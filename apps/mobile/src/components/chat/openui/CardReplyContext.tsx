@@ -73,10 +73,12 @@ export function useCardPressState(
     () => read(messageId),
   );
   const answered = answer ?? state.sent;
-  // Once the canonical reply has landed, `answered` follows it (closed while it exists, open again if it is deleted).
+  // Once the canonical reply has landed, `answered` follows it (closed while it exists, open again if it is
+  // deleted) and whatever this client still holds of the send goes: the local marker, but also a pinned
+  // retry or an error from a POST that timed out after the server had committed it.
   useEffect(() => {
-    if (answer !== null && state.sent !== null) write(messageId, IDLE);
-  }, [answer, state.sent, messageId]);
+    if (answer !== null && state !== IDLE) write(messageId, IDLE);
+  }, [answer, state, messageId]);
   const press = useCallback((text: string) => {
     if (!onReply || state.pending || answered !== null) return;
     const attempt = state.id ? { id: state.id, text: state.text } : { id: randomUUID(), text: text.trim() };

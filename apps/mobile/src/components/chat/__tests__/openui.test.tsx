@@ -115,6 +115,18 @@ it("the local marker yields to the canonical answer: deleting the reply reopens 
   await waitFor(() => expect(screen.getByRole("button", { name: "Starter", disabled: false })).toBeTruthy());
 });
 
+it("an unconfirmed attempt yields to the canonical answer too: the pin goes, and a deleted reply reopens every option", async () => {
+  const onReply = jest.fn().mockRejectedValueOnce(new Error("timeout"));
+  const view = await render(<Card text={CHOICE} onReply={onReply} messageId="m5" />);
+  await fireEvent.press(screen.getByRole("button", { name: "Studio" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Starter", disabled: true })).toBeTruthy());
+  await view.rerender(<Card text={CHOICE} onReply={onReply} messageId="m5" answered="Studio" />);
+  expect(screen.getByRole("button", { name: "Studio", disabled: true })).toBeTruthy();
+  await view.rerender(<Card text={CHOICE} onReply={onReply} messageId="m5" answered={null} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Starter", disabled: false })).toBeTruthy());
+  expect(screen.getByRole("button", { name: "Studio", disabled: false })).toBeTruthy();
+});
+
 it("Sources open a native screen, the web, or nothing", async () => {
   const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
   await render(<Card text={fence('root = Stack([s])\ns = Sources([{ title: "Session", url: "https://thelightbulb.company/chat?panel=session&session=s1" }, { title: "Docs", url: "https://example.com/d" }, { title: "Bad", url: "javascript:alert(1)" }])')} />);

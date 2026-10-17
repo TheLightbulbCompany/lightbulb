@@ -275,7 +275,7 @@ def test_stop_interrupts_an_attached_agent_and_a_queued_stop_never_runs(home, mo
 
 
 @pytest.mark.parametrize("token", ["grant-jwt", None])
-def test_create_threads_the_local_session_grant_into_the_turn_context_only_when_sent(home, monkeypatch, token):
+def test_create_writes_the_turn_context_with_the_local_session_grant_when_sent(home, monkeypatch, token):
     (home / "profiles" / "agent-1").mkdir(parents=True)
     threading, created = _capturing_threading()
     monkeypatch.setattr(server, "threading", threading)
@@ -300,9 +300,7 @@ def test_create_threads_the_local_session_grant_into_the_turn_context_only_when_
     assert server.handle_plugin(CREATE_PATH, "POST", headers, BODY)[0] == 202
     created[0].run_now()
 
-    if token:
-        assert seen["ctx"]["localSessionToken"] == token
-        assert seen["ctx"]["family"] == "paperclip" and seen["ctx"]["sessionKey"] == SESSION
-    else:
-        assert seen["ctx"] is None  # no grant, no context file: the plugin's tools answer NO_TURN
+    # Every Paperclip run gets a context file, so send_room_message works without a grant.
+    assert seen["ctx"]["localSessionToken"] == token
+    assert seen["ctx"]["family"] == "paperclip" and seen["ctx"]["sessionKey"] == SESSION
     assert not turn._turn_context_path(turn._profile_dir("agent-1"), SESSION).exists()

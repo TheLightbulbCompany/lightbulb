@@ -49,6 +49,19 @@ def test_send_room_message_defaults_to_the_turns_thread_root(tmp_path, monkeypat
     assert json.loads(out)["messageId"] == "m1"
 
 
+@pytest.mark.parametrize("thread", [None, "abc"])
+def test_a_paperclip_run_posts_to_any_room_as_a_routine_post(tmp_path, monkeypatch, thread):
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    own = ctx(tmp_path, family="paperclip")
+    sent = {}
+    monkeypatch.setattr(lightbulb, "_post", lambda url, token, body: sent.update(body=body) or {"messageId": "m1"})
+    # Its own room too: a Paperclip run's answer is the issue result, so nothing posts twice.
+    lightbulb._send_room_message({"roomId": own["roomId"], "text": "brief", "threadRootMessageId": thread},
+                                 session_id=SESSION)
+    assert "runId" not in sent["body"]  # no room-run to bind to: the backend counts it as hop 1
+    assert sent["body"]["threadRootMessageId"] == thread and sent["body"]["roomId"] == own["roomId"]
+
+
 def test_an_explicit_thread_root_wins_and_no_context_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
     ctx(tmp_path)

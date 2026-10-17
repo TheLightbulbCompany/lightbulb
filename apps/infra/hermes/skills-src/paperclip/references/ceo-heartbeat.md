@@ -150,9 +150,8 @@ issue is always allowed and needs no checkout). Then:
 
 If checkout fails (`409` -- a live run already holds it), skip every mutation
 this wake and end the heartbeat: with nothing checked out, no other Paperclip
-write this run can succeed either (same rule), and there is no fallback
-channel -- "No Lightbulb room tools here" below still applies. The next
-wake's checkout attempt is the retry. On success, everything below is a
+write this run can succeed either (same rule), and the board summary waits
+for the next wake, whose checkout attempt is the retry. On success, everything below is a
 cross-issue write on a held run, capped at Paperclip's 20-per-run limit --
 well above this checklist's own 10-per-wake budget, which stays the number
 that actually binds.
@@ -220,10 +219,9 @@ summarising this wake's mutations -- issue id + action for each (e.g.
 the budget above produced none. Leave the issue `in_progress` -- never
 `done` -- so the next timer wake finds it and checks it out again.
 
-**No Lightbulb room tools here.** Do not call `send_room_message` or any other
-Lightbulb-plugin tool from this checklist -- a Paperclip-triggered run has no
-active Lightbulb turn to send into, and the call fails (ISOA-377). Comments on
-the Paperclip issue thread are the only channel this checklist uses.
+**Room posts are your call.** `send_room_message` works from a Paperclip run
+and posts to any room you sit in, when something there is worth saying. This
+checklist's own summary still goes on "Board hygiene" as above.
 
 **Carried from the retired nightly routine.** Three lines earned their keep;
 everything else about that routine (title, daily cadence as its own

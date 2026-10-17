@@ -1,6 +1,7 @@
 import http.server
 import json
 import shutil
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -74,7 +75,7 @@ def test_token_file_holds_owner_and_plaintext_token(tmp_path, monkeypatch):
 def test_helper_bakes_api_base_and_no_placeholders(tmp_path, monkeypatch):
     aws_dir = _write(tmp_path, monkeypatch)
     helper = (aws_dir / aws_cli.HELPER_FILENAME).read_text()
-    assert 'const API_BASE = "https://api-test.isol8.co";' in helper
+    assert '(process.env.ISOL8_API_URL || "https://api-test.isol8.co")' in helper
     assert "__API_BASE__" not in helper
 
 
@@ -112,6 +113,25 @@ class _StubHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *a):  # keep pytest output clean
         pass
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_helper_prefers_the_runtimes_api_url_over_the_baked_one(tmp_path, monkeypatch):
+    """A helper written before a domain move must follow the runtime's ISOL8_API_URL."""
+    _StubHandler.calls = []
+    server = http.server.HTTPServer(("127.0.0.1", 0), _StubHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(aws_cli, "materializer_root", lambda: tmp_path / "org_x")
+        monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", "http://127.0.0.1:9")  # dead
+        aws_cli.write("org_x", "aws", _cred())
+        helper = Path(tmp_path) / "org_x" / ".aws" / aws_cli.HELPER_FILENAME
+        env = {**os.environ, "ISOL8_API_URL": f"http://127.0.0.1:{server.server_port}/"}
+        r = subprocess.run(["node", str(helper)], capture_output=True, text=True, timeout=30, env=env)
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout) == _StubHandler.creds and len(_StubHandler.calls) == 1
+    finally:
+        server.shutdown()
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")

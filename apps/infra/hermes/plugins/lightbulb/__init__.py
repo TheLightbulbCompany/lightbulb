@@ -64,8 +64,11 @@ def _normalize_room(raw: str) -> str | None:
 
 def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
-    if not ctx or ctx.get("family") == "paperclip":  # a Paperclip run's answer is its result
+    if not ctx:
         return NO_TURN
+    # A Paperclip run's answer is its issue result, never a room post, so any room or thread is
+    # the agent's own call; its post is a routine post (hop 1), with no room-run id to bind to.
+    paperclip = ctx.get("family") == "paperclip"
     room = _normalize_room(str(args.get("roomId", "")))
     if not room:
         return "Invalid roomId: expected a room UUID, optionally prefixed 'lightbulb:'."
@@ -76,13 +79,13 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
         return "text is required."
     thread = str(args.get("threadRootMessageId") or "").strip() or None
     own_thread = str(ctx.get("threadRootMessageId") or "").strip() or None  # same normalization both sides
-    if room == _normalize_room(str(ctx.get("roomId") or "")) and thread in (None, own_thread):
+    if not paperclip and room == _normalize_room(str(ctx.get("roomId") or "")) and thread in (None, own_thread):
         return OWN_THREAD_REFUSAL
     body = {
         "eventId": f"{ctx['runId']}:{ctx['agentId']}:tool:{next(_counter)}",
         "roomId": room, "agentId": ctx["agentId"], "text": text, "replyToMessageId": None,
-        "threadRootMessageId": args.get("threadRootMessageId") or ctx.get("threadRootMessageId"),
-        "runId": ctx["runId"],
+        "threadRootMessageId": thread if paperclip else thread or ctx.get("threadRootMessageId"),
+        **({} if paperclip else {"runId": ctx["runId"]}),
     }
     url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/messaging/agent-messages/{ctx['ownerId']}"
     try:

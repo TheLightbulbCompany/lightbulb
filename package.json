@@ -13,6 +13,12 @@
   },
   "packageManager": "pnpm@9.15.0",
   "pnpm": {
+    "neverBuiltDependencies": [
+      "@openuidev/lang-core",
+      "@openuidev/react-lang",
+      "@openuidev/devtools",
+      "@openuidev/observability"
+    ],
     "overrides": {
       "protobufjs": "^7.6.5",
       "@xmldom/xmldom@>=0.8.0 <0.8.15": "0.8.15",

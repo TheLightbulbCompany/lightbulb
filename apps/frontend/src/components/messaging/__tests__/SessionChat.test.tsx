@@ -1,10 +1,13 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { ApiError, type CanonicalRoomMessage, type RoomDetail } from "@lightbulb/shared";
 
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "user_alice" }) }));
 const rooms = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
 vi.mock("@/hooks/useRooms", () => ({ useRooms: (...args: unknown[]) => { rooms.value.args = args; return rooms.value; } }));
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+// The card is a lazy chunk; warm it so the first mount fits findByRole's 1 s budget.
+beforeAll(() => import("../openui/OpenUICard"));
 
 import { SessionChat } from "../SessionChat";
 
@@ -136,4 +139,17 @@ it("stops counting the room as on screen once access to it is removed", async ()
   rooms.value = { ...rooms.value, accessRemoved: true, messages: [] };
   view.rerender(<SessionChat {...props} />);
   await waitFor(() => expect(onRoom).toHaveBeenLastCalledWith(null));
+});
+
+it("answers an agent's card as the person, addressed to the agent, under the card", async () => {
+  const sendMessage = vi.fn(async () => undefined);
+  const ceo = { ...member("agent-ceo", "CEO"), kind: "agent" as const };
+  const card: CanonicalRoomMessage = { ...fromBob, messageId: "card", messageSeq: 2, author: { kind: "agent", id: "agent-ceo", displayName: "CEO" },
+    text: "```openui-lang\nroot = Stack([b])\nb = Buttons([Button(\"Studio\"), Button(\"Starter\")])\n```" };
+  rooms.value = { ...rooms.value, sendMessage, activeRoom: { ...detail, members: [...detail.members, ceo] }, messages: [fromBob, card] };
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Studio" }));
+  await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+    text: "Studio", mentions: [{ kind: "agent", id: "agent-ceo" }], replyToMessageId: "card", threadRootMessageId: null,
+  })));
 });

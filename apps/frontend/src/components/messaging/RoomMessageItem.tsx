@@ -1,9 +1,9 @@
 "use client";
 
-import type { ReactElement, ReactNode } from "react";
+import { useMemo, type ReactElement, type ReactNode } from "react";
 import { MessageCircle } from "lucide-react";
 import type { Components, UrlTransform } from "react-markdown";
-import { sessionLabel, sessionStatus, type LocalSession } from "@lightbulb/shared";
+import { sessionLabel, sessionStatus, type CardReply, type LocalSession } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -15,6 +15,7 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomDocumentCards } from "./RoomDocumentCards";
 import { RoomImageAttachments } from "./RoomImageAttachments";
+import { CardContext, type CardContextValue, useCardPressState } from "./openui/CardContext";
 import { RoomAppLinks } from "./RoomAppLinks";
 import { RoomLinkPreviews } from "./RoomLinkPreviews";
 import { RoomMessageContent } from "./RoomMessageContent";
@@ -52,6 +53,12 @@ interface RoomMessageItemProps {
   onUpdateMessage?: RoomPanelProps["onUpdateMessage"];
   onDownloadAttachment?: RoomPanelProps["onDownloadAttachment"];
   onAttachmentUrl?: RoomPanelProps["onAttachmentUrl"];
+  /** Posts a card's answer as the viewer (absent in read-only places: the controls disable). */
+  onCardReply?: (reply: CardReply) => Promise<void>;
+  /** The first human reply to this message, when it carries a card. */
+  cardAnswer?: string | null;
+  /** False in the feed: the fence stays a code block. */
+  cardsEnabled?: boolean;
   /** The sessions this viewer can open: a referenced session resolves its live status here. */
   sessions?: readonly LocalSession[];
   onOpenSession?: (sessionId: string) => void;
@@ -75,7 +82,17 @@ function SessionCard({ sessionId, label, session, onOpen }: {
   </span>;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor }: RoomMessageItemProps): ReactElement {
+  const cardReply = useMemo(() => onCardReply && actionable
+    ? (replyText: string, clientMessageId: string) => onCardReply({ text: replyText, agentId: message.author.id, messageId: message.messageId, threadRootMessageId: message.threadRootMessageId, clientMessageId })
+    : undefined, [onCardReply, actionable, message.author.id, message.messageId, message.threadRootMessageId]);
+  // One press state per message (not per fence): a reply answers the message.
+  const cardPress = useCardPressState(cardReply, cardAnswer);
+  const cardContext = useMemo<CardContextValue | null>(() => !cardsEnabled || message.author.kind !== "agent" || message.deletedAt ? null : {
+    messageId: message.messageId, roomId: message.roomId, authorId: message.author.id, threadRootMessageId: message.threadRootMessageId,
+    attachments: message.attachments ?? [], ...cardPress, attachmentUrl: onAttachmentUrl,
+  }, [message.messageId, message.roomId, message.author.kind, message.author.id, message.threadRootMessageId, message.deletedAt, message.attachments,
+    cardPress, onAttachmentUrl, cardsEnabled]);
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
@@ -106,7 +123,9 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         {timestamp && <time className="text-ui text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{time}</time>}
       </div>}
       <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} startEditing={startEditing} onEditingClosed={onEditingClosed} actions={actions} menuExtras={menuExtras}>
-        <MarkdownView skipHtml components={markdown} urlTransform={urlTransform}>{text}</MarkdownView>
+        <CardContext.Provider value={cardContext}>
+          <MarkdownView skipHtml components={markdown} urlTransform={urlTransform}>{text}</MarkdownView>
+        </CardContext.Provider>
       </RoomMessageContent>
       {!message.deletedAt && !!message.sessionMentions?.length && <div className="flex flex-wrap gap-1 mt-1" aria-label="Referenced sessions">
         {message.sessionMentions.map((sessionId) => <SessionCard key={sessionId} sessionId={sessionId} label={message.sessionTargetLabels?.[sessionId]}

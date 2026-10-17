@@ -338,3 +338,10 @@ export {
   delegationIdOf,
 } from "./messaging/subagents";
 export type { RoomSubagents, SubagentProgress, SubagentStatus } from "./messaging/subagents";
+export { CARD_FENCE, CARD_MAX_BYTES, CARD_MAX_OPTIONS, CARD_ROOT } from "./ui/constants";
+// Type only: the vocabulary (and OpenUI's parser) is `@lightbulb/shared/cards`, so the
+// barrel never loads lang-core.
+export type { CardName } from "./ui/library";
+export { cardReplyRequest, choiceReply, formReply, tableReply } from "./ui/reply";
+export type { CardReply } from "./ui/reply";
+export { cardAnswerFor, cardAnswersFor } from "./ui/answer";

@@ -178,7 +178,9 @@ export type AnalyticsEvent =
   | "launch_renamed"
   | "launch_stripe_connected"
   | "launch_referral_copied"
-  | "launch_team_interest";
+  | "launch_team_interest"
+  // Cards in chat
+  | "openui.parse_error";
 
 /**
  * Type exposing the ``__loaded`` flag PostHog sets after ``init()``

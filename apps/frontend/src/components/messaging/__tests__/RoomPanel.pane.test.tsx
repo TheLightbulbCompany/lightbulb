@@ -1,6 +1,7 @@
-// The conversation's tools and side column in the shell's one right pane.
+// The conversation's tools and side column in the shell's one right pane, plus the one card
+// rule only RoomPanel can apply: whether the card's author is still in the room.
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import type { RoomMessage, RoomParticipant } from "../types";
 import { _resetControllerForTests, attachShell, getWorkspaceSnapshot, setThreadPaneHost } from "@/components/workspace/workspaceController";
@@ -18,6 +19,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   }),
 }));
 vi.mock("../useMessageSearch", () => ({ useMessageSearch: () => ({ hits: [], state: "idle" }) }));
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 vi.mock("@/lib/shellNav", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -35,6 +37,9 @@ const props: RoomPanelProps = {
   participants: [owner, friday], messages: [message, reply],
   composer: { text: "", onTextChange: vi.fn(), members: [owner, friday], clientMessageId: "draft", sendState: "idle", onSubmit: vi.fn(), focusAgentId: "friday" },
 };
+
+// The card is a lazy chunk; warm it so the first mount fits findByRole's 1 s budget.
+beforeAll(() => import("../openui/OpenUICard"));
 
 beforeEach(() => {
   _resetControllerForTests();
@@ -84,4 +89,13 @@ it("shows a thread in the pane, and folds it when something else takes the pane"
   expect(getWorkspaceSnapshot().pane?.panelId).toBe("file-viewer");
   expect(screen.queryByRole("complementary", { name: "Thread" })).toBeNull();
   host.remove();
+});
+
+it("a card from an agent no longer in the room is read-only; a member's card still answers", async () => {
+  const card: RoomMessage = { ...message, text: "```openui-lang\nroot = Stack([b])\nb = Buttons([Button(\"Studio\"), Button(\"Starter\")])\n```" };
+  const gone = render(<RoomPanel {...props} participants={[owner]} messages={[card]} onCardReply={vi.fn()} />);
+  expect(await screen.findByRole("button", { name: "Studio" })).toBeDisabled();
+  gone.unmount();
+  render(<RoomPanel {...props} messages={[card]} onCardReply={vi.fn()} />);
+  expect(await screen.findByRole("button", { name: "Studio" })).not.toBeDisabled();
 });

@@ -2063,16 +2063,8 @@ export class ServiceStack extends cdk.Stack {
         LAMBDA_SECRET_ENV_MAP: secretEnvMap,
       },
     });
-    // Exactly the secrets the task def injects. KMS decrypt is the task role's
-    // existing KmsAccess grant (same CMK). On the BackendSecrets managed policy, not the
-    // role's inline default policy: one ARN per secret outgrew the inline size budget.
-    secretsPolicy.addStatements(
-      new iam.PolicyStatement({
-        sid: "ProvisionerSecrets",
-        actions: ["secretsmanager:GetSecretValue"],
-        resources: Object.values(backendContainerSecrets).map((secret) => `${secret.arn}-??????`),
-      }),
-    );
+    // The provisioner Lambda reads the task def's secrets through SecretsAccess
+    // (lightbulb/{env}/*) on the task role, so no per-secret statement is needed.
 
     // ---------------------------------------------------------------------
     // Messaging work consumer: openclaw-work.fifo drained by an SQS event source

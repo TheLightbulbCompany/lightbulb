@@ -49,17 +49,17 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     targetGroup: network.targetGroup,
     albSecurityGroup: network.albSecurityGroup,
     secretNames: {
-      clerkIssuer: `isol8/${environment}/clerk_issuer`,
-      clerkSecretKey: `isol8/${environment}/clerk_secret_key`,
-      clerkWebhookSecret: `isol8/${environment}/clerk_webhook_secret`,
-      stripeSecretKey: `isol8/${environment}/stripe_secret_key`,
-      stripeWebhookSecret: `isol8/${environment}/stripe_webhook_secret`,
-      encryptionKey: `isol8/${environment}/encryption_key`,
-      posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
-      paperclipServiceTokenKey: `isol8/${environment}/paperclip_service_token_key`,
-      paperclipEventsWebhookSecret: `isol8/${environment}/paperclip_events_webhook_secret`,
+      clerkIssuer: `lightbulb/${environment}/clerk_issuer`,
+      clerkSecretKey: `lightbulb/${environment}/clerk_secret_key`,
+      clerkWebhookSecret: `lightbulb/${environment}/clerk_webhook_secret`,
+      stripeSecretKey: `lightbulb/${environment}/stripe_secret_key`,
+      stripeWebhookSecret: `lightbulb/${environment}/stripe_webhook_secret`,
+      encryptionKey: `lightbulb/${environment}/encryption_key`,
+      posthogProjectApiKey: `lightbulb/${environment}/posthog_project_api_key`,
+      paperclipServiceTokenKey: `lightbulb/${environment}/paperclip_service_token_key`,
+      paperclipEventsWebhookSecret: `lightbulb/${environment}/paperclip_events_webhook_secret`,
       gogKeyringPassword: `lightbulb/${environment}/gog-keyring-password`,
-      metronomeApiKey: `isol8/${environment}/metronome_api_key`,
+      metronomeApiKey: `lightbulb/${environment}/metronome_api_key`,
       openaiApiKey: `lightbulb/${environment}/openai_api_key`,
       livekitApiKey: `lightbulb/${environment}/livekit_api_key`,
       livekitApiSecret: `lightbulb/${environment}/livekit_api_secret`,
@@ -69,9 +69,9 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       sendblueApiSecretKey: `lightbulb/${environment}/sendblue_api_secret_key`,
       sendblueWebhookSecret: `lightbulb/${environment}/sendblue_webhook_secret`,
       huddleWorkerSecret: `lightbulb/${environment}/huddle_worker_secret`,
-      metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
-      wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
-      sesIngestSecret: `isol8/${environment}/ses_ingest_secret`,
+      metronomeWebhookSecret: `lightbulb/${environment}/metronome_webhook_secret`,
+      wsInternalSecret: `lightbulb/${environment}/ws_internal_secret`,
+      sesIngestSecret: `lightbulb/${environment}/ses_ingest_secret`,
     },
     kmsKeyArn: kmsKey.keyArn,
     container: {
@@ -905,7 +905,7 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     }
   });
 
-  test("the provisioner may read exactly the backend's injected secrets", () => {
+  test("the provisioner reads every injected secret through the lightbulb/{env}/* grant", () => {
     const backend = (
       Object.values(
         template.findResources("AWS::ECS::TaskDefinition", {
@@ -913,18 +913,15 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
         }),
       )[0] as any
     ).Properties.ContainerDefinitions.find((c: any) => c.Name === "backend");
-    const docs = [
-      ...Object.values(template.findResources("AWS::IAM::Policy")),
-      ...Object.values(template.findResources("AWS::IAM::ManagedPolicy")),
-    ].map((r: any) => r.Properties.PolicyDocument);
-    const statement = docs
-      .flatMap((d: any) => d.Statement)
-      .find((s: any) => s.Sid === "ProvisionerSecrets");
-    expect(statement).toBeDefined();
-    expect(statement.Action).toEqual("secretsmanager:GetSecretValue");
-    expect(statement.Resource).toHaveLength(
-      backend.Secrets.filter((secret: any) => secret.Name !== "HOOK_GRANT_SIGNING_KEY").length,
-    );
+    for (const secret of backend.Secrets.filter((s: any) => s.Name !== "HOOK_GRANT_SIGNING_KEY")) {
+      expect(JSON.stringify(secret.ValueFrom), secret.Name).toContain(":secret:lightbulb/dev/");
+    }
+    const grant = Object.values(template.findResources("AWS::IAM::ManagedPolicy"))
+      .flatMap((r: any) => r.Properties.PolicyDocument.Statement)
+      .find((s: any) => s.Sid === "SecretsAccess");
+    expect(grant).toBeDefined();
+    expect(grant.Action).toContain("secretsmanager:GetSecretValue");
+    expect(JSON.stringify(grant.Resource)).toMatch(/lightbulb\/dev\/\*"/);
   });
 
   test("backend task definition carries PROVISION_STATE_MACHINE_ARN and no PROVISION_EXECUTOR flag", () => {

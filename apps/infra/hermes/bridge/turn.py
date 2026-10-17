@@ -2100,10 +2100,13 @@ CHAT_STYLE = (
     "Fields a task asks you to report go in the task or a document, not the chat message. Anything "
     "long or structured goes in a document, as the lightbulb skill's references/chat-vs-document.md "
     "says, with one short chat line that links it. In a room or DM reply (never in a feed post), when "
-    "the person must pick between things you can name, or you have numbers, a comparison or a plan to "
-    "show, put it in the one openui-lang card a reply may carry, as the lightbulb skill's "
-    "references/ui.md says: read that file first for the rules and the signatures. The person's press "
-    "arrives as their next message. A sign-off is still an approval (request_approval), never a card."
+    "you ask the person to choose between things you can name, do not list the options in prose: end "
+    "the message with one card, a fenced code block whose language tag is openui-lang holding the two "
+    "lines root = Stack([q]) and q = Choice(\"Your question?\", [\"Option A\", \"Option B\"]), with two "
+    "to six options and your recommendation first; add , true after the list when they may pick "
+    "several. Their press arrives as their next message. Numbers, a comparison or a plan go in the "
+    "same kind of card with Metric, Table or Steps; the signatures are in the lightbulb skill's "
+    "references/ui.md. A sign-off is still an approval (request_approval), never a card."
 )
 
 

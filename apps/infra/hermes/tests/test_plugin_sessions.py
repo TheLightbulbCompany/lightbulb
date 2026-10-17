@@ -78,12 +78,6 @@ def test_an_ask_comes_back_as_awaiting_approval_and_the_ask_bounds_name_their_co
         assert out.startswith(code) if code in lightbulb.ASK_REFUSALS else out == lightbulb.SESSIONS_UNAVAILABLE
 
 
-def test_send_room_message_stays_off_in_a_paperclip_run(tmp_path, monkeypatch):
-    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
-    turn_context.write(tmp_path, SESSION, {"family": "paperclip", "localSessionToken": "jwt"})
-    assert lightbulb._send_room_message({"roomId": "x", "text": "hi"}, session_id=SESSION) == lightbulb.NO_TURN
-
-
 def test_an_extra_param_for_the_action_is_refused(tmp_path, monkeypatch):
     _ctx(tmp_path, monkeypatch)
     assert "not allowed" in lightbulb._local_sessions({"action": "resources", "sessionId": SID},

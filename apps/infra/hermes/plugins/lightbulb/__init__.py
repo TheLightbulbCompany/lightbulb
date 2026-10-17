@@ -33,16 +33,17 @@ VOICE_ROOM_REFUSAL = ("This is a Live voice request: your answer is spoken, and 
 # Task 11: send_room_message tool
 SEND_SCHEMA = {
     "name": "send_room_message",
-    "description": "Post a message to ANOTHER Lightbulb room, or another thread in this one — "
-                   "your reply to the thread you are answering is posted for you when the turn "
-                   "ends, so never send that here.",
+    "description": "Post a message to a Lightbulb room you sit in. In a room turn, your reply "
+                   "to the thread you are answering is posted for you when the turn ends, so "
+                   "never send that here; use this for other rooms or threads. In a task run, "
+                   "any room or thread is yours to post in.",
     "parameters": {
         "type": "object",
         "properties": {
             "roomId": {"type": "string", "description": "Room id, optionally prefixed 'lightbulb:'."},
             "text": {"type": "string"},
             "threadRootMessageId": {"type": "string",
-                                    "description": "Thread to post under. Omitted = this turn's own thread."},
+                                    "description": "Thread to post under. Omitted = this room turn's own thread, or the top level in a task run."},
         },
         "required": ["roomId", "text"],
     },
@@ -64,8 +65,11 @@ def _normalize_room(raw: str) -> str | None:
 
 def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
-    if not ctx or ctx.get("family") == "paperclip":  # a Paperclip run's answer is its result
+    if not ctx:
         return NO_TURN
+    # A Paperclip run's answer is its issue result, never a room post, so any room or thread is
+    # the agent's own call; its post is a routine post (hop 1), with no room-run id to bind to.
+    paperclip = ctx.get("family") == "paperclip"
     room = _normalize_room(str(args.get("roomId", "")))
     if not room:
         return "Invalid roomId: expected a room UUID, optionally prefixed 'lightbulb:'."
@@ -76,13 +80,13 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
         return "text is required."
     thread = str(args.get("threadRootMessageId") or "").strip() or None
     own_thread = str(ctx.get("threadRootMessageId") or "").strip() or None  # same normalization both sides
-    if room == _normalize_room(str(ctx.get("roomId") or "")) and thread in (None, own_thread):
+    if not paperclip and room == _normalize_room(str(ctx.get("roomId") or "")) and thread in (None, own_thread):
         return OWN_THREAD_REFUSAL
     body = {
         "eventId": f"{ctx['runId']}:{ctx['agentId']}:tool:{next(_counter)}",
         "roomId": room, "agentId": ctx["agentId"], "text": text, "replyToMessageId": None,
-        "threadRootMessageId": args.get("threadRootMessageId") or ctx.get("threadRootMessageId"),
-        "runId": ctx["runId"],
+        "threadRootMessageId": thread if paperclip else thread or ctx.get("threadRootMessageId"),
+        **({} if paperclip else {"runId": ctx["runId"]}),
     }
     url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/messaging/agent-messages/{ctx['ownerId']}"
     try:

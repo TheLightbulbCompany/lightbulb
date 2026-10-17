@@ -69,7 +69,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const API_BASE = "__API_BASE__";
+// The runtime's own API address first: a baked one outlives a domain move (api.flickmeon.ai,
+// 2026-10-02) because nothing rewrites this file until the owner reconnects AWS.
+const API_BASE = (process.env.ISOL8_API_URL || "__API_BASE__").replace(/\/+$/, "");
 const DIR = dirname(fileURLToPath(import.meta.url));
 const CACHE = join(DIR, "cache.json");
 const REFRESH_MARGIN_MS = 10 * 60 * 1000;

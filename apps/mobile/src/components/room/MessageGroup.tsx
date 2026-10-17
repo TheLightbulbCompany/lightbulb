@@ -7,6 +7,7 @@ import {
   sessionStatus,
   unpromptedLabel,
   type AvatarRing,
+  type CardReply,
   type CanonicalRoomMessage,
   type MessageAttachment,
   type RoomMember,
@@ -15,7 +16,7 @@ import {
 } from "@lightbulb/shared";
 import { Image } from "expo-image";
 import { router } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { fonts, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
@@ -24,6 +25,7 @@ import { attachmentFile } from "../../lib/attachmentFile";
 import type { LocalMessageRow } from "../../lib/rooms";
 import { Bubble, BubbleMeta, Chip, MetaText, AVATAR_GUTTER } from "../conversation/bubbles";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
+import { CardReplyContext, useCardPressState, type CardReplyValue } from "../chat/openui/CardReplyContext";
 import { AttachmentViewerModal } from "./AttachmentViewerModal";
 import { Avatar } from "./Avatar";
 import { DocumentCards } from "./DocumentCards";
@@ -187,6 +189,9 @@ export function MessageGroup({
   showTime = true,
   readLabel = null,
   agentRing = null,
+  onCardReply,
+  cardAnswer = null,
+  cardsEnabled = true,
 }: {
   message: CanonicalRoomMessage;
   collapsed: boolean;
@@ -209,6 +214,12 @@ export function MessageGroup({
   readLabel?: string | null;
   /** Ring on this bubble's avatar (the agent is running right now). Ignored for a mine bubble, which never draws an avatar. */
   agentRing?: AvatarRing | null;
+  /** Posts a card's answer as the viewer. Absent (archived room, no access) leaves cards read-only. */
+  onCardReply?: (reply: CardReply) => Promise<void>;
+  /** The first human reply to this message when it carries a card (`cardAnswersFor`). */
+  cardAnswer?: string | null;
+  /** False in the feed: a card fence stays code. */
+  cardsEnabled?: boolean;
 }) {
   const palette = useChatPalette();
   const [timeShown, setTimeShown] = useState(false);
@@ -234,6 +245,22 @@ export function MessageGroup({
   const markdownText = message.via === "lightbulb_mcp" ? message.text : linkifySessionMentions(
     linkifyMentions(message.text, message.mentions, members), message,
     sessionCandidates.map(({ session }) => session),
+  );
+  // Cards are live only for an AGENT's message, and only while its author is still in the room.
+  const authorInRoom = members.some((m) => m.kind === "agent" && m.id === message.author.id);
+  const cardReply = useMemo(
+    () => onCardReply && authorInRoom
+      ? (text: string, clientMessageId: string) => onCardReply({ text, agentId: message.author.id, messageId: message.messageId, threadRootMessageId: message.threadRootMessageId, clientMessageId })
+      : undefined,
+    [onCardReply, authorInRoom, message.author.id, message.messageId, message.threadRootMessageId],
+  );
+  const cardPress = useCardPressState(message.messageId, currentUserId, cardReply, cardAnswer);
+  const cardContext = useMemo<CardReplyValue | null>(
+    () => !cardsEnabled || message.author.kind !== "agent" || deleted ? null : {
+      messageId: message.messageId, roomId: message.roomId, authorId: message.author.id,
+      threadRootMessageId: message.threadRootMessageId, attachments: message.attachments ?? [], ...cardPress, attachmentUrl,
+    },
+    [cardsEnabled, deleted, message.author.kind, message.author.id, message.messageId, message.roomId, message.threadRootMessageId, message.attachments, cardPress, attachmentUrl],
   );
   const bubbleLabel = deleted
     ? "Message deleted"
@@ -277,7 +304,9 @@ export function MessageGroup({
                 {deleted ? (
                   <Text style={[styles.deleted, { color: palette.fgMute }]}>Message deleted</Text>
                 ) : (
-                  <MessageMarkdown text={markdownText} palette={palette} />
+                  <CardReplyContext.Provider value={cardContext}>
+                    <MessageMarkdown text={markdownText} palette={palette} />
+                  </CardReplyContext.Provider>
                 )}
                 {!deleted ? <DocumentCards text={message.text} /> : null}
                 {!deleted ? <LinkPreviews text={message.text} /> : null}
@@ -311,7 +340,9 @@ export function MessageGroup({
                   Message deleted
                 </Text>
               ) : (
-                <MessageMarkdown text={markdownText} palette={palette} inverse={mine} />
+                <CardReplyContext.Provider value={cardContext}>
+                  <MessageMarkdown text={markdownText} palette={palette} inverse={mine} />
+                </CardReplyContext.Provider>
               )}
               {!deleted ? <DocumentCards text={message.text} /> : null}
               {!deleted ? <LinkPreviews text={message.text} /> : null}

@@ -1,5 +1,5 @@
-import { parseMentionHref } from "@lightbulb/shared";
-import { memo } from "react";
+import { CARD_FENCE, parseMentionHref } from "@lightbulb/shared";
+import { memo, useMemo } from "react";
 import { Linking, ScrollView, Text, View } from "react-native";
 import { router } from "expo-router";
 import Markdown, {
@@ -14,6 +14,8 @@ import { activityMobileHref } from "../../lib/activityLink";
 import { paperclipMobileHref } from "../../lib/paperclipLink";
 import { sessionMobileHref } from "../../lib/sessionLink";
 import { colors, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
+import { useCardReply } from "./openui/CardReplyContext";
+import { OpenUICard } from "./openui/OpenUICard";
 
 /**
  * Assistant-message markdown (spec §2). Style map mirrors the web
@@ -146,6 +148,17 @@ const rules: RenderRules = {
     );
   },
 };
+
+/** With a card context (an agent's message) the card fence draws as a card; anywhere else it stays code. */
+const cardRules = (palette: ChatPalette): RenderRules => ({
+  ...rules,
+  fence: (node, children, parent, styles, ...rest) => {
+    const lang = ((node as ASTNode & { sourceInfo?: string }).sourceInfo ?? "").trim();
+    if (lang !== CARD_FENCE) return rules.fence!(node, children, parent, styles, ...rest);
+    const content = node.content.endsWith("\n") ? node.content.slice(0, -1) : node.content;
+    return <OpenUICard key={node.key} program={content} palette={palette} />;
+  },
+});
 
 const horizontalBlockScroll = { flexGrow: 0, maxWidth: "100%" as const };
 
@@ -498,8 +511,10 @@ function MessageMarkdownInner({
   inverse?: boolean;
 }) {
   const style = palette ? cachedBubbleStyles(palette, inverse) : markdownStyles;
+  const live = useCardReply() !== null;
+  const r = useMemo(() => (live && palette ? cardRules(palette) : rules), [live, palette]);
   return (
-    <Markdown style={style} rules={rules} markdownit={markdownIt}>
+    <Markdown style={style} rules={r} markdownit={markdownIt}>
       {text}
     </Markdown>
   );

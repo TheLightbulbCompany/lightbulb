@@ -9,7 +9,7 @@ module.exports = {
     // syntax) with no transform, so any test that reaches a real (unmocked) expo-router import fails
     // to parse without this entry. First hit importing `router` directly into MessageMarkdown.tsx,
     // a component several test files render without mocking expo-router.
-    "node_modules/(?!(?:\\.pnpm/[^/]+/node_modules/)?((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|@clerk/.*|standard-navigation))",
+    "node_modules/(?!(?:\\.pnpm/[^/]+/node_modules/)?((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|@clerk/.*|standard-navigation|@openuidev/.*))",
     // Carried over from jest-expo's own preset (which this array otherwise
     // REPLACES, not extends): without it, babel-preset-expo's reanimated
     // babel plugin — auto-applied because the package is installed — gets

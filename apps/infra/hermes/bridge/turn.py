@@ -2099,7 +2099,11 @@ CHAT_STYLE = (
     "If something blocked you, say what it was and what you need, once. Ask at most one question. "
     "Fields a task asks you to report go in the task or a document, not the chat message. Anything "
     "long or structured goes in a document, as the lightbulb skill's references/chat-vs-document.md "
-    "says, with one short chat line that links it."
+    "says, with one short chat line that links it. When the person must pick between things you can "
+    "name, or you have numbers, a comparison or a plan to show, put it in the one openui-lang card a "
+    "reply may carry, as the lightbulb skill's references/ui.md says: read that file first for the "
+    "rules and the signatures. The person's press arrives as their next message. A sign-off is still "
+    "an approval (request_approval), never a card."
 )
 
 

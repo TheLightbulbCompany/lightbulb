@@ -23,7 +23,7 @@ export interface CardReplyValue {
   error: string | null;
   /** The reply of a send that got no answer: the next press replays it, the other options wait. */
   retry: string | null;
-  attachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
+  attachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
 }
 
 export const CardReplyContext = createContext<CardReplyValue | null>(null);

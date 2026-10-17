@@ -1,11 +1,13 @@
 import { createLibrary, defineComponent } from "@openuidev/react-lang";
 import { CARD_MAX_OPTIONS, CARD_ROOT, choiceReply, formReply, tableReply, type CardName } from "@lightbulb/shared";
 import { CARD_COMPONENTS } from "@lightbulb/shared/cards";
+import { Image as ExpoImage } from "expo-image";
 import { router } from "expo-router";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Linking, Pressable, Text, TextInput, View } from "react-native";
 import { WEB_ORIGIN } from "../../../config/domain";
 import { fonts, spacing, type ChatPalette } from "../../../config/theme";
+import { attachmentFile } from "../../../lib/attachmentFile";
 import { activityMobileHref } from "../../../lib/activityLink";
 import { paperclipMobileHref } from "../../../lib/paperclipLink";
 import { sessionMobileHref } from "../../../lib/sessionLink";
@@ -59,6 +61,23 @@ const chart = ({ props }: RP<{ labels: string[]; values: number[]; title?: strin
   </View>
 );
 
+/** Only this message's own image attachment, by file name; a URL in the program never loads. Alt text until it arrives. */
+function CardImage({ props }: RP<{ fileName: string; alt: string }>) {
+  const ctx = useCardReply();
+  const attachment = ctx?.attachments.find((a) => a.fileName === props.fileName && a.contentType.startsWith("image/"));
+  const attachmentUrl = ctx?.attachmentUrl;
+  const roomId = ctx?.roomId;
+  const [loaded, setLoaded] = useState<{ id: string; uri: string } | null>(null);
+  useEffect(() => {
+    if (!attachment || !attachmentUrl || !roomId) return;
+    let live = true;
+    void attachmentFile(roomId, attachment, attachmentUrl).then((f) => { if (live) setLoaded({ id: attachment.id, uri: f.uri }); }).catch(() => {});
+    return () => { live = false; };
+  }, [attachment, attachmentUrl, roomId]);
+  if (!attachment || loaded?.id !== attachment.id) return <Prose soft>{props.alt}</Prose>;
+  return <ExpoImage source={{ uri: loaded.uri }} accessibilityLabel={props.alt} contentFit="contain" style={{ width: "100%", height: 200 }} />;
+}
+
 const input = { borderWidth: 1, borderRadius: 6, padding: spacing.sm } as const;
 
 const R = {
@@ -103,7 +122,7 @@ const R = {
         : <Prose key={i} soft>{s.title}</Prose>;
     })}</View>
   ),
-  Image: ({ props }: RP<{ fileName: string; alt: string }>) => <Prose soft>{props.alt}</Prose>, // attachments already render under the bubble; the card names the picture
+  Image: CardImage,
   Choice: ({ props }: RP<{ question: string; options: string[]; multi?: boolean }>) => {
     const { press, disabled, answered, retry } = usePress();
     const [picked, setPicked] = useState<string[]>([]);

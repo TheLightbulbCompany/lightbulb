@@ -6,6 +6,7 @@ import { chatPalette } from "../../../config/theme";
 import { MessageMarkdown } from "../MessageMarkdown";
 import { _resetCardAttemptsForTests, CardReplyContext, useCardPressState, type OnReply } from "../openui/CardReplyContext";
 
+jest.mock("../../../lib/attachmentFile", () => ({ attachmentFile: jest.fn().mockResolvedValue({ uri: "file:///cache/chart.png" }) }));
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 
 // Native randomUUID is absent under jest (the other suites mock it too); a counter keeps ids distinct.
@@ -136,4 +137,18 @@ it("Sources open a native screen, the web, or nothing", async () => {
   expect(open).toHaveBeenCalledWith("https://example.com/d");
   expect(screen.getByText("Bad")).toBeTruthy();
   expect(screen.queryByRole("link", { name: "Bad" })).toBeNull();
+});
+
+it("Image shows the message's own attachment and never a URL from the program", async () => {
+  const attachmentUrl = jest.fn().mockResolvedValue({ url: "https://s3/x", expiresIn: 60 });
+  const program = fence('root = Stack([a, b])\na = Image("chart.png", "Q3 revenue")\nb = Image("https://evil.example/x.png", "Remote")');
+  await render(
+    <CardReplyContext.Provider value={ctx({ attachmentUrl, attachments: [{ id: "att1", fileName: "chart.png", contentType: "image/png" }] })}>
+      <MessageMarkdown text={program} palette={chatPalette.light} />
+    </CardReplyContext.Provider>,
+  );
+  await waitFor(() => expect(screen.getByLabelText("Q3 revenue")).toBeTruthy());
+  expect(screen.getByLabelText("Q3 revenue").props.source).toEqual([{ uri: "file:///cache/chart.png" }]);
+  expect(screen.getByText("Remote")).toBeTruthy();
+  expect(screen.queryByLabelText("Remote")).toBeNull();
 });

@@ -391,6 +391,65 @@ async def create_workspace_checkout(
     return result
 
 
+class FrontDeskRequest(BaseModel):
+    return_to: Literal["web", "app"] = "web"
+
+
+@router.post(
+    "/front-desk",
+    summary="Add the Front desk add-on, or start Checkout for Team plus the add-on",
+    operation_id="create_front_desk",
+)
+async def create_front_desk(
+    body: FrontDeskRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """The line itself is provisioned by the Stripe webhook, never by this click."""
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    account = await _get_billing_account(auth)
+    if apple_iap.apple_is_live(account):
+        raise HTTPException(status_code=409, detail="apple_managed")
+
+    from core.services.billing_service import (
+        BillingServiceError,
+        add_front_desk_item,
+        create_workspace_checkout as create_checkout,
+    )
+
+    if apple_iap.stripe_is_live(account):
+        outcome = await add_front_desk_item(owner_id)
+        if outcome in ("added", "already"):
+            return {"status": outcome}
+        raise HTTPException(status_code=400, detail=outcome)
+
+    if not account or not account.get("stripe_customer_id"):
+        try:
+            await BillingService().create_customer_for_owner(
+                owner_id=owner_id,
+                owner_type="org",
+                email=auth.email,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("front desk customer creation failed owner_id=%s: %s", owner_id, e)
+            raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
+
+    try:
+        result = await create_checkout(
+            owner_id=owner_id,
+            clerk_user_id=auth.user_id,
+            plan="standard",
+            return_to=body.return_to,
+            front_desk=True,
+        )
+    except BillingServiceError as e:
+        if str(e) == "checkout_in_progress":
+            raise HTTPException(status_code=409, detail="checkout_in_progress") from e
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return {"status": "checkout", "url": result["checkout_url"]}
+
+
 # Hard cap on credit-purchase amounts — a safety rail: without an upper
 # bound, a compromised session could lock in an unreasonable
 # charge-automatically payment against the saved card. Metronome/Stripe

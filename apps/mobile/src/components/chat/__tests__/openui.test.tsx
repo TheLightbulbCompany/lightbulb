@@ -84,3 +84,28 @@ it("survives the row unmounting: the pinned attempt is replayed unchanged", asyn
   await waitFor(() => expect(onReply).toHaveBeenCalledTimes(2));
   expect(onReply.mock.calls[1]).toEqual(onReply.mock.calls[0]);
 });
+
+it("a multi Choice can replay its pinned attempt after the row remounts", async () => {
+  const multi = fence('root = Stack([q])\nq = Choice("Which channels?", ["Email", "SMS"], true)');
+  const onReply = jest.fn().mockRejectedValueOnce(new Error("network")).mockResolvedValue(undefined);
+  const first = await render(<Card text={multi} onReply={onReply} messageId="m2" />);
+  await fireEvent.press(screen.getByRole("button", { name: "Email" }));
+  await fireEvent.press(screen.getByRole("button", { name: "Done" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "SMS", disabled: true })).toBeTruthy());
+  await first.unmount();
+  await render(<Card text={multi} onReply={onReply} messageId="m2" />);
+  await fireEvent.press(screen.getByRole("button", { name: "Done", disabled: false }));
+  await waitFor(() => expect(onReply).toHaveBeenCalledTimes(2));
+  expect(onReply.mock.calls[1]).toEqual(onReply.mock.calls[0]);
+});
+
+it("the local marker yields to the canonical answer: deleting the reply reopens the card", async () => {
+  const onReply = jest.fn().mockResolvedValue(undefined);
+  const view = await render(<Card text={CHOICE} onReply={onReply} messageId="m3" />);
+  await fireEvent.press(screen.getByRole("button", { name: "Studio" }));
+  await waitFor(() => expect(screen.getByText("You picked Studio.")).toBeTruthy());
+  await view.rerender(<Card text={CHOICE} onReply={onReply} messageId="m3" answered="Studio" />);
+  expect(screen.getByText("You picked Studio.")).toBeTruthy();
+  await view.rerender(<Card text={CHOICE} onReply={onReply} messageId="m3" answered={null} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Starter", disabled: false })).toBeTruthy());
+});

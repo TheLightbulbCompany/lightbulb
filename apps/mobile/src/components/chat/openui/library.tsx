@@ -103,7 +103,7 @@ const R = {
       {props.multi ? <>
         <Row>{shown.map((o) => <Chip key={o} label={o} disabled={disabled || retry !== null} pressed={answered !== null ? answeredSet.has(o) : picked.includes(o)}
           onPress={() => setPicked((cur) => cur.includes(o) ? cur.filter((p) => p !== o) : [...cur, o])} />)}</Row>
-        {answered === null ? <Row><Chip label="Done" disabled={disabled || picked.length === 0} onPress={() => press(choiceReply(picked))} /></Row> : null}
+        {answered === null ? <Row><Chip label="Done" disabled={disabled || (retry === null && picked.length === 0)} onPress={() => press(choiceReply(picked))} /></Row> : null}
       </> : <Row>{shown.map((o) => <Chip key={o} label={o} disabled={disabled || (retry !== null && retry !== o)} pressed={answered === o} onPress={() => press(o)} />)}</Row>}
       {props.options.length > shown.length ? <Prose soft>+{props.options.length - shown.length} more</Prose> : null}
       {answered !== null ? <Answer>You picked {answered}.</Answer> : null}

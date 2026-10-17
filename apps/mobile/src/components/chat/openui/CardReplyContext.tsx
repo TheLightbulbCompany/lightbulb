@@ -1,6 +1,6 @@
 import { ApiError, type MessageAttachment } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
-import { createContext, useCallback, useContext, useMemo, useSyncExternalStore } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
 
 /**
  * The phone twin of the web CardContext: what a card needs from the message it sits in.
@@ -73,6 +73,10 @@ export function useCardPressState(
     () => read(messageId),
   );
   const answered = answer ?? state.sent;
+  // Once the canonical reply has landed, `answered` follows it (closed while it exists, open again if it is deleted).
+  useEffect(() => {
+    if (answer !== null && state.sent !== null) write(messageId, IDLE);
+  }, [answer, state.sent, messageId]);
   const press = useCallback((text: string) => {
     if (!onReply || state.pending || answered !== null) return;
     const attempt = state.id ? { id: state.id, text: state.text } : { id: randomUUID(), text: text.trim() };

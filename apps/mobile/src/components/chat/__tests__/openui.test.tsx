@@ -7,6 +7,7 @@ import { MessageMarkdown } from "../MessageMarkdown";
 import { _resetCardAttemptsForTests, CardReplyContext, useCardPressState, type OnReply } from "../openui/CardReplyContext";
 
 jest.mock("../../../lib/attachmentFile", () => ({ attachmentFile: jest.fn().mockResolvedValue({ uri: "file:///cache/chart.png" }) }));
+import { attachmentFile } from "../../../lib/attachmentFile";
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 
 // Native randomUUID is absent under jest (the other suites mock it too); a counter keeps ids distinct.
@@ -128,6 +129,18 @@ it("an unconfirmed attempt yields to the canonical answer too: the pin goes, and
   expect(screen.getByRole("button", { name: "Studio", disabled: false })).toBeTruthy();
 });
 
+it("a POST that settles after the canonical answer landed writes nothing back", async () => {
+  let finish: () => void = () => {};
+  const onReply = jest.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+  const view = await render(<Card text={CHOICE} onReply={onReply} messageId="m6" />);
+  await fireEvent.press(screen.getByRole("button", { name: "Studio" }));
+  await view.rerender(<Card text={CHOICE} onReply={onReply} messageId="m6" answered="Studio" />);
+  finish();
+  await view.rerender(<Card text={CHOICE} onReply={onReply} messageId="m6" answered={null} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Starter", disabled: false })).toBeTruthy());
+  expect(screen.getByRole("button", { name: "Studio", disabled: false })).toBeTruthy();
+});
+
 it("Sources open a native screen, the web, or nothing", async () => {
   const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
   await render(<Card text={fence('root = Stack([s])\ns = Sources([{ title: "Session", url: "https://thelightbulb.company/chat?panel=session&session=s1" }, { title: "Docs", url: "https://example.com/d" }, { title: "Bad", url: "javascript:alert(1)" }])')} />);
@@ -150,5 +163,6 @@ it("Image shows the message's own attachment and never a URL from the program", 
   await waitFor(() => expect(screen.getByLabelText("Q3 revenue")).toBeTruthy());
   expect(screen.getByLabelText("Q3 revenue").props.source).toEqual([{ uri: "file:///cache/chart.png" }]);
   expect(screen.getByText("Remote")).toBeTruthy();
+  expect(attachmentFile).toHaveBeenCalledWith("room", expect.objectContaining({ id: "att1" }), expect.any(Function));
   expect(screen.queryByLabelText("Remote")).toBeNull();
 });

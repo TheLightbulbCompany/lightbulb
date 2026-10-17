@@ -84,9 +84,12 @@ export function useCardPressState(
     const attempt = state.id ? { id: state.id, text: state.text } : { id: randomUUID(), text: text.trim() };
     if (!attempt.text) return;
     write(messageId, { ...attempt, pending: true, error: null, sent: null });
+    // A completion applies only to the attempt it belongs to: a canonical answer that arrived first has
+    // already cleared the entry, and a late POST result must not write a stale marker back.
+    const settle = (next: Attempt) => { if (read(messageId).id === attempt.id) write(messageId, next); };
     onReply(attempt.text, attempt.id).then(
-      () => write(messageId, { ...IDLE, sent: attempt.text }),
-      (e: unknown) => write(messageId, e instanceof ApiError && e.status < 500
+      () => settle({ ...IDLE, sent: attempt.text }),
+      (e: unknown) => settle(e instanceof ApiError && e.status < 500
         ? { ...IDLE, error: ERR }
         : { ...attempt, pending: false, error: ERR, sent: null }),
     );

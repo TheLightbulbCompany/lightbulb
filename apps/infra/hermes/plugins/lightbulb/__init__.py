@@ -33,16 +33,17 @@ VOICE_ROOM_REFUSAL = ("This is a Live voice request: your answer is spoken, and 
 # Task 11: send_room_message tool
 SEND_SCHEMA = {
     "name": "send_room_message",
-    "description": "Post a message to ANOTHER Lightbulb room, or another thread in this one — "
-                   "your reply to the thread you are answering is posted for you when the turn "
-                   "ends, so never send that here.",
+    "description": "Post a message to a Lightbulb room you sit in. In a room turn, your reply "
+                   "to the thread you are answering is posted for you when the turn ends, so "
+                   "never send that here; use this for other rooms or threads. In a task run, "
+                   "any room or thread is yours to post in.",
     "parameters": {
         "type": "object",
         "properties": {
             "roomId": {"type": "string", "description": "Room id, optionally prefixed 'lightbulb:'."},
             "text": {"type": "string"},
             "threadRootMessageId": {"type": "string",
-                                    "description": "Thread to post under. Omitted = this turn's own thread."},
+                                    "description": "Thread to post under. Omitted = this room turn's own thread, or the top level in a task run."},
         },
         "required": ["roomId", "text"],
     },

@@ -227,6 +227,10 @@ class Settings(BaseSettings):
     RECALL_API_KEY: str = ""
     RECALL_WEBHOOK_SECRET: str = ""
     """The ``whsec_`` workspace verification secret. Empty = every Recall webhook is refused."""
+    # Text agents (Sendblue iMessage/SMS). Empty = the rail is off.
+    SENDBLUE_API_KEY_ID: str = ""
+    SENDBLUE_API_SECRET_KEY: str = ""
+    SENDBLUE_WEBHOOK_SECRET: str = ""
     MEET_BOT_PAGE_URL: str = ""
     """The bot's Output Media page. Empty = ``{FRONTEND_URL}/meet-bot``."""
     OPENROUTER_MARKUP: str = ""

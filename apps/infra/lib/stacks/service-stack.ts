@@ -68,6 +68,9 @@ export interface SecretNames {
   livekitApiSecret: string;
   recallApiKey: string;
   recallWebhookSecret: string;
+  sendblueApiKeyId: string;
+  sendblueApiSecretKey: string;
+  sendblueWebhookSecret: string;
   huddleWorkerSecret: string;
   /**
    * Symmetric secret used by the FastAPI Paperclip proxy router to sign
@@ -1953,6 +1956,15 @@ export class ServiceStack extends cdk.Stack {
       RECALL_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportRecallWebhookSecret", props.secretNames.recallWebhookSecret),
       ),
+      SENDBLUE_API_KEY_ID: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportSendblueApiKeyId", props.secretNames.sendblueApiKeyId),
+      ),
+      SENDBLUE_API_SECRET_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportSendblueApiSecretKey", props.secretNames.sendblueApiSecretKey),
+      ),
+      SENDBLUE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportSendblueWebhookSecret", props.secretNames.sendblueWebhookSecret),
+      ),
       HUDDLE_WORKER_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportHuddleWorkerSecret", props.secretNames.huddleWorkerSecret),
       ),
@@ -2052,8 +2064,9 @@ export class ServiceStack extends cdk.Stack {
       },
     });
     // Exactly the secrets the task def injects. KMS decrypt is the task role's
-    // existing KmsAccess grant (same CMK).
-    this.taskRole.addToPolicy(
+    // existing KmsAccess grant (same CMK). On the BackendSecrets managed policy, not the
+    // role's inline default policy: one ARN per secret outgrew the inline size budget.
+    secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "ProvisionerSecrets",
         actions: ["secretsmanager:GetSecretValue"],

@@ -33,6 +33,7 @@ from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
     agent_mail,
+    agent_text,
     apple_iap,
     automations,
     billing,
@@ -961,6 +962,7 @@ app.include_router(platform_info.router, prefix="/api/v1/platform-info", tags=["
 # Agent mail (container routes under /u/{owner_id}/… use hook-token auth;
 # /addresses routes use Clerk). Policy lives in core/services/agent_mail_send.
 app.include_router(agent_mail.router, prefix="/api/v1/agent-mail", tags=["agent-mail"])
+app.include_router(agent_text.router, prefix="/api/v1/agent-text", tags=["agent-text"])
 
 # Admin dashboard — every endpoint gated by Depends(require_platform_admin).
 from routers import admin as admin_router  # noqa: E402

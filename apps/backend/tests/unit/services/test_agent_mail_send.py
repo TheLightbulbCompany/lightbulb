@@ -168,6 +168,13 @@ async def test_reply_key_of_a_sent_row_is_refused(wired):
 
 
 @pytest.mark.asyncio
+async def test_mail_reply_to_a_text_row_is_refused(wired):
+    wired.msg = dict(wired.msg, channel="text")
+    assert await _send(reply_key=f"{TEAM}/2026#m1") == "bad_reply_key"
+    assert wired.reply_kwargs is None
+
+
+@pytest.mark.asyncio
 async def test_free_path_rate_limited_by_daily_cap(wired):
     wired.cap = False
     assert await _send(to="vendor@x.y") == "rate_limited"

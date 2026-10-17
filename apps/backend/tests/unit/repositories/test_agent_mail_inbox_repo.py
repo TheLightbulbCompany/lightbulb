@@ -192,3 +192,41 @@ async def test_count_received_after_stops_paging_at_the_cap(monkeypatch):
     monkeypatch.setattr(repo, "_get_table", lambda: table)
     assert await repo.count_received_after("agents@acme.isol8.co", "t", cap=10) == 10
     assert table.query.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_put_message_writes_channel_only_when_given(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    kw = dict(
+        address="a@b.c", owner_id="o", agent_id="a", message_id="m1", from_addr="+15551230000",
+        subject="", text="hi", headers={}, attachments=[],
+    )  # fmt: skip
+    assert "channel" not in await repo.put_message(**kw)
+    assert (await repo.put_message(**kw, channel="text"))["channel"] == "text"
+
+
+@pytest.mark.asyncio
+async def test_put_sent_writes_channel(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    kw = dict(address="a@b.c", message_id="<x@d>", owner_id="o", agent_id="a", to="+15551230000", subject="")
+    await repo.put_sent(**kw)
+    assert "channel" not in table.put_item.call_args.kwargs["Item"]
+    await repo.put_sent(**kw, channel="text")
+    assert table.put_item.call_args.kwargs["Item"]["channel"] == "text"
+
+
+@pytest.mark.asyncio
+async def test_has_sent_to_true_on_first_out_row_to_that_number(monkeypatch):
+    table = MagicMock()
+    table.query.side_effect = [
+        {"Items": [], "LastEvaluatedKey": {"k": 1}},
+        {"Items": [{"direction": "out", "to": "+15551230000"}]},
+    ]
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.has_sent_to("A@B.c", "+15551230000") is True
+    assert table.query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"k": 1}
+
+    table.query.side_effect = [{"Items": []}]
+    assert await repo.has_sent_to("a@b.c", "+15559999999") is False

@@ -191,7 +191,7 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
 
 
 async def try_consume_stranger_wake(
-    owner_id: str, *, sender_key: str, day: str, owner_cap: int, sender_cap: int
+    owner_id: str, *, sender_key: str, day: str, owner_cap: int, sender_cap: int, attr_prefix: str = "stranger_wake"
 ) -> bool:
     """Admit one inbound email from a NON-allowlisted sender to WAKE the owner's agent for ``day``.
 
@@ -211,6 +211,7 @@ async def try_consume_stranger_wake(
     """
     table = _get_table()
     key = {"owner_id": owner_id}
+    day_a, count_a, senders_a = f"{attr_prefix}_day", f"{attr_prefix}_count", f"{attr_prefix}_senders"
 
     async def _bump() -> bool:
         try:
@@ -218,13 +219,13 @@ async def try_consume_stranger_wake(
                 table.update_item,
                 Key=key,
                 UpdateExpression=(
-                    "SET stranger_wake_count = if_not_exists(stranger_wake_count, :zero) + :one, "
-                    "stranger_wake_senders.#k = if_not_exists(stranger_wake_senders.#k, :zero) + :one"
+                    f"SET {count_a} = if_not_exists({count_a}, :zero) + :one, "
+                    f"{senders_a}.#k = if_not_exists({senders_a}.#k, :zero) + :one"
                 ),
                 ConditionExpression=(
-                    "stranger_wake_day = :d"
-                    " AND (attribute_not_exists(stranger_wake_count) OR stranger_wake_count < :ocap)"
-                    " AND (attribute_not_exists(stranger_wake_senders.#k) OR stranger_wake_senders.#k < :scap)"
+                    f"{day_a} = :d"
+                    f" AND (attribute_not_exists({count_a}) OR {count_a} < :ocap)"
+                    f" AND (attribute_not_exists({senders_a}.#k) OR {senders_a}.#k < :scap)"
                 ),
                 ExpressionAttributeNames={"#k": sender_key},
                 ExpressionAttributeValues={":d": day, ":zero": 0, ":one": 1, ":ocap": owner_cap, ":scap": sender_cap},
@@ -247,12 +248,8 @@ async def try_consume_stranger_wake(
             await run_in_thread(
                 table.update_item,
                 Key=key,
-                UpdateExpression=(
-                    "SET stranger_wake_day = :d, stranger_wake_count = :zero, stranger_wake_senders = :empty"
-                ),
-                ConditionExpression=(
-                    "attribute_exists(owner_id) AND (attribute_not_exists(stranger_wake_day) OR stranger_wake_day < :d)"
-                ),
+                UpdateExpression=f"SET {day_a} = :d, {count_a} = :zero, {senders_a} = :empty",
+                ConditionExpression=(f"attribute_exists(owner_id) AND (attribute_not_exists({day_a}) OR {day_a} < :d)"),
                 ExpressionAttributeValues={":d": day, ":zero": 0, ":empty": {}},
             )
         except ClientError as e:

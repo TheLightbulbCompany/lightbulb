@@ -122,7 +122,12 @@ async def send(
                 return _done(path, "bad_reply_key")
             address, received_key = parsed
             msg = await get_message(address, received_key)
-            if not msg or msg.get("owner_id") != owner_id or msg.get("direction") == "out":
+            if (
+                not msg
+                or msg.get("owner_id") != owner_id
+                or msg.get("direction") == "out"
+                or msg.get("channel") == "text"
+            ):
                 return _done(path, "bad_reply_key")
             # Stored state decides the replying agent — never fall back to the
             # caller-supplied agent_id, which would let a container claim to

@@ -22,7 +22,7 @@ to the agent who wrote the thread; ``list_messages`` never shows those rows (``l
 import logging
 import time
 
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
@@ -70,6 +70,22 @@ async def find_by_message_id(address: str, message_id: str) -> dict | None:
     return None
 
 
+async def has_sent_to(address: str, to: str) -> bool:
+    """True when the agent has already sent something to ``to`` from this address."""
+    # ponytail: a filtered scan of one 30-day partition; an index if a line ever carries thousands of threads.
+    kwargs = {
+        "KeyConditionExpression": Key("address").eq(_normalize(address)),
+        "FilterExpression": Attr("direction").eq("out") & Attr("to").eq(to),
+    }
+    while True:
+        resp = await run_in_thread(_get_table().query, **kwargs)
+        if resp.get("Items"):
+            return True
+        if not resp.get("LastEvaluatedKey"):
+            return False
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+
 async def put_message(
     *,
     address: str,
@@ -82,6 +98,7 @@ async def put_message(
     headers: dict,
     attachments: list,
     received_at: str | None = None,
+    channel: str | None = None,
 ) -> dict:
     received_at = received_at or utc_now_iso()
     item = {
@@ -101,12 +118,22 @@ async def put_message(
         "received_at": received_at,
         "ttl": int(time.time()) + _TTL_SECONDS,
     }
+    if channel:
+        item["channel"] = channel
     await run_in_thread(_get_table().put_item, Item=item)
     return item
 
 
 async def put_sent(
-    *, address: str, message_id: str, owner_id: str, agent_id: str, to: str, subject: str, text: str = ""
+    *,
+    address: str,
+    message_id: str,
+    owner_id: str,
+    agent_id: str,
+    to: str,
+    subject: str,
+    text: str = "",
+    channel: str | None = None,
 ) -> None:
     """Record one agent-sent message (and its plain-text body) under its RFC ``Message-ID``, then
     nudge the workspace's open Mail panels. Best-effort: the mail has already left, so a failed
@@ -130,6 +157,8 @@ async def put_sent(
         }
         if text:
             item["text"] = text[:MAX_TEXT_CHARS]
+        if channel:
+            item["channel"] = channel
         await run_in_thread(_get_table().put_item, Item=item)
     except Exception:  # noqa: BLE001 — see docstring
         logger.warning("agent_mail_inbox: put_sent failed for %s", message_id, exc_info=True)

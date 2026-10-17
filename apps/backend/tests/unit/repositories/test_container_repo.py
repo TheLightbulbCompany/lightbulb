@@ -754,6 +754,19 @@ async def test_stranger_wake_is_capped_per_owner_across_senders(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_stranger_wake_prefix_names_the_attributes(dynamodb_table):
+    from core.repositories import container_repo
+
+    await _seed("owner_a", {"hook_token": "t"})
+    assert await container_repo.try_consume_stranger_wake(
+        "owner_a", sender_key="s1", day=_DAY, owner_cap=5, sender_cap=5, attr_prefix="text_wake"
+    )
+    row = await container_repo.get_by_owner_id("owner_a", consistent=True)
+    assert row["text_wake_count"] == 1 and row["text_wake_senders"] == {"s1": 1}
+    assert "stranger_wake_count" not in row
+
+
+@pytest.mark.asyncio
 async def test_a_refused_stranger_wake_burns_neither_counter(dynamodb_table):
     """Both limits are one conditional write: refused under one, nothing is consumed under the other."""
     from core.repositories import container_repo

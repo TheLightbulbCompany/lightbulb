@@ -348,6 +348,7 @@ def _mail_view(address: str, r: dict) -> dict:
         "subject": r.get("subject", ""),
         "at": r.get("received_at", ""),
         "agent_id": r.get("agent_id"),
+        "channel": r.get("channel") or "mail",
         "text": (r.get("text") or "")[:_PREVIEW_CHARS],
         "truncated": len(r.get("text") or "") > _PREVIEW_CHARS,
     }

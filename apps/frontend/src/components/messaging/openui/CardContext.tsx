@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import { ApiError, type MessageAttachment } from "@lightbulb/shared";
 
 /**
@@ -39,41 +39,43 @@ export function useCardContext(): CardContextValue | null {
 
 type OnReply = (text: string, clientMessageId: string) => Promise<void>;
 
+type Attempt = { id: string; text: string; pending: boolean; error: string | null; sent: string | null };
+const IDLE: Attempt = { id: "", text: "", pending: false, error: null, sent: null };
+const ERR = "Couldn't send your reply. Try again.";
+
 /** One press state per message: in flight, failed, or sent. `answer` is the room's reply when it has landed. */
 export function useCardPressState(onReply: OnReply | undefined, answer: string | null): Pick<CardContextValue, "press" | "pending" | "error" | "answered" | "retry"> {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState<string | null>(null);
-  const [retry, setRetry] = useState<string | null>(null);
-  const answered = answer ?? sent;
   // A send the server never answered may still have landed, and the server dedupes on
   // (user, clientMessageId) but refuses that id with a different body. So an unconfirmed
   // send is replayed AS IT WAS, same id and same text, whatever the next press carries
   // (`retry` tells the controls which one that is); if it had landed, the replay returns it.
   // A send the server rejected (an ApiError under 500) landed nothing: the id is dropped
   // and the next press may choose anything with a fresh one.
-  const attempt = useRef<{ id: string; text: string } | null>(null);
+  const [state, setState] = useState<Attempt>(IDLE);
+  const answered = answer ?? state.sent;
+  // Once the canonical reply has landed, whatever this client still holds of the send goes: the local
+  // marker, but also a pinned retry or an error from a POST that timed out after the server had committed
+  // it. `answered` then follows the room: closed while the reply exists, open again if it is deleted.
+  // (State adjusted during render on a prop change, the React-documented form; an effect would re-render once more.)
+  const [seenAnswer, setSeenAnswer] = useState<string | null>(null);
+  if (answer !== seenAnswer) {
+    setSeenAnswer(answer);
+    if (answer !== null && state !== IDLE) setState(IDLE);
+  }
   const press = useCallback((text: string) => {
-    if (!onReply || pending || answered !== null) return;
-    const current = attempt.current ?? { id: crypto.randomUUID(), text: text.trim() };
-    if (!current.text) return;
-    attempt.current = current;
-    setPending(true);
-    setError(null);
-    onReply(current.text, current.id).then(() => {
-      attempt.current = null;
-      setRetry(null);
-      setSent(current.text);
-    }, (e: unknown) => {
-      if (e instanceof ApiError && e.status < 500) {
-        attempt.current = null;
-        setRetry(null);
-      } else {
-        setRetry(current.text);
-      }
-      setError("Couldn't send your reply. Try again.");
-    }).finally(() => setPending(false));
-  }, [onReply, pending, answered]);
+    if (!onReply || state.pending || answered !== null) return;
+    const attempt = state.id ? { id: state.id, text: state.text } : { id: crypto.randomUUID(), text: text.trim() };
+    if (!attempt.text) return;
+    setState({ ...attempt, pending: true, error: null, sent: null });
+    // A completion applies only to the attempt it belongs to: a canonical answer that arrived first has
+    // already reset the state, and a late POST result must not write a stale marker back.
+    const settle = (next: Attempt) => setState((cur) => (cur.id === attempt.id ? next : cur));
+    onReply(attempt.text, attempt.id).then(
+      () => settle({ ...IDLE, sent: attempt.text }),
+      (e: unknown) => settle(e instanceof ApiError && e.status < 500 ? { ...IDLE, error: ERR } : { ...attempt, pending: false, error: ERR, sent: null }),
+    );
+  }, [onReply, state, answered]);
+  const retry = !state.pending && state.id ? state.text : null;
   // One object per state change, so the message's context value (and every card under it) stays put across unrelated re-renders.
-  return useMemo(() => ({ press: onReply ? press : undefined, pending, error, answered, retry }), [onReply, press, pending, error, answered, retry]);
+  return useMemo(() => ({ press: onReply ? press : undefined, pending: state.pending, error: state.error, answered, retry }), [onReply, press, state.pending, state.error, answered, retry]);
 }

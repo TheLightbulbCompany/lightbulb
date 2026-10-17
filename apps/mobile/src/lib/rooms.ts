@@ -78,7 +78,6 @@ export interface LocalMessageRow {
   unsent: boolean;
 }
 
-/** What a composer produces: the message minus every id only the send rail knows. */
 /** A card's reply is its own message: its stable id, the card as the reply target, the card's own thread. */
 export type SendOptions = Partial<Pick<CreateMessageRequest, "clientMessageId" | "replyToMessageId" | "threadRootMessageId">>;
 
@@ -90,6 +89,7 @@ export const cardReplySender =
     return send({ text, mentions }, ids);
   };
 
+/** What a composer produces: the message minus every id only the send rail knows. */
 export type ComposedMessage = Omit<
   CreateMessageRequest,
   "clientMessageId" | "replyToMessageId" | "threadRootMessageId"

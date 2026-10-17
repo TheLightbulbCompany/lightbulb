@@ -286,7 +286,7 @@ export default function ThreadScreen() {
                 members={members ?? []}
                 sessionCandidates={sessionCandidates}
                 cardsEnabled={cardsEnabled}
-                onCardReply={repliesEnabled ? onCardReply : undefined}
+                onCardReply={repliesEnabled && canSend ? onCardReply : undefined}
                 cardAnswer={cardAnswers.get(root.messageId) ?? null}
               />
               <View style={[styles.hairline, { backgroundColor: palette.edge }]} />
@@ -354,7 +354,7 @@ export default function ThreadScreen() {
                 members={members ?? []}
                 sessionCandidates={sessionCandidates}
                 cardsEnabled={cardsEnabled}
-                onCardReply={repliesEnabled ? onCardReply : undefined}
+                onCardReply={repliesEnabled && canSend ? onCardReply : undefined}
                 cardAnswer={cardAnswers.get(item.message.messageId) ?? null}
               />
               <SavedDelegations state={rooms.subagents} entry={rooms.delegationsByMessage.get(item.message.messageId)} />

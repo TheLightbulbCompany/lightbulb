@@ -44,14 +44,16 @@ const attempts = new Map<string, Attempt>();
 const listeners = new Map<string, Set<() => void>>();
 const read = (messageId: string): Attempt => attempts.get(messageId) ?? IDLE;
 const write = (messageId: string, next: Attempt) => {
-  attempts.set(messageId, next);
+  if (next === IDLE) attempts.delete(messageId);
+  else attempts.set(messageId, next);
   listeners.get(messageId)?.forEach((cb) => cb());
 };
 const subscribe = (messageId: string, cb: () => void) => {
   const set = listeners.get(messageId) ?? new Set<() => void>();
   set.add(cb);
   listeners.set(messageId, set);
-  return () => { set.delete(cb); };
+  // Every MessageGroup subscribes, and FlatList rows come and go: drop the bucket with its last listener.
+  return () => { set.delete(cb); if (set.size === 0 && listeners.get(messageId) === set) listeners.delete(messageId); };
 };
 export function _resetCardAttemptsForTests() {
   attempts.clear();

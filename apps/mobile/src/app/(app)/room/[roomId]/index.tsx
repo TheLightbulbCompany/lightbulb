@@ -641,7 +641,7 @@ function Conversation() {
                   members={members ?? []}
                   sessionCandidates={sessionCandidates}
                   cardsEnabled={cardsEnabled}
-                  onCardReply={repliesEnabled && !preview ? onCardReply : undefined}
+                  onCardReply={repliesEnabled && !preview && canSend ? onCardReply : undefined}
                   cardAnswer={cardAnswers.get(item.message.messageId) ?? null}
                 />
                 <SavedDelegations state={rooms.subagents} entry={rooms.delegationsByMessage.get(item.message.messageId)} />

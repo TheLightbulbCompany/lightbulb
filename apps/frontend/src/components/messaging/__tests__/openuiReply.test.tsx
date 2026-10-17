@@ -1,10 +1,13 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, it, vi } from "vitest";
+import { beforeAll, expect, it, vi } from "vitest";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
 import { defaultUrlTransform } from "react-markdown";
 import { RoomMessageItem } from "../RoomMessageItem";
 import { roomMarkdown } from "../roomMarkdown";
+
+// The card is a lazy chunk; the first mount in a file otherwise pays the import inside findByRole's 1 s budget.
+beforeAll(() => import("../openui/OpenUICard"));
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 

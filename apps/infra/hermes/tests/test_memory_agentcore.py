@@ -7,6 +7,7 @@ import re
 import sys
 import types
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -232,6 +233,11 @@ def test_near_duplicate_facts_take_one_slot(mod):
 
 
 # ---- the live task board -----------------------------------------------------------------
+# A done item three days ago, relative to now: a hardcoded date aged out of the 14-day window at
+# 2026-10-17 00:00Z and failed every branch's bridge tests (the window is day-granular).
+RECENT_DONE_AT = (datetime.now(timezone.utc) - timedelta(days=3)).replace(hour=10, minute=0, second=0, microsecond=0)
+
+
 class FakeBoard:
     """urlopen stand-in for Paperclip's GET /api/companies/{id}/issues."""
 
@@ -254,7 +260,7 @@ def board(mod, monkeypatch):
     mod._BOARD.clear()
     fake = FakeBoard(doing=[{"identifier": "ISOA-837", "title": "Daily Gauge brief"}],
                      done=[{"identifier": "ISOA-591", "title": "40-second\nproduct demo video",
-                            "updatedAt": "2026-10-02T10:00:00Z"}])
+                            "updatedAt": RECENT_DONE_AT.strftime("%Y-%m-%dT%H:%M:%SZ")}])
     monkeypatch.setattr(mod.urllib.request, "urlopen", fake)
     return fake
 
@@ -262,7 +268,7 @@ def board(mod, monkeypatch):
 def test_board_lists_in_progress_and_recently_done_with_the_agents_key(mod, board):
     text = mod.board_snapshot()
     assert "In progress: ISOA-837 Daily Gauge brief" in text
-    assert "Done in the last 14 days: ISOA-591 40-second product demo video (2026-10-02)" in text
+    assert f"Done in the last 14 days: ISOA-591 40-second product demo video ({RECENT_DONE_AT:%Y-%m-%d})" in text
     (doing, done) = board.urls
     assert doing[0].startswith("http://pc.local/api/companies/co-1/issues?") and doing[1] == "Bearer pk-agent"
     query = urllib.parse.parse_qs(urllib.parse.urlparse(done[0]).query)

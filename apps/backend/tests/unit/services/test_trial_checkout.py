@@ -101,3 +101,52 @@ async def test_marking_a_live_subscription_founding_stamps_the_lock_once(monkeyp
     billing_service.stripe.Subscription.retrieve.return_value = {"metadata": {"price_lock_until": "2028-12-01"}}
     assert (await billing_service.mark_founding_team("org_1"))["price_lock_until"] == "2028-12-01"
     modify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_checkout_with_front_desk_adds_the_item_and_no_trial(monkeypatch, checkout):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_SEAT_PRICE_ID", "price_seat")
+    row = {
+        "owner_id": "org_1",
+        "stripe_customer_id": "cus_1",
+        "subscription_status": "trial_local",
+        "trial_end": NOW + 20 * DAY,
+    }
+    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(billing_service, "seats_for_workspace", AsyncMock(return_value=2))
+
+    await billing_service.create_workspace_checkout(
+        owner_id="org_1", clerk_user_id="user_1", plan="workspace", front_desk=True
+    )
+
+    kwargs = checkout.call_args.kwargs
+    assert kwargs["line_items"] == [
+        {"price": "price_workspace", "quantity": 1},
+        {"price": "price_seat", "quantity": 2},
+        {"price": "price_fd", "quantity": 1},
+    ]
+    assert "trial_end" not in kwargs["subscription_data"]
+    assert kwargs["idempotency_key"].endswith(":fd1")
+
+
+@pytest.mark.asyncio
+async def test_checkout_without_front_desk_is_unchanged(monkeypatch, checkout):
+    row = {"owner_id": "org_1", "stripe_customer_id": "cus_1", "subscription_status": "canceled"}
+    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
+
+    await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    kwargs = checkout.call_args.kwargs
+    assert kwargs["line_items"] == [{"price": "price_workspace", "quantity": 1}]
+    assert kwargs["idempotency_key"].endswith(":fd0")
+
+
+@pytest.mark.asyncio
+async def test_front_desk_checkout_refuses_without_a_price(monkeypatch, checkout):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "")
+    with pytest.raises(billing_service.BillingServiceError, match="front_desk_price_unconfigured"):
+        await billing_service.create_workspace_checkout(
+            owner_id="org_1", clerk_user_id="user_1", plan="workspace", front_desk=True
+        )
+    checkout.assert_not_called()

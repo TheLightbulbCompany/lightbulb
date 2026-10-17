@@ -10,9 +10,16 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import sendblue
 from core.services.billing_service import BillingServiceError, _is_front_desk_item
 from core.services.hermes_provisioning import refresh_agent_soul
-from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
 
 logger = logging.getLogger(__name__)
+
+# The line costs money the moment it exists, so only a paid subscription buys it; past_due keeps an
+# existing line until the item goes or the subscription is canceled.
+FRONT_DESK_LIVE_STATUSES = frozenset({"active"})
+
+
+class _RowExists(RuntimeError):
+    pass
 
 
 async def ensure_line(owner_id: str) -> str:
@@ -25,15 +32,28 @@ async def ensure_line(owner_id: str) -> str:
     # ponytail: a process death between the claim and the row write leaves front_desk=True with no row (hand reset); the window is one HTTP call.
     if not await billing_repo.claim_front_desk(owner_id):
         return "unchanged"
+    number = None
     try:
         number = await sendblue.provision_line()
-        await agent_email_repo.put_text_line(number=number, owner_id=owner_id, agent_id=agent_id)
+        if await agent_email_repo.put_text_line(number=number, owner_id=owner_id, agent_id=agent_id) is None:
+            raise _RowExists(f"text line {number} already recorded")
     except Exception as e:
+        if number:
+            try:
+                await sendblue.deprovision_line(number)
+            except Exception:
+                logger.warning(
+                    "Could not release unrecorded line %s (owner %s): it is billing, release it by hand",
+                    number,
+                    owner_id,
+                    exc_info=True,
+                )
         try:
             await billing_repo.set_front_desk(owner_id, False)
         except Exception:
             logger.exception("Could not release the front desk claim for owner %s", owner_id)
-        put_metric("text_line.provision_failed", dimensions={"code": str(getattr(e, "code", type(e).__name__))})
+        code = "row_exists" if isinstance(e, _RowExists) else str(getattr(e, "code", type(e).__name__))
+        put_metric("text_line.provision_failed", dimensions={"code": code})
         raise
     try:
         await refresh_agent_soul(owner_id, agent_id)
@@ -45,6 +65,10 @@ async def ensure_line(owner_id: str) -> str:
 async def release_line(owner_id: str) -> str:
     line = await agent_email_repo.text_line_for_owner(owner_id)
     if not line:
+        try:
+            await billing_repo.set_front_desk(owner_id, False)  # unsticks a lost claim
+        except Exception:
+            logger.warning("Could not clear the front desk flag for owner %s", owner_id, exc_info=True)
         return "absent"
     number = line["address"]
     try:
@@ -64,7 +88,7 @@ async def release_line(owner_id: str) -> str:
 
 async def sync_front_desk(owner_id: str, *, status: str, items: list[dict]) -> str:
     has = any(_is_front_desk_item(i) for i in items)
-    if status in LIVE_SUBSCRIPTION_STATUSES and has:
+    if status in FRONT_DESK_LIVE_STATUSES and has:
         return await ensure_line(owner_id)
     if not has or status == "canceled":
         return await release_line(owner_id)

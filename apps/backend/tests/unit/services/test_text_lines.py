@@ -125,3 +125,42 @@ async def test_release_survives_sendblue_failure(m):
     assert await text_lines.release_line("org_1") == "released"
     m.delete.assert_awaited_once_with("+15551230000")
     m.set_fd.assert_awaited_once_with("org_1", False)
+
+
+async def test_sync_incomplete_does_not_provision(m, monkeypatch):
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
+    assert await text_lines.sync_front_desk("org_1", status="incomplete", items=[{}]) == "skipped"
+    m.provision.assert_not_awaited()
+    m.claim.assert_not_awaited()
+
+
+async def test_sync_past_due_keeps_the_line(m, monkeypatch):
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
+    m.line.return_value = {"address": "+15551230000", "agent_id": "agent_co"}
+    assert await text_lines.sync_front_desk("org_1", status="past_due", items=[{}]) == "skipped"
+    m.deprovision.assert_not_awaited()
+    m.delete.assert_not_awaited()
+
+
+async def test_put_none_deprovisions_resets_claim_and_raises(m):
+    m.put.return_value = None
+    with pytest.raises(RuntimeError, match="already recorded"):
+        await text_lines.ensure_line("org_1")
+    m.deprovision.assert_awaited_once_with("+15551230000")
+    m.set_fd.assert_awaited_once_with("org_1", False)
+    m.metric.assert_called_once_with("text_line.provision_failed", dimensions={"code": "row_exists"})
+    m.soul.assert_not_awaited()
+
+
+async def test_put_failure_deprovisions_resets_claim_and_raises(m):
+    m.put.side_effect = ValueError("ddb down")
+    with pytest.raises(ValueError):
+        await text_lines.ensure_line("org_1")
+    m.deprovision.assert_awaited_once_with("+15551230000")
+    m.set_fd.assert_awaited_once_with("org_1", False)
+    m.metric.assert_called_once_with("text_line.provision_failed", dimensions={"code": "ValueError"})
+
+
+async def test_release_absent_clears_flag(m):
+    assert await text_lines.release_line("org_1") == "absent"
+    m.set_fd.assert_awaited_once_with("org_1", False)

@@ -131,3 +131,26 @@ export function useNewMailCount(): number {
   useMailInvalidation(mutate);
   return since ? data?.count ?? 0 : 0;
 }
+
+// ---- the workspace's text line (null while it has none) ----------------------
+
+export interface TextLine { number: string; agentId: string; businessPhone: string; humanThreads: string[] }
+const TEXT_LINE_URL = "/agent-text/line";
+export const isTextLineKey = (key: unknown) => Array.isArray(key) && key[0] === TEXT_LINE_URL;
+
+/** One read for the header and every open text; a 404 means no line, quietly. */
+export function useTextLine(orgId: string | undefined) {
+  const api = useApi();
+  return useSWR<TextLine | null>(
+    orgId ? [TEXT_LINE_URL, orgId] : null,
+    async ([url]: [string, string]) => {
+      try {
+        return (await api.get(url)) as TextLine;
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+}

@@ -21,7 +21,7 @@ import {
   type MailEntry,
   type MailFilter,
 } from "./mailModel";
-import { advanceSeen, readSeen, useTeamMail } from "./useTeamMail";
+import { advanceSeen, readSeen, useTeamMail, useTextLine } from "./useTeamMail";
 
 const WIDE_PX = 840;
 
@@ -75,6 +75,7 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
   const wide = useWide(rootRef);
   const { orgId, inbox, noAddress, address, loadedAt: now } = useTeamMail();
   const { agents } = useAgents();
+  const line = useTextLine(orgId);
   const [filter, setFilter] = useState<MailFilter>("all");
 
   const pages = inbox.data;
@@ -159,6 +160,7 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
       <span className="mail-panel__address-text">{teamAddress}</span>
       <CopyButton text={teamAddress} />
     </span>}
+    {line.data?.number && <span className="mail-panel__number">{line.data.number}</span>}
     <span className="mail-panel__actions">
       <button type="button" className="mail-link" onClick={() => navigateShell(buildPanelUrl("agents", {}))}>Settings</button>
       <Button type="button" variant="ghost" size="sm" aria-label="Refresh mail" disabled={inbox.isValidating}

@@ -5,6 +5,8 @@ import useSWR from "swr";
 import { ParticipantAvatar } from "@/components/messaging/ParticipantAvatar";
 import { useApi } from "@/lib/api";
 import { fullDateTime, type MailMessage } from "./mailModel";
+import { TextReplyBox } from "./TextReplyBox";
+import { useTextLine } from "./useTeamMail";
 
 export function MailDetail({ message, at, agentName, orgId }: {
   message: MailMessage; at: number; agentName: string | null; orgId: string | undefined;
@@ -18,6 +20,8 @@ export function MailDetail({ message, at, agentName, orgId }: {
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
   const text = full.data?.text || message.text;
+  const replyable = message.channel === "text" && inbound;
+  const line = useTextLine(replyable ? orgId : undefined);
 
   return <article className="mail-detail" aria-labelledby="mail-detail-title">
     <h3 id="mail-detail-title" className="mail-detail__title">{message.subject || "(no subject)"}</h3>
@@ -35,5 +39,6 @@ export function MailDetail({ message, at, agentName, orgId }: {
       : <div className="mail-detail__body">{text}</div>}
     {message.truncated && full.error && <p className="mail-detail__note">Showing the first 2,000 characters.</p>}
     {full.data?.truncated && <p className="mail-detail__note">Only the first 64,000 characters were kept.</p>}
+    {replyable && <TextReplyBox messageKey={message.key} humanThread={Boolean(line.data?.humanThreads?.includes(message.from))} />}
   </article>;
 }

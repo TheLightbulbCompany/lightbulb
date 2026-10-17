@@ -85,3 +85,13 @@ it("a feed post's fence stays code", () => {
   expect(screen.getByText(/root = Stack/).closest("pre")).not.toBeNull();
   expect(screen.queryByRole("button", { name: "Studio" })).toBeNull();
 });
+
+it("two fences in one reply share one answer", async () => {
+  const onCardReply = vi.fn().mockResolvedValue(undefined);
+  const two = program + "\n\n```openui-lang\nroot = Stack([b])\nb = Buttons([Button(\"Alpha\"), Button(\"Beta\")])\n```";
+  render(<RoomMessageItem {...itemProps(agentMessage({ text: two }), { onCardReply, cardAnswer: null })} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Studio" }));
+  expect(await screen.findByRole("button", { name: "Alpha" })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "Alpha" }));
+  expect(onCardReply).toHaveBeenCalledTimes(1);
+});

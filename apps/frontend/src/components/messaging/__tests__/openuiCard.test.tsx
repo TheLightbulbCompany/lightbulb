@@ -11,7 +11,7 @@ vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 import { capture } from "@/lib/analytics";
 
 const ctx = (over: Partial<CardContextValue> = {}): CardContextValue => ({
-  messageId: "card", roomId: "room", authorId: "agent-1", threadRootMessageId: null, attachments: [], answered: null, ...over,
+  messageId: "card", roomId: "room", authorId: "agent-1", threadRootMessageId: null, attachments: [], answered: null, pending: false, error: null, ...over,
 });
 const fence = (body: string) => "```openui-lang\n" + body + "\n```";
 

@@ -1,12 +1,18 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import { CardContext } from "../openui/CardContext";
+import { CardContext, useCardPressState } from "../openui/CardContext";
 import { OpenUICard } from "../openui/OpenUICard";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
-const ctx = (over = {}) => ({ messageId: "card", roomId: "room", authorId: "a", threadRootMessageId: null, attachments: [], answered: null, ...over });
-const wrap = (program: string, over = {}) => render(<CardContext.Provider value={ctx(over)}><OpenUICard program={program} /></CardContext.Provider>);
+const ctx = (over = {}) => ({ messageId: "card", roomId: "room", authorId: "a", threadRootMessageId: null, attachments: [], answered: null, pending: false, error: null, ...over });
+// The press state is the message's (RoomMessageItem holds it); this stands in for the message.
+function Card({ program, onReply, answered = null }: { program: string; onReply?: (text: string, clientMessageId: string) => Promise<void>; answered?: string | null }) {
+  const press = useCardPressState(onReply, answered);
+  return <CardContext.Provider value={{ ...ctx(), ...press }}><OpenUICard program={program} /></CardContext.Provider>;
+}
+
+const wrap = (program: string, over: { onReply?: (text: string, clientMessageId: string) => Promise<void>; answered?: string | null } = {}) => render(<Card program={program} {...over} />);
 
 it("a single Choice posts on the press", async () => {
   const onReply = vi.fn().mockResolvedValue(undefined);

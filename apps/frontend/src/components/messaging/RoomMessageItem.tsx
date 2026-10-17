@@ -15,7 +15,7 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomDocumentCards } from "./RoomDocumentCards";
 import { RoomImageAttachments } from "./RoomImageAttachments";
-import { CardContext, type CardContextValue } from "./openui/CardContext";
+import { CardContext, type CardContextValue, useCardPressState } from "./openui/CardContext";
 import { RoomAppLinks } from "./RoomAppLinks";
 import { RoomLinkPreviews } from "./RoomLinkPreviews";
 import { RoomMessageContent } from "./RoomMessageContent";
@@ -83,13 +83,16 @@ function SessionCard({ sessionId, label, session, onOpen }: {
 }
 
 export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor }: RoomMessageItemProps): ReactElement {
+  const cardReply = useMemo(() => onCardReply && actionable
+    ? (replyText: string, clientMessageId: string) => onCardReply({ text: replyText, agentId: message.author.id, messageId: message.messageId, threadRootMessageId: message.threadRootMessageId, clientMessageId })
+    : undefined, [onCardReply, actionable, message.author.id, message.messageId, message.threadRootMessageId]);
+  // One press state per message (not per fence): a reply answers the message.
+  const cardPress = useCardPressState(cardReply, cardAnswer);
   const cardContext = useMemo<CardContextValue | null>(() => !cardsEnabled || message.author.kind !== "agent" || message.deletedAt ? null : {
     messageId: message.messageId, roomId: message.roomId, authorId: message.author.id, threadRootMessageId: message.threadRootMessageId,
-    attachments: message.attachments ?? [], answered: cardAnswer,
-    onReply: onCardReply && actionable ? (replyText: string, clientMessageId: string) => onCardReply({ text: replyText, agentId: message.author.id, messageId: message.messageId, threadRootMessageId: message.threadRootMessageId, clientMessageId }) : undefined,
-    attachmentUrl: onAttachmentUrl,
+    attachments: message.attachments ?? [], ...cardPress, attachmentUrl: onAttachmentUrl,
   }, [message.messageId, message.roomId, message.author.kind, message.author.id, message.threadRootMessageId, message.deletedAt, message.attachments,
-    cardAnswer, onCardReply, actionable, onAttachmentUrl, cardsEnabled]);
+    cardPress, onAttachmentUrl, cardsEnabled]);
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";

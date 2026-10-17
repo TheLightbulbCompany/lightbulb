@@ -1,46 +1,28 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { Renderer, type OpenUIError } from "@openuidev/react-lang";
 import { CARD_MAX_BYTES } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import { useCardContext } from "./CardContext";
 import { webCardLibrary } from "./library";
-import { CardPressContext } from "./renderers/shared";
+import { CardPressContext, type CardPress } from "./renderers/shared";
 
 const bytes = (s: string) => new TextEncoder().encode(s).length;
 
 /**
  * One ```openui-lang fence from an agent's reply, drawn with the shared vocabulary.
  * Replies arrive whole, so nothing streams. A control's click goes through the
- * press context below: this component owns in-flight, error and sent state.
+ * press context below, which is the MESSAGE's (CardContext.useCardPressState): two fences
+ * in one reply share one answer.
  */
 export function OpenUICard({ program }: { program: string }) {
   const ctx = useCardContext();
   const tooBig = useMemo(() => bytes(program) > CARD_MAX_BYTES, [program]);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState<string | null>(null);
-  const answered = ctx?.answered ?? sent;
-  // text → clientMessageId, kept until that text lands: a failed send may still have
-  // reached the server, so the retry must reuse the id the server dedupes on.
-  const clientIds = useRef(new Map<string, string>());
-  const press = useCallback((text: string) => {
-    const reply = text.trim();
-    if (!ctx?.onReply || pending || answered !== null || !reply) return;
-    let clientMessageId = clientIds.current.get(reply);
-    if (!clientMessageId) {
-      clientMessageId = crypto.randomUUID();
-      clientIds.current.set(reply, clientMessageId);
-    }
-    setPending(true);
-    setError(null);
-    ctx.onReply(reply, clientMessageId).then(() => {
-      clientIds.current.delete(reply);
-      setSent(reply);
-    }, () => setError("Couldn't send your reply. Try again.")).finally(() => setPending(false));
-  }, [ctx, pending, answered]);
-  const pressValue = useMemo(() => ({ press, disabled: !ctx?.onReply || pending || answered !== null, answered }), [press, ctx, pending, answered]);
+  const answered = ctx?.answered ?? null;
+  const pressValue = useMemo<CardPress>(() => ({
+    press: ctx?.press ?? (() => {}), disabled: !ctx?.press || ctx.pending || ctx.answered !== null, answered,
+  }), [ctx, answered]);
   const onError = useCallback((errors: OpenUIError[]) => {
     // Codes only, never the program: this is the one reliability signal the spec keeps.
     if (errors.length) capture("openui.parse_error", { codes: errors.map((e) => e.code), count: errors.length });
@@ -51,7 +33,7 @@ export function OpenUICard({ program }: { program: string }) {
       <CardPressContext.Provider value={pressValue}>
         <Renderer response={program} library={webCardLibrary} isStreaming={false} onError={onError} />
       </CardPressContext.Provider>
-      {error && <p role="alert" className="text-ui text-err">{error}</p>}
+      {ctx?.error && <p role="alert" className="text-ui text-err">{ctx.error}</p>}
     </div>
   );
 }

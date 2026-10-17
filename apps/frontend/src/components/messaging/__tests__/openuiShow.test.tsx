@@ -5,7 +5,7 @@ import { CardContext, type CardContextValue, useCardPressState } from "../openui
 import { OpenUICard } from "../openui/OpenUICard";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
-const ctx = (over: Partial<CardContextValue> = {}): CardContextValue => ({ messageId: "card", roomId: "room", authorId: "a", threadRootMessageId: null, attachments: [], answered: null, pending: false, error: null, ...over });
+const ctx = (over: Partial<CardContextValue> = {}): CardContextValue => ({ messageId: "card", roomId: "room", authorId: "a", threadRootMessageId: null, attachments: [], answered: null, pending: false, error: null, retry: null, ...over });
 
 // The press state is the message's (RoomMessageItem holds it); this stands in for the message.
 function Card({ program, onReply, answered = null, ...over }: { program: string; onReply?: (text: string, clientMessageId: string) => Promise<void>; answered?: string | null } & Partial<CardContextValue>) {

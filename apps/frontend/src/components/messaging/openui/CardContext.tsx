@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
-import type { MessageAttachment } from "@lightbulb/shared";
+import { ApiError, type MessageAttachment } from "@lightbulb/shared";
 
 /**
  * What a card needs from the message it sits in. Provided by RoomMessageItem for an
@@ -26,6 +26,8 @@ export interface CardContextValue {
   pending: boolean;
   /** The last press failed; the controls are open again for a retry. */
   error: string | null;
+  /** The reply of a send that got no answer. It may have landed, so the next press replays it with the same id and the other options wait. */
+  retry: string | null;
   attachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
 }
 
@@ -38,28 +40,40 @@ export function useCardContext(): CardContextValue | null {
 type OnReply = (text: string, clientMessageId: string) => Promise<void>;
 
 /** One press state per message: in flight, failed, or sent. `answer` is the room's reply when it has landed. */
-export function useCardPressState(onReply: OnReply | undefined, answer: string | null): Pick<CardContextValue, "press" | "pending" | "error" | "answered"> {
+export function useCardPressState(onReply: OnReply | undefined, answer: string | null): Pick<CardContextValue, "press" | "pending" | "error" | "answered" | "retry"> {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
+  const [retry, setRetry] = useState<string | null>(null);
   const answered = answer ?? sent;
-  // ONE clientMessageId per message until a send is confirmed, whatever text each press carries:
-  // a failed POST may still have committed, and the server dedupes on (user, clientMessageId),
-  // so a different choice after a failure must replay the same id rather than post a second answer.
-  // If the first did commit, the replay returns it and the room's reply then shows the real answer.
-  const clientId = useRef<string | null>(null);
+  // A send the server never answered may still have landed, and the server dedupes on
+  // (user, clientMessageId) but refuses that id with a different body. So an unconfirmed
+  // send is replayed AS IT WAS, same id and same text, whatever the next press carries
+  // (`retry` tells the controls which one that is); if it had landed, the replay returns it.
+  // A send the server rejected (an ApiError under 500) landed nothing: the id is dropped
+  // and the next press may choose anything with a fresh one.
+  const attempt = useRef<{ id: string; text: string } | null>(null);
   const press = useCallback((text: string) => {
-    const reply = text.trim();
-    if (!onReply || pending || answered !== null || !reply) return;
-    const clientMessageId = clientId.current ?? crypto.randomUUID();
-    clientId.current = clientMessageId;
+    if (!onReply || pending || answered !== null) return;
+    const current = attempt.current ?? { id: crypto.randomUUID(), text: text.trim() };
+    if (!current.text) return;
+    attempt.current = current;
     setPending(true);
     setError(null);
-    onReply(reply, clientMessageId).then(() => {
-      clientId.current = null;
-      setSent(reply);
-    }, () => setError("Couldn't send your reply. Try again.")).finally(() => setPending(false));
+    onReply(current.text, current.id).then(() => {
+      attempt.current = null;
+      setRetry(null);
+      setSent(current.text);
+    }, (e: unknown) => {
+      if (e instanceof ApiError && e.status < 500) {
+        attempt.current = null;
+        setRetry(null);
+      } else {
+        setRetry(current.text);
+      }
+      setError("Couldn't send your reply. Try again.");
+    }).finally(() => setPending(false));
   }, [onReply, pending, answered]);
   // One object per state change, so the message's context value (and every card under it) stays put across unrelated re-renders.
-  return useMemo(() => ({ press: onReply ? press : undefined, pending, error, answered }), [onReply, press, pending, error, answered]);
+  return useMemo(() => ({ press: onReply ? press : undefined, pending, error, answered, retry }), [onReply, press, pending, error, answered, retry]);
 }

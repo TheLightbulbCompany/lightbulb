@@ -21,7 +21,7 @@ export function OpenUICard({ program }: { program: string }) {
   const tooBig = useMemo(() => bytes(program) > CARD_MAX_BYTES, [program]);
   const answered = ctx?.answered ?? null;
   const pressValue = useMemo<CardPress>(() => ({
-    press: ctx?.press ?? (() => {}), disabled: !ctx?.press || ctx.pending || ctx.answered !== null, answered,
+    press: ctx?.press ?? (() => {}), disabled: !ctx?.press || ctx.pending || ctx.answered !== null, answered, retry: ctx?.retry ?? null,
   }), [ctx, answered]);
   const onError = useCallback((errors: OpenUIError[]) => {
     // Codes only, never the program: this is the one reliability signal the spec keeps.

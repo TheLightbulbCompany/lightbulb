@@ -1,7 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, expect, it, vi } from "vitest";
-import type { CanonicalRoomMessage } from "@lightbulb/shared";
+import { ApiError, type CanonicalRoomMessage } from "@lightbulb/shared";
 import { defaultUrlTransform } from "react-markdown";
 import { RoomMessageItem } from "../RoomMessageItem";
 import { roomMarkdown } from "../roomMarkdown";
@@ -96,13 +96,27 @@ it("two fences in one reply share one answer", async () => {
   expect(onCardReply).toHaveBeenCalledTimes(1);
 });
 
-it("after a failure, a different choice carries the same client id", async () => {
+it("a send with no answer pins its reply: the other option waits, the retry replays the same id and text", async () => {
   const onCardReply = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(undefined);
   render(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: null })} />);
   await userEvent.click(await screen.findByRole("button", { name: "Studio" }));
   await screen.findByRole("alert");
+  expect(screen.getByRole("button", { name: "Starter" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Studio" })).not.toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "Studio" }));
+  expect(onCardReply).toHaveBeenCalledTimes(2);
+  expect(onCardReply.mock.calls[1][0]).toMatchObject({ text: "Studio", clientMessageId: onCardReply.mock.calls[0][0].clientMessageId });
+  expect(await screen.findByRole("button", { name: "Studio" })).toHaveAttribute("aria-pressed", "true");
+});
+
+it("a send the server rejected frees the card: another choice goes out with a fresh id", async () => {
+  const onCardReply = vi.fn().mockRejectedValueOnce(new ApiError(400, {}, "bad")).mockResolvedValueOnce(undefined);
+  render(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: null })} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Studio" }));
+  await screen.findByRole("alert");
+  expect(screen.getByRole("button", { name: "Starter" })).not.toBeDisabled();
   await userEvent.click(screen.getByRole("button", { name: "Starter" }));
   expect(onCardReply).toHaveBeenCalledTimes(2);
-  expect(onCardReply.mock.calls[1][0].clientMessageId).toBe(onCardReply.mock.calls[0][0].clientMessageId);
   expect(onCardReply.mock.calls[1][0].text).toBe("Starter");
+  expect(onCardReply.mock.calls[1][0].clientMessageId).not.toBe(onCardReply.mock.calls[0][0].clientMessageId);
 });

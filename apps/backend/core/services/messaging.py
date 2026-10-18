@@ -1396,7 +1396,8 @@ def attachment_url(owner_id: str, room_id: str, attachment_id: str) -> str:
         metadata = MessageAttachment.model_validate_json(raw)
     except (OSError, ValueError) as exc:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Attachment not found.") from exc
-    disposition = "attachment" if metadata.content_type == "application/zip" else "inline"
+    # Lockstep with the byte route: a zip and an HTML page always download, never render.
+    disposition = "attachment" if metadata.content_type in ("application/zip", "text/html") else "inline"
     return hermes_profiles.presign_owner_object(
         attachment_key(owner_id, room_id, f"{normalized}{_ATTACHMENT_SIGNATURES[metadata.content_type][1]}"),
         content_type=metadata.content_type,

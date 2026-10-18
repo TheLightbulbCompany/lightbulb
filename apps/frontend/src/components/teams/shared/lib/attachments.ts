@@ -31,7 +31,7 @@ export function attachmentIdFromHref(href?: string | null): string | null {
 
 /** BFF content path (relative to `/teams`) for an attachment on an issue. */
 export function issueAttachmentContentPath(issueId: string, attachmentId: string): string {
-  return `/issues/${issueId}/attachments/${attachmentId}/content`;
+  return `/issues/${encodeURIComponent(issueId)}/attachments/${encodeURIComponent(attachmentId)}/content`;
 }
 
 /** BFF content path for an upstream attachment href on `issueId`, or null when

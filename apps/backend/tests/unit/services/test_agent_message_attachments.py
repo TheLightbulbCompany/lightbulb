@@ -224,3 +224,15 @@ def test_attachment_url_presigns_only_a_stored_attachment(staged, monkeypatch):
     key, kw = calls[0]
     assert key == messaging.attachment_key(OWNER, ROOM, f"{att}.mp4")
     assert kw["content_type"] == "video/mp4" and kw["disposition"].startswith("inline;")
+
+    # HTML never renders from the bucket host either: it downloads, as the byte route serves it.
+    page = str(uuid.uuid4())
+    staged[messaging.attachment_key(OWNER, ROOM, f"{page}.json")] = (
+        messaging.MessageAttachment(id=uuid.UUID(page), file_name="report.html", content_type="text/html", size=12)
+        .model_dump_json(by_alias=True)
+        .encode()
+    )
+    messaging.attachment_url(OWNER, ROOM, page)
+    key, kw = calls[-1]
+    assert key == messaging.attachment_key(OWNER, ROOM, f"{page}.html")
+    assert kw["content_type"] == "text/html" and kw["disposition"].startswith("attachment;")

@@ -7,9 +7,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 
 export const SHEET_MAX_ROWS = 2_000;
 export const SHEET_MAX_BYTES = 5 * 1024 * 1024;
+export const SHEET_MAX_COLS = 200;
 
-type Sheet = { name: string; header: string[]; rows: string[][]; total: number };
+type Sheet = { name: string; header: string[]; rows: string[][]; total: number; cols: number };
 type State = { status: "loading" } | { status: "ready"; sheets: Sheet[] } | { status: "error" };
+
+// ponytail: counts newlines, so a quoted cell with a line break overcounts; parse fully if that matters.
+function csvRows(b: Uint8Array): number {
+  let n = 0;
+  for (let i = 0; i < b.length; i++) if (b[i] === 0x0a) n++;
+  if (b.length && b[b.length - 1] !== 0x0a) n++;
+  return n - 1; // the header line
+}
 
 const text = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 
@@ -27,11 +36,19 @@ export function SheetGrid({ blob, fileName, csv }: { blob: Blob; fileName: strin
         // SheetJS reads any bytes as text, so garbage "parses"; a workbook is a zip ("PK"), only CSV may be bare text.
         const head = new Uint8Array(bytes.slice(0, 2));
         if (!csv && !(head[0] === 0x50 && head[1] === 0x4b)) throw new Error("not a workbook");
-        const wb = read(bytes, { type: "array", dense: true });
+        // sheetRows stops the parse at the header plus 2,000 rows; "!fullref" keeps the real extent.
+        const wb = read(bytes, { type: "array", dense: true, sheetRows: SHEET_MAX_ROWS + 1 });
         const sheets = wb.SheetNames.map((name) => {
-          const aoa = utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1, blankrows: false }) as unknown[][];
+          const ws = wb.Sheets[name];
+          const aoa = utils.sheet_to_json<unknown[]>(ws, { header: 1, blankrows: false }) as unknown[][];
           const [head = [], ...body] = aoa;
-          return { name, header: head.map(text), rows: body.slice(0, SHEET_MAX_ROWS).map((r) => r.map(text)), total: body.length };
+          // A workbook keeps its real extent in "!fullref"; a CSV parse does not, so count its lines.
+          const full = ws["!fullref"];
+          const total = full ? utils.decode_range(full).e.r - utils.decode_range(full).s.r
+            : csv && body.length >= SHEET_MAX_ROWS ? csvRows(new Uint8Array(bytes)) : body.length;
+          const cols = Math.max(head.length, ...body.map((r) => r.length));
+          const cut = (r: unknown[]) => r.slice(0, SHEET_MAX_COLS).map(text);
+          return { name, header: cut(head), rows: body.slice(0, SHEET_MAX_ROWS).map(cut), total, cols };
         });
         if (!sheets.length) throw new Error("empty");
         if (live) setState({ status: "ready", sheets });
@@ -44,12 +61,12 @@ export function SheetGrid({ blob, fileName, csv }: { blob: Blob; fileName: strin
   if (state.status === "loading") return <p className="p-4 text-ui text-muted-foreground">Loading {fileName}…</p>;
   if (state.status === "error") return <p role="alert" className="p-4 text-ui text-muted-foreground">Could not preview {fileName}. Download it instead.</p>;
   const sheet = state.sheets[Math.min(active, state.sheets.length - 1)];
-  const width = Math.max(sheet.header.length, ...sheet.rows.map((r) => r.length));
+  const width = Math.min(sheet.cols, SHEET_MAX_COLS);
   return (
     <div className="flex h-full min-h-0 flex-col">
       {state.sheets.length > 1 && (
         <Tabs value={String(active)} onValueChange={(v) => setActive(Number(v))}>
-          <TabsList>{state.sheets.map((s, i) => <TabsTrigger key={s.name} value={String(i)}>{s.name}</TabsTrigger>)}</TabsList>
+          <TabsList className="max-w-full justify-start overflow-x-auto">{state.sheets.map((s, i) => <TabsTrigger key={s.name} value={String(i)} className="flex-none">{s.name}</TabsTrigger>)}</TabsList>
         </Tabs>
       )}
       <div className="min-h-0 flex-1 overflow-auto">
@@ -58,6 +75,7 @@ export function SheetGrid({ blob, fileName, csv }: { blob: Blob; fileName: strin
           <TableBody>{sheet.rows.map((r, i) => <TableRow key={i}>{Array.from({ length: width }, (_, c) => <TableCell key={c}>{r[c] ?? ""}</TableCell>)}</TableRow>)}</TableBody>
         </Table>
       </div>
+      {sheet.cols > SHEET_MAX_COLS && <p className="p-2 text-caption text-muted-foreground">Showing the first {SHEET_MAX_COLS} of {sheet.cols.toLocaleString()} columns.</p>}
       {sheet.total > SHEET_MAX_ROWS && <p className="p-2 text-caption text-muted-foreground">Showing the first {SHEET_MAX_ROWS.toLocaleString()} of {sheet.total.toLocaleString()} rows.</p>}
     </div>
   );

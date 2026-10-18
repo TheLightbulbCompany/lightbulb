@@ -7,6 +7,7 @@ const XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.s
 const blob = (text: string, type: string) => new Blob([text], { type });
 
 it("isPaneViewable names the document-like kinds only", () => {
+  expect(isPaneViewable("Text/Markdown; charset=utf-8")).toBe(true);
   expect(["application/pdf", XLSX_TYPE, "text/csv", "text/html", "text/markdown", "text/plain"].every(isPaneViewable)).toBe(true);
   expect(["image/png", "video/mp4", "application/zip", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"].some(isPaneViewable)).toBe(false);
 });
@@ -80,4 +81,22 @@ it("a failing read shows the fallback card, not Loading forever", async () => {
   } finally {
     spy.mockRestore();
   }
+});
+
+it("columns are bounded", async () => {
+  const row = (p: string) => Array.from({ length: 250 }, (_, i) => `${p}${i}`).join(",");
+  render(<FileViewerContent item={{ fileName: "wide.csv", contentType: "text/csv", url: "blob:x", blob: blob(`${row("H")}\n${row("v")}\n`, "text/csv") }} />);
+  expect(await screen.findByRole("table")).toBeInTheDocument();
+  expect(screen.getAllByRole("columnheader")).toHaveLength(200);
+  expect(screen.getByText(/showing the first 200 of 250 columns/i)).toBeInTheDocument();
+});
+
+it("a long workbook stops parsing at 2,000 rows and still names the real total", async () => {
+  const { utils, write } = await import("xlsx");
+  const wb = utils.book_new();
+  utils.book_append_sheet(wb, utils.aoa_to_sheet([["n"], ...Array.from({ length: 5000 }, (_, i) => [i])]), "S");
+  const bytes = write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+  render(<FileViewerContent item={{ fileName: "long.xlsx", contentType: XLSX_TYPE, url: "blob:x", blob: new Blob([bytes], { type: XLSX_TYPE }) }} />);
+  expect(within(await screen.findByRole("table")).getAllByRole("row")).toHaveLength(2001);
+  expect(screen.getByText(/showing the first 2,000 of 5,000 rows/i)).toBeInTheDocument();
 });

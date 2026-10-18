@@ -18,7 +18,9 @@ it("opens a room CSV attachment in the grid", async () => {
   downloadBlob.mockResolvedValue(new Blob(["a,b\n1,2\n"], { type: "text/csv" }));
   render(<ArtifactDockPanel id="artifact" params={{ src: "attachment", room: "r1", id: "att1", name: "out.csv", type: "text/csv" }} />);
   expect(await screen.findByRole("table")).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "out.csv" })).toBeInTheDocument();
+  // The title lives in RightPane's bar (describePanel); the pane draws no second header.
+  expect(screen.queryByRole("heading", { name: "out.csv" })).toBeNull();
+  expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("download", "out.csv");
   expect(downloadBlob).toHaveBeenCalledWith("/messaging/rooms/r1/attachments/att1");
 });
 
@@ -31,7 +33,7 @@ it("a refused fetch shows the error card", async () => {
 it("renders a Paperclip document body as markdown with an Open task action", async () => {
   teamsRead.mockReturnValue({ data: { id: "d", key: "plan", title: "Launch plan", body: "# Launch\n\nStep one.", format: "markdown" } });
   render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "document", issue: "i1", key: "plan", ident: "ISOA-9" }} />);
-  expect(await screen.findByRole("heading", { name: "Launch plan" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Launch" })).toBeInTheDocument();
   expect(screen.getByText("Step one.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /open task/i })).toBeInTheDocument();
 });
@@ -69,4 +71,17 @@ it("an untyped response previews nothing and offers Download", async () => {
   expect(await screen.findByText(/no preview/i)).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Download" })).toBeInTheDocument();
   expect(container.querySelector("iframe")).toBeNull();
+});
+
+it("encodes every path segment taken from the URL", async () => {
+  downloadBlob.mockResolvedValue(new Blob(["a"], { type: "text/plain" }));
+  render(<ArtifactDockPanel id="artifact" params={{ src: "attachment", room: "../../x?", id: "a/b", name: "n.txt" }} />);
+  await screen.findByRole("link", { name: "Download" });
+  expect(downloadBlob).toHaveBeenLastCalledWith("/messaging/rooms/..%2F..%2Fx%3F/attachments/a%2Fb");
+  teamsDownload.mockResolvedValue(new Blob(["a"], { type: "text/plain" }));
+  render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "attachment", issue: "../i", id: "a?b" }} />);
+  await vi.waitFor(() => expect(teamsDownload).toHaveBeenCalledWith("/issues/..%2Fi/attachments/a%3Fb/content"));
+  teamsRead.mockReturnValue({ data: undefined });
+  render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "document", issue: "../i", key: "k/1" }} />);
+  expect(teamsRead).toHaveBeenLastCalledWith("/issues/..%2Fi/documents/k%2F1");
 });

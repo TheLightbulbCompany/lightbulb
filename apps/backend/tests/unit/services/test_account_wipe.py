@@ -1509,12 +1509,42 @@ async def test_pending_row_is_cancelled_on_wipe(wipe_mocks):
 
     row = {"owner_id": OWNER_ID, "address": "TEXT_PENDING#x", "kind": "text_pending", "operation_id": "op_1"}
     cancel = AsyncMock()
+    release = AsyncMock()
     with (
         patch("core.services.account_wipe.agent_email_repo.query_by_owner", new=AsyncMock(return_value=[row])),
         patch("core.services.account_wipe.photon.cancel_operation", new=cancel),
+        patch("core.services.account_wipe.photon.get_operation", new=AsyncMock(return_value={"state": "cancelled"})),
+        patch("core.services.account_wipe.photon.release_line", new=release),
     ):
         report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
     cancel.assert_awaited_once_with("op_1")
+    release.assert_not_awaited()
     wipe_mocks.agent_email_delete.assert_awaited_once_with(OWNER_ID)
     step = next(s for s in report.steps if s.system == "agent_email_addresses")
     assert step.status == "ok" and "released 1 text line(s)" in step.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("release_fails", [False, True])
+async def test_wipe_releases_a_finished_pending_operation(wipe_mocks, release_fails):
+    """A cancel that lost the race (409): the finished line is released by its resource, never left billing."""
+    from unittest.mock import AsyncMock, patch
+
+    row = {"owner_id": OWNER_ID, "address": "pending:x", "kind": "text_pending", "operation_id": "op_1"}
+    release = AsyncMock(side_effect=RuntimeError("photon down") if release_fails else None)
+    with (
+        patch("core.services.account_wipe.agent_email_repo.query_by_owner", new=AsyncMock(return_value=[row])),
+        patch("core.services.account_wipe.photon.cancel_operation", new=AsyncMock()),
+        patch(
+            "core.services.account_wipe.photon.get_operation",
+            new=AsyncMock(return_value={"state": "succeeded", "resourceId": "res_9"}),
+        ),
+        patch("core.services.account_wipe.photon.release_line", new=release),
+    ):
+        report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    release.assert_awaited_once_with("res_9")
+    step = next(s for s in report.steps if s.system == "agent_email_addresses")
+    if release_fails:
+        assert "released 0 text line(s)" in step.detail and "FAILED to release: operation op_1" in step.detail
+    else:
+        assert "released 1 text line(s)" in step.detail and "FAILED" not in step.detail

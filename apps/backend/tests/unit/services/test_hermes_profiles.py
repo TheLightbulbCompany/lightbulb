@@ -448,3 +448,6 @@ def test_front_desk_section_names_the_number():
     out = hermes_profiles.front_desk_section("+15551234567")
     assert "text on +15551234567." in out
     assert "{number}" not in out
+    assert "A text that reaches you directly is from a customer." in out
+    assert "A workspace member's text arrives here as their room message, never through this channel." in out
+    assert "Every texter is a customer" not in out

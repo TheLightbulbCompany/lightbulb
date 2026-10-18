@@ -387,16 +387,28 @@ async def test_pending_line_for_owner_filters_kind(monkeypatch):
     assert await repo.pending_line_for_owner("o") is None
 
 
-async def test_delete_pending_line_is_conditional_and_reports_loss(monkeypatch):
+async def test_pending_delete_is_fenced_on_the_operation(monkeypatch):
     table = MagicMock()
     monkeypatch.setattr(repo, "_get_table", lambda: table)
-    assert await repo.delete_pending_line("o") is True
+    assert await repo.delete_pending_line("o", operation_id="op_1") is True
     kwargs = table.delete_item.call_args.kwargs
     assert kwargs["Key"] == {"address": "pending:o"}
-    assert kwargs["ConditionExpression"] == "kind = :pending"
-    assert kwargs["ExpressionAttributeValues"] == {":pending": "text_pending"}
+    assert kwargs["ConditionExpression"] == "kind = :pending AND operation_id = :op"
+    assert kwargs["ExpressionAttributeValues"] == {":pending": "text_pending", ":op": "op_1"}
+    # A newer request replaced the row (or another reader removed it): the condition fails, nothing is deleted.
     table.delete_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "DeleteItem")
-    assert await repo.delete_pending_line("o") is False
+    assert await repo.delete_pending_line("o", operation_id="op_1") is False
+
+
+async def test_text_line_by_photon_user_paginates(monkeypatch):
+    table = MagicMock()
+    table.scan.side_effect = [
+        {"Items": [], "LastEvaluatedKey": {"address": "k1"}},
+        {"Items": [{"address": "+1555", "photon_user_id": "u1", "kind": "text"}]},
+    ]
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert (await repo.text_line_by_photon_user("u1"))["address"] == "+1555"
+    assert table.scan.call_args_list[1].kwargs["ExclusiveStartKey"] == {"address": "k1"}
 
 
 async def test_set_member_phone_sets_and_removes(monkeypatch):

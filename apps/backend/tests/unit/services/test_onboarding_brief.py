@@ -589,17 +589,36 @@ def _website_capture(start):
 
 
 @pytest.mark.asyncio
-async def test_first_message_link_starts_the_build():
+async def test_first_message_no_longer_starts_the_build():
+    """The build starts when the line is recorded (text_lines), not on the first message."""
     start = AsyncMock(return_value="m1")
     message, patches = _website_capture(start)
     with patches[0], patches[1], patches[2], patches[3]:
         assert await capture_first_workspace_message(OWNER, message) is True
-    start.assert_awaited_once_with(OWNER, "https://acme.example", user_id="user_member")
+    start.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_build_failure_does_not_break_the_capture():
-    start = AsyncMock(side_effect=RuntimeError("boom"))
-    message, patches = _website_capture(start)
-    with patches[0], patches[1], patches[2], patches[3]:
-        assert await capture_first_workspace_message(OWNER, message) is True
+@pytest.mark.parametrize(
+    ("pending", "row", "expected"),
+    [
+        ({"path": "grow", "input": "https://acme.example", "submitted_by": "u1"}, None, ("https://acme.example", "u1")),
+        ({"path": "new", "input": "a bakery", "submitted_by": "u1"}, None, None),
+        (
+            None,
+            SimpleNamespace(
+                onboarding_brief_text="Here's our website: https://acme.example", onboarding_submitted_by="u2"
+            ),
+            ("https://acme.example", "u2"),
+        ),
+        (None, SimpleNamespace(onboarding_brief_text=None, onboarding_submitted_by="u2"), None),
+    ],
+)
+async def test_front_desk_link_reads_the_brief(pending, row, expected):
+    from core.services.onboarding_brief import front_desk_link
+
+    repo = MagicMock()
+    repo.get_pending_brief = AsyncMock(return_value=pending)
+    repo.resolve_owner_row = AsyncMock(return_value=row)
+    with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+        assert await front_desk_link(OWNER) == expected

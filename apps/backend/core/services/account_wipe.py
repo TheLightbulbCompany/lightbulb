@@ -147,11 +147,16 @@ async def release_text_lines(rows: list[dict]) -> tuple[int, list[str]]:
                     raise ValueError("row has no photon_resource_id")
                 await photon.release_line(r["photon_resource_id"])
             else:
+                # A cancel answered 409 when the operation already finished: release the line by its resource.
                 await photon.cancel_operation(r["operation_id"])
+                op = await photon.get_operation(r["operation_id"])
+                if op.get("state") == "succeeded":
+                    await photon.release_line(op["resourceId"])
             released += 1
         except Exception as exc:
             logger.warning("wipe: could not release text line %s: %s", r.get("address"), exc)
-            failed.append(r.get("address") or r.get("operation_id") or "?")
+            op_id = r.get("operation_id") if kind == "text_pending" else None
+            failed.append(f"operation {op_id}" if op_id else r.get("address") or "?")
     return released, failed
 
 

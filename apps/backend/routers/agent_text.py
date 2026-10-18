@@ -5,6 +5,7 @@ line and always as the line's agent.
 """
 
 import hashlib
+import logging
 import re
 import uuid
 from typing import Literal
@@ -28,6 +29,8 @@ from core.services.agent_email import mail_changed
 from core.services import photon
 from core.services.text_inbound import business_name
 from routers.agent_mail import _require_hook_token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -55,7 +58,8 @@ async def send_reply(*, owner_id: str, reply_key: str, text: str, by_human: bool
         return "no_line"
     provider = row.get("provider") or {}
     space_id = provider.get("space_id")
-    sender_id = provider.get("line_user_id") or line.get("photon_user_id")
+    # The line's own Photon user is authoritative; the id stored with the inbound row is only a fallback.
+    sender_id = line.get("photon_user_id") or provider.get("line_user_id")
     if not space_id or not sender_id:
         return "bad_reply_key"
     customer = row["from_addr"]
@@ -136,8 +140,12 @@ class Thread(BaseModel):
 async def get_line(auth: AuthContext = Depends(get_current_user)) -> dict:
     owner_id = resolve_owner_id(auth)
     line = await text_line_for_owner(owner_id)
-    if not line and await text_lines.complete_pending(owner_id) == "provisioned":
-        line = await text_line_for_owner(owner_id)
+    if not line:
+        try:
+            if await text_lines.complete_pending(owner_id) == "provisioned":
+                line = await text_line_for_owner(owner_id)
+        except (photon.PhotonError, httpx.HTTPError):
+            logger.warning("Completing the pending line failed for owner %s", owner_id, exc_info=True)
     # A line Photon is still creating reads as 404 too: useTextLine maps 404 to null, and a 202 body
     # without `number` would read as a line.
     if not line:

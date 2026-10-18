@@ -77,11 +77,23 @@ def m(monkeypatch):
 
     o.put_pending.side_effect = _put_pending
 
-    async def _del_pending(owner_id):
+    # The delete is fenced on the operation, as the repo's condition is.
+    async def _del_pending(owner_id, *, operation_id):
+        current = o.pending.return_value
+        if not current or current["operation_id"] != operation_id:
+            return False
         o.pending.return_value = None
         return True
 
     o.del_pending.side_effect = _del_pending
+    o.account = AsyncMock(return_value={"stripe_subscription_id": "sub_1"})
+    monkeypatch.setattr(text_lines.billing_repo, "get_by_owner_id", o.account)
+    from core.services import onboarding_brief
+
+    o.link = AsyncMock(return_value=None)
+    o.build = AsyncMock()
+    monkeypatch.setattr(onboarding_brief, "front_desk_link", o.link, raising=False)
+    monkeypatch.setattr(onboarding_brief, "start_front_desk_build", o.build)
     return o
 
 
@@ -98,7 +110,7 @@ async def test_ensure_line_fast_path_records_the_line(m):
         photon_resource_id="res_1",
         photon_user_id="usr_1",
     )
-    m.del_pending.assert_awaited_once_with("org_1")
+    m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
     m.soul.assert_awaited_once_with("org_1", "agent_co")
     m.mail.assert_awaited_once_with("org_1")
     m.metric.assert_called_once_with("text_line.provisioned")
@@ -125,17 +137,35 @@ async def test_complete_on_read_records_once_across_two_readers(m):
     m.pending.return_value = PENDING
     wins = iter([True, False])
 
-    async def _del(owner_id):
+    async def _del(owner_id, *, operation_id):
         return next(wins)
 
     m.del_pending.side_effect = _del
     first = await text_lines.complete_pending("org_1")
-    # The second reader's put loses to the first reader's row for the SAME Photon resource.
-    m.put.return_value = None
+    # The second reader finds the first reader's row for the SAME Photon resource before writing.
     m.line.return_value = LINE_ROW
     second = await text_lines.complete_pending("org_1")
     assert (first, second) == ("provisioned", "provisioned")
+    m.put.assert_awaited_once()  # the second reader never writes a second row
     m.release.assert_not_awaited()  # never frees a line another reader recorded
+
+
+async def test_two_readers_cannot_record_two_lines(m):
+    """Reader B saw op_1 fail, but reader A has already replaced the row with a newer request (op_2).
+    B's delete is fenced on op_1, so it fails and leaves A's row: no orphaned op_2, no second request."""
+    m.pending.return_value = PENDING
+
+    async def _a_moves_on(op_id):
+        m.pending.return_value = {**PENDING, "operation_id": "op_2"}
+        return {"operationId": op_id, "state": "failed"}
+
+    m.get_op.side_effect = _a_moves_on
+    assert await text_lines.complete_pending("org_1") == "pending"
+    m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
+    assert m.pending.return_value["operation_id"] == "op_2"
+    m.set_fd.assert_not_awaited()  # A's claim stands
+    m.request.assert_not_awaited()
+    m.put.assert_not_awaited()
 
 
 async def test_failed_operation_releases_the_claim_and_raises_from_webhook(m):
@@ -143,18 +173,43 @@ async def test_failed_operation_releases_the_claim_and_raises_from_webhook(m):
     m.get_op.return_value = {"operationId": "op_1", "state": "failed", "error": {"code": "no_inventory"}}
     with pytest.raises(BillingServiceError, match="line_provision_failed"):
         await text_lines.complete_pending("org_1", from_webhook=True)
-    m.del_pending.assert_awaited_once_with("org_1")
+    m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
     m.set_fd.assert_awaited_once_with("org_1", False)
     m.metric.assert_called_once_with("text_line.provision_failed", dimensions={"code": "no_inventory"})
     m.put.assert_not_awaited()
 
 
-async def test_failed_operation_returns_absent_from_read(m):
+async def test_read_after_cancel_does_not_rebuy_when_the_item_is_gone(m, monkeypatch):
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: False)
+    _stub_retrieve(monkeypatch, "active", [{}])
     m.pending.return_value = PENDING
     m.get_op.return_value = {"operationId": "op_1", "state": "cancelled", "reason": "by_us"}
-    assert await text_lines.complete_pending("org_1") == "absent"  # the one retry failed the same way
+    assert await text_lines.complete_pending("org_1") == "absent"
+    m.request.assert_not_awaited()
+    m.claim.assert_not_awaited()
     m.set_fd.assert_awaited_with("org_1", False)
     m.metric.assert_any_call("text_line.provision_failed", dimensions={"code": "by_us"})
+
+
+async def test_read_after_cancel_without_a_subscription_is_absent(m):
+    m.account.return_value = {}
+    m.pending.return_value = PENDING
+    m.get_op.return_value = {"operationId": "op_1", "state": "cancelled"}
+    assert await text_lines.complete_pending("org_1") == "absent"
+    m.request.assert_not_awaited()
+
+
+@pytest.mark.parametrize("item_on_subscription", [True, False])
+async def test_read_after_failed_rebuys_only_when_the_item_is_still_on_the_subscription(
+    m, monkeypatch, item_on_subscription
+):
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: item_on_subscription)
+    _stub_retrieve(monkeypatch, "active", [{}])
+    m.pending.return_value = PENDING
+    m.get_op.side_effect = [{"operationId": "op_1", "state": "failed"}, DONE]
+    expected = "provisioned" if item_on_subscription else "absent"
+    assert await text_lines.complete_pending("org_1") == expected
+    assert m.request.await_count == int(item_on_subscription)
 
 
 async def test_no_pending_row_is_absent(m):
@@ -257,33 +312,38 @@ async def test_unknown_line_user_keeps_the_pending_row(m):
     m.put.assert_not_awaited()
 
 
+async def test_line_user_without_a_handle_is_deferred_not_released(m):
+    m.pending.return_value = PENDING
+    m.find_user.return_value = {"id": "usr_1", "handle": None}
+    assert await text_lines.complete_pending("org_1") == "pending"
+    with pytest.raises(BillingServiceError, match="line_record_pending"):
+        await text_lines.complete_pending("org_1", from_webhook=True)
+    m.put.assert_not_awaited()
+    m.release.assert_not_awaited()
+    m.del_pending.assert_not_awaited()
+
+
 async def test_failure_but_row_already_recorded_is_provisioned(m):
     m.pending.return_value = PENDING
     m.put.side_effect = ValueError("timeout after the write landed")
-    m.line.return_value = LINE_ROW
+    m.line.side_effect = [None, LINE_ROW]
     assert await text_lines.complete_pending("org_1") == "provisioned"
     m.release.assert_not_awaited()
 
 
 async def test_conflicting_existing_line_releases_the_extra_one(m):
     m.pending.return_value = PENDING
-    m.put.return_value = None
     m.line.return_value = {**LINE_ROW, "photon_resource_id": "res_other"}
     assert await text_lines.complete_pending("org_1") == "provisioned"
+    m.put.assert_not_awaited()  # re-read before the write: the existing line stands
     m.release.assert_awaited_once_with("res_1")
-    m.del_pending.assert_awaited_once_with("org_1")
+    m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
     m.set_fd.assert_not_awaited()
 
 
-async def test_read_path_failed_requests_again(m):
-    m.pending.return_value = PENDING
-    m.get_op.side_effect = [{"operationId": "op_1", "state": "failed"}, DONE]
-    assert await text_lines.complete_pending("org_1") == "provisioned"
-    m.request.assert_awaited_once()
-    m.set_fd.assert_awaited_once_with("org_1", False)
-
-
-async def test_read_path_second_failure_is_absent_without_looping(m):
+async def test_read_path_second_failure_is_absent_without_looping(m, monkeypatch):
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
+    _stub_retrieve(monkeypatch, "active", [{}])
     m.pending.return_value = PENDING
     m.get_op.return_value = {"operationId": "op_1", "state": "failed"}
     assert await text_lines.complete_pending("org_1") == "absent"
@@ -310,7 +370,7 @@ async def test_release_cancels_a_pending_operation(m):
     m.get_op.return_value = {"operationId": "op_1", "state": "cancelled"}
     assert await text_lines.release_line("org_1") == "released"
     m.cancel.assert_awaited_once_with("op_1")
-    m.del_pending.assert_awaited_once_with("org_1")
+    m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
     m.set_fd.assert_awaited_once_with("org_1", False)
     m.release.assert_not_awaited()
 
@@ -324,25 +384,26 @@ async def test_release_keeps_the_row_while_the_operation_still_runs(m):
     m.set_fd.assert_not_awaited()
 
 
-async def test_release_with_deferred_record_after_lost_race_raises(m):
+async def test_release_of_a_finished_operation_goes_by_resource(m):
+    """The cancel lost the race: the line is released by its resource, never recorded first."""
     m.pending.return_value = PENDING
     m.get_op.return_value = DONE
-    m.put.side_effect = ValueError("ddb down")
-    with pytest.raises(BillingServiceError, match="line_release_pending"):
-        await text_lines.release_line("org_1")
-    m.release.assert_not_awaited()
-
-
-async def test_release_falls_through_when_cancel_loses_the_race(m):
-    m.pending.return_value = PENDING
-    m.get_op.return_value = DONE
-    # complete_pending records the line; the line row then exists for the release.
-    m.line.return_value = LINE_ROW
     assert await text_lines.release_line("org_1") == "released"
-    m.put.assert_awaited_once()
     m.release.assert_awaited_once_with("res_1")
-    m.delete.assert_awaited_once_with("+15551230000")
+    m.find_user.assert_not_awaited()
+    m.put.assert_not_awaited()
+    m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
     m.set_fd.assert_awaited_once_with("org_1", False)
+
+
+async def test_release_of_a_finished_operation_raises_and_keeps_the_row_when_photon_fails(m):
+    m.pending.return_value = PENDING
+    m.get_op.return_value = DONE
+    m.release.side_effect = photon.PhotonError(500, "http_500")
+    with pytest.raises(photon.PhotonError):
+        await text_lines.release_line("org_1")
+    m.del_pending.assert_not_awaited()
+    m.set_fd.assert_not_awaited()
 
 
 async def test_release_line_row_calls_photon_and_clears(m):
@@ -419,3 +480,45 @@ async def test_sync_other_statuses_are_skipped(m, monkeypatch, status):
     assert await _sync(monkeypatch, status, [{}]) == "skipped"
     m.request.assert_not_awaited()
     m.release.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("stored_now", "previous"),
+    [("sub_new", None), ("sub_1", "sub_new")],  # the current id as stored now, or before the event's own write
+)
+async def test_stale_cancel_of_an_old_subscription_does_not_release(m, monkeypatch, stored_now, previous):
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
+    _stub_retrieve(monkeypatch, "canceled", [{}])
+    m.account.return_value = {"stripe_subscription_id": stored_now}
+    m.line.return_value = LINE_ROW
+    got = await text_lines.sync_front_desk("org_1", subscription_id="sub_1", previous_subscription_id=previous)
+    assert got == "skipped_superseded"
+    m.release.assert_not_awaited()
+    m.delete.assert_not_awaited()
+
+
+async def test_new_active_subscription_provisions_even_when_an_old_id_was_stored(m, monkeypatch):
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
+    _stub_retrieve(monkeypatch, "active", [{}])
+    m.account.return_value = {"stripe_subscription_id": "sub_old"}
+    got = await text_lines.sync_front_desk("org_1", subscription_id="sub_1", previous_subscription_id="sub_old")
+    assert got == "provisioned"
+    m.request.assert_awaited_once()
+
+
+async def test_provisioned_line_starts_the_build_from_the_brief_link(m):
+    m.link.return_value = ("https://acme.example", "user_m")
+    assert await text_lines.ensure_line("org_1") == "provisioned"
+    m.build.assert_awaited_once_with("org_1", "https://acme.example", user_id="user_m")
+
+
+async def test_provisioned_line_without_a_brief_link_starts_nothing(m):
+    assert await text_lines.ensure_line("org_1") == "provisioned"
+    m.link.assert_awaited_once_with("org_1")
+    m.build.assert_not_awaited()
+
+
+async def test_build_failure_does_not_fail_the_provision(m):
+    m.link.return_value = ("https://acme.example", "user_m")
+    m.build.side_effect = RuntimeError("messaging down")
+    assert await text_lines.ensure_line("org_1") == "provisioned"

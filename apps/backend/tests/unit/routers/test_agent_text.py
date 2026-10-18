@@ -57,6 +57,12 @@ async def test_reply_sends_to_the_row_space_as_the_line_user(m):
     )
 
 
+async def test_reply_prefers_the_lines_photon_user_over_the_rows(m):
+    m["text_line_for_owner"].return_value = dict(LINE, photon_user_id="line_usr")
+    await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
+    assert m["send_text"].await_args.kwargs["sender_id"] == "line_usr"
+
+
 async def test_row_without_provider_ids_is_bad_reply_key(m):
     m["get_message"].return_value = {k: v for k, v in ROW.items() if k != "provider"}
     assert await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi") == "bad_reply_key"
@@ -128,6 +134,17 @@ def test_line_read_still_pending_is_404_for_the_panel(client, monkeypatch):
     monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=None))
     monkeypatch.setattr(agent_text.text_lines, "complete_pending", AsyncMock(return_value="pending"))
     assert client.get("/api/v1/agent-text/line").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "error", [agent_text.photon.PhotonError(503, "http_503"), agent_text.httpx.ConnectError("down")]
+)
+def test_line_read_photon_error_is_404(client, monkeypatch, error):
+    monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
+    monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(agent_text.text_lines, "complete_pending", AsyncMock(side_effect=error))
+    r = client.get("/api/v1/agent-text/line")
+    assert r.status_code == 404 and r.json() == {"detail": "no_line"}
 
 
 def test_clerk_thread_mode_sets_agent(client, monkeypatch):

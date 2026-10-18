@@ -22,7 +22,7 @@ class PhotonError(Exception):
     def __init__(self, status: int, code: str):
         super().__init__(f"photon {status}: {code}")
         self.status = status
-        self.code = code
+        self.code = str(code)
 
 
 def enabled() -> bool:

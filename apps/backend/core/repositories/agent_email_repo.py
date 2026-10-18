@@ -251,14 +251,15 @@ async def pending_line_for_owner(owner_id: str) -> dict | None:
     return row if row and row.get("kind") == "text_pending" else None
 
 
-async def delete_pending_line(owner_id: str) -> bool:
-    """True when this call removed the row; False when it was already gone (another reader won)."""
+async def delete_pending_line(owner_id: str, *, operation_id: str) -> bool:
+    """True when this call removed the row; False when it was already gone or now names another operation
+    (another reader won, or a newer request replaced it)."""
     try:
         await run_in_thread(
             _get_table().delete_item,
             Key={"address": f"pending:{owner_id}"},
-            ConditionExpression="kind = :pending",
-            ExpressionAttributeValues={":pending": "text_pending"},
+            ConditionExpression="kind = :pending AND operation_id = :op",
+            ExpressionAttributeValues={":pending": "text_pending", ":op": operation_id},
         )
         return True
     except ClientError as e:
@@ -287,12 +288,14 @@ async def text_line_for_owner(owner_id: str) -> dict | None:
 
 async def text_line_by_photon_user(user_id: str) -> dict | None:
     # ponytail: rare path (receivedBy.handle missing); a GSI if it is ever hot
-    resp = await run_in_thread(
-        _get_table().scan,
-        FilterExpression=Attr("photon_user_id").eq(user_id) & Attr("kind").eq("text"),
-    )
-    items = resp.get("Items") or []
-    return items[0] if items else None
+    kwargs: dict = {"FilterExpression": Attr("photon_user_id").eq(user_id) & Attr("kind").eq("text")}
+    while True:
+        resp = await run_in_thread(_get_table().scan, **kwargs)
+        if resp.get("Items"):
+            return resp["Items"][0]
+        if not resp.get("LastEvaluatedKey"):
+            return None
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
 
 async def set_business_phone(number: str, phone: str) -> None:

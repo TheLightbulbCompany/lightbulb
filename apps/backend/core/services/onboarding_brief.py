@@ -427,11 +427,6 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
         return False
 
     path, user_input = first_message_intake(text)
-    if path == "grow" and user_input:
-        try:
-            await start_front_desk_build(owner_id, user_input, user_id=str(author["id"]))
-        except Exception:  # noqa: BLE001 — best effort; never fails the capture
-            logger.warning("front desk build did not start for %s", owner_id, exc_info=True)
     landed = await repo.put_pending_brief(
         owner_id,
         path=path,
@@ -457,6 +452,27 @@ Set up the front desk for {url}.
 4. Run /app/skills/lightbulb/scripts/lightbulb-text.sh set-business-phone <number> with the phone number the site lists.
 5. Reply here with one line: "Front desk ready for {url}: <what you can do for customers>." Post nothing in rooms.
 """
+
+
+async def front_desk_link(owner_id: str) -> tuple[str, str] | None:
+    """(website, submitter) from the workspace's captured first message when it named a website, else None.
+
+    The pending brief while it waits; once fulfilled it is deleted, so the owner row's stored brief text
+    and submitter are read instead (the same text the pending brief was built from)."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    pending = await repo.get_pending_brief(owner_id)
+    if pending:
+        path, link, by = pending.get("path"), pending.get("input"), pending.get("submitted_by")
+    else:
+        row = await repo.resolve_owner_row(owner_id)
+        text = getattr(row, "onboarding_brief_text", None)
+        if not text:
+            return None
+        path, link = first_message_intake(text)
+        by = getattr(row, "onboarding_submitted_by", None)
+    return (link, str(by)) if path == "grow" and link and by else None
 
 
 async def start_front_desk_build(owner_id: str, url: str, *, user_id: str) -> str | None:

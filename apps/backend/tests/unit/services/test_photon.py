@@ -65,6 +65,13 @@ async def test_problem_code_mapping(monkeypatch):
     assert (ei.value.status, ei.value.code) == (402, "payment_required")
 
 
+async def test_non_string_problem_code_is_a_string(monkeypatch):
+    _mock(monkeypatch, lambda r: httpx.Response(409, json={"code": 4091}))
+    with pytest.raises(photon.PhotonError) as ei:
+        await photon.get_operation("op1")
+    assert ei.value.code == "4091"
+
+
 async def test_unparseable_error_is_http_status(monkeypatch):
     _mock(monkeypatch, lambda r: httpx.Response(502, text="bad gateway"))
     with pytest.raises(photon.PhotonError) as ei:

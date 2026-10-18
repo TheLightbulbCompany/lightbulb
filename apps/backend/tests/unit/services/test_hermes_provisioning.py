@@ -2026,6 +2026,7 @@ async def _front_desk_profile(monkeypatch, line, override=None):
 async def test_profile_for_the_line_agent_carries_the_section(monkeypatch):
     soul = await _front_desk_profile(monkeypatch, {"address": "+15551234567", "agent_id": "agent_fd"})
     assert soul.startswith("BASE\n\n## Front desk") and "+15551234567" in soul
+    assert "A text that reaches you directly is from a customer." in soul
     # an owner-edited override is never touched
     line = {"address": "+15551234567", "agent_id": "agent_fd"}
     assert await _front_desk_profile(monkeypatch, line, override="MINE") == "MINE"

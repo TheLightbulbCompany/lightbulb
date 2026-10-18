@@ -1045,7 +1045,9 @@ async def test_subscription_handler_calls_sync_front_desk_after_seats(mock_repo,
     event = _subscription_event(status=status)
     with patch.object(handlers, "stripe"):
         await handlers.handle_subscription_state(event, MagicMock())
-    front_desk.assert_awaited_once_with("org_x", subscription_id=event["data"]["object"]["id"])
+    front_desk.assert_awaited_once_with(
+        "org_x", subscription_id=event["data"]["object"]["id"], previous_subscription_id=None
+    )
     if status == "active":
         assert [c[0] for c in calls.mock_calls] == ["seats", "front_desk"]
 
@@ -1093,16 +1095,7 @@ async def test_subscription_deleted_releases_the_line_only_for_the_current_subsc
 
 
 @pytest.mark.asyncio
-async def test_state_handler_skips_front_desk_sync_for_a_superseded_subscription(
-    mock_repo, front_desk_sync, reconcile_dispatch
-):
-    """A late event for an old subscription must not release the line the current one owns."""
-    await _run_state(mock_repo, "active", "canceled", stored_sub="sub_old", id="sub_new")
-    front_desk_sync.assert_not_awaited()
-    mock_repo.set_subscription.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_state_handler_syncs_when_no_subscription_was_stored(mock_repo, front_desk_sync):
-    await _run_state(mock_repo, "trial_local", "active", id="sub_new")
-    front_desk_sync.assert_awaited_once_with("org_x", subscription_id="sub_new")
+async def test_state_handler_hands_the_previously_stored_subscription_to_the_sync(mock_repo, front_desk_sync):
+    """The superseded-subscription decision lives in sync_front_desk, on the fresh retrieve."""
+    await _run_state(mock_repo, "active", "active", stored_sub="sub_old", id="sub_new")
+    front_desk_sync.assert_awaited_once_with("org_x", subscription_id="sub_new", previous_subscription_id="sub_old")

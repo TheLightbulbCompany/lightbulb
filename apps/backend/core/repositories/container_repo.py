@@ -940,10 +940,14 @@ async def note_provision_error(owner_id: str, last_error: str) -> None:
         await run_in_thread(
             _get_table().update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression="SET #le = :le, updated_at = :iso",
+            UpdateExpression="SET #le = :le, #lea = :iso, updated_at = :iso",
             ConditionExpression="attribute_exists(owner_id) AND #s <> :running",
-            ExpressionAttributeNames={"#s": "status", "#le": "last_error"},
-            ExpressionAttributeValues={":le": str(last_error)[:500], ":running": "running", ":iso": utc_now_iso()},
+            ExpressionAttributeNames={"#s": "status", "#le": "last_error", "#lea": "last_error_at"},
+            ExpressionAttributeValues={
+                ":le": " ".join(str(last_error).split())[:500],
+                ":running": "running",
+                ":iso": utc_now_iso(),
+            },
         )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":

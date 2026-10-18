@@ -129,6 +129,29 @@ async def test_mark_provision_error_noops_on_an_absent_row(dynamodb_table):
     assert _row(dynamodb_table, "org_gone") is None
 
 
+@pytest.mark.asyncio
+async def test_note_provision_error_records_one_line_reason_without_touching_status(dynamodb_table):
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "org_n", "status": "provisioning"})
+    await container_repo.note_provision_error("org_n", "boom\n  second   line" + "x" * 600)
+    row = _row(dynamodb_table, "org_n")
+    assert row["status"] == "provisioning"
+    assert row["last_error"].startswith("boom second line") and len(row["last_error"]) == 500
+    assert row["last_error_at"]
+
+
+@pytest.mark.asyncio
+async def test_note_provision_error_skips_running_and_absent_rows(dynamodb_table):
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "org_r", "status": "running"})
+    await container_repo.note_provision_error("org_r", "boom")
+    await container_repo.note_provision_error("org_gone", "boom")
+    assert "last_error" not in _row(dynamodb_table, "org_r")
+    assert _row(dynamodb_table, "org_gone") is None
+
+
 # ---------------------------------------------------------------------------
 # update_fields(expected_field=...) — the #14 CREATE_FAILED ARN clear's condition
 

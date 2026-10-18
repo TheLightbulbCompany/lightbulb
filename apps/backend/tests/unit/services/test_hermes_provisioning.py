@@ -856,6 +856,34 @@ async def test_a_create_failed_runtime_is_deleted_arn_cleared_and_the_failure_ra
 
 
 @pytest.mark.asyncio
+async def test_provision_raises_transient_without_creating_when_old_runtime_never_finishes_deleting(monkeypatch):
+    _configure_hermes_settings(monkeypatch)
+    monkeypatch.setattr(
+        hermes_provisioning.container_repo,
+        "get_by_owner_id",
+        _row({"agentcore_runtime_arn": "arn:old", "status": "provisioning"}),
+    )
+    monkeypatch.setattr(
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
+    )
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)
+
+    def _gone(arn):
+        raise hermes_provisioning._RuntimeGone(arn)
+
+    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", _gone)
+    monkeypatch.setattr(hermes_provisioning, "_wait_runtime_gone", lambda arn: False)
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
+
+    with pytest.raises(RuntimeError, match="still deleting") as ei:
+        await hermes_provisioning.provision_hermes_runtime("org_a")
+    from core.repositories.container_repo import classify_provision_error
+
+    assert classify_provision_error(ei.value)[1] is True
+
+
+@pytest.mark.asyncio
 async def test_a_create_failed_arn_clear_is_conditioned_on_the_arn_still_matching(monkeypatch):
     """Two concurrent runs can both observe the same dead ARN and both reach this clear. If a
     THIRD run's fresh create already landed a new ARN on the row in between, the loser's clear

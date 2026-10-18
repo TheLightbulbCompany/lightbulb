@@ -220,7 +220,7 @@ _ROLE_PROPAGATION_INTERVAL_S = 5.0
 
 #: How long a reprovision waits for the previous same-named runtime to finish DELETING
 #: (a teardown immediately followed by a provision hits this; AgentCore names are deterministic).
-_DELETE_WAIT_TIMEOUT_S = 180.0
+_DELETE_WAIT_TIMEOUT_S = 90.0  # two waits + role retries (60 s) stay inside the Lambda's 5 min
 _DELETE_WAIT_INTERVAL_S = 5.0
 
 
@@ -1543,7 +1543,9 @@ async def provision_hermes_runtime(owner_id: str) -> str:
             # create path below: if the delete is still in flight the create raises a name
             # conflict, which classifies transient and retries — no process sleeps on AWS here.
             logger.info("hermes provision: runtime %s for owner=%s is gone/deleting -- creating fresh", arn, owner_id)
-            await run_in_thread(_wait_runtime_gone, arn)
+            if not await run_in_thread(_wait_runtime_gone, arn):
+                # Retryable by default classification: the state machine retries, no create attempted.
+                raise RuntimeError(f"previous runtime still deleting after {_DELETE_WAIT_TIMEOUT_S:.0f} s")
             arn = None
         else:
             if current_image and current_image != settings.AGENTCORE_HERMES_IMAGE:

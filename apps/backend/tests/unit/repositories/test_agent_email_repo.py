@@ -263,15 +263,22 @@ async def _async(value):
     return value
 
 
-async def test_put_text_line_item_and_condition(monkeypatch):
+async def test_record_text_line_puts_the_row_and_deletes_the_pending_row_atomically(monkeypatch):
     table = MagicMock()
+    table.name = "t"
     monkeypatch.setattr(repo, "_get_table", lambda: table)
-    item = await repo.put_text_line(
-        number="+15551230000", owner_id="org_1", agent_id="agent_1", photon_resource_id="res_1", photon_user_id="usr_1"
+    ok = await repo.record_text_line(
+        number="+15551230000",
+        owner_id="org_1",
+        agent_id="agent_1",
+        photon_resource_id="res_1",
+        photon_user_id="usr_1",
+        operation_id="op_1",
     )
-    kwargs = table.put_item.call_args.kwargs
-    assert kwargs["ConditionExpression"] == "attribute_not_exists(address)"
-    assert kwargs["Item"] == item
+    assert ok is True
+    put, delete = table.meta.client.transact_write_items.call_args.kwargs["TransactItems"]
+    assert put["Put"]["ConditionExpression"] == "attribute_not_exists(address)"
+    item = put["Put"]["Item"]
     assert item == {
         "address": "+15551230000",
         "owner_id": "org_1",
@@ -287,18 +294,36 @@ async def test_put_text_line_item_and_condition(monkeypatch):
         "disclosed": {},
     }
     assert item["created_at"]
+    assert delete["Delete"]["Key"] == {"address": "pending:org_1"}
+    assert delete["Delete"]["ConditionExpression"] == "kind = :pending AND operation_id = :op"
+    assert delete["Delete"]["ExpressionAttributeValues"] == {":pending": "text_pending", ":op": "op_1"}
 
 
-async def test_put_text_line_refuses_existing(monkeypatch):
+async def test_record_text_line_is_false_when_the_pending_row_is_gone(monkeypatch):
     table = MagicMock()
-    table.put_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+    table.name = "t"
+    table.meta.client.transact_write_items.side_effect = ClientError(
+        {"Error": {"Code": "TransactionCanceledException"}}, "TransactWriteItems"
+    )
     monkeypatch.setattr(repo, "_get_table", lambda: table)
     assert (
-        await repo.put_text_line(
-            number="+15551230000", owner_id="o", agent_id="a", photon_resource_id="r", photon_user_id="u"
+        await repo.record_text_line(
+            number="+15551230000",
+            owner_id="o",
+            agent_id="a",
+            photon_resource_id="r",
+            photon_user_id="u",
+            operation_id="op_1",
         )
-        is None
+        is False
     )
+    table.meta.client.transact_write_items.side_effect = ClientError(
+        {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "TransactWriteItems"
+    )
+    with pytest.raises(ClientError):
+        await repo.record_text_line(
+            number="+1", owner_id="o", agent_id="a", photon_resource_id="r", photon_user_id="u", operation_id="op_1"
+        )
 
 
 async def test_set_disclosed_records_the_first_time_only(monkeypatch):
@@ -452,7 +477,11 @@ async def test_bind_member_phone_is_single_use_and_drops_other_phones(monkeypatc
 
 @pytest.mark.asyncio
 async def test_phone_code_round_trip_on_dynamodb(agent_email_table):
-    await repo.put_text_line(number="+1555", owner_id="o", agent_id="a", photon_resource_id="r", photon_user_id="u")
+    await repo.put_pending_line(owner_id="o", agent_id="a", operation_id="op")
+    assert await repo.record_text_line(
+        number="+1555", owner_id="o", agent_id="a", photon_resource_id="r", photon_user_id="u", operation_id="op"
+    )
+    assert await repo.pending_line_for_owner("o") is None
     await repo.set_member_phone("+1555", "+1888", "u1")
     assert await repo.put_phone_code("+1555", "000001", "u1", 100, prune=[]) is True
     assert await repo.put_phone_code("+1555", "000001", "u2", 100, prune=[]) is False  # live collision

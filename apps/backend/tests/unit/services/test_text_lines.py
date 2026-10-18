@@ -26,7 +26,7 @@ def m(monkeypatch):
     o.del_pending = AsyncMock(return_value=True)
     o.claim = AsyncMock(return_value=0)  # the generation claimed under
     o.set_fd = AsyncMock()
-    o.put = AsyncMock(return_value={"address": "+15551230000"})
+    o.record = AsyncMock(return_value=True)
     o.delete = AsyncMock()
     o.request = AsyncMock(return_value={"operationId": "op_1", "state": "pending"})
     o.get_op = AsyncMock(return_value=DONE)
@@ -41,7 +41,7 @@ def m(monkeypatch):
     monkeypatch.setattr(r, "pending_line_for_owner", o.pending)
     monkeypatch.setattr(r, "put_pending_line", o.put_pending)
     monkeypatch.setattr(r, "delete_pending_line", o.del_pending)
-    monkeypatch.setattr(r, "put_text_line", o.put)
+    monkeypatch.setattr(r, "record_text_line", o.record)
     monkeypatch.setattr(r, "delete_text_line", o.delete)
     monkeypatch.setattr(text_lines.billing_repo, "claim_front_desk", o.claim)
     monkeypatch.setattr(text_lines.billing_repo, "release_front_desk_claim", o.set_fd)
@@ -72,6 +72,16 @@ def m(monkeypatch):
         return True
 
     o.del_pending.side_effect = _del_pending
+
+    # The record transaction settles the pending row in the same breath, fenced on the operation too.
+    async def _record(**kw):
+        current = o.pending.return_value
+        if not current or current["operation_id"] != kw["operation_id"]:
+            return False
+        o.pending.return_value = None
+        return True
+
+    o.record.side_effect = _record
     o.account = AsyncMock(return_value={"stripe_subscription_id": "sub_1"})
     monkeypatch.setattr(text_lines.billing_repo, "get_by_owner_id", o.account)
     o.build = AsyncMock(return_value=False)
@@ -85,14 +95,16 @@ async def test_ensure_line_fast_path_records_the_line(m):
     m.request.assert_awaited_once()
     assert m.request.await_args.kwargs["idempotency_key"] == "front-desk:org_1:0"
     m.put_pending.assert_awaited_once_with(owner_id="org_1", agent_id="agent_co", operation_id="op_1")
-    m.put.assert_awaited_once_with(
+    m.record.assert_awaited_once_with(
         number="+15551230000",
         owner_id="org_1",
         agent_id="agent_co",
         photon_resource_id="res_1",
         photon_user_id="usr_1",
+        operation_id="op_1",
     )
-    m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
+    m.del_pending.assert_not_awaited()  # the record transaction settled it
+    assert m.pending.return_value is None
     m.soul.assert_awaited_once_with("org_1", "agent_co")
     m.mail.assert_awaited_once_with("org_1")
     m.metric.assert_called_once_with("text_line.provisioned")
@@ -102,7 +114,7 @@ async def test_ensure_line_slow_path_returns_pending_and_keeps_the_row(m):
     m.get_op.return_value = RUNNING
     assert await text_lines.ensure_line("org_1") == "pending"
     m.get_op.assert_awaited_once_with("op_1")  # one look, no poll: the panel's read completes it
-    m.put.assert_not_awaited()
+    m.record.assert_not_awaited()
     m.del_pending.assert_not_awaited()
     m.set_fd.assert_not_awaited()
 
@@ -117,18 +129,14 @@ async def test_second_delivery_during_pending_does_not_request_again(m):
 
 async def test_complete_on_read_records_once_across_two_readers(m):
     m.pending.return_value = PENDING
-    wins = iter([True, False])
-
-    async def _del(owner_id, *, operation_id):
-        return next(wins)
-
-    m.del_pending.side_effect = _del
     first = await text_lines.complete_pending("org_1")
-    # The second reader finds the first reader's row for the SAME Photon resource before writing.
+    # The second reader read the pending row before the first settled it, then finds the first reader's
+    # row for the SAME Photon resource before writing.
+    m.pending.return_value = PENDING
     m.line.return_value = LINE_ROW
     second = await text_lines.complete_pending("org_1")
     assert (first, second) == ("provisioned", "provisioned")
-    m.put.assert_awaited_once()  # the second reader never writes a second row
+    m.record.assert_awaited_once()  # the second reader never writes a second row
     m.release.assert_not_awaited()  # never frees a line another reader recorded
 
 
@@ -147,7 +155,7 @@ async def test_two_readers_cannot_record_two_lines(m):
     assert m.pending.return_value["operation_id"] == "op_2"
     m.set_fd.assert_not_awaited()  # A's claim stands
     m.request.assert_not_awaited()
-    m.put.assert_not_awaited()
+    m.record.assert_not_awaited()
 
 
 async def test_failed_operation_releases_the_claim_and_raises_from_webhook(m):
@@ -157,7 +165,7 @@ async def test_failed_operation_releases_the_claim_and_raises_from_webhook(m):
     m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
     m.set_fd.assert_awaited_once_with("org_1")
     m.metric.assert_called_once_with("text_line.provision_failed", dimensions={"code": "no_inventory"})
-    m.put.assert_not_awaited()
+    m.record.assert_not_awaited()
     m.pending.return_value = PENDING
     with pytest.raises(BillingServiceError, match="line_provision_failed"):
         await text_lines.ensure_line("org_1")  # the webhook caller
@@ -285,7 +293,7 @@ async def test_pending_row_write_failure_cancels_the_operation(m):
 
 async def test_transient_record_failure_keeps_the_pending_row(m):
     m.pending.return_value = PENDING
-    m.put.side_effect = ValueError("ddb down")
+    m.record.side_effect = ValueError("ddb down")
     assert await text_lines.complete_pending("org_1") == "pending"
     assert await text_lines.ensure_line("org_1") == "pending"  # the webhook keeps the row too; a read records it
     m.release.assert_not_awaited()
@@ -294,13 +302,27 @@ async def test_transient_record_failure_keeps_the_pending_row(m):
     m.request.assert_not_awaited()
 
 
+async def test_release_that_removed_the_pending_row_makes_a_late_record_fail(m):
+    m.pending.return_value = PENDING
+
+    async def _release_won(**kw):
+        m.pending.return_value = None  # the release deleted the pending row during the slow find_line_user
+        return False
+
+    m.record.side_effect = _release_won
+    assert await text_lines.complete_pending("org_1") == "pending"  # deferred, nothing written
+    m.release.assert_not_awaited()
+    m.del_pending.assert_not_awaited()
+    assert await text_lines.complete_pending("org_1") == "absent"  # the claim flag is clear
+
+
 async def test_unknown_line_user_keeps_the_pending_row(m):
     m.pending.return_value = PENDING
     m.find_user.return_value = None
     assert await text_lines.complete_pending("org_1") == "pending"
     m.release.assert_not_awaited()
     m.del_pending.assert_not_awaited()
-    m.put.assert_not_awaited()
+    m.record.assert_not_awaited()
 
 
 async def test_line_user_without_a_handle_is_deferred_not_released(m):
@@ -308,14 +330,14 @@ async def test_line_user_without_a_handle_is_deferred_not_released(m):
     m.find_user.return_value = {"id": "usr_1", "handle": None}
     assert await text_lines.complete_pending("org_1") == "pending"
     assert await text_lines.ensure_line("org_1") == "pending"
-    m.put.assert_not_awaited()
+    m.record.assert_not_awaited()
     m.release.assert_not_awaited()
     m.del_pending.assert_not_awaited()
 
 
 async def test_failure_but_row_already_recorded_is_provisioned(m):
     m.pending.return_value = PENDING
-    m.put.side_effect = ValueError("timeout after the write landed")
+    m.record.side_effect = ValueError("timeout after the write landed")
     m.line.side_effect = [None, LINE_ROW]
     assert await text_lines.complete_pending("org_1") == "provisioned"
     m.release.assert_not_awaited()
@@ -325,7 +347,7 @@ async def test_conflicting_existing_line_releases_the_extra_one(m):
     m.pending.return_value = PENDING
     m.line.return_value = {**LINE_ROW, "photon_resource_id": "res_other"}
     assert await text_lines.complete_pending("org_1") == "provisioned"
-    m.put.assert_not_awaited()  # re-read before the write: the existing line stands
+    m.record.assert_not_awaited()  # re-read before the write: the existing line stands
     m.release.assert_awaited_once_with("res_1")
     m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
     m.set_fd.assert_not_awaited()
@@ -383,7 +405,7 @@ async def test_release_of_a_finished_operation_goes_by_resource(m):
     assert await text_lines.release_line("org_1") == "released"
     m.release.assert_awaited_once_with("res_1")
     m.find_user.assert_not_awaited()
-    m.put.assert_not_awaited()
+    m.record.assert_not_awaited()
     m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
     m.set_fd.assert_awaited_once_with("org_1")
 

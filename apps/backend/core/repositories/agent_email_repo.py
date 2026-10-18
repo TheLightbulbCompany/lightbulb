@@ -200,16 +200,19 @@ async def update_settings(
     return resp.get("Attributes")
 
 
-async def put_text_line(
+async def record_text_line(
     *,
     number: str,
     owner_id: str,
     agent_id: str,
     photon_resource_id: str,
     photon_user_id: str,
-) -> dict | None:
-    """Create the workspace's texting-line row, keyed by its E.164 number. A CREATE, never an
-    overwrite; None when the number already has a row."""
+    operation_id: str,
+) -> bool:
+    """Record the workspace's texting line (a CREATE keyed by its E.164 number) and settle its pending
+    row in ONE transaction. False when either condition fails: the number already has a row, or the
+    pending row is gone / names another operation (a release or another reader got there first), in
+    which case nothing is written."""
     item = {
         "address": number,
         "owner_id": owner_id,
@@ -224,8 +227,25 @@ async def put_text_line(
         "phone_codes": {},
         "disclosed": {},
     }
-    created = await _conditional(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
-    return item if created else None
+    table = _get_table()
+    items = [
+        {"Put": {"TableName": table.name, "Item": item, "ConditionExpression": "attribute_not_exists(address)"}},
+        {
+            "Delete": {
+                "TableName": table.name,
+                "Key": {"address": f"pending:{owner_id}"},
+                "ConditionExpression": "kind = :pending AND operation_id = :op",
+                "ExpressionAttributeValues": {":pending": "text_pending", ":op": operation_id},
+            }
+        },
+    ]
+    try:
+        await run_in_thread(table.meta.client.transact_write_items, TransactItems=items)
+        return True
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "TransactionCanceledException":
+            return False
+        raise
 
 
 async def put_pending_line(*, owner_id: str, agent_id: str, operation_id: str) -> bool:

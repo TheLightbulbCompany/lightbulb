@@ -129,12 +129,13 @@ async def complete_pending(owner_id: str) -> str:
         if not line:
             user = await photon.find_line_user(resource_id)
             if user and user.get("handle"):
-                recorded = await agent_email_repo.put_text_line(
+                recorded = await agent_email_repo.record_text_line(
                     number=user["handle"],
                     owner_id=owner_id,
                     agent_id=agent_id,
                     photon_resource_id=resource_id,
                     photon_user_id=user["id"],
+                    operation_id=op_id,
                 )
     except Exception as e:
         code = str(getattr(e, "code", type(e).__name__))
@@ -161,8 +162,7 @@ async def complete_pending(owner_id: str) -> str:
         await agent_email_repo.delete_pending_line(owner_id, operation_id=op_id)
         put_metric("text_line.surplus_released")
         return "provisioned"
-    # False: another reader already did; still provisioned
-    await agent_email_repo.delete_pending_line(owner_id, operation_id=op_id)
+    # Recorded here (the same transaction removed the pending row) or by another reader: provisioned.
     try:
         await refresh_agent_soul(owner_id, agent_id)
     except Exception:

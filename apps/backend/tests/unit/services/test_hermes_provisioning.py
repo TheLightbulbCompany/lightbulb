@@ -2014,6 +2014,49 @@ def test_conflict_on_the_last_propagation_attempt_still_gets_one_post_wait_creat
     assert client.calls == n + 1
 
 
+def _deleting_then_gone_client(failures):
+    client = _CreateClient(failures, runtime_status="DELETING")
+    states = iter(["DELETING", "gone"])
+
+    def _get(agentRuntimeId):
+        if next(states) == "gone":
+            raise _ResourceNotFoundException("gone")
+        return {"status": "DELETING"}
+
+    client.get_agent_runtime = _get
+    return client
+
+
+def test_post_wait_create_retries_role_validation_then_succeeds(monkeypatch):
+    import boto3
+
+    role = _ValidationException("Role validation failed")
+    client = _deleting_then_gone_client([_ConflictException("exists"), role, role])
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:old/rt-old")
+
+    assert hermes_provisioning._create_runtime({"agentRuntimeName": "x"}) == "arn:created"
+    assert client.calls == 4
+
+
+def test_post_wait_role_validation_exhaustion_is_retryable(monkeypatch):
+    import boto3
+
+    from core.repositories.container_repo import classify_provision_error
+
+    n = hermes_provisioning._ROLE_PROPAGATION_ATTEMPTS
+    role = _ValidationException("Role validation failed")
+    client = _deleting_then_gone_client([_ConflictException("exists")] + [role] * n)
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:old/rt-old")
+
+    with pytest.raises(RuntimeError) as ei:
+        hermes_provisioning._create_runtime({"agentRuntimeName": "x"})
+    assert classify_provision_error(ei.value)[1] is True
+
+
 def test_exhausted_create_loop_raises_a_retryable_error_not_assertion(monkeypatch):
     import boto3
 

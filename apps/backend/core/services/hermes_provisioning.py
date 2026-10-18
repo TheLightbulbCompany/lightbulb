@@ -257,6 +257,13 @@ def _create_runtime(request: dict) -> str:
     finishes, instead of the adopt succeeding."""
 
     client = _agentcore_control_client()
+    return _create_with_role_retries(client, request, allow_conflict_wait=True)
+
+
+def _create_with_role_retries(client, request: dict, *, allow_conflict_wait: bool) -> str:
+    """The bounded create loop. On a name conflict with a DELETING runtime (first pass only) it
+    waits the delete out, then runs this loop once more with its own fresh role-propagation
+    budget and no further conflict wait."""
     for attempt in range(1, _ROLE_PROPAGATION_ATTEMPTS + 1):
         try:
             return client.create_agent_runtime(**request)["agentRuntimeArn"]
@@ -267,16 +274,18 @@ def _create_runtime(request: dict) -> str:
             try:
                 _runtime_image_uri(arn)
             except _RuntimeGone:
-                # DELETING (or just gone): wait the delete out, then create once more. A
-                # runtime that never finishes deleting re-raises the original conflict.
-                if not _wait_runtime_gone(arn):
+                # DELETING (or just gone): wait the delete out, then create again. A runtime
+                # that never finishes deleting (or a second conflict) re-raises the conflict.
+                if not allow_conflict_wait or not _wait_runtime_gone(arn):
                     raise conflict from None
-                # One post-wait create, outside the role-propagation budget; any error propagates.
-                return client.create_agent_runtime(**request)["agentRuntimeArn"]
+                return _create_with_role_retries(client, request, allow_conflict_wait=False)
             return arn
         except client.exceptions.ValidationException as exc:
-            if "Role validation failed" not in str(exc) or attempt == _ROLE_PROPAGATION_ATTEMPTS:
+            if "Role validation failed" not in str(exc):
                 raise
+            if attempt == _ROLE_PROPAGATION_ATTEMPTS:
+                # IAM propagation is transient: surface it as retryable, not a deterministic ValidationException.
+                raise RuntimeError(f"role still not visible to AgentCore after {attempt} attempts: {exc}") from exc
             logger.info("hermes provision: role not yet visible to AgentCore (attempt %d) -- retrying", attempt)
             time.sleep(_ROLE_PROPAGATION_INTERVAL_S)
     # Retryable by classify_provision_error (a plain RuntimeError), never an unclassified AssertionError.

@@ -1,0 +1,325 @@
+"""Unit tests for POST /api/v1/webhooks/photon-inbound (a customer's iMessage to a business line)."""
+
+import base64
+import hashlib
+import hmac
+import json
+import time
+from unittest.mock import AsyncMock
+
+import httpx
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from core.services import text_inbound
+from core.services.agent_mail_inbound import stranger_key
+from core.services.photon import PhotonError
+from core.services.webhook_dedup import WebhookDedupResult
+from routers import photon_inbound as ph
+
+SECRET_RAW = b"photon-test-secret-bytes"
+SECRET = "whsec_" + base64.b64encode(SECRET_RAW).decode()
+OWNER_ID, AGENT_ID = "owner_1", "agent_1"
+LINE, TEAM, CUSTOMER = "+14155550100", "agents@acme.example.com", "+14155550123"
+LINE_USER, CUSTOMER_USER, SPACE = "pho_usr_line", "pho_usr_cust", "pho_spc_1"
+LINE_ROW = {
+    "address": LINE,
+    "owner_id": OWNER_ID,
+    "agent_id": AGENT_ID,
+    "kind": "text",
+    "human_threads": {},
+    "photon_user_id": LINE_USER,
+}
+
+
+@pytest.fixture
+def client():
+    app = FastAPI()
+    app.include_router(ph.router, prefix="/api/v1/webhooks")
+    return TestClient(app)
+
+
+@pytest.fixture
+def seams(monkeypatch):
+    m = {
+        "enabled": lambda: True,
+        "record_event_or_skip": AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        "delete_event": AsyncMock(),
+        "get_by_address": AsyncMock(return_value=dict(LINE_ROW)),
+        "text_line_by_photon_user": AsyncMock(return_value=None),
+        "team_address": AsyncMock(return_value=TEAM),
+        "find_by_message_id": AsyncMock(return_value=None),
+        "put_message": AsyncMock(return_value={"received_key": "2026#m1"}),
+        "put_sent": AsyncMock(),
+        "mail_changed": AsyncMock(),
+        "trial_block_reason": AsyncMock(return_value=None),
+        "try_consume_stranger_wake": AsyncMock(return_value=True),
+        "send_text": AsyncMock(return_value={"id": "msg_out"}),
+        "send_typing": AsyncMock(),
+        "mark_read": AsyncMock(),
+        "deliver_to_agent": AsyncMock(return_value="delivered"),
+        "business_name": AsyncMock(return_value="Acme"),
+    }
+    for name, value in m.items():
+        monkeypatch.setattr(ph, name, value)
+    monkeypatch.setattr(ph.settings, "PHOTON_WEBHOOK_SECRET", SECRET)
+    return m
+
+
+def _sign(body: bytes, *, secret=SECRET, ts=None, wid="pho_wh_1") -> dict:
+    ts = str(int(time.time()) if ts is None else ts)
+    key = base64.b64decode(secret.removeprefix("whsec_"))
+    mac = hmac.new(key, f"{wid}.{ts}.".encode() + body, hashlib.sha256).digest()
+    return {
+        "webhook-id": wid,
+        "webhook-timestamp": ts,
+        "webhook-signature": "v1,AAAA v1," + base64.b64encode(mac).decode(),
+        "content-type": "application/json",
+    }
+
+
+def _event(**overrides) -> dict:
+    """A message.received event in the fixture's shape; keyword overrides replace object fields."""
+    obj = {
+        "id": "m1",
+        "platform": "imessage",
+        "status": "received",
+        "space": {"id": SPACE, "participantIds": [LINE_USER, CUSTOMER_USER]},
+        "sentBy": {"id": CUSTOMER_USER, "handle": CUSTOMER},
+        "receivedBy": {"id": LINE_USER, "handle": LINE, "details": {"resourceId": "res_1"}},
+        "content": {"type": "text", "text": "do you open at 9?"},
+        "timestamps": {"receivedAt": "2026-10-17T10:00:00Z"},
+    }
+    obj.update(overrides)
+    return {
+        "id": "pho_evt_1",
+        "type": "message.received",
+        "apiVersion": "2026-07-01",
+        "source": "imessage.photon",
+        "timestamp": "2026-10-17T10:00:00Z",
+        "data": {"projectId": "pho_prj_1", "object": obj},
+    }
+
+
+def _post(client, event=None, *, headers=None, raw: bytes | None = None):
+    raw = raw if raw is not None else json.dumps(event or _event()).encode()
+    return client.post("/api/v1/webhooks/photon-inbound", content=raw, headers=headers or _sign(raw))
+
+
+def test_disabled_without_settings(client, seams, monkeypatch):
+    monkeypatch.setattr(ph, "enabled", lambda: False)
+    assert _post(client).json() == {"status": "disabled"}
+
+
+def test_bad_signature_is_401(client, seams):
+    raw = json.dumps(_event()).encode()
+    r = _post(client, raw=raw, headers=_sign(raw, secret="whsec_" + base64.b64encode(b"other").decode()))
+    assert r.status_code == 401 and r.json() == {"status": "bad_signature"}
+    seams["record_event_or_skip"].assert_not_called()
+
+
+def test_body_tampered_after_signing_is_401(client, seams):
+    raw = json.dumps(_event()).encode()
+    assert _post(client, raw=raw + b" ", headers=_sign(raw)).status_code == 401
+
+
+def test_stale_timestamp_is_401(client, seams):
+    raw = json.dumps(_event()).encode()
+    r = _post(client, raw=raw, headers=_sign(raw, ts=int(time.time()) - 301))
+    assert r.status_code == 401 and r.json() == {"status": "stale_timestamp"}
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda e: e["data"]["object"].update(content={"type": "read"}),
+        lambda e: e["data"]["object"].update(content={"type": "typing"}),
+        lambda e: e["data"]["object"].update(content={"type": "group"}),
+        lambda e: e.update(type="message.sent"),
+        lambda e: e["data"]["object"].update(platform="sms"),
+        lambda e: e["data"]["object"].update(status="sent"),
+    ],
+)
+def test_non_message_events_are_ignored(client, seams, mutate):
+    event = _event()
+    mutate(event)
+    assert _post(client, event).json() == {"status": "ignored_event"}
+    seams["record_event_or_skip"].assert_not_called()
+
+
+def test_redelivered_message_id_is_duplicate(client, seams):
+    seen = set()
+
+    async def record(event_id, *, source):
+        if event_id in seen:
+            return WebhookDedupResult.ALREADY_SEEN
+        seen.add(event_id)
+        return WebhookDedupResult.RECORDED
+
+    seams["record_event_or_skip"].side_effect = record
+    assert _post(client).json() == {"status": "delivered"}
+    # Photon redelivers the same message under a fresh webhook id.
+    raw = json.dumps(_event()).encode()
+    assert _post(client, raw=raw, headers=_sign(raw, wid="pho_wh_2")).json() == {"status": "duplicate"}
+    seams["put_message"].assert_awaited_once()
+    seams["deliver_to_agent"].assert_awaited_once()
+
+
+def test_replayed_webhook_id_is_duplicate(client, seams):
+    seams["record_event_or_skip"].return_value = WebhookDedupResult.ALREADY_SEEN
+    assert _post(client).json() == {"status": "duplicate"}
+    seams["record_event_or_skip"].assert_awaited_once_with("photon:m1", source="photon_inbound")
+
+
+@pytest.mark.parametrize("row", [None, {"address": LINE, "owner_id": OWNER_ID, "agent_id": AGENT_ID}])
+def test_unknown_line_is_dropped(client, seams, row):
+    seams["get_by_address"].return_value = row
+    assert _post(client).json() == {"status": "dropped_unknown_line"}
+    seams["put_message"].assert_not_called()
+
+
+def test_line_found_by_user_id_when_handle_missing(client, seams):
+    seams["text_line_by_photon_user"].return_value = dict(LINE_ROW)
+    assert _post(client, _event(receivedBy={"id": LINE_USER})).json() == {"status": "delivered"}
+    seams["get_by_address"].assert_not_called()
+    seams["text_line_by_photon_user"].assert_awaited_once_with(LINE_USER)
+
+
+def test_stored_and_delivered_with_exact_kwargs(client, seams):
+    assert _post(client).json() == {"status": "delivered"}
+    seams["put_message"].assert_awaited_once_with(
+        address=TEAM,
+        owner_id=OWNER_ID,
+        agent_id=AGENT_ID,
+        message_id="m1",
+        from_addr=CUSTOMER,
+        subject="",
+        text="do you open at 9?",
+        headers={},
+        attachments=[],
+        channel="text",
+        provider_ids={
+            "space_id": SPACE,
+            "sender_user_id": CUSTOMER_USER,
+            "line_user_id": LINE_USER,
+            "message_id": "m1",
+        },
+    )
+    key = ph.reply_key(TEAM, "2026#m1")
+    seams["deliver_to_agent"].assert_awaited_once_with(
+        owner_id=OWNER_ID,
+        agent_id=AGENT_ID,
+        message=text_inbound.build_delivered_text(
+            from_number=CUSTOMER, service="iMessage", text="do you open at 9?", reply_key=key, media_url=None
+        ),
+        idempotency_key="photon:m1",
+        session_key=text_inbound.text_session_key(CUSTOMER),
+    )
+    assert text_inbound.text_session_key(CUSTOMER).startswith("lightbulb-text:")
+    assert f"Reply-Key: {key}" in seams["deliver_to_agent"].await_args.kwargs["message"]
+    seams["send_typing"].assert_awaited_once_with(sender_id=LINE_USER, space_id=SPACE)
+    seams["mark_read"].assert_awaited_once_with("m1")
+    wake = seams["try_consume_stranger_wake"].await_args
+    assert wake.args == (OWNER_ID,)
+    assert wake.kwargs["attr_prefix"] == "text_wake"
+    assert wake.kwargs["sender_key"] == stranger_key(CUSTOMER)
+    assert wake.kwargs["owner_cap"] == text_inbound.TEXT_WAKES_PER_OWNER_PER_DAY
+    assert wake.kwargs["sender_cap"] == text_inbound.TEXT_WAKES_PER_SENDER_PER_DAY
+
+
+def test_attachment_is_stored_as_placeholder(client, seams):
+    event = _event(content={"type": "attachment", "attachmentId": "att_9"})
+    assert _post(client, event).json() == {"status": "delivered"}
+    assert seams["put_message"].await_args.kwargs["text"] == "[Attachment: att_9]"
+
+
+def test_human_thread_is_stored_not_woken(client, seams):
+    seams["get_by_address"].return_value = {**LINE_ROW, "human_threads": {CUSTOMER: "2026-10-17T00:00:00Z"}}
+    assert _post(client).json() == {"status": "stored_human_thread"}
+    seams["put_message"].assert_awaited_once()
+    seams["deliver_to_agent"].assert_not_called()
+
+
+def test_capped_owner_gets_paused_autoreply(client, seams):
+    seams["trial_block_reason"].return_value = "daily_cap"
+    seams["get_by_address"].return_value = {**LINE_ROW, "business_phone": "+14155550999"}
+    assert _post(client).json() == {"status": "capped_notified"}
+    text = text_inbound.paused_autoreply("Acme", "+14155550999")
+    seams["send_text"].assert_awaited_once_with(
+        sender_id=LINE_USER, space_id=SPACE, text=text, idempotency_key="paused:m1"
+    )
+    kw = seams["put_sent"].await_args.kwargs
+    assert kw["channel"] == "text" and kw["to"] == CUSTOMER and kw["message_id"] == "msg_out"
+    seams["deliver_to_agent"].assert_not_called()
+
+
+def test_capped_owner_is_told_once_per_day(client, seams):
+    seams["trial_block_reason"].return_value = "daily_cap"
+    seen = set()
+
+    async def consume(owner_id, *, sender_key, attr_prefix, **_):
+        if (attr_prefix, sender_key) in seen:
+            return False
+        seen.add((attr_prefix, sender_key))
+        return True
+
+    seams["try_consume_stranger_wake"].side_effect = consume
+    assert _post(client).json() == {"status": "capped_notified"}
+    assert _post(client, _event(id="m2")).json() == {"status": "stored_capped_quiet"}
+    seams["send_text"].assert_awaited_once()
+    assert seams["try_consume_stranger_wake"].await_args.kwargs["attr_prefix"] == "text_paused"
+
+
+@pytest.mark.parametrize("exc", [PhotonError(500, "x"), httpx.ConnectError("x")])
+def test_capped_send_failure_is_dropped_over_cap(client, seams, exc):
+    seams["trial_block_reason"].return_value = "daily_cap"
+    seams["send_text"].side_effect = exc
+    assert _post(client).json() == {"status": "dropped_over_cap"}
+
+
+def test_empty_sender_is_dropped(client, seams):
+    assert _post(client, _event(sentBy={})).json() == {"status": "dropped_no_sender"}
+    seams["put_message"].assert_not_called()
+
+
+def test_sender_without_handle_falls_back_to_user_id(client, seams):
+    assert _post(client, _event(sentBy={"id": CUSTOMER_USER})).json() == {"status": "delivered"}
+    assert seams["put_message"].await_args.kwargs["from_addr"] == f"photon:{CUSTOMER_USER}"
+
+
+def test_apple_email_sender_is_kept_verbatim(client, seams):
+    event = _event(sentBy={"id": CUSTOMER_USER, "handle": "Jane@iCloud.com"})
+    assert _post(client, event).json() == {"status": "delivered"}
+    assert seams["put_message"].await_args.kwargs["from_addr"] == "Jane@iCloud.com"
+
+
+def test_rate_limited_sender_is_stored_not_woken(client, seams):
+    seams["try_consume_stranger_wake"].return_value = False
+    assert _post(client).json() == {"status": "stored_not_woken_rate_limited"}
+    seams["deliver_to_agent"].assert_not_called()
+
+
+def test_delivery_error_rolls_back_dedup_and_503s(client, seams):
+    seams["deliver_to_agent"].return_value = "error"
+    assert _post(client).status_code == 503
+    seams["delete_event"].assert_awaited_once_with("photon:m1")
+    seams["deliver_to_agent"].return_value = "delivered"
+    seams["deliver_to_agent"].side_effect = RuntimeError("boom")
+    assert _post(client).status_code == 503
+    assert seams["delete_event"].await_count == 2
+
+
+def test_unknown_body_shape_is_422_not_500(client, seams):
+    raw = b'{"data": 5, "id": "x"}'
+    assert _post(client, raw=raw, headers=_sign(raw)).status_code == 422
+    raw = b"not json"
+    assert _post(client, raw=raw, headers=_sign(raw)).status_code == 422
+
+
+def test_delivered_text_matches_the_template():
+    got = text_inbound.build_delivered_text(
+        from_number=CUSTOMER, service="iMessage", text="hi", reply_key="k/1", media_url=None
+    )
+    assert got.startswith(f"You received a text message.\n\nFrom: {CUSTOMER}\nVia: iMessage\nReply-Key: k/1\n\n")
+    assert got.endswith("---\nhi")

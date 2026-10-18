@@ -68,6 +68,7 @@ from routers import (
     paperclip_events,
     paperclip_proxy,
     paperclip_trigger_proxy,
+    photon_inbound,
     platform_info,
     runtime_rpc,
     sendblue_inbound,
@@ -834,6 +835,7 @@ app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"]
 # SES-inbound agent-email ingest (provisioned agent email, inbound leg).
 # A Lambda parses raw SES mail and POSTs the clean JSON payload here.
 app.include_router(sendblue_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
+app.include_router(photon_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
 # Paperclip isol8.notifications plugin events (approvals + run lifecycle →

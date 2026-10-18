@@ -341,3 +341,13 @@ async def test_delete_text_line_swallows_a_mail_row_or_missing(monkeypatch):
     table.delete_item.side_effect = ClientError({"Error": {"Code": "InternalServerError"}}, "DeleteItem")
     with pytest.raises(ClientError):
         await repo.delete_text_line("+1555")
+
+
+async def test_text_line_by_photon_user_scans_with_filter(monkeypatch):
+    table = MagicMock()
+    table.scan.return_value = {"Items": [{"address": "+1555", "photon_user_id": "u1", "kind": "text"}]}
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert (await repo.text_line_by_photon_user("u1"))["address"] == "+1555"
+    assert "FilterExpression" in table.scan.call_args.kwargs
+    table.scan.return_value = {"Items": []}
+    assert await repo.text_line_by_photon_user("u2") is None

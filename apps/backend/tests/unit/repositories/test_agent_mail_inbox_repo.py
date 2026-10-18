@@ -241,3 +241,23 @@ async def test_disclosure_ignores_rows_without_the_prefix(monkeypatch):
     assert "BeginsWith" in str(table.query.call_args.kwargs["FilterExpression"].get_expression())
     await repo.has_sent_to("a@b.c", "+1555")
     assert "BeginsWith" not in str(table.query.call_args.kwargs["FilterExpression"].get_expression())
+
+
+@pytest.mark.asyncio
+async def test_put_message_stores_provider_ids_only_when_given(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    kw = dict(
+        address="a@b.co",
+        owner_id="o",
+        agent_id="g",
+        message_id="m1",
+        from_addr="+1",
+        subject="",
+        text="t",
+        headers={},
+        attachments=[],
+    )
+    assert "provider" not in await repo.put_message(**kw)
+    item = await repo.put_message(**kw, provider_ids={"space_id": "s1"})
+    assert item["provider"] == {"space_id": "s1"}

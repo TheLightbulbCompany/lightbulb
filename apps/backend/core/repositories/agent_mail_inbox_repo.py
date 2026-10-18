@@ -103,6 +103,7 @@ async def put_message(
     attachments: list,
     received_at: str | None = None,
     channel: str | None = None,
+    provider_ids: dict | None = None,
 ) -> dict:
     received_at = received_at or utc_now_iso()
     item = {
@@ -124,6 +125,8 @@ async def put_message(
     }
     if channel:
         item["channel"] = channel
+    if provider_ids:
+        item["provider"] = provider_ids
     await run_in_thread(_get_table().put_item, Item=item)
     return item
 

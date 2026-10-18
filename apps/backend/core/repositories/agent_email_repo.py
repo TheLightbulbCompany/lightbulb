@@ -14,7 +14,7 @@ Prefix-convention table (``core.dynamodb.get_table``), matching
 import logging
 from typing import Literal
 
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from core.config import settings
@@ -231,6 +231,16 @@ async def delete_text_line(number: str) -> None:
 
 async def text_line_for_owner(owner_id: str) -> dict | None:
     return next((r for r in await query_by_owner(owner_id) if r.get("kind") == "text"), None)
+
+
+async def text_line_by_photon_user(user_id: str) -> dict | None:
+    # ponytail: rare path (receivedBy.handle missing); a GSI if it is ever hot
+    resp = await run_in_thread(
+        _get_table().scan,
+        FilterExpression=Attr("photon_user_id").eq(user_id) & Attr("kind").eq("text"),
+    )
+    items = resp.get("Items") or []
+    return items[0] if items else None
 
 
 async def set_business_phone(number: str, phone: str) -> None:

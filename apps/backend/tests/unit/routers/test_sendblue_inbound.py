@@ -44,7 +44,7 @@ def seams(monkeypatch):
         "send_text": AsyncMock(return_value={}),
         "send_typing": AsyncMock(),
         "deliver_to_agent": AsyncMock(return_value="delivered"),
-        "_business_name": AsyncMock(return_value="Acme"),
+        "business_name": AsyncMock(return_value="Acme"),
     }
     for name, value in m.items():
         monkeypatch.setattr(sb, name, value)

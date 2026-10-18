@@ -81,9 +81,7 @@ def _sql(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def build_posthog_query(
-    start: datetime, end: datetime, excluded: set[str], excluded_authors: set[str]
-) -> str:
+def build_posthog_query(start: datetime, end: datetime, excluded: set[str], excluded_authors: set[str]) -> str:
     """Build the single bounded HogQL event read used by the pure summarizer."""
     earliest = start - timedelta(days=28)
     event_names = ", ".join(_sql(name) for name in READOUT_EVENTS)
@@ -94,7 +92,9 @@ def build_posthog_query(
         exclusion = f"\n  AND toString(properties.workspace_id) NOT IN ({', '.join(_sql(v) for v in sorted(excluded))})"
     author_exclusion = ""
     if excluded_authors:
-        author_exclusion = f"\n  AND toString(distinct_id) NOT IN ({', '.join(_sql(v) for v in sorted(excluded_authors))})"
+        author_exclusion = (
+            f"\n  AND toString(distinct_id) NOT IN ({', '.join(_sql(v) for v in sorted(excluded_authors))})"
+        )
     return f"""SELECT
   toString(uuid) AS event_id,
   event,
@@ -151,9 +151,7 @@ def summarize(
     """Compute all readout metrics from fixture-shaped source records."""
     staff_ids = staff_ids or set()
     clean_events = [
-        {**event, "timestamp": _dt(event["timestamp"])}
-        for event in events
-        if event.get("actor_id") not in staff_ids
+        {**event, "timestamp": _dt(event["timestamp"])} for event in events if event.get("actor_id") not in staff_ids
     ]
     workspace_events = [
         event for event in clean_events if event.get("workspace_id") and event["workspace_id"] not in excluded
@@ -552,10 +550,7 @@ def main(argv: list[str] | None = None) -> int:
         build_posthog_query(start, end, excluded, admins),
     )
     relevant = {event["workspace_id"] for event in events if event.get("workspace_id")}
-    membership_counts = {
-        workspace_id: len(clerk.member_user_ids(workspace_id) - admins)
-        for workspace_id in relevant
-    }
+    membership_counts = {workspace_id: len(clerk.member_user_ids(workspace_id) - admins) for workspace_id in relevant}
     invoices = fetch_invoices(_secret("STRIPE_SECRET_KEY", "lightbulb/prod/stripe_secret_key"))
     result = summarize(
         events,

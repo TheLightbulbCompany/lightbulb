@@ -146,12 +146,42 @@ def test_resolve_organizations_uses_exact_internal_slugs_each_run():
 def test_staff_authors_do_not_count_as_second_person_handoff_or_week4_activity():
     start, end = monday_window(datetime(2026, 10, 14, tzinfo=timezone.utc))
     events = [
-        {"event": "workspace_created", "timestamp": "2026-10-04T00:00:00+00:00", "workspace_id": "org_team", "actor_id": "user_customer"},
-        {"event": "team_formed", "timestamp": "2026-10-04T01:00:00+00:00", "workspace_id": "org_team", "actor_id": "user_staff"},
-        {"event": "workspace_created", "timestamp": "2026-09-30T00:00:00+00:00", "workspace_id": "org_handoff", "actor_id": "user_customer"},
-        {"event": "handoff_completed", "timestamp": "2026-10-01T00:00:00+00:00", "workspace_id": "org_handoff", "actor_id": "user_staff"},
-        {"event": "team_formed", "timestamp": "2026-09-07T00:00:00+00:00", "workspace_id": "org_week4", "actor_id": "user_customer"},
-        {"event": "room_message_sent", "timestamp": "2026-10-02T00:00:00+00:00", "workspace_id": "org_week4", "actor_id": "user_staff"},
+        {
+            "event": "workspace_created",
+            "timestamp": "2026-10-04T00:00:00+00:00",
+            "workspace_id": "org_team",
+            "actor_id": "user_customer",
+        },
+        {
+            "event": "team_formed",
+            "timestamp": "2026-10-04T01:00:00+00:00",
+            "workspace_id": "org_team",
+            "actor_id": "user_staff",
+        },
+        {
+            "event": "workspace_created",
+            "timestamp": "2026-09-30T00:00:00+00:00",
+            "workspace_id": "org_handoff",
+            "actor_id": "user_customer",
+        },
+        {
+            "event": "handoff_completed",
+            "timestamp": "2026-10-01T00:00:00+00:00",
+            "workspace_id": "org_handoff",
+            "actor_id": "user_staff",
+        },
+        {
+            "event": "team_formed",
+            "timestamp": "2026-09-07T00:00:00+00:00",
+            "workspace_id": "org_week4",
+            "actor_id": "user_customer",
+        },
+        {
+            "event": "room_message_sent",
+            "timestamp": "2026-10-02T00:00:00+00:00",
+            "workspace_id": "org_week4",
+            "actor_id": "user_staff",
+        },
     ]
 
     result = summarize(events, [], {}, {"org_team": 1}, set(), start, end, staff_ids={"user_staff"})

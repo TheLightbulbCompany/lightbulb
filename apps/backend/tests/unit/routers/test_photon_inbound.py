@@ -388,6 +388,16 @@ def test_removed_member_falls_through_to_the_front_desk(client, seams, member, m
     seams["delete_event"].assert_not_called()
 
 
+def test_a_missing_main_room_keeps_a_live_members_link(client, seams, member, monkeypatch):
+    from core.services import messaging
+
+    member.side_effect = messaging.ApiProblem("ROOM_NOT_FOUND", "no main room")
+    drop = AsyncMock()
+    monkeypatch.setattr(ph, "set_member_phone", drop)
+    assert _post(client).json() == {"status": "delivered"}  # the text is a customer's this once
+    drop.assert_not_called()  # a 404 is the room's fault, not the member's
+
+
 def test_member_post_transient_failure_is_503_and_retried(client, seams, member):
     member.side_effect = RuntimeError("ddb throttled")
     r = _post(client)
@@ -418,7 +428,7 @@ def bind(seams, monkeypatch):
 
 
 def test_a_live_code_links_the_sender_and_replies(client, seams, bind):
-    r = _post(client, _event(content={"type": "text", "text": f" {CODE}\n"}))
+    r = _post(client, _event(content={"type": "text", "text": f" link  {CODE}\n"}))  # any case, any spacing
     assert r.status_code == 200 and r.json() == {"status": "member_linked"}
     kwargs = bind.await_args.kwargs
     assert bind.await_args.args == (LINE,)
@@ -431,9 +441,16 @@ def test_a_live_code_links_the_sender_and_replies(client, seams, bind):
     seams["deliver_to_agent"].assert_not_called()
 
 
+def test_a_bare_six_digit_text_never_links(client, seams, bind):
+    # A customer's order number is not a link attempt: only "LINK <code>" matches.
+    assert _post(client, _event(content={"type": "text", "text": CODE})).json() == {"status": "delivered"}
+    bind.assert_not_called()
+    seams["put_message"].assert_awaited_once()
+
+
 def test_a_failed_link_confirmation_still_links(client, seams, bind):
     seams["send_text"].side_effect = PhotonError(503, "http_503")
-    assert _post(client, _event(content={"type": "text", "text": CODE})).json() == {"status": "member_linked"}
+    assert _post(client, _event(content={"type": "text", "text": f"LINK {CODE}"})).json() == {"status": "member_linked"}
 
 
 @pytest.mark.parametrize("expired", [False, True])
@@ -443,7 +460,7 @@ def test_an_expired_or_used_code_is_a_customer_text(client, seams, bind, expired
         row["phone_codes"] = {CODE: {"user_id": MEMBER_ID, "exp": int(time.time()) - 1}}
     else:
         bind.return_value = False  # used meanwhile
-    assert _post(client, _event(content={"type": "text", "text": CODE})).json() == {"status": "delivered"}
+    assert _post(client, _event(content={"type": "text", "text": f"LINK {CODE}"})).json() == {"status": "delivered"}
     assert bind.await_count == (0 if expired else 1)
     seams["put_message"].assert_awaited_once()
     seams["deliver_to_agent"].assert_awaited_once()
@@ -455,5 +472,5 @@ def test_a_linked_member_never_relinks_by_code(client, seams, bind, member):
         "member_phones": {CUSTOMER: MEMBER_ID},
         "phone_codes": {CODE: {"user_id": MEMBER_ID, "exp": int(time.time()) + 600}},
     }
-    assert _post(client, _event(content={"type": "text", "text": CODE})).json() == {"status": "member_routed"}
+    assert _post(client, _event(content={"type": "text", "text": f"LINK {CODE}"})).json() == {"status": "member_routed"}
     bind.assert_not_called()

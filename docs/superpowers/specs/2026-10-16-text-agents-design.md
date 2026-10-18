@@ -40,8 +40,9 @@ conversation is the customer, and the agent works for them.
   linked as theirs is a member: their text is posted into the workspace's main room as that
   member, marked "sent by text", and the normal routing (listen modes, Jev) picks the agent, who
   answers in the room and texts back. Every other texter is a customer and goes to the front desk.
-  Members link their number by texting the code the Mail panel shows to the business's number; the
-  webhook decides from the line's own row, and a removed member's text goes to the front desk.
+  Members link their number by texting LINK and the six-digit code the Mail panel shows to the
+  business's number (one live code per member, 15 minutes); the webhook decides from the line's own
+  row, and a removed member's text goes to the front desk.
 - The agent acts only on the business's own site and its connected tools, through the
   workspace's cloud browser and terminal. Orders and bookings go under the customer's own
   texting number, after the customer has said yes or paid.

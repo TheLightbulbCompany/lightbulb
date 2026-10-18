@@ -145,6 +145,13 @@ async def test_get_operation_unwraps_the_operation(monkeypatch):
     assert calls[0].method == "GET" and calls[0].url.path == f"{PRJ}/platforms/operations/op1"
 
 
+async def test_get_operation_takes_the_resource_id_from_the_wrapper_when_the_operation_lacks_it(monkeypatch):
+    wrapped = {"operation": {"operationId": "op1", "state": "succeeded"}, "resource": {"resourceId": "res9"}}
+    _mock(monkeypatch, lambda r: httpx.Response(200, json=wrapped))
+    out = await photon.get_operation("op1")
+    assert out["resourceId"] == "res9" and out["state"] == "succeeded"
+
+
 async def test_cancel_swallows_409_only(monkeypatch):
     calls = _mock(monkeypatch, lambda r: httpx.Response(409, json={"code": "finished"}))
     await photon.cancel_operation("op1")

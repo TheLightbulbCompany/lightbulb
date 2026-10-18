@@ -86,7 +86,7 @@ function MyPhone({ phone, number }: { phone: string | null | undefined; number: 
       <span>Your phone: {phone}</span>
       <Button type="button" variant="ghost" size="sm" onClick={() => void remove()}>Remove</Button>
     </> : code ? <>
-      <span>Text <strong>{code}</strong> to {number} from your phone. The code works for 15 minutes.</span>
+      <span>Text <strong>LINK {code}</strong> to {number} from your phone. The code works for 15 minutes.</span>
       <Button type="button" variant="ghost" size="sm" onClick={() => void mutate(isTextLineKey)}>Check</Button>
     </> : <Button type="button" variant="ghost" size="sm" onClick={() => void getCode()}>Link my phone</Button>}
     {error && <span role="status" className="mail-panel__number">{error}</span>}

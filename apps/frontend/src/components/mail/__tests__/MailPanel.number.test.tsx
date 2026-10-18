@@ -174,7 +174,7 @@ describe("MailPanel number", () => {
     renderMail();
     fireEvent.click(await screen.findByRole("button", { name: "Link my phone" }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/agent-text/me/phone/code", {}));
-    expect(await screen.findByText("004821")).toBeInTheDocument();
+    expect(await screen.findByText("LINK 004821")).toBeInTheDocument();
     expect(screen.getByText(/to \+15551230000 from your phone\. The code works for 15 minutes\./)).toBeInTheDocument();
     line = { number: "+15551230000", myPhone: "+15551234567" };
     fireEvent.click(screen.getByRole("button", { name: "Check" }));

@@ -219,10 +219,15 @@ async def my_phone_code(auth: AuthContext = Depends(get_current_user)) -> dict:
     line = await _line_or_404(resolve_owner_id(auth))
     now = int(time.time())
     expires_at = now + PHONE_CODE_TTL_S
-    expired = [c for c, v in (line.get("phone_codes") or {}).items() if int(v.get("exp", 0)) <= now]
+    # One live code per member (a guess stays one in a million per text), and expired ones go with it.
+    prune = [
+        c
+        for c, v in (line.get("phone_codes") or {}).items()
+        if int(v.get("exp", 0)) <= now or v.get("user_id") == auth.user_id
+    ]
     for _ in range(2):  # a live collision is one in a million; draw once more, then give up
         code = f"{secrets.randbelow(10**6):06d}"
-        if await put_phone_code(line["address"], code, auth.user_id, expires_at, prune=expired):
+        if await put_phone_code(line["address"], code, auth.user_id, expires_at, prune=prune):
             return {
                 "code": code,
                 "number": line["address"],

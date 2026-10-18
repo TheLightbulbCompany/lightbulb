@@ -8,6 +8,7 @@ Photon retries; every deterministic drop stays 200.
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -103,20 +104,27 @@ def _final(status: str, *, code: int = 200):
 
 
 LINKED_REPLY = "Linked. Texts from this phone now reach the team as you."
+_LINK_RE = re.compile(r"link\s+(\d{6})", re.IGNORECASE)
 
 
 async def _link_by_code(
     line: dict, sender: str, text: str, line_user: str | None, space_id: str | None, obj_id: str
 ) -> bool:
-    """A member links their phone by texting the code the Mail panel showed them; the text is the proof.
-    True when this text linked ``sender``; the code text is not stored."""
-    entry = (line.get("phone_codes") or {}).get(text)
+    """A member links their phone by texting ``LINK <code>`` (the code the Mail panel showed them); the text is
+    the proof. True when this text linked ``sender``; the code text is not stored. The LINK word keeps a
+    customer's six-digit order number from ever matching, and one live code per member (the route prunes the
+    member's earlier ones) keeps a guess at one in a million per text."""
+    match = _LINK_RE.fullmatch(text)
+    if not match:
+        return False
+    code = match.group(1)
+    entry = (line.get("phone_codes") or {}).get(code)
     now = int(time.time())
     if not entry or int(entry.get("exp", 0)) <= now:
         return False
     user_id = entry["user_id"]
     drop = [p for p, uid in (line.get("member_phones") or {}).items() if uid == user_id and p != sender]
-    if not await bind_member_phone(line["address"], code=text, phone=sender, user_id=user_id, now=now, drop=drop):
+    if not await bind_member_phone(line["address"], code=code, phone=sender, user_id=user_id, now=now, drop=drop):
         return False  # used or expired meanwhile: a customer's text
     try:
         await send_text(sender_id=line_user, space_id=space_id, text=LINKED_REPLY, idempotency_key=f"link:{obj_id}")
@@ -224,13 +232,14 @@ async def handle_photon_inbound(request: Request):
             except (messaging.ApiProblem, HTTPException) as e:
                 if e.status_code not in (403, 404):
                     raise  # transient: the outer handler rolls the dedup back and answers 503
-                # No longer a member (removed, or out of the main room): drop the stale link and treat
-                # the text as a customer's.
-                logger.warning("photon_inbound: member post refused for %s; dropping the link", obj.id, exc_info=True)
-                try:
-                    await set_member_phone(line["address"], customer, None)
-                except Exception:  # noqa: BLE001 — the next text retries the drop
-                    logger.warning("photon_inbound: could not drop the link for %s", obj.id, exc_info=True)
+                # Refused: the text is a customer's this time. A 403 means no longer a member, so the stale
+                # link goes too; a 404 (the main room is missing) keeps a live member's link.
+                logger.warning("photon_inbound: member post refused for %s", obj.id, exc_info=True)
+                if e.status_code == 403:
+                    try:
+                        await set_member_phone(line["address"], customer, None)
+                    except Exception:  # noqa: BLE001 — the next text retries the drop
+                        logger.warning("photon_inbound: could not drop the link for %s", obj.id, exc_info=True)
             else:
                 return _final("member_routed")
 

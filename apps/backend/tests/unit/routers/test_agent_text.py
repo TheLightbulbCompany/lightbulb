@@ -239,7 +239,11 @@ def test_phone_code_is_issued_and_stored(client, monkeypatch):
     now = 1_800_000_000
     monkeypatch.setattr(agent_text.time, "time", lambda: now)
     monkeypatch.setattr(agent_text.secrets, "randbelow", lambda n: 4821)
-    codes = {"111111": {"user_id": "x", "exp": now - 1}, "222222": {"user_id": "y", "exp": now + 60}}
+    codes = {
+        "111111": {"user_id": "x", "exp": now - 1},  # expired: pruned
+        "222222": {"user_id": "y", "exp": now + 60},  # another member's live code: kept
+        "333333": {"user_id": "me", "exp": now + 60},  # my earlier live code: replaced (one live code per member)
+    }
     _me(monkeypatch, {**LINE, "phone_codes": codes})
     put = AsyncMock(return_value=True)
     monkeypatch.setattr(agent_text, "put_phone_code", put)
@@ -249,7 +253,7 @@ def test_phone_code_is_issued_and_stored(client, monkeypatch):
     body = r.json()
     assert body["code"] == "004821" and body["number"] == LINE["address"]
     assert agent_text.datetime.fromisoformat(body["expiresAt"]).timestamp() == now + 15 * 60
-    put.assert_awaited_once_with(LINE["address"], "004821", "me", now + 15 * 60, prune=["111111"])
+    put.assert_awaited_once_with(LINE["address"], "004821", "me", now + 15 * 60, prune=["111111", "333333"])
 
 
 def test_phone_code_redraws_once_on_a_live_collision(client, monkeypatch):

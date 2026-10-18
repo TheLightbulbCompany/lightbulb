@@ -102,7 +102,10 @@ async def get_operation(operation_id: str) -> dict:
     """The operation itself. The GET wraps it as ``{operation, resource?}`` (spec: GetOperationResponse),
     unlike the create, cancel and delete calls, which return the Operation at the top level."""
     body = await _call("GET", f"/platforms/operations/{operation_id}")
-    return body.get("operation") or body
+    op = body.get("operation") or body
+    if not op.get("resourceId") and (body.get("resource") or {}).get("resourceId"):
+        op = {**op, "resourceId": body["resource"]["resourceId"]}  # the wrapper's resource names it too
+    return op
 
 
 async def cancel_operation(operation_id: str) -> None:

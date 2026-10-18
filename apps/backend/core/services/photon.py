@@ -99,7 +99,10 @@ async def request_dedicated_line(*, idempotency_key: str) -> dict:
 
 
 async def get_operation(operation_id: str) -> dict:
-    return await _call("GET", f"/platforms/operations/{operation_id}")
+    """The operation itself. The GET wraps it as ``{operation, resource?}`` (spec: GetOperationResponse),
+    unlike the create, cancel and delete calls, which return the Operation at the top level."""
+    body = await _call("GET", f"/platforms/operations/{operation_id}")
+    return body.get("operation") or body
 
 
 async def cancel_operation(operation_id: str) -> None:

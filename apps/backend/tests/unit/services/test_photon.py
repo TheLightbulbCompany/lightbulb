@@ -133,10 +133,15 @@ async def test_request_dedicated_line(monkeypatch):
     assert req.headers["idempotency-key"] == "idem"
 
 
-async def test_get_operation(monkeypatch):
-    calls = _mock(monkeypatch, lambda r: httpx.Response(200, json={"state": "succeeded", "resourceId": "res1"}))
+async def test_get_operation_unwraps_the_operation(monkeypatch):
+    # The GET answers GetOperationResponse {operation, resource?}; create/cancel/delete answer the bare Operation.
+    wrapped = {
+        "operation": {"operationId": "op1", "state": "succeeded", "resourceId": "res1"},
+        "resource": {"resourceId": "res1"},
+    }
+    calls = _mock(monkeypatch, lambda r: httpx.Response(200, json=wrapped))
     out = await photon.get_operation("op1")
-    assert out["resourceId"] == "res1"
+    assert out["state"] == "succeeded" and out["resourceId"] == "res1"
     assert calls[0].method == "GET" and calls[0].url.path == f"{PRJ}/platforms/operations/op1"
 
 

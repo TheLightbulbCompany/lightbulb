@@ -14,6 +14,7 @@ import {
 import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import { actorName } from "../../lib/actorName";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
+import { CardReplyContext, readOnlyCardReply } from "../chat/openui/CardReplyContext";
 import { DocumentEditSheet } from "./DocumentEditSheet";
 import {
   fetchAttachmentDataUri,
@@ -150,6 +151,9 @@ export function WorkProductsSection({
   );
 }
 
+/** A document draws its cards but never answers one: no `press`, so every control is disabled. */
+const READ_ONLY_CARDS = readOnlyCardReply("document");
+
 export function DocumentsSection({
   documents,
   agents,
@@ -215,7 +219,9 @@ export function DocumentsSection({
             </Pressable>
             {open ? (
               doc.body ? (
-                <MessageMarkdown text={doc.body} palette={palette} />
+                <CardReplyContext.Provider value={READ_ONLY_CARDS}>
+                  <MessageMarkdown text={doc.body} palette={palette} />
+                </CardReplyContext.Provider>
               ) : (
                 <Text style={styles.rowMeta}>Empty document.</Text>
               )

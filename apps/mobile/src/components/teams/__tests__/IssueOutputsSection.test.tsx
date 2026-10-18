@@ -20,3 +20,18 @@ it("names a person who saved the document", async () => {
   await show(doc({ updatedByUserId: "pc_ada" }));
   expect(screen.getByText(/^Ada · updated/)).toBeTruthy();
 });
+
+it("draws a card in an opened body with every control disabled", async () => {
+  const body = 'Pick:\n```openui-lang\nroot = Stack([q])\nq = Choice("Which plan first?", ["Starter", "Studio"])\n```';
+  await show(doc({ body }));
+  await open();
+  expect(screen.getByRole("button", { name: "Studio" }).props.accessibilityState.disabled).toBe(true);
+  expect(screen.getByRole("button", { name: "Starter" }).props.accessibilityState.disabled).toBe(true);
+  expect(screen.queryByText(/root = Stack/)).toBeNull();
+});
+
+it("leaves a body without fences as it was", async () => {
+  await show(doc({ body: "Just words" }));
+  await open();
+  expect(screen.getByText("Just words")).toBeTruthy();
+});

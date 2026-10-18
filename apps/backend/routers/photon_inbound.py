@@ -23,7 +23,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories.agent_email_repo import bind_member_phone, get_by_address
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, put_sent, reply_key
-from core.repositories.container_repo import try_consume_stranger_wake
+from core.repositories.container_repo import release_stranger_wake, try_consume_stranger_wake
 from core.services.agent_email import mail_changed, team_address
 from core.services import messaging, standard_webhooks
 from core.services.agent_mail_delivery import deliver_to_agent
@@ -244,10 +244,11 @@ async def handle_photon_inbound(request: Request):
 
         # A paused workspace answers each sender once a day with the paused reply; a live one wakes the agent.
         paused = bool(await trial_block_reason(owner_id))
+        sender_key, day = stranger_key(customer), datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if not await try_consume_stranger_wake(
             owner_id,
-            sender_key=stranger_key(customer),
-            day=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            sender_key=sender_key,
+            day=day,
             owner_cap=TEXT_WAKES_PER_OWNER_PER_DAY,
             sender_cap=1 if paused else TEXT_WAKES_PER_SENDER_PER_DAY,
             attr_prefix="text_paused" if paused else "text_wake",
@@ -271,7 +272,11 @@ async def handle_photon_inbound(request: Request):
                     channel="text",
                 )
             except (PhotonError, httpx.HTTPError):
-                return _final("dropped_over_cap")
+                # Transient: the sender's slot goes back and the dedup row with it, so Photon's redelivery
+                # sends the promised reply. A 200 here spent the sender's one reply a day on nothing.
+                await release_stranger_wake(owner_id, sender_key=sender_key, day=day, attr_prefix="text_paused")
+                await _rollback_dedup(event_id)
+                return _final("paused_reply_failed", code=503)
             return _final("capped_notified")
 
         if line_user:

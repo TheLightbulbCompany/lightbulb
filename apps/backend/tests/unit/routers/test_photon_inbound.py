@@ -54,6 +54,7 @@ def seams(monkeypatch):
         "mail_changed": AsyncMock(),
         "trial_block_reason": AsyncMock(return_value=None),
         "try_consume_stranger_wake": AsyncMock(return_value=True),
+        "release_stranger_wake": AsyncMock(),
         "send_text": AsyncMock(return_value={"id": "msg_out"}),
         "send_typing": AsyncMock(),
         "mark_read": AsyncMock(),
@@ -270,10 +271,17 @@ def test_capped_owner_is_told_once_per_day(client, seams):
 
 
 @pytest.mark.parametrize("exc", [PhotonError(500, "x"), httpx.ConnectError("x")])
-def test_capped_send_failure_is_dropped_over_cap(client, seams, exc):
+def test_a_paused_reply_that_fails_gives_the_slot_back_and_503s(client, seams, exc):
+    """Photon redelivers on 503, and the sender's one reply a day must not have been spent on the failure."""
     seams["trial_block_reason"].return_value = "daily_cap"
     seams["send_text"].side_effect = exc
-    assert _post(client).json() == {"status": "dropped_over_cap"}
+    r = _post(client)
+    assert r.status_code == 503 and r.json() == {"status": "paused_reply_failed"}
+    taken = seams["try_consume_stranger_wake"].await_args.kwargs
+    seams["release_stranger_wake"].assert_awaited_once_with(
+        LINE_ROW["owner_id"], sender_key=taken["sender_key"], day=taken["day"], attr_prefix="text_paused"
+    )
+    seams["delete_event"].assert_awaited_once_with("photon:m1")
 
 
 def test_empty_sender_is_dropped(client, seams):

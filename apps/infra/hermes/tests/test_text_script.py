@@ -54,7 +54,7 @@ def test_set_business_phone_posts_phone(tmp_path):
     proc, sent, url = _run(tmp_path, "set-business-phone", "+15551234567", answer='{"status":"ok"}')
     assert proc.returncode == 0
     assert url == "https://api.x/api/v1/agent-text/u/org_1/business-phone"
-    assert sent == {"phone": "+15551234567"}
+    assert sent == {"agent_id": "agent-1", "phone": "+15551234567"}
 
 
 def test_bad_phone_is_explained(tmp_path):

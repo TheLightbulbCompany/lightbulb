@@ -68,7 +68,8 @@ case "$cmd" in
     echo 'Text sent.' ;;
   set-business-phone)
     [[ -n "$phone" ]] || { usage >&2; exit 2; }
-    call POST "$base/business-phone" "$(jq -nc --arg p "$phone" '{phone:$p}')"
+    [[ -n "$agent_id" ]] || die 'Cannot tell which agent you are: pass --as <agent_id>.'
+    call POST "$base/business-phone" "$(jq -nc --arg a "$agent_id" --arg p "$phone" '{agent_id:$a, phone:$p}')"
     echo 'Business phone saved.' ;;
   *) usage >&2; exit 2 ;;
 esac

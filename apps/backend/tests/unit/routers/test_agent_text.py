@@ -133,6 +133,15 @@ async def test_other_owners_row_is_refused(m):
     m["send_text"].assert_not_awaited()
 
 
+async def test_another_agent_cannot_send_as_the_front_desk(m):
+    """Every agent holds the hook token; the send names its agent and only the line's agent passes."""
+    status = await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi", agent_id="agent_other")
+    assert status == "not_front_desk"
+    m["send_text"].assert_not_awaited()
+    status = await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi", agent_id=LINE["agent_id"])
+    assert status == "sent"
+
+
 async def test_human_reply_marks_the_thread_human(m):
     assert await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi", by_human=True) == "sent"
     m["set_thread_mode"].assert_awaited_once_with(LINE["address"], "+15559870000", "human")
@@ -224,12 +233,26 @@ def test_business_phone_rejects_non_e164(client, monkeypatch):
     save = AsyncMock()
     monkeypatch.setattr(agent_text, "set_business_phone", save)
     for bad in ["555-1234", "+0123456789", "+1555", "call me"]:
-        r = client.post(f"/api/v1/agent-text/u/{OWNER}/business-phone", json={"phone": bad})
+        r = client.post(
+            f"/api/v1/agent-text/u/{OWNER}/business-phone", json={"agent_id": LINE["agent_id"], "phone": bad}
+        )
         assert r.status_code == 400 and r.json() == {"status": "bad_phone"}
     save.assert_not_awaited()
-    r = client.post(f"/api/v1/agent-text/u/{OWNER}/business-phone", json={"phone": "+15551234567"})
+    good = {"agent_id": LINE["agent_id"], "phone": "+15551234567"}
+    r = client.post(f"/api/v1/agent-text/u/{OWNER}/business-phone", json=good)
     assert r.status_code == 200
     save.assert_awaited_once_with(LINE["address"], "+15551234567")
+
+
+def test_business_phone_refuses_another_agent(client, monkeypatch):
+    monkeypatch.setattr(agent_text, "_require_hook_token", AsyncMock())
+    monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=LINE))
+    save = AsyncMock()
+    monkeypatch.setattr(agent_text, "set_business_phone", save)
+    body = {"agent_id": "agent_other", "phone": "+15551234567"}
+    r = client.post(f"/api/v1/agent-text/u/{OWNER}/business-phone", json=body)
+    assert r.status_code == 403 and r.json() == {"detail": "not_front_desk"}
+    save.assert_not_awaited()
 
 
 def _me(monkeypatch, line, set_phone=None):

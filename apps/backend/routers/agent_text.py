@@ -66,7 +66,9 @@ async def _text_row(owner_id: str, key: str) -> tuple[str, dict] | None:
     return parsed[0], row
 
 
-async def send_reply(*, owner_id: str, reply_key: str, text: str, by_human: bool = False) -> str:
+async def send_reply(
+    *, owner_id: str, reply_key: str, text: str, by_human: bool = False, agent_id: str | None = None
+) -> str:
     if not photon.enabled():
         return "disabled"
     found = await _text_row(owner_id, reply_key)
@@ -76,6 +78,9 @@ async def send_reply(*, owner_id: str, reply_key: str, text: str, by_human: bool
     line = await text_line_for_owner(owner_id)
     if not line:
         return "no_line"
+    # Every agent in the workspace holds the hook token; only the line's own agent texts customers as it.
+    if agent_id is not None and agent_id != line["agent_id"]:
+        return "not_front_desk"
     provider = row.get("provider") or {}
     space_id = provider.get("space_id")
     # The line's own Photon user is authoritative; the id stored with the inbound row is only a fallback.
@@ -132,13 +137,15 @@ class AgentSend(BaseModel):
 
 
 class BusinessPhone(BaseModel):
+    agent_id: str
     phone: str
 
 
 @router.post("/u/{owner_id}/send")
 async def hook_send(owner_id: str, body: AgentSend, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
-    return {"status": await send_reply(owner_id=owner_id, reply_key=body.reply_key, text=body.text)}
+    status = await send_reply(owner_id=owner_id, reply_key=body.reply_key, text=body.text, agent_id=body.agent_id)
+    return {"status": status}
 
 
 @router.post("/u/{owner_id}/business-phone")
@@ -147,6 +154,8 @@ async def hook_business_phone(owner_id: str, body: BusinessPhone, request: Reque
     if not _valid_phone(body.phone):
         return JSONResponse(status_code=400, content={"status": "bad_phone"})
     line = await _line_or_404(owner_id)
+    if body.agent_id != line["agent_id"]:
+        raise HTTPException(status_code=403, detail="not_front_desk")
     await set_business_phone(line["address"], body.phone)
     return {"status": "ok"}
 

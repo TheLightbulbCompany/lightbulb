@@ -1,5 +1,7 @@
 # Text agents, plan 2 of 3: the Front desk add-on and the number door
 
+> Provider: Photon 2.0 since 2026-10-17 (plan 4); the Sendblue names below are history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A business clicks "Get a phone number", pays for Team plus the Front desk add-on, and the Sendblue line exists and is shown the moment the subscription is live; when the add-on item or the subscription goes away, the line is released.

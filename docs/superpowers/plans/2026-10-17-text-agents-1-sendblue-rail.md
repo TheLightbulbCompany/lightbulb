@@ -1,5 +1,7 @@
 # Text agents, plan 1 of 3: the Sendblue text rail
 
+> Provider: Photon 2.0 since 2026-10-17 (plan 4); the Sendblue names below are history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A customer texts a workspace's Sendblue number, the text reaches that workspace's front-desk agent the way an email does, the agent replies by text, and the business sees and can take over the thread in the Mail panel.

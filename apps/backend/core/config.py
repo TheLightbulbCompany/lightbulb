@@ -232,7 +232,6 @@ class Settings(BaseSettings):
     PHOTON_PROJECT_ID: str = ""  # pho_prj_...
     PHOTON_WEBHOOK_SECRET: str = ""  # the Standard-Webhooks whsec_... secret
     # Dedicated lines held ahead for instant assignment, $250/month each; 0 until Photon's wait times are known.
-    PHOTON_LINE_POOL_SIZE: int = 0
     # removed with the Sendblue client in plan 4 Task 2
     SENDBLUE_API_KEY_ID: str = ""
     SENDBLUE_API_SECRET_KEY: str = ""

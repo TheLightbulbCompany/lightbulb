@@ -1,5 +1,7 @@
 # Text agents, plan 3 of 3: the front-desk agent, OpenCLI and the bench
 
+> Provider: Photon 2.0 since 2026-10-17 (plan 4); the Sendblue names below are history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Customer Operations becomes the business's front desk: it learns the business's website with OpenCLI into tested adapters, answers customers under the front-desk rules, and a scripted bench proves those rules before the feature ships.

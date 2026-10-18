@@ -1466,7 +1466,7 @@ async def test_a_roster_read_failure_stops_the_preview_rather_than_hiding_a_tear
         await resolve_workspace_memberships(OWNER_ID)
 
 
-TEXT_ROW = {"owner_id": OWNER_ID, "address": "+15550001111", "kind": "text"}
+TEXT_ROW = {"owner_id": OWNER_ID, "address": "+15550001111", "kind": "text", "photon_resource_id": "res_1"}
 
 
 @pytest.mark.asyncio
@@ -1478,10 +1478,10 @@ async def test_agent_email_step_deprovisions_text_rows_then_deletes(wipe_mocks):
     wipe_mocks.agent_email_delete.side_effect = lambda oid: calls.delete(oid) or ["x"]
     with (
         patch("core.services.account_wipe.agent_email_repo.query_by_owner", new=AsyncMock(return_value=[TEXT_ROW])),
-        patch("core.services.account_wipe.sendblue.deprovision_line", new=deprovision),
+        patch("core.services.account_wipe.photon.release_line", new=deprovision),
     ):
         report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
-    deprovision.assert_awaited_once_with("+15550001111")
+    deprovision.assert_awaited_once_with("res_1")
     assert [c[0] for c in calls.mock_calls if c[0] in ("deprovision", "delete")] == ["deprovision", "delete"]
     step = next(s for s in report.steps if s.system == "agent_email_addresses")
     assert step.status == "ok" and "released 1 text line(s)" in step.detail
@@ -1494,10 +1494,27 @@ async def test_deprovision_failure_does_not_abort(wipe_mocks):
     deprovision = AsyncMock(side_effect=RuntimeError("sendblue down"))
     with (
         patch("core.services.account_wipe.agent_email_repo.query_by_owner", new=AsyncMock(return_value=[TEXT_ROW])),
-        patch("core.services.account_wipe.sendblue.deprovision_line", new=deprovision),
+        patch("core.services.account_wipe.photon.release_line", new=deprovision),
     ):
         report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
     wipe_mocks.agent_email_delete.assert_awaited_once_with(OWNER_ID)
     step = next(s for s in report.steps if s.system == "agent_email_addresses")
     assert step.status == "ok"
     assert "released 0 text line(s)" in step.detail and "FAILED to release: +15550001111" in step.detail
+
+
+@pytest.mark.asyncio
+async def test_pending_row_is_cancelled_on_wipe(wipe_mocks):
+    from unittest.mock import AsyncMock, patch
+
+    row = {"owner_id": OWNER_ID, "address": "TEXT_PENDING#x", "kind": "text_pending", "operation_id": "op_1"}
+    cancel = AsyncMock()
+    with (
+        patch("core.services.account_wipe.agent_email_repo.query_by_owner", new=AsyncMock(return_value=[row])),
+        patch("core.services.account_wipe.photon.cancel_operation", new=cancel),
+    ):
+        report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    cancel.assert_awaited_once_with("op_1")
+    wipe_mocks.agent_email_delete.assert_awaited_once_with(OWNER_ID)
+    step = next(s for s in report.steps if s.system == "agent_email_addresses")
+    assert step.status == "ok" and "released 1 text line(s)" in step.detail

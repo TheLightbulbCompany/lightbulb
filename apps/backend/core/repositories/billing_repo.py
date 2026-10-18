@@ -1208,7 +1208,9 @@ async def claim_front_desk(owner_id: str, *, stale_before: str | None = None) ->
     condition = "attribute_not_exists(front_desk) OR front_desk = :f"
     values = {":v": True, ":f": False, ":u": now}
     if stale_before:
-        condition += " OR (attribute_exists(front_desk_claim_at) AND front_desk_claim_at < :stale)"
+        condition += (
+            " OR (front_desk = :v AND (attribute_not_exists(front_desk_claim_at) OR front_desk_claim_at < :stale))"
+        )
         values[":stale"] = stale_before
     try:
         await run_in_thread(

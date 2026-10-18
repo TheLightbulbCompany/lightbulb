@@ -210,7 +210,7 @@ nudge, or flag) carries a one-line reason comment -- never a bare status flip.
    `suggest_tasks` card (mechanics: `references/interactions.md`) on a
    single rolling issue titled "Board review": search for an open one
    assigned to you first (`?q=Board+review&status=todo,in_progress,in_review,blocked`),
-   reuse it if found, else create one (`--assignee` yourself). Set it
+   reuse it if found, else create one (`--assignee` yourself, `--status backlog`). Set it
    `in_review`. Do not open a new "Board review" issue per wake.
 
 **Close the loop.** Before exiting, leave ONE comment on "Board hygiene"

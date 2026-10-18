@@ -49,14 +49,19 @@ function PaneFrame({ title, actions, children }: { title: string; actions?: Reac
   );
 }
 
-function FilePane({ source }: { source: Exclude<ArtifactSource, { src: "file" } | { kind: "document" }> }) {
+type FileSource = Exclude<ArtifactSource, { src: "file" } | { kind: "document" }>;
+
+function FilePane({ source }: { source: FileSource }) {
   const api = useApi();
   const teams = useTeamsApi();
   const [state, setState] = useState<Loaded>({ status: "loading" });
   // The clients may be new objects every render; the fetch must run once per source, not per render.
   const clients = useRef({ api, teams });
   useEffect(() => { clients.current = { api, teams }; });
+  // Keyed on the source's content: an equal-but-new params object must not refetch or revoke the shown URL.
+  const sourceKey = JSON.stringify(source);
   useEffect(() => {
+    const source = JSON.parse(sourceKey) as FileSource;
     let live = true;
     let url: string | undefined;
     const { api, teams } = clients.current;
@@ -71,7 +76,7 @@ function FilePane({ source }: { source: Exclude<ArtifactSource, { src: "file" } 
       setState({ status: "ready", blob, url, name: source.name ?? "file", type });
     }).catch((e) => { if (live) setState({ status: "error", message: describeError(e) }); });
     return () => { live = false; if (url) URL.revokeObjectURL(url); };
-  }, [source]);
+  }, [sourceKey]);
   const title = source.name ?? "File";
   const download = state.status === "ready" ? <a className="inline-flex" href={state.url} download={state.name} aria-label="Download"><Download aria-hidden="true" /></a> : null;
   return (

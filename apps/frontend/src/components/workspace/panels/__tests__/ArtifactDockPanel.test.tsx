@@ -35,3 +35,17 @@ it("renders a Paperclip document body as markdown with an Open task action", asy
   expect(screen.getByText("Step one.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /open task/i })).toBeInTheDocument();
 });
+
+it("refetches only when the source really changes", async () => {
+  downloadBlob.mockReset();
+  downloadBlob.mockResolvedValue(new Blob(["a,b\n1,2\n"], { type: "text/csv" }));
+  const mk = (id: string) => ({ src: "attachment", room: "r1", id, name: "out.csv", type: "text/csv" });
+  const { rerender } = render(<ArtifactDockPanel id="artifact" params={mk("att1")} />);
+  await screen.findByRole("table");
+  rerender(<ArtifactDockPanel id="artifact" params={mk("att1")} />);
+  expect(downloadBlob).toHaveBeenCalledTimes(1);
+  expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+  rerender(<ArtifactDockPanel id="artifact" params={mk("att2")} />);
+  await screen.findByRole("table");
+  expect(downloadBlob).toHaveBeenCalledTimes(2);
+});

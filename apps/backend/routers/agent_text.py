@@ -19,8 +19,8 @@ from core.repositories.agent_email_repo import set_business_phone, set_thread_mo
 from core.repositories.agent_mail_inbox_repo import get_message, has_sent_to, parse_reply_key, put_sent
 from core.services.agent_email import mail_changed
 from core.services.sendblue import SendblueError, enabled, send_text
+from core.services.text_inbound import business_name
 from routers.agent_mail import _require_hook_token
-from routers.sendblue_inbound import _business_name
 
 router = APIRouter()
 
@@ -50,7 +50,7 @@ async def send_reply(*, owner_id: str, reply_key: str, text: str, by_human: bool
     if not by_human and customer in (line.get("human_threads") or {}):
         return "human_thread"
     if not by_human and not await has_sent_to(address, customer, text_prefix=DISCLOSURE_PREFIX):
-        text = f"{DISCLOSURE.format(business=await _business_name(owner_id))} {text}"
+        text = f"{DISCLOSURE.format(business=await business_name(owner_id))} {text}"
     try:
         resp = await send_text(from_number=line["address"], to_number=customer, content=text)
     except (SendblueError, httpx.HTTPError):

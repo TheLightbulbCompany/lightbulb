@@ -19,7 +19,7 @@ def m(monkeypatch):
         "put_sent": AsyncMock(),
         "mail_changed": AsyncMock(),
         "set_thread_mode": AsyncMock(),
-        "_business_name": AsyncMock(return_value="Acme"),
+        "business_name": AsyncMock(return_value="Acme"),
     }
     for name, mock in mocks.items():
         monkeypatch.setattr(agent_text, name, mock)

@@ -252,8 +252,9 @@ async def handle_photon_inbound(request: Request):
         ):
             return _final("stored_not_woken_rate_limited")
 
-        await send_typing(sender_id=line_user, space_id=space.id)
-        await mark_read(obj.id)
+        if line_user:
+            await send_typing(sender_id=line_user, space_id=space.id)
+            await mark_read(obj.id)
 
         result = await deliver_to_agent(
             owner_id=owner_id,

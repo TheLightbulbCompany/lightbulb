@@ -323,3 +323,11 @@ def test_delivered_text_matches_the_template():
     )
     assert got.startswith(f"You received a text message.\n\nFrom: {CUSTOMER}\nVia: iMessage\nReply-Key: k/1\n\n")
     assert got.endswith("---\nhi")
+
+
+def test_typing_skipped_without_a_line_user(client, seams):
+    seams["text_line_by_photon_user"].return_value = {k: v for k, v in LINE_ROW.items() if k != "photon_user_id"}
+    seams["get_by_address"].return_value = {k: v for k, v in LINE_ROW.items() if k != "photon_user_id"}
+    assert _post(client, _event(receivedBy={"handle": LINE})).json() == {"status": "delivered"}
+    seams["send_typing"].assert_not_called()
+    seams["mark_read"].assert_not_called()

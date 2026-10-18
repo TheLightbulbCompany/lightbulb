@@ -927,6 +927,9 @@ export interface IssueDocument {
   createdAt?: string | null;
   latestRevisionNumber?: number | null;
   latestRevisionId?: string | null;
+  /** Set while the document is locked against a person's edits. */
+  lockedAt?: string | null;
+  lockedByAgentId?: string | null;
 }
 
 /**

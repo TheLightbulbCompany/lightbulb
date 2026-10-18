@@ -8,7 +8,7 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { CardContext, readOnlyCardContext } from "@/components/messaging/openui/CardContext";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import type { CompanyAgent, IssueDocument } from "@/components/teams/shared/types";
+import type { CompanyAgent, CompanyMember, IssueDocument } from "@/components/teams/shared/types";
 import { DocumentRevisionMenu } from "./DocumentRevisionMenu";
 import { DocumentDiffModal } from "./DocumentDiffModal";
 import { DocumentEditor, documentMarkdown } from "./DocumentEditor";
@@ -40,6 +40,7 @@ export function DocumentRow({
   hideTitle,
   editing: editingProp,
   onEditingChange,
+  onPreviewingChange,
 }: {
   doc: IssueDocument;
   agents: CompanyAgent[];
@@ -60,6 +61,8 @@ export function DocumentRow({
   // Left unset, the row keeps the state itself.
   editing?: boolean;
   onEditingChange?: (editing: boolean) => void;
+  // Tells the pane when a past revision is shown, so it can hide Edit as the row's pencil does.
+  onPreviewingChange?: (previewing: boolean) => void;
 }) {
   const root = basePath ?? `/issues/${issueId}`;
   const reviewable = doc as ReviewableDocument;
@@ -84,6 +87,8 @@ export function DocumentRow({
 
   const { read, post } = useTeamsApi();
   const { mutate } = useSWRConfig();
+  // Only the editor names the other editor; the pane and the issue page share the one cached read.
+  const { data: membersData } = read<{ members: CompanyMember[] }>(editing ? "/members" : null);
 
   const when = doc.updatedAt ?? doc.createdAt;
   const titleShown =
@@ -97,7 +102,7 @@ export function DocumentRow({
 
   const reviewEnabled = Boolean(issueId);
   // Only issue documents have a save route; a case document keeps comments and versions.
-  const editable = reviewEnabled && (basePath === undefined || basePath === `/issues/${issueId}`);
+  const editable = reviewEnabled && !doc.lockedAt && (basePath === undefined || basePath === `/issues/${issueId}`);
   const latestRevisionNumber = reviewable.latestRevisionNumber ?? 0;
   const latestRevisionId = reviewable.latestRevisionId ?? null;
   const annotationsPath = reviewEnabled
@@ -138,6 +143,7 @@ export function DocumentRow({
     [revData, selectedRevisionId],
   );
   const historicalPreview = selectedRevisionId !== null;
+  useEffect(() => { onPreviewingChange?.(historicalPreview); }, [historicalPreview, onPreviewingChange]);
   const shownBody = historicalPreview ? selectedRevision?.body ?? "" : doc.body ?? "";
 
   // Deep-link / confirmation-chip anchor: expand + scroll when the URL hash
@@ -338,6 +344,8 @@ export function DocumentRow({
                   issueId={issueId!}
                   document={reviewable}
                   agents={agents}
+                  members={membersData?.members}
+                  currentUserId={user?.id}
                   currentUserName={currentUserName}
                   onSaved={() => { setEditing(false); onRestored?.(); }}
                   onCancel={() => setEditing(false)}

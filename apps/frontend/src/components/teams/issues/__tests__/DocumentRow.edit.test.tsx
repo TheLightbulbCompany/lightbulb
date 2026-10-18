@@ -26,3 +26,8 @@ it("a case document has no pencil", () => {
   render(<DocumentRow doc={doc} agents={[]} issueId="c1" basePath="/cases/c1" defaultOpen />);
   expect(screen.queryByRole("button", { name: "Edit document" })).toBeNull();
 });
+
+it("a locked document has no pencil", () => {
+  render(<DocumentRow doc={{ ...doc, lockedAt: "2026-10-16T10:00:00Z" }} agents={[]} issueId="i1" defaultOpen />);
+  expect(screen.queryByRole("button", { name: "Edit document" })).toBeNull();
+});

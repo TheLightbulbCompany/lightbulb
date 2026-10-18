@@ -8,6 +8,8 @@ import { DocumentRow } from "@/components/teams/issues/DocumentRow";
 import { AttachmentIssueContext, issueAttachmentContentPath } from "@/components/teams/shared/lib/attachments";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { CompanyAgent, CompanyMember, IssueDocument } from "@/components/teams/shared/types";
+import { useUser } from "@clerk/nextjs";
+import { actorName } from "@/components/teams/shared/lib/actorName";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useApi } from "@/lib/api";
 import { openPanel } from "../workspaceController";
@@ -99,15 +101,16 @@ function DocumentPane({ source }: { source: Extract<ArtifactSource, { kind: "doc
   const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: membersData } = read<{ members: CompanyMember[] }>("/members");
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const { user } = useUser();
   const [editing, setEditing] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const canEdit = !data?.lockedAt && !previewing;
   const actions = <>
-    <Button type="button" variant="outline" size="sm" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>Edit</Button>
+    {canEdit && <Button type="button" variant="outline" size="sm" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>Edit</Button>}
     <Button type="button" variant="outline" size="sm" onClick={() => openPanel("teams-issue-detail", { detailId: source.issue }, { pushUrl: true })}>Open task</Button>
   </>;
   const agents = agentsData?.agents ?? [];
-  const author = (data?.updatedByAgentId && agents.find((a) => a.id === data.updatedByAgentId)?.name)
-    || (data?.updatedByUserId && membersData?.members.find((m) => m.userId === data.updatedByUserId)?.name)
-    || "Someone";
+  const author = actorName({ agentId: data?.updatedByAgentId, userId: data?.updatedByUserId, agents, members: membersData?.members, currentUserId: user?.id });
   const when = data?.updatedAt ?? data?.createdAt;
   const outline = outlineOf(data?.body ?? "");
   return (
@@ -115,10 +118,10 @@ function DocumentPane({ source }: { source: Extract<ArtifactSource, { kind: "doc
       {error && <p role="alert" className="p-4 text-ui">{describeError(error)}</p>}
       {data && <div className="mx-auto max-w-2xl p-4">
         <h2 className="text-lg font-semibold">{data.title || data.key}</h2>
-        <p className="mb-3 text-caption text-muted-foreground">{author}{when ? ` · updated ${timeAgo(when)}` : ""} · rev {data.latestRevisionNumber ?? 1}</p>
+        <p className="mb-3 text-caption text-muted-foreground">{author}{when ? ` · updated ${timeAgo(when)}` : ""} · rev {data.latestRevisionNumber ?? 1}{data.lockedAt ? ` · locked by ${actorName({ agentId: data.lockedByAgentId, agents })}` : ""}</p>
         {outline.length >= CONTENTS_MIN_HEADINGS && <DocumentContents entries={outline} bodyRef={bodyRef} />}
         <AttachmentIssueContext.Provider value={source.issue}>
-          <div ref={bodyRef}><DocumentRow doc={data} agents={agents} issueId={source.issue} defaultOpen hideTitle editing={editing} onEditingChange={setEditing} /></div>
+          <div ref={bodyRef}><DocumentRow doc={data} agents={agents} issueId={source.issue} defaultOpen hideTitle editing={editing} onEditingChange={setEditing} onPreviewingChange={setPreviewing} /></div>
         </AttachmentIssueContext.Provider>
       </div>}
     </PaneFrame>

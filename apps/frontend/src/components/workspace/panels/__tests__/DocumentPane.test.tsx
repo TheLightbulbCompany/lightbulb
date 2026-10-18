@@ -28,3 +28,24 @@ it("hides the contents list under four headings", async () => {
   await screen.findByRole("heading", { name: "Short", level: 2 });
   expect(screen.queryByRole("navigation", { name: "Contents" })).toBeNull();
 });
+
+it("names a human author by Paperclip id, or Someone when unknown", async () => {
+  reads["/issues/i1/documents/h"] = { id: "d3", key: "h", title: "H", body: "x", updatedByUserId: "pc-1", updatedAt: "2026-10-16T10:00:00Z", latestRevisionNumber: 1 };
+  reads["/agents"] = { agents: [] };
+  reads["/members"] = { members: [{ userId: "user_9", paperclipUserId: "pc-1", name: "Ada Lovelace" }] };
+  const { unmount } = render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "document", issue: "i1", key: "h" }} />);
+  expect(await screen.findByText(/Ada Lovelace · updated/)).toBeInTheDocument();
+  unmount();
+  reads["/members"] = undefined;
+  render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "document", issue: "i1", key: "h" }} />);
+  expect(await screen.findByText(/Someone · updated/)).toBeInTheDocument();
+});
+
+it("a locked document has no Edit action and says who locked it", async () => {
+  reads["/issues/i1/documents/l"] = { id: "d4", key: "l", title: "L", body: "x", lockedAt: "2026-10-16T10:00:00Z", lockedByAgentId: "a1", latestRevisionNumber: 1 };
+  reads["/agents"] = { agents: [{ id: "a1", name: "Growth" }] };
+  reads["/members"] = { members: [] };
+  render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "document", issue: "i1", key: "l" }} />);
+  expect(await screen.findByText(/locked by Growth/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+});

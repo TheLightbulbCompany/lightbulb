@@ -509,7 +509,7 @@ class CanonicalMessage(ContractModel):
     thread_root_message_id: uuid.UUID | None
     created_at: datetime
     run_id: str | None
-    via: Literal["lightbulb_mcp", "ideas", "front_desk"] | None = None
+    via: Literal["lightbulb_mcp", "ideas", "front_desk", "text"] | None = None
     # An agent reply's trigger message (the `to` edge Jev reads on agent lines); absent otherwise.
     in_reply_to: str | None = None
     # A mid-run progress line, not the run's reply (clients keep the run card); absent otherwise.
@@ -4028,7 +4028,7 @@ async def create_human_message(
     native_provider: str | None = None,
     native_hop: int | None = None,
     native_conditions: list[dict] | None = None,
-    via: Literal["lightbulb_mcp", "ideas", "front_desk"] | None = None,
+    via: Literal["lightbulb_mcp", "ideas", "front_desk", "text"] | None = None,
     author_override: dict | None = None,
     expected_room_revision: int | None = None,
     wake: bool = True,

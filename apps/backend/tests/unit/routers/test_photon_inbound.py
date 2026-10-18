@@ -331,3 +331,60 @@ def test_typing_skipped_without_a_line_user(client, seams):
     assert _post(client, _event(receivedBy={"handle": LINE})).json() == {"status": "delivered"}
     seams["send_typing"].assert_not_called()
     seams["mark_read"].assert_not_called()
+
+
+MEMBER_ID = "user_member"
+
+
+@pytest.fixture
+def member(seams, monkeypatch):
+    seams["get_by_address"].return_value = {**LINE_ROW, "member_phones": {CUSTOMER: MEMBER_ID}}
+    post = AsyncMock()
+    monkeypatch.setattr(ph.messaging, "create_human_message", post)
+    return post
+
+
+def test_member_text_is_posted_to_the_default_room_as_the_member(client, seams, member):
+    import uuid
+
+    from core.auth import AuthContext
+    from core.services import messaging
+
+    assert _post(client).json() == {"status": "member_routed"}
+    seams["put_message"].assert_awaited_once()
+    seams["mail_changed"].assert_awaited_once_with(OWNER_ID)
+    member.assert_awaited_once_with(
+        AuthContext(user_id=MEMBER_ID, org_id=OWNER_ID),
+        messaging.default_room_id(OWNER_ID),
+        messaging.CreateMessageRequest(
+            client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb-text|m1"),
+            text=f"do you open at 9?\n\n(sent by text from {CUSTOMER}; to text back: "
+            "/app/skills/lightbulb/scripts/lightbulb-text.sh send --reply "
+            f"{TEAM}/2026#m1)",
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+        ),
+        via="text",
+    )
+
+
+def test_member_text_never_wakes_the_front_desk(client, seams, member):
+    _post(client)
+    seams["deliver_to_agent"].assert_not_called()
+    seams["send_typing"].assert_not_called()
+    seams["mark_read"].assert_not_called()
+    seams["try_consume_stranger_wake"].assert_not_called()
+    seams["send_text"].assert_not_called()
+
+
+def test_member_post_failure_is_member_post_failed(client, seams, member):
+    member.side_effect = RuntimeError("not in room")
+    assert _post(client).json() == {"status": "member_post_failed"}
+    seams["deliver_to_agent"].assert_not_called()
+    seams["try_consume_stranger_wake"].assert_not_called()
+
+
+def test_unregistered_phone_is_a_customer_again(client, seams, member):
+    seams["get_by_address"].return_value = {**LINE_ROW, "member_phones": {"+19990000000": MEMBER_ID}}
+    assert _post(client).json() == {"status": "delivered"}
+    member.assert_not_called()

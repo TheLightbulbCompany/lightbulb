@@ -17,7 +17,12 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.observability.metrics import put_metric
 from core.services import text_lines
-from core.repositories.agent_email_repo import set_business_phone, set_thread_mode, text_line_for_owner
+from core.repositories.agent_email_repo import (
+    set_business_phone,
+    set_member_phone,
+    set_thread_mode,
+    text_line_for_owner,
+)
 from core.repositories.agent_mail_inbox_repo import get_message, has_sent_to, parse_reply_key, put_sent
 from core.services.agent_email import mail_changed
 from core.services import photon
@@ -142,7 +147,34 @@ async def get_line(auth: AuthContext = Depends(get_current_user)) -> dict:
         "agentId": line["agent_id"],
         "businessPhone": line.get("business_phone"),
         "humanThreads": list((line.get("human_threads") or {}).keys()),
+        "myPhone": next((p for p, uid in (line.get("member_phones") or {}).items() if uid == auth.user_id), None),
     }
+
+
+@router.put("/me/phone")
+async def put_my_phone(body: BusinessPhone, auth: AuthContext = Depends(get_current_user)):
+    if not re.fullmatch(r"\+[1-9]\d{6,14}", body.phone):
+        return JSONResponse(status_code=400, content={"status": "bad_phone"})
+    line = await text_line_for_owner(resolve_owner_id(auth))
+    if not line:
+        raise HTTPException(status_code=404, detail="no_line")
+    # One phone per member: drop any earlier one before saving the new.
+    for old, uid in (line.get("member_phones") or {}).items():
+        if uid == auth.user_id and old != body.phone:
+            await set_member_phone(line["address"], old, None)
+    await set_member_phone(line["address"], body.phone, auth.user_id)
+    return {"status": "ok"}
+
+
+@router.delete("/me/phone")
+async def delete_my_phone(auth: AuthContext = Depends(get_current_user)) -> dict:
+    line = await text_line_for_owner(resolve_owner_id(auth))
+    if not line:
+        raise HTTPException(status_code=404, detail="no_line")
+    for phone, uid in (line.get("member_phones") or {}).items():
+        if uid == auth.user_id:
+            await set_member_phone(line["address"], phone, None)
+    return {"status": "ok"}
 
 
 @router.post("/reply")

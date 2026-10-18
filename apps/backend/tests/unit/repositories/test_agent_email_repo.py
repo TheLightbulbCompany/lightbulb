@@ -396,3 +396,19 @@ async def test_delete_pending_line_is_conditional_and_reports_loss(monkeypatch):
     assert kwargs["ExpressionAttributeValues"] == {":pending": "text_pending"}
     table.delete_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "DeleteItem")
     assert await repo.delete_pending_line("o") is False
+
+
+async def test_set_member_phone_sets_and_removes(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.set_member_phone("+1555", "+15559998888", "user_1")
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"address": "+1555"}
+    assert kwargs["UpdateExpression"] == "SET member_phones.#p = :uid"
+    assert kwargs["ExpressionAttributeNames"] == {"#p": "+15559998888"}
+    assert kwargs["ExpressionAttributeValues"] == {":uid": "user_1"}
+    assert kwargs["ConditionExpression"] == "attribute_exists(address)"
+    await repo.set_member_phone("+1555", "+15559998888", None)
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["UpdateExpression"] == "REMOVE member_phones.#p"
+    assert "ExpressionAttributeValues" not in kwargs

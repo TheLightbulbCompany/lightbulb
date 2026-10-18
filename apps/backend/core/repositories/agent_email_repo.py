@@ -320,6 +320,22 @@ async def set_thread_mode(number: str, customer: str, mode: Literal["human", "ag
     await run_in_thread(_get_table().update_item, **kwargs)
 
 
+async def set_member_phone(number: str, phone: str, user_id: str | None) -> None:
+    """Register (``user_id``) or remove (``None``) a member's phone on the line row, so their texts
+    are posted to the main room as them. The ``member_phones`` map is created with the line."""
+    kwargs: dict = {
+        "Key": {"address": number},
+        "ConditionExpression": "attribute_exists(address)",
+        "ExpressionAttributeNames": {"#p": phone},
+    }
+    if user_id:
+        kwargs["UpdateExpression"] = "SET member_phones.#p = :uid"
+        kwargs["ExpressionAttributeValues"] = {":uid": user_id}
+    else:
+        kwargs["UpdateExpression"] = "REMOVE member_phones.#p"
+    await run_in_thread(_get_table().update_item, **kwargs)
+
+
 async def add_meeting(address: str, meeting_id: str) -> None:
     """Record a meeting (its room id) on the workspace's row, for the team inbox. A DynamoDB ``ADD``
     to a string set, so a replay is a no-op; ids are never removed. Best effort: the team-mail path

@@ -5,9 +5,11 @@ import { ApiError } from "@lightbulb/shared";
 
 const mockGet = vi.fn();
 const mockPost = vi.fn();
+const mockPut = vi.fn();
+const mockDel = vi.fn();
 const refresh = vi.fn();
 const billing = vi.hoisted(() => ({ price: 7 as number | null | undefined, frontDesk: false }));
-vi.mock("@/lib/api", () => ({ useApi: () => ({ get: mockGet, post: mockPost }) }));
+vi.mock("@/lib/api", () => ({ useApi: () => ({ get: mockGet, post: mockPost, put: mockPut, del: mockDel }) }));
 vi.mock("@/hooks/useBilling", () => ({
   useBilling: () => ({ account: { front_desk_price_usd: billing.price, front_desk: billing.frontDesk }, refresh }),
 }));
@@ -21,7 +23,7 @@ vi.mock("@/lib/shellNav", () => ({ replaceSearchParams: vi.fn(), navigateShell: 
 import { MailPanel } from "../MailPanel";
 
 const page = { address: "agents@acme.thelightbulb.company", meetings: [], messages: [], next: null };
-let line: { number: string } | null;
+let line: { number: string; myPhone?: string | null } | null;
 const assign = vi.fn();
 
 function renderMail() {
@@ -107,5 +109,29 @@ describe("MailPanel number", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Get a phone number/ }));
     await waitFor(() => expect(screen.queryByRole("button", { name: /Get a phone number/ })).toBeNull());
     expect(screen.queryByText(/400|unconfigured/)).toBeNull();
+  });
+
+  it("saves and removes the member's own phone", async () => {
+    line = { number: "+15551230000", myPhone: null };
+    mockPut.mockResolvedValue({ status: "ok" });
+    mockDel.mockResolvedValue({ status: "ok" });
+    renderMail();
+    const input = await screen.findByLabelText("Text the team from your phone");
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    fireEvent.change(input, { target: { value: "+15551234567" } });
+    line = { number: "+15551230000", myPhone: "+15551234567" };
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mockPut).toHaveBeenCalledWith("/agent-text/me/phone", { phone: "+15551234567" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(mockDel).toHaveBeenCalledWith("/agent-text/me/phone"));
+  });
+
+  it("explains a bad phone", async () => {
+    line = { number: "+15551230000", myPhone: null };
+    mockPut.mockRejectedValue(new ApiError(400, { status: "bad_phone" }));
+    renderMail();
+    fireEvent.change(await screen.findByLabelText("Text the team from your phone"), { target: { value: "555" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Use the form +1XXXXXXXXXX")).toBeInTheDocument();
   });
 });

@@ -52,6 +52,32 @@ function useCopy(text: string | undefined) {
   return { copied, copy };
 }
 
+/** Registers the member's own phone so a text from it posts to the main room as them. */
+function MyPhone({ phone }: { phone: string | null | undefined }) {
+  const api = useApi();
+  const { mutate } = useSWRConfig();
+  const [value, setValue] = useState(phone ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const run = async (call: () => Promise<unknown>) => {
+    setError(null);
+    try {
+      await call();
+      await mutate(isTextLineKey);
+    } catch (e) {
+      setError(e instanceof ApiError && e.status === 400 ? "Use the form +1XXXXXXXXXX" : "Could not save");
+    }
+  };
+  return <div className="mail-panel__myphone">
+    <label>
+      <span>Text the team from your phone</span>
+      <input type="tel" value={value} placeholder="+1XXXXXXXXXX" onChange={(e) => setValue(e.target.value)} />
+    </label>
+    <Button type="button" variant="ghost" size="sm" onClick={() => void run(() => api.put("/agent-text/me/phone", { phone: value.trim() }))}>Save</Button>
+    {phone && <Button type="button" variant="ghost" size="sm" onClick={() => void run(async () => { await api.del("/agent-text/me/phone"); setValue(""); })}>Remove</Button>}
+    {error && <span role="status" className="mail-panel__number">{error}</span>}
+  </div>;
+}
+
 function CopyButton({ text }: { text: string | undefined }) {
   const { copied, copy } = useCopy(text);
   return <Button type="button" variant="ghost" size="sm" aria-label={copied ? "Copied" : "Copy address"} onClick={() => void copy()}>
@@ -266,6 +292,7 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
 
   return <section ref={rootRef} className="mail-panel" aria-label="Mail" data-wide={wide || undefined}>
     {header}
+    {line.data?.number && <MyPhone key={line.data.myPhone ?? ""} phone={line.data.myPhone} />}
     {body}
   </section>;
 }

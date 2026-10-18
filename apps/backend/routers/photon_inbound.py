@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 
 import httpx
@@ -19,12 +20,14 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from core.auth import AuthContext
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories.agent_email_repo import get_by_address, text_line_by_photon_user
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, put_sent, reply_key
 from core.repositories.container_repo import try_consume_stranger_wake
 from core.services.agent_email import mail_changed, team_address
+from core.services import messaging
 from core.services.agent_mail_delivery import deliver_to_agent
 from core.services.agent_mail_inbound import stranger_key
 from core.services.photon import PhotonError, enabled, mark_read, send_text, send_typing
@@ -181,7 +184,7 @@ async def handle_photon_inbound(request: Request):
         customer = sent_by.handle or (f"photon:{sent_by.id}" if sent_by.id else "")
         if not customer:
             return _final("dropped_no_sender")
-        # Task 11: member check goes here
+        member_id = (line.get("member_phones") or {}).get(customer)
         address = await team_address(owner_id)
         if not address:
             return _final("dropped_no_address")
@@ -208,6 +211,28 @@ async def handle_photon_inbound(request: Request):
                 },
             )
             await mail_changed(owner_id)
+
+        if member_id:
+            # A registered member is a teammate, not a customer: their text is a room message as
+            # them, so listen modes and Jev pick the responder. Never falls through to the front desk.
+            key = reply_key(address, stored["received_key"])
+            try:
+                await messaging.create_human_message(
+                    AuthContext(user_id=member_id, org_id=owner_id),
+                    messaging.default_room_id(owner_id),
+                    messaging.CreateMessageRequest(
+                        client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-text|{obj.id}"),
+                        text=f"{text}\n\n(sent by text from {customer}; to text back: "
+                        f"/app/skills/lightbulb/scripts/lightbulb-text.sh send --reply {key})",
+                        reply_to_message_id=None,
+                        thread_root_message_id=None,
+                    ),
+                    via="text",
+                )
+            except Exception:  # noqa: BLE001 — e.g. not in the main room; the text stays in the inbox
+                logger.warning("photon_inbound: member post failed for %s", obj.id, exc_info=True)
+                return _final("member_post_failed")
+            return _final("member_routed")
 
         if customer in (line.get("human_threads") or {}):
             return _final("stored_human_thread")

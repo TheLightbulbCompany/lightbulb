@@ -177,3 +177,53 @@ def test_business_phone_rejects_non_e164(client, monkeypatch):
     r = client.post(f"/api/v1/agent-text/u/{OWNER}/business-phone", json={"phone": "+15551234567"})
     assert r.status_code == 200
     save.assert_awaited_once_with(LINE["address"], "+15551234567")
+
+
+def _me(monkeypatch, line, set_phone=None):
+    monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
+    monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=line))
+    set_phone = set_phone or AsyncMock()
+    monkeypatch.setattr(agent_text, "set_member_phone", set_phone)
+    return set_phone
+
+
+def _as(client, user_id):
+    from core.auth import AuthContext
+
+    client.app.dependency_overrides[agent_text.get_current_user] = lambda: AuthContext(user_id=user_id, org_id=OWNER)
+
+
+def test_me_phone_requires_e164(client, monkeypatch):
+    set_phone = _me(monkeypatch, LINE)
+    r = client.put("/api/v1/agent-text/me/phone", json={"phone": "555-1234"})
+    assert r.status_code == 400 and r.json() == {"status": "bad_phone"}
+    set_phone.assert_not_awaited()
+
+
+def test_me_phone_without_a_line_is_404(client, monkeypatch):
+    _me(monkeypatch, None)
+    assert client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"}).status_code == 404
+
+
+def test_me_phone_saves_for_the_caller(client, monkeypatch):
+    set_phone = _me(monkeypatch, LINE)
+    _as(client, "me")
+    r = client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"})
+    assert r.json() == {"status": "ok"}
+    set_phone.assert_awaited_once_with(LINE["address"], "+15551234567", "me")
+
+
+def test_me_phone_delete_removes_the_callers_phone(client, monkeypatch):
+    set_phone = _me(monkeypatch, {**LINE, "member_phones": {"+15550001111": "other", "+15551234567": "me"}})
+    _as(client, "me")
+    r = client.delete("/api/v1/agent-text/me/phone")
+    assert r.json() == {"status": "ok"}
+    set_phone.assert_awaited_once_with(LINE["address"], "+15551234567", None)
+
+
+def test_line_read_has_my_phone(client, monkeypatch):
+    _me(monkeypatch, {**LINE, "member_phones": {"+15551234567": "me"}})
+    _as(client, "me")
+    assert client.get("/api/v1/agent-text/line").json()["myPhone"] == "+15551234567"
+    _as(client, "you")
+    assert client.get("/api/v1/agent-text/line").json()["myPhone"] is None

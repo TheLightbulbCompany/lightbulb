@@ -134,7 +134,7 @@ export function useNewMailCount(): number {
 
 // ---- the workspace's text line (null while it has none) ----------------------
 
-export interface TextLine { number: string; agentId: string; businessPhone: string; humanThreads: string[] }
+export interface TextLine { number: string; agentId: string; businessPhone: string; humanThreads: string[]; myPhone?: string | null }
 const TEXT_LINE_URL = "/agent-text/line";
 export const isTextLineKey = (key: unknown) => Array.isArray(key) && key[0] === TEXT_LINE_URL;
 

@@ -51,6 +51,28 @@ export function getContainerTextOffset(
   };
 }
 
+const CONTEXT_WORDS = 8;
+const CANDIDATE_WORDS = 16;
+
+function words(text: string): string[] {
+  return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+/** How well `expected` (rendered words, nearest first) appears in order in
+ * `actual` (candidate words, nearest first): +1 per word found, -0.5 per
+ * candidate word skipped to reach it; stops at the first word not found. */
+function contextScore(expected: string[], actual: string[]): number {
+  let score = 0;
+  let cursor = 0;
+  for (const word of expected) {
+    const at = actual.indexOf(word, cursor);
+    if (at === -1) break;
+    score += 1 - 0.5 * (at - cursor);
+    cursor = at + 1;
+  }
+  return score;
+}
+
 function findAllOccurrences(haystack: string, needle: string): number[] {
   if (!needle) return [];
   const out: number[] = [];
@@ -96,13 +118,20 @@ export function computeAnchor(input: {
   const normalizedContainer = normalizeAnchorText(input.containerText);
   const rendered = findAllOccurrences(normalizedContainer, needle);
   if (rendered.length === 0) return null;
-  const ratio = input.startOffset / Math.max(1, input.containerText.length);
-  const renderedStart = pickClosest(rendered, Math.round(ratio * normalizedContainer.length));
+  // The selection's start in normalized space (not a ratio of raw lengths:
+  // long whitespace runs, e.g. an unrendered pipe table, skew a ratio).
+  const selectionStart = input.containerText.slice(0, input.startOffset).replace(/\s+/g, " ").trimStart().length;
+  const renderedStart = pickClosest(rendered, selectionStart);
   if (renderedStart == null) return null;
 
   // Find the same quote in the server's projection. The projection drops
   // `*`, `_`, `~` and turns `|` into a space even when they render literally
   // (escaped or mid-word), so retry with the quote in that shape.
+  // Known limits (the fork's projection): such a quote is stored without
+  // those characters, so its highlight may not draw; a quote with an HTML
+  // entity (`&amp;` stays raw in the projection) or one spanning table cells
+  // (rendered cells join with no separator, the projection puts a space)
+  // finds no match and gets no Comment button.
   const projection = projectMarkdownToText(input.markdown);
   let quote = needle;
   let candidates = findAllOccurrences(projection.text, quote);
@@ -110,14 +139,33 @@ export function computeAnchor(input: {
     quote = normalizeAnchorText(needle.replace(/[*_~]/g, "").replace(/\|/g, " "));
     candidates = quote ? findAllOccurrences(projection.text, quote) : [];
   }
-  if (candidates.length === 0) return null; // the server would refuse it
+  // No match, or over the server's 10,000-character quote cap: it would refuse it.
+  if (candidates.length === 0 || quote.length > 10000) return null;
 
-  // Same occurrence count → take the reader's k-th; otherwise the nearest by
+  // The projection also holds text the page never renders (image alt text,
+  // reference-link definitions, raw HTML, card/diagram fence source), so pick
+  // the candidate whose surrounding words match the words around the
+  // reader's selection.
+  const renderedBefore = words(normalizedContainer.slice(0, renderedStart)).slice(-CONTEXT_WORDS).reverse();
+  const renderedAfter = words(normalizedContainer.slice(renderedStart + needle.length)).slice(0, CONTEXT_WORDS);
+  const scored = candidates.map((start) => ({
+    start,
+    score:
+      contextScore(renderedBefore, words(projection.text.slice(0, start)).slice(-CANDIDATE_WORDS).reverse())
+      + contextScore(renderedAfter, words(projection.text.slice(start + quote.length)).slice(0, CANDIDATE_WORDS)),
+  }));
+  const best = Math.max(...scored.map((c) => c.score));
+  const sameCount = candidates.length === rendered.length;
+  // Counts differ and no context matches: guessing could anchor to hidden text.
+  if (!sameCount && best <= 0) return null;
+  const top = scored.filter((c) => c.score === best).map((c) => c.start);
+  // Tie: the reader's k-th occurrence when counts agree, else the nearest by
   // relative position.
+  const kth = sameCount ? candidates[rendered.indexOf(renderedStart)] : undefined;
   const projectionStart =
-    candidates.length === rendered.length
-      ? candidates[rendered.indexOf(renderedStart)]
-      : pickClosest(candidates, Math.round((renderedStart / Math.max(1, normalizedContainer.length)) * projection.text.length));
+    kth !== undefined && top.includes(kth)
+      ? kth
+      : pickClosest(top, Math.round((renderedStart / Math.max(1, normalizedContainer.length)) * projection.text.length));
   if (projectionStart == null) return null;
 
   const range = resolveProjectionRange(projection, projectionStart, projectionStart + quote.length);

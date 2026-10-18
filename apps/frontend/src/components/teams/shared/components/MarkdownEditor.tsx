@@ -49,7 +49,7 @@ const fenceLanguagePlugin = realmPlugin({
   },
 });
 
-/** "```&#x60;&#x60;&#x60;" (a fence whose info string is only escaped backticks) → "```". */
+/** "```&#x60;&#x60;&#x60;" (a fence whose info string is only escaped backticks) → "```". It also rewrites such a line inside a code block's content; harmless, nobody writes that. */
 const unbacktickFences = (markdown: string) => markdown.replace(/^([ \t]*`{3,})(?:&#x60;)+[ \t]*$/gm, "$1");
 
 /** A markdown editor over MDXEditor: headings, lists, quotes, rules, links, tables, code, images by URL. No upload, no mentions (later). A body it cannot parse (raw HTML, JSX) opens as plain markdown text, never dropped. */

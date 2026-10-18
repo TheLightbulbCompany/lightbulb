@@ -488,6 +488,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/frontend/src/components/messaging/openui/ (web renderers, press -> reply),
                                  apps/mobile/src/components/chat/openui/ (phone; lands with the mobile PR). SKILL.md: the "Ask with a card"
                                  non-negotiable and "How you reply in chat" (docs/research/2026-10-13-employee-voice-and-consumer-agents.md rung 1).
+  - Writing a document ...... references/documents.md
+                              <- owner complaint 2026-10-16 (a GTM document opened with "Observed … UTC",
+                                 "Decision", "Current-state audit" and task-id bullets); the pane header now carries
+                                 title/author/date/version so the body never repeats them; cards via references/ui.md.
   - Hook-token calls ........ SKILL.md (the non-negotiable) + references/money.md (the status tables)
                               <- /app/skills/lightbulb/scripts/lightbulb-api.sh — every OPENCLAW_HOOK_TOKEN call goes through a script on disk;
                                  apps/infra/hermes/plugins/lightbulb/__init__.py (_register_redaction) masks that header including $VAR refs,

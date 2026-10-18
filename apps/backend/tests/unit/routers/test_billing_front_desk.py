@@ -1,6 +1,6 @@
 """POST /billing/front-desk: add the add-on to a live subscription, or send to Checkout."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -9,6 +9,15 @@ from core.auth import AuthContext
 from routers import billing
 
 LIVE = {"owner_id": "org_1", "stripe_customer_id": "cus_1", "stripe_subscription_status": "active"}
+
+
+@pytest.fixture(autouse=True)
+def has_front_desk_agent(monkeypatch):
+    """The precheck reads the Paperclip row; default to a workspace that has the agent."""
+    row = MagicMock(starter_agent_ids={"customer_operations": "agent_co"})
+    resolve = AsyncMock(return_value=row)
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.resolve_owner_row", resolve)
+    return resolve
 
 
 def _admin():
@@ -47,7 +56,7 @@ async def test_post_on_trial_returns_checkout_url(monkeypatch):
 
     assert result == {"status": "checkout", "url": "https://checkout.test/cs_1"}
     checkout.assert_awaited_once_with(
-        owner_id="org_1", clerk_user_id="user_admin", plan="standard", return_to="app", front_desk=True
+        owner_id="org_1", clerk_user_id="user_admin", plan="workspace", return_to="app", front_desk=True
     )
     add.assert_not_awaited()
 
@@ -80,3 +89,52 @@ async def test_post_member_is_403():
     with pytest.raises(HTTPException) as exc:
         await billing.create_front_desk(billing.FrontDeskRequest(), auth=member)
     assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_post_without_customer_operations_is_409(monkeypatch, has_front_desk_agent):
+    has_front_desk_agent.return_value = MagicMock(starter_agent_ids={"ceo": "agent_ceo"})
+    monkeypatch.setattr(billing, "_get_billing_account", AsyncMock(return_value=LIVE))
+    add = AsyncMock()
+    checkout = AsyncMock()
+    with (
+        patch("core.services.billing_service.add_front_desk_item", new=add),
+        patch("core.services.billing_service.create_workspace_checkout", new=checkout),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await billing.create_front_desk(billing.FrontDeskRequest(), auth=_admin())
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "no_front_desk_agent"
+    add.assert_not_awaited()
+    checkout.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_on_trial_passes_the_real_plan_check(monkeypatch):
+    """The door's plan name must be one create_workspace_checkout accepts (not plan_retired)."""
+    from core.services import billing_service
+
+    row = {"owner_id": "org_1", "stripe_customer_id": "cus_1", "subscription_status": "trial_local"}
+    monkeypatch.setattr(billing, "_get_billing_account", AsyncMock(return_value=row))
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
+    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="claim"))
+    monkeypatch.setattr(billing_service.billing_repo, "release_checkout_slot", AsyncMock())
+    monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", AsyncMock())
+    monkeypatch.setattr(billing_service, "seats_for_workspace", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        billing_service.stripe.Subscription,
+        "list",
+        MagicMock(return_value=MagicMock(auto_paging_iter=lambda: iter([]))),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session,
+        "create",
+        MagicMock(return_value={"id": "cs_1", "url": "https://checkout.test/cs_1"}),
+    )
+
+    result = await billing.create_front_desk(billing.FrontDeskRequest(), auth=_admin())
+
+    assert result == {"status": "checkout", "url": "https://checkout.test/cs_1"}

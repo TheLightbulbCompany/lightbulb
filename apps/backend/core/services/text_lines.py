@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+import stripe
+
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, billing_repo
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -86,8 +88,11 @@ async def release_line(owner_id: str) -> str:
     return "released"
 
 
-async def sync_front_desk(owner_id: str, *, status: str, items: list[dict]) -> str:
-    has = any(_is_front_desk_item(i) for i in items)
+async def sync_front_desk(owner_id: str, *, subscription_id: str) -> str:
+    """Decide on the subscription as Stripe has it NOW, not as a possibly reordered event described it."""
+    subscription = stripe.Subscription.retrieve(subscription_id)
+    status = subscription.get("status")
+    has = any(_is_front_desk_item(i) for i in subscription["items"]["data"])
     if status in FRONT_DESK_LIVE_STATUSES and has:
         return await ensure_line(owner_id)
     if not has or status == "canceled":

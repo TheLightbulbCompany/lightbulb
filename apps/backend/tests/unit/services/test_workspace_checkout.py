@@ -59,6 +59,7 @@ async def test_workspace_checkout_has_one_recurring_item_and_no_promotion_codes(
         "plan": plan,
         "purpose": "workspace_subscription_v2",
         "return_to": "web",
+        "front_desk": "0",
     }
     assert "automatic_tax" not in kwargs
     assert "customer_update" not in kwargs
@@ -774,3 +775,25 @@ async def test_retired_plans_are_never_sold(monkeypatch, plan):
     monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
     with pytest.raises(billing_service.BillingServiceError, match="plan_retired"):
         await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan=plan)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_fd", "click_fd", "reused"), [("0", True, False), ("1", False, False), ("1", True, True)]
+)
+async def test_a_pending_session_is_reused_only_for_the_same_front_desk_choice(
+    monkeypatch, session_fd, click_fd, reused
+):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
+    pending = {
+        **_OPEN_BASE,
+        "metadata": {**_OPEN_BASE["metadata"], "plan": "workspace", "return_to": "web", "front_desk": session_fd},
+    }
+    stripe_calls = _with_pending_marker(monkeypatch, pending)
+
+    await billing_service.create_workspace_checkout(
+        owner_id="org_1", clerk_user_id="user_1", plan="workspace", front_desk=click_fd
+    )
+
+    assert stripe_calls["expire"].called is not reused
+    assert stripe_calls["create"].called is not reused

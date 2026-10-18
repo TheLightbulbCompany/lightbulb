@@ -343,7 +343,12 @@ async def create_workspace_checkout(
                 # A corrupt or foreign marker is not ours to disclose or
                 # expire. Failing closed avoids damaging another workspace.
                 raise BillingServiceError("pending_checkout_invalid")
-            if metadata.get("plan") == plan and (metadata.get("return_to") or "web") == return_to:
+            if (
+                metadata.get("plan") == plan
+                and (metadata.get("return_to") or "web") == return_to
+                # A plain-Team session is never handed to a front-desk click, nor the reverse.
+                and (metadata.get("front_desk") or "0") == str(int(front_desk))
+            ):
                 return {"checkout_url": pending["url"]}
             _expire_open_checkout_session(pending_id)
 
@@ -354,6 +359,7 @@ async def create_workspace_checkout(
             "plan": plan,
             "purpose": "workspace_subscription_v2",
             "return_to": return_to,
+            "front_desk": str(int(front_desk)),
         }
         bucket_start = checkout_bucket * 300
         # The add-on costs $100 the moment it exists: no Stripe trial with it.
@@ -630,7 +636,6 @@ async def add_front_desk_item(owner_id: str) -> str:
     Removal is Stripe's (billing portal / dashboard); the webhook releases the line.
     """
     from core.services.apple_iap import stripe_is_live
-    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
 
     price = settings.STRIPE_FRONT_DESK_PRICE_ID
     if not price:
@@ -641,17 +646,30 @@ async def add_front_desk_item(owner_id: str) -> str:
         return "not_live"
     with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
         subscription = stripe.Subscription.retrieve(sub_id)
-    if subscription.get("status") not in LIVE_SUBSCRIPTION_STATUSES:
+    status = subscription.get("status")
+    if status not in ("active", "trialing"):
         return "not_live"
     if subscription_item_on_price(subscription["items"]["data"], price):
         return "already"
+    key = f"front-desk-item:v1:{sub_id}"
+    if status == "trialing":
+        # The add-on carries no trial: the paid plan starts now, invoiced now.
+        with timing("stripe.api.latency", {"op": "subscription.modify"}):
+            stripe.Subscription.modify(
+                sub_id,
+                items=[{"price": price, "quantity": 1}],
+                trial_end="now",
+                proration_behavior="always_invoice",
+                idempotency_key=key,
+            )
+        return "added"
     with timing("stripe.api.latency", {"op": "subscription_item.create"}):
         stripe.SubscriptionItem.create(
             subscription=sub_id,
             price=price,
             quantity=1,
-            proration_behavior="create_prorations",
-            idempotency_key=f"front-desk-item:v1:{sub_id}",
+            proration_behavior="always_invoice",
+            idempotency_key=key,
         )
     return "added"
 

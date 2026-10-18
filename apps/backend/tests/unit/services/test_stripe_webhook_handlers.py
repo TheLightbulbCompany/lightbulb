@@ -1032,7 +1032,7 @@ async def test_a_stale_trialing_event_after_the_trial_is_ignored(mock_repo, prio
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["active", "canceled"])
+@pytest.mark.parametrize("status", ["active", "canceled", "past_due"])
 async def test_subscription_handler_calls_sync_front_desk_after_seats(mock_repo, monkeypatch, status):
     calls = MagicMock()
     seats = AsyncMock()
@@ -1044,6 +1044,48 @@ async def test_subscription_handler_calls_sync_front_desk_after_seats(mock_repo,
     event = _subscription_event(status=status)
     with patch.object(handlers, "stripe"):
         await handlers.handle_subscription_state(event, MagicMock())
-    front_desk.assert_awaited_once_with("org_x", status=status, items=event["data"]["object"]["items"]["data"])
+    front_desk.assert_awaited_once_with("org_x", subscription_id=event["data"]["object"]["id"])
     if status == "active":
         assert [c[0] for c in calls.mock_calls] == ["seats", "front_desk"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("stored", "released"), [("sub_x", True), ("sub_old", False), (None, False)])
+async def test_subscription_deleted_releases_the_line_only_for_the_current_subscription(facts_mock, stored, released):
+    billing_service = MagicMock()
+    order = []
+    release = AsyncMock(side_effect=lambda *_a: order.append("release"))
+    billing_service.cancel_subscription = AsyncMock(side_effect=lambda *_a: order.append("cancel"))
+    event = {
+        "id": "evt_del",
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"id": "sub_x", "customer": "cus_x", "metadata": {"owner_id": "org_x"}}},
+    }
+    with (
+        patch.object(handlers, "billing_repo") as repo,
+        patch("core.services.text_lines.release_line", release),
+        patch("core.services.hermes_provisioning.delete_workspace_runtime", AsyncMock()),
+        patch(
+            "core.services.paperclip_provisioning.build_paperclip_provisioning",
+            AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
+        ),
+        patch(
+            "core.services.entitlement_teardown.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "org_x", "subscription_status": "canceled"}),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "org_x",
+                "owner_type": "org",
+                "stripe_customer_id": "cus_x",
+                "stripe_subscription_id": stored,
+            }
+        )
+        repo.set_plan = AsyncMock()
+        await handlers.handle_subscription_deleted(event, billing_service)
+
+    assert release.await_count == int(released)
+    if released:
+        release.assert_awaited_once_with("org_x")
+        assert order == ["release", "cancel"]

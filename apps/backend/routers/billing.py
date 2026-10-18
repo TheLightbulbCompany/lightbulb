@@ -118,6 +118,11 @@ async def get_trial_recap(
     return {"show": True, **await trial_recap.recap(owner_id, int(trial_end), rows)}
 
 
+def _front_desk_price_usd() -> int | None:
+    """None while the Stripe price is unconfigured: nothing may advertise what checkout cannot bill."""
+    return settings.FRONT_DESK_PRICE_USD if settings.STRIPE_FRONT_DESK_PRICE_ID else None
+
+
 @router.get(
     "/prices",
     summary="The public plan price",
@@ -134,7 +139,7 @@ async def get_public_prices(response: Response):
         "workspace_price_usd": settings.WORKSPACE_PRICE_USD,
         "included_members": SEATS_INCLUDED,
         "seat_price_usd": settings.SEAT_PRICE_USD,
-        "front_desk_price_usd": settings.FRONT_DESK_PRICE_USD,
+        "front_desk_price_usd": _front_desk_price_usd(),
         "trial_days": billing_repo._TRIAL_LOCAL_DURATION_SECONDS // 86400,
         # The one billed copy is repo-root openrouter-pricing.json, fed in by CDK.
         "managed_markup": settings.OPENROUTER_MARKUP or None,
@@ -197,7 +202,7 @@ async def get_billing_account(
         ultra_price_usd=settings.ULTRA_PRICE_USD,
         seat_price_usd=settings.SEAT_PRICE_USD,
         front_desk=bool(account.get("front_desk")) if account else False,
-        front_desk_price_usd=settings.FRONT_DESK_PRICE_USD,
+        front_desk_price_usd=_front_desk_price_usd(),
         included_members=SEATS_INCLUDED,
         managed_markup=settings.OPENROUTER_MARKUP or None,
         subscription_source=(account.get("subscription_source") if account else None),
@@ -417,6 +422,13 @@ async def create_front_desk(
         create_workspace_checkout as create_checkout,
     )
 
+    # The add-on needs the Customer Operations agent; refuse before any billing call.
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    if not (getattr(row, "starter_agent_ids", None) or {}).get("customer_operations"):
+        raise HTTPException(status_code=409, detail="no_front_desk_agent")
+
     if apple_iap.stripe_is_live(account):
         outcome = await add_front_desk_item(owner_id)
         if outcome in ("added", "already"):
@@ -438,7 +450,7 @@ async def create_front_desk(
         result = await create_checkout(
             owner_id=owner_id,
             clerk_user_id=auth.user_id,
-            plan="standard",
+            plan="workspace",
             return_to=body.return_to,
             front_desk=True,
         )

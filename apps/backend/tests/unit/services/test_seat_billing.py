@@ -135,13 +135,48 @@ async def test_add_front_desk_item_creates_once(monkeypatch, stripe_calls):
         "subscription": "sub_1",
         "price": "price_fd",
         "quantity": 1,
-        "proration_behavior": "create_prorations",
+        "proration_behavior": "always_invoice",
         "idempotency_key": "front-desk-item:v1:sub_1",
     }
 
     _subscription(monkeypatch, [plan, {"id": "si_fd", "price": {"id": "price_fd"}, "quantity": 1}])
     assert await billing_service.add_front_desk_item("org_1") == "already"
     assert stripe_calls.create.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_add_front_desk_item_on_a_trial_ends_it_now_and_invoices(monkeypatch, stripe_calls):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
+    _row(monkeypatch, LIVE_ROW)
+    _subscription(
+        monkeypatch, [{"id": "si_plan", "price": {"id": "price_workspace"}, "quantity": 1}], status="trialing"
+    )
+    modify = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
+
+    assert await billing_service.add_front_desk_item("org_1") == "added"
+    modify.assert_called_once_with(
+        "sub_1",
+        items=[{"price": "price_fd", "quantity": 1}],
+        trial_end="now",
+        proration_behavior="always_invoice",
+        idempotency_key="front-desk-item:v1:sub_1",
+    )
+    stripe_calls.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["past_due", "incomplete", "unpaid", "paused"])
+async def test_add_front_desk_item_only_on_active_or_trialing(monkeypatch, stripe_calls, status):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
+    _row(monkeypatch, LIVE_ROW)
+    _subscription(monkeypatch, [], status=status)
+    modify = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
+
+    assert await billing_service.add_front_desk_item("org_1") == "not_live"
+    stripe_calls.create.assert_not_called()
+    modify.assert_not_called()
 
 
 @pytest.mark.asyncio

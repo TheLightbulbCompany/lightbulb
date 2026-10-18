@@ -89,13 +89,13 @@ async def test_provision_failure_releases_the_claim(m):
 
 async def test_sync_with_item_on_live_provisions(m, monkeypatch):
     monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: i.get("fd", False))
-    assert await text_lines.sync_front_desk("org_1", status="active", items=[{"fd": True}]) == "provisioned"
+    assert await _sync(monkeypatch, "active", [{"fd": True}]) == "provisioned"
 
 
 async def test_sync_without_item_releases_existing_line(m, monkeypatch):
     monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: False)
     m.line.return_value = {"address": "+15551230000", "agent_id": "agent_co"}
-    assert await text_lines.sync_front_desk("org_1", status="active", items=[{}]) == "released"
+    assert await _sync(monkeypatch, "active", [{}]) == "released"
     m.deprovision.assert_awaited_once_with("+15551230000")
     m.delete.assert_awaited_once_with("+15551230000")
     m.set_fd.assert_awaited_once_with("org_1", False)
@@ -104,19 +104,19 @@ async def test_sync_without_item_releases_existing_line(m, monkeypatch):
 
 async def test_sync_without_item_and_no_line_is_absent(m, monkeypatch):
     monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: False)
-    assert await text_lines.sync_front_desk("org_1", status="active", items=[]) == "absent"
+    assert await _sync(monkeypatch, "active", []) == "absent"
     m.deprovision.assert_not_awaited()
 
 
 async def test_sync_canceled_releases(m, monkeypatch):
     monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
     m.line.return_value = {"address": "+15551230000", "agent_id": "agent_co"}
-    assert await text_lines.sync_front_desk("org_1", status="canceled", items=[{}]) == "released"
+    assert await _sync(monkeypatch, "canceled", [{}]) == "released"
 
 
 async def test_sync_item_on_incomplete_expired_is_skipped(m, monkeypatch):
     monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
-    assert await text_lines.sync_front_desk("org_1", status="incomplete_expired", items=[{}]) == "skipped"
+    assert await _sync(monkeypatch, "incomplete_expired", [{}]) == "skipped"
 
 
 async def test_release_survives_sendblue_failure(m):
@@ -129,7 +129,7 @@ async def test_release_survives_sendblue_failure(m):
 
 async def test_sync_incomplete_does_not_provision(m, monkeypatch):
     monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
-    assert await text_lines.sync_front_desk("org_1", status="incomplete", items=[{}]) == "skipped"
+    assert await _sync(monkeypatch, "incomplete", [{}]) == "skipped"
     m.provision.assert_not_awaited()
     m.claim.assert_not_awaited()
 
@@ -137,7 +137,7 @@ async def test_sync_incomplete_does_not_provision(m, monkeypatch):
 async def test_sync_past_due_keeps_the_line(m, monkeypatch):
     monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
     m.line.return_value = {"address": "+15551230000", "agent_id": "agent_co"}
-    assert await text_lines.sync_front_desk("org_1", status="past_due", items=[{}]) == "skipped"
+    assert await _sync(monkeypatch, "past_due", [{}]) == "skipped"
     m.deprovision.assert_not_awaited()
     m.delete.assert_not_awaited()
 
@@ -164,3 +164,24 @@ async def test_put_failure_deprovisions_resets_claim_and_raises(m):
 async def test_release_absent_clears_flag(m):
     assert await text_lines.release_line("org_1") == "absent"
     m.set_fd.assert_awaited_once_with("org_1", False)
+
+
+def _stub_retrieve(monkeypatch, status, items):
+    monkeypatch.setattr(
+        text_lines.stripe.Subscription,
+        "retrieve",
+        lambda sid: {"id": sid, "status": status, "items": {"data": items}},
+    )
+
+
+async def _sync(monkeypatch, status, items):
+    _stub_retrieve(monkeypatch, status, items)
+    return await text_lines.sync_front_desk("org_1", subscription_id="sub_1")
+
+
+async def test_sync_decides_on_the_fresh_subscription(m, monkeypatch):
+    """The event said the item was present; Stripe now says it is gone: release."""
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: i.get("fd", False))
+    m.line.return_value = {"address": "+15551230000", "agent_id": "agent_co"}
+    assert await _sync(monkeypatch, "active", []) == "released"
+    m.provision.assert_not_awaited()

@@ -77,13 +77,18 @@ class TestGetBillingAccount:
     @pytest.mark.asyncio
     @patch("routers.billing.get_usage_summary")
     @patch("routers.billing.billing_repo")
-    async def test_account_reports_front_desk_flag(self, mock_repo, mock_get_summary, async_client):
+    async def test_account_reports_front_desk_flag(self, mock_repo, mock_get_summary, async_client, monkeypatch):
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
         mock_get_summary.return_value = {"total_spend": 0, "lifetime_spend": 0}
         row = {"owner_id": "org_test_456", "subscription_status": "active"}
         mock_repo.get_by_owner_id = AsyncMock(return_value={**row, "front_desk": True})
         data = (await async_client.get("/api/v1/billing/account")).json()
         assert data["front_desk"] is True
         assert data["front_desk_price_usd"] == 250
+        monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "")
+        assert (await async_client.get("/api/v1/billing/account")).json()["front_desk_price_usd"] is None
         mock_repo.get_by_owner_id = AsyncMock(return_value=row)
         assert (await async_client.get("/api/v1/billing/account")).json()["front_desk"] is False
 
@@ -260,6 +265,11 @@ class TestGetMyUsage:
 
 
 class TestStripeWebhook:
+    @pytest.fixture(autouse=True)
+    def _no_front_desk_sync(self, monkeypatch):
+        """The Front desk line sync reaches Stripe and DynamoDB; these tests are not about it."""
+        monkeypatch.setattr("core.services.text_lines.sync_front_desk", AsyncMock(return_value="absent"))
+
     @pytest.mark.asyncio
     @patch("core.services.stripe_webhook_handlers.billing_repo")
     @patch("routers.billing.stripe")
@@ -608,9 +618,10 @@ class TestStripeWebhook:
 
 
 @pytest.mark.asyncio
-async def test_public_prices_need_no_sign_in_and_match_checkout(async_client):
+async def test_public_prices_need_no_sign_in_and_match_checkout(async_client, monkeypatch):
     from core.config import settings
 
+    monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
     response = await async_client.get("/api/v1/billing/prices")
     assert response.status_code == 200
     assert response.json() == {
@@ -624,6 +635,18 @@ async def test_public_prices_need_no_sign_in_and_match_checkout(async_client):
 
 
 @pytest.mark.asyncio
-async def test_prices_include_front_desk(async_client):
+async def test_prices_include_front_desk(async_client, monkeypatch):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
     response = await async_client.get("/api/v1/billing/prices")
     assert response.json()["front_desk_price_usd"] == 250
+
+
+@pytest.mark.asyncio
+async def test_public_prices_have_no_front_desk_price_while_unconfigured(async_client, monkeypatch):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "")
+    response = await async_client.get("/api/v1/billing/prices")
+    assert response.json()["front_desk_price_usd"] is None

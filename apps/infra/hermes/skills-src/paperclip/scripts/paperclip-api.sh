@@ -290,27 +290,11 @@ require_valid_status() {
 #
 # Echoes the status to put in a create/subtask body ("" = omit the field).
 #
-# WHY this exists: Paperclip's create default is NOT neutral. An issue created
-# with an assignee and NO status is silently promoted to `todo`
-# (`resolveCreateIssueStatusDefault`, packages/shared/src/validators/issue.ts),
-# and assignee + any status other than `backlog` is exactly the pair that
-# dispatches an agent run — `queueIssueAssignmentWakeup` returns early ONLY for
-# "no assignee" or "backlog". Worse, the run isn't one-shot: a 30s reconciler
-# (`reconcileStrandedAssignedIssues`) re-picks assigned todo/in_progress issues
-# with no live execution path and re-dispatches them until they escalate to
-# `blocked`. Filing three assigned tasks in one heartbeat therefore fires three
-# unasked-for runs and then keeps firing them.
-#
-# So when an assignee is given and no status is, send an EXPLICIT `backlog`
-# rather than letting the server infer. The two mistakes are not symmetric:
-# a wrongly-backlogged task sits on the board until someone moves it, while a
-# wrongly-started one spends the owner's money and re-spends it every 30s.
-# "Assign this and start it now" stays fully available — it just has to be
-# asked for (`--status todo`) instead of falling out of an omission.
-#
-# Unassigned creates keep omitting `status`: the server's default there is
-# `backlog` too, so there is nothing to fix and no reason to freeze someone
-# else's default into this script.
+# Stock Paperclip's default (`resolveCreateIssueStatusDefault`): an assigned
+# create with no status is `todo`, so the assignee starts on it; an unassigned
+# one is `backlog`. This sends that `todo` EXPLICITLY rather than omitting it,
+# so a room-session create still takes the bind-then-start split below.
+# `--status backlog` remains the way to file assigned work for later.
 resolve_create_status() {
   local cmd="$1" status="$2" assignee="$3"
 
@@ -321,9 +305,7 @@ resolve_create_status() {
   fi
 
   if [[ -n "$assignee" ]]; then
-    printf '%s: --assignee with no --status; filing to backlog. Pass --status todo to dispatch a run now.\n' \
-      "$cmd" >&2
-    printf 'backlog'
+    printf 'todo'
     return 0
   fi
 

@@ -97,6 +97,13 @@ def test_an_assigned_active_create_is_filed_as_backlog_bound_and_only_then_start
 
 
 @helper
+def test_an_assigned_create_with_no_status_starts_in_todo_as_stock_does(tmp_path):
+    calls = _helper(tmp_path, ["create", "company-1", "--title", "Fix it", "--assignee", AGENT],
+                    responses=[[201, {"id": ISSUE, "status": "backlog"}], [200, {"id": ISSUE, "status": "todo"}]])
+    assert [c["method"] for c in calls] == ["POST", "PATCH"] and json.loads(calls[1]["body"]) == {"status": "todo"}
+
+
+@helper
 def test_a_create_that_cannot_wake_anyone_is_sent_as_asked(tmp_path):
     calls = _helper(tmp_path, ["create", "company-1", "--title", "Later", "--assignee", AGENT, "--status", "backlog"],
                     responses=[[201, {"id": ISSUE, "status": "backlog"}]])

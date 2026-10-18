@@ -82,15 +82,21 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
      is its workspace, NOT the skill root, so relative `scripts/...` commands
      fail with "not found" and the first-run kickoff silently loses its board
      writes. Keep paths absolute when re-vendoring.
-  6. EXPLICIT create status (SKILL.md "Creating work for someone else" + the
-     create/subtask rows in references/hot-routes.md): paperclip-api.sh sends an explicit `backlog` when a create
-     passes --assignee with no --status, instead of letting the server pick.
-     Paperclip's own default promotes that case to `todo`
-     (resolveCreateIssueStatusDefault), and assignee + non-backlog is exactly
-     what dispatches an agent run — then a 30s reconciler re-dispatches it
-     until it escalates to `blocked`. Upstream's docs are silent on this, so
-     an agent filing a few assigned tasks in one heartbeat starts a run storm.
-     Keep both the helper default and the doc wording on re-vendor.
+  6. Create status (SKILL.md "Creating work for someone else" + the
+     create/subtask rows in references/hot-routes.md): paperclip-api.sh sends
+     an explicit `todo` when a create passes --assignee with no --status — the
+     stock default (resolveCreateIssueStatusDefault), sent explicitly so a
+     room-session create still takes the bind-then-start split. Owner ruling
+     2026-10-18: asked-for work starts; `backlog` is for parking on purpose.
+     It replaced a `backlog` default that left tasks filed from chat sitting
+     unstarted. Keep the helper default and the doc wording on re-vendor.
+  6a. "Telling the person about task work" (SKILL.md; heartbeat.md webchat
+     bullet; the CEO checklist's "Room posts" paragraph, mirrored in
+     backend core/services/heartbeat_checklist.py): owner ruling 2026-10-18 —
+     no progress posts in rooms; a task is mentioned when done, when it needs
+     the person, or when asked, folded into the conversation it came from;
+     self-started work posts one result message. The bridge's BOUND_WAKE_STEER
+     note (bridge/turn.py) says the same to a mid-turn wake. Lightbulb-only.
   7. Webchat capability section (summarised in SKILL.md; full rules in
      references/heartbeat.md): upstream
      documents only the heartbeat worldview; Lightbulb owners drive agents from a

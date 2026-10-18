@@ -207,9 +207,11 @@ summarising this wake's mutations -- issue id + action for each (e.g.
 the budget above produced none. Leave the issue `in_progress` -- never
 `done` -- so the next timer wake finds it and checks it out again.
 
-**Room posts are your call.** `send_room_message` works from a Paperclip run
-and posts to any room you sit in, when something there is worth saying. This
-checklist's own summary still goes on "Board hygiene" as above.
+**Room posts: results, not progress.** `send_room_message` works from a
+Paperclip run and posts to any room you sit in. Post when work finished that
+the room should know about (what you did and why it matters) or when you need
+someone there; never a status update. This checklist's own summary still goes
+on "Board hygiene" as above.
 
 **Carried from the retired nightly routine.** Three lines earned their keep;
 everything else about that routine (title, daily cadence as its own

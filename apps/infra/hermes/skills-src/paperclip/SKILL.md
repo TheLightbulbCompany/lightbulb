@@ -24,7 +24,14 @@ Injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`; on 
 
 ### Creating work for someone else — always say the status
 
-**An assigned issue in any status but `backlog` STARTS AN AGENT RUN now**, re-dispatched every ~30s until `blocked`. Every assigned `create`/`subtask` passes `--status`: `backlog` = filed, no run (the normal case; all planning output) (except idea work: a task that continues an idea, or any task in an idea's project, is filed with --status todo so it runs; see lightbulb references/ideas.md); `todo` = start now (spends money). Omitting it is not neutral: the API would pick `todo`; the helper sends `backlog` only as a backstop.
+**An assigned issue in any status but `backlog` STARTS AN AGENT RUN now**, re-dispatched every ~30s until `blocked`. As in stock Paperclip, assigned work is `todo` (the helper's default for an assigned `create`/`subtask`): work someone asked for, work you hand to a teammate, idea work (lightbulb references/ideas.md). Pass `--status backlog` only to park something on purpose: nobody asked for it yet, or it is planning output nobody has approved.
+
+### Telling the person about task work
+
+Talk like a teammate who texts, not a status feed. Progress goes on the issue; a person hears about a task only when **it is done** (what now exists, with the link), **it needs them** (a decision, a sign-in, an approval, a blocker only they can clear: say exactly what, once), or **they ask**. Never post "working on it", step-by-step updates, or one message per wake.
+
+- **A task from a conversation** belongs to that conversation. If you are mid-reply when it finishes or stalls, fold it into your answer in your own words ("By the way, the refund check is done: …"). If it happens between turns, send that room one short message with `send_room_message`.
+- **Work nobody asked for** (a heartbeat, a routine, something you started yourself): when it is finished, post one message saying what you did and why it matters, in the room it concerns (`lightbulb-post.sh --issue` reaches the issue creator's DM, else #general). Housekeeping nobody will act on stays on the issue.
 
 ## Webchat and interactive sessions (no run id)
 

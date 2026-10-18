@@ -227,6 +227,9 @@ export interface IssueDocument {
   format?: string | null;
   body?: string | null;
   updatedAt?: string | null;
+  latestRevisionId?: string | null;
+  latestRevisionNumber?: number | null;
+  updatedByAgentId?: string | null;
 }
 
 /** A binary attachment from `GET /teams/issues/{id}/attachments`. Content
@@ -620,6 +623,7 @@ export function useTeamsIssue(issueId: string | undefined) {
   const writingRef = useRef<Set<string>>(new Set());
   const postingRef = useRef(false);
   const creatingRef = useRef(false);
+  const savingDocRef = useRef(false);
   // Per-approval in-flight latch for the issue-detail approve/reject actions.
   const decidingRef = useRef<Set<string>>(new Set());
   // Once-per-mount latch for the open-marks-read write.
@@ -904,6 +908,40 @@ export function useTeamsIssue(issueId: string | undefined) {
     [config, issueId, load],
   );
 
+  // Save a document edit, then refetch. Ref-latched. Never returns without a
+  // save having happened: every failure throws, so the edit sheet keeps the
+  // draft. `baseRevisionId` is the revision the person OPENED, passed in by the
+  // caller; a reload while the sheet is open must not move it. A conflict also
+  // reloads, so the section behind the sheet shows the new revision and author.
+  const updateDocument = useCallback(
+    async (
+      key: string,
+      title: string,
+      body: string,
+      changeSummary: string,
+      baseRevisionId: string | null,
+    ) => {
+      if (!issueId || savingDocRef.current) throw new Error("Document save not started");
+      savingDocRef.current = true;
+      try {
+        await updateIssueDocument(config, issueId, key, {
+          title,
+          format: "markdown",
+          body,
+          changeSummary,
+          baseRevisionId,
+        });
+      } catch (err) {
+        if (isDocumentConflict(err)) await load();
+        throw err;
+      } finally {
+        savingDocRef.current = false;
+      }
+      await load();
+    },
+    [config, issueId, load],
+  );
+
   // Approve / reject an approval linked to THIS issue. Optimistically flip the
   // row's status to its resolved value (which hides its Approve/Reject buttons —
   // `isApprovalActionable` goes false), write, then reconcile via refetch. On
@@ -1125,6 +1163,7 @@ export function useTeamsIssue(issueId: string | undefined) {
     setDescription,
     addComment,
     createChild,
+    updateDocument,
     approveApproval: approveIssueApproval,
     rejectApproval: rejectIssueApproval,
     acceptInteraction,
@@ -1410,6 +1449,43 @@ export async function createSubIssue(
     input,
   );
   return (res ?? {}) as CreatedIssue;
+}
+
+export interface UpdateDocumentInput {
+  title: string;
+  format: "markdown";
+  body: string;
+  changeSummary: string;
+  /** The revision the person opened; the server rejects a stale save with 409. */
+  baseRevisionId: string | null;
+}
+
+/** A stale save: HTTP 409, or a conflict/lock code or message on the error. */
+export function isDocumentConflict(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return false;
+  if (err.status === 409) return true;
+  const b = (err.body ?? {}) as { code?: unknown; error?: unknown; message?: unknown };
+  return [b.code, b.error, b.message, err.message].some(
+    (v) => typeof v === "string" && /conflict|locked/i.test(v),
+  );
+}
+
+/** The change summary the web writes too: "Edited by <name>", "You" when unknown. */
+export function documentChangeSummary(user?: { fullName?: string | null; firstName?: string | null } | null): string {
+  return `Edited by ${user?.fullName || user?.firstName || "You"}`;
+}
+
+/** PUT /teams/issues/{issueId}/documents/{key} — save a new revision. */
+export async function updateIssueDocument(
+  config: PlatformAdapter,
+  issueId: string,
+  key: string,
+  input: UpdateDocumentInput,
+): Promise<void> {
+  await createApiClient(config).put(
+    `/teams/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}`,
+    input,
+  );
 }
 
 // ---------------------------------------------------------------------------

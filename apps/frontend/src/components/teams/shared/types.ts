@@ -1931,9 +1931,75 @@ export interface AttentionItem {
   approval?: Approval | null;
   /** BFF-hydrated: the full interaction row (`issue_thread_interaction`). */
   interaction?: IssueThreadInteraction | null;
+  // Desk fields (upstream AttentionItem, fork v2026.1012.0-isol8.4). Optional so
+  // a feed built before them, and older fixtures, still type-check.
+  /** Key for `/inbox-dismissals` (dismiss / snooze / restore). Contains ':'. */
+  dismissalKey?: string;
+  /** Present on `includeDismissed=true` reads when the item is dismissed or snoozed. */
+  dismissal?: AttentionItemDismissal | null;
+  /** `today` | `this_week` | `whenever` | `YYYY-MM-DD`. */
+  decideBy?: string | null;
+  decideByAttribution?: AttentionTriageAttribution | null;
+  snoozedUntil?: string | null;
+  /** Server escalation order; lower is more urgent. */
+  rank?: number;
+  /** Idle past retention: the item belongs on the Aging shelf, not the desk. */
+  shelf?: boolean;
+  decisionVerbs?: AttentionDecisionVerb[];
+  inlineResolvable?: boolean;
+  detail?: AttentionItemDetail | null;
+  /** Set for `issue_thread_interaction` rows only. Typed loosely here; the
+   *  audience line that reads it is ported separately. */
+  resolverAudience?: Record<string, unknown> | null;
 }
 
+export interface AttentionDecisionVerb {
+  id: string;
+  label: string;
+  description: string | null;
+}
+
+export interface AttentionItemDismissal {
+  kind: "dismiss" | "snooze";
+  dismissedAt: string;
+  snoozedUntil: string | null;
+  isActive: boolean;
+}
+
+export interface AttentionTriageAttribution {
+  type: "agent" | "user";
+  agentId: string | null;
+  agentName: string | null;
+  userId: string | null;
+  runId: string | null;
+  responsibleUserId: string | null;
+  updatedAt: string;
+}
+
+type AttentionDetailImages = { images?: { assetId: string; alt?: string | null }[] };
+
+export type AttentionItemDetail = AttentionDetailImages & (
+  | { kind: "approval"; approvalType: string; summaryExcerpt: string | null }
+  | { kind: "plan_approval"; issueTitle: string | null; planTitle: string | null; summaryExcerpt: string | null }
+  | { kind: "confirmation"; promptExcerpt: string | null }
+  | { kind: "questions"; questionCount: number; firstQuestionText: string | null }
+  | { kind: "suggested_tasks"; taskCount: number; firstTaskTitle: string | null }
+  | { kind: "checkbox_confirmation"; optionCount: number; promptExcerpt: string | null }
+  | { kind: "item_verdicts"; itemCount: number; promptExcerpt: string | null }
+  | { kind: "failed_run"; agentName: string | null; failureReasonExcerpt: string | null }
+  | { kind: "agent_error"; agentName: string | null; failureReasonExcerpt: string | null }
+  | {
+      kind: "blocker";
+      blockingIssue: { id: string | null; identifier: string | null; title: string | null } | null;
+      blockedTaskCount?: number;
+    }
+  | { kind: "budget"; observedPercent: number; amountObserved: number; amountLimit: number }
+  | { kind: "generic"; summaryExcerpt: string | null }
+);
+
 export interface AttentionFeedResponse {
+  /** Server clock at feed time: the desk's shelves and idle labels use it. */
+  generatedAt?: string;
   items?: AttentionItem[];
   /** Computed upstream BEFORE pagination — safe to render as a badge. */
   totalCount?: number;

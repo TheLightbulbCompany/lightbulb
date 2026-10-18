@@ -5,11 +5,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActivityItem } from "@lightbulb/shared";
 import { ForYou, type ForYouProps } from "../ForYou";
 import type { ForYouFilter } from "../activityPage";
-import { approval, ask, attention, loginAsk, maya, message, runGroup } from "./fixtures";
+import { approval, ask, assigned, attention, loginAsk, maya, message, runGroup } from "./fixtures";
 
 const wakeAgent = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/components/teams/inbox/hooks/useAgentWake", () => ({ useAgentWake: () => ({ wakeAgent }) }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
+vi.mock("@/components/teams/inbox/AttentionDesk", () => ({
+  AttentionDesk: () => <div data-testid="attention-desk">Attention desk</div>,
+}));
 vi.mock("@/components/teams/inbox/DecisionResolver", () => ({
   DecisionResolver: ({ decisionId }: { decisionId: string }) => <div>Decision card {decisionId}</div>,
 }));
@@ -78,7 +81,9 @@ describe("ForYou", () => {
     await userEvent.click(chip("Mentions"));
     expect(rows()).toEqual(["mention:m1"]);
     await userEvent.click(chip("Needs you"));
-    expect(rows()).toEqual(["paperclip:approval:a1"]);
+    // The approval is on the attention desk now, not a row.
+    expect(rows()).toEqual([]);
+    expect(screen.getByTestId("attention-desk")).toBeInTheDocument();
     // Re-picking the selected chip changes nothing (no history entry).
     onFilter.mockClear();
     await userEvent.click(chip("Needs you"));
@@ -88,7 +93,22 @@ describe("ForYou", () => {
   it("starts on the chip the link names", () => {
     setup({ activityItems: [approval, message("m1")], filter: "needs-you" });
     expect(chip("Needs you")).toHaveAttribute("aria-pressed", "true");
-    expect(rows()).toEqual(["paperclip:approval:a1"]);
+    expect(screen.getByTestId("attention-desk")).toBeInTheDocument();
+  });
+
+  it("Needs you renders the desk, other filters unchanged", async () => {
+    setup({ activityItems: [approval, message("m1"), assigned, loginAsk], attentionItems: [attention("x2", "blocker_attention")],
+      failedRuns: [runGroup("g1")], filter: "needs-you" });
+    // The desk carries approvals, attention items and failed runs; the rows keep the asks it does not.
+    expect(screen.getByTestId("attention-desk")).toBeInTheDocument();
+    expect(rows()).toEqual(["paperclip:assigned_issue:i9", "login:abc"]);
+    expect(screen.queryByText("You're all caught up.")).not.toBeInTheDocument();
+    await userEvent.click(chip("All"));
+    expect(screen.queryByTestId("attention-desk")).not.toBeInTheDocument();
+    expect(rows()).toEqual(["mention:m1", "paperclip:approval:a1", "paperclip:assigned_issue:i9", "login:abc", "attention:x2", "failed_run:g1"]);
+    await userEvent.click(chip("Mentions"));
+    expect(screen.queryByTestId("attention-desk")).not.toBeInTheDocument();
+    expect(rows()).toEqual(["mention:m1"]);
   });
 
   it("Unread hides read messages and keeps open asks", async () => {

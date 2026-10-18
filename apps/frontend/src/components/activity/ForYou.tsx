@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActivityAction, ActivityItem, ActivityLinkKind } from "@lightbulb/shared";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { DecisionResolver } from "@/components/teams/inbox/DecisionResolver";
+import { AttentionDesk } from "@/components/teams/inbox/AttentionDesk";
 import { useRunRetry } from "@/components/teams/inbox/FailedRunRow";
 import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { AttentionItem, CompanyAgent } from "@/components/teams/shared/types";
@@ -119,7 +120,9 @@ export function ForYou(props: ForYouProps) {
         onRunAction={props.onRunAction} people={props.people} onDismissRuns={props.onDismissRuns}
         onNavigate={(target) => open(entry.id, target)} />)}
     </ul>}
-    {entries.length === 0 && (loading
+    {/* Needs you: the attention desk carries its own loading and all-clear. */}
+    {filter === "needs-you" && <AttentionDesk agents={agents} />}
+    {entries.length === 0 && filter !== "needs-you" && (loading
       ? <p role="status" className="for-you__empty">Loading…</p>
       // The all-clear only when every source answered and nothing older is left to load.
       : !incomplete && !hasMore && <p className="for-you__empty">{unreadOnly ? "Nothing unread." : "You're all caught up."}</p>)}

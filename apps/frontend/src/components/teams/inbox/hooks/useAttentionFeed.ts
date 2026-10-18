@@ -13,6 +13,13 @@ import type {
 /** The full SWR cache key, for mutate() after resolving an item. */
 export const ATTENTION_KEY = `/teams${teamsQueryKeys.attention()}`;
 
+/** Every attention read: this badge key and any query-stringed variant (the
+ *  Activity desk's `?includeDismissed=true&all=true`). Pass to mutate() after a
+ *  change that moves an item, so the badge and the desk refresh together. */
+export function isAttentionKey(key: string): boolean {
+  return key === ATTENTION_KEY || key.startsWith(`${ATTENTION_KEY}?`);
+}
+
 /** The source kinds where work does not move until a HUMAN does something.
  *
  *  That is the line this list draws, and it is drawn from the owner's own
@@ -126,8 +133,9 @@ export function useAttentionFeed(): UseAttentionFeedResult {
     count: sourceCount ?? items.length,
     isLoading,
     isError: Boolean(error),
+    // Every attention key, so Retry and a resolved item also refresh the desk.
     refresh: () => {
-      void mutate(ATTENTION_KEY);
+      void mutate(isAttentionKey);
     },
   };
 }

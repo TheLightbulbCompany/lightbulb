@@ -175,9 +175,14 @@ export function forYouEntries(
 }
 
 /**
- * What For you shows: everything, or one slice. `needs-you` is the actionable part
- * (decisions, tasks, failed runs, requests: no plain messages); the others are one kind of
- * message. The same values back the filter chips and the `?panel=activity&filter=` link.
+ * What For you shows: everything, or one slice. `needs-you` is the actionable part; the
+ * others are one kind of message. The same values back the filter chips and the
+ * `?panel=activity&filter=` link.
+ *
+ * Under `needs-you` the attention desk (stock Paperclip's, with its shelves, snooze and
+ * dismiss) lists every Paperclip decision, approval, question and failed run, so the rows
+ * here keep only the asks the desk does not carry: assigned tasks, session, login and
+ * extension asks.
  */
 export type ForYouFilter = "all" | "needs-you" | "mentions" | "threads" | "dms";
 export const FOR_YOU_FILTERS: readonly { id: ForYouFilter; label: string }[] = [
@@ -196,10 +201,17 @@ export function isForYouFilter(value: unknown): value is ForYouFilter {
  * One chip's slice. `unreadOnly` (the Unread toggle) keeps unread messages and every
  * needs-you item: an open ask is still waiting on you after you have seen it.
  */
+/** Shown by the attention desk under Needs you, so not repeated as a row there. */
+function onAttentionDesk(entry: ForYouEntry): boolean {
+  if (entry.source.type !== "activity") return true;
+  const item = entry.source.item;
+  return item.kind === "paperclip" && (item.subtype === "approval" || item.subtype === "interaction");
+}
+
 export function filterForYou(entries: readonly ForYouEntry[], filter: ForYouFilter, unreadOnly = false): ForYouEntry[] {
   const shown = unreadOnly ? entries.filter((entry) => entry.unread || entry.verb !== "reply") : entries;
   switch (filter) {
-    case "needs-you": return shown.filter((entry) => entry.verb !== "reply");
+    case "needs-you": return shown.filter((entry) => entry.verb !== "reply" && !onAttentionDesk(entry));
     case "mentions": return shown.filter((entry) => entry.kind === "mention");
     case "threads": return shown.filter((entry) => entry.kind === "thread_reply");
     case "dms": return shown.filter((entry) => entry.kind === "dm");

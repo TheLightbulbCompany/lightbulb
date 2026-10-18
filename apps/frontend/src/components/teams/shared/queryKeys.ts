@@ -65,6 +65,12 @@ export const teamsQueryKeys = {
   // count it carries is company-wide (computed upstream before pagination),
   // so every consumer shares one cache entry and one number.
   attention: () => `/attention`,
+  // The attention desk (Activity -> Needs you): the whole feed, dismissed and
+  // snoozed rows included for its curtains. A separate key so those rows never
+  // reach the badge above, which reads `attention()`. `all` is never combined
+  // with limit/cursor (the BFF 422s).
+  attentionDesk: () => `/attention?includeDismissed=true&all=true`,
+  inboxDismissals: () => `/inbox-dismissals`,
   runs: { detail: (id: string) => `/runs/${id}` },
   members: () => `/members`,
   // `projects()` returns the company project list. Kept callable for the

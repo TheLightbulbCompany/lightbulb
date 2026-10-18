@@ -8,9 +8,9 @@ const APPROVALS_KEY = "/teams/approvals";
 const DASHBOARD_KEY = "/teams/dashboard"; // pending-approvals tile
 
 /**
- * Approve / reject a pending approval. Both bodies are whitelisted by the BFF
- * (extra="forbid"): approve accepts an optional {note} (not surfaced in v1 —
- * one-click approve), reject requires {reason}. On success we revalidate the
+ * Approve / reject / request revision on a pending approval. Bodies are
+ * whitelisted by the BFF (extra="forbid"): approve accepts an optional {note},
+ * reject requires {reason}, request-revision an optional {decisionNote}. On success we revalidate the
  * band's approvals source + the dashboard tile; the approved/rejected item
  * leaves the pending list on refetch.
  */
@@ -29,8 +29,8 @@ export function useApprovalMutations() {
   }, [mutate]);
 
   const approve = useCallback(
-    async (approvalId: string) => {
-      await post(`/approvals/${approvalId}/approve`, {});
+    async (approvalId: string, note?: string) => {
+      await post(`/approvals/${approvalId}/approve`, note ? { note } : {});
       revalidate();
     },
     [post, revalidate],
@@ -44,5 +44,13 @@ export function useApprovalMutations() {
     [post, revalidate],
   );
 
-  return { approve, reject };
+  const requestRevision = useCallback(
+    async (approvalId: string, note?: string) => {
+      await post(`/approvals/${approvalId}/request-revision`, note ? { decisionNote: note } : {});
+      revalidate();
+    },
+    [post, revalidate],
+  );
+
+  return { approve, reject, requestRevision };
 }

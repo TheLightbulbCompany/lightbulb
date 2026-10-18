@@ -152,6 +152,10 @@ async def handle_photon_inbound(request: Request):
         raw = await request.body()
         bad = standard_webhooks.verify(request.headers, raw, settings.PHOTON_WEBHOOK_SECRET)
         if bad:
+            # Fail closed. The header names are pinned at the first real delivery (plan 4 Task 10); a refusal
+            # logs the names Photon actually sent, never their values, so that pin is one log read.
+            names = sorted(request.headers.keys())
+            logger.warning("photon_inbound: signature refused (%s); header names: %s", bad, names)
             return _final("stale_timestamp" if bad == "stale" else "bad_signature", code=401)
         try:
             event = PhotonEvent.model_validate_json(raw)

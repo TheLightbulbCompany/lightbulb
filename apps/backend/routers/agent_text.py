@@ -24,6 +24,7 @@ from core.services import text_lines
 from core.repositories import billing_repo
 from core.repositories.agent_email_repo import (
     drop_member_phones,
+    pending_line_for_owner,
     put_phone_code,
     set_business_phone,
     set_disclosed,
@@ -191,7 +192,8 @@ async def _recheck(owner_id: str) -> str:
 async def get_line(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     line = await text_line_for_owner(owner_id)
-    if not line:
+    # A pending row beside a line is a surplus line whose release is not done: this read retries it.
+    if not line or await pending_line_for_owner(owner_id):
         try:
             outcome = await text_lines.complete_pending(owner_id)
             if outcome == "failed":

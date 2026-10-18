@@ -375,6 +375,21 @@ async def test_conflicting_existing_line_releases_the_extra_one(m):
     m.set_fd.assert_not_awaited()
 
 
+async def test_a_surplus_release_not_done_keeps_the_pending_row(m):
+    """The pending row is the only record of the surplus line; it stays until Photon has released it."""
+    m.pending.return_value = PENDING
+    m.line.return_value = {**LINE_ROW, "photon_resource_id": "res_other"}
+    m.release.return_value = {"operationId": "op_r", "state": "running"}  # a 202 release still running
+    assert await text_lines.complete_pending("org_1") == "provisioned"
+    m.release.assert_awaited_once_with("res_1")
+    m.del_pending.assert_not_awaited()
+    m.metric.assert_any_call("text_line.surplus_release_deferred")
+    m.release.return_value = None
+    m.release.side_effect = photon.PhotonError(500, "http_500")
+    assert await text_lines.complete_pending("org_1") == "provisioned"
+    m.del_pending.assert_not_awaited()
+
+
 async def test_read_path_second_failure_is_absent_without_looping(m, monkeypatch):
     monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
     _stub_retrieve(monkeypatch, "active", [{}])

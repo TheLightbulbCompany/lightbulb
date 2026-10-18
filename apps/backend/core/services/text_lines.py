@@ -154,14 +154,12 @@ async def complete_pending(owner_id: str) -> str:
     if line and line.get("photon_resource_id") != resource_id:
         # The one definite conflict: the owner already has a different line, so this one is surplus.
         try:
-            await photon.release_line(resource_id)
-        except Exception:
-            logger.warning(
-                "Could not release surplus Photon line %s (owner %s): it is billing, release it by hand",
-                resource_id,
-                owner_id,
-                exc_info=True,
-            )
+            await _release_resource(resource_id)
+        except Exception:  # noqa: BLE001 — still billing; the row is the only record of it, so it stays
+            # The next look retries: a panel open (get_line settles a pending row beside a line), a cancel, a wipe.
+            logger.warning("Surplus Photon line %s (owner %s) not released yet", resource_id, owner_id, exc_info=True)
+            put_metric("text_line.surplus_release_deferred")
+            return "provisioned"
         await agent_email_repo.delete_pending_line(owner_id, operation_id=op_id)
         put_metric("text_line.surplus_released")
         return "provisioned"

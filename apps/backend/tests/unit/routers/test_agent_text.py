@@ -183,6 +183,18 @@ def test_line_read_completes_pending(client, monkeypatch):
     assert r.status_code == 200 and r.json()["number"] == LINE["address"]
 
 
+def test_line_read_settles_a_pending_row_left_beside_a_line(client, monkeypatch):
+    """A surplus line whose release is not done keeps its pending row; a panel open retries it."""
+    monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
+    monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=LINE))
+    monkeypatch.setattr(agent_text, "pending_line_for_owner", AsyncMock(return_value={"kind": "text_pending"}))
+    complete = AsyncMock(return_value="provisioned")
+    monkeypatch.setattr(agent_text.text_lines, "complete_pending", complete)
+    r = client.get("/api/v1/agent-text/line")
+    complete.assert_awaited_once_with(OWNER)
+    assert r.status_code == 200 and r.json()["number"] == LINE["address"]
+
+
 def test_line_read_still_pending_is_404_for_the_panel(client, monkeypatch):
     # useTextLine maps 404 to null; a 202 body without `number` would read as a line.
     monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
@@ -330,6 +342,7 @@ def test_me_phone_delete_removes_the_callers_phone(client, monkeypatch):
 
 def test_line_read_has_my_phone(client, monkeypatch):
     _me(monkeypatch, {**LINE, "member_phones": {"+15551234567": "me"}})
+    monkeypatch.setattr(agent_text, "pending_line_for_owner", AsyncMock(return_value=None))
     _as(client, "me")
     assert client.get("/api/v1/agent-text/line").json()["myPhone"] == "+15551234567"
     _as(client, "you")

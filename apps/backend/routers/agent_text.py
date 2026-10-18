@@ -181,7 +181,7 @@ async def _recheck(owner_id: str) -> str:
 
 
 @router.get("/line")
-async def get_line(auth: AuthContext = Depends(get_current_user)) -> dict:
+async def get_line(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     line = await text_line_for_owner(owner_id)
     if not line:
@@ -192,11 +192,13 @@ async def get_line(auth: AuthContext = Depends(get_current_user)) -> dict:
             if outcome == "provisioned":
                 line = await text_line_for_owner(owner_id)
         except (photon.PhotonError, httpx.HTTPError):
+            # Only reading the operation raises, and that means a pending row is there.
             logger.warning("Completing the pending line failed for owner %s", owner_id, exc_info=True)
-    # A line Photon is still creating reads as 404 too: useTextLine maps 404 to null, and a 202 body
-    # without `number` would read as a line.
+            outcome = "pending"
+    # No line reads as 404 (useTextLine maps it to null; a 202 body without `number` would read as a
+    # line). Its status says whether the number is still being set up, so the panel polls only then.
     if not line:
-        raise HTTPException(status_code=404, detail="no_line")
+        return JSONResponse(status_code=404, content={"status": "absent" if outcome == "absent" else "pending"})
     return {
         "number": line["address"],
         "agentId": line["agent_id"],

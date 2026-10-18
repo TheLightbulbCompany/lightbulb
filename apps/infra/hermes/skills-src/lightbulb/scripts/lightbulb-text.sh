@@ -40,13 +40,22 @@ done
 base="${ISOL8_API_URL%/}/api/v1/agent-text/u/${ISOL8_OWNER_ID}"
 auth=(-H "Authorization: Bearer ${OPENCLAW_HOOK_TOKEN}" -H 'Content-Type: application/json')
 
-call() { # method path json
-  local out code
+call() { # method path json -- returns only on success; every other answer dies with its reason
+  local out code status
   out="$(curl -sS -w $'\n%{http_code}' -X "$1" "${auth[@]}" -d "$3" "$2")"
   code="${out##*$'\n'}"; out="${out%$'\n'*}"
-  [[ "$out" != *'"bad_phone"'* ]] || die 'Not saved: give the number as +1XXXXXXXXXX.'
-  [[ "$code" -ge 200 && "$code" -lt 300 ]] || { printf 'HTTP %s: %s\n' "$code" "$out" >&2; exit 1; }
-  printf '%s' "$out"
+  status="$(jq -r '.status // "unknown"' <<<"$out" 2>/dev/null || echo unknown)"
+  case "$status" in
+    sent|ok) ;;
+    bad_phone) die 'Not saved: give the number as +1XXXXXXXXXX.' ;;
+    bad_reply_key) die 'Not sent: that Reply-Key is not a text you received.' ;;
+    human_thread) die 'Not sent: a person has taken this thread over.' ;;
+    no_line) die 'Not sent: this workspace has no text number.' ;;
+    disabled) die 'Not sent: texting is not configured.' ;;
+    send_failed) die 'Not sent: the carrier declined it; try again later.' ;;
+    *) [[ "$code" -ge 200 && "$code" -lt 300 ]] && die "Not sent (status: $status)."
+       printf 'HTTP %s: %s\n' "$code" "$out" >&2; exit 1 ;;
+  esac
 }
 
 case "$cmd" in
@@ -55,20 +64,11 @@ case "$cmd" in
     [[ -n "$agent_id" ]] || die 'Cannot tell which agent you are: pass --as <agent_id>.'
     body="$(cat)"; [[ -n "$body" ]] || die 'Empty text: pipe the message on stdin.'
     payload="$(jq -nc --arg a "$agent_id" --arg r "$reply" --arg t "$body" '{agent_id:$a, reply_key:$r, text:$t}')"
-    res="$(call POST "$base/send" "$payload")"
-    status="$(jq -r '.status // "unknown"' <<<"$res")"
-    case "$status" in
-      sent) echo 'Text sent.' ;;
-      bad_reply_key) die 'Not sent: that Reply-Key is not a text you received.' ;;
-      human_thread) die 'Not sent: a person has taken this thread over.' ;;
-      no_line) die 'Not sent: this workspace has no text number.' ;;
-      disabled) die 'Not sent: texting is not configured.' ;;
-      send_failed) die 'Not sent: the carrier declined it; try again later.' ;;
-      *) die "Not sent (status: $status)." ;;
-    esac ;;
+    call POST "$base/send" "$payload"
+    echo 'Text sent.' ;;
   set-business-phone)
     [[ -n "$phone" ]] || { usage >&2; exit 2; }
-    call POST "$base/business-phone" "$(jq -nc --arg p "$phone" '{phone:$p}')" >/dev/null
+    call POST "$base/business-phone" "$(jq -nc --arg p "$phone" '{phone:$p}')"
     echo 'Business phone saved.' ;;
   *) usage >&2; exit 2 ;;
 esac

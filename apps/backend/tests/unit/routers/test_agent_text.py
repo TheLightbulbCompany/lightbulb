@@ -138,7 +138,7 @@ def test_clerk_line_404s_without_a_line(client, monkeypatch):
     monkeypatch.setattr(agent_text.text_lines, "complete_pending", AsyncMock(return_value="absent"))
     r = client.get("/api/v1/agent-text/line")
     assert r.status_code == 404
-    assert r.json() == {"detail": "no_line"}
+    assert r.json() == {"status": "absent"}
 
 
 def test_line_read_completes_pending(client, monkeypatch):
@@ -157,7 +157,8 @@ def test_line_read_still_pending_is_404_for_the_panel(client, monkeypatch):
     monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
     monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=None))
     monkeypatch.setattr(agent_text.text_lines, "complete_pending", AsyncMock(return_value="pending"))
-    assert client.get("/api/v1/agent-text/line").status_code == 404
+    r = client.get("/api/v1/agent-text/line")
+    assert r.status_code == 404 and r.json() == {"status": "pending"}
 
 
 @pytest.mark.parametrize(
@@ -168,7 +169,7 @@ def test_line_read_photon_error_is_404(client, monkeypatch, error):
     monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=None))
     monkeypatch.setattr(agent_text.text_lines, "complete_pending", AsyncMock(side_effect=error))
     r = client.get("/api/v1/agent-text/line")
-    assert r.status_code == 404 and r.json() == {"detail": "no_line"}
+    assert r.status_code == 404 and r.json() == {"status": "pending"}  # the pending row is still there
 
 
 def test_clerk_thread_mode_sets_agent(client, monkeypatch):
@@ -307,3 +308,18 @@ def test_me_phone_replaces_the_callers_earlier_phone(client, monkeypatch):
         (LINE["address"], "+15551234567", "me"),
         (LINE["address"], "+15550001111", None),
     ]
+
+
+@pytest.mark.parametrize(("again", "status"), [("pending", "pending"), ("absent", "absent")])
+def test_line_read_after_a_failed_operation_rechecks_the_subscription(client, monkeypatch, again, status):
+    monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
+    monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(agent_text.text_lines, "complete_pending", AsyncMock(return_value="failed"))
+    monkeypatch.setattr(
+        agent_text.billing_repo, "get_by_owner_id", AsyncMock(return_value={"stripe_subscription_id": "sub_1"})
+    )
+    sync = AsyncMock(return_value=again)
+    monkeypatch.setattr(agent_text.text_lines, "sync_front_desk", sync)
+    r = client.get("/api/v1/agent-text/line")
+    assert r.status_code == 404 and r.json() == {"status": status}
+    sync.assert_awaited_once_with(OWNER, subscription_id="sub_1")

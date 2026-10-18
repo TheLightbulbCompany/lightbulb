@@ -58,6 +58,12 @@ const PHONE_ERRORS: Record<string, string> = {
   phone_is_a_customer: "A customer has texted from this number, so it cannot be a member's",
 };
 
+// The buy door's 409/400 answers, by their `detail`.
+const BUY_ERRORS: Record<string, string> = {
+  apple_managed: "Not available on this plan",
+  no_front_desk_agent: "This workspace has no Customer Operations agent",
+};
+
 function phoneErrorKey(e: ApiError): string {
   const status = typeof e.body === "object" && e.body !== null ? (e.body as { status?: unknown }).status : undefined;
   return e.status === 409 && typeof status === "string" ? status : String(e.status);
@@ -117,7 +123,16 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
   const { orgId, inbox, noAddress, address, loadedAt: now } = useTeamMail();
   const { agents } = useAgents();
   const { account, refresh: refreshBilling } = useBilling();
-  const line = useTextLine(orgId, account?.front_desk ? refreshBilling : undefined);
+  const line = useTextLine(orgId);
+  // The number stopped being set up (it arrived, or none is coming): billing changed, so read it once.
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (line.pending) wasPending.current = true;
+    else if (wasPending.current) {
+      wasPending.current = false;
+      void refreshBilling();
+    }
+  }, [line.pending, refreshBilling]);
   const isAdmin = useOrganization().membership?.role === "org:admin";
   const api = useApi();
   const { mutate: mutateGlobal } = useSWRConfig();
@@ -136,11 +151,10 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
       }
       await Promise.all([mutateGlobal(isTextLineKey), refreshBilling()]);
     } catch (e) {
-      const code = e instanceof ApiError ? JSON.stringify(e.body ?? "") : "";
-      if (code.includes("front_desk_price_unconfigured")) setPriceGone(true);
-      else if (code.includes("apple_managed")) setBuyStatus("Not available on this plan");
-      else if (code.includes("no_front_desk_agent")) setBuyStatus("This workspace has no Customer Operations agent");
-      else setBuyStatus("Could not start checkout");
+      const body = e instanceof ApiError && typeof e.body === "object" && e.body !== null ? e.body : {};
+      const detail = String((body as { detail?: unknown }).detail ?? "");
+      if (detail === "front_desk_price_unconfigured") setPriceGone(true);
+      else setBuyStatus(BUY_ERRORS[detail] ?? "Could not start checkout");
     }
     setBuying(false);
   };
@@ -229,7 +243,7 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
       <CopyButton text={teamAddress} />
     </span>}
     {line.data?.number && <span className="mail-panel__number">{line.data.number}</span>}
-    {isAdmin && line.data === null && (account?.front_desk
+    {isAdmin && line.data === null && (line.pending || account?.front_desk
       ? <span role="status" className="mail-panel__number">Setting up your number…</span>
       : typeof price === "number" && <>
       <Button type="button" variant="ghost" size="sm" disabled={buying} onClick={() => void buyNumber()}>

@@ -62,6 +62,11 @@ def test_bad_phone_is_explained(tmp_path):
     assert proc.returncode == 1 and "Not saved: give the number as +1XXXXXXXXXX." in proc.stderr
 
 
+def test_an_http_error_without_a_status_shows_the_answer(tmp_path):
+    proc, _, _ = _run(tmp_path, "set-business-phone", "+15551234567", answer='{"detail":"no_line"}', code=404)
+    assert proc.returncode == 1 and 'HTTP 404: {"detail":"no_line"}' in proc.stderr
+
+
 def test_send_without_reply_exits_2(tmp_path):
     proc, sent, _ = _run(tmp_path, "send")
     assert proc.returncode == 2 and sent is None

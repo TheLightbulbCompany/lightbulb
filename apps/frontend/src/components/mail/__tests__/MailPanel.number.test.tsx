@@ -24,6 +24,7 @@ import { MailPanel } from "../MailPanel";
 
 const page = { address: "agents@acme.thelightbulb.company", meetings: [], messages: [], next: null };
 let line: { number: string; myPhone?: string | null } | null;
+let missing: "pending" | "absent";
 const assign = vi.fn();
 
 function renderMail() {
@@ -36,9 +37,10 @@ describe("MailPanel number", () => {
     billing.price = 7;
     billing.frontDesk = false;
     line = null;
+    missing = "absent";
     mockGet.mockImplementation(async (url: string) => {
       if (url === "/agent-text/line") {
-        if (!line) throw new ApiError(404, "none");
+        if (!line) throw new ApiError(404, { status: missing });
         return line;
       }
       return page;
@@ -94,19 +96,41 @@ describe("MailPanel number", () => {
   it("polls while the number is pending", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      billing.frontDesk = true;
+      missing = "pending";
       renderMail();
       expect(await screen.findByText("Setting up your number…")).toBeInTheDocument();
       const lineReads = () => mockGet.mock.calls.filter(([u]) => u === "/agent-text/line").length;
       const before = lineReads();
-      line = { number: "+15551230000" };
       await vi.advanceTimersByTimeAsync(10_000);
       await waitFor(() => expect(lineReads()).toBeGreaterThan(before));
-      expect(refresh).toHaveBeenCalled(); // billing is re-read on each empty tick
+      expect(refresh).not.toHaveBeenCalled(); // a pending tick reads the line, never billing
+      line = { number: "+15551230000" };
+      await vi.advanceTimersByTimeAsync(10_000);
       expect(await screen.findByText("+15551230000")).toBeInTheDocument();
+      await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1)); // the number arrived: billing once
       const after = lineReads();
       await vi.advanceTimersByTimeAsync(20_000);
       expect(lineReads()).toBe(after); // the line exists: polling stops
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops polling and refreshes billing once when the number is absent", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      missing = "pending";
+      renderMail();
+      expect(await screen.findByText("Setting up your number…")).toBeInTheDocument();
+      const lineReads = () => mockGet.mock.calls.filter(([u]) => u === "/agent-text/line").length;
+      missing = "absent";
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await screen.findByRole("button", { name: /Get a phone number/ })).toBeInTheDocument();
+      await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+      const after = lineReads();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(lineReads()).toBe(after);
+      expect(refresh).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

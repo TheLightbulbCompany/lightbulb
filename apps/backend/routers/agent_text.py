@@ -91,14 +91,14 @@ async def send_reply(*, owner_id: str, reply_key: str, text: str, by_human: bool
         and customer not in (line.get("member_phones") or {})
         and customer not in (line.get("disclosed") or {})
     )
+    # Keyed on the reply as written: a retry after the disclosure was recorded carries the same key and
+    # replays the first send instead of texting the customer again without the prefix.
+    idempotency_key = f"text-reply:{row['received_key']}:{hashlib.sha256(text.encode()).hexdigest()[:16]}"
     if disclose:
         text = f"{DISCLOSURE.format(business=await business_name(owner_id))} {text}"
     try:
         resp = await photon.send_text(
-            sender_id=sender_id,
-            space_id=space_id,
-            text=text,
-            idempotency_key=f"text-reply:{row['received_key']}:{hashlib.sha256(text.encode()).hexdigest()[:16]}",
+            sender_id=sender_id, space_id=space_id, text=text, idempotency_key=idempotency_key
         )
     except (photon.PhotonError, httpx.HTTPError):
         put_metric("text.send", dimensions={"result": "failed"})

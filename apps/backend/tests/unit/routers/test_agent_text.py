@@ -103,6 +103,17 @@ async def test_disclosure_is_recorded_on_the_row_after_the_first_reply(m):
     m["set_disclosed"].assert_not_awaited()
 
 
+async def test_a_retry_after_the_disclosure_was_recorded_keeps_the_same_idempotency_key(m):
+    """The key is the reply as written, so a retry whose text has lost the prefix replays the first send."""
+    m["text_line_for_owner"].return_value = NEW_CUSTOMER_LINE
+    await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
+    first = m["send_text"].await_args.kwargs["idempotency_key"]
+    m["text_line_for_owner"].return_value = LINE  # the disclosure is on the row now
+    await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
+    assert m["send_text"].await_args.kwargs["idempotency_key"] == first
+    assert m["send_text"].await_args.kwargs["text"] == "hi"
+
+
 async def test_a_failed_send_records_no_disclosure(m):
     m["text_line_for_owner"].return_value = NEW_CUSTOMER_LINE
     m["send_text"].side_effect = agent_text.photon.PhotonError(500, "http_500")

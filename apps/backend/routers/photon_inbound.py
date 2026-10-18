@@ -78,6 +78,7 @@ class _Object(BaseModel):
     sentBy: _Party | None = None  # noqa: N815
     receivedBy: _Party | None = None  # noqa: N815
     content: _Content | None = None
+    timestamps: dict | None = None  # receivedAt: "preserved across replay" (spec), so a redelivery keys the same row
 
 
 class _Data(BaseModel):
@@ -202,6 +203,9 @@ async def handle_photon_inbound(request: Request):
                 text=text,
                 headers={},
                 attachments=[],
+                # Photon's own receipt time, not our clock: the by-message-id index behind find_by_message_id is
+                # eventually consistent, and a redelivery after a 503 must land on the SAME row and reply key.
+                received_at=(obj.timestamps or {}).get("receivedAt"),
                 channel="text",
                 provider_ids={
                     "space_id": space.id,

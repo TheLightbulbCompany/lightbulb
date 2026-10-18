@@ -196,6 +196,7 @@ def test_stored_and_delivered_with_exact_kwargs(client, seams):
         text="do you open at 9?",
         headers={},
         attachments=[],
+        received_at="2026-10-17T10:00:00Z",
         channel="text",
         provider_ids={
             "space_id": SPACE,
@@ -314,6 +315,17 @@ def test_delivery_error_rolls_back_dedup_and_503s(client, seams):
     seams["deliver_to_agent"].side_effect = RuntimeError("boom")
     assert _post(client).status_code == 503
     assert seams["delete_event"].await_count == 2
+
+
+def test_a_redelivery_the_index_has_not_caught_up_with_lands_on_the_same_row(client, seams):
+    """find_by_message_id reads an eventually consistent index; the row's key is Photon's receipt time,
+    preserved across replays, so a second put after a 503 is the same row and the same reply key."""
+    seams["deliver_to_agent"].return_value = "error"
+    assert _post(client).status_code == 503
+    seams["deliver_to_agent"].return_value = "delivered"
+    assert _post(client).status_code == 200  # find_by_message_id still answers None (the seam's default)
+    stamps = [c.kwargs["received_at"] for c in seams["put_message"].await_args_list]
+    assert stamps == ["2026-10-17T10:00:00Z", "2026-10-17T10:00:00Z"]
 
 
 def test_unknown_body_shape_is_422_not_500(client, seams):

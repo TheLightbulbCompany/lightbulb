@@ -501,3 +501,105 @@ async def test_a_new_path_message_lands_with_no_detail():
     kwargs = repo.put_pending_brief.await_args.kwargs
     assert kwargs["path"] == "new"
     assert kwargs["detail"] is None
+
+
+def _desk_repo(ids):
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(return_value=SimpleNamespace(starter_agent_ids=ids))
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_start_dms_customer_operations_with_the_prompt():
+    from core.services.onboarding_brief import FRONT_DESK_BUILD_PROMPT, start_front_desk_build
+
+    post = AsyncMock(return_value=SimpleNamespace(message_id="m1"))
+    dm = AsyncMock(return_value="room-dm")
+    with (
+        patch(
+            "core.repositories.paperclip_repo.PaperclipRepo", return_value=_desk_repo({"customer_operations": "co-1"})
+        ),
+        patch("core.services.messaging.create_human_message", post),
+        patch("core.services.messaging._agent_dm_room_id", dm),
+    ):
+        assert await start_front_desk_build(OWNER, "https://acme.example", user_id="user_m") == "m1"
+    dm.assert_awaited_once_with(OWNER, "user_m", "co-1")
+    args, kwargs = post.await_args
+    assert args[1] == "room-dm"
+    assert args[2].text == FRONT_DESK_BUILD_PROMPT.format(url="https://acme.example")
+    assert args[2].text.startswith("Set up the front desk for https://acme.example.\n\n1. Read the whole site")
+    assert kwargs["via"] == "front_desk"
+
+
+@pytest.mark.asyncio
+async def test_start_is_idempotent_per_url():
+    from core.services.onboarding_brief import start_front_desk_build
+
+    post = AsyncMock(return_value=SimpleNamespace(message_id="m1"))
+    with (
+        patch(
+            "core.repositories.paperclip_repo.PaperclipRepo", return_value=_desk_repo({"customer_operations": "co-1"})
+        ),
+        patch("core.services.messaging.create_human_message", post),
+        patch("core.services.messaging._agent_dm_room_id", AsyncMock(return_value="r")),
+    ):
+        await start_front_desk_build(OWNER, "https://Acme.example ", user_id="u")
+        await start_front_desk_build(OWNER, "https://acme.example", user_id="u")
+        await start_front_desk_build(OWNER, "https://other.example", user_id="u")
+    ids = [c.args[2].client_message_id for c in post.await_args_list]
+    assert ids[0] == ids[1] != ids[2]
+
+
+@pytest.mark.asyncio
+async def test_no_customer_operations_is_a_noop():
+    from core.services.onboarding_brief import start_front_desk_build
+
+    post = AsyncMock()
+    with (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=_desk_repo({"ceo": "x"})),
+        patch("core.services.messaging.create_human_message", post),
+    ):
+        assert await start_front_desk_build(OWNER, "https://acme.example", user_id="u") is None
+    post.assert_not_awaited()
+
+
+def _website_capture(start):
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(
+        return_value=SimpleNamespace(status="active", starter_agent_ids={"ceo": FRIDAY_ID}, funnel_state="not_started")
+    )
+    repo.put_pending_brief = AsyncMock(return_value=True)
+    message = {
+        "roomId": __import__("core.services.messaging", fromlist=["default_room_id"]).default_room_id(OWNER),
+        "messageSeq": 2,
+        "messageId": "msg_site",
+        "text": "Here's our website: https://acme.example",
+        "author": {"kind": "human", "id": "user_member"},
+        "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
+    }
+    return message, (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
+        patch("core.services.onboarding_brief.start_front_desk_build", start),
+        patch(
+            "core.repositories.messaging_repo.list_messages_between",
+            new=AsyncMock(return_value=[{"messageSeq": 1, "author": {"kind": "agent"}}]),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_message_link_starts_the_build():
+    start = AsyncMock(return_value="m1")
+    message, patches = _website_capture(start)
+    with patches[0], patches[1], patches[2], patches[3]:
+        assert await capture_first_workspace_message(OWNER, message) is True
+    start.assert_awaited_once_with(OWNER, "https://acme.example", user_id="user_member")
+
+
+@pytest.mark.asyncio
+async def test_build_failure_does_not_break_the_capture():
+    start = AsyncMock(side_effect=RuntimeError("boom"))
+    message, patches = _website_capture(start)
+    with patches[0], patches[1], patches[2], patches[3]:
+        assert await capture_first_workspace_message(OWNER, message) is True

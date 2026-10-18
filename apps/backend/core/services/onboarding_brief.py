@@ -427,6 +427,11 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
         return False
 
     path, user_input = first_message_intake(text)
+    if path == "grow" and user_input:
+        try:
+            await start_front_desk_build(owner_id, user_input, user_id=str(author["id"]))
+        except Exception:  # noqa: BLE001 — best effort; never fails the capture
+            logger.warning("front desk build did not start for %s", owner_id, exc_info=True)
     landed = await repo.put_pending_brief(
         owner_id,
         path=path,
@@ -441,6 +446,45 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
         return False
     await reconcile_pending_brief(owner_id)
     return True
+
+
+FRONT_DESK_BUILD_PROMPT = """\
+Set up the front desk for {url}.
+
+1. Read the whole site: every page, menu, service list, booking or ordering flow, hours, locations, delivery area, policies, and the listed phone number.
+2. Save the facts you will need to answer customers to memory.
+3. For each thing a customer can do on the site (order, book, get a quote, check availability), build an OpenCLI adapter: `opencli adapter init <site>/<command>`, write it, then verify it with `opencli adapter check <site>/<command>` and `opencli adapter test` against the real site. Prefer a public API, then captured network calls, then page actions.
+4. Run /app/skills/lightbulb/scripts/lightbulb-text.sh set-business-phone <number> with the phone number the site lists.
+5. Reply here with one line: "Front desk ready for {url}: <what you can do for customers>." Post nothing in rooms.
+"""
+
+
+async def start_front_desk_build(owner_id: str, url: str, *, user_id: str) -> str | None:
+    """DM Customer Operations the build prompt. One message per (workspace, url): the
+    messaging IDEMP receipt makes a repeat a no-op. None when the roster has no such agent."""
+    import uuid
+
+    from core.auth import AuthContext
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services import messaging
+
+    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    agent_id = (getattr(row, "starter_agent_ids", None) or {}).get("customer_operations")
+    if not agent_id:
+        return None
+    room_id = await messaging._agent_dm_room_id(owner_id, user_id, agent_id)
+    message = await messaging.create_human_message(
+        AuthContext(user_id=user_id, org_id=owner_id),
+        room_id,
+        messaging.CreateMessageRequest(
+            client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-front-desk|{owner_id}|{url.strip().lower()}"),
+            text=FRONT_DESK_BUILD_PROMPT.format(url=url),
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+        ),
+        via="front_desk",
+    )
+    return str(message.message_id)
 
 
 async def reconcile_pending_brief(owner_id: str) -> None:

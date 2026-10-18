@@ -44,3 +44,15 @@ it("shows the usual failure alert for other errors", async () => {
   await waitFor(() => expect(alert).toHaveBeenCalled());
   expect(alert.mock.calls.at(-1)?.[1]).not.toContain("changed since you opened it");
 });
+
+it("treats a conflict code in the error body as a conflict", async () => {
+  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const onSave = jest.fn().mockRejectedValue(new ApiError(400, { code: "document_locked" }, "Bad request"));
+  const onClose = jest.fn();
+  await render(<DocumentEditSheet document={doc} onSave={onSave} onClose={onClose} />);
+  await fireEvent.press(screen.getByLabelText("Save"));
+  await waitFor(() =>
+    expect(alert).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("changed since you opened it")),
+  );
+  expect(onClose).not.toHaveBeenCalled();
+});

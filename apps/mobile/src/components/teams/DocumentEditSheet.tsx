@@ -1,16 +1,9 @@
-import { ApiError } from "@lightbulb/shared";
 import { useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
-import type { IssueDocument } from "../../lib/teamsData";
+import { isDocumentConflict, type IssueDocument } from "../../lib/teamsData";
 import { BottomSheet } from "../ui/BottomSheet";
-
-/** A stale save: the server answers 409, or names a conflict/lock in the body. */
-function isConflict(err: unknown): boolean {
-  if (!(err instanceof ApiError)) return false;
-  return err.status === 409 || /conflict|locked/i.test(JSON.stringify(err.body ?? ""));
-}
 
 /**
  * Plain editor for one document. `onSave` rejects on failure; the sheet then
@@ -37,7 +30,7 @@ export function DocumentEditSheet({
       await onSave(title.trim() || document.key, body);
       onClose();
     } catch (err) {
-      if (isConflict(err)) {
+      if (isDocumentConflict(err)) {
         Alert.alert(
           "Couldn’t save",
           "This document changed since you opened it. Copy your edits, close this, and open it again.",

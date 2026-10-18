@@ -42,6 +42,7 @@ import {
   priorityColor,
   resolveAssignee,
   statusColors,
+  documentChangeSummary,
   timeAgo,
   toBoardStatus,
   useTeamsIssue,
@@ -363,8 +364,8 @@ export default function IssueDetailScreen() {
         onSetTitle={setTitle}
         onSetDescription={setDescription}
         onCreateChild={createChild}
-        onUpdateDocument={(key, title, body) =>
-          updateDocument(key, title, body, `Edited by ${user?.fullName || user?.firstName || "You"}`)
+        onUpdateDocument={(key, title, body, baseRevisionId) =>
+          updateDocument(key, title, body, documentChangeSummary(user), baseRevisionId)
         }
         onApproveApproval={approveApproval}
         onRejectApproval={rejectApproval}
@@ -448,7 +449,7 @@ function ReadyBody({
   onSetTitle: (title: string) => void;
   onSetDescription: (description: string) => void;
   onCreateChild: (input: CreateIssueInput) => Promise<boolean>;
-  onUpdateDocument: (key: string, title: string, body: string) => Promise<void>;
+  onUpdateDocument: (key: string, title: string, body: string, baseRevisionId: string | null) => Promise<void>;
   onApproveApproval: (approvalId: string) => void;
   onRejectApproval: (approvalId: string, reason: string) => void;
   onAcceptInteraction: (

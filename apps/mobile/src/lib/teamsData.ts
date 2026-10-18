@@ -908,13 +908,20 @@ export function useTeamsIssue(issueId: string | undefined) {
     [config, issueId, load],
   );
 
-  // Save a document edit, then refetch. Ref-latched. Failures are rethrown so
-  // the edit sheet can tell a conflict from any other error and keep the draft.
+  // Save a document edit, then refetch. Ref-latched. Never returns without a
+  // save having happened: every failure throws, so the edit sheet keeps the
+  // draft. `baseRevisionId` is the revision the person OPENED, passed in by the
+  // caller; a reload while the sheet is open must not move it. A conflict also
+  // reloads, so the section behind the sheet shows the new revision and author.
   const updateDocument = useCallback(
-    async (key: string, title: string, body: string, changeSummary: string) => {
-      const current = stateRef.current;
-      if (!issueId || current.kind !== "ready" || savingDocRef.current) return;
-      const doc = current.documents.find((d) => d.key === key);
+    async (
+      key: string,
+      title: string,
+      body: string,
+      changeSummary: string,
+      baseRevisionId: string | null,
+    ) => {
+      if (!issueId || savingDocRef.current) throw new Error("Document save not started");
       savingDocRef.current = true;
       try {
         await updateIssueDocument(config, issueId, key, {
@@ -922,12 +929,15 @@ export function useTeamsIssue(issueId: string | undefined) {
           format: "markdown",
           body,
           changeSummary,
-          baseRevisionId: doc?.latestRevisionId ?? null,
+          baseRevisionId,
         });
-        await load();
+      } catch (err) {
+        if (isDocumentConflict(err)) await load();
+        throw err;
       } finally {
         savingDocRef.current = false;
       }
+      await load();
     },
     [config, issueId, load],
   );
@@ -1448,6 +1458,21 @@ export interface UpdateDocumentInput {
   changeSummary: string;
   /** The revision the person opened; the server rejects a stale save with 409. */
   baseRevisionId: string | null;
+}
+
+/** A stale save: HTTP 409, or a conflict/lock code or message on the error. */
+export function isDocumentConflict(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return false;
+  if (err.status === 409) return true;
+  const b = (err.body ?? {}) as { code?: unknown; error?: unknown; message?: unknown };
+  return [b.code, b.error, b.message, err.message].some(
+    (v) => typeof v === "string" && /conflict|locked/i.test(v),
+  );
+}
+
+/** The change summary the web writes too: "Edited by <name>", "You" when unknown. */
+export function documentChangeSummary(user?: { fullName?: string | null; firstName?: string | null } | null): string {
+  return `Edited by ${user?.fullName || user?.firstName || "You"}`;
 }
 
 /** PUT /teams/issues/{issueId}/documents/{key} — save a new revision. */

@@ -155,7 +155,7 @@ export function DocumentsSection({
 }: {
   documents: IssueDocument[];
   agents: TeamsAgent[];
-  onSave: (key: string, title: string, body: string) => Promise<void>;
+  onSave: (key: string, title: string, body: string, baseRevisionId: string | null) => Promise<void>;
 }) {
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const styles = SHEETS[scheme];
@@ -226,7 +226,7 @@ export function DocumentsSection({
         <DocumentEditSheet
           key={editing.key}
           document={editing}
-          onSave={(title, body) => onSave(editing.key, title, body)}
+          onSave={(title, body) => onSave(editing.key, title, body, editing.latestRevisionId ?? null)}
           onClose={() => setEditing(null)}
         />
       ) : null}

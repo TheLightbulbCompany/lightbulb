@@ -19,3 +19,11 @@ it("PUTs the document with the revision the person opened", async () => {
   await updateIssueDocument({} as never, "iss 1", "plan", body);
   expect(mockPut).toHaveBeenCalledWith("/teams/issues/iss%201/documents/plan", body);
 });
+
+import { documentChangeSummary } from "../teamsData";
+
+it("names the editor, falling back to first name then You", () => {
+  expect(documentChangeSummary({ fullName: "Ada Lovelace", firstName: "Ada" })).toBe("Edited by Ada Lovelace");
+  expect(documentChangeSummary({ fullName: "", firstName: "Ada" })).toBe("Edited by Ada");
+  expect(documentChangeSummary(null)).toBe("Edited by You");
+});

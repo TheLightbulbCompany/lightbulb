@@ -225,7 +225,7 @@ def _me(monkeypatch, line, set_phone=None):
     monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
     monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=line))
     set_phone = set_phone or AsyncMock()
-    monkeypatch.setattr(agent_text, "set_member_phone", set_phone)
+    monkeypatch.setattr("core.repositories.agent_email_repo.set_member_phone", set_phone)
     return set_phone
 
 

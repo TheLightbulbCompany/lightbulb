@@ -451,12 +451,17 @@ async def test_release_absent_without_a_flag_writes_nothing(m):
     m.release.assert_not_awaited()
 
 
-def _stub_retrieve(monkeypatch, status, items):
-    monkeypatch.setattr(
-        text_lines.stripe.Subscription,
-        "retrieve",
-        lambda sid: {"id": sid, "status": status, "items": {"data": items}},
-    )
+def _stub_retrieve(monkeypatch, status, items, others: dict[str, str] | None = None):
+    """``sub_1`` answers ``status``; an id in ``others`` answers its own status; any other id is unknown to Stripe."""
+
+    def retrieve(sid):
+        if sid == "sub_1":
+            return {"id": sid, "status": status, "items": {"data": items}}
+        if others and sid in others:
+            return {"id": sid, "status": others[sid], "items": {"data": []}}
+        raise text_lines.stripe.error.InvalidRequestError(f"No such subscription: {sid}", "id")
+
+    monkeypatch.setattr(text_lines.stripe.Subscription, "retrieve", retrieve)
 
 
 async def _sync(monkeypatch, status, items):
@@ -510,13 +515,26 @@ async def test_sync_other_statuses_are_skipped(m, monkeypatch, status):
 )
 async def test_stale_cancel_of_an_old_subscription_does_not_release(m, monkeypatch, stored_now, previous):
     monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
-    _stub_retrieve(monkeypatch, "canceled", [{}])
+    _stub_retrieve(monkeypatch, "canceled", [{}], others={"sub_new": "active"})
     m.account.return_value = {"stripe_subscription_id": stored_now}
     m.line.return_value = LINE_ROW
     got = await text_lines.sync_front_desk("org_1", subscription_id="sub_1", previous_subscription_id=previous)
     assert got == "skipped_superseded"
     m.release.assert_not_awaited()
     m.delete.assert_not_awaited()
+
+
+@pytest.mark.parametrize("others", [{"sub_old": "canceled"}, {}])  # the stored id is dead too, or unknown to Stripe
+async def test_a_cancel_is_not_superseded_by_a_stored_id_that_is_itself_dead(m, monkeypatch, others):
+    # Reordered events: a stale cancel of OLD sub_old overwrote the row's id, then the live sub_1 is deleted.
+    # The stored id names no live subscription, so nothing supersedes the cancel and the line is released.
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
+    _stub_retrieve(monkeypatch, "canceled", [{}], others=others)
+    m.account.return_value = {"stripe_subscription_id": "sub_old"}
+    m.line.return_value = LINE_ROW
+    got = await text_lines.sync_front_desk("org_1", subscription_id="sub_1", previous_subscription_id="sub_old")
+    assert got == "released"
+    m.release.assert_awaited_once()
 
 
 async def test_new_active_subscription_provisions_even_when_an_old_id_was_stored(m, monkeypatch):
@@ -526,6 +544,16 @@ async def test_new_active_subscription_provisions_even_when_an_old_id_was_stored
     got = await text_lines.sync_front_desk("org_1", subscription_id="sub_1", previous_subscription_id="sub_old")
     assert got == "provisioned"
     m.request.assert_awaited_once()
+
+
+async def test_unlink_member_drops_every_phone_the_member_holds(m, monkeypatch):
+    drop = AsyncMock()
+    monkeypatch.setattr(text_lines.agent_email_repo, "drop_member_phones", drop)
+    await text_lines.unlink_member("org_1", "user_a")  # no line: nothing to drop
+    drop.assert_not_awaited()
+    m.line.return_value = LINE_ROW
+    await text_lines.unlink_member("org_1", "user_a")
+    drop.assert_awaited_once_with(LINE_ROW, "user_a")
 
 
 async def test_provisioned_line_starts_the_build(m):

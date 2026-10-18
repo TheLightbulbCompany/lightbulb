@@ -137,7 +137,9 @@ async def delete_all_for_owner(owner_id: str) -> list[str]:
     addresses: list[str] = []
     for row in rows:
         address = row.get("address")
-        if not address:
+        # A texting line or its pending row is released AND deleted by text_lines.release_line; one still
+        # here failed to release and stays for the wipe's retry (a dedicated number bills until released).
+        if not address or str(row.get("kind") or "").startswith("text"):
             continue
         await run_in_thread(table.delete_item, Key={"address": address})
         addresses.append(address)
@@ -345,6 +347,13 @@ async def set_member_phone(number: str, phone: str, user_id: str | None) -> None
     else:
         kwargs["UpdateExpression"] = "REMOVE member_phones.#p"
     await run_in_thread(_get_table().update_item, **kwargs)
+
+
+async def drop_member_phones(line: dict, user_id: str) -> None:
+    """Remove every phone ``user_id`` holds on the line row."""
+    for phone, uid in (line.get("member_phones") or {}).items():
+        if uid == user_id:
+            await set_member_phone(line["address"], phone, None)
 
 
 async def put_phone_code(number: str, code: str, user_id: str, expires_at: int, *, prune: list[str]) -> bool:

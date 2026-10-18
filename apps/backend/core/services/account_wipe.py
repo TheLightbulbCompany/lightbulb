@@ -158,7 +158,7 @@ async def release_text_lines(rows: list[dict]) -> tuple[int, list[str]]:
 def text_release_note(released: int, failed: list[str]) -> str:
     note = f", released {released} text line(s)"
     if failed:
-        note += f", FAILED to release: {', '.join(failed)} (release by hand)"
+        note += f", FAILED to release: {', '.join(failed)} (rows kept; run the wipe again)"
     return note
 
 

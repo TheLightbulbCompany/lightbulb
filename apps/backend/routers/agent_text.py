@@ -23,10 +23,10 @@ from core.observability.metrics import put_metric
 from core.services import text_lines
 from core.repositories import billing_repo
 from core.repositories.agent_email_repo import (
+    drop_member_phones,
     put_phone_code,
     set_business_phone,
     set_disclosed,
-    set_member_phone,
     set_thread_mode,
     text_line_for_owner,
 )
@@ -56,13 +56,6 @@ async def _line_or_404(owner_id: str) -> dict:
     if not line:
         raise HTTPException(status_code=404, detail="no_line")
     return line
-
-
-async def _drop_phones(line: dict, user_id: str) -> None:
-    """Remove every phone ``user_id`` holds on the line."""
-    for phone, uid in (line.get("member_phones") or {}).items():
-        if uid == user_id:
-            await set_member_phone(line["address"], phone, None)
 
 
 async def _text_row(owner_id: str, key: str) -> tuple[str, dict] | None:
@@ -238,7 +231,7 @@ async def my_phone_code(auth: AuthContext = Depends(get_current_user)) -> dict:
 
 @router.delete("/me/phone")
 async def delete_my_phone(auth: AuthContext = Depends(get_current_user)) -> dict:
-    await _drop_phones(await _line_or_404(resolve_owner_id(auth)), auth.user_id)
+    await drop_member_phones(await _line_or_404(resolve_owner_id(auth)), auth.user_id)
     return {"status": "ok"}
 
 

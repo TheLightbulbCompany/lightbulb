@@ -33,6 +33,8 @@ def world(monkeypatch):
     monkeypatch.setattr(hermes_profiles, "_s3_get", lambda bucket, key: files.get(key))
     monkeypatch.setattr(hermes_profiles, "_s3_put", lambda bucket, key, body: files.__setitem__(key, body))
     monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "tok"}))
+    # A rename rewrites the profile, whose inputs include the workspace's texting line (none here).
+    monkeypatch.setattr("core.repositories.agent_email_repo.text_line_for_owner", AsyncMock(return_value=None))
     runs = {
         RUN: {"roomId": R_LIVE, "agentId": AGENT, "speakerUserId": "user_1", "speakerName": "Aden"},
         "run-guest": {"roomId": R_LIVE, "agentId": AGENT, "speakerUserId": "user_guest", "speakerName": "Gus"},

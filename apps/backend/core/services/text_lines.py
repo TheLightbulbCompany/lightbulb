@@ -214,12 +214,22 @@ async def release_line(owner_id: str) -> str:
     return "released"
 
 
+def _is_live(subscription_id: str) -> bool:
+    """Whether Stripe has this subscription live NOW; an id Stripe no longer answers for is not."""
+    try:
+        return stripe.Subscription.retrieve(subscription_id).get("status") in SUBSCRIPTION_LIVE_STATUSES
+    except stripe.error.StripeError:
+        return False
+
+
 async def sync_front_desk(owner_id: str, *, subscription_id: str, previous_subscription_id: str | None = None) -> str:
     """Decide on the subscription as Stripe has it NOW, not as a possibly reordered event described it.
 
-    A subscription that is no longer live and is not the workspace's current one (as stored now, or as stored
-    before the event's own write, ``previous_subscription_id``) is a stale cancel: it never releases the line.
-    A live subscription decides whatever id was stored. The line costs money the moment it exists, so only an
+    A subscription that is no longer live is a stale cancel, and never releases the line, only when the
+    workspace holds ANOTHER subscription that is itself live (as stored now, or as stored before the event's
+    own write, ``previous_subscription_id``). A stored id that is dead too (a reordered cancel of an older
+    subscription overwrote the row) supersedes nothing: the cancel stands and the line goes. A live
+    subscription decides whatever id was stored. The line costs money the moment it exists, so only an
     ``active`` subscription buys it; past_due keeps an existing line until the item goes or the subscription
     is canceled.
     """
@@ -228,7 +238,8 @@ async def sync_front_desk(owner_id: str, *, subscription_id: str, previous_subsc
     has = any(_is_front_desk_item(i) for i in subscription["items"]["data"])
     if status not in SUBSCRIPTION_LIVE_STATUSES:
         current = (await billing_repo.get_by_owner_id(owner_id) or {}).get("stripe_subscription_id")
-        if any(sid and sid != subscription_id for sid in (current, previous_subscription_id)):
+        others = {sid for sid in (current, previous_subscription_id) if sid and sid != subscription_id}
+        if any(_is_live(sid) for sid in others):
             put_metric("text_line.sync_superseded")
             return "skipped_superseded"
     if status == "active" and has:
@@ -236,3 +247,10 @@ async def sync_front_desk(owner_id: str, *, subscription_id: str, previous_subsc
     if not has or status == "canceled":
         return await release_line(owner_id)
     return "skipped"
+
+
+async def unlink_member(owner_id: str, user_id: str) -> None:
+    """Drop every phone ``user_id`` linked on the workspace's line: a member who left texts as a customer."""
+    line = await agent_email_repo.text_line_for_owner(owner_id)
+    if line:
+        await agent_email_repo.drop_member_phones(line, user_id)

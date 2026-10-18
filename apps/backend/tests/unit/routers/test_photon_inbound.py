@@ -374,15 +374,17 @@ def test_member_text_never_wakes_the_front_desk(client, seams, member):
     seams["send_text"].assert_not_called()
 
 
-def test_removed_member_falls_through_to_the_front_desk(client, seams, member, monkeypatch):
+def test_a_refused_member_post_falls_through_to_the_front_desk_and_keeps_the_link(client, seams, member, monkeypatch):
+    # A 403 is a member missing from the main room OR from the workspace; the membership webhook unlinks a
+    # member who left, so the handler keeps the link and a member merely taken out of the room stays linked.
     from core.services import messaging
 
     member.side_effect = messaging.ApiProblem("ROOM_FORBIDDEN", "not a room member")
     drop = AsyncMock()
-    monkeypatch.setattr(ph, "set_member_phone", drop)
+    monkeypatch.setattr("core.repositories.agent_email_repo.set_member_phone", drop)
     r = _post(client)
     assert r.status_code == 200 and r.json() == {"status": "delivered"}
-    drop.assert_awaited_once_with(LINE, CUSTOMER, None)
+    drop.assert_not_called()
     seams["try_consume_stranger_wake"].assert_awaited_once()
     seams["deliver_to_agent"].assert_awaited_once()
     seams["delete_event"].assert_not_called()
@@ -393,7 +395,7 @@ def test_a_missing_main_room_keeps_a_live_members_link(client, seams, member, mo
 
     member.side_effect = messaging.ApiProblem("ROOM_NOT_FOUND", "no main room")
     drop = AsyncMock()
-    monkeypatch.setattr(ph, "set_member_phone", drop)
+    monkeypatch.setattr("core.repositories.agent_email_repo.set_member_phone", drop)
     assert _post(client).json() == {"status": "delivered"}  # the text is a customer's this once
     drop.assert_not_called()  # a 404 is the room's fault, not the member's
 

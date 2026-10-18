@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from core.auth import AuthContext
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories.agent_email_repo import bind_member_phone, get_by_address, set_member_phone
+from core.repositories.agent_email_repo import bind_member_phone, get_by_address
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, put_sent, reply_key
 from core.repositories.container_repo import try_consume_stranger_wake
 from core.services.agent_email import mail_changed, team_address
@@ -232,14 +232,10 @@ async def handle_photon_inbound(request: Request):
             except (messaging.ApiProblem, HTTPException) as e:
                 if e.status_code not in (403, 404):
                     raise  # transient: the outer handler rolls the dedup back and answers 503
-                # Refused: the text is a customer's this time. A 403 means no longer a member, so the stale
-                # link goes too; a 404 (the main room is missing) keeps a live member's link.
+                # Refused (403: not in the main room, or not in the workspace; 404: no main room): the text is
+                # a customer's this time. The link stays: the membership webhook unlinks a member who left,
+                # and a member only taken out of the main room is still a member.
                 logger.warning("photon_inbound: member post refused for %s", obj.id, exc_info=True)
-                if e.status_code == 403:
-                    try:
-                        await set_member_phone(line["address"], customer, None)
-                    except Exception:  # noqa: BLE001 — the next text retries the drop
-                        logger.warning("photon_inbound: could not drop the link for %s", obj.id, exc_info=True)
             else:
                 return _final("member_routed")
 

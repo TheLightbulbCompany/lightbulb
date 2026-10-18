@@ -1,7 +1,7 @@
 """agent_email_repo: the workspace's one mailbox row, address-keyed with a by-owner GSI."""
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
@@ -324,6 +324,31 @@ async def test_record_text_line_is_false_when_the_pending_row_is_gone(monkeypatc
         await repo.record_text_line(
             number="+1", owner_id="o", agent_id="a", photon_resource_id="r", photon_user_id="u", operation_id="op_1"
         )
+
+
+async def test_delete_all_for_owner_keeps_a_line_that_failed_to_release(monkeypatch):
+    # release_line deletes the rows it releases; a line or pending row still present at the sweep is a failed
+    # release, kept so a retried wipe can release the dedicated number instead of orphaning it at Photon.
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    rows = [
+        {"address": "friday@acme.isol8.co", "owner_id": "o"},
+        {"address": "+15551230000", "owner_id": "o", "kind": "text"},
+        {"address": "pending:o", "owner_id": "o", "kind": "text_pending"},
+    ]
+    monkeypatch.setattr(repo, "query_by_owner", AsyncMock(return_value=rows))
+    assert await repo.delete_all_for_owner("o") == ["friday@acme.isol8.co"]
+    table.delete_item.assert_called_once_with(Key={"address": "friday@acme.isol8.co"})
+
+
+async def test_drop_member_phones_removes_only_that_members_phones(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    phones = {"+15550001111": "other", "+15551234567": "me", "+15559990000": "me"}
+    await repo.drop_member_phones({"address": "+15551230000", "member_phones": phones}, "me")
+    calls = table.update_item.call_args_list
+    assert sorted(c.kwargs["ExpressionAttributeNames"]["#p"] for c in calls) == ["+15551234567", "+15559990000"]
+    assert all(c.kwargs["UpdateExpression"] == "REMOVE member_phones.#p" for c in calls)
 
 
 async def test_set_disclosed_records_the_first_time_only(monkeypatch):

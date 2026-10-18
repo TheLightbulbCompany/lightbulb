@@ -521,6 +521,7 @@ async def _handle_organization_membership_deleted(
 
     from core.services.mac_browser import revoke_member_soon
     from core.services.messaging import revoke_human_membership
+    from core.services.text_lines import unlink_member
 
     revocation_error: BaseException | None = None
     still_current = None
@@ -529,6 +530,7 @@ async def _handle_organization_membership_deleted(
         # Security boundary: every room key rotates before the private stream is
         # disabled. Repeated delivery is idempotent.
         await revoke_human_membership(org_id, user_id)
+        await unlink_member(org_id, user_id)  # their texts to the business's number are a customer's now
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
         # Only once the revocation landed and this delete is still the current lifecycle event:
         # their paired Macs are refused at once, cleared of the workspace's sign-ins if

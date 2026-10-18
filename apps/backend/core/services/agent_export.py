@@ -373,8 +373,12 @@ def _slugify(name: str) -> str:
 # safety scan. ``memories/`` is Hermes's learned memory -- ``USER.md`` is what
 # the agent knows about its OWNER (and where the pasted business-context dump
 # lands), ``MEMORY.md`` the agent's own notes about that owner's work. Neither
-# is part of a portable agent definition.
-_S3_PROFILE_SKIP_TOP_DIRS = frozenset({"sessions", "logs", "mcp-tokens", "memories", hermes_cli.HOME_DIR})
+# is part of a portable agent definition. ``lightbulb-issue-bindings/`` is what the retired
+# issue -> room routing (2026-10-04, reversed 2026-10-18) left in older profiles: the seller's
+# own room and issue ids, read by nothing now.
+_S3_PROFILE_SKIP_TOP_DIRS = frozenset(
+    {"sessions", "logs", "mcp-tokens", "memories", "lightbulb-issue-bindings", hermes_cli.HOME_DIR}
+)
 
 # Top-level profile files the BACKEND writes for this owner (config.yaml, the facts file, the CLI
 # env values): owner-keyed config, never the seller's portable agent. The buyer's deploy writes

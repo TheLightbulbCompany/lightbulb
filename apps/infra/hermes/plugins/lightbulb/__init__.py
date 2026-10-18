@@ -5,11 +5,9 @@ import itertools
 import json
 import logging
 import re
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
 
 from . import turn_context
 from bridge import browser_control, website_logins
@@ -454,8 +452,6 @@ APPROVAL_SCHEMA = {
         "required": ["title", "summary"],
     },
 }
-_ISSUE_FILE_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")  # paperclip-api.sh ISSUE_ID_RE
-_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 APPROVAL_NO_KEY = "request_approval is unavailable: this turn has no Paperclip credentials."
 
 
@@ -495,49 +491,7 @@ def _http_error_text(exc: urllib.error.HTTPError) -> str:
     return f"HTTP {exc.code}" + (f": {str(detail)[:200]}" if detail else "")
 
 
-def _bind_issue_to_room(session_id: str, issue_id: str) -> tuple[Path, bytes | None] | None:
-    """paperclip-api.sh's write_binding, same file and format: the issue belongs to this room
-    conversation, so turn._route_paperclip_run lands the approval's wake here. Returns the path
-    and its exact prior bytes (None: there was no file), so a failed create can put it back."""
-    from bridge import turn
-
-    room = _scope_secret("LIGHTBULB_ROOM_SESSION_KEY") or session_id
-    if not turn.ROOM_SESSION_RE.match(room or "") or not _ISSUE_FILE_RE.match(issue_id):
-        return None
-    path = turn_context._home() / turn.ISSUE_BINDINGS_DIR / f"{issue_id}.json"
-    try:
-        prior = path.read_bytes()
-    except FileNotFoundError:
-        prior = None
-    except OSError:
-        return None
-    binding = {"sessionKey": room, "boundAt": int(time.time())}
-    if session_id != room:
-        binding["origin"] = session_id
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(binding), encoding="utf-8")
-    except OSError:
-        return None
-    return path, prior
-
-
-def _attached_run_id(issue_id: str) -> str | None:
-    """paperclip-api.sh's attached_run_id: Paperclip's run the bridge attached to this room
-    conversation for the issue (turn.ISSUE_RUN_FILE under .lightbulb-turn/)."""
-    from bridge import turn
-
-    if not _ISSUE_FILE_RE.match(issue_id):
-        return None
-    try:
-        run = (turn_context._home() / turn_context.DIRNAME
-               / turn.ISSUE_RUN_FILE.format(issue=issue_id)).read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return run if _RUN_ID_RE.match(run) else None
-
-
-def _request_approval(args: dict, *, session_id: str = "", **_kw) -> str:
+def _request_approval(args: dict, **_kw) -> str:
     base, key = _scope_secret("PAPERCLIP_API_URL").rstrip("/"), _scope_secret("PAPERCLIP_API_KEY")
     if not base or not key:
         return APPROVAL_NO_KEY
@@ -575,19 +529,9 @@ def _request_approval(args: dict, *, session_id: str = "", **_kw) -> str:
         return f"Approval not created: {_http_error_text(exc)}."
     except Exception as exc:  # noqa: BLE001
         return f"Approval not created: {type(exc).__name__}."
-    # Bind BEFORE the create: an approval can be answered at once, and its wake must find the room.
-    bound = [b for b in (_bind_issue_to_room(session_id, i["id"]) for i in issues) if b]
     try:
         approval = _paperclip_call("POST", f"{base}/api/companies/{company_id}/approvals", key, body, run_id)
     except Exception as exc:  # noqa: BLE001
-        for path, prior in bound:  # put back another room's binding byte for byte
-            try:
-                if prior is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    path.write_bytes(prior)
-            except OSError:
-                pass
         if isinstance(exc, urllib.error.HTTPError):
             return f"Approval not created: {_http_error_text(exc)}."
         return f"Approval not created: {type(exc).__name__}."
@@ -597,8 +541,7 @@ def _request_approval(args: dict, *, session_id: str = "", **_kw) -> str:
     not_moved = []
     for issue in issues:
         try:
-            _paperclip_call("PATCH", f"{base}/api/issues/{issue['id']}", key, {"status": "in_review"},
-                            run_id or _attached_run_id(issue["id"]))
+            _paperclip_call("PATCH", f"{base}/api/issues/{issue['id']}", key, {"status": "in_review"}, run_id)
         except urllib.error.HTTPError as exc:
             not_moved.append(f"{issue.get('identifier') or issue['id']} ({_http_error_text(exc)})")
         except Exception as exc:  # noqa: BLE001

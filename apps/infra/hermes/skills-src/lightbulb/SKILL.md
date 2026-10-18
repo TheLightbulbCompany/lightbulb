@@ -36,6 +36,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/integrations.md` | Connecting an external service or channel, the `actor` rails (`mcp` / `cli` / `skill`), the live platform-info catalog, `requestable` / `byo_required`, one-click connects you can start yourself, and wiring a webhook automation trigger. |
 | `references/email.md` | Sending or reading mail: the team address, the inbox, verification codes, who can wake you, meetings (calendar invites), the three `send` forms, and the limits. |
 | `references/text.md` | A text arrives from a customer ("You received a text message." with a Reply-Key), replying to it, and the business's listed phone. |
+| `references/front-desk.md` | Serving a business's customers by text; building and running OpenCLI site adapters; payment links. |
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
 | `references/skills.md` | Where your skills live and which of the three directories you can write to. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`. |
 | `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skills` toolset, and importing an existing Claude Code setup. |

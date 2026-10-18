@@ -16,6 +16,7 @@ def _creds(monkeypatch):
     monkeypatch.setattr(settings, "PHOTON_WEBHOOK_SECRET", "whsec_x")
     yield
     monkeypatch.setattr(photon, "_transport", None)
+    photon._reset_client()
 
 
 def _mock(monkeypatch, handler):
@@ -26,7 +27,16 @@ def _mock(monkeypatch, handler):
         return handler(request)
 
     monkeypatch.setattr(photon, "_transport", httpx.MockTransport(wrapped))
+    photon._reset_client()
     return calls
+
+
+async def test_calls_share_one_client(monkeypatch):
+    _mock(monkeypatch, lambda r: httpx.Response(200, json={}))
+    await photon.get_operation("op1")
+    first = photon._client
+    await photon.get_operation("op2")
+    assert first is not None and photon._client is first
 
 
 def test_enabled(monkeypatch):
@@ -51,11 +61,11 @@ async def test_send_text_body_and_headers(monkeypatch):
     }
 
 
-async def test_send_text_dry_never_calls(monkeypatch):
-    calls = _mock(monkeypatch, lambda r: httpx.Response(500))
+async def test_send_text_has_no_dry_run_short_circuit(monkeypatch):
+    """A bench injects ``_transport``; the production client never fakes a send."""
+    calls = _mock(monkeypatch, lambda r: httpx.Response(202, json={"id": "msg_2"}))
     out = await photon.send_text(sender_id="u1", space_id="dry:abc", text="hi", idempotency_key="k")
-    assert out["id"].startswith("dry-") and out["dry_run"] is True and out["status"] == "accepted"
-    assert calls == []
+    assert out == {"id": "msg_2"} and len(calls) == 1
 
 
 async def test_problem_code_mapping(monkeypatch):
@@ -80,10 +90,14 @@ async def test_unparseable_error_is_http_status(monkeypatch):
 
 
 async def test_404_is_not_found(monkeypatch):
-    _mock(monkeypatch, lambda r: httpx.Response(404, json={"code": "space_missing"}))
+    _mock(monkeypatch, lambda r: httpx.Response(404, text="gone"))
     with pytest.raises(photon.PhotonError) as ei:
         await photon.get_operation("op1")
     assert (ei.value.status, ei.value.code) == (404, "not_found")
+    _mock(monkeypatch, lambda r: httpx.Response(404, json={"code": "space_missing"}))
+    with pytest.raises(photon.PhotonError) as ei:
+        await photon.get_operation("op1")
+    assert (ei.value.status, ei.value.code) == (404, "space_missing")
 
 
 async def test_typing_posts_and_swallows(monkeypatch):
@@ -153,6 +167,12 @@ async def test_find_line_user_pages_and_matches(monkeypatch):
     assert await photon.find_line_user("r1") == {"id": "b", "handle": "+2"}
     assert len(calls) == 2 and calls[0].url.path == f"{PRJ}/users"
     assert await photon.find_line_user("nope") is None
+
+
+async def test_find_line_user_stops_after_the_page_cap(monkeypatch):
+    calls = _mock(monkeypatch, lambda r: httpx.Response(200, json={"items": [], "nextPageToken": "t.n"}))
+    assert await photon.find_line_user("r1") is None
+    assert len(calls) == photon.FIND_USER_MAX_PAGES
 
 
 @pytest.mark.parametrize("status", [200, 202, 404])

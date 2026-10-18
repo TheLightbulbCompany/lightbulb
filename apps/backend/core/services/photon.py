@@ -4,7 +4,6 @@ No business logic here: no DynamoDB, no owner lookups. Settings are read at call
 """
 
 import logging
-import uuid
 
 import httpx
 
@@ -13,9 +12,12 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.photon.codes/v1"
+FIND_USER_MAX_PAGES = 10
 
-# Tests inject an ``httpx.MockTransport`` here.
+# Tests inject an ``httpx.MockTransport`` here, then call ``_reset_client``.
 _transport: httpx.AsyncBaseTransport | None = None
+# One keep-alive client for every call: a fresh client per request paid a TLS handshake each time.
+_client: httpx.AsyncClient | None = None
 
 
 class PhotonError(Exception):
@@ -27,6 +29,18 @@ class PhotonError(Exception):
 
 def enabled() -> bool:
     return bool(settings.PHOTON_API_KEY and settings.PHOTON_PROJECT_ID and settings.PHOTON_WEBHOOK_SECRET)
+
+
+def _reset_client() -> None:
+    global _client
+    _client = None
+
+
+def _http() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(base_url=BASE_URL, timeout=20, transport=_transport)
+    return _client
 
 
 async def _call(
@@ -42,8 +56,7 @@ async def _call(
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key
     url = f"/projects/{settings.PHOTON_PROJECT_ID}{path}"
-    async with httpx.AsyncClient(base_url=BASE_URL, timeout=20, transport=_transport) as client:
-        resp = await client.request(method, url, json=json, headers=headers, params=params)
+    resp = await _http().request(method, url, json=json, headers=headers, params=params)
     try:
         body = resp.json()
     except ValueError:
@@ -53,16 +66,12 @@ async def _call(
     if resp.status_code in ok_statuses:
         return body
     if not resp.is_success:
-        if resp.status_code == 404:
-            raise PhotonError(404, "not_found")
-        raise PhotonError(resp.status_code, body.get("code") or f"http_{resp.status_code}")
+        status = resp.status_code
+        raise PhotonError(status, body.get("code") or ("not_found" if status == 404 else f"http_{status}"))
     return body
 
 
 async def send_text(*, sender_id: str, space_id: str, text: str, idempotency_key: str) -> dict:
-    # The bench's spaces are fictional ("dry:..."): never reach Photon.
-    if space_id.startswith("dry:"):
-        return {"id": f"dry-{uuid.uuid4().hex}", "status": "accepted", "dry_run": True}
     return await _call(
         "POST",
         "/messages",
@@ -99,18 +108,18 @@ async def cancel_operation(operation_id: str) -> None:
 
 
 async def find_line_user(resource_id: str) -> dict | None:
-    token = None
-    while True:
-        params = {"platform": "imessage", "pageSize": 100}
-        if token:
-            params["pageToken"] = token
+    """The line's own Photon user. ``/users`` filters by platform only, so this walks pages; past
+    ``FIND_USER_MAX_PAGES`` it answers not found, and the caller defers the record to a later look."""
+    params: dict = {"platform": "imessage", "pageSize": 100}
+    for _ in range(FIND_USER_MAX_PAGES):
         page = await _call("GET", "/users", params=params)
         for user in page.get("items", []):
             if (user.get("details") or {}).get("resourceId") == resource_id:
                 return {"id": user["id"], "handle": user.get("handle")}
-        token = page.get("nextPageToken")
-        if not token:
+        if not page.get("nextPageToken"):
             return None
+        params = {**params, "pageToken": page["nextPageToken"]}
+    return None
 
 
 async def release_line(resource_id: str) -> None:

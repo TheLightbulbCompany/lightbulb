@@ -6,12 +6,8 @@ failures (a delivery ``error``, any unexpected exception) roll the dedup row bac
 Photon retries; every deterministic drop stays 200.
 """
 
-import base64
-import binascii
-import hashlib
-import hmac
+import asyncio
 import logging
-import time
 import uuid
 from datetime import datetime, timezone
 
@@ -27,7 +23,7 @@ from core.repositories.agent_email_repo import get_by_address
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, put_sent, reply_key
 from core.repositories.container_repo import try_consume_stranger_wake
 from core.services.agent_email import mail_changed, team_address
-from core.services import messaging
+from core.services import messaging, standard_webhooks
 from core.services.agent_mail_delivery import deliver_to_agent
 from core.services.agent_mail_inbound import stranger_key
 from core.services.photon import PhotonError, enabled, mark_read, send_text, send_typing
@@ -45,12 +41,6 @@ from core.services.webhook_dedup import WebhookDedupResult, delete_event, record
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# Standard Webhooks header names, pinned in one place (Task 0 confirms them from a real delivery).
-HEADER_ID = "webhook-id"
-HEADER_TIMESTAMP = "webhook-timestamp"
-HEADER_SIGNATURE = "webhook-signature"
-MAX_CLOCK_SKEW_S = 300
 
 
 class _Party(BaseModel):
@@ -108,30 +98,7 @@ def _final(status: str, *, code: int = 200):
         put_metric("text.inbound", dimensions={"result": status})
     except Exception:  # noqa: BLE001 — telemetry must never break ingestion
         logger.debug("text.inbound metric emission failed", exc_info=True)
-    if code == 200:
-        return {"status": status}
     return JSONResponse(status_code=code, content={"status": status})
-
-
-def _verify(headers, raw: bytes) -> str | None:
-    """None when the delivery is authentic and fresh, else the 401 status string."""
-    wid, ts, sigs = headers.get(HEADER_ID), headers.get(HEADER_TIMESTAMP), headers.get(HEADER_SIGNATURE)
-    if not (wid and ts and sigs):
-        return "bad_signature"
-    try:
-        key = base64.b64decode(settings.PHOTON_WEBHOOK_SECRET.removeprefix("whsec_"))
-        sent_at = int(ts)
-    except (binascii.Error, ValueError):
-        return "bad_signature"
-    if abs(time.time() - sent_at) > MAX_CLOCK_SKEW_S:
-        return "stale_timestamp"
-    mac = hmac.new(key, f"{wid}.{ts}.".encode() + raw, hashlib.sha256).digest()
-    expected = base64.b64encode(mac)
-    for entry in sigs.split():
-        version, _, sig = entry.partition(",")
-        if version == "v1" and hmac.compare_digest(sig.encode(), expected):
-            return None
-    return "bad_signature"
 
 
 async def _rollback_dedup(event_id: str) -> None:
@@ -149,9 +116,9 @@ async def handle_photon_inbound(request: Request):
         if not enabled():
             return _final("disabled")
         raw = await request.body()
-        bad = _verify(request.headers, raw)
+        bad = standard_webhooks.verify(request.headers, raw, settings.PHOTON_WEBHOOK_SECRET)
         if bad:
-            return _final(bad, code=401)
+            return _final("stale_timestamp" if bad == "stale" else "bad_signature", code=401)
         try:
             event = PhotonEvent.model_validate_json(raw)
         except ValidationError:
@@ -239,17 +206,19 @@ async def handle_photon_inbound(request: Request):
         if customer in (line.get("human_threads") or {}):
             return _final("stored_human_thread")
 
-        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if await trial_block_reason(owner_id):
-            if not await try_consume_stranger_wake(
-                owner_id,
-                sender_key=stranger_key(customer),
-                day=day,
-                owner_cap=TEXT_WAKES_PER_OWNER_PER_DAY,
-                sender_cap=1,
-                attr_prefix="text_paused",
-            ):
-                return _final("stored_capped_quiet")
+        # A paused workspace answers each sender once a day with the paused reply; a live one wakes the agent.
+        paused = bool(await trial_block_reason(owner_id))
+        if not await try_consume_stranger_wake(
+            owner_id,
+            sender_key=stranger_key(customer),
+            day=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            owner_cap=TEXT_WAKES_PER_OWNER_PER_DAY,
+            sender_cap=1 if paused else TEXT_WAKES_PER_SENDER_PER_DAY,
+            attr_prefix="text_paused" if paused else "text_wake",
+        ):
+            return _final("stored_capped_quiet" if paused else "stored_not_woken_rate_limited")
+
+        if paused:
             try:
                 reply = paused_autoreply(await business_name(owner_id), line.get("business_phone"))
                 resp = await send_text(
@@ -269,19 +238,8 @@ async def handle_photon_inbound(request: Request):
                 return _final("dropped_over_cap")
             return _final("capped_notified")
 
-        if not await try_consume_stranger_wake(
-            owner_id,
-            sender_key=stranger_key(customer),
-            day=day,
-            owner_cap=TEXT_WAKES_PER_OWNER_PER_DAY,
-            sender_cap=TEXT_WAKES_PER_SENDER_PER_DAY,
-            attr_prefix="text_wake",
-        ):
-            return _final("stored_not_woken_rate_limited")
-
         if line_user:
-            await send_typing(sender_id=line_user, space_id=space.id)
-            await mark_read(obj.id)
+            await asyncio.gather(send_typing(sender_id=line_user, space_id=space.id), mark_read(obj.id))
 
         result = await deliver_to_agent(
             owner_id=owner_id,

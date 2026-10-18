@@ -3704,6 +3704,8 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
     # The room's own key reaches the shell beside the session's: paperclip-api.sh binds an issue to
     # the ROOM conversation even from a call or a side session, so its wakes land in the room.
     room_env = {"LIGHTBULB_ROOM_SESSION_KEY": session_key} if ROOM_SESSION_RE.match(session_key) else None
+    if cdp := browser_control.cdp_url():  # opencli in the shell drives the run's browser
+        room_env = {**(room_env or {}), "OPENCLI_CDP_ENDPOINT": cdp}
     with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         try:
             yield browser_lease
@@ -3870,6 +3872,8 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
     # Hermes's per-session env passthrough, and Hermes resolves each value back out of this
     # same scope.
     browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "paperclip")
+    if cdp := browser_control.cdp_url():  # opencli in the shell drives the run's browser
+        env["OPENCLI_CDP_ENDPOINT"] = cdp
     # Same-session Paperclip retries must not replace another active desktop ledger.
     logins = website_logins.prompt_scope(agent_id, room_id, None, lambda: paperclip_run_aborted(run_id))
     token = identity.get("localSessionToken")

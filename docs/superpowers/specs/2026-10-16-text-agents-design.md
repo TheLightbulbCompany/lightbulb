@@ -1,6 +1,6 @@
 # Text agents for businesses
 
-Date: 2026-10-17. Status: draft for owner approval. Research behind it:
+Date: 2026-10-17. Status: settled by owner rulings; provider changed to Photon 2026-10-17. Research behind it:
 `docs/research/2026-10-16-external-customer-agent-by-text.md`.
 
 ## What it is
@@ -52,15 +52,20 @@ conversation is the customer, and the agent works for them.
 
 ## Facts that shape it (verified in the research note and on the providers' pages, 2026-10-17)
 
-- The number is a Sendblue line (owner choice 2026-10-17; LoopMessage was the runner-up, about
-  $10 cheaper, and the cost table is in the research note). A line is a real US number that
-  sends and receives iMessage with SMS and RCS fallback; it exists the moment it is created, by
-  API, with no carrier verification. The AI Agent plan is $100 a month per line, inbound-first,
-  1,000 inbound contacts a day, replies free within 24 hours of the customer's last text,
-  webhooks included, 10 messages a second burst. Cold outbound is not sold. A released line is
-  not refunded for the rest of its month. By default an account may create 3 lines a day and
-  10 a month; Sendblue raises that on request. The free sandbox is a shared number with 10
-  verified contacts and no webhooks, so dev needs one paid line.
+- The number is a Photon dedicated iMessage line (owner ruling 2026-10-17, replacing Sendblue:
+  Photon carries WhatsApp, Telegram and voice on the same platform and Hermes has a native
+  Photon plugin; facts in `docs/research/2026-10-17-photon-integration-facts.md`). A line is a
+  real US number that sends and receives iMessage with SMS and RCS fallback, created by API on
+  Photon's Business plan at $250 a line a month ($250 monthly minimum, 50 lines a project,
+  pro-rated on release; cash refund terms unconfirmed). Photon has two API products; we use
+  Photon 2.0 (`api.photon.codes/v1`, Bearer project key, public beta since 2026-10-15), the
+  only one with an HTTP send path, typing, read receipts, attachment download and
+  Standard-Webhooks delivery. Its line creation is asynchronous (a 202 operation that "can stay
+  running for hours" when capacity is short), so "on the spot" is served from a small pool of
+  lines we hold ahead, refilled by a sweeper. Inbound media arrives as metadata; bytes are a
+  second call. There is no sandbox: dev buys one line against the $100 starting credit.
+  Hermes's own Photon plugin is a personal always-on gateway (a Node sidecar holding a gRPC
+  stream); it does not fit an invoke-only runtime, so texts still enter through our backend.
 - The ordinary SMS route (Twilio, Telnyx, any carrier) costs about $2 a number but every number
   must be verified in the business's name first, 3 to 5 business days, so it cannot be "on the
   spot" except from a pool we verify ahead under our own name. It stays as the cheap fallback.
@@ -82,21 +87,24 @@ conversation is the customer, and the agent works for them.
 
 ## Mechanisms (pointers for the builder)
 
-- Inbound: `routers/sendblue_inbound.py` shaped like `routers/ses_inbound.py`: Sendblue's
-  webhook, verified by its signing secret, dedup on the message handle, number row to (owner, agent), store with
+- Inbound: `routers/photon_inbound.py` shaped like `routers/ses_inbound.py`: Photon's
+  Standard-Webhooks delivery (`webhook-id`/`webhook-timestamp`/`webhook-signature`, HMAC over
+  `id.timestamp.body`, 5-minute window), dedup on the message id, line row to (owner, agent), store with
   `agent_mail_inbox_repo.put_message` (under the team mail address, with a channel field, so
   every inbox list and badge shows texts unchanged), the existing
   stranger caps and trial-cap autoreply, then `agent_mail_delivery.deliver_to_agent` with a
   session key per (number, customer).
 - Outbound: `lightbulb-text.sh send --reply <key>` to a backend route that sends through
-  Sendblue's send API and records the sent text as an inbox item, as mail does. Sendblue's
-  typing indicator and read receipt are free to use.
-- Numbers: one Lightbulb Sendblue account with automatic line provisioning, one line per
-  workspace created at the onboarding website step with `provision-preview` then
-  `provision-confirm`, assigned to Customer Operations. The number is a row in the existing agent-email address
-  table (`kind: text`): owner, agent, status, business phone, taken-over threads. A workspace wipe deprovisions the line at its month end, since Sendblue
-  does not refund. Before launch, Sendblue must enable automatic provisioning on our account
-  and raise the default 3-a-day, 10-a-month line limits to our sign-up rate.
+  Photon's `POST /v1/projects/{id}/messages` (sender = the line's agent user, space = the
+  customer's DM space from the stored inbound row, an `Idempotency-Key` per send) and records
+  the sent text as an inbox item, as mail does. Typing and read receipts are one call each.
+- Numbers: one Lightbulb Photon project on the Business plan. The Stripe webhook assigns a line
+  from the pool (instant) or starts a dedicated-line operation and marks the workspace pending; a
+  one-minute sweeper polls operations, records finished lines, refills the pool to
+  `PHOTON_LINE_POOL_SIZE` (default 0 until Photon's wait times are known), and releases lines
+  whose workspace is gone. The number is a row in the existing agent-email address table
+  (`kind: text`): owner, agent, status, business phone, taken-over threads, Photon resource and
+  user ids. A workspace wipe releases the line.
 - Build from URL: a DM to Customer Operations when the first message carries the site (the
   existing intake chip), using the lightbulb skill and OpenCLI in the image (`OPENCLI_CDP_ENDPOINT` set from the CDP address the bridge hands each run).
   It rewrites Customer Operations into the front desk (persona, facts, and a site adapter for
@@ -122,17 +130,20 @@ conversation is the customer, and the agent works for them.
 
 ## Left to the builder
 
-The Sendblue account setup (automatic provisioning on, limits raised, one paid line in dev
-driving the inbound webhook), table choice, the exact Hermes tool-allowlist
-key, cap values, adapter storage path, the Mail panel changes, the onboarding step's look,
-rollout order, and the first per-platform adapter.
+The Photon project setup (Business plan, a `pho_sk_` project key, the webhook destination,
+one paid line in dev against the starting credit, the pool size), the exact inbound event
+schema (fetched from Photon's event-types endpoint before the parser is written), the Hermes
+tool-allowlist key, cap values, adapter storage path, the Mail panel changes, the onboarding
+step's look, rollout order, and the first per-platform adapter.
 
 ## Calls I made (override any of them)
 
 - The number is an iMessage line by default, created on the spot. The SMS pool is the cheap
   fallback, not the default.
-- The Front desk is an add-on at Sendblue's rate, $100 a month, with Team unchanged at $50
-  (owner 2026-10-17, "keep the rates for now"). Revisit when there is volume pricing.
+- The Front desk is an add-on at the line's cost, $250 a month on Photon, with Team unchanged
+  at $50 (owner 2026-10-17, "keep the rates for now", set when the line cost $100; the $250
+  pass-through is my call, override it). WhatsApp is a second $250 line and a connected Meta
+  business account; voice is $0.01 a minute. Revisit when there is volume pricing.
 - Getting the number starts the paid plan: Team plus the add-on, charged then, no trial
   carried over. Sign-up and the website step stay free; the agent can be tried in chat
   before paying.

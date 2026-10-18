@@ -15,6 +15,11 @@ const ctx = (over: Partial<CardContextValue> = {}): CardContextValue => ({
 });
 const fence = (body: string) => "```openui-lang\n" + body + "\n```";
 
+it("a fence the parser cannot turn into a root stays readable as code", async () => {
+  render(<CardContext.Provider value={ctx()}><MarkdownView components={roomMarkdown}>{fence("Which plan? Studio or Starter")}</MarkdownView></CardContext.Provider>);
+  expect(await screen.findByText("Which plan? Studio or Starter")).toBeInTheDocument();
+});
+
 it("renders a Text card from an agent's fence, not a code block", async () => {
   render(<CardContext.Provider value={ctx()}><MarkdownView components={roomMarkdown}>{fence('root = Stack([t])\nt = Text("Hello there")')}</MarkdownView></CardContext.Provider>);
   const text = await screen.findByText("Hello there");

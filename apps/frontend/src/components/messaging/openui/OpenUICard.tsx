@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
-import { Renderer, type OpenUIError } from "@openuidev/react-lang";
+import { useCallback, useMemo, useState } from "react";
+import { Renderer, type OpenUIError, type ParseResult } from "@openuidev/react-lang";
 import { CARD_MAX_BYTES } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import { useCardContext } from "./CardContext";
@@ -20,6 +20,9 @@ export function OpenUICard({ program }: { program: string }) {
   const ctx = useCardContext();
   const tooBig = useMemo(() => bytes(program) > CARD_MAX_BYTES, [program]);
   const answered = ctx?.answered ?? null;
+  // A fence the parser cannot turn into a root would otherwise draw nothing; the words stay visible as code.
+  const [unparsed, setUnparsed] = useState(false);
+  const onParseResult = useCallback((r: ParseResult | null) => setUnparsed(r !== null && r.root === null), []);
   const pressValue = useMemo<CardPress>(() => ({
     press: ctx?.press ?? (() => {}), disabled: !ctx?.press || ctx.pending || ctx.answered !== null, answered, retry: ctx?.retry ?? null,
   }), [ctx, answered]);
@@ -31,7 +34,8 @@ export function OpenUICard({ program }: { program: string }) {
   return (
     <div className="openui-card" data-answered={answered !== null ? "" : undefined}>
       <CardPressContext.Provider value={pressValue}>
-        <Renderer response={program} library={webCardLibrary} isStreaming={false} onError={onError} />
+        <Renderer response={program} library={webCardLibrary} isStreaming={false} onError={onError} onParseResult={onParseResult} />
+        {unparsed && <pre className="rounded-sm p-2 text-caption font-mono overflow-x-auto" style={{ background: "var(--edge)" }}>{program}</pre>}
       </CardPressContext.Provider>
       {ctx?.error && <p role="alert" className="text-ui text-err">{ctx.error}</p>}
     </div>

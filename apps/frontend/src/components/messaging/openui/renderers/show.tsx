@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { tableReply } from "@lightbulb/shared";
+import { answerIsTableOf, tableReply } from "@lightbulb/shared";
 import { Button as UiButton } from "@/components/ui/button";
 import { Input as UiInput } from "@/components/ui/input";
 import { Table as UiTable, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -62,9 +62,9 @@ export function EditableTableView({ props }: RenderProps<{ columns: string[]; ro
           </TableCell>)}</TableRow>)}
         </TableBody>
       </UiTable>
-      {answered === null
-        ? <UiButton type="submit" size="sm" disabled={disabled} className="justify-self-start">{props.submit ?? "Submit"}</UiButton>
-        : <p className="text-caption openui-answer">Sent.</p>}
+      {answerIsTableOf(answered, props.columns)
+        ? <p className="text-caption openui-answer">Sent.</p>
+        : <UiButton type="submit" size="sm" disabled={disabled} className="justify-self-start">{props.submit ?? "Submit"}</UiButton>}
     </form>
   );
 }

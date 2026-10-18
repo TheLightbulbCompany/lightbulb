@@ -39,3 +39,44 @@ export function cardAnswersFor(messages: readonly CanonicalRoomMessage[]): Map<s
   }
   return answers;
 }
+
+const norm = (s: string) => s.trim();
+
+/**
+ * Whether a message's answer came from THIS group of options. The answer is the message's
+ * (one per card), so a Form's "Sent." must not make the FollowUps beside it say "You picked
+ * Your name: Ada", and a Choice's pick must not make the Form beside it read "Sent.".
+ */
+export function answerIsFrom(answered: string | null, options: readonly string[], multi = false): boolean {
+  if (answered === null) return false;
+  const opts = options.map(norm).filter(Boolean);
+  if (!multi) return opts.includes(norm(answered));
+  // A multi answer is the picks joined by ", " (choiceReply). An option may itself hold a comma, so
+  // the answer is consumed option by option (longest first) rather than split on commas.
+  const byLength = [...new Set(opts)].sort((a, b) => b.length - a.length);
+  let rest = norm(answered);
+  let picks = 0;
+  while (rest.length > 0) {
+    const hit = byLength.find((o) => rest === o || rest.startsWith(o + ", "));
+    if (!hit) return false;
+    picks += 1;
+    rest = rest === hit ? "" : rest.slice(hit.length + 2);
+  }
+  return picks > 0;
+}
+
+/** A Form's reply is `Label: value` lines (reply.ts); it is this form's when every line names one of its labels. */
+export function answerIsFormOf(answered: string | null, labels: readonly string[]): boolean {
+  if (answered === null) return false;
+  // formReply writes `Label: value`; a label may itself hold a colon, so match on the label prefix.
+  const prefixes = labels.map(norm).filter(Boolean).map((l) => l + ":");
+  const lines = answered.split("\n").map(norm).filter(Boolean);
+  return lines.length > 0 && lines.every((l) => prefixes.some((p) => l.startsWith(p)));
+}
+
+/** An EditableTable's reply is a markdown table (reply.ts); it is this table's when the header row is its columns. */
+export function answerIsTableOf(answered: string | null, columns: readonly string[]): boolean {
+  if (answered === null) return false;
+  const first = answered.split("\n")[0] ?? "";
+  return first.startsWith("|") && columns.every((c) => first.includes(`| ${norm(c)} `) || first.includes(`| ${norm(c)} |`));
+}

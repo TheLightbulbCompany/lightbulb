@@ -45,6 +45,17 @@ it("mounts no DOM element: the Renderer's default slot wraps the tree in a div, 
   expect(JSON.stringify(view.toJSON())).not.toMatch(/"type":"(div|span|button|section)"/);
 });
 
+it("the answer line belongs to the component that produced it", async () => {
+  const program = fence('root = Stack([f, n])\nf = Form("Choose your plan", [Input("name", "Your name"), Select("plan", "Plan", ["Starter", "Team"])])\nn = FollowUps(["Compare the plans", "Recommend a plan"])');
+  const first = await render(<Card text={program} onReply={jest.fn()} answered={"Your name: Ada\nPlan: Team"} />);
+  expect(screen.getByText("Sent.")).toBeTruthy();
+  expect(screen.queryByText(/You picked/)).toBeNull();
+  await first.unmount();
+  await render(<Card text={program} onReply={jest.fn()} answered="Compare the plans" />);
+  expect(screen.getByText("You picked Compare the plans.")).toBeTruthy();
+  expect(screen.queryByText("Sent.")).toBeNull();
+});
+
 it("a fence with no card context stays code", async () => {
   await render(<MessageMarkdown text={fence('root = Stack([t])\nt = Text("hi")')} palette={chatPalette.light} />);
   expect(screen.getByText(/root = Stack/)).toBeTruthy();

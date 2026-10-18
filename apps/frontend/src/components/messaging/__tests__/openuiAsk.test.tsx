@@ -65,6 +65,18 @@ it("an answered Choice shows the pick", () => {
   expect(within(group).getByRole("button", { name: "Starter" })).toBeDisabled();
 });
 
+it("the answer line belongs to the component that produced it", () => {
+  const program = 'root = Stack([f, n])\nf = Form("Choose your plan", [Input("name", "Your name"), Select("plan", "Plan", ["Starter", "Team"])])\nn = FollowUps(["Compare the plans", "Recommend a plan"])';
+  const { unmount } = wrap(program, { onReply: vi.fn(), answered: "Your name: Ada\nPlan: Team" });
+  expect(screen.getByText("Sent.")).toBeInTheDocument();
+  expect(screen.queryByText(/You picked/)).not.toBeInTheDocument();
+  unmount();
+  wrap(program, { onReply: vi.fn(), answered: "Compare the plans" });
+  expect(screen.getByText("You picked Compare the plans.")).toBeInTheDocument();
+  expect(screen.queryByText("Sent.")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+});
+
 it("a Button posts exactly its label", async () => {
   const onReply = vi.fn().mockResolvedValue(undefined);
   wrap('root = Stack([b])\nb = Buttons([Button("Yes", "primary"), Button("No", "secondary")])', { onReply });

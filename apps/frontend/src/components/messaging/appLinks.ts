@@ -65,7 +65,8 @@ export function appLinkTarget(raw: string | null | undefined, origin = typeof wi
 /** Every own-app link in a message's text, in order, de-duplicated by target. */
 export function extractAppLinks(text: string, max = 3): AppLink[] {
   const links: AppLink[] = [];
-  for (const [match] of text.matchAll(/https?:\/\/[^\s<>()[\]"'`]+/gi)) {
+  // A link inside a fenced block belongs to the block (a Sources card draws its own); no chip for it.
+  for (const [match] of text.replace(/(`{3,}|~{3,})[\s\S]*?(\1|$)/g, " ").matchAll(/https?:\/\/[^\s<>()[\]"'`]+/gi)) {
     const link = appLinkTarget(match.replace(/[.,;:!?*_~]+$/, ""));
     if (!link || links.some((l) => l.href === link.href)) continue;
     links.push(link);

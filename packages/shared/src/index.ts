@@ -344,4 +344,4 @@ export { CARD_FENCE, CARD_MAX_BYTES, CARD_MAX_OPTIONS, CARD_ROOT } from "./ui/co
 export type { CardName } from "./ui/library";
 export { cardReplyRequest, choiceReply, formReply, tableReply } from "./ui/reply";
 export type { CardReply } from "./ui/reply";
-export { cardAnswerFor, cardAnswersFor } from "./ui/answer";
+export { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./ui/answer";

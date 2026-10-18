@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
-import { CARD_MAX_OPTIONS, choiceReply, formReply } from "@lightbulb/shared";
+import { CARD_MAX_OPTIONS, answerIsFormOf, answerIsFrom, choiceReply, formReply } from "@lightbulb/shared";
 import { Button as UiButton } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input as UiInput } from "@/components/ui/input";
@@ -35,7 +35,7 @@ export function ChoiceView({ props }: RenderProps<{ question: string; options: s
         </div>
       )}
       {hidden > 0 && <p className="text-caption text-muted-foreground">+{hidden} more</p>}
-      {answered !== null && <p className="text-caption openui-answer">You picked {answered}.</p>}
+      {answerIsFrom(answered, props.options, props.multi) && <p className="text-caption openui-answer">You picked {answered}.</p>}
     </div>
   );
 }
@@ -51,7 +51,7 @@ export function ButtonsView({ props }: RenderProps<{ buttons: SubComponent<Butto
         return <UiButton key={`${b.props.label}-${i}`} type="button" size="sm" variant={b.props.variant === "secondary" ? "outline" : "default"}
           disabled={disabled || (retry !== null && retry !== text)} aria-pressed={answered !== null && answered === text} onClick={() => press(text)}>{b.props.label}</UiButton>;
       })}
-      {answered !== null && <p className="text-caption openui-answer">You picked {answered}.</p>}
+      {answerIsFrom(answered, props.buttons.map((b) => b.props.label)) && <p className="text-caption openui-answer">You picked {answered}.</p>}
     </div>
   );
 }
@@ -65,7 +65,7 @@ export function FollowUpsView({ props }: RenderProps<{ replies: string[] }>) {
     <div className="flex flex-wrap gap-2 openui-live" role="group" aria-label="Suggested replies">
       {props.replies.map((r) => <UiButton key={r} type="button" size="sm" variant="outline" disabled={disabled || (retry !== null && retry !== r)}
         aria-pressed={answered !== null && answered === r} onClick={() => press(r)}>{r}</UiButton>)}
-      {answered !== null && <p className="text-caption openui-answer">You picked {answered}.</p>}
+      {answerIsFrom(answered, props.replies) && <p className="text-caption openui-answer">You picked {answered}.</p>}
     </div>
   );
 }
@@ -98,9 +98,9 @@ export function FormView({ props }: RenderProps<{ title: string; fields: SubComp
               : <UiInput id={id} type="text" placeholder={f.props.placeholder} value={value} disabled={frozen} onChange={(e) => set(f.props.name, e.target.value)} />}
         </div>;
       })}
-      {answered === null
-        ? <UiButton type="submit" size="sm" className="justify-self-start" disabled={disabled}>{props.submit ?? "Submit"}</UiButton>
-        : <p className="text-caption openui-answer">Sent.</p>}
+      {answerIsFormOf(answered, props.fields.map((f) => f.props.label))
+        ? <p className="text-caption openui-answer">Sent.</p>
+        : <UiButton type="submit" size="sm" className="justify-self-start" disabled={disabled}>{props.submit ?? "Submit"}</UiButton>}
     </form>
   );
 }

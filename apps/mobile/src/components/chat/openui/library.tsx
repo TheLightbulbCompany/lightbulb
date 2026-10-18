@@ -1,5 +1,5 @@
 import { createLibrary, defineComponent } from "@openuidev/react-lang";
-import { CARD_MAX_OPTIONS, CARD_ROOT, choiceReply, formReply, tableReply, type CardName } from "@lightbulb/shared";
+import { CARD_MAX_OPTIONS, CARD_ROOT, answerIsFormOf, answerIsFrom, answerIsTableOf, choiceReply, formReply, tableReply, type CardName } from "@lightbulb/shared";
 import { CARD_COMPONENTS } from "@lightbulb/shared/cards";
 import { Image as ExpoImage } from "expo-image";
 import { router } from "expo-router";
@@ -103,7 +103,7 @@ const R = {
         <TextInput key={ci} accessibilityLabel={`${props.columns[ci]}, row ${ri + 1}`} editable={!disabled && retry === null} value={cell}
           onChangeText={(v) => setRows((cur) => cur.map((row, a) => a === ri ? row.map((x, b) => b === ci ? v : x) : row))}
           style={{ ...input, flex: 1, borderColor: palette.edge, color: palette.fg }} />)}</View>)}
-      {answered === null ? <Row><Chip label={props.submit ?? "Submit"} disabled={disabled} onPress={() => press(tableReply(props.columns, rows))} /></Row> : <Answer>Sent.</Answer>}
+      {answerIsTableOf(answered, props.columns) ? <Answer>Sent.</Answer> : <Row><Chip label={props.submit ?? "Submit"} disabled={disabled} onPress={() => press(tableReply(props.columns, rows))} /></Row>}
     </View>;
   },
   BarChart: chart,
@@ -136,7 +136,7 @@ const R = {
         {answered === null ? <Row><Chip label="Done" disabled={disabled || (retry === null && picked.length === 0)} onPress={() => press(choiceReply(picked))} /></Row> : null}
       </> : <Row>{shown.map((o) => <Chip key={o} label={o} disabled={disabled || (retry !== null && retry !== o.trim())} pressed={answered === o.trim()} onPress={() => press(o)} />)}</Row>}
       {props.options.length > shown.length ? <Prose soft>+{props.options.length - shown.length} more</Prose> : null}
-      {answered !== null ? <Answer>You picked {answered}.</Answer> : null}
+      {answerIsFrom(answered, props.options, props.multi) ? <Answer>You picked {answered}.</Answer> : null}
     </View>;
   },
   Buttons: ({ props }: RP<{ buttons: Sub<{ label: string; variant?: string }>[] }>) => {
@@ -146,7 +146,7 @@ const R = {
         const t = b.props.label.trim();
         return <Chip key={i} label={b.props.label} disabled={disabled || (retry !== null && retry !== t)} pressed={answered === t} onPress={() => press(t)} />;
       })}</Row>
-      {answered !== null ? <Answer>You picked {answered}.</Answer> : null}
+      {answerIsFrom(answered, props.buttons.map((b) => b.props.label)) ? <Answer>You picked {answered}.</Answer> : null}
     </View>;
   },
   Button: () => null,
@@ -154,7 +154,7 @@ const R = {
     const { press, disabled, answered, retry } = usePress();
     return <View style={{ gap: spacing.sm }}>
       <Row>{props.replies.map((r) => <Chip key={r} label={r} disabled={disabled || (retry !== null && retry !== r.trim())} pressed={answered === r.trim()} onPress={() => press(r)} />)}</Row>
-      {answered !== null ? <Answer>You picked {answered}.</Answer> : null}
+      {answerIsFrom(answered, props.replies) ? <Answer>You picked {answered}.</Answer> : null}
     </View>;
   },
   Form: ({ props }: RP<{ title: string; fields: Sub<{ name: string; label: string; placeholder?: string; options?: string[] }>[]; submit?: string }>) => {
@@ -171,7 +171,7 @@ const R = {
           : <TextInput accessibilityLabel={f.props.label} editable={!frozen} placeholder={f.typeName === "DatePicker" ? "YYYY-MM-DD" : f.props.placeholder} value={values[f.props.name] ?? ""}
               onChangeText={(v) => setValues((c) => ({ ...c, [f.props.name]: v }))} style={{ ...input, borderColor: palette.edge, color: palette.fg }} />}
       </View>)}
-      {answered === null ? <Row><Chip label={props.submit ?? "Submit"} disabled={disabled} onPress={() => press(formReply(props.fields.map((f) => ({ label: f.props.label, value: values[f.props.name] ?? "" }))))} /></Row> : <Answer>Sent.</Answer>}
+      {answerIsFormOf(answered, props.fields.map((f) => f.props.label)) ? <Answer>Sent.</Answer> : <Row><Chip label={props.submit ?? "Submit"} disabled={disabled} onPress={() => press(formReply(props.fields.map((f) => ({ label: f.props.label, value: values[f.props.name] ?? "" }))))} /></Row>}
     </View>;
   },
   Input: () => null, Select: () => null, DatePicker: () => null,

@@ -24,6 +24,15 @@ describe("extractPreviewUrls", () => {
   });
 });
 
+describe("fenced blocks", () => {
+  it("a URL inside a fenced block gets no preview: the card draws its own link", () => {
+    const text = "See below.\n```openui-lang\nroot = Stack([s])\ns = Sources([Source(\"Stripe\", \"https://docs.stripe.com/billing\")])\n```\nand https://example.com/after";
+    expect(extractPreviewUrls(text)).toEqual(["https://example.com/after"]);
+    const tilde = "~~~openui-lang\nroot = Stack([s])\ns = Sources([Source(\"Stripe\", \"https://docs.stripe.com/billing\")])\n~~~\nhttps://example.com/after";
+    expect(extractPreviewUrls(tilde)).toEqual(["https://example.com/after"]);
+  });
+});
+
 describe("helpers", () => {
   it("encodes the url into the endpoint path", () => {
     expect(linkPreviewPath("https://a.com/?a=1&b=2")).toBe("/messaging/link-preview?url=https%3A%2F%2Fa.com%2F%3Fa%3D1%26b%3D2");

@@ -102,6 +102,12 @@ async def find_tasks(auth: AuthContext, query: str = "", status: str = "", assig
         sort_dir="desc",
         limit=max(1, min(limit, 100)),
         exclude_routine_executions=True,
+        # Called as a function, so every Query() default must be passed: an
+        # omitted one arrives as a truthy Query object and is sent upstream.
+        attention=None,
+        include_blocked_inbox_attention=False,
+        include_blocked_by=False,
+        include_live_descendant_summary=False,
     )
     return {"tasks": [_summary(i, names) for i in listed["issues"] if isinstance(i, dict)]}
 

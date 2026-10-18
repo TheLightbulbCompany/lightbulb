@@ -60,6 +60,14 @@ async def test_find_and_read_are_scoped_to_the_callers_company(admin):
     assert kwargs["company_id"] == "co_a"
     assert kwargs["params"]["assigneeAgentId"] == "ag1"
     assert kwargs["params"]["status"] == "backlog,todo,in_progress,in_review,blocked"
+    assert set(kwargs["params"]) == {
+        "status",
+        "assigneeAgentId",
+        "sortField",
+        "sortDir",
+        "limit",
+        "excludeRoutineExecutions",
+    }
     assert found["tasks"][0]["assignee"] == "Engineering"
     task = await task_board.read_task(AUTH, "ISOA-1")
     assert task["description"] == "Do the thing." and task["blockedBy"][0]["identifier"] == "ISOA-0"

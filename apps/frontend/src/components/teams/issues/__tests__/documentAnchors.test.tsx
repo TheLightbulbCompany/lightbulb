@@ -86,6 +86,12 @@ describe("computeAnchor never pins text the page does not render", () => {
     expect(pinned("main", 0, body)).toEqual({ start: body.indexOf("main"), text: "main" });
   });
 
+  it("never lets a code span cross a blank line", () => {
+    // Two unpaired backticks in different paragraphs are not a code span (CommonMark).
+    const body = "Intro text ` here.\n\n![Sales grew in March](x)\n\nSales grew in March. Fix ` later.";
+    expect(pinned("grew", 0, body)).toEqual({ start: body.lastIndexOf("grew"), text: "grew" });
+  });
+
   it("keeps an autolink: it renders", () => {
     const body = "Docs at <https://docs.example> today.\n\nDocs at docs.example today.";
     expect(pinned("docs.example", 0, body)).toEqual({ start: body.indexOf("docs.example"), text: "docs.example" });

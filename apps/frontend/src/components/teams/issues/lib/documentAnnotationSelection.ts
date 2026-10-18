@@ -73,7 +73,7 @@ function unrenderedRanges(markdown: string): Array<[number, number]> {
     fence.lastIndex = Math.max(end + 1, fence.lastIndex); // skip past the close fence line
   }
   const inBlock = (pos: number) => [...hidden, ...code].some(([from, to]) => pos >= from && pos < to);
-  for (const m of markdown.matchAll(/(`+)[^`][\s\S]*?(?<!`)\1(?!`)/g)) {
+  for (const m of markdown.matchAll(/(`+)[^`](?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\1(?!`)/g)) {
     if (!inBlock(m.index ?? 0)) code.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
   }
   // Blank out code so the remaining patterns never see it.

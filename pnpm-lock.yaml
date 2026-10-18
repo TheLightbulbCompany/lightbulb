@@ -183,6 +183,9 @@ importers:
       tailwind-merge:
         specifier: ^3.4.0
         version: 3.5.0
+      xlsx:
+        specifier: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+        version: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -9542,6 +9545,12 @@ packages:
   xcode@3.0.1:
     resolution: {integrity: sha512-kCz5k7J7XbJtjABOvkc5lJmkiDh8VhjVCGNiqdKCscmVpdVUpEAyXv1xmCLkQJ5dsHqx3IPO4XW+NTDhU/fatA==}
     engines: {node: '>=10.0.0'}
+
+  xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz:
+    resolution: {integrity: sha512-oLDq3jw7AcLqKWH2AhCpVTZl8mf6X2YReP+Neh0SJUzV/BdZYjth94tG5toiMB1PPrYtxOCfaoUCkvtuH+3AJA==, tarball: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz}
+    version: 0.20.3
+    engines: {node: '>=0.8'}
+    hasBin: true
 
   xml-name-validator@4.0.0:
     resolution: {integrity: sha512-ICP2e+jsHvAj2E2lIHxa5tjXRlKDJo4IdvPvCXbXQGdzSfmSpNVyIKMvoZHjDY9DP0zV17iI85o90vRFXNccRw==}
@@ -21527,6 +21536,8 @@ snapshots:
     dependencies:
       simple-plist: 1.3.1
       uuid: 7.0.3
+
+  xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz: {}
 
   xml-name-validator@4.0.0: {}
 

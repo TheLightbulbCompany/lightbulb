@@ -29,6 +29,8 @@ let keptData: unknown;
 // refreshed. Distinct from `mutate` above (each read's own bound mutate).
 const teamsMutate = vi.fn().mockResolvedValue(undefined);
 
+vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: vi.fn() }));
+
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: (path: string | null, opts?: { keepPreviousData?: boolean }) => {
@@ -65,6 +67,7 @@ vi.mock("@/components/teams/shared/components/MarkdownView", () => ({
   MarkdownView: ({ children }: { children: string }) => <div data-testid="md">{children}</div>,
 }));
 
+import { openPanel } from "@/components/workspace/workspaceController";
 import { ArtifactsPanel } from "../ArtifactsPanel";
 
 const DOC = {
@@ -343,180 +346,50 @@ describe("ArtifactsPanel — artifact card previews", () => {
   });
 });
 
-describe("ArtifactsPanel — view on click", () => {
-  it("opens a document artifact's content in the viewer (markdown body fetched by key)", async () => {
+describe("ArtifactsPanel — open in the artifact pane", () => {
+  const PANE = { pushUrl: true };
+
+  it("opens a document by its key", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC]);
-    reads["/issues/iss_1/documents/plan"] = {
-      data: { id: "doc1", key: "plan", body: "Implementation details here" },
-    };
     render(<ArtifactsPanel />);
     switchToByTask();
     expandStack();
-
     fireEvent.click(cardFor("Implementation plan"));
-
-    expect(await screen.findByText("Implementation details here")).toBeInTheDocument();
+    expect(openPanel).toHaveBeenCalledWith("artifact", { src: "paperclip", kind: "document", issue: "iss_1", key: "plan", ident: "ISO-1" }, PANE);
   });
 
-  it("opens a work-product artifact's content in the viewer (summary fetched + matched by id)", async () => {
-    stubStackList([group()]);
-    stubExpanded("iss_1", [WORK_PRODUCT]);
-    reads["/issues/iss_1/work-products"] = {
-      data: {
-        workProducts: [
-          { id: "wp1", title: "Deploy preview", summary: "Shipped to staging", url: "https://x" },
-        ],
-      },
-    };
-    render(<ArtifactsPanel />);
-    switchToByTask();
-    expandStack();
-
-    fireEvent.click(cardFor("Deploy preview"));
-
-    expect(await screen.findByText("Shipped to staging")).toBeInTheDocument();
-  });
-
-  it("revalidates the work-products key instead of rendering a stale cached miss", async () => {
-    stubStackList([group()]);
-    stubExpanded("iss_1", [WORK_PRODUCT]);
-    // The issue-detail Output list was cached BEFORE this deliverable existed:
-    // a miss for wp1, with a fresh fetch still in flight (isValidating).
-    reads["/issues/iss_1/work-products"] = {
-      data: { workProducts: [] },
-      isValidating: true,
-    };
-    render(<ArtifactsPanel />);
-    switchToByTask();
-    expandStack();
-
-    fireEvent.click(cardFor("Deploy preview"));
-
-    // A cached miss must NOT be treated as final: no error, still "loading",
-    // and the viewer kicks a fresh revalidation of the shared key.
-    expect(screen.queryByText("Could not load this output.")).not.toBeInTheDocument();
-    expect(screen.getByText("Loading output…")).toBeInTheDocument();
-    await waitFor(() => expect(mutate).toHaveBeenCalled());
-  });
-
-  it("opens an image attachment inline via the BFF content route", async () => {
+  it("opens an attachment by its raw id", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [ATTACHMENT]);
     render(<ArtifactsPanel />);
     switchToByTask();
     expandStack();
-
     fireEvent.click(cardFor("Screenshot.png"));
-
-    // The dialog image (not the card thumbnail) shows the same alt; assert the
-    // authenticated content route was hit for it.
-    expect(await screen.findByRole("dialog")).toBeInTheDocument();
-    expect(download).toHaveBeenCalledWith("/issues/iss_1/attachments/att1/content");
+    expect(openPanel).toHaveBeenCalledWith("artifact", { src: "paperclip", kind: "attachment", issue: "iss_1", id: "att1", name: "Screenshot.png", type: "image/png" }, PANE);
   });
 
-  it("renders a file-backed work product's markdown bytes inline, below its summary", async () => {
+  it("opens a file-backed work product by the attachment id in its download path", () => {
     stubRecent([WORK_PRODUCT_FILE]);
-    reads["/issues/iss_1/work-products"] = {
-      data: {
-        workProducts: [
-          { id: "wp9", title: "Pricing proposal", summary: "Three tiers", url: null },
-        ],
-      },
-    };
-    download.mockResolvedValueOnce({
-      size: 7,
-      type: "text/markdown",
-      text: async () => "# Tiers",
-    } as unknown as Blob);
     render(<ArtifactsPanel />);
-
     fireEvent.click(cardFor("Pricing proposal"));
+    expect(openPanel).toHaveBeenCalledWith("artifact", { src: "paperclip", kind: "work_product", issue: "iss_1", id: "att9", name: "Pricing proposal", type: "text/markdown" }, PANE);
+  });
 
-    expect(await screen.findByText("Three tiers")).toBeInTheDocument();
-    expect(download).toHaveBeenCalledWith("/issues/iss_1/attachments/att9/content");
-    // The file bytes render after an async blob read; the summary's md node
-    // is on screen first, so wait for the one that carries the file.
-    await waitFor(() =>
-      expect(screen.getAllByTestId("md").map((m) => m.textContent)).toContain("# Tiers"),
+  it("falls back to opening the task when no pane params can be derived", () => {
+    stubStackList([group()]);
+    stubExpanded("iss_1", [WORK_PRODUCT]);
+    const openDetail = vi.fn();
+    render(
+      <InlineTeamsNavProvider value={{ openDetail, leaveToList: vi.fn() }}>
+        <ArtifactsPanel />
+      </InlineTeamsNavProvider>,
     );
-  });
-
-  it("does not claim a missing summary above the deliverable it is missing from", async () => {
-    stubRecent([WORK_PRODUCT_FILE]);
-    // The agent upload helper's default: no summary, bytes behind an attachment.
-    reads["/issues/iss_1/work-products"] = {
-      data: { workProducts: [{ id: "wp9", title: "Pricing proposal", summary: "", url: null }] },
-    };
-    download.mockResolvedValueOnce({
-      size: 7,
-      type: "text/markdown",
-      text: async () => "# Tiers",
-    } as unknown as Blob);
-    render(<ArtifactsPanel />);
-
-    fireEvent.click(cardFor("Pricing proposal"));
-
-    // The file bytes render after an async blob read; the summary's md node
-    // is on screen first, so wait for the one that carries the file.
-    await waitFor(() =>
-      expect(screen.getAllByTestId("md").map((m) => m.textContent)).toContain("# Tiers"),
-    );
-    expect(screen.queryByText("No summary provided.")).not.toBeInTheDocument();
-  });
-
-  it("still renders the readable bytes when the work-products list read fails", async () => {
-    stubRecent([WORK_PRODUCT_FILE]);
-    // The list read carries the SUMMARY only. Losing it must not hide the file.
-    reads["/issues/iss_1/work-products"] = {
-      data: undefined,
-      isLoading: false,
-      error: new Error("boom"),
-    };
-    download.mockResolvedValueOnce({
-      size: 7,
-      type: "text/markdown",
-      text: async () => "# Tiers",
-    } as unknown as Blob);
-    render(<ArtifactsPanel />);
-
-    fireEvent.click(cardFor("Pricing proposal"));
-
-    expect(await screen.findByText("Could not load this output.")).toBeInTheDocument();
-    expect(download).toHaveBeenCalledWith("/issues/iss_1/attachments/att9/content");
-    // The file bytes render after an async blob read; the summary's md node
-    // is on screen first, so wait for the one that carries the file.
-    await waitFor(() =>
-      expect(screen.getAllByTestId("md").map((m) => m.textContent)).toContain("# Tiers"),
-    );
-  });
-
-  it("says a row it cannot route is unopenable, in the reader's words", async () => {
-    stubRecent([{ ...DOC, id: "mystery:x1", title: "Mystery" }]);
-    render(<ArtifactsPanel />);
-
-    fireEvent.click(cardFor("Mystery"));
-
-    expect(await screen.findByText("This can’t be opened here.")).toBeInTheDocument();
-    // Same rule as the zero notice: the reader never sees the internal word.
-    expect(screen.queryByText(/artifacts?/i)).not.toBeInTheDocument();
-  });
-
-  it("renders a plain-text attachment inline in a <pre>", async () => {
-    stubRecent([
-      { ...ATTACHMENT, id: "attachment:att2", title: "notes.txt", contentType: "text/plain", mediaKind: "text" },
-    ]);
-    download.mockResolvedValueOnce({
-      size: 5,
-      type: "text/plain",
-      text: async () => "hello",
-    } as unknown as Blob);
-    render(<ArtifactsPanel />);
-
-    fireEvent.click(cardFor("notes.txt"));
-
-    expect(await screen.findByText("hello")).toBeInTheDocument();
-    expect(download).toHaveBeenCalledWith("/issues/iss_1/attachments/att2/content");
+    switchToByTask();
+    expandStack();
+    fireEvent.click(cardFor("Deploy preview"));
+    expect(openPanel).not.toHaveBeenCalled();
+    expect(openDetail).toHaveBeenCalledWith("issue-detail", "iss_1");
   });
 });
 

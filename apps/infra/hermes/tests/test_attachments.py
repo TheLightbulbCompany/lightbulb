@@ -87,6 +87,16 @@ def test_materialize_fetches_only_messages_with_attachments(home, monkeypatch):
     assert sync.materialize_attachments(body, base) == paths and len(fetched) == 2  # not refetched within a turn
 
 
+def test_text_and_office_attachments_keep_a_suffix_extract_media_can_type(home):
+    # extract_media types a returned path by its suffix; a bare id "couldn't attach".
+    for content_type, suffix in [("text/html", ".html"), ("text/markdown", ".md"), ("text/csv", ".csv"),
+                                 ("text/plain", ".txt"),
+                                 ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx")]:
+        path = sync.attachment_path(home, {"id": "a1", "contentType": content_type})
+        assert path.suffix == suffix
+        assert turn.MEDIA_CONTENT_TYPES[suffix] == content_type
+
+
 def test_a_turns_attachments_are_gone_when_the_turn_ends(home, monkeypatch):
     # A shared per-room cache left a DM's files readable from any later turn in any room.
     seen = _capture_agent_call(monkeypatch)
@@ -298,3 +308,10 @@ def test_a_video_attachment_is_read_from_s3_not_the_backend(home, monkeypatch):
 def test_a_video_is_never_sent_to_the_model_as_an_image():
     assert "video/mp4" in turn.ATTACHMENT_TYPES
     assert not {"video/mp4", "video/webm", "video/quicktime"} & turn.IMAGE_ATTACHMENT_TYPES
+
+
+def test_html_is_a_text_attachment_the_model_never_sees_as_an_image():
+    assert turn.MEDIA_CONTENT_TYPES[".html"] == turn.MEDIA_CONTENT_TYPES[".htm"] == "text/html"
+    assert "text/html" in turn.ATTACHMENT_TYPES
+    assert "text/html" not in turn.IMAGE_ATTACHMENT_TYPES
+    assert turn._sniff("text/html", b"<html>hi</html>")

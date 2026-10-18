@@ -1014,8 +1014,8 @@ ATTACHMENT_MAX_BYTES_BY_TYPE = {
 # application/zip: the backend accepts it (messaging.py ZIP_MAX_BYTES) and a zip missing here
 # 400'd every later dispatch that carried it in recentHistory. It is offered as a file path.
 ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf",
-                    "application/zip", *_OFFICE_TYPES, "text/csv", "text/plain", "text/markdown", *_VIDEO_TYPES)
-_NON_IMAGE_ATTACHMENT_TYPES = frozenset({"application/pdf", "application/zip", "text/csv", "text/plain", "text/markdown",
+                    "application/zip", *_OFFICE_TYPES, "text/csv", "text/plain", "text/markdown", "text/html", *_VIDEO_TYPES)
+_NON_IMAGE_ATTACHMENT_TYPES = frozenset({"application/pdf", "application/zip", "text/csv", "text/plain", "text/markdown", "text/html",
                                          *_OFFICE_TYPES, *_VIDEO_TYPES})
 IMAGE_ATTACHMENT_TYPES = frozenset(ATTACHMENT_TYPES) - _NON_IMAGE_ATTACHMENT_TYPES
 MAX_NATIVE_IMAGES = 20
@@ -1095,7 +1095,7 @@ MEDIA_CONTENT_TYPES = {
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ".csv": "text/csv", ".txt": "text/plain", ".md": "text/markdown",
+    ".csv": "text/csv", ".txt": "text/plain", ".md": "text/markdown", ".html": "text/html", ".htm": "text/html",
     ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
 }
 #: The backend's attachment-key suffix per type (``_ATTACHMENT_SIGNATURES``' second column): an
@@ -1121,7 +1121,7 @@ MEDIA_SIGNATURES = {"image/png": (b"\x89PNG\r\n\x1a\n",), "image/jpeg": (b"\xff\
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": _ZIP_MEDIA_SIGNATURE,
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": _ZIP_MEDIA_SIGNATURE,
                     "application/vnd.openxmlformats-officedocument.presentationml.presentation": _ZIP_MEDIA_SIGNATURE,
-                    "text/csv": None, "text/plain": None, "text/markdown": None,
+                    "text/csv": None, "text/plain": None, "text/markdown": None, "text/html": None,
                     # ISO BMFF: `ftyp` at offset 4 (checked in _sniff); WebM: the EBML magic.
                     "video/mp4": (b"ftyp",), "video/quicktime": (b"ftyp",),
                     "video/webm": (b"\x1a\x45\xdf\xa3",)}

@@ -87,6 +87,7 @@ ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "text/csv": TEXT_MAX_BYTES,
     "text/plain": TEXT_MAX_BYTES,
     "text/markdown": TEXT_MAX_BYTES,
+    "text/html": TEXT_MAX_BYTES,
     **{t: VIDEO_MAX_BYTES for t in VIDEO_CONTENT_TYPES},
 }
 # The largest file that travels THROUGH the API (upload route, inline agent attachment). Video
@@ -570,6 +571,7 @@ class MessageAttachment(ContractModel):
         "text/csv",
         "text/plain",
         "text/markdown",
+        "text/html",
         "video/mp4",
         "video/webm",
         "video/quicktime",
@@ -1252,6 +1254,7 @@ _ATTACHMENT_SIGNATURES = {
     "text/csv": (None, ".csv"),
     "text/plain": (None, ".txt"),
     "text/markdown": (None, ".md"),
+    "text/html": (None, ".html"),
     # ISO BMFF (mp4 / QuickTime): the ``ftyp`` box sits at offset 4, after its 4-byte size --
     # checked in ``_signature_ok``. WebM is Matroska: the EBML magic at offset 0.
     "video/mp4": (b"ftyp", ".mp4"),
@@ -1293,7 +1296,7 @@ def validate_attachment_bytes(content_type: str, data: bytes) -> str:
     cap = ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type)
     if not expected or not cap or not data or len(data) > cap:
         raise ValueError(
-            "attachment must be PNG, JPEG, WebP, GIF, PDF, ZIP, XLSX, DOCX, PPTX, CSV, TXT, MD, MP4, WebM, or MOV, "
+            "attachment must be PNG, JPEG, WebP, GIF, PDF, ZIP, XLSX, DOCX, PPTX, CSV, TXT, MD, HTML, MP4, WebM, or MOV, "
             "and at most 5 MiB for images/text, 20 MiB for PDF/ZIP/Office documents or 100 MiB for video"
         )
     signature, suffix = expected
@@ -1393,7 +1396,8 @@ def attachment_url(owner_id: str, room_id: str, attachment_id: str) -> str:
         metadata = MessageAttachment.model_validate_json(raw)
     except (OSError, ValueError) as exc:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Attachment not found.") from exc
-    disposition = "attachment" if metadata.content_type == "application/zip" else "inline"
+    # Lockstep with the byte route: a zip and an HTML page always download, never render.
+    disposition = "attachment" if metadata.content_type in ("application/zip", "text/html") else "inline"
     return hermes_profiles.presign_owner_object(
         attachment_key(owner_id, room_id, f"{normalized}{_ATTACHMENT_SIGNATURES[metadata.content_type][1]}"),
         content_type=metadata.content_type,

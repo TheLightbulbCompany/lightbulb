@@ -438,7 +438,8 @@ def test_office_validation_accepts_zip_signature_rejects_spoofed_and_oversized(c
 
 
 @pytest.mark.parametrize(
-    "content_type,suffix", [("text/csv", ".csv"), ("text/plain", ".txt"), ("text/markdown", ".md")]
+    "content_type,suffix",
+    [("text/csv", ".csv"), ("text/plain", ".txt"), ("text/markdown", ".md"), ("text/html", ".html")],
 )
 def test_text_validation_accepts_utf8_rejects_invalid_bytes_and_oversized(content_type, suffix):
     # No fixed byte signature for plain text -- the check is that the bytes
@@ -482,7 +483,7 @@ async def test_unsupported_file_upload_reproduces_clear_api_400_at_attachment_va
     assert exc_info.value.status_code == 400
     assert exc_info.value.error.code == "INVALID_REQUEST"
     assert (
-        "PNG, JPEG, WebP, GIF, PDF, ZIP, XLSX, DOCX, PPTX, CSV, TXT, MD, MP4, WebM, or MOV"
+        "PNG, JPEG, WebP, GIF, PDF, ZIP, XLSX, DOCX, PPTX, CSV, TXT, MD, HTML, MP4, WebM, or MOV"
         in exc_info.value.error.message
     )
 

@@ -9,6 +9,7 @@ import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
 import { BrowserDockPanel } from "./panels/BrowserDockPanel";
 import { ActivityDockPanel } from "./panels/ActivityDockPanel";
 import { MailDockPanel } from "./panels/MailDockPanel";
+import { ArtifactDockPanel } from "./panels/ArtifactDockPanel";
 import { IdeasDockPanel } from "./panels/IdeasDockPanel";
 
 export interface PanelProps {
@@ -26,4 +27,5 @@ export const PANEL_COMPONENTS: Record<PanelKind, ComponentType<PanelProps>> = {
   activity: ActivityDockPanel,
   mail: MailDockPanel,
   ideas: IdeasDockPanel,
+  artifact: ArtifactDockPanel,
 };

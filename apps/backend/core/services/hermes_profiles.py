@@ -1382,13 +1382,25 @@ def list_profile_dir(owner_id: str, agent_id: str, rel_path: str = "") -> list[d
     return dirs + files
 
 
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# The browser's sheet viewer stops at 5 MiB (``SheetGrid``); past it the tree shows the binary card.
+_XLSX_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
+
+
 def _profile_file_info(rel: str, body: bytes, modified_at: float) -> dict:
     """``Workspace.read_file_info``'s payload for one profile object -- same keys, same
     text/base64/None content rule, so ``FileContentViewer`` needs no branch of its own."""
     name = rel.rsplit("/", 1)[-1]
-    mime_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    # Python's own table has no xlsx entry (3.12), so the image's /etc/mime.types would decide it.
+    mime_type = (
+        _XLSX_MIME if name.lower().endswith(".xlsx") else mimetypes.guess_type(name)[0] or "application/octet-stream"
+    )
     info = {"name": name, "path": rel, "size": len(body), "modified_at": modified_at, "mime_type": mime_type}
-    if mime_type.startswith("image/") or mime_type == "application/pdf":
+    if (
+        mime_type.startswith("image/")
+        or mime_type == "application/pdf"
+        or (mime_type == _XLSX_MIME and len(body) <= _XLSX_PREVIEW_MAX_BYTES)
+    ):
         return {**info, "binary": True, "content": base64.b64encode(body).decode("ascii")}
     try:
         return {**info, "binary": False, "content": body.decode()}

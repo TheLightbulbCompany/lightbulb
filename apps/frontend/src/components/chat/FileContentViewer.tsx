@@ -7,7 +7,10 @@ import { notifyApiError } from "@/lib/notify";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { LobsterGraphView } from "@/components/chat/LobsterGraphView";
 import { useScopedHotkey } from "@/hooks/useScopedHotkey";
-import { FileViewerContent } from "@/components/media/FileViewerContent";
+import { FileViewerContent, normalizeContentType } from "@/components/media/FileViewerContent";
+
+/** The only kinds the file tree previews instead of editing (a positive allowlist). */
+const TREE_PREVIEW = new Set(["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv"]);
 
 const isSaveHotkey = (e: KeyboardEvent) => (e.metaKey || e.ctrlKey) && e.key === "s";
 
@@ -54,6 +57,15 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
     setPdfUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [pdfContent]);
+
+  // Spreadsheets preview from a Blob; everything else text (HTML included) stays editable below.
+  // An HTML page previews in the right pane, where its sandbox lives.
+  const previewable = file != null && file.content != null && TREE_PREVIEW.has(normalizeContentType(file.mime_type));
+  const previewBlob = React.useMemo(
+    () => (previewable && file ? (file.binary ? base64ToBlob(file.content as string, file.mime_type) : new Blob([file.content as string], { type: file.mime_type })) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [previewable, file?.path, file?.content, file?.binary, file?.mime_type],
+  );
 
   // Sync editor content when a new file loads. Parent is responsible for
   // prompting the user about unsaved changes BEFORE changing the file prop.
@@ -129,6 +141,14 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
         {pdfUrl
           ? <FileViewerContent item={{ contentType: "application/pdf", fileName: file.name, size: file.size, url: pdfUrl }} className="rounded-sm border border-[var(--edge)]" />
           : <div className="flex items-center justify-center h-full text-[var(--midnight-muted)] text-sm">Loading preview…</div>}
+      </div>
+    );
+  }
+
+  if (previewBlob) {
+    return (
+      <div ref={rootRef} className="h-full w-full p-2">
+        <FileViewerContent item={{ fileName: file.name, contentType: file.mime_type, size: file.size, url: "", blob: previewBlob }} className="h-full" />
       </div>
     );
   }

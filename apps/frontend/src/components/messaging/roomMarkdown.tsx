@@ -10,6 +10,7 @@ import { useMessagingWorkspaceOptional } from "./MessagingWorkspaceContext";
 import { openAppLink } from "./RoomAppLinks";
 
 const CARD_CLASS = `language-${CARD_FENCE}`;
+const MERMAID_CLASS = "language-mermaid";
 type CodeProps = React.ComponentProps<"code"> & ExtraProps;
 type PreProps = React.ComponentProps<"pre"> & ExtraProps;
 // They are plain function components in MarkdownView; cast once so the fallback is renderable.
@@ -18,6 +19,9 @@ const DefaultPre = markdownComponents.pre as ComponentType<PreProps>;
 // OpenUI, its parser and recharts load only when a card is first drawn, not with /chat.
 const OpenUICard = lazy(() => import("./openui/OpenUICard").then((m) => ({ default: m.OpenUICard })));
 
+// mermaid loads only when a diagram is first drawn.
+const MermaidBlock = lazy(() => import("./MermaidBlock").then((m) => ({ default: m.MermaidBlock })));
+
 /** An agent's card fence. Without a CardContext (a person's message, a transcript) it stays code. */
 function CodeOrCard(props: CodeProps) {
   const ctx = useCardContext();
@@ -25,6 +29,13 @@ function CodeOrCard(props: CodeProps) {
   if (ctx && typeof className === "string" && className.split(" ").includes(CARD_CLASS)) {
     return <Suspense fallback={<DefaultCode {...props} />}>
       <OpenUICard program={String(children ?? "").replace(/\n$/, "")} />
+    </Suspense>;
+  }
+  // A diagram is inert, so unlike a card it renders for anyone.
+  if (typeof className === "string" && className.split(" ").includes(MERMAID_CLASS)) {
+    // PreOrCard unwrapped the <pre> for the diagram, so the loading fallback brings its own.
+    return <Suspense fallback={<DefaultPre><DefaultCode {...props} /></DefaultPre>}>
+      <MermaidBlock source={String(children ?? "").replace(/\n$/, "")} />
     </Suspense>;
   }
   return <DefaultCode {...props} />;
@@ -36,7 +47,8 @@ function PreOrCard(props: PreProps) {
   const node = (props as { node?: { children?: { type: string; properties?: { className?: unknown } }[] } }).node;
   const first = node?.children?.find((c) => c.type === "element");
   const cls = Array.isArray(first?.properties?.className) ? (first!.properties!.className as unknown[]).join(" ") : "";
-  if (ctx && cls.split(" ").includes(CARD_CLASS)) return <>{(props as { children?: ReactNode }).children}</>;
+  const classes = cls.split(" ");
+  if ((ctx && classes.includes(CARD_CLASS)) || classes.includes(MERMAID_CLASS)) return <>{(props as { children?: ReactNode }).children}</>;
   return <DefaultPre {...props} />;
 }
 

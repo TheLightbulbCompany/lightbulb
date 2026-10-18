@@ -5,24 +5,30 @@ import { Download, FileArchive, FileSpreadsheet, FileText, Presentation, RotateC
 import { isVideoAttachmentType, type MessageAttachment, type MessageAttachmentContentType } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { FileViewerDialog } from "@/components/media/FileViewerDialog";
+import { isPaneViewable } from "@/components/media/FileViewerContent";
+import { openPanel } from "@/components/workspace/workspaceController";
 import { formatBytes } from "@/lib/utils";
 
 const isImage = (attachment: MessageAttachment) => attachment.contentType.startsWith("image/");
 const isVideo = (attachment: MessageAttachment) => isVideoAttachmentType(attachment.contentType);
 
 // Everything here is downloaded on click and never fetched into the inline
-// preview/viewer pipeline -- unlike images and PDF (below), which get an
-// in-app viewer. Label + icon per kind so a spreadsheet doesn't read as a
+// preview/viewer pipeline -- unlike images (lightbox) and the pane kinds
+// below, which open the artifact pane. Label + icon per kind so a spreadsheet doesn't read as a
 // document; the download behavior itself is identical for all of them.
 const DOWNLOAD_ONLY: Partial<Record<MessageAttachmentContentType, { label: string; Icon: typeof FileArchive }>> = {
   "application/zip": { label: "ZIP", Icon: FileArchive },
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { label: "XLSX", Icon: FileSpreadsheet },
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": { label: "DOCX", Icon: FileText },
   "application/vnd.openxmlformats-officedocument.presentationml.presentation": { label: "PPTX", Icon: Presentation },
-  "text/csv": { label: "CSV", Icon: FileSpreadsheet },
-  "text/plain": { label: "TXT", Icon: FileText },
-  "text/markdown": { label: "MD", Icon: FileText },
 };
+// Documents open in the artifact pane, never prefetched here (the pane fetches).
+const PANE_LABEL: Partial<Record<MessageAttachmentContentType, string>> = {
+  "application/pdf": "PDF",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
+  "text/csv": "CSV", "text/html": "HTML", "text/markdown": "MD", "text/plain": "TXT",
+};
+const SPREADSHEET = new Set<string>(["text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
+const opensInPane = (attachment: MessageAttachment) => isPaneViewable(attachment.contentType);
 const isDownloadOnly = (attachment: MessageAttachment) => attachment.contentType in DOWNLOAD_ONLY;
 
 /**
@@ -58,7 +64,7 @@ export function RoomImageAttachments({ roomId, attachments, download, attachment
     // Download-only kinds are intentionally not fetched into the preview
     // pipeline. They are downloaded only after an explicit click and never
     // passed to a viewer.
-    const missing = attachments.filter((attachment) => !isDownloadOnly(attachment) && !urlsRef.current[attachment.id]);
+    const missing = attachments.filter((attachment) => !isDownloadOnly(attachment) && !opensInPane(attachment) && !urlsRef.current[attachment.id]);
     void Promise.all(missing.map(async (attachment) => {
       try {
         if (isVideo(attachment)) {
@@ -97,7 +103,7 @@ export function RoomImageAttachments({ roomId, attachments, download, attachment
     setAttempt((value) => value + 1);
   }
 
-  const viewableAttachments = attachments.filter((attachment) => !isDownloadOnly(attachment));
+  const viewableAttachments = attachments.filter((attachment) => !isDownloadOnly(attachment) && !opensInPane(attachment));
 
   function open(attachmentId: string, trigger: HTMLButtonElement) {
     lastTriggerRef.current = trigger;
@@ -161,19 +167,13 @@ export function RoomImageAttachments({ roomId, attachments, download, attachment
           {loadFailed ? <RotateCcw aria-hidden="true" /> : <Download aria-hidden="true" />}
         </button>;
       }
-      return <button key={attachment.id} type="button" className="room-file-card" disabled={!url && !loadFailed}
-        aria-label={loadFailed ? `Retry ${attachment.fileName}` : url ? `Open ${attachment.fileName}` : undefined}
-        onClick={(event) => {
-          if (loadFailed) {
-            setFailed((current) => { const next = new Set(current); next.delete(attachment.id); return next; });
-            setAttempt((value) => value + 1);
-          } else if (url) open(attachment.id, event.currentTarget);
-        }}>
-        <FileText aria-hidden="true" />
-        <span className="min-w-0 flex-1"><strong className="block truncate" title={attachment.fileName}>{attachment.fileName}</strong>
-          <span className="block text-ui text-muted-foreground">PDF · {formatBytes(attachment.size)}</span>
-          <span className={loadFailed ? "block text-ui text-err" : "block text-ui text-muted-foreground"}>{loadFailed ? "Could not load file" : url ? "Open file" : "Loading…"}</span></span>
-        {loadFailed && <RotateCcw aria-hidden="true" />}
+      return <button key={attachment.id} type="button" className="room-link-card room-doc-card" aria-label={`Open ${attachment.fileName}`}
+        onClick={() => openPanel("artifact", { src: "attachment", room: roomId, id: attachment.id, name: attachment.fileName, type: attachment.contentType }, { pushUrl: true })}>
+        <span className="room-link-card-body">
+          <span className="room-doc-card-head">{SPREADSHEET.has(attachment.contentType) ? <FileSpreadsheet size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}<span className="room-link-card-title">{attachment.fileName}</span></span>
+          <span className="room-link-card-meta">{PANE_LABEL[attachment.contentType]} · {formatBytes(attachment.size)}</span>
+          <span className="room-doc-card-foot"><span className="room-doc-card-open" aria-hidden="true">Open</span></span>
+        </span>
       </button>;
     })}</div>
     <FileViewerDialog

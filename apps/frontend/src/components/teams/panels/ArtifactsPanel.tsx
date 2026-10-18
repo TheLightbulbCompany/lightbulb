@@ -16,13 +16,13 @@
 //      one per task. Clicking a stack EXPANDS it inline.
 //   3. EXPANDED STACK — `GET /artifacts?groupBy=task&groupIssueId={id}` → that
 //      task's artifacts as ArtifactGalleryCards, with a back control. Clicking
-//      a card opens the in-app ArtifactViewerDialog.
+//      a card opens the artifact pane.
 //
 // Capabilities preserved from the previous list impl (do not regress):
-//   - VIEW   — clicking an artifact card opens ArtifactViewerDialog, which
+//   - VIEW   — clicking an artifact card opens the artifact pane, which
 //     fetches + renders the artifact's CONTENT in place (routed by its typed id
 //     prefix; see artifactRouting.ts).
-//   - DELETE — an artifact card's trash icon (and the viewer's Delete button)
+//   - DELETE — an artifact card's trash icon
 //     runs a confirm-then-delete flow against the correct BFF DELETE endpoint,
 //     then revalidates EVERY gallery key (one key filter over the global SWR
 //     cache, so the view the owner is NOT on — and any other search — refreshes
@@ -42,10 +42,15 @@ import { ArrowLeft, Images } from "lucide-react";
 import { PanelMasthead, PanelNotice, PanelTabs, PanelToolbar } from "@/components/teams/shell";
 import { EditorialDialog } from "@/components/teams/shell/EditorialDialog";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { ArtifactViewerDialog } from "./ArtifactViewerDialog";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
+import { openPanel } from "@/components/workspace/workspaceController";
+import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
 import { ArtifactGalleryCard, ArtifactStackCard } from "./ArtifactCards";
 import {
   artifactContentPath,
+  artifactKind,
+  artifactRawId,
+  documentKeyFromArtifact,
   bucketByRecency,
   deletePathForArtifact,
   issueListPathForArtifact,
@@ -113,6 +118,7 @@ function SortControl({
 
 export function ArtifactsPanel() {
   const { read, del, download, mutate } = useTeamsApi();
+  const nav = useInlineTeamsNav();
   // The gallery and the issue-detail sections keep SEPARATE SWR caches; deleting
   // here must also invalidate the issue-scoped list (documents/attachments/
   // work-products) or the removed artifact lingers in the task detail. Both
@@ -123,7 +129,6 @@ export function ArtifactsPanel() {
   const [expandedIssueId, setExpandedIssueId] = useState<string | null>(null);
   const [view, setView] = useState<LibraryView>("recent");
   const [sort, setSort] = useState<ArtifactSort>("newest");
-  const [viewing, setViewing] = useState<CompanyArtifact | null>(null);
   const [pendingDelete, setPendingDelete] = useState<CompanyArtifact | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -211,6 +216,24 @@ export function ArtifactsPanel() {
     }
   }
 
+  // A card opens the artifact pane. When no pane params can be built, fall back
+  // to the old behaviour: download the bytes if there are any, else open the task.
+  function openInPane(a: CompanyArtifact) {
+    const kind = artifactKind(a.id);
+    const issue = a.issue?.id;
+    let params: Record<string, string> | null = null;
+    if (issue && kind === "document") {
+      const key = documentKeyFromArtifact(a);
+      if (key) params = { src: "paperclip", kind, issue, key, ...(a.issue?.identifier ? { ident: a.issue.identifier } : {}) };
+    } else if (issue && (kind === "attachment" || kind === "work_product")) {
+      const id = kind === "attachment" ? artifactRawId(a.id) : attachmentIdFromHref(a.downloadPath ?? a.openPath);
+      if (id) params = { src: "paperclip", kind, issue, id, name: a.title, ...(a.contentType ? { type: a.contentType } : {}) };
+    }
+    if (params) openPanel("artifact", params, { pushUrl: true });
+    else if (artifactContentPath(a)) void handleDownload(a);
+    else if (issue) nav?.openDetail("issue-detail", issue);
+  }
+
   async function confirmDelete() {
     if (!pendingDelete) return;
     const artifact = pendingDelete;
@@ -231,7 +254,7 @@ export function ArtifactsPanel() {
       setDeleting(false);
       return;
     }
-    // Deleted. Close the confirm + the viewer if it was showing this artifact,
+    // Deleted. Close the confirm,
     // then best-effort revalidate BOTH gallery keys AND the issue-scoped list
     // that also holds it (separate SWR caches) so the task detail stops showing
     // it. A revalidation hiccup must not reopen the dialog — the delete
@@ -245,7 +268,6 @@ export function ArtifactsPanel() {
     // every `q` is its own key: deleting under a search and then clearing the
     // box would otherwise still list the deleted deliverable. The issue-scoped
     // list is a different resource and stays an exact key.
-    setViewing((cur) => (cur && cur.id === artifact.id ? null : cur));
     setPendingDelete(null);
     setDeleting(false);
     const issueListPath = issueListPathForArtifact(artifact);
@@ -353,7 +375,7 @@ export function ArtifactsPanel() {
                     <ArtifactGalleryCard
                       key={artifact.id}
                       artifact={artifact}
-                      onOpen={setViewing}
+                      onOpen={openInPane}
                       onDownload={handleDownload}
                       onRequestDelete={setPendingDelete}
                     />
@@ -377,7 +399,7 @@ export function ArtifactsPanel() {
               <ArtifactGalleryCard
                 key={artifact.id}
                 artifact={artifact}
-                onOpen={setViewing}
+                onOpen={openInPane}
                 onDownload={handleDownload}
                 onRequestDelete={setPendingDelete}
               />
@@ -395,14 +417,6 @@ export function ArtifactsPanel() {
           </div>
         )}
       </section>
-
-      {viewing ? (
-        <ArtifactViewerDialog
-          artifact={viewing}
-          onClose={() => setViewing(null)}
-          onRequestDelete={setPendingDelete}
-        />
-      ) : null}
 
       <EditorialDialog
         open={pendingDelete !== null}

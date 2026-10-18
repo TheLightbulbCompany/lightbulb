@@ -106,6 +106,32 @@ async def test_put_sent_never_raises(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_find_sent_by_message_id_picks_the_outbound_row_at_any_address(monkeypatch):
+    table = MagicMock()
+    table.query.return_value = {
+        "Items": [
+            {"address": "a@b.c", "received_key": "k1", "message_id": "m", "direction": "in"},
+            {"address": "team@b.c", "received_key": "k2", "message_id": "m", "direction": "out"},
+        ]
+    }
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    row = await repo.find_sent_by_message_id("m")
+    assert row["received_key"] == "k2" and table.query.call_args.kwargs["IndexName"] == "by-message-id"
+    table.query.return_value = {"Items": []}
+    assert await repo.find_sent_by_message_id("m") is None
+
+
+@pytest.mark.asyncio
+async def test_mark_sent_failed_keeps_the_reason_on_the_row(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.mark_sent_failed("Team@B.c", "k2", "undeliverable")
+    kw = table.update_item.call_args.kwargs
+    assert kw["Key"] == {"address": "team@b.c", "received_key": "k2"}
+    assert kw["ExpressionAttributeValues"] == {":f": "failed", ":r": "undeliverable"}
+
+
+@pytest.mark.asyncio
 async def test_find_by_message_id_queries_the_gsi_and_filters_by_address(monkeypatch):
     table = MagicMock()
     table.query.return_value = {

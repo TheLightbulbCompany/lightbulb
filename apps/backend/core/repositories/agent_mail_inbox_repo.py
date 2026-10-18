@@ -70,6 +70,25 @@ async def find_by_message_id(address: str, message_id: str) -> dict | None:
     return None
 
 
+async def find_sent_by_message_id(message_id: str) -> dict | None:
+    """The agent-sent row under a provider message id (``put_sent``), at whatever address: a delivery report
+    names the message, not the mailbox."""
+    resp = await run_in_thread(
+        _get_table().query, IndexName="by-message-id", KeyConditionExpression=Key("message_id").eq(message_id)
+    )
+    return next((item for item in resp.get("Items", []) if item.get("direction") == "out"), None)
+
+
+async def mark_sent_failed(address: str, received_key: str, reason: str) -> None:
+    """The provider could not deliver a sent message after accepting it; the row keeps the reason."""
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"address": _normalize(address), "received_key": received_key},
+        UpdateExpression="SET delivery = :f, delivery_reason = :r",
+        ExpressionAttributeValues={":f": "failed", ":r": reason[:200]},
+    )
+
+
 async def put_message(
     *,
     address: str,

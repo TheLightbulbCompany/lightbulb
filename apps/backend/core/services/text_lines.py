@@ -30,17 +30,22 @@ async def _clear_claim(owner_id: str) -> None:
 
 
 async def _abandon(owner_id: str, op: dict | None, code: str) -> None:
-    """A request that left no pending row: cancel its operation (it may bill) and release the claim."""
+    """A request that left no pending row: cancel its operation, release a line the cancel came too late for
+    (it bills, and no row would ever find it), then release the claim."""
     if op:
         try:
             await photon.cancel_operation(op["operationId"])
-        except Exception:
-            logger.warning(
-                "Could not cancel line operation %s (owner %s): it may bill, cancel it by hand",
+            done = await photon.get_operation(op["operationId"])
+            if done.get("state") == "succeeded":
+                await _release_resource(done["resourceId"])
+        except Exception:  # noqa: BLE001 — ponytail: no row to retry from here; text_line.orphan_line is the alarm
+            logger.error(
+                "Line operation %s (owner %s): not cancelled, or its line not released; it bills, release it by hand",
                 op.get("operationId"),
                 owner_id,
                 exc_info=True,
             )
+            put_metric("text_line.orphan_line")
     await _clear_claim(owner_id)
     put_metric("text_line.provision_failed", dimensions={"code": code})
 

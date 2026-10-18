@@ -290,6 +290,25 @@ async def test_pending_row_write_failure_cancels_the_operation(m):
     with pytest.raises(ValueError):
         await text_lines.ensure_line("org_1")
     m.cancel.assert_awaited_once_with("op_1")
+    m.release.assert_awaited_once_with("res_1")  # the cancel came too late (the operation is DONE): released
+    m.set_fd.assert_awaited_once_with("org_1")
+
+
+async def test_an_abandoned_request_releases_nothing_when_the_cancel_won(m):
+    m.put_pending.side_effect = ValueError("ddb down")
+    m.get_op.return_value = {"operationId": "op_1", "state": "cancelled"}
+    with pytest.raises(ValueError):
+        await text_lines.ensure_line("org_1")
+    m.release.assert_not_awaited()
+    m.set_fd.assert_awaited_once_with("org_1")
+
+
+async def test_an_abandoned_line_that_will_not_release_is_counted_and_the_claim_still_clears(m):
+    m.put_pending.side_effect = ValueError("ddb down")
+    m.release.return_value = {"operationId": "op_r", "state": "failed"}
+    with pytest.raises(ValueError):
+        await text_lines.ensure_line("org_1")
+    m.metric.assert_any_call("text_line.orphan_line")
     m.set_fd.assert_awaited_once_with("org_1")
 
 

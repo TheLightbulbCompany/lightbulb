@@ -22,7 +22,14 @@ from core.auth import AuthContext
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories.agent_email_repo import bind_member_phone, get_by_address
-from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, put_sent, reply_key
+from core.repositories.agent_mail_inbox_repo import (
+    find_by_message_id,
+    find_sent_by_message_id,
+    mark_sent_failed,
+    put_message,
+    put_sent,
+    reply_key,
+)
 from core.repositories.container_repo import release_stranger_wake, try_consume_stranger_wake
 from core.services.agent_email import mail_changed, team_address
 from core.services import messaging, standard_webhooks
@@ -80,6 +87,7 @@ class _Object(BaseModel):
     addressedTo: _Party | None = None  # noqa: N815
     content: _Content | None = None
     timestamps: dict | None = None  # receivedAt: "preserved across replay" (spec), so a redelivery keys the same row
+    failure: dict | None = None  # on message.failed: why a send Photon had accepted did not deliver
 
 
 class _Data(BaseModel):
@@ -135,6 +143,20 @@ async def _link_by_code(
     return True
 
 
+async def _sent_failed(obj: _Object) -> str:
+    """Photon accepted a send (202) and later could not deliver it: the sent row says so, and the Mail panel
+    refreshes. The agent is not woken for it: a number that never delivers would wake it on every retry."""
+    row = await find_sent_by_message_id(obj.id) if obj.id else None
+    if not row:
+        return "ignored_event"
+    failure = obj.failure or {}
+    reason = str(failure.get("code") or failure.get("reason") or failure.get("message") or "failed")
+    await mark_sent_failed(row["address"], row["received_key"], reason)
+    await mail_changed(row["owner_id"])
+    put_metric("text.send", dimensions={"result": "failed_later"})
+    return "send_failed_later"
+
+
 async def _rollback_dedup(event_id: str) -> None:
     try:
         await delete_event(event_id)
@@ -164,6 +186,12 @@ async def handle_photon_inbound(request: Request):
 
         obj = event.data.object
         content = obj.content or _Content()
+        if event.type == "message.failed" and obj.id:
+            event_id = f"photon-failed:{obj.id}"
+            if await record_event_or_skip(event_id, source="photon_inbound") is WebhookDedupResult.ALREADY_SEEN:
+                return _final("duplicate")
+            recorded = True
+            return _final(await _sent_failed(obj))
         if (
             event.type != "message.received"
             or obj.platform != "imessage"

@@ -49,6 +49,8 @@ def seams(monkeypatch):
         "get_by_address": AsyncMock(return_value=dict(LINE_ROW)),
         "team_address": AsyncMock(return_value=TEAM),
         "find_by_message_id": AsyncMock(return_value=None),
+        "find_sent_by_message_id": AsyncMock(return_value=None),
+        "mark_sent_failed": AsyncMock(),
         "put_message": AsyncMock(return_value={"received_key": "2026#m1"}),
         "put_sent": AsyncMock(),
         "mail_changed": AsyncMock(),
@@ -306,6 +308,25 @@ def test_apple_email_sender_is_kept_verbatim(client, seams):
     event = _event(sentBy={"id": CUSTOMER_USER, "handle": "Jane@iCloud.com"})
     assert _post(client, event).json() == {"status": "delivered"}
     assert seams["put_message"].await_args.kwargs["from_addr"] == "Jane@iCloud.com"
+
+
+def test_a_send_photon_later_fails_marks_the_sent_row_and_wakes_nobody(client, seams):
+    """A 202 send is not delivered until Photon says so; its failure lands on the sent row for the panel."""
+    seams["find_sent_by_message_id"].return_value = {
+        "address": TEAM,
+        "received_key": "2026#msg_out",
+        "owner_id": OWNER_ID,
+    }
+    event = {**_event(id="msg_out", status="failed", failure={"code": "undeliverable"}), "type": "message.failed"}
+    assert _post(client, event).json() == {"status": "send_failed_later"}
+    seams["mark_sent_failed"].assert_awaited_once_with(TEAM, "2026#msg_out", "undeliverable")
+    seams["mail_changed"].assert_awaited_once_with(OWNER_ID)
+    seams["put_message"].assert_not_called()
+    seams["deliver_to_agent"].assert_not_called()
+    # Not a message we sent: nothing to mark.
+    seams["find_sent_by_message_id"].return_value = None
+    other = {**_event(id="m9", status="failed"), "type": "message.failed"}
+    assert _post(client, other).json() == {"status": "ignored_event"}
 
 
 def test_rate_limited_sender_is_stored_not_woken(client, seams):

@@ -3,7 +3,9 @@
 // components map all derive from this file — nothing else may invent a
 // panel id or component name.
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "mail" | "ideas";
+import { ARTIFACT_PARAM_KEYS, parseArtifactSource } from "./panels/artifactSource";
+
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "mail" | "ideas" | "artifact";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -262,6 +264,13 @@ export function describePanel(
     return { panelId: "file-viewer", component: "file-viewer", title: "Files", params: p };
   }
 
+  if (key === "artifact") {
+    const p: Record<string, string> = {};
+    for (const k of ARTIFACT_PARAM_KEYS) if (params[k]) p[k] = params[k];
+    if (!parseArtifactSource(p)) return null;
+    return { panelId: "artifact", component: "artifact", title: p.name ?? p.ident ?? "File", params: p };
+  }
+
   if (key === "browser") {
     // Singleton, no params: an owner has ONE AgentCore Browser profile, and the
     // pane watches whichever session is live on it.
@@ -381,6 +390,7 @@ export function durableParamsFor(panelId: string): string[] {
   // agent OR agentId) so an externally-authored chat link clears fully.
   if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId", "room", "message", "session"];
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
+  if (panelId === "artifact") return ["panel", ...ARTIFACT_PARAM_KEYS];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
   if (panelId === WORK_PANEL_ID) return ["panel", "agent", "groupBy", "view", "day", "section"];
@@ -407,6 +417,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "mail") return ["item"];
   if (panelId === "ideas") return ["agent", "idea"];
   if (panelId === "file-viewer") return ["path", "agent"];
+  if (panelId === "artifact") return [...ARTIFACT_PARAM_KEYS];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];
   }
@@ -417,5 +428,6 @@ export function clearablePanelParamKeys(panelId: string): string[] {
 export function opensInPane(descriptor: PanelDescriptor): boolean {
   if (descriptor.component === "teams") return !!descriptor.params.detailId;
   return descriptor.component === "file-viewer" || descriptor.component === "browser"
-    || descriptor.component === "mail" || descriptor.component === "control" || descriptor.component === "ideas";
+    || descriptor.component === "mail" || descriptor.component === "control" || descriptor.component === "ideas"
+    || descriptor.component === "artifact";
 }

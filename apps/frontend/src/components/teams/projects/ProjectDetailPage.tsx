@@ -234,6 +234,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
           liveIssueIds={liveIssueIds}
           externalObjectSummaries={externalObjectSummaries}
           currentUserId={paperclipUserIdOf(membersResp?.members, user?.id)}
+          projectId={projectId}
           isLoading={issuesLoading}
           onUpdateIssue={handleUpdateIssue}
           onNewTask={() => setCreating(true)}

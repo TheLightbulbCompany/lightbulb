@@ -8,6 +8,16 @@ import {
 } from "@/components/chat/InlineTeamsNav";
 import type { Issue } from "@/components/teams/shared/types";
 
+// Only the Blocked view reads the BFF (it fetches its own attention list).
+const { blockedReadSpy } = vi.hoisted(() => ({ blockedReadSpy: vi.fn() }));
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({
+    read: (path: string) => (
+      blockedReadSpy(path), { data: { issues: [] }, error: undefined, isLoading: false }
+    ),
+  }),
+}));
+
 function issue(partial: Partial<Issue> & Pick<Issue, "id" | "title" | "status">): Issue {
   return { identifier: partial.id.toUpperCase(), priority: null, ...partial };
 }
@@ -143,6 +153,28 @@ describe("TasksList", () => {
     // Without persistence this would come back as the board default — which is
     // exactly what made list-preferring users re-pick on every reload.
     expect(second.container.querySelector("[data-kanban-column]")).toBeNull();
+  });
+
+  it("toggle offers Blocked and persists it", async () => {
+    const user = userEvent.setup();
+    // Blocked fetches its own list, so it opens even with no tasks passed in.
+    const first = render(
+      <TasksList issues={[]} onUpdateIssue={onUpdateIssue} onNewTask={onNewTask} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /blocked view/i }));
+    expect(screen.getByRole("button", { name: /blocked view/i })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("No work is stopped.")).toBeInTheDocument();
+    expect(blockedReadSpy).toHaveBeenCalledWith(expect.stringMatching(/^\/issues\?attention=blocked&/));
+    expect(localStorage.getItem("paperclip:tasks:view-mode")).toBe("blocked");
+
+    await user.click(screen.getByRole("button", { name: "Sort" }));
+    for (const label of ["Most urgent", "Most recent", "Longest stopped"]) {
+      expect(await screen.findByText(label)).toBeInTheDocument();
+    }
+    first.unmount();
+
+    render(<TasksList issues={[]} onUpdateIssue={onUpdateIssue} onNewTask={onNewTask} />);
+    expect(screen.getByText("No work is stopped.")).toBeInTheDocument();
   });
 
   it("falls back to the board default when storage is unavailable", () => {

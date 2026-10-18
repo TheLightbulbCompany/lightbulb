@@ -396,6 +396,78 @@ export interface IssueExecutionPolicy {
   stages?: IssueExecutionStage[];
 }
 
+// The Blocked view's per-issue attention, from upstream Paperclip's
+// packages/shared/src/types/issue.ts @ v2026.1012.0-isol8.4 (MIT, (c) 2025
+// Paperclip AI). Verbatim but for IssueStatus/IssuePriority, which are ours.
+export type IssueInboxAttentionKind = "blocked";
+
+export type IssueBlockedInboxState =
+  | "needs_attention"
+  | "awaiting_decision"
+  | "external_wait"
+  | "recovery_open"
+  | "missing_disposition";
+
+export type IssueBlockedInboxSeverity = "critical" | "high" | "medium" | "low";
+
+export type IssueBlockedInboxReason =
+  | "blocked_by_unassigned_issue"
+  | "blocked_by_assigned_backlog_issue"
+  | "blocked_by_uninvokable_assignee"
+  | "blocked_by_cancelled_issue"
+  | "blocked_chain_stalled"
+  | "invalid_review_participant"
+  | "in_review_without_action_path"
+  | "missing_successful_run_disposition"
+  | "pending_board_decision"
+  | "pending_user_decision"
+  | "external_owner_action"
+  | "open_recovery_issue";
+
+export type IssueBlockedInboxOwnerType = "agent" | "user" | "board" | "external" | "unknown";
+
+export interface IssueBlockedInboxIssueRef {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}
+
+export interface IssueBlockedInboxOwner {
+  type: IssueBlockedInboxOwnerType;
+  agentId: string | null;
+  userId: string | null;
+  label: string | null;
+}
+
+export interface IssueBlockedInboxAction {
+  label: string;
+  detail: string | null;
+}
+
+export interface IssueBlockedInboxAttention {
+  kind: IssueInboxAttentionKind;
+  state: IssueBlockedInboxState;
+  reason: IssueBlockedInboxReason;
+  severity: IssueBlockedInboxSeverity;
+  stoppedSinceAt: string | null;
+  owner: IssueBlockedInboxOwner;
+  action: IssueBlockedInboxAction;
+  sourceIssue: IssueBlockedInboxIssueRef | null;
+  leafIssue: IssueBlockedInboxIssueRef | null;
+  recoveryIssue: IssueBlockedInboxIssueRef | null;
+  approvalId: string | null;
+  interactionId: string | null;
+  sampleIssueIdentifier: string | null;
+  redaction: {
+    externalDetailsRedacted: boolean;
+    secretFieldsOmitted: true;
+  };
+}
+
 export interface Issue {
   id: string;
   identifier?: string | null;
@@ -466,6 +538,9 @@ export interface Issue {
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   /** The issue's active recovery action, when upstream attaches it to the read. */
   activeRecoveryAction?: IssueRecoveryAction | null;
+  /** Why the task is stopped, on the Blocked view's list read only
+   * (`attention=blocked&includeBlockedInboxAttention=true`). */
+  blockedInboxAttention?: IssueBlockedInboxAttention | null;
 }
 
 // ---------------------------------------------------------------------------

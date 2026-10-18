@@ -22,7 +22,7 @@ import { useSyncExternalStore } from "react";
  * would be a larger change than the feature — while a list-vs-board preference
  * is a property of the person, not the tenant, and carries no tenant data.
  */
-export type TasksViewMode = "list" | "board";
+export type TasksViewMode = "list" | "board" | "blocked";
 
 const KEY = "paperclip:tasks:view-mode";
 const DEFAULT: TasksViewMode = "board";
@@ -45,7 +45,7 @@ function subscribe(onStoreChange: () => void): () => void {
 function getSnapshot(): TasksViewMode {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw === "list" || raw === "board" ? raw : DEFAULT;
+    return raw === "list" || raw === "board" || raw === "blocked" ? raw : DEFAULT;
   } catch {
     // Private mode / storage disabled — the default stands.
     return DEFAULT;

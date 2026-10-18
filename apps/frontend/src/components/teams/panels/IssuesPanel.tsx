@@ -318,6 +318,7 @@ export function IssuesPanel({
         externalObjectSummaries={externalObjectSummaries}
         currentUserId={myPaperclipUserId}
         searchActive={search.trim().length > 0 || agentFilter !== null}
+        searchQuery={search}
         isLoading={isLoading}
         onUpdateIssue={handleUpdateIssue}
         onNewTask={() => setCreating(true)}

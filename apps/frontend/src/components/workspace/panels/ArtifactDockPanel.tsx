@@ -119,7 +119,8 @@ function DocumentPane({ source }: { source: Extract<ArtifactSource, { kind: "doc
       {data && <div className="mx-auto max-w-2xl p-4">
         <h2 className="text-lg font-semibold">{data.title || data.key}</h2>
         <p className="mb-3 text-caption text-muted-foreground">{author}{when ? ` · updated ${timeAgo(when)}` : ""} · rev {data.latestRevisionNumber ?? 1}{data.lockedAt ? ` · locked by ${actorName({ agentId: data.lockedByAgentId, agents })}` : ""}</p>
-        {outline.length >= CONTENTS_MIN_HEADINGS && <DocumentContents entries={outline} bodyRef={bodyRef} />}
+        {/* The outline is the latest body's; while a past revision is previewed its headings may differ, so the list hides. */}
+        {!previewing && !editing && outline.length >= CONTENTS_MIN_HEADINGS && <DocumentContents entries={outline} bodyRef={bodyRef} />}
         <AttachmentIssueContext.Provider value={source.issue}>
           <div ref={bodyRef}><DocumentRow doc={data} agents={agents} issueId={source.issue} defaultOpen hideTitle editing={editing} onEditingChange={setEditing} onPreviewingChange={setPreviewing} /></div>
         </AttachmentIssueContext.Provider>

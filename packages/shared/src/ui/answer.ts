@@ -49,18 +49,29 @@ const norm = (s: string) => s.trim();
  */
 export function answerIsFrom(answered: string | null, options: readonly string[], multi = false): boolean {
   if (answered === null) return false;
-  const opts = new Set(options.map(norm));
-  if (!multi) return opts.has(norm(answered));
-  const parts = answered.split(",").map(norm).filter(Boolean);
-  return parts.length > 0 && parts.every((p) => opts.has(p));
+  const opts = options.map(norm).filter(Boolean);
+  if (!multi) return opts.includes(norm(answered));
+  // A multi answer is the picks joined by ", " (choiceReply). An option may itself hold a comma, so
+  // the answer is consumed option by option (longest first) rather than split on commas.
+  const byLength = [...new Set(opts)].sort((a, b) => b.length - a.length);
+  let rest = norm(answered);
+  let picks = 0;
+  while (rest.length > 0) {
+    const hit = byLength.find((o) => rest === o || rest.startsWith(o + ", "));
+    if (!hit) return false;
+    picks += 1;
+    rest = rest === hit ? "" : rest.slice(hit.length + 2);
+  }
+  return picks > 0;
 }
 
 /** A Form's reply is `Label: value` lines (reply.ts); it is this form's when every line names one of its labels. */
 export function answerIsFormOf(answered: string | null, labels: readonly string[]): boolean {
   if (answered === null) return false;
-  const known = new Set(labels.map(norm));
+  // formReply writes `Label: value`; a label may itself hold a colon, so match on the label prefix.
+  const prefixes = labels.map(norm).filter(Boolean).map((l) => l + ":");
   const lines = answered.split("\n").map(norm).filter(Boolean);
-  return lines.length > 0 && lines.every((l) => known.has(norm(l.slice(0, l.indexOf(":") < 0 ? 0 : l.indexOf(":")))));
+  return lines.length > 0 && lines.every((l) => prefixes.some((p) => l.startsWith(p)));
 }
 
 /** An EditableTable's reply is a markdown table (reply.ts); it is this table's when the header row is its columns. */

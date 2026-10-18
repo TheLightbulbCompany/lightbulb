@@ -58,12 +58,15 @@ describe("which component an answer belongs to", () => {
     expect(answerIsFrom("Studio", ["Starter", " Studio "])).toBe(true);
     expect(answerIsFrom("Email, Push", ["Email", "SMS", "Push"], true)).toBe(true);
     expect(answerIsFrom("Email, Fax", ["Email", "SMS", "Push"], true)).toBe(false);
+    expect(answerIsFrom("San Francisco, CA, Austin", ["San Francisco, CA", "Austin", "Boston"], true)).toBe(true);
+    expect(answerIsFrom("San Francisco", ["San Francisco, CA", "Austin"], true)).toBe(false);
     expect(answerIsFrom("Your name: Ada\nPlan: Team", ["Compare the plans"])).toBe(false);
     expect(answerIsFrom(null, ["A"])).toBe(false);
   });
   it("a form owns Label: value lines that name its labels; a table owns a markdown table with its columns", () => {
     expect(answerIsFormOf("Your name: Ada\nPlan: Team", ["Your name", "Plan"])).toBe(true);
     expect(answerIsFormOf("Studio", ["Your name", "Plan"])).toBe(false);
+    expect(answerIsFormOf("Start: time: 09:00", ["Start: time"])).toBe(true);
     expect(answerIsTableOf("| Item | Qty |\n| --- | --- |\n| Pens | 3 |", ["Item", "Qty"])).toBe(true);
     expect(answerIsTableOf("Your name: Ada", ["Item", "Qty"])).toBe(false);
   });

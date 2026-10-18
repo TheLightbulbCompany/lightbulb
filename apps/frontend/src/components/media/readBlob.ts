@@ -4,6 +4,7 @@ const read = <T extends string | ArrayBuffer>(go: (r: FileReader) => void) =>
     const r = new FileReader();
     r.onload = () => resolve(r.result as T);
     r.onerror = () => reject(r.error);
+    r.onabort = () => reject(new Error("aborted"));
     go(r);
   });
 

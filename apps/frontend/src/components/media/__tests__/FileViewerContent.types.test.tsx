@@ -1,6 +1,6 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { FileViewerContent, isPaneViewable } from "../FileViewerContent";
 
 const XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -44,7 +44,7 @@ it("markdown renders and plain text stays monospace", async () => {
   render(<FileViewerContent item={{ fileName: "notes.md", contentType: "text/markdown", url: "blob:x", blob: blob("# Title\n\nbody", "text/markdown") }} />);
   expect(await screen.findByRole("heading", { name: "Title" })).toBeInTheDocument();
   render(<FileViewerContent item={{ fileName: "log.txt", contentType: "text/plain", url: "blob:y", blob: blob("line 1\nline 2", "text/plain") }} />);
-  expect(await screen.findByText(/line 1/)).toBeInTheDocument();
+  expect((await screen.findByText(/line 1/)).tagName).toBe("PRE");
 });
 
 it("a two-sheet workbook shows tabs", async () => {
@@ -56,4 +56,28 @@ it("a two-sheet workbook shows tabs", async () => {
   render(<FileViewerContent item={{ fileName: "two.xlsx", contentType: XLSX_TYPE, url: "blob:x", blob: new Blob([bytes], { type: XLSX_TYPE }) }} />);
   await userEvent.click(await screen.findByRole("tab", { name: "Second" }));
   expect(within(screen.getByRole("table")).getAllByRole("columnheader")[0]).toHaveTextContent("b");
+});
+
+it("a CSV whose blob type is empty still renders the grid", async () => {
+  render(<FileViewerContent item={{ fileName: "v.csv", contentType: "text/csv", url: "blob:x", blob: blob("A,B\n1,2\n", "") }} />);
+  expect(within(await screen.findByRole("table")).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["A", "B"]);
+});
+
+it("an oversize page shows the too-large card", async () => {
+  render(<FileViewerContent item={{ fileName: "huge.html", contentType: "text/html", url: "blob:x", blob: blob("x".repeat(2 * 1024 * 1024 + 1), "text/html") }} />);
+  expect(await screen.findByText(/too large to preview/i)).toBeInTheDocument();
+});
+
+it("a failing read shows the fallback card, not Loading forever", async () => {
+  const spy = vi.spyOn(FileReader.prototype, "readAsText").mockImplementation(function (this: FileReader) {
+    queueMicrotask(() => this.onerror?.(new ProgressEvent("error") as ProgressEvent<FileReader>));
+  });
+  try {
+    render(<FileViewerContent item={{ fileName: "a.html", contentType: "text/html", url: "blob:x", blob: blob("<p>x</p>", "text/html") }} />);
+    expect(await screen.findByText(/could not preview a\.html/i)).toBeInTheDocument();
+    render(<FileViewerContent item={{ fileName: "b.txt", contentType: "text/plain", url: "blob:y", blob: blob("x", "text/plain") }} />);
+    expect(await screen.findByText(/could not preview b\.txt/i)).toBeInTheDocument();
+  } finally {
+    spy.mockRestore();
+  }
 });

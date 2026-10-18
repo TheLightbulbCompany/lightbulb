@@ -14,7 +14,7 @@ type State = { status: "loading" } | { status: "ready"; sheets: Sheet[] } | { st
 const text = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 
 /** A workbook or CSV parsed in the browser with SheetJS: one tab per sheet, the first 2,000 rows each. View only. */
-export function SheetGrid({ blob, fileName }: { blob: Blob; fileName: string }) {
+export function SheetGrid({ blob, fileName, csv }: { blob: Blob; fileName: string; csv: boolean }) {
   const [state, setState] = useState<State>({ status: "loading" });
   const [active, setActive] = useState(0);
   useEffect(() => {
@@ -25,8 +25,8 @@ export function SheetGrid({ blob, fileName }: { blob: Blob; fileName: string }) 
         const { read, utils } = await import("xlsx");
         const bytes = await blobBytes(blob);
         // SheetJS reads any bytes as text, so garbage "parses"; a workbook is a zip ("PK"), only CSV may be bare text.
-        const head = new Uint8Array(bytes, 0, 2);
-        if (blob.type !== "text/csv" && !(head[0] === 0x50 && head[1] === 0x4b)) throw new Error("not a workbook");
+        const head = new Uint8Array(bytes.slice(0, 2));
+        if (!csv && !(head[0] === 0x50 && head[1] === 0x4b)) throw new Error("not a workbook");
         const wb = read(bytes, { type: "array", dense: true });
         const sheets = wb.SheetNames.map((name) => {
           const aoa = utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1, blankrows: false }) as unknown[][];
@@ -40,7 +40,7 @@ export function SheetGrid({ blob, fileName }: { blob: Blob; fileName: string }) 
       }
     })();
     return () => { live = false; };
-  }, [blob]);
+  }, [blob, csv]);
   if (state.status === "loading") return <p className="p-4 text-ui text-muted-foreground">Loading {fileName}…</p>;
   if (state.status === "error") return <p role="alert" className="p-4 text-ui text-muted-foreground">Could not preview {fileName}. Download it instead.</p>;
   const sheet = state.sheets[Math.min(active, state.sheets.length - 1)];

@@ -63,7 +63,7 @@ export function FileViewerContent({ item, className }: { item: FileViewerItem; c
     );
   }
 
-  if (item.blob && (item.contentType === XLSX || item.contentType === "text/csv")) return <SheetGrid blob={item.blob} fileName={item.fileName} />;
+  if (item.blob && (item.contentType === XLSX || item.contentType === "text/csv")) return <SheetGrid blob={item.blob} fileName={item.fileName} csv={item.contentType === "text/csv"} />;
   if (item.blob && item.contentType === "text/html") return <HtmlPreview blob={item.blob} fileName={item.fileName} />;
   if (item.blob && (item.contentType === "text/markdown" || item.contentType === "text/plain")) return <TextPreview blob={item.blob} fileName={item.fileName} markdown={item.contentType === "text/markdown"} />;
 

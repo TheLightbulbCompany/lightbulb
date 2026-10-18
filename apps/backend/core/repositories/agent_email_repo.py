@@ -279,6 +279,21 @@ async def delete_pending_line(owner_id: str, *, operation_id: str) -> bool:
     )
 
 
+async def set_pending_page_token(owner_id: str, *, operation_id: str, page_token: str | None) -> bool:
+    """Where the line-user walk stopped (None clears it), fenced on the operation so a slow reader never writes
+    onto a newer request's row."""
+    values: dict = {":pending": "text_pending", ":op": operation_id}
+    if page_token:
+        values[":t"] = page_token
+    return await _conditional(
+        _get_table().update_item,
+        Key={"address": f"pending:{owner_id}"},
+        UpdateExpression="SET page_token = :t" if page_token else "REMOVE page_token",
+        ConditionExpression="kind = :pending AND operation_id = :op",
+        ExpressionAttributeValues=values,
+    )
+
+
 async def delete_text_line(number: str) -> None:
     """Delete a texting-line row; the condition means it can never delete a mail address row."""
     await _conditional(

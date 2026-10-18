@@ -176,15 +176,17 @@ async def test_find_line_user_pages_and_matches(monkeypatch):
         return httpx.Response(200, json={"items": [{"id": "b", "handle": "+2", "details": {"resourceId": "r1"}}]})
 
     calls = _mock(monkeypatch, handler)
-    assert await photon.find_line_user("r1") == {"id": "b", "handle": "+2"}
+    assert await photon.find_line_user("r1") == ({"id": "b", "handle": "+2"}, None)
     assert len(calls) == 2 and calls[0].url.path == f"{PRJ}/users"
-    assert await photon.find_line_user("nope") is None
+    assert await photon.find_line_user("nope") == (None, None)
 
 
-async def test_find_line_user_stops_after_the_page_cap(monkeypatch):
+async def test_find_line_user_stops_after_the_page_cap_and_resumes_from_its_token(monkeypatch):
     calls = _mock(monkeypatch, lambda r: httpx.Response(200, json={"items": [], "nextPageToken": "t.n"}))
-    assert await photon.find_line_user("r1") is None
+    assert await photon.find_line_user("r1") == (None, "t.n")
     assert len(calls) == photon.FIND_USER_MAX_PAGES
+    assert await photon.find_line_user("r1", page_token="t.n") == (None, "t.n")
+    assert calls[photon.FIND_USER_MAX_PAGES].url.params["pageToken"] == "t.n"  # the next look starts there
 
 
 @pytest.mark.parametrize("status", [200, 202, 404])

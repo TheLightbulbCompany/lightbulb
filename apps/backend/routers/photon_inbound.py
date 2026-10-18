@@ -77,6 +77,7 @@ class _Object(BaseModel):
     space: _Space | None = None
     sentBy: _Party | None = None  # noqa: N815
     receivedBy: _Party | None = None  # noqa: N815
+    addressedTo: _Party | None = None  # noqa: N815
     content: _Content | None = None
     timestamps: dict | None = None  # receivedAt: "preserved across replay" (spec), so a redelivery keys the same row
 
@@ -173,8 +174,9 @@ async def handle_photon_inbound(request: Request):
             return _final("duplicate")
         recorded = True
 
-        received_by, sent_by, space = obj.receivedBy or _Party(), obj.sentBy or _Party(), obj.space or _Space()
-        # Photon's iMessage user snapshot always carries a handle, so the line is found by its number.
+        # Both name OUR line (spec: receivedBy, addressedTo) and either may be absent; its handle is the number.
+        received_by = obj.receivedBy or obj.addressedTo or _Party()
+        sent_by, space = obj.sentBy or _Party(), obj.space or _Space()
         line = await get_by_address(received_by.handle) if received_by.handle else None
         if not line or line.get("kind") != "text":
             return _final("dropped_unknown_line")

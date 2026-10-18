@@ -113,19 +113,21 @@ async def cancel_operation(operation_id: str) -> None:
     await _call("POST", f"/platforms/operations/{operation_id}/cancel", ok_statuses=(409,))
 
 
-async def find_line_user(resource_id: str) -> dict | None:
-    """The line's own Photon user. ``/users`` filters by platform only, so this walks pages; past
-    ``FIND_USER_MAX_PAGES`` it answers not found, and the caller defers the record to a later look."""
-    params: dict = {"platform": "imessage", "pageSize": 100}
+async def find_line_user(resource_id: str, *, page_token: str | None = None) -> tuple[dict | None, str | None]:
+    """The line's own Photon user, and where to look next. ``/users`` filters by platform only, so this walks
+    pages from ``page_token``: ``(user, None)`` when found; ``(None, token)`` when ``FIND_USER_MAX_PAGES`` pages
+    ran out with more to read, so the caller's next look continues instead of starting over; ``(None, None)``
+    when the list ended without it."""
+    params: dict = {"platform": "imessage", "pageSize": 100, **({"pageToken": page_token} if page_token else {})}
     for _ in range(FIND_USER_MAX_PAGES):
         page = await _call("GET", "/users", params=params)
         for user in page.get("items", []):
             if (user.get("details") or {}).get("resourceId") == resource_id:
-                return {"id": user["id"], "handle": user.get("handle")}
+                return {"id": user["id"], "handle": user.get("handle")}, None
         if not page.get("nextPageToken"):
-            return None
+            return None, None
         params = {**params, "pageToken": page["nextPageToken"]}
-    return None
+    return None, params["pageToken"]
 
 
 async def release_line(resource_id: str) -> dict | None:

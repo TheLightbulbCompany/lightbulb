@@ -127,7 +127,10 @@ async def complete_pending(owner_id: str) -> str:
         # Read first: another reader may have recorded a line already, and an owner holds one line only.
         line = await agent_email_repo.text_line_for_owner(owner_id)
         if not line:
-            user = await photon.find_line_user(resource_id)
+            user, next_page = await photon.find_line_user(resource_id, page_token=pending.get("page_token"))
+            if user is None and next_page != pending.get("page_token"):
+                # A long user list: keep where the walk stopped, so the next look continues instead of restarting.
+                await agent_email_repo.set_pending_page_token(owner_id, operation_id=op_id, page_token=next_page)
             if user and user.get("handle"):
                 recorded = await agent_email_repo.record_text_line(
                     number=user["handle"],

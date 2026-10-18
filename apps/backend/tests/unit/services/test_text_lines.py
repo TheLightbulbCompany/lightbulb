@@ -30,7 +30,8 @@ def m(monkeypatch):
     o.delete = AsyncMock()
     o.request = AsyncMock(return_value={"operationId": "op_1", "state": "pending"})
     o.get_op = AsyncMock(return_value=DONE)
-    o.find_user = AsyncMock(return_value={"id": "usr_1", "handle": "+15551230000"})
+    o.find_user = AsyncMock(return_value=({"id": "usr_1", "handle": "+15551230000"}, None))
+    o.set_page = AsyncMock(return_value=True)
     o.cancel = AsyncMock()
     o.release = AsyncMock(return_value=None)  # released now; a 202 still running comes back as the operation
     o.soul = AsyncMock()
@@ -42,6 +43,7 @@ def m(monkeypatch):
     monkeypatch.setattr(r, "put_pending_line", o.put_pending)
     monkeypatch.setattr(r, "delete_pending_line", o.del_pending)
     monkeypatch.setattr(r, "record_text_line", o.record)
+    monkeypatch.setattr(r, "set_pending_page_token", o.set_page)
     monkeypatch.setattr(r, "delete_text_line", o.delete)
     monkeypatch.setattr(text_lines.billing_repo, "claim_front_desk", o.claim)
     monkeypatch.setattr(text_lines.billing_repo, "release_front_desk_claim", o.set_fd)
@@ -318,16 +320,36 @@ async def test_release_that_removed_the_pending_row_makes_a_late_record_fail(m):
 
 async def test_unknown_line_user_keeps_the_pending_row(m):
     m.pending.return_value = PENDING
-    m.find_user.return_value = None
+    m.find_user.return_value = (None, None)
     assert await text_lines.complete_pending("org_1") == "pending"
     m.release.assert_not_awaited()
     m.del_pending.assert_not_awaited()
     m.record.assert_not_awaited()
+    m.set_page.assert_not_awaited()  # nothing to keep: the walk ended, and the row held no place
+
+
+async def test_a_long_user_list_is_walked_across_looks_not_restarted(m):
+    """Past the page cap the walk keeps its place on the pending row, and the next look continues from it."""
+    m.pending.return_value = PENDING
+    m.find_user.return_value = (None, "t.11")
+    assert await text_lines.complete_pending("org_1") == "pending"
+    m.set_page.assert_awaited_once_with("org_1", operation_id="op_1", page_token="t.11")
+    m.pending.return_value = {**PENDING, "page_token": "t.11"}
+    m.find_user.return_value = ({"id": "usr_1", "handle": "+15551230000"}, None)
+    assert await text_lines.complete_pending("org_1") == "provisioned"
+    assert m.find_user.await_args.kwargs["page_token"] == "t.11"
+    m.record.assert_awaited_once()
+    # The list ended without it: the place is cleared, so the next look starts over (the user may be new).
+    m.set_page.reset_mock()
+    m.pending.return_value = {**PENDING, "page_token": "t.11"}  # a fresh look at a row still holding a place
+    m.find_user.return_value = (None, None)
+    assert await text_lines.complete_pending("org_1") == "pending"
+    m.set_page.assert_awaited_once_with("org_1", operation_id="op_1", page_token=None)
 
 
 async def test_line_user_without_a_handle_is_deferred_not_released(m):
     m.pending.return_value = PENDING
-    m.find_user.return_value = {"id": "usr_1", "handle": None}
+    m.find_user.return_value = ({"id": "usr_1", "handle": None}, None)
     assert await text_lines.complete_pending("org_1") == "pending"
     assert await text_lines.ensure_line("org_1") == "pending"
     m.record.assert_not_awaited()

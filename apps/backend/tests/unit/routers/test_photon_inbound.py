@@ -295,6 +295,13 @@ def test_sender_without_handle_falls_back_to_user_id(client, seams):
     assert seams["put_message"].await_args.kwargs["from_addr"] == f"photon:{CUSTOMER_USER}"
 
 
+def test_addressed_to_names_the_line_when_received_by_is_absent(client, seams):
+    """Both parties are optional in the spec, and either names our line."""
+    event = _event(receivedBy=None, addressedTo={"id": LINE_USER, "handle": LINE})
+    assert _post(client, event).json() == {"status": "delivered"}
+    assert seams["get_by_address"].await_args_list[0].args == (LINE,)
+
+
 def test_apple_email_sender_is_kept_verbatim(client, seams):
     event = _event(sentBy={"id": CUSTOMER_USER, "handle": "Jane@iCloud.com"})
     assert _post(client, event).json() == {"status": "delivered"}

@@ -438,6 +438,21 @@ async def test_pending_line_for_owner_filters_kind(monkeypatch):
     assert await repo.pending_line_for_owner("o") is None
 
 
+async def test_pending_page_token_is_set_or_cleared_under_the_operation_fence(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.set_pending_page_token("org_1", operation_id="op_1", page_token="t.11") is True
+    kw = table.update_item.call_args.kwargs
+    assert kw["Key"] == {"address": "pending:org_1"} and kw["UpdateExpression"] == "SET page_token = :t"
+    assert kw["ConditionExpression"] == "kind = :pending AND operation_id = :op"
+    assert kw["ExpressionAttributeValues"] == {":pending": "text_pending", ":op": "op_1", ":t": "t.11"}
+    assert await repo.set_pending_page_token("org_1", operation_id="op_1", page_token=None) is True
+    kw = table.update_item.call_args.kwargs
+    assert kw["UpdateExpression"] == "REMOVE page_token" and ":t" not in kw["ExpressionAttributeValues"]
+    table.update_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+    assert await repo.set_pending_page_token("org_1", operation_id="op_2", page_token="t.11") is False
+
+
 async def test_pending_delete_is_fenced_on_the_operation(monkeypatch):
     table = MagicMock()
     monkeypatch.setattr(repo, "_get_table", lambda: table)

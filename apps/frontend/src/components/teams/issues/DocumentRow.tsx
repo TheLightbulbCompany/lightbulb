@@ -6,14 +6,12 @@ import { useUser } from "@clerk/nextjs";
 import { useSWRConfig } from "swr";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
-import type { Components } from "react-markdown";
-import { roomMarkdown } from "@/components/messaging/roomMarkdown";
 import { CardContext, readOnlyCardContext } from "@/components/messaging/openui/CardContext";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, IssueDocument } from "@/components/teams/shared/types";
 import { DocumentRevisionMenu } from "./DocumentRevisionMenu";
 import { DocumentDiffModal } from "./DocumentDiffModal";
-import { DocumentEditor } from "./DocumentEditor";
+import { DocumentEditor, documentMarkdown } from "./DocumentEditor";
 import { DocumentAnnotationLayer, type OverlayThread } from "./DocumentAnnotationLayer";
 import { DocumentAnnotationPanel } from "./DocumentAnnotationPanel";
 import type {
@@ -27,11 +25,6 @@ import { notifyApiError } from "@/lib/notify";
 // The upstream wire payload carries the latest-revision fields even though the
 // trimmed local `IssueDocument` type omits them.
 type ReviewableDocument = IssueDocument & DocumentRevisionRef;
-
-// A document keeps MarkdownView's own links, images and the rest; it takes only the
-// fence overrides (cards, diagrams) from the room set. Merged shallowly, so adding
-// `a` or `img` here would replace the attachment handling.
-const documentMarkdown: Partial<Components> = { code: roomMarkdown.code, pre: roomMarkdown.pre };
 
 function documentAnchorId(key: string): string {
   return `document-${key}`;
@@ -103,6 +96,8 @@ export function DocumentRow({
   const Chevron = open ? ChevronDown : ChevronRight;
 
   const reviewEnabled = Boolean(issueId);
+  // Only issue documents have a save route; a case document keeps comments and versions.
+  const editable = reviewEnabled && (basePath === undefined || basePath === `/issues/${issueId}`);
   const latestRevisionNumber = reviewable.latestRevisionNumber ?? 0;
   const latestRevisionId = reviewable.latestRevisionId ?? null;
   const annotationsPath = reviewEnabled
@@ -272,7 +267,7 @@ export function DocumentRow({
               <MessageSquare size={12} strokeWidth={1.75} />
               <span className="tabular-nums">{openCount}</span>
             </button>
-            {!historicalPreview ? (
+            {editable && !historicalPreview ? (
               <button
                 type="button"
                 onClick={() => { setOpen(true); setEditing(!editing); }}
@@ -338,11 +333,11 @@ export function DocumentRow({
               {/* `bodyRef` wraps ONLY the rendered markdown so the annotation
                   layer's text-node walk + selection offsets aren't polluted by
                   the overlay's own chrome (which is a sibling below). */}
-              {editing && reviewEnabled && !historicalPreview ? (
+              {editing && editable && !historicalPreview ? (
                 <DocumentEditor
                   issueId={issueId!}
-                  basePath={root}
                   document={reviewable}
+                  agents={agents}
                   currentUserName={currentUserName}
                   onSaved={() => { setEditing(false); onRestored?.(); }}
                   onCancel={() => setEditing(false)}

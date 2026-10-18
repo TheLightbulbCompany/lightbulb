@@ -133,6 +133,28 @@ def test_read_profile_file_base64s_an_image_like_the_efs_reader(s3_hermes_bucket
     assert base64.b64decode(info["content"]) == b"\x89PNG\r\n\x1a\nnot-utf8\xff"
 
 
+def test_read_profile_file_base64s_an_xlsx_for_the_sheet_preview(s3_hermes_bucket):
+    xlsx = b"PK\x03\x04not-utf8\xff"
+    _put(s3_hermes_bucket, "out/Report.XLSX", xlsx)
+
+    info = hermes_profiles.read_profile_file(OWNER, AGENT, "out/Report.XLSX")
+
+    assert info["binary"] is True
+    assert info["mime_type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    import base64
+
+    assert base64.b64decode(info["content"]) == xlsx
+
+
+def test_read_profile_file_sends_no_bytes_for_an_xlsx_past_the_preview_cap(s3_hermes_bucket):
+    _put(s3_hermes_bucket, "big.xlsx", b"PK\x03\x04" + b"\xff" * (5 * 1024 * 1024))
+
+    info = hermes_profiles.read_profile_file(OWNER, AGENT, "big.xlsx")
+
+    assert info["binary"] is True
+    assert info["content"] is None
+
+
 def test_read_profile_file_hides_the_secret_store_behind_a_plain_miss(s3_hermes_bucket):
     _put(s3_hermes_bucket, ".env", b"ANTHROPIC_API_KEY=sk-live\n")
     _put(s3_hermes_bucket, "lightbulb-facts.json", b'{"plan": "ultra_pro"}')

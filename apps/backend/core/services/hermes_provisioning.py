@@ -1165,6 +1165,17 @@ async def resolve_profile_inputs(owner_id: str) -> ProfileInputs:
     )
 
 
+async def _front_desk_suffix(owner_id: str, agent_id: str) -> str:
+    """The front-desk SOUL section, for the one agent that owns the workspace's text line."""
+    from core.repositories import agent_email_repo
+    from core.services import hermes_profiles
+
+    line = await agent_email_repo.text_line_for_owner(owner_id)
+    if line and line.get("agent_id") == agent_id:
+        return "\n\n" + hermes_profiles.front_desk_section(line["address"])
+    return ""
+
+
 async def write_profile_for_agent(
     owner_id: str,
     agent_row: dict,
@@ -1249,6 +1260,8 @@ async def write_profile_for_agent(
         ) from exc
     if soul_md_override is not None:
         files.soul_md = soul_md_override
+    elif suffix := await _front_desk_suffix(owner_id, agent_id):
+        files.soul_md += suffix
     await upload_profile(owner_id, agent_id, files)
     await _stage_owner_facts(owner_id, [agent_id], inputs, refresh_roster=lone_agent)
 
@@ -1288,7 +1301,7 @@ async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None
         return
     current = await run_in_thread(hermes_profiles.read_soul_md, owner_id, agent_id)
     if not current or hermes_profiles.is_generated_soul(current):
-        soul_md = hermes_profiles.build_soul_md(agent_row)
+        soul_md = hermes_profiles.build_soul_md(agent_row) + await _front_desk_suffix(owner_id, agent_id)
         await run_in_thread(hermes_profiles.upload_soul_md, owner_id, agent_id, soul_md)
     # Every rename door, owner-edited SOUL.md or not: VOICE_NOTES.md carries the current name,
     # room member labels follow it, and an open Live window hears about it (C3 ``renamed``).

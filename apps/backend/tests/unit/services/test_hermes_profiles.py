@@ -442,3 +442,9 @@ def test_managed_openrouter_also_never_pins_vision(monkeypatch):
     c = cfg(provider_choice="openrouter_managed")
     assert "vision" not in c["auxiliary"]
     assert "supports_vision" not in c["model"]
+
+
+def test_front_desk_section_names_the_number():
+    out = hermes_profiles.front_desk_section("+15551234567")
+    assert "text on +15551234567." in out
+    assert "{number}" not in out

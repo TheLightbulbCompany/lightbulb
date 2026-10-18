@@ -8,6 +8,11 @@ from core.services import hermes_provisioning
 
 
 @pytest.fixture(autouse=True)
+def _no_text_line(monkeypatch):
+    monkeypatch.setattr("core.repositories.agent_email_repo.text_line_for_owner", AsyncMock(return_value=None))
+
+
+@pytest.fixture(autouse=True)
 def _no_billing_row(monkeypatch):
     """Provisioning resolves the provider from billing on every path; default to a ChatGPT row.
     Tests that care patch billing_repo themselves, which wins."""
@@ -1995,3 +2000,42 @@ def test_a_runtime_still_carrying_the_retired_bedrock_env_reads_as_drift():
     desired = {"AWS_REGION": "us-east-1"}
     assert hermes_provisioning._env_drifted({**desired, "ANTHROPIC_MODEL": "arn:aip:sonnet"}, desired)
     assert not hermes_provisioning._env_drifted(dict(desired), desired)
+
+
+async def _front_desk_profile(monkeypatch, line, override=None):
+    from core.services.hermes_provisioning import ProfileInputs
+
+    inputs = ProfileInputs(
+        provider_choice="chatgpt_oauth", byo_provider=None, byo_api_key=None, integrations={}, env_vars={}
+    )
+    monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", AsyncMock(return_value=inputs))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk"))
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    monkeypatch.setattr(
+        "core.services.hermes_profiles.write_agent_profile", lambda *a, **k: SimpleNamespace(soul_md="BASE")
+    )
+    upload = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload)
+    monkeypatch.setattr(hermes_provisioning, "_stage_owner_facts", AsyncMock())
+    monkeypatch.setattr("core.repositories.agent_email_repo.text_line_for_owner", AsyncMock(return_value=line))
+    await hermes_provisioning.write_profile_for_agent("owner_1", {"id": "agent_fd"}, soul_md_override=override)
+    return upload.await_args.args[2].soul_md
+
+
+@pytest.mark.asyncio
+async def test_profile_for_the_line_agent_carries_the_section(monkeypatch):
+    soul = await _front_desk_profile(monkeypatch, {"address": "+15551234567", "agent_id": "agent_fd"})
+    assert soul.startswith("BASE\n\n## Front desk") and "+15551234567" in soul
+    # an owner-edited override is never touched
+    line = {"address": "+15551234567", "agent_id": "agent_fd"}
+    assert await _front_desk_profile(monkeypatch, line, override="MINE") == "MINE"
+
+
+@pytest.mark.asyncio
+async def test_other_agents_do_not(monkeypatch):
+    assert await _front_desk_profile(monkeypatch, {"address": "+1555", "agent_id": "someone_else"}) == "BASE"
+
+
+@pytest.mark.asyncio
+async def test_no_line_no_section(monkeypatch):
+    assert await _front_desk_profile(monkeypatch, None) == "BASE"

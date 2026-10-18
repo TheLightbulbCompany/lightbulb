@@ -68,6 +68,7 @@ def wired(monkeypatch):
         mod.container_repo, "try_consume_daily_email_send", AsyncMock(side_effect=lambda *a, **k: st.cap)
     )
     monkeypatch.setattr(mod, "put_metric", lambda *a, **k: None)
+    monkeypatch.setattr(mod.agent_email_repo, "text_line_for_owner", AsyncMock(return_value=None))
     return st
 
 
@@ -268,3 +269,17 @@ async def test_reply_path_allowlisted_sender_allowed_without_send_to_anyone(wire
 async def test_reply_path_domain_allowlisted_sender_allowed_without_send_to_anyone(wired):
     wired.row = dict(wired.row, send_to_anyone=False, verified_senders=["@x.y"])
     assert await _send(reply_key=f"{TEAM}/2026#m1") == "sent"
+
+
+@pytest.mark.asyncio
+async def test_front_desk_agent_cannot_send_mail(wired, monkeypatch):
+    line = AsyncMock(return_value={"address": "+15551234567", "agent_id": AGENT, "kind": "text"})
+    monkeypatch.setattr(mod.agent_email_repo, "text_line_for_owner", line)
+    ses = AsyncMock()
+    monkeypatch.setattr(mod.ses_email, "send_ses_email", ses)
+    assert await _send(to="vendor@x.y") == "front_desk_agent"
+    ses.assert_not_awaited()
+    assert wired.owner_kwargs is None and wired.reply_kwargs is None
+    # another agent on the same workspace still sends
+    monkeypatch.setattr(mod.agent_email_repo, "text_line_for_owner", AsyncMock(return_value={"agent_id": "other"}))
+    assert await _send(to="vendor@x.y") != "front_desk_agent"

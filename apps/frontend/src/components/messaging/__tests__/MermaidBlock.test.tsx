@@ -35,6 +35,17 @@ it("a bad diagram falls back to code", async () => {
   expect(screen.getByText(/garbage/).closest("pre")).not.toBeNull();
 });
 
+it("measures labels in the page's own font and draws nothing for an empty fence", async () => {
+  const { default: mermaid } = await import("mermaid");
+  render(<MarkdownView components={roomMarkdown}>{"```mermaid\ngraph TD; A-->B\n```"}</MarkdownView>);
+  await screen.findByRole("img", { name: /diagram/i });
+  const font = getComputedStyle(document.body).fontFamily || "inherit";
+  expect(mermaid.initialize).toHaveBeenCalledWith(expect.objectContaining({ fontFamily: font, themeVariables: expect.objectContaining({ fontFamily: font }) }));
+  const { container } = render(<MarkdownView components={roomMarkdown}>{"before\n\n```\n```\n\nafter"}</MarkdownView>);
+  expect(container.querySelector("pre")).toBeNull();
+  expect(container.textContent).toContain("after");
+});
+
 it("other fences are untouched", () => {
   render(<MarkdownView components={roomMarkdown}>{"```js\nconsole.log(1)\n```"}</MarkdownView>);
   expect(screen.getByText("console.log(1)").closest("pre")).not.toBeNull();

@@ -25,7 +25,10 @@ export function MermaidBlock({ source }: { source: string }) {
         // mermaid's config is global and LobsterGraphView initialises it too, so set ours (with the
         // theme as it is now, after any light/dark toggle) before every render. suppressErrorRendering
         // stops a failed render leaving mermaid's error SVG in document.body.
-        mermaid.initialize({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true, theme: "base", fontFamily: "inherit", themeVariables: themeVariables() });
+        // The font must be the one the labels render in: mermaid measures label widths with the font it is
+        // told about, and "inherit" measured a fallback face, so Source Sans labels were clipped on device.
+        const fontFamily = getComputedStyle(document.body).fontFamily || "inherit";
+        mermaid.initialize({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true, theme: "base", fontFamily, themeVariables: { ...themeVariables(), fontFamily } });
         const { svg } = await mermaid.render(`m${id}`, source);
         if (live) setState({ svg });
       } catch (e) {

@@ -54,7 +54,7 @@ helper omits the header, and every call below works without one.
    owns, or one `in_progress` under a live run, refuses a document write from
    chat: file a subtask under it instead (`subtask … --parent <id>`).
 
-2. **Write the document.** Key: short, lowercase, `[a-z0-9][a-z0-9_-]*`
+2. **Write the document.** Shape and voice: `references/documents.md`. Key: short, lowercase, `[a-z0-9][a-z0-9_-]*`
    (`research`, `video-plan`; `plan` for a plan). Build the body with `jq`:
 
    ```bash

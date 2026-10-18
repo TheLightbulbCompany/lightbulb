@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +11,8 @@ const wakeAgent = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/components/teams/inbox/hooks/useAgentWake", () => ({ useAgentWake: () => ({ wakeAgent }) }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
 vi.mock("@/components/teams/inbox/AttentionDesk", () => ({
-  AttentionDesk: () => <div data-testid="attention-desk">Attention desk</div>,
+  AttentionDesk: (props: { hideFailedRuns?: boolean; currentUserId?: string | null }) =>
+    <div data-testid="attention-desk" data-hide-failed-runs={String(props.hideFailedRuns)} data-user={props.currentUserId ?? ""}>Attention desk</div>,
 }));
 vi.mock("@/components/teams/inbox/DecisionResolver", () => ({
   DecisionResolver: ({ decisionId }: { decisionId: string }) => <div>Decision card {decisionId}</div>,
@@ -96,12 +97,22 @@ describe("ForYou", () => {
     expect(screen.getByTestId("attention-desk")).toBeInTheDocument();
   });
 
+  it("keeps a failed-run group with Retry under Needs you, and the desk leaves its own failed runs out", async () => {
+    setup({ activityItems: [], failedRuns: [runGroup("g1")], filter: "needs-you" });
+    const row = document.querySelector('[data-for-you-id="failed_run:g1"]') as HTMLElement;
+    expect(row).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
+    expect(screen.getByTestId("attention-desk")).toHaveAttribute("data-hide-failed-runs", "true");
+  });
+
   it("Needs you renders the desk, other filters unchanged", async () => {
     setup({ activityItems: [approval, message("m1"), assigned, loginAsk], attentionItems: [attention("x2", "blocker_attention")],
-      failedRuns: [runGroup("g1")], filter: "needs-you" });
-    // The desk carries approvals, attention items and failed runs; the rows keep the asks it does not.
-    expect(screen.getByTestId("attention-desk")).toBeInTheDocument();
-    expect(rows()).toEqual(["paperclip:assigned_issue:i9", "login:abc"]);
+      failedRuns: [runGroup("g1")], filter: "needs-you", currentUserId: "user_me" });
+    // The desk carries approvals and attention items; the rows keep the asks and failed runs it does not.
+    const desk = screen.getByTestId("attention-desk");
+    expect(desk).toHaveAttribute("data-user", "user_me");
+    expect(rows()).toEqual(["paperclip:assigned_issue:i9", "login:abc", "failed_run:g1"]);
     expect(screen.queryByText("You're all caught up.")).not.toBeInTheDocument();
     await userEvent.click(chip("All"));
     expect(screen.queryByTestId("attention-desk")).not.toBeInTheDocument();

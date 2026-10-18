@@ -5,7 +5,7 @@ import { UserButton } from "@clerk/nextjs";
 import { Bell, HelpCircle, Images, ListTodo, MessageSquare, Search, Settings } from "lucide-react";
 import Link from "next/link";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
-import { useActivity } from "@/hooks/useActivity";
+import { useNeedsYouBadge } from "@/components/activity/useNeedsYouBadge";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { recordMessagesNavigation } from "./chatHistory";
@@ -34,8 +34,9 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   const { setOpen } = useCommandPalette();
   const { place: current } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
-  // Activity's badge: every needs-you item, plus unseen mentions, DMs and Paperclip items.
-  const { attentionCount } = useActivity();
+  // Activity's badge: what For you → Needs you shows (the desk, minus dismissed and
+  // snoozed items, plus failed-run groups), plus unseen mentions, DMs and Paperclip items.
+  const attentionCount = useNeedsYouBadge();
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />

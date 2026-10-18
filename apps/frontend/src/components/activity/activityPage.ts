@@ -180,9 +180,9 @@ export function forYouEntries(
  * `?panel=activity&filter=` link.
  *
  * Under `needs-you` the attention desk (stock Paperclip's, with its shelves, snooze and
- * dismiss) lists every Paperclip decision, approval, question and failed run, so the rows
- * here keep only the asks the desk does not carry: assigned tasks, session, login and
- * extension asks.
+ * dismiss) lists every Paperclip decision, approval and question, so the rows here keep
+ * what the desk does not carry: the Inbox's failed-run groups (with Retry; the desk
+ * leaves its own failed runs out), assigned tasks, and session, login and extension asks.
  */
 export type ForYouFilter = "all" | "needs-you" | "mentions" | "threads" | "dms";
 export const FOR_YOU_FILTERS: readonly { id: ForYouFilter; label: string }[] = [
@@ -203,7 +203,8 @@ export function isForYouFilter(value: unknown): value is ForYouFilter {
  */
 /** Shown by the attention desk under Needs you, so not repeated as a row there. */
 function onAttentionDesk(entry: ForYouEntry): boolean {
-  if (entry.source.type !== "activity") return true;
+  if (entry.source.type === "attention") return true;
+  if (entry.source.type === "failed_runs") return false;
   const item = entry.source.item;
   return item.kind === "paperclip" && (item.subtype === "approval" || item.subtype === "interaction");
 }

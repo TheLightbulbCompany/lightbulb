@@ -58,6 +58,8 @@ export interface ForYouProps {
   agents: readonly CompanyAgent[];
   /** An item a notification points at: highlighted and scrolled to. */
   focusId?: string | null;
+  /** The viewer's Clerk id, so a question on the desk can say "You". */
+  currentUserId?: string | null;
 }
 
 /**
@@ -121,7 +123,7 @@ export function ForYou(props: ForYouProps) {
         onNavigate={(target) => open(entry.id, target)} />)}
     </ul>}
     {/* Needs you: the attention desk carries its own loading and all-clear. */}
-    {filter === "needs-you" && <AttentionDesk agents={agents} />}
+    {filter === "needs-you" && <AttentionDesk agents={agents} currentUserId={props.currentUserId ?? null} hideFailedRuns />}
     {entries.length === 0 && filter !== "needs-you" && (loading
       ? <p role="status" className="for-you__empty">Loading…</p>
       // The all-clear only when every source answered and nothing older is left to load.

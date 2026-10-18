@@ -212,6 +212,36 @@ describe("AttentionDesk", () => {
     expect(del).toHaveBeenCalledWith("/inbox-dismissals/attention%3Aa");
   });
 
+  it("an Undo pressed after a newer feed landed keeps the pending state made on that feed", async () => {
+    setDesk([item("a"), item("b")]);
+    const { rerender } = render(<AttentionDesk />);
+    await openMenu(rowOf("Title a"));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Dismiss" }));
+    const { action } = notifySuccess.mock.calls[0][1] as { action: { onClick: () => void } };
+
+    // A newer feed lands (a is dismissed on the server), then b is dismissed on it.
+    setDesk([item("a", { dismissal: { kind: "dismiss", dismissedAt: iso(NOW), snoozedUntil: null, isActive: true } }), item("b")], iso(NOW + 1));
+    rerender(<AttentionDesk />);
+    await openMenu(rowOf("Title b"));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Dismiss" }));
+    expect(screen.queryByText("Title b")).not.toBeInTheDocument();
+
+    // The first toast's Undo, from the older render: b stays hidden.
+    act(() => action.onClick());
+    expect(screen.queryByText("Title b")).not.toBeInTheDocument();
+    expect(del).toHaveBeenCalledWith("/inbox-dismissals/attention%3Aa");
+  });
+
+  it("leaves its failed runs out when For you lists the failed-run groups", () => {
+    setDesk([item("run", { sourceKind: "failed_run" }), item("blk")]);
+    const { unmount } = render(<AttentionDesk hideFailedRuns />);
+    expect(screen.queryByText("Title run")).not.toBeInTheDocument();
+    expect(screen.getByText("Title blk")).toBeInTheDocument();
+    unmount();
+    render(<AttentionDesk />);
+    expect(screen.getByText("Title run")).toBeInTheDocument();
+  });
+
   it("idle N days after 30 days", async () => {
     setDesk([item("stale", { shelf: true, activityAt: iso(NOW - 45 * DAY), createdAt: iso(NOW - 60 * DAY) })]);
     render(<AttentionDesk />);

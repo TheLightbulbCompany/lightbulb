@@ -17,6 +17,8 @@
 //                               apart from the badge's /attention)
 //   - agents / session reads -> the caller's agents and currentUserId
 //   - pushToast              -> notifySuccess with an Undo action
+//   - `hideFailedRuns`       -> under For you the Inbox's failed-run groups (with
+//                               Retry) list failures, so the desk leaves its own out
 //   - not ported: DecisionsToolbar (group / sort / filter), DecisionQueueRail and
 //     DecisionDateChips (decision queues and the date chips' chrome), the
 //     Decided / Expired history curtains, the `?decisionId=` deep link,
@@ -25,7 +27,7 @@
 
 "use client";
 
-import { Fragment, useCallback, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, Inbox } from "lucide-react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifySuccess } from "@/lib/notify";
@@ -56,9 +58,12 @@ function settleQuietly(write: Promise<unknown>) {
 export interface AttentionDeskProps {
   agents?: readonly CompanyAgent[];
   currentUserId?: string | null;
+  /** Leave the feed's `failed_run` rows out: For you lists the Inbox's failed-run
+   *  groups (with Retry) under Needs you already, so the desk would repeat them. */
+  hideFailedRuns?: boolean;
 }
 
-export function AttentionDesk({ agents = [], currentUserId = null }: AttentionDeskProps) {
+export function AttentionDesk({ agents = [], currentUserId = null, hideFailedRuns = false }: AttentionDeskProps) {
   const { read } = useTeamsApi();
   const { data: feed, isLoading, error } = read<AttentionFeedResponse>(teamsQueryKeys.attentionDesk());
   const { dismiss, snooze, restore } = useInboxDismissals();
@@ -80,20 +85,29 @@ export function AttentionDesk({ agents = [], currentUserId = null }: AttentionDe
   const current = pending.stamp === feedStamp ? pending : { stamp: feedStamp, hide: EMPTY, restore: EMPTY };
   const pendingHide = current.hide;
   const pendingRestore = current.restore;
+  // The updater reads the CURRENT feed's stamp, not the one its caller closed
+  // over: a toast's Undo pressed after a newer feed landed must not wipe the
+  // pending state made on that newer feed.
+  const stampRef = useRef<unknown>(feedStamp);
+  useEffect(() => {
+    stampRef.current = feedStamp;
+  }, [feedStamp]);
   const editPending = useCallback((field: "hide" | "restore", id: string, add: boolean) => {
     setPending((prev) => {
-      const base = prev.stamp === feedStamp ? prev : { stamp: feedStamp, hide: EMPTY, restore: EMPTY };
+      const stamp = stampRef.current;
+      const base = prev.stamp === stamp ? prev : { stamp, hide: EMPTY, restore: EMPTY };
       const next = new Set(base[field]);
       if (add) next.add(id);
       else next.delete(id);
       return { ...base, [field]: next };
     });
-  }, [feedStamp]);
+  }, []);
 
   const allItems = useMemo(() => {
     const items = feed?.items;
-    return Array.isArray(items) ? items : [];
-  }, [feed]);
+    if (!Array.isArray(items)) return [];
+    return hideFailedRuns ? items.filter((item) => item.sourceKind !== "failed_run") : items;
+  }, [feed, hideFailedRuns]);
   const activeItems = allItems.filter(
     (item) => (!item.dismissal?.isActive || pendingRestore.has(item.id)) && !pendingHide.has(item.id),
   );

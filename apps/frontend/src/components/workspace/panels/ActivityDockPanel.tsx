@@ -133,6 +133,7 @@ export function ActivityDockPanel({ params }: PanelProps) {
           people={people}
           agents={roster}
           focusId={params.focus ?? null}
+          currentUserId={userId ?? null}
           filter={isForYouFilter(params.filter) ? params.filter : "all"}
           onFilterChange={(filter) => openPanel("activity", filter === "all" ? {} : { filter }, { pushUrl: true })}
         />

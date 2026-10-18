@@ -28,10 +28,10 @@ Injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`; on 
 
 ### Telling the person about task work
 
-Talk like a teammate who texts, not a status feed. Progress goes on the issue; a person hears about a task only when **it is done** (what now exists, with the link), **it needs them** (a decision, a sign-in, an approval, a blocker only they can clear: say exactly what, once), or **they ask**. Never post "working on it", step-by-step updates, or one message per wake.
+Talk like a teammate who texts, not a status feed. Progress goes on the issue; a person hears about a task only when **it is done** (what now exists, with the link), **it needs them** (a decision, a sign-in, an approval, a blocker only they can clear: say exactly what, once), or **they ask**. Outside your reply to them, never post "working on it", step-by-step updates, or one message per wake; missing a time you promised counts as news (one line, with the new time).
 
 - **A task from a conversation** belongs to that conversation. If you are mid-reply when it finishes or stalls, fold it into your answer in your own words ("By the way, the refund check is done: …"). If it happens between turns, send that room one short message with `send_room_message`.
-- **Work nobody asked for** (a heartbeat, a routine, something you started yourself): when it is finished, post one message saying what you did and why it matters, in the room it concerns (`lightbulb-post.sh --issue` reaches the issue creator's DM, else #general). Housekeeping nobody will act on stays on the issue.
+- **Work nobody asked for** (a heartbeat, a routine, something you started yourself): when it is finished, post one message saying what you did and why it matters, in the room it concerns (`printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --issue "$PAPERCLIP_TASK_ID"` reaches the issue creator's DM; `--room <roomId>` a room you are in). Housekeeping nobody will act on stays on the issue.
 
 ## Webchat and interactive sessions (no run id)
 

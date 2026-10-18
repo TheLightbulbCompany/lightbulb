@@ -257,7 +257,6 @@ def _create_runtime(request: dict) -> str:
     finishes, instead of the adopt succeeding."""
 
     client = _agentcore_control_client()
-    conflict_retried = False
     for attempt in range(1, _ROLE_PROPAGATION_ATTEMPTS + 1):
         try:
             return client.create_agent_runtime(**request)["agentRuntimeArn"]
@@ -270,17 +269,18 @@ def _create_runtime(request: dict) -> str:
             except _RuntimeGone:
                 # DELETING (or just gone): wait the delete out, then create once more. A
                 # runtime that never finishes deleting re-raises the original conflict.
-                if conflict_retried or not _wait_runtime_gone(arn):
+                if not _wait_runtime_gone(arn):
                     raise conflict from None
-                conflict_retried = True
-                continue
+                # One post-wait create, outside the role-propagation budget; any error propagates.
+                return client.create_agent_runtime(**request)["agentRuntimeArn"]
             return arn
         except client.exceptions.ValidationException as exc:
             if "Role validation failed" not in str(exc) or attempt == _ROLE_PROPAGATION_ATTEMPTS:
                 raise
             logger.info("hermes provision: role not yet visible to AgentCore (attempt %d) -- retrying", attempt)
             time.sleep(_ROLE_PROPAGATION_INTERVAL_S)
-    raise AssertionError("unreachable")  # pragma: no cover
+    # Retryable by classify_provision_error (a plain RuntimeError), never an unclassified AssertionError.
+    raise RuntimeError("CreateAgentRuntime: role-propagation attempts exhausted")
 
 
 def _find_existing_runtime_arn(name: str) -> str | None:

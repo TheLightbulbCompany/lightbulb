@@ -778,6 +778,12 @@ def _unavailable(state: dict) -> dict:
 
 def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
     """Hermes hook: acquire for browser calls, yield to a person, fence stale element refs."""
+    # ponytail: substring match on the command; a proper hook when a second CLI needs the browser.
+    if tool_name == "terminal" and "opencli" in str((args or {}).get("command", "")):
+        state = _TURN.get()
+        if state:  # best effort, never blocks the shell: opencli reports its own failure
+            _refresh(state, time.monotonic() + HOOK_BUDGET_S)
+        return None
     if not (str(tool_name).startswith("browser_") or tool_name == "computer_use"):
         return None
     state = _TURN.get()

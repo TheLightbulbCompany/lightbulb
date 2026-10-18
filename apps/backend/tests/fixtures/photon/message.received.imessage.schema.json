@@ -1,0 +1,764 @@
+{
+ "_source": "https://api.photon.codes/openapi.json components.schemas.ImessageMessageReceivedEvent, 2026-10-17; iMessage branch expanded, other platforms left as $ref names, patterns dropped",
+ "ImessageMessageReceivedEvent": {
+  "additionalProperties": false,
+  "properties": {
+   "apiVersion": {
+    "const": "2026-07-01",
+    "type": "string"
+   },
+   "data": {
+    "additionalProperties": false,
+    "properties": {
+     "object": {
+      "allOf": [
+       {
+        "anyOf": [
+         {
+          "$ref": "SmsMessage"
+         },
+         {
+          "$ref": "WhatsappMessage"
+         },
+         {
+          "$ref": "WhatsappBusinessMessage"
+         },
+         {
+          "$ref": "EmailMessage"
+         },
+         {
+          "oneOf": [
+           {
+            "additionalProperties": false,
+            "properties": {
+             "acceptance": {
+              "not": {}
+             },
+             "addressedTo": {
+              "anyOf": [
+               {
+                "$ref": "SmsUserSnapshot"
+               },
+               {
+                "$ref": "WhatsappUserSnapshot"
+               },
+               {
+                "$ref": "WhatsappBusinessUserSnapshot"
+               },
+               {
+                "$ref": "EmailUserSnapshot"
+               },
+               {
+                "$ref": "VoiceUserSnapshot"
+               },
+               {
+                "additionalProperties": false,
+                "properties": {
+                 "createdAt": {
+                  "not": {}
+                 },
+                 "details": {
+                  "additionalProperties": false,
+                  "properties": {
+                   "managedBy": {
+                    "type": "string"
+                   },
+                   "resourceId": {
+                    "type": "string"
+                   },
+                   "type": {
+                    "enum": [
+                     "shared",
+                     "dedicated"
+                    ],
+                    "type": "string"
+                   }
+                  },
+                  "type": "object"
+                 },
+                 "handle": {
+                  "minLength": 1,
+                  "type": "string"
+                 },
+                 "id": {
+                  "type": "string"
+                 },
+                 "kind": {
+                  "minLength": 1,
+                  "type": "string"
+                 },
+                 "metadata": {
+                  "additionalProperties": {
+                   "$ref": "JsonValue"
+                  },
+                  "properties": {
+                   "displayName": {
+                    "minLength": 1,
+                    "type": "string"
+                   },
+                   "email": {
+                    "$ref": "EmailMetadata"
+                   },
+                   "spam": {
+                    "$ref": "SpamClassification"
+                   }
+                  },
+                  "type": "object"
+                 },
+                 "platform": {
+                  "const": "imessage",
+                  "type": "string"
+                 },
+                 "projectId": {
+                  "type": "string"
+                 },
+                 "updatedAt": {
+                  "not": {}
+                 }
+                },
+                "required": [
+                 "id",
+                 "projectId",
+                 "platform",
+                 "handle",
+                 "kind",
+                 "details",
+                 "metadata"
+                ],
+                "type": "object"
+               },
+               {
+                "$ref": "TelegramUserSnapshot"
+               }
+              ],
+              "x-photon-extension": {
+               "discriminator": "platform",
+               "fallback": "#/$defs/UnknownUserSnapshot",
+               "reserved": [
+                "sms",
+                "whatsapp",
+                "whatsapp_business",
+                "email",
+                "voice",
+                "imessage",
+                "telegram"
+               ]
+              }
+             },
+             "content": {
+              "anyOf": [
+               {
+                "additionalProperties": false,
+                "properties": {
+                 "format": {
+                  "minLength": 1,
+                  "type": "string"
+                 },
+                 "metadata": {
+                  "additionalProperties": {
+                   "additionalProperties": {
+                    "$ref": "JsonValue"
+                   },
+                   "propertyNames": {
+                    "type": "string"
+                   },
+                   "type": "object"
+                  },
+                  "properties": {
+                   "email": {
+                    "$ref": "EmailMetadata"
+                   },
+                   "voice": {
+                    "$ref": "VoiceMetadata"
+                   }
+                  },
+                  "type": "object"
+                 },
+                 "text": {
+                  "minLength": 1,
+                  "type": "string"
+                 },
+                 "type": {
+                  "const": "text",
+                  "type": "string"
+                 }
+                },
+                "required": [
+                 "type",
+                 "format",
+                 "text"
+                ],
+                "type": "object"
+               },
+               {
+                "additionalProperties": false,
+                "properties": {
+                 "attachmentId": {
+                  "type": "string"
+                 },
+                 "metadata": {
+                  "additionalProperties": {
+                   "additionalProperties": {
+                    "$ref": "JsonValue"
+                   },
+                   "propertyNames": {
+                    "type": "string"
+                   },
+                   "type": "object"
+                  },
+                  "properties": {
+                   "email": {
+                    "$ref": "EmailMetadata"
+                   },
+                   "voice": {
+                    "$ref": "VoiceMetadata"
+                   }
+                  },
+                  "type": "object"
+                 },
+                 "type": {
+                  "const": "attachment",
+                  "type": "string"
+                 }
+                },
+                "required": [
+                 "type",
+                 "attachmentId"
+                ],
+                "type": "object"
+               },
+               {
+                "$ref": "MessageReadContent"
+               },
+               {
+                "$ref": "SpaceTypingUpdateContent"
+               },
+               {
+                "$ref": "ImessageGroupContent"
+               }
+              ],
+              "x-photon-extension": {
+               "discriminator": "type",
+               "fallback": "#/$defs/UnknownContent",
+               "reserved": [
+                "text",
+                "text.update",
+                "attachment",
+                "voice",
+                "reaction",
+                "message.delete",
+                "message.read",
+                "space.participants.update",
+                "space.typing.update",
+                "poll",
+                "poll.vote",
+                "poll.update",
+                "group",
+                "message"
+               ]
+              }
+             },
+             "createdAt": {
+              "description": "When Photon first persisted this resource.",
+              "format": "date-time",
+              "type": "string"
+             },
+             "failure": {
+              "not": {}
+             },
+             "id": {
+              "type": "string"
+             },
+             "metadata": {
+              "additionalProperties": {
+               "$ref": "JsonValue"
+              },
+              "properties": {
+               "displayName": {
+                "minLength": 1,
+                "type": "string"
+               },
+               "email": {
+                "$ref": "EmailMetadata"
+               },
+               "spam": {
+                "$ref": "SpamClassification"
+               }
+              },
+              "type": "object"
+             },
+             "parentMessageId": {
+              "type": "string"
+             },
+             "platform": {
+              "const": "imessage",
+              "type": "string"
+             },
+             "projectId": {
+              "type": "string"
+             },
+             "receivedBy": {
+              "anyOf": [
+               {
+                "$ref": "SmsUserSnapshot"
+               },
+               {
+                "$ref": "WhatsappUserSnapshot"
+               },
+               {
+                "$ref": "WhatsappBusinessUserSnapshot"
+               },
+               {
+                "$ref": "EmailUserSnapshot"
+               },
+               {
+                "$ref": "VoiceUserSnapshot"
+               },
+               {
+                "additionalProperties": false,
+                "properties": {
+                 "createdAt": {
+                  "not": {}
+                 },
+                 "details": {
+                  "additionalProperties": false,
+                  "properties": {
+                   "managedBy": {
+                    "type": "string"
+                   },
+                   "resourceId": {
+                    "type": "string"
+                   },
+                   "type": {
+                    "enum": [
+                     "shared",
+                     "dedicated"
+                    ],
+                    "type": "string"
+                   }
+                  },
+                  "type": "object"
+                 },
+                 "handle": {
+                  "minLength": 1,
+                  "type": "string"
+                 },
+                 "id": {
+                  "type": "string"
+                 },
+                 "kind": {
+                  "minLength": 1,
+                  "type": "string"
+                 },
+                 "metadata": {
+                  "additionalProperties": {
+                   "$ref": "JsonValue"
+                  },
+                  "properties": {
+                   "displayName": {
+                    "minLength": 1,
+                    "type": "string"
+                   },
+                   "email": {
+                    "$ref": "EmailMetadata"
+                   },
+                   "spam": {
+                    "$ref": "SpamClassification"
+                   }
+                  },
+                  "type": "object"
+                 },
+                 "platform": {
+                  "const": "imessage",
+                  "type": "string"
+                 },
+                 "projectId": {
+                  "type": "string"
+                 },
+                 "updatedAt": {
+                  "not": {}
+                 }
+                },
+                "required": [
+                 "id",
+                 "projectId",
+                 "platform",
+                 "handle",
+                 "kind",
+                 "details",
+                 "metadata"
+                ],
+                "type": "object"
+               },
+               {
+                "$ref": "TelegramUserSnapshot"
+               }
+              ],
+              "x-photon-extension": {
+               "discriminator": "platform",
+               "fallback": "#/$defs/UnknownUserSnapshot",
+               "reserved": [
+                "sms",
+                "whatsapp",
+                "whatsapp_business",
+                "email",
+                "voice",
+                "imessage",
+                "telegram"
+               ]
+              }
+             },
+             "sentBy": {
+              "anyOf": [
+               {
+                "$ref": "SmsUserSnapshot"
+               },
+               {
+                "$ref": "WhatsappUserSnapshot"
+               },
+               {
+                "$ref": "WhatsappBusinessUserSnapshot"
+               },
+               {
+                "$ref": "EmailUserSnapshot"
+               },
+               {
+                "$ref": "VoiceUserSnapshot"
+               },
+               {
+                "additionalProperties": false,
+                "properties": {
+                 "createdAt": {
+                  "not": {}
+                 },
+                 "details": {
+                  "additionalProperties": false,
+                  "properties": {
+                   "managedBy": {
+                    "type": "string"
+                   },
+                   "resourceId": {
+                    "type": "string"
+                   },
+                   "type": {
+                    "enum": [
+                     "shared",
+                     "dedicated"
+                    ],
+                    "type": "string"
+                   }
+                  },
+                  "type": "object"
+                 },
+                 "handle": {
+                  "minLength": 1,
+                  "type": "string"
+                 },
+                 "id": {
+                  "type": "string"
+                 },
+                 "kind": {
+                  "minLength": 1,
+                  "type": "string"
+                 },
+                 "metadata": {
+                  "additionalProperties": {
+                   "$ref": "JsonValue"
+                  },
+                  "properties": {
+                   "displayName": {
+                    "minLength": 1,
+                    "type": "string"
+                   },
+                   "email": {
+                    "$ref": "EmailMetadata"
+                   },
+                   "spam": {
+                    "$ref": "SpamClassification"
+                   }
+                  },
+                  "type": "object"
+                 },
+                 "platform": {
+                  "const": "imessage",
+                  "type": "string"
+                 },
+                 "projectId": {
+                  "type": "string"
+                 },
+                 "updatedAt": {
+                  "not": {}
+                 }
+                },
+                "required": [
+                 "id",
+                 "projectId",
+                 "platform",
+                 "handle",
+                 "kind",
+                 "details",
+                 "metadata"
+                ],
+                "type": "object"
+               },
+               {
+                "$ref": "TelegramUserSnapshot"
+               }
+              ],
+              "x-photon-extension": {
+               "discriminator": "platform",
+               "fallback": "#/$defs/UnknownUserSnapshot",
+               "reserved": [
+                "sms",
+                "whatsapp",
+                "whatsapp_business",
+                "email",
+                "voice",
+                "imessage",
+                "telegram"
+               ]
+              }
+             },
+             "space": {
+              "anyOf": [
+               {
+                "$ref": "SmsSpaceSnapshot"
+               },
+               {
+                "$ref": "WhatsappSpaceSnapshot"
+               },
+               {
+                "$ref": "WhatsappBusinessSpaceSnapshot"
+               },
+               {
+                "$ref": "EmailSpaceSnapshot"
+               },
+               {
+                "$ref": "VoiceSpaceSnapshot"
+               },
+               {
+                "additionalProperties": false,
+                "properties": {
+                 "createdAt": {
+                  "not": {}
+                 },
+                 "details": {
+                  "additionalProperties": false,
+                  "properties": {},
+                  "type": "object"
+                 },
+                 "id": {
+                  "type": "string"
+                 },
+                 "kind": {
+                  "minLength": 1,
+                  "type": "string"
+                 },
+                 "metadata": {
+                  "additionalProperties": {
+                   "$ref": "JsonValue"
+                  },
+                  "properties": {
+                   "displayName": {
+                    "minLength": 1,
+                    "type": "string"
+                   },
+                   "email": {
+                    "$ref": "EmailMetadata"
+                   },
+                   "spam": {
+                    "$ref": "SpamClassification"
+                   }
+                  },
+                  "type": "object"
+                 },
+                 "participantIds": {
+                  "items": {
+                   "type": "string"
+                  },
+                  "type": "array",
+                  "uniqueItems": true
+                 },
+                 "platform": {
+                  "const": "imessage",
+                  "type": "string"
+                 },
+                 "projectId": {
+                  "type": "string"
+                 },
+                 "updatedAt": {
+                  "not": {}
+                 }
+                },
+                "required": [
+                 "id",
+                 "projectId",
+                 "platform",
+                 "kind",
+                 "participantIds",
+                 "details",
+                 "metadata"
+                ],
+                "type": "object"
+               },
+               {
+                "$ref": "TelegramSpaceSnapshot"
+               }
+              ],
+              "x-photon-extension": {
+               "discriminator": "platform",
+               "fallback": "#/$defs/UnknownSpaceSnapshot",
+               "reserved": [
+                "sms",
+                "whatsapp",
+                "whatsapp_business",
+                "email",
+                "voice",
+                "imessage",
+                "telegram"
+               ]
+              }
+             },
+             "status": {
+              "const": "received",
+              "type": "string"
+             },
+             "timestamp": {
+              "not": {}
+             },
+             "timestamps": {
+              "additionalProperties": false,
+              "properties": {
+               "acceptedAt": {
+                "not": {}
+               },
+               "deliveredAt": {
+                "not": {}
+               },
+               "dispatchedAt": {
+                "not": {}
+               },
+               "failedAt": {
+                "not": {}
+               },
+               "receivedAt": {
+                "description": "Authoritative source receipt or observation time, preserved across replay.",
+                "format": "date-time",
+                "type": "string"
+               }
+              },
+              "required": [
+               "receivedAt"
+              ],
+              "type": "object"
+             },
+             "updatedAt": {
+              "description": "When Photon last persisted a change to this resource's public state.",
+              "format": "date-time",
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "projectId",
+             "platform",
+             "space",
+             "sentBy",
+             "content",
+             "metadata",
+             "createdAt",
+             "updatedAt",
+             "status",
+             "timestamps"
+            ],
+            "type": "object"
+           },
+           {
+            "$ref": "DispatchedImessageMessage"
+           },
+           {
+            "$ref": "AcceptedImessageMessage"
+           },
+           {
+            "$ref": "DeliveredImessageMessage"
+           },
+           {
+            "$ref": "FailedImessageMessage"
+           }
+          ]
+         },
+         {
+          "$ref": "TelegramMessage"
+         }
+        ],
+        "x-photon-extension": {
+         "discriminator": "platform",
+         "fallback": "#/$defs/UnknownMessage",
+         "reserved": [
+          "sms",
+          "whatsapp",
+          "whatsapp_business",
+          "email",
+          "voice",
+          "imessage",
+          "telegram"
+         ]
+        }
+       },
+       {
+        "additionalProperties": {},
+        "properties": {
+         "platform": {
+          "const": "imessage",
+          "type": "string"
+         },
+         "status": {
+          "const": "received",
+          "type": "string"
+         }
+        },
+        "required": [
+         "platform",
+         "status"
+        ],
+        "type": "object"
+       }
+      ]
+     },
+     "projectId": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "projectId",
+     "object"
+    ],
+    "type": "object"
+   },
+   "id": {
+    "$ref": "EventId"
+   },
+   "source": {
+    "const": "imessage.photon",
+    "type": "string"
+   },
+   "timestamp": {
+    "format": "date-time",
+    "type": "string"
+   },
+   "type": {
+    "const": "message.received",
+    "type": "string"
+   }
+  },
+  "required": [
+   "id",
+   "type",
+   "apiVersion",
+   "source",
+   "timestamp",
+   "data"
+  ],
+  "type": "object"
+ }
+}

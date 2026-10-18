@@ -96,6 +96,7 @@ function MailRow({ entry, isNew, agentName }: {
           ? <ArrowDownLeft size={14} className="mail-row__glyph" aria-label="Received" role="img" />
           : <ArrowUpRight size={14} className="mail-row__glyph" aria-label="Sent" role="img" />}
         <span className="mail-row__party">{inbound ? m.from : m.to}</span>
+        {m.channel === "text" && <span className="mail-row__chip">Text</span>}
         <time className="mail-row__time" dateTime={m.at}>{entry.at ? clockTime(entry.at) : ""}</time>
       </span>
       <span className="mail-row__second">

@@ -26,6 +26,12 @@ def _container(owner_id=OWNER):
     return {"owner_id": owner_id, "hook_token": TOKEN}
 
 
+def test_mail_view_defaults_channel_to_mail_and_passes_text():
+    row = {"received_key": "k", "received_at": "t"}
+    assert agent_mail._mail_view("a@b.c", row)["channel"] == "mail"
+    assert agent_mail._mail_view("a@b.c", dict(row, channel="text"))["channel"] == "text"
+
+
 def test_send_missing_bearer_401(client):
     assert (
         client.post(
@@ -170,6 +176,7 @@ def test_inbox_lists_with_keys_and_truncates(client):
     assert body["address"] == "agents@acme.isol8.co"
     assert body["messages"][0]["key"] == "agents@acme.isol8.co/2026#m1"
     assert len(body["messages"][0]["text"]) == 8000
+    assert body["messages"][0]["channel"] == "mail"
 
 
 def test_inbox_without_address_is_empty(client):
@@ -437,6 +444,7 @@ async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_membe
         "subject": "Re: hi",
         "at": "t3",
         "agent_id": "a1",
+        "channel": "mail",
         "text": "",
         "truncated": False,
     }

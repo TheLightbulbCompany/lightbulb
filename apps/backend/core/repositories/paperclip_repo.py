@@ -1626,3 +1626,9 @@ class PaperclipRepo:
                         item.get("user_id"),
                     )
         return out
+
+
+async def customer_ops_agent_id(owner_id: str) -> str | None:
+    """The workspace's Customer Operations starter agent (the front desk), or None when the roster has none."""
+    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    return (getattr(row, "starter_agent_ids", None) or {}).get("customer_operations")

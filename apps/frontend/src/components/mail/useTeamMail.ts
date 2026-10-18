@@ -131,3 +131,39 @@ export function useNewMailCount(): number {
   useMailInvalidation(mutate);
   return since ? data?.count ?? 0 : 0;
 }
+
+// ---- the workspace's text line (null while it has none) ----------------------
+
+export interface TextLine { number: string; agentId: string; businessPhone: string; humanThreads: string[]; myPhone?: string | null }
+const TEXT_LINE_URL = "/agent-text/line";
+export const isTextLineKey = (key: unknown) => Array.isArray(key) && key[0] === TEXT_LINE_URL;
+
+type NoLine = { missing: "pending" | "absent" };
+const isPending = (read: TextLine | NoLine | undefined) => Boolean(read && "missing" in read && read.missing === "pending");
+
+/** One read for the header and every open text. No line is a 404 whose `status` says whether the number
+ *  is still being set up: while it is `pending` this polls every 10 s (and on focus) until the line or
+ *  `absent` arrives. `data` is the line, or null when there is none. */
+export function useTextLine(orgId: string | undefined): { data: TextLine | null | undefined; pending: boolean } {
+  const api = useApi();
+  const [polling, setPolling] = useState(false);
+  const { data } = useSWR<TextLine | NoLine>(
+    orgId ? [TEXT_LINE_URL, orgId] : null,
+    async ([url]: [string, string]) => {
+      try {
+        return (await api.get(url)) as TextLine;
+      } catch (e) {
+        if (!(e instanceof ApiError) || e.status !== 404) throw e;
+        const status = typeof e.body === "object" && e.body !== null ? (e.body as { status?: unknown }).status : undefined;
+        return { missing: status === "pending" ? "pending" : "absent" };
+      }
+    },
+    {
+      revalidateOnFocus: polling,
+      shouldRetryOnError: false,
+      refreshInterval: (latest) => (isPending(latest) ? 10_000 : 0),
+      onSuccess: (latest) => setPolling(isPending(latest)),
+    },
+  );
+  return { data: data && "missing" in data ? null : data, pending: isPending(data) };
+}

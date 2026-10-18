@@ -33,6 +33,7 @@ from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
     agent_mail,
+    agent_text,
     apple_iap,
     automations,
     billing,
@@ -67,8 +68,10 @@ from routers import (
     paperclip_events,
     paperclip_proxy,
     paperclip_trigger_proxy,
+    photon_inbound,
     platform_info,
     runtime_rpc,
+    sendblue_inbound,
     ses_inbound,
     settings_keys,
     setup_requests,
@@ -831,6 +834,8 @@ app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"]
 
 # SES-inbound agent-email ingest (provisioned agent email, inbound leg).
 # A Lambda parses raw SES mail and POSTs the clean JSON payload here.
+app.include_router(sendblue_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
+app.include_router(photon_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
 # Paperclip isol8.notifications plugin events (approvals + run lifecycle →
@@ -959,6 +964,7 @@ app.include_router(platform_info.router, prefix="/api/v1/platform-info", tags=["
 # Agent mail (container routes under /u/{owner_id}/… use hook-token auth;
 # /addresses routes use Clerk). Policy lives in core/services/agent_mail_send.
 app.include_router(agent_mail.router, prefix="/api/v1/agent-mail", tags=["agent-mail"])
+app.include_router(agent_text.router, prefix="/api/v1/agent-text", tags=["agent-text"])
 
 # Admin dashboard — every endpoint gated by Depends(require_platform_admin).
 from routers import admin as admin_router  # noqa: E402

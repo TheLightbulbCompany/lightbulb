@@ -6,9 +6,6 @@ The API key and the meeting URL never reach a log line.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import time
 from datetime import datetime, timezone
 from urllib.parse import urlencode
@@ -16,7 +13,7 @@ from urllib.parse import urlencode
 import httpx
 
 from core.config import settings
-from core.services import livekit_huddles
+from core.services import livekit_huddles, standard_webhooks
 
 CONSENT_LINE = (
     "Lightbulb agents are in this meeting for {company}. They listen for their names; notes and a "
@@ -30,7 +27,6 @@ _REASONS = {
 }
 _BOT_SUFFIX = " agents · Lightbulb"  # Recall caps bot_name at 100 chars; the company part gives way
 _TICKET_GRACE_S = 4 * 3600  # the ticket outlives the scheduled end by this much, then dies
-_WEBHOOK_TOLERANCE_S = 300
 _SPEECH_EVENTS = [
     "participant_events.speech_on",
     "participant_events.speech_off",
@@ -181,19 +177,5 @@ async def say(bot_id: str, text: str) -> None:
 
 
 def verify_webhook(headers, body: bytes) -> bool:
-    """Recall's Svix-style signature: ``v1,<b64 HMAC-SHA256(id.timestamp.body)>`` under the
-    ``whsec_`` workspace secret, any of the space-separated signatures (rotation), 5-min skew."""
-    msg_id, stamp, sigs = (headers.get(f"webhook-{k}") for k in ("id", "timestamp", "signature"))
-    secret = settings.RECALL_WEBHOOK_SECRET
-    if (
-        not (secret and msg_id and stamp and sigs)
-        or not stamp.isdigit()
-        or abs(time.time() - int(stamp)) > _WEBHOOK_TOLERANCE_S
-    ):
-        return False
-    key = base64.b64decode(secret.removeprefix("whsec_"))
-    expected = base64.b64encode(hmac.new(key, f"{msg_id}.{stamp}.".encode() + body, hashlib.sha256).digest()).decode()
-    return any(
-        version == "v1" and hmac.compare_digest(sig, expected)
-        for version, _, sig in (s.partition(",") for s in sigs.split())
-    )
+    """Recall's Svix-style signature under the ``whsec_`` workspace secret (``standard_webhooks``)."""
+    return standard_webhooks.verify(headers, body, settings.RECALL_WEBHOOK_SECRET) is None

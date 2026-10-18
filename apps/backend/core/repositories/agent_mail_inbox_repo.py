@@ -70,6 +70,25 @@ async def find_by_message_id(address: str, message_id: str) -> dict | None:
     return None
 
 
+async def find_sent_by_message_id(message_id: str) -> dict | None:
+    """The agent-sent row under a provider message id (``put_sent``), at whatever address: a delivery report
+    names the message, not the mailbox."""
+    resp = await run_in_thread(
+        _get_table().query, IndexName="by-message-id", KeyConditionExpression=Key("message_id").eq(message_id)
+    )
+    return next((item for item in resp.get("Items", []) if item.get("direction") == "out"), None)
+
+
+async def mark_sent_failed(address: str, received_key: str, reason: str) -> None:
+    """The provider could not deliver a sent message after accepting it; the row keeps the reason."""
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"address": _normalize(address), "received_key": received_key},
+        UpdateExpression="SET delivery = :f, delivery_reason = :r",
+        ExpressionAttributeValues={":f": "failed", ":r": reason[:200]},
+    )
+
+
 async def put_message(
     *,
     address: str,
@@ -82,6 +101,8 @@ async def put_message(
     headers: dict,
     attachments: list,
     received_at: str | None = None,
+    channel: str | None = None,
+    provider_ids: dict | None = None,
 ) -> dict:
     received_at = received_at or utc_now_iso()
     item = {
@@ -101,12 +122,24 @@ async def put_message(
         "received_at": received_at,
         "ttl": int(time.time()) + _TTL_SECONDS,
     }
+    if channel:
+        item["channel"] = channel
+    if provider_ids:
+        item["provider"] = provider_ids
     await run_in_thread(_get_table().put_item, Item=item)
     return item
 
 
 async def put_sent(
-    *, address: str, message_id: str, owner_id: str, agent_id: str, to: str, subject: str, text: str = ""
+    *,
+    address: str,
+    message_id: str,
+    owner_id: str,
+    agent_id: str,
+    to: str,
+    subject: str,
+    text: str = "",
+    channel: str | None = None,
 ) -> None:
     """Record one agent-sent message (and its plain-text body) under its RFC ``Message-ID``, then
     nudge the workspace's open Mail panels. Best-effort: the mail has already left, so a failed
@@ -130,6 +163,8 @@ async def put_sent(
         }
         if text:
             item["text"] = text[:MAX_TEXT_CHARS]
+        if channel:
+            item["channel"] = channel
         await run_in_thread(_get_table().put_item, Item=item)
     except Exception:  # noqa: BLE001 — see docstring
         logger.warning("agent_mail_inbox: put_sent failed for %s", message_id, exc_info=True)

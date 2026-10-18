@@ -12,6 +12,7 @@ Prefix-convention table (``core.dynamodb.get_table``), matching
 """
 
 import logging
+from typing import Literal
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -25,6 +26,17 @@ logger = logging.getLogger(__name__)
 
 def _get_table():
     return get_table("agent-email-addresses")
+
+
+async def _conditional(fn, **kwargs) -> bool:
+    """One conditional write: False when its condition failed, any other error raises."""
+    try:
+        await run_in_thread(fn, **kwargs)
+        return True
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
 
 
 def normalize(value: str) -> str:
@@ -59,13 +71,8 @@ async def put(
     }
     if outbound_disabled:
         item["outbound_disabled"] = outbound_disabled
-    try:
-        await run_in_thread(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
-        return item
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return None
-        raise
+    created = await _conditional(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
+    return item if created else None
 
 
 async def get_by_address(address: str) -> dict | None:
@@ -130,7 +137,9 @@ async def delete_all_for_owner(owner_id: str) -> list[str]:
     addresses: list[str] = []
     for row in rows:
         address = row.get("address")
-        if not address:
+        # A texting line or its pending row is released AND deleted by text_lines.release_line; one still
+        # here failed to release and stays for the wipe's retry (a dedicated number bills until released).
+        if not address or str(row.get("kind") or "").startswith("text"):
             continue
         await run_in_thread(table.delete_item, Key={"address": address})
         addresses.append(address)
@@ -191,6 +200,210 @@ async def update_settings(
             return None
         raise
     return resp.get("Attributes")
+
+
+async def record_text_line(
+    *,
+    number: str,
+    owner_id: str,
+    agent_id: str,
+    photon_resource_id: str,
+    photon_user_id: str,
+    operation_id: str,
+) -> bool:
+    """Record the workspace's texting line (a CREATE keyed by its E.164 number) and settle its pending
+    row in ONE transaction. False when either condition fails: the number already has a row, or the
+    pending row is gone / names another operation (a release or another reader got there first), in
+    which case nothing is written."""
+    item = {
+        "address": number,
+        "owner_id": owner_id,
+        "agent_id": agent_id,
+        "kind": "text",
+        "status": "active",
+        "created_at": utc_now_iso(),
+        "photon_resource_id": photon_resource_id,
+        "photon_user_id": photon_user_id,
+        "human_threads": {},
+        "member_phones": {},
+        "phone_codes": {},
+        "disclosed": {},
+    }
+    table = _get_table()
+    items = [
+        {"Put": {"TableName": table.name, "Item": item, "ConditionExpression": "attribute_not_exists(address)"}},
+        {
+            "Delete": {
+                "TableName": table.name,
+                "Key": {"address": f"pending:{owner_id}"},
+                "ConditionExpression": "kind = :pending AND operation_id = :op",
+                "ExpressionAttributeValues": {":pending": "text_pending", ":op": operation_id},
+            }
+        },
+    ]
+    try:
+        await run_in_thread(table.meta.client.transact_write_items, TransactItems=items)
+        return True
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "TransactionCanceledException":
+            return False
+        raise
+
+
+async def put_pending_line(*, owner_id: str, agent_id: str, operation_id: str) -> bool:
+    """The in-flight marker for a line Photon is still creating; one per owner. False when one exists."""
+    item = {
+        "address": f"pending:{owner_id}",
+        "owner_id": owner_id,
+        "agent_id": agent_id,
+        "kind": "text_pending",
+        "operation_id": operation_id,
+        "created_at": utc_now_iso(),
+    }
+    return await _conditional(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
+
+
+async def pending_line_for_owner(owner_id: str) -> dict | None:
+    row = await get_by_address(f"pending:{owner_id}")
+    return row if row and row.get("kind") == "text_pending" else None
+
+
+async def delete_pending_line(owner_id: str, *, operation_id: str) -> bool:
+    """True when this call removed the row; False when it was already gone or now names another operation
+    (another reader won, or a newer request replaced it)."""
+    return await _conditional(
+        _get_table().delete_item,
+        Key={"address": f"pending:{owner_id}"},
+        ConditionExpression="kind = :pending AND operation_id = :op",
+        ExpressionAttributeValues={":pending": "text_pending", ":op": operation_id},
+    )
+
+
+async def set_pending_page_token(owner_id: str, *, operation_id: str, page_token: str | None) -> bool:
+    """Where the line-user walk stopped (None clears it), fenced on the operation so a slow reader never writes
+    onto a newer request's row."""
+    values: dict = {":pending": "text_pending", ":op": operation_id}
+    if page_token:
+        values[":t"] = page_token
+    return await _conditional(
+        _get_table().update_item,
+        Key={"address": f"pending:{owner_id}"},
+        UpdateExpression="SET page_token = :t" if page_token else "REMOVE page_token",
+        ConditionExpression="kind = :pending AND operation_id = :op",
+        ExpressionAttributeValues=values,
+    )
+
+
+async def delete_text_line(number: str) -> None:
+    """Delete a texting-line row; the condition means it can never delete a mail address row."""
+    await _conditional(
+        _get_table().delete_item,
+        Key={"address": number},
+        ConditionExpression="kind = :text",
+        ExpressionAttributeValues={":text": "text"},
+    )
+
+
+async def text_line_for_owner(owner_id: str) -> dict | None:
+    return next((r for r in await query_by_owner(owner_id) if r.get("kind") == "text"), None)
+
+
+async def set_business_phone(number: str, phone: str) -> None:
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"address": number},
+        UpdateExpression="SET business_phone = :p",
+        ConditionExpression="attribute_exists(address)",
+        ExpressionAttributeValues={":p": phone},
+    )
+
+
+async def set_thread_mode(number: str, customer: str, mode: Literal["human", "agent"]) -> None:
+    """``human`` marks a customer's thread as taken over by a person; ``agent`` hands it back.
+    ``customer`` is a phone number or an email address, so it goes in as a name placeholder."""
+    kwargs: dict = {
+        "Key": {"address": number},
+        "ConditionExpression": "attribute_exists(address)",
+        "ExpressionAttributeNames": {"#c": customer},
+    }
+    if mode == "human":
+        kwargs["UpdateExpression"] = "SET human_threads.#c = :iso"
+        kwargs["ExpressionAttributeValues"] = {":iso": utc_now_iso()}
+    else:
+        kwargs["UpdateExpression"] = "REMOVE human_threads.#c"
+    await run_in_thread(_get_table().update_item, **kwargs)
+
+
+async def set_disclosed(number: str, customer: str) -> None:
+    """Record that ``customer`` has been told the line is an automated assistant (the first reply).
+    The first time stands: a later call never moves it."""
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"address": number},
+        UpdateExpression="SET disclosed.#c = if_not_exists(disclosed.#c, :iso)",
+        ConditionExpression="attribute_exists(address)",
+        ExpressionAttributeNames={"#c": customer},
+        ExpressionAttributeValues={":iso": utc_now_iso()},
+    )
+
+
+async def set_member_phone(number: str, phone: str, user_id: str | None) -> None:
+    """Set (``user_id``) or remove (``None``) a member's phone on the line row, so their texts are
+    posted to the main room as them. The ``member_phones`` map is created with the line. A phone is
+    linked by proof (``bind_member_phone``), and the latest proof holds it."""
+    kwargs: dict = {
+        "Key": {"address": number},
+        "ConditionExpression": "attribute_exists(address)",
+        "ExpressionAttributeNames": {"#p": phone},
+    }
+    if user_id:
+        kwargs["UpdateExpression"] = "SET member_phones.#p = :uid"
+        kwargs["ExpressionAttributeValues"] = {":uid": user_id}
+    else:
+        kwargs["UpdateExpression"] = "REMOVE member_phones.#p"
+    await run_in_thread(_get_table().update_item, **kwargs)
+
+
+async def drop_member_phones(line: dict, user_id: str) -> None:
+    """Remove every phone ``user_id`` holds on the line row."""
+    for phone, uid in (line.get("member_phones") or {}).items():
+        if uid == user_id:
+            await set_member_phone(line["address"], phone, None)
+
+
+async def put_phone_code(number: str, code: str, user_id: str, expires_at: int, *, prune: list[str]) -> bool:
+    """Store a link code for ``user_id`` (``expires_at`` in epoch seconds) and remove the expired codes in
+    ``prune`` in the same update. False when ``code`` is already on the row."""
+    prune = [c for c in prune if c != code]  # one path may not be both SET and REMOVEd
+    names = {"#c": code, **{f"#e{i}": c for i, c in enumerate(prune)}}
+    expr = "SET phone_codes.#c = :v"
+    if prune:
+        expr += " REMOVE " + ", ".join(f"phone_codes.#e{i}" for i in range(len(prune)))
+    return await _conditional(
+        _get_table().update_item,
+        Key={"address": number},
+        UpdateExpression=expr,
+        ConditionExpression="attribute_exists(address) AND attribute_not_exists(phone_codes.#c)",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues={":v": {"user_id": user_id, "exp": expires_at}},
+    )
+
+
+async def bind_member_phone(number: str, *, code: str, phone: str, user_id: str, now: int, drop: list[str]) -> bool:
+    """Link ``phone`` to ``user_id`` with the code they texted from it: the code is single-use, must belong to
+    ``user_id`` and be live at ``now``. ``drop`` is the user's other phones, so one member holds one phone.
+    False when the code was used or has expired."""
+    drop = [d for d in drop if d != phone]
+    names = {"#c": code, "#p": phone, **{f"#d{i}": d for i, d in enumerate(drop)}}
+    removes = ["phone_codes.#c", *(f"member_phones.#d{i}" for i in range(len(drop)))]
+    return await _conditional(
+        _get_table().update_item,
+        Key={"address": number},
+        UpdateExpression="SET member_phones.#p = :uid REMOVE " + ", ".join(removes),
+        ConditionExpression="phone_codes.#c.user_id = :uid AND phone_codes.#c.exp > :now",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues={":uid": user_id, ":now": now},
+    )
 
 
 async def add_meeting(address: str, meeting_id: str) -> None:

@@ -36,6 +36,8 @@ directory (`/app/skills/lightbulb/`).
 | `references/surfaces.md` § Shared local-session workspace notices | The room context lists a `sessions` entry for a participant — a live Claude Code or Codex terminal. **Read its recent tail before planning or editing code in that repository** (`lightbulb_local_sessions` `read`, `afterSeq: max(0, latestEventSeq - 40)`), never redo what the session is already doing, and name the session when you report. |
 | `references/integrations.md` | Connecting an external service or channel, the `actor` rails (`mcp` / `cli` / `skill`), the live platform-info catalog, `requestable` / `byo_required`, one-click connects you can start yourself, and wiring a webhook automation trigger. |
 | `references/email.md` | Sending or reading mail: the team address, the inbox, verification codes, who can wake you, meetings (calendar invites), the three `send` forms, and the limits. |
+| `references/text.md` | A text arrives from a customer ("You received a text message." with a Reply-Key), replying to it, and the business's listed phone. |
+| `references/front-desk.md` | Serving a business's customers by text; building and running OpenCLI site adapters; payment links. |
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
 | `references/skills.md` | Where your skills live and which of the three directories you can write to. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`. |
 | `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skills` toolset, and importing an existing Claude Code setup. |
@@ -64,7 +66,7 @@ These hold whether or not you open a reference.
   looks like a platform fault). Use the scripts on disk — their text never
   round-trips through your transcript:
   `/app/skills/lightbulb/scripts/lightbulb-api.sh`,
-  `lightbulb-connect.sh`, `lightbulb-mail.sh`, `lightbulb-post.sh` (absolute paths — your cwd is
+  `lightbulb-connect.sh`, `lightbulb-mail.sh`, `lightbulb-post.sh`, `lightbulb-text.sh` (absolute paths — your cwd is
   this conversation's own folder, `<profile>/work/<conversation>`, not the skill root). Draft
   briefs, notes and other working files in that folder: your profile is saved, except
   `.scratch/`. A repository is cloned once, partially, at `$HERMES_HOME/.run/<repo>`.

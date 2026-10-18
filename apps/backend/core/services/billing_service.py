@@ -167,8 +167,11 @@ async def create_workspace_checkout(
     plan: Literal["workspace"],
     return_to: Literal["web", "app"] = "web",
     confirm: bool = False,
+    front_desk: bool = False,
 ) -> dict:
     """Create or change the single recurring subscription for a workspace.
+
+    ``front_desk`` adds the texting add-on as a third item, charged now.
 
     Changing the plan of a LIVE subscription needs ``confirm=True``. Without it
     nothing is changed and the result is ``confirm_required`` plus what the
@@ -182,6 +185,8 @@ async def create_workspace_checkout(
     price_id = settings.STRIPE_WORKSPACE_PRICE_ID
     if not price_id:
         raise BillingServiceError("STRIPE_WORKSPACE_PRICE_ID not configured")
+    if front_desk and not settings.STRIPE_FRONT_DESK_PRICE_ID:
+        raise BillingServiceError("front_desk_price_unconfigured")
 
     from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
 
@@ -243,6 +248,9 @@ async def create_workspace_checkout(
         raise BillingServiceError("Stored subscription was not found in the customer subscription list")
 
     if subscription is not None:
+        if front_desk:
+            # The in-place plan change below would silently drop the add-on.
+            raise BillingServiceError("already_subscribed")
         sub_id = subscription.get("id") or sub_id
         # The seat item rides along untouched; only the plan item swaps price.
         items = [i for i in subscription["items"]["data"] if not _is_seat_item(i)]
@@ -335,7 +343,12 @@ async def create_workspace_checkout(
                 # A corrupt or foreign marker is not ours to disclose or
                 # expire. Failing closed avoids damaging another workspace.
                 raise BillingServiceError("pending_checkout_invalid")
-            if metadata.get("plan") == plan and (metadata.get("return_to") or "web") == return_to:
+            if (
+                metadata.get("plan") == plan
+                and (metadata.get("return_to") or "web") == return_to
+                # A plain-Team session is never handed to a front-desk click, nor the reverse.
+                and (metadata.get("front_desk") or "0") == str(int(front_desk))
+            ):
                 return {"checkout_url": pending["url"]}
             _expire_open_checkout_session(pending_id)
 
@@ -346,9 +359,11 @@ async def create_workspace_checkout(
             "plan": plan,
             "purpose": "workspace_subscription_v2",
             "return_to": return_to,
+            "front_desk": str(int(front_desk)),
         }
         bucket_start = checkout_bucket * 300
-        trial_end = _checkout_trial_end(account, bucket_start)
+        # The add-on costs $250 (FRONT_DESK_PRICE_USD) the moment it exists: no Stripe trial with it.
+        trial_end = None if front_desk else _checkout_trial_end(account, bucket_start)
         if account.get("founding_team"):
             metadata["price_lock_until"] = price_lock_until(bucket_start)
         if return_to == "app":
@@ -373,6 +388,8 @@ async def create_workspace_checkout(
                 put_metric("billing.seat_price_unconfigured")
                 raise BillingServiceError("seat_price_unconfigured")
             line_items.append({"price": settings.STRIPE_SEAT_PRICE_ID, "quantity": seats})
+        if front_desk:
+            line_items.append({"price": settings.STRIPE_FRONT_DESK_PRICE_ID, "quantity": 1})
         session = await _build_subscription_checkout(
             owner_id=owner_id,
             line_items=line_items,
@@ -392,6 +409,8 @@ async def create_workspace_checkout(
                 # Web and app sessions differ in body (return URLs, origin_context);
                 # sharing a key would make Stripe reject the second as a mismatch.
                 f":{return_to}"
+                # The add-on changes the body (a third item, no trial).
+                f":fd{int(front_desk)}"
             ),
             expires_at=checkout_expires_at,
         )
@@ -542,6 +561,11 @@ def _is_seat_item(item: dict) -> bool:
     return bool(settings.STRIPE_SEAT_PRICE_ID) and (item.get("price") or {}).get("id") == settings.STRIPE_SEAT_PRICE_ID
 
 
+def _is_front_desk_item(item: dict) -> bool:
+    price_id = settings.STRIPE_FRONT_DESK_PRICE_ID
+    return bool(price_id) and (item.get("price") or {}).get("id") == price_id
+
+
 async def seats_for_workspace(owner_id: str) -> int:
     """Billable seats: human members past :data:`SEATS_INCLUDED`.
 
@@ -603,6 +627,51 @@ async def sync_seat_quantity(owner_id: str) -> str:
     put_metric("billing.seat_sync", dimensions={"outcome": "changed"})
     logger.info("seat sync owner=%s subscription=%s seats=%d", owner_id, sub_id, seats)
     return "changed"
+
+
+async def add_front_desk_item(owner_id: str) -> str:
+    """Add the Front desk item to a live Stripe subscription, prorated.
+
+    Returns ``added | already | not_live | front_desk_price_unconfigured``.
+    Removal is Stripe's (billing portal / dashboard); the webhook releases the line.
+    """
+    from core.services.apple_iap import stripe_is_live
+
+    price = settings.STRIPE_FRONT_DESK_PRICE_ID
+    if not price:
+        return "front_desk_price_unconfigured"
+    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+    sub_id = (account or {}).get("stripe_subscription_id")
+    if not sub_id or not stripe_is_live(account) or account.get("subscription_source") == "apple_iap":
+        return "not_live"
+    with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
+        subscription = stripe.Subscription.retrieve(sub_id)
+    status = subscription.get("status")
+    if status not in ("active", "trialing"):
+        return "not_live"
+    if subscription_item_on_price(subscription["items"]["data"], price):
+        return "already"
+    key = f"front-desk-item:v1:{sub_id}"
+    if status == "trialing":
+        # The add-on carries no trial: the paid plan starts now, invoiced now.
+        with timing("stripe.api.latency", {"op": "subscription.modify"}):
+            stripe.Subscription.modify(
+                sub_id,
+                items=[{"price": price, "quantity": 1}],
+                trial_end="now",
+                proration_behavior="always_invoice",
+                idempotency_key=key,
+            )
+        return "added"
+    with timing("stripe.api.latency", {"op": "subscription_item.create"}):
+        stripe.SubscriptionItem.create(
+            subscription=sub_id,
+            price=price,
+            quantity=1,
+            proration_behavior="always_invoice",
+            idempotency_key=key,
+        )
+    return "added"
 
 
 def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None) -> str:

@@ -11,6 +11,7 @@ export interface MailMessage {
   agent_id: string | null;
   text: string;
   truncated?: boolean;
+  channel?: "mail" | "text";
 }
 
 export type MeetingNotes = "posted" | "skipped" | "pending";

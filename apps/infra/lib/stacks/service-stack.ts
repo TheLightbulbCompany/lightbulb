@@ -68,6 +68,9 @@ export interface SecretNames {
   livekitApiSecret: string;
   recallApiKey: string;
   recallWebhookSecret: string;
+  photonApiKey: string;
+  photonProjectId: string;
+  photonWebhookSecret: string;
   huddleWorkerSecret: string;
   /**
    * Symmetric secret used by the FastAPI Paperclip proxy router to sign
@@ -1582,6 +1585,11 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? (process.env.STRIPE_SEAT_PRICE_ID_PROD ?? "")
           : (process.env.STRIPE_SEAT_PRICE_ID_DEV ?? ""),
+      // Front desk add-on Price, same live/test split. Empty fails closed.
+      STRIPE_FRONT_DESK_PRICE_ID:
+        env === "prod"
+          ? (process.env.STRIPE_FRONT_DESK_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_FRONT_DESK_PRICE_ID_DEV ?? ""),
       FRONTEND_URL:
         env === "prod" ? `https://${rootDomain}` : `https://dev.${rootDomain}`,
       // Public-facing base URL of THIS API. Used by /hooks/credentials
@@ -1953,6 +1961,15 @@ export class ServiceStack extends cdk.Stack {
       RECALL_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportRecallWebhookSecret", props.secretNames.recallWebhookSecret),
       ),
+      PHOTON_API_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonApiKey", props.secretNames.photonApiKey),
+      ),
+      PHOTON_PROJECT_ID: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonProjectId", props.secretNames.photonProjectId),
+      ),
+      PHOTON_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonWebhookSecret", props.secretNames.photonWebhookSecret),
+      ),
       HUDDLE_WORKER_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportHuddleWorkerSecret", props.secretNames.huddleWorkerSecret),
       ),
@@ -2051,15 +2068,8 @@ export class ServiceStack extends cdk.Stack {
         LAMBDA_SECRET_ENV_MAP: secretEnvMap,
       },
     });
-    // Exactly the secrets the task def injects. KMS decrypt is the task role's
-    // existing KmsAccess grant (same CMK).
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "ProvisionerSecrets",
-        actions: ["secretsmanager:GetSecretValue"],
-        resources: Object.values(backendContainerSecrets).map((secret) => `${secret.arn}-??????`),
-      }),
-    );
+    // The provisioner Lambda reads the task def's secrets through SecretsAccess
+    // (lightbulb/{env}/*) on the task role, so no per-secret statement is needed.
 
     // ---------------------------------------------------------------------
     // Messaging work consumer: openclaw-work.fifo drained by an SQS event source

@@ -21,7 +21,8 @@ from core.auth import (
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
-from core.services import apple_iap, openrouter_keys, trial_cap
+from core.repositories.paperclip_repo import customer_ops_agent_id
+from core.services import apple_iap, billing_service, openrouter_keys, photon, text_lines, trial_cap
 from core.services.billing_service import SEATS_INCLUDED, BillingService
 from core.services.chat_gate import budget_block_reason
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
@@ -118,6 +119,11 @@ async def get_trial_recap(
     return {"show": True, **await trial_recap.recap(owner_id, int(trial_end), rows)}
 
 
+def _front_desk_price_usd() -> int | None:
+    """None while the Stripe price is unconfigured: nothing may advertise what checkout cannot bill."""
+    return settings.FRONT_DESK_PRICE_USD if settings.STRIPE_FRONT_DESK_PRICE_ID else None
+
+
 @router.get(
     "/prices",
     summary="The public plan price",
@@ -134,6 +140,7 @@ async def get_public_prices(response: Response):
         "workspace_price_usd": settings.WORKSPACE_PRICE_USD,
         "included_members": SEATS_INCLUDED,
         "seat_price_usd": settings.SEAT_PRICE_USD,
+        "front_desk_price_usd": _front_desk_price_usd(),
         "trial_days": billing_repo._TRIAL_LOCAL_DURATION_SECONDS // 86400,
         # The one billed copy is repo-root openrouter-pricing.json, fed in by CDK.
         "managed_markup": settings.OPENROUTER_MARKUP or None,
@@ -195,6 +202,8 @@ async def get_billing_account(
         base_price_usd=settings.BASE_PRICE_USD,
         ultra_price_usd=settings.ULTRA_PRICE_USD,
         seat_price_usd=settings.SEAT_PRICE_USD,
+        front_desk=bool(account.get("front_desk")) if account else False,
+        front_desk_price_usd=_front_desk_price_usd(),
         included_members=SEATS_INCLUDED,
         managed_markup=settings.OPENROUTER_MARKUP or None,
         subscription_source=(account.get("subscription_source") if account else None),
@@ -386,6 +395,70 @@ async def create_workspace_checkout(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     return result
+
+
+class FrontDeskRequest(BaseModel):
+    return_to: Literal["web", "app"] = "web"
+
+
+@router.post(
+    "/front-desk",
+    summary="Add the Front desk add-on, or start Checkout for Team plus the add-on",
+    operation_id="create_front_desk",
+)
+async def create_front_desk(
+    body: FrontDeskRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """The line itself is provisioned by the Stripe webhook, never by this click."""
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    account = await _get_billing_account(auth)
+    if apple_iap.apple_is_live(account):
+        raise HTTPException(status_code=409, detail="apple_managed")
+
+    # The add-on needs the Customer Operations agent; refuse before any billing call.
+    if not await customer_ops_agent_id(owner_id):
+        raise HTTPException(status_code=409, detail="no_front_desk_agent")
+
+    if apple_iap.stripe_is_live(account):
+        outcome = await billing_service.add_front_desk_item(owner_id)
+        if outcome == "already":
+            # The subscription has the add-on but the line may not: a failed purchase leaves no event to retry.
+            try:
+                await text_lines.ensure_line(owner_id)
+            except (billing_service.BillingServiceError, photon.PhotonError) as e:
+                logger.warning("front desk line request failed owner_id=%s: %s", owner_id, e)
+                raise HTTPException(status_code=502, detail="line_provision_failed") from e
+        if outcome in ("added", "already"):
+            return {"status": outcome}
+        raise HTTPException(status_code=400, detail=outcome)
+
+    if not account or not account.get("stripe_customer_id"):
+        try:
+            await BillingService().create_customer_for_owner(
+                owner_id=owner_id,
+                owner_type="org",
+                email=auth.email,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("front desk customer creation failed owner_id=%s: %s", owner_id, e)
+            raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
+
+    try:
+        result = await billing_service.create_workspace_checkout(
+            owner_id=owner_id,
+            clerk_user_id=auth.user_id,
+            plan="workspace",
+            return_to=body.return_to,
+            front_desk=True,
+        )
+    except billing_service.BillingServiceError as e:
+        if str(e) == "checkout_in_progress":
+            raise HTTPException(status_code=409, detail="checkout_in_progress") from e
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return {"status": "checkout", "url": result["checkout_url"]}
 
 
 # Hard cap on credit-purchase amounts — a safety rail: without an upper

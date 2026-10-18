@@ -626,12 +626,15 @@ def strip_generated_marker(text: str) -> str:
     return text
 
 
-def build_soul_md(agent: dict, *, company_name: str | None = None) -> str:
+def build_soul_md(agent: dict, *, company_name: str | None = None, front_desk_number: str | None = None) -> str:
     """The profile's ``SOUL.md`` — the agent's identity, from the Paperclip roster row.
 
     Hermes reads ``$HERMES_HOME/SOUL.md`` per profile (config_home.py:66). There is no
     ``agents.list[*].name`` to carry a display name any more, so the name lives here and in the
     Paperclip row, and nowhere in config.yaml.
+
+    ``front_desk_number`` (the workspace's texting line, given only for the agent that owns it) adds
+    the front-desk section.
     """
     name = agent.get("name") or agent["id"]
     role = agent.get("role") or "general"
@@ -650,7 +653,27 @@ def build_soul_md(agent: dict, *, company_name: str | None = None) -> str:
         lines.append(_CEO_LINE)
     if agent.get("capabilities"):
         lines += ["", "## What you do", "", agent["capabilities"]]
-    return "\n".join(lines) + "\n"
+    soul = "\n".join(lines) + "\n"
+    return soul + "\n\n" + front_desk_section(front_desk_number) if front_desk_number else soul
+
+
+FRONT_DESK_SOUL = """## Front desk
+
+You answer the business's customers by text on {number}. A text that reaches you directly is from a customer. A workspace member's text arrives here as their room message, never through this channel.
+
+- Answer from what the site says and what you have saved. Never invent a price, a slot, a policy or an account detail.
+- If you have not learned the business's site yet, say so here and ask for the website; then follow references/front-desk.md to set it up.
+- To act on the site, run the adapters you built with OpenCLI (`opencli <site> <command> ...`). Browse only to build or repair an adapter.
+- Place an order or booking only after the customer has said yes or paid, always under the customer's own number.
+- Payment: create a Stripe payment link for the amount with your Stripe tools and text it. If Stripe is not connected, say the customer pays at the business, or send the site's own checkout link.
+- When you do not know: tell the customer you will get back to them, ask the CEO in a DM, and if the CEO cannot answer, raise a Needs-you question with request_approval. Text the answer back when it comes.
+- Never text anyone who has not texted this number first. Never give out a member's personal number or email.
+- Reply with /app/skills/lightbulb/scripts/lightbulb-text.sh send --reply <Reply-Key>. Keep replies short, one question at a time, and never send email.
+"""
+
+
+def front_desk_section(number: str) -> str:
+    return FRONT_DESK_SOUL.format(number=number)
 
 
 #: The managed scope (/etc/hermes/config.yaml). Hermes merges it AFTER env expansion and it wins at
@@ -758,6 +781,7 @@ def write_agent_profile(
     byo_provider: str | None = None,
     byo_api_key: str | None = None,
     soul_md_override: str | None = None,
+    front_desk_number: str | None = None,
 ) -> ProfileFiles:
     """The three files that ARE one agent's Hermes profile (fix round 1, I5 dropped the fourth,
     ``managed_overlay`` — the baked ``/etc/hermes/config.yaml`` is the sole enforcement point and
@@ -800,7 +824,11 @@ def write_agent_profile(
     return ProfileFiles(
         config_yaml=yaml.safe_dump(config, sort_keys=False),
         dotenv=render_dotenv(env),
-        soul_md=soul_md_override if soul_md_override is not None else build_soul_md(agent),
+        soul_md=(
+            soul_md_override
+            if soul_md_override is not None
+            else build_soul_md(agent, front_desk_number=front_desk_number)
+        ),
         heartbeat_md=default_checklist(agent.get("role")),
     )
 

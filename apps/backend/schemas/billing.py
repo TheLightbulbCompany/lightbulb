@@ -44,6 +44,9 @@ class BillingAccountResponse(BaseModel):
     # then seat_price_usd a month for each member past them.
     seat_price_usd: int
     included_members: int
+    # The Front desk add-on (a texting number): whether this workspace has it, and its monthly price.
+    front_desk: bool = False
+    front_desk_price_usd: int | None = None
     # Managed-credit markup (provider price x this), from openrouter-pricing.json via CDK.
     managed_markup: str | None = None
     # Which channel the live subscription was bought through: "apple_iap", or

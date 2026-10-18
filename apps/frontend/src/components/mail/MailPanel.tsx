@@ -4,10 +4,14 @@ import "@/components/messaging/messaging.css";
 import "./mail.css";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Copy, Mail, RefreshCw } from "lucide-react";
+import { useOrganization } from "@clerk/nextjs";
+import { useSWRConfig } from "swr";
 import { agentDisplayName, ApiError } from "@lightbulb/shared";
 
 import { Button } from "@/components/ui/button";
 import { useAgents } from "@/hooks/useAgents";
+import { useBilling } from "@/hooks/useBilling";
+import { useApi } from "@/lib/api";
 import { navigateShell, replaceSearchParams } from "@/lib/shellNav";
 import { buildPanelUrl, clearDurableParamFromUrl } from "@/components/workspace/urlChannel";
 import { MailList } from "./MailList";
@@ -21,7 +25,7 @@ import {
   type MailEntry,
   type MailFilter,
 } from "./mailModel";
-import { advanceSeen, readSeen, useTeamMail } from "./useTeamMail";
+import { advanceSeen, isTextLineKey, readSeen, useTeamMail, useTextLine } from "./useTeamMail";
 
 const WIDE_PX = 840;
 
@@ -46,6 +50,47 @@ function useCopy(text: string | undefined) {
     timer.current = setTimeout(() => setCopied(false), 1500);
   };
   return { copied, copy };
+}
+
+// The buy door's 409/400 answers, by their `detail`.
+const BUY_ERRORS: Record<string, string> = {
+  apple_managed: "Not available on this plan",
+  no_front_desk_agent: "This workspace has no Customer Operations agent",
+};
+
+/** Links the member's own phone by texting a code to the line, so a text from it posts to the main room as them. */
+function MyPhone({ phone, number }: { phone: string | null | undefined; number: string }) {
+  const api = useApi();
+  const { mutate } = useSWRConfig();
+  const [code, setCode] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const getCode = async () => {
+    setError(null);
+    try {
+      setCode(((await api.post("/agent-text/me/phone/code", {})) as { code: string }).code);
+    } catch {
+      setError("Could not get a code");
+    }
+  };
+  const remove = async () => {
+    setError(null);
+    try {
+      await api.del("/agent-text/me/phone");
+      await mutate(isTextLineKey);
+    } catch {
+      setError("Could not remove");
+    }
+  };
+  return <div className="mail-panel__myphone">
+    {phone ? <>
+      <span>Your phone: {phone}</span>
+      <Button type="button" variant="ghost" size="sm" onClick={() => void remove()}>Remove</Button>
+    </> : code ? <>
+      <span>Text <strong>LINK {code}</strong> to {number} from your phone. The code works for 15 minutes.</span>
+      <Button type="button" variant="ghost" size="sm" onClick={() => void mutate(isTextLineKey)}>Check</Button>
+    </> : <Button type="button" variant="ghost" size="sm" onClick={() => void getCode()}>Link my phone</Button>}
+    {error && <span role="status" className="mail-panel__number">{error}</span>}
+  </div>;
 }
 
 function CopyButton({ text }: { text: string | undefined }) {
@@ -75,6 +120,42 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
   const wide = useWide(rootRef);
   const { orgId, inbox, noAddress, address, loadedAt: now } = useTeamMail();
   const { agents } = useAgents();
+  const { account, refresh: refreshBilling } = useBilling();
+  const line = useTextLine(orgId);
+  // The number stopped being set up (it arrived, or none is coming): billing changed, so read it once.
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (line.pending) wasPending.current = true;
+    else if (wasPending.current) {
+      wasPending.current = false;
+      void refreshBilling();
+    }
+  }, [line.pending, refreshBilling]);
+  const isAdmin = useOrganization().membership?.role === "org:admin";
+  const api = useApi();
+  const { mutate: mutateGlobal } = useSWRConfig();
+  const [buying, setBuying] = useState(false);
+  const [buyStatus, setBuyStatus] = useState<string | null>(null);
+  const [priceGone, setPriceGone] = useState(false);
+  const price = priceGone ? null : account?.front_desk_price_usd;
+  const buyNumber = async () => {
+    setBuying(true);
+    setBuyStatus(null);
+    try {
+      const res = (await api.post("/billing/front-desk", { return_to: "web" })) as { status: string; url?: string };
+      if (res.status === "checkout" && res.url) {
+        window.location.assign(res.url);
+        return; // leaving the page: stay disabled
+      }
+      await Promise.all([mutateGlobal(isTextLineKey), refreshBilling()]);
+    } catch (e) {
+      const body = e instanceof ApiError && typeof e.body === "object" && e.body !== null ? e.body : {};
+      const detail = String((body as { detail?: unknown }).detail ?? "");
+      if (detail === "front_desk_price_unconfigured") setPriceGone(true);
+      else setBuyStatus(BUY_ERRORS[detail] ?? "Could not start checkout");
+    }
+    setBuying(false);
+  };
   const [filter, setFilter] = useState<MailFilter>("all");
 
   const pages = inbox.data;
@@ -159,6 +240,15 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
       <span className="mail-panel__address-text">{teamAddress}</span>
       <CopyButton text={teamAddress} />
     </span>}
+    {line.data?.number && <span className="mail-panel__number">{line.data.number}</span>}
+    {isAdmin && line.data === null && (line.pending || account?.front_desk
+      ? <span role="status" className="mail-panel__number">Setting up your number…</span>
+      : typeof price === "number" && <>
+      <Button type="button" variant="ghost" size="sm" disabled={buying} onClick={() => void buyNumber()}>
+        {`Get a phone number · $${price}/month`}
+      </Button>
+      {buyStatus && <span role="status" className="mail-panel__number">{buyStatus}</span>}
+    </>)}
     <span className="mail-panel__actions">
       <button type="button" className="mail-link" onClick={() => navigateShell(buildPanelUrl("agents", {}))}>Settings</button>
       <Button type="button" variant="ghost" size="sm" aria-label="Refresh mail" disabled={inbox.isValidating}
@@ -225,6 +315,7 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
 
   return <section ref={rootRef} className="mail-panel" aria-label="Mail" data-wide={wide || undefined}>
     {header}
+    {line.data?.number && <MyPhone key={line.data.myPhone ?? ""} phone={line.data.myPhone} number={line.data.number} />}
     {body}
   </section>;
 }

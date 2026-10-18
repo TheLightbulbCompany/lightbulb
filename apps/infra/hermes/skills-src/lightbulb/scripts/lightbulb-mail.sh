@@ -81,6 +81,7 @@ case "$cmd" in
       sent|already_sent) echo "Email $status." ;;
       forbidden_recipient) die 'Not sent: your owner has not allowed you to email people other than them (this includes replying to senders who are not on your wake list). Ask them to enable it in Control → Agents → Team email.' ;;
       outbound_disabled) die 'Not sent: outbound email is paused for this account (a recipient reported spam). Your owner can re-enable it in Control → Agents → Team email.' ;;
+      front_desk_agent) die 'Not sent: the front desk does not send email; reply by text.' ;;
       rate_limited) die 'Not sent: daily email limit reached. Try tomorrow.' ;;
       no_address) die 'Not sent: the team has no address yet — name your company, then run: lightbulb-mail.sh address' ;;
       bad_reply_key) die 'Not sent: that Reply-Key is not one of your messages.' ;;

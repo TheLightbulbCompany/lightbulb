@@ -100,6 +100,10 @@ async def send(
     try:
         if not (settings.AGENT_EMAIL_DOMAIN or "").strip():
             return _done(path, "disabled")
+        # ponytail: the "no shell beyond adapters" allowlist in the spec is not enforceable while OpenCLI needs the terminal; the doors we own (mail) are fenced, the rest is SOUL. Revisit with a Hermes per-tool allowlist.
+        line = await agent_email_repo.text_line_for_owner(owner_id)
+        if line and line.get("agent_id") == agent_id:
+            return _done(path, "front_desk_agent")
         if to and reply_key:
             return _done(path, "error")
         tenant = await ensure_tenant(owner_id)
@@ -122,7 +126,12 @@ async def send(
                 return _done(path, "bad_reply_key")
             address, received_key = parsed
             msg = await get_message(address, received_key)
-            if not msg or msg.get("owner_id") != owner_id or msg.get("direction") == "out":
+            if (
+                not msg
+                or msg.get("owner_id") != owner_id
+                or msg.get("direction") == "out"
+                or msg.get("channel") == "text"
+            ):
                 return _done(path, "bad_reply_key")
             # Stored state decides the replying agent — never fall back to the
             # caller-supplied agent_id, which would let a container claim to

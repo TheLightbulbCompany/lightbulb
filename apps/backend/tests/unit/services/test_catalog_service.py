@@ -194,3 +194,11 @@ async def test_write_profiles_and_build_and_upload_agent_profile_source_identica
     assert written["kwargs"]["byo_api_key"] == expected.byo_api_key
     assert written["kwargs"]["integrations"] == expected.integrations
     assert written["kwargs"]["env_vars"] == expected.env_vars
+
+
+@pytest.fixture(autouse=True)
+def _no_text_line(monkeypatch):
+    """Profile writes read the workspace's texting line (the front-desk SOUL section); none here."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    monkeypatch.setattr("core.repositories.agent_email_repo.text_line_for_owner", _AsyncMock(return_value=None))

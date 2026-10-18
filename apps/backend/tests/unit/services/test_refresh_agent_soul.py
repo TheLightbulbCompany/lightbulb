@@ -135,3 +135,11 @@ async def test_rename_seam_refreshes_the_facts_manifest(world, monkeypatch):
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", facts)
     await refresh_agent_soul(OWNER, AGENT)
     facts.assert_awaited_once_with(OWNER)
+
+
+@pytest.fixture(autouse=True)
+def _no_text_line(monkeypatch):
+    """A regenerated SOUL.md reads the workspace's texting line (the front-desk section); none here."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    monkeypatch.setattr("core.repositories.agent_email_repo.text_line_for_owner", _AsyncMock(return_value=None))

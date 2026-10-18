@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { getPricing, markupPercent, ordinal, pricingFaq, teamMonthlyUsd } from "../pricing";
 
 const json = (body: unknown) => new Response(JSON.stringify(body));
-const API = { workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30, managed_markup: "1.2" };
-const P = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, managedMarkup: "1.2" };
+const API = { workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30, managed_markup: "1.2", front_desk_price_usd: 250 };
+const P = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, managedMarkup: "1.2", frontDeskPriceUsd: 250 };
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -12,6 +12,11 @@ describe("one plan pricing", () => {
   it("reads the price from the billing API", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(API)));
     expect(await getPricing()).toEqual(P);
+  });
+
+  it("keeps the other prices when the API has no front desk price yet", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({ ...API, front_desk_price_usd: undefined })));
+    expect(await getPricing()).toEqual({ ...P, frontDeskPriceUsd: null });
   });
 
   it("returns null, never a guessed number, when the API is unreachable or malformed", async () => {

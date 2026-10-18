@@ -35,7 +35,7 @@ from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric, timing
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo
-from core.services.billing_service import BillingService
+from core.services.billing_service import BillingService, _is_front_desk_item
 
 logger = logging.getLogger(__name__)
 
@@ -309,8 +309,9 @@ def _workspace_plan_from_subscription_items(event_data: dict[str, Any]) -> str |
     items = [
         item
         for item in (event_data.get("items") or {}).get("data") or []
-        # The per-member seat item (T04) is the one allowed second item.
+        # The per-member seat item (T04) and the Front desk add-on are the allowed extra items.
         if not (seat_price and ((item or {}).get("price") or {}).get("id") == seat_price)
+        and not _is_front_desk_item(item or {})
     ]
     if len(items) != 1:
         reason = "missing_or_multiple_items"
@@ -372,6 +373,8 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # bridge below can detect transitions (esp. trialing -> active, the
     # trial->paid moment).
     old_status = account.get("subscription_status")
+    # The id the row held BEFORE this event: the handler overwrites it below.
+    stored_sub = account.get("stripe_subscription_id")
     new_status = event_data.get("status", "active")
     if (new_status in ("incomplete", "incomplete_expired") and old_status in ("trial_local", "active", "trialing")) or (
         # A subscription never re-enters its trial, and Checkout only opens a trial for a
@@ -604,6 +607,19 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             put_metric("billing.seat_sync", dimensions={"outcome": "error"})
             logger.exception("Seat sync failed for owner %s; Stripe will redeliver", account["owner_id"])
             raise
+    # The Front desk line follows the item, for every status (a canceled subscription releases it).
+    # sync_front_desk decides on the fresh subscription; a stale cancel of a superseded one is skipped
+    # there, against the id stored before this event's own write (``stored_sub``) and the id stored now.
+    # Only a buyer is synced: with no item on the event and no claim on the row there is nothing to buy
+    # or release.
+    if account.get("front_desk") or any(
+        _is_front_desk_item(item or {}) for item in (event_data.get("items") or {}).get("data") or []
+    ):
+        from core.services.text_lines import sync_front_desk
+
+        await sync_front_desk(
+            account["owner_id"], subscription_id=event_data["id"], previous_subscription_id=stored_sub
+        )
     return None
 
 
@@ -655,6 +671,18 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
         },
         set_person={"subscription_status": "canceled", "is_subscribed": False},
     )
+    # The texting line goes through the same rule as every other event (sync_front_desk): a stale or
+    # superseded subscription being deleted never takes the line from a live one. Gated on the claim
+    # alone, since a deleted subscription's items are gone. Before cancel_subscription's own write, so
+    # the stored id is the one this event found. A failure raises so Stripe redelivers.
+    if account.get("front_desk"):
+        from core.services.text_lines import sync_front_desk
+
+        await sync_front_desk(
+            account["owner_id"],
+            subscription_id=event_data["id"],
+            previous_subscription_id=account.get("stripe_subscription_id"),
+        )
     await billing_service.cancel_subscription(account)
     logger.info("Subscription cancelled for owner %s", account["owner_id"])
 

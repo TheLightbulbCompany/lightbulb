@@ -123,6 +123,7 @@ async def inbox(owner_id: str, agent_id: str, request: Request, since: str | Non
                 "from": r.get("from_addr", ""),
                 "subject": r.get("subject", ""),
                 "received_at": r.get("received_at", ""),
+                "channel": r.get("channel") or "mail",
                 "text": (r.get("text") or "")[:_INBOX_TEXT_CHARS],
             }
             for r in rows
@@ -348,6 +349,7 @@ def _mail_view(address: str, r: dict) -> dict:
         "subject": r.get("subject", ""),
         "at": r.get("received_at", ""),
         "agent_id": r.get("agent_id"),
+        "channel": r.get("channel") or "mail",
         "text": (r.get("text") or "")[:_PREVIEW_CHARS],
         "truncated": len(r.get("text") or "") > _PREVIEW_CHARS,
     }

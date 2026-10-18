@@ -8,6 +8,11 @@ from core.services import hermes_provisioning
 
 
 @pytest.fixture(autouse=True)
+def _no_text_line(monkeypatch):
+    monkeypatch.setattr("core.repositories.agent_email_repo.text_line_for_owner", AsyncMock(return_value=None))
+
+
+@pytest.fixture(autouse=True)
 def _no_billing_row(monkeypatch):
     """Provisioning resolves the provider from billing on every path; default to a ChatGPT row.
     Tests that care patch billing_repo themselves, which wins."""
@@ -1995,3 +2000,73 @@ def test_a_runtime_still_carrying_the_retired_bedrock_env_reads_as_drift():
     desired = {"AWS_REGION": "us-east-1"}
     assert hermes_provisioning._env_drifted({**desired, "ANTHROPIC_MODEL": "arn:aip:sonnet"}, desired)
     assert not hermes_provisioning._env_drifted(dict(desired), desired)
+
+
+async def _front_desk_profile(monkeypatch, line, override=None):
+    """The SOUL.md ``write_profile_for_agent`` uploads for agent_fd, with ``line`` as the workspace's text line."""
+    monkeypatch.setattr("core.repositories.agent_email_repo.text_line_for_owner", AsyncMock(return_value=line))
+    monkeypatch.setattr(
+        "core.services.container_provision.resolve_provider_choice", AsyncMock(return_value=("chatgpt_oauth", None))
+    )
+    monkeypatch.setattr(
+        "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk"))
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    upload = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload)
+    monkeypatch.setattr(hermes_provisioning, "_stage_owner_facts", AsyncMock())
+    await hermes_provisioning.write_profile_for_agent(
+        "owner_1", {"id": "agent_fd", "name": "Desk", "role": "general"}, soul_md_override=override
+    )
+    return upload.await_args.args[2].soul_md
+
+
+@pytest.mark.asyncio
+async def test_profile_for_the_line_agent_carries_the_section(monkeypatch):
+    from core.services import hermes_profiles
+
+    soul = await _front_desk_profile(monkeypatch, {"address": "+15551234567", "agent_id": "agent_fd"})
+    base = hermes_profiles.build_soul_md({"id": "agent_fd", "name": "Desk", "role": "general"})
+    assert soul.startswith(base + "\n\n## Front desk") and "+15551234567" in soul
+    assert "A text that reaches you directly is from a customer." in soul
+    assert hermes_profiles.is_generated_soul(soul)  # a rename still regenerates it
+    # an owner-edited override is never touched
+    line = {"address": "+15551234567", "agent_id": "agent_fd"}
+    assert await _front_desk_profile(monkeypatch, line, override="MINE") == "MINE"
+
+
+@pytest.mark.asyncio
+async def test_other_agents_do_not(monkeypatch):
+    soul = await _front_desk_profile(monkeypatch, {"address": "+1555", "agent_id": "someone_else"})
+    assert "## Front desk" not in soul
+
+
+@pytest.mark.asyncio
+async def test_no_line_no_section(monkeypatch):
+    assert "## Front desk" not in await _front_desk_profile(monkeypatch, None)
+
+
+@pytest.mark.asyncio
+async def test_the_roster_fan_out_reads_the_line_once(monkeypatch):
+    line = AsyncMock(return_value={"address": "+1555", "agent_id": "a1"})
+    monkeypatch.setattr("core.repositories.agent_email_repo.text_line_for_owner", line)
+    monkeypatch.setattr(
+        "core.services.container_provision.resolve_provider_choice", AsyncMock(return_value=("chatgpt_oauth", None))
+    )
+    monkeypatch.setattr(
+        "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster",
+        AsyncMock(return_value=[{"id": f"a{i}", "name": f"A{i}", "role": "general"} for i in range(6)]),
+    )
+    monkeypatch.setattr(hermes_provisioning.settings, "OWNER_STATE_BUCKET", "")
+    write = AsyncMock()
+    monkeypatch.setattr(hermes_provisioning, "write_profile_for_agent", write)
+    await hermes_provisioning.write_profiles("owner_1")
+    line.assert_awaited_once_with("owner_1")
+    numbers = [c.kwargs["inputs"].front_desk_number_for(c.args[1]["id"]) for c in write.await_args_list]
+    assert numbers == [None, "+1555", None, None, None, None]

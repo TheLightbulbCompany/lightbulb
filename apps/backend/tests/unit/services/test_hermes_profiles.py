@@ -442,3 +442,20 @@ def test_managed_openrouter_also_never_pins_vision(monkeypatch):
     c = cfg(provider_choice="openrouter_managed")
     assert "vision" not in c["auxiliary"]
     assert "supports_vision" not in c["model"]
+
+
+def test_front_desk_section_names_the_number():
+    out = hermes_profiles.front_desk_section("+15551234567")
+    assert "text on +15551234567." in out
+    assert "{number}" not in out
+    assert "A text that reaches you directly is from a customer." in out
+    assert "A workspace member's text arrives here as their room message, never through this channel." in out
+    assert "Every texter is a customer" not in out
+
+
+def test_build_soul_md_adds_the_front_desk_section_only_with_a_number():
+    agent = {"id": "a1", "name": "Desk", "role": "general"}
+    bare = hermes_profiles.build_soul_md(agent)
+    desk = hermes_profiles.build_soul_md(agent, front_desk_number="+15551234567")
+    assert desk == bare + "\n\n" + hermes_profiles.front_desk_section("+15551234567")
+    assert hermes_profiles.is_generated_soul(desk) and "## Front desk" not in bare

@@ -64,7 +64,7 @@ describe("landing headlines survive .lb-brk being hidden", () => {
 
   it("PricingThreeCard states the one price", async () => {
     const { PricingThreeCard } = await import("../PricingThreeCard");
-    const { container } = render(<PricingThreeCard pricing={{ teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, managedMarkup: "1.2" }} />);
+    const { container } = render(<PricingThreeCard pricing={{ teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, frontDeskPriceUsd: null, managedMarkup: "1.2" }} />);
     expect(flatten(container)).toContain("Any model. One price.");
     expect(flatten(container)).toContain("$50 a month for your workspace, up to five people.");
   });

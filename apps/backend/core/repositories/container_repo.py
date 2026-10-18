@@ -191,7 +191,7 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
 
 
 async def try_consume_stranger_wake(
-    owner_id: str, *, sender_key: str, day: str, owner_cap: int, sender_cap: int
+    owner_id: str, *, sender_key: str, day: str, owner_cap: int, sender_cap: int, attr_prefix: str = "stranger_wake"
 ) -> bool:
     """Admit one inbound email from a NON-allowlisted sender to WAKE the owner's agent for ``day``.
 
@@ -211,6 +211,7 @@ async def try_consume_stranger_wake(
     """
     table = _get_table()
     key = {"owner_id": owner_id}
+    day_a, count_a, senders_a = f"{attr_prefix}_day", f"{attr_prefix}_count", f"{attr_prefix}_senders"
 
     async def _bump() -> bool:
         try:
@@ -218,13 +219,13 @@ async def try_consume_stranger_wake(
                 table.update_item,
                 Key=key,
                 UpdateExpression=(
-                    "SET stranger_wake_count = if_not_exists(stranger_wake_count, :zero) + :one, "
-                    "stranger_wake_senders.#k = if_not_exists(stranger_wake_senders.#k, :zero) + :one"
+                    f"SET {count_a} = if_not_exists({count_a}, :zero) + :one, "
+                    f"{senders_a}.#k = if_not_exists({senders_a}.#k, :zero) + :one"
                 ),
                 ConditionExpression=(
-                    "stranger_wake_day = :d"
-                    " AND (attribute_not_exists(stranger_wake_count) OR stranger_wake_count < :ocap)"
-                    " AND (attribute_not_exists(stranger_wake_senders.#k) OR stranger_wake_senders.#k < :scap)"
+                    f"{day_a} = :d"
+                    f" AND (attribute_not_exists({count_a}) OR {count_a} < :ocap)"
+                    f" AND (attribute_not_exists({senders_a}.#k) OR {senders_a}.#k < :scap)"
                 ),
                 ExpressionAttributeNames={"#k": sender_key},
                 ExpressionAttributeValues={":d": day, ":zero": 0, ":one": 1, ":ocap": owner_cap, ":scap": sender_cap},
@@ -247,12 +248,8 @@ async def try_consume_stranger_wake(
             await run_in_thread(
                 table.update_item,
                 Key=key,
-                UpdateExpression=(
-                    "SET stranger_wake_day = :d, stranger_wake_count = :zero, stranger_wake_senders = :empty"
-                ),
-                ConditionExpression=(
-                    "attribute_exists(owner_id) AND (attribute_not_exists(stranger_wake_day) OR stranger_wake_day < :d)"
-                ),
+                UpdateExpression=f"SET {day_a} = :d, {count_a} = :zero, {senders_a} = :empty",
+                ConditionExpression=(f"attribute_exists(owner_id) AND (attribute_not_exists({day_a}) OR {day_a} < :d)"),
                 ExpressionAttributeValues={":d": day, ":zero": 0, ":empty": {}},
             )
         except ClientError as e:
@@ -262,6 +259,27 @@ async def try_consume_stranger_wake(
     except Exception:  # noqa: BLE001 — fail closed, see docstring
         logger.warning("try_consume_stranger_wake failed for %s", owner_id, exc_info=True)
         return False
+
+
+async def release_stranger_wake(
+    owner_id: str, *, sender_key: str, day: str, attr_prefix: str = "stranger_wake"
+) -> None:
+    """Give back the slot ``try_consume_stranger_wake`` admitted when what it admitted could not be sent,
+    so the delivery's retry is admitted again. Best effort, and only inside the same day's window: a slot
+    the window has rolled past, or a sender never admitted, is left alone."""
+    day_a, count_a, senders_a = f"{attr_prefix}_day", f"{attr_prefix}_count", f"{attr_prefix}_senders"
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression=f"SET {count_a} = {count_a} - :one, {senders_a}.#k = {senders_a}.#k - :one",
+            ConditionExpression=f"{day_a} = :d AND {senders_a}.#k >= :one",
+            ExpressionAttributeNames={"#k": sender_key},
+            ExpressionAttributeValues={":d": day, ":one": 1},
+        )
+    except Exception as e:  # noqa: BLE001 — a slot not given back costs one retry's reply, never the ingestion
+        if getattr(e, "response", {}).get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            logger.warning("release_stranger_wake failed for %s", owner_id, exc_info=True)
 
 
 async def try_claim_daily_system_notice(owner_id: str, *, day: str, kind: str = "complaint") -> bool:

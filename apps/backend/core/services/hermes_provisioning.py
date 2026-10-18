@@ -1133,6 +1133,12 @@ class ProfileInputs:
     byo_api_key: str | None
     integrations: dict[str, dict]
     env_vars: dict[str, str]
+    # The workspace's texting line and the agent that owns it (the front desk), read once per owner.
+    front_desk_agent_id: str | None = None
+    front_desk_number: str | None = None
+
+    def front_desk_number_for(self, agent_id: str) -> str | None:
+        return self.front_desk_number if agent_id == self.front_desk_agent_id else None
 
 
 async def resolve_profile_inputs(owner_id: str) -> ProfileInputs:
@@ -1145,6 +1151,7 @@ async def resolve_profile_inputs(owner_id: str) -> ProfileInputs:
     with no LLM credential at all is a failed install, not a degrade
     (M6-R11, folded into this shared helper by M6-R10).
     """
+    from core.repositories import agent_email_repo
     from core.services.container_provision import resolve_provider_choice
     from core.services.credentials.mcp_server import build_connected_integration_servers
     from core.services.key_service import read_byo_key
@@ -1156,12 +1163,15 @@ async def resolve_profile_inputs(owner_id: str) -> ProfileInputs:
         raise HermesProfileError(f"hermes profile for owner={owner_id}: byo api key read failed")
     integrations = await build_connected_integration_servers(owner_id)
     env_vars = await build_provisioned_env(owner_id)
+    line = await agent_email_repo.text_line_for_owner(owner_id)
     return ProfileInputs(
         provider_choice=provider_choice,
         byo_provider=byo_provider,
         byo_api_key=byo_api_key,
         integrations=integrations,
         env_vars=env_vars,
+        front_desk_agent_id=line.get("agent_id") if line else None,
+        front_desk_number=line["address"] if line else None,
     )
 
 
@@ -1242,6 +1252,7 @@ async def write_profile_for_agent(
             env_vars=inputs.env_vars,
             byo_provider=inputs.byo_provider,
             byo_api_key=inputs.byo_api_key,
+            front_desk_number=inputs.front_desk_number_for(agent_id),
         )
     except ValueError as exc:
         raise RuntimeError(
@@ -1279,6 +1290,7 @@ async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None
     narrower race, not a closed one: closing it needs a conditional PUT (``IfMatch`` on the ETag
     this read saw), which ``upload_soul_md`` does not carry today.
     """
+    from core.repositories import agent_email_repo
     from core.services import hermes_profiles
     from core.services.messaging import load_agent_roster
 
@@ -1288,7 +1300,9 @@ async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None
         return
     current = await run_in_thread(hermes_profiles.read_soul_md, owner_id, agent_id)
     if not current or hermes_profiles.is_generated_soul(current):
-        soul_md = hermes_profiles.build_soul_md(agent_row)
+        line = await agent_email_repo.text_line_for_owner(owner_id)
+        number = line["address"] if line and line.get("agent_id") == agent_id else None
+        soul_md = hermes_profiles.build_soul_md(agent_row, front_desk_number=number)
         await run_in_thread(hermes_profiles.upload_soul_md, owner_id, agent_id, soul_md)
     # Every rename door, owner-edited SOUL.md or not: VOICE_NOTES.md carries the current name,
     # room member labels follow it, and an open Live window hears about it (C3 ``renamed``).

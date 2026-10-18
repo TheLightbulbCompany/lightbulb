@@ -1177,6 +1177,57 @@ async def set_founding_team(owner_id: str) -> None:
     )
 
 
+async def release_front_desk_claim(owner_id: str) -> None:
+    """Clear the texting-line flag (the Front desk add-on): a release.
+
+    It drops the claim timestamp and bumps ``front_desk_gen``, which keys the next line request, so a redelivery
+    after a crash reuses the same Photon operation until a release happens. A missing billing row has no claim
+    to release (a wipe deletes the row first): a no-op.
+    """
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET front_desk = :f, updated_at = :u REMOVE front_desk_claim_at ADD front_desk_gen :one",
+            ExpressionAttributeValues={":f": False, ":u": utc_now_iso(), ":one": 1},
+            ConditionExpression="attribute_exists(owner_id)",
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+
+
+async def claim_front_desk(owner_id: str, *, stale_before: str | None = None) -> int | None:
+    """Single-flight claim before buying a line: the generation claimed under (the request key), or None when
+    another delivery holds it.
+
+    ``stale_before`` (an ISO time) also retakes a claim stamped earlier than it, in place: the crash repair
+    must not bump ``front_desk_gen``, or the retry would request a second line under a new key.
+    """
+    now = utc_now_iso()
+    condition = "attribute_not_exists(front_desk) OR front_desk = :f"
+    values = {":v": True, ":f": False, ":u": now}
+    if stale_before:
+        condition += (
+            " OR (front_desk = :v AND (attribute_not_exists(front_desk_claim_at) OR front_desk_claim_at < :stale))"
+        )
+        values[":stale"] = stale_before
+    try:
+        resp = await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET front_desk = :v, front_desk_claim_at = :u, updated_at = :u",
+            ExpressionAttributeValues=values,
+            ConditionExpression=f"attribute_exists(owner_id) AND ({condition})",
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return None
+        raise
+    return int(resp["Attributes"].get("front_desk_gen") or 0)
+
+
 async def set_nightly_ceo_opted_out(owner_id: str, opted_out: bool) -> None:
     """Set/clear the durable nightly-CEO opt-out flag.
 

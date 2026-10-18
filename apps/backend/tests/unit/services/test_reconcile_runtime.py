@@ -521,3 +521,11 @@ async def test_a_nightly_arm_failure_does_not_fail_the_reconcile(monkeypatch, bo
     assert await hp.reconcile_runtime("org_a") != "failed"
     assert world.metrics == []
     world.arm.assert_awaited_once_with("org_a")
+
+
+@pytest.fixture(autouse=True)
+def _no_text_line(monkeypatch):
+    """Profile writes read the workspace's texting line (the front-desk SOUL section); none here."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    monkeypatch.setattr("core.repositories.agent_email_repo.text_line_for_owner", _AsyncMock(return_value=None))

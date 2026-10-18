@@ -226,3 +226,25 @@
 @media (prefers-reduced-motion: reduce) {
   .mail-chip, .mail-row { transition: none; }
 }
+
+/* ---- texts: the row chip, the header number, the reply box -------------- */
+.mail-row__chip { flex-shrink: 0; font-size: 0.6875rem; color: var(--fg-mute); }
+.mail-panel__number { color: var(--fg-mute); font-size: 0.8125rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mail-reply { display: flex; max-width: 70ch; flex-direction: column; gap: 0.5rem; margin-top: 1rem; }
+.mail-reply__input {
+  width: 100%;
+  resize: vertical;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--plane-edge);
+  border-radius: 6px;
+  background: var(--plane-raised);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.875rem;
+}
+.mail-reply__actions { display: flex; align-items: center; gap: 0.5rem; }
+.mail-reply__status { font-size: 0.8125rem; color: var(--fg-soft); }
+
+.mail-panel__myphone { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0 1rem 0.5rem; font-size: 0.8125rem; color: var(--fg-mute); }
+.mail-panel__myphone label { display: inline-flex; align-items: center; gap: 0.5rem; }
+.mail-panel__myphone input { min-width: 0; width: 10rem; padding: 0.125rem 0.5rem; border: 1px solid var(--plane-edge); border-radius: 6px; background: var(--plane-pane); color: var(--fg); }

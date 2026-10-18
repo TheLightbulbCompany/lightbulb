@@ -1,7 +1,7 @@
 """agent_email_repo: the workspace's one mailbox row, address-keyed with a by-owner GSI."""
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
@@ -254,3 +254,284 @@ async def test_add_meeting_is_an_idempotent_set_add(agent_email_table):
 async def test_add_meeting_never_raises(agent_email_table):
     await repo.add_meeting("nobody@acme.isol8.co", "m1")  # no row: the condition fails, logged only
     assert await repo.get_by_address("nobody@acme.isol8.co") is None
+
+
+# ---- the text line: a kind="text" row keyed by its E.164 number ----
+
+
+async def _async(value):
+    return value
+
+
+async def test_record_text_line_puts_the_row_and_deletes_the_pending_row_atomically(monkeypatch):
+    table = MagicMock()
+    table.name = "t"
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    ok = await repo.record_text_line(
+        number="+15551230000",
+        owner_id="org_1",
+        agent_id="agent_1",
+        photon_resource_id="res_1",
+        photon_user_id="usr_1",
+        operation_id="op_1",
+    )
+    assert ok is True
+    put, delete = table.meta.client.transact_write_items.call_args.kwargs["TransactItems"]
+    assert put["Put"]["ConditionExpression"] == "attribute_not_exists(address)"
+    item = put["Put"]["Item"]
+    assert item == {
+        "address": "+15551230000",
+        "owner_id": "org_1",
+        "agent_id": "agent_1",
+        "kind": "text",
+        "status": "active",
+        "created_at": item["created_at"],
+        "photon_resource_id": "res_1",
+        "photon_user_id": "usr_1",
+        "human_threads": {},
+        "member_phones": {},
+        "phone_codes": {},
+        "disclosed": {},
+    }
+    assert item["created_at"]
+    assert delete["Delete"]["Key"] == {"address": "pending:org_1"}
+    assert delete["Delete"]["ConditionExpression"] == "kind = :pending AND operation_id = :op"
+    assert delete["Delete"]["ExpressionAttributeValues"] == {":pending": "text_pending", ":op": "op_1"}
+
+
+async def test_record_text_line_is_false_when_the_pending_row_is_gone(monkeypatch):
+    table = MagicMock()
+    table.name = "t"
+    table.meta.client.transact_write_items.side_effect = ClientError(
+        {"Error": {"Code": "TransactionCanceledException"}}, "TransactWriteItems"
+    )
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert (
+        await repo.record_text_line(
+            number="+15551230000",
+            owner_id="o",
+            agent_id="a",
+            photon_resource_id="r",
+            photon_user_id="u",
+            operation_id="op_1",
+        )
+        is False
+    )
+    table.meta.client.transact_write_items.side_effect = ClientError(
+        {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "TransactWriteItems"
+    )
+    with pytest.raises(ClientError):
+        await repo.record_text_line(
+            number="+1", owner_id="o", agent_id="a", photon_resource_id="r", photon_user_id="u", operation_id="op_1"
+        )
+
+
+async def test_delete_all_for_owner_keeps_a_line_that_failed_to_release(monkeypatch):
+    # release_line deletes the rows it releases; a line or pending row still present at the sweep is a failed
+    # release, kept so a retried wipe can release the dedicated number instead of orphaning it at Photon.
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    rows = [
+        {"address": "friday@acme.isol8.co", "owner_id": "o"},
+        {"address": "+15551230000", "owner_id": "o", "kind": "text"},
+        {"address": "pending:o", "owner_id": "o", "kind": "text_pending"},
+    ]
+    monkeypatch.setattr(repo, "query_by_owner", AsyncMock(return_value=rows))
+    assert await repo.delete_all_for_owner("o") == ["friday@acme.isol8.co"]
+    table.delete_item.assert_called_once_with(Key={"address": "friday@acme.isol8.co"})
+
+
+async def test_drop_member_phones_removes_only_that_members_phones(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    phones = {"+15550001111": "other", "+15551234567": "me", "+15559990000": "me"}
+    await repo.drop_member_phones({"address": "+15551230000", "member_phones": phones}, "me")
+    calls = table.update_item.call_args_list
+    assert sorted(c.kwargs["ExpressionAttributeNames"]["#p"] for c in calls) == ["+15551234567", "+15559990000"]
+    assert all(c.kwargs["UpdateExpression"] == "REMOVE member_phones.#p" for c in calls)
+
+
+async def test_set_disclosed_records_the_first_time_only(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.set_disclosed("+1555", "+15559998888")
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"address": "+1555"}
+    assert kwargs["UpdateExpression"] == "SET disclosed.#c = if_not_exists(disclosed.#c, :iso)"
+    assert kwargs["ExpressionAttributeNames"] == {"#c": "+15559998888"}
+    assert kwargs["ConditionExpression"] == "attribute_exists(address)"
+
+
+async def test_text_line_for_owner_filters_kind(monkeypatch):
+    rows = [{"address": "agents@x.co", "owner_id": "o"}, {"address": "+1555", "owner_id": "o", "kind": "text"}]
+    monkeypatch.setattr(repo, "query_by_owner", lambda owner_id: _async(rows))
+    assert (await repo.text_line_for_owner("o"))["address"] == "+1555"
+    monkeypatch.setattr(repo, "query_by_owner", lambda owner_id: _async(rows[:1]))
+    assert await repo.text_line_for_owner("o") is None
+
+
+async def test_set_thread_mode_human_sets_and_agent_removes(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.set_thread_mode("+1555", "+15559998888", "human")
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"address": "+1555"}
+    assert kwargs["UpdateExpression"] == "SET human_threads.#c = :iso"
+    assert kwargs["ExpressionAttributeNames"] == {"#c": "+15559998888"}
+    assert kwargs["ExpressionAttributeValues"][":iso"]
+    assert kwargs["ConditionExpression"] == "attribute_exists(address)"
+    await repo.set_thread_mode("+1555", "a@b.co", "agent")
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["UpdateExpression"] == "REMOVE human_threads.#c"
+    assert kwargs["ExpressionAttributeNames"] == {"#c": "a@b.co"}
+    assert "ExpressionAttributeValues" not in kwargs
+
+
+async def test_set_business_phone(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.set_business_phone("+1555", "+15550001111")
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["UpdateExpression"] == "SET business_phone = :p"
+    assert kwargs["ExpressionAttributeValues"] == {":p": "+15550001111"}
+
+
+async def test_delete_text_line_is_conditional_on_kind(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.delete_text_line("+1555")
+    kwargs = table.delete_item.call_args.kwargs
+    assert kwargs["Key"] == {"address": "+1555"}
+    assert kwargs["ConditionExpression"] == "kind = :text"
+    assert kwargs["ExpressionAttributeValues"] == {":text": "text"}
+
+
+async def test_delete_text_line_swallows_a_mail_row_or_missing(monkeypatch):
+    table = MagicMock()
+    table.delete_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "DeleteItem")
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.delete_text_line("agents@x.co")
+    table.delete_item.side_effect = ClientError({"Error": {"Code": "InternalServerError"}}, "DeleteItem")
+    with pytest.raises(ClientError):
+        await repo.delete_text_line("+1555")
+
+
+async def test_put_pending_line_item_and_condition(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.put_pending_line(owner_id="org_1", agent_id="a", operation_id="op_1") is True
+    kwargs = table.put_item.call_args.kwargs
+    assert kwargs["ConditionExpression"] == "attribute_not_exists(address)"
+    item = kwargs["Item"]
+    assert item["address"] == "pending:org_1" and item["kind"] == "text_pending"
+    assert (item["owner_id"], item["agent_id"], item["operation_id"]) == ("org_1", "a", "op_1")
+    assert item["created_at"]
+    table.put_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+    assert await repo.put_pending_line(owner_id="org_1", agent_id="a", operation_id="op_2") is False
+
+
+async def test_pending_line_for_owner_filters_kind(monkeypatch):
+    row = {"address": "pending:o", "kind": "text_pending"}
+    monkeypatch.setattr(repo, "get_by_address", lambda a: _async(row if a == "pending:o" else None))
+    assert await repo.pending_line_for_owner("o") == row
+    monkeypatch.setattr(repo, "get_by_address", lambda a: _async({"address": a, "kind": "text"}))
+    assert await repo.pending_line_for_owner("o") is None
+
+
+async def test_pending_page_token_is_set_or_cleared_under_the_operation_fence(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.set_pending_page_token("org_1", operation_id="op_1", page_token="t.11") is True
+    kw = table.update_item.call_args.kwargs
+    assert kw["Key"] == {"address": "pending:org_1"} and kw["UpdateExpression"] == "SET page_token = :t"
+    assert kw["ConditionExpression"] == "kind = :pending AND operation_id = :op"
+    assert kw["ExpressionAttributeValues"] == {":pending": "text_pending", ":op": "op_1", ":t": "t.11"}
+    assert await repo.set_pending_page_token("org_1", operation_id="op_1", page_token=None) is True
+    kw = table.update_item.call_args.kwargs
+    assert kw["UpdateExpression"] == "REMOVE page_token" and ":t" not in kw["ExpressionAttributeValues"]
+    table.update_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+    assert await repo.set_pending_page_token("org_1", operation_id="op_2", page_token="t.11") is False
+
+
+async def test_pending_delete_is_fenced_on_the_operation(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.delete_pending_line("o", operation_id="op_1") is True
+    kwargs = table.delete_item.call_args.kwargs
+    assert kwargs["Key"] == {"address": "pending:o"}
+    assert kwargs["ConditionExpression"] == "kind = :pending AND operation_id = :op"
+    assert kwargs["ExpressionAttributeValues"] == {":pending": "text_pending", ":op": "op_1"}
+    # A newer request replaced the row (or another reader removed it): the condition fails, nothing is deleted.
+    table.delete_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "DeleteItem")
+    assert await repo.delete_pending_line("o", operation_id="op_1") is False
+
+
+async def test_set_member_phone_sets_and_removes(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.set_member_phone("+1555", "+15559998888", "user_1")
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"address": "+1555"}
+    assert kwargs["UpdateExpression"] == "SET member_phones.#p = :uid"
+    assert kwargs["ExpressionAttributeNames"] == {"#p": "+15559998888"}
+    assert kwargs["ExpressionAttributeValues"] == {":uid": "user_1"}
+    assert kwargs["ConditionExpression"] == "attribute_exists(address)"  # proof wins: no holder check
+    await repo.set_member_phone("+1555", "+15559998888", None)
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["UpdateExpression"] == "REMOVE member_phones.#p"
+    assert kwargs["ConditionExpression"] == "attribute_exists(address)"
+    assert "ExpressionAttributeValues" not in kwargs
+
+
+_CCF = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+
+
+async def test_put_phone_code_sets_the_code_and_prunes_expired(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.put_phone_code("+1555", "123456", "user_1", 1000, prune=["111111", "123456"]) is True
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["UpdateExpression"] == "SET phone_codes.#c = :v REMOVE phone_codes.#e0"
+    assert kwargs["ConditionExpression"] == "attribute_exists(address) AND attribute_not_exists(phone_codes.#c)"
+    assert kwargs["ExpressionAttributeNames"] == {"#c": "123456", "#e0": "111111"}
+    assert kwargs["ExpressionAttributeValues"] == {":v": {"user_id": "user_1", "exp": 1000}}
+    table.update_item.side_effect = _CCF
+    assert await repo.put_phone_code("+1555", "123456", "user_1", 1000, prune=[]) is False
+
+
+async def test_bind_member_phone_is_single_use_and_drops_other_phones(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    ok = await repo.bind_member_phone(
+        "+1555", code="123456", phone="+1999", user_id="u1", now=500, drop=["+1888", "+1999"]
+    )
+    assert ok is True
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["UpdateExpression"] == "SET member_phones.#p = :uid REMOVE phone_codes.#c, member_phones.#d0"
+    assert kwargs["ConditionExpression"] == "phone_codes.#c.user_id = :uid AND phone_codes.#c.exp > :now"
+    assert kwargs["ExpressionAttributeNames"] == {"#c": "123456", "#p": "+1999", "#d0": "+1888"}
+    assert kwargs["ExpressionAttributeValues"] == {":uid": "u1", ":now": 500}
+    table.update_item.side_effect = _CCF
+    assert await repo.bind_member_phone("+1555", code="1", phone="+1999", user_id="u1", now=500, drop=[]) is False
+
+
+@pytest.mark.asyncio
+async def test_phone_code_round_trip_on_dynamodb(agent_email_table):
+    await repo.put_pending_line(owner_id="o", agent_id="a", operation_id="op")
+    assert await repo.record_text_line(
+        number="+1555", owner_id="o", agent_id="a", photon_resource_id="r", photon_user_id="u", operation_id="op"
+    )
+    assert await repo.pending_line_for_owner("o") is None
+    await repo.set_member_phone("+1555", "+1888", "u1")
+    assert await repo.put_phone_code("+1555", "000001", "u1", 100, prune=[]) is True
+    assert await repo.put_phone_code("+1555", "000001", "u2", 100, prune=[]) is False  # live collision
+    assert await repo.put_phone_code("+1555", "000002", "u1", 900, prune=["000001"]) is True
+    assert await repo.bind_member_phone("+1555", code="000002", phone="+1999", user_id="u2", now=50, drop=[]) is False
+    assert await repo.bind_member_phone("+1555", code="000002", phone="+1999", user_id="u1", now=950, drop=[]) is False
+    assert (
+        await repo.bind_member_phone("+1555", code="000002", phone="+1999", user_id="u1", now=50, drop=["+1888"])
+        is True
+    )
+    row = await repo.get_by_address("+1555")
+    assert row["member_phones"] == {"+1999": "u1"} and row["phone_codes"] == {}
+    assert await repo.bind_member_phone("+1555", code="000002", phone="+1999", user_id="u1", now=50, drop=[]) is False

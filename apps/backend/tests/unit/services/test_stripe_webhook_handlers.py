@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 import pytest  # noqa: E402
 
 from core.services import stripe_webhook_handlers as handlers  # noqa: E402
+from core.services.text_lines import sync_front_desk as _REAL_SYNC  # noqa: E402
 from core.services.webhook_dedup import WebhookDedupResult  # noqa: E402
 
 RECORDED_RESULT = WebhookDedupResult.RECORDED
@@ -92,6 +93,14 @@ def reconcile_dispatch(monkeypatch):
     dispatch = AsyncMock(return_value=True)
     monkeypatch.setattr("core.services.provision_dispatch.dispatch_reconcile", dispatch)
     return dispatch
+
+
+@pytest.fixture(autouse=True)
+def front_desk_sync(monkeypatch):
+    """The Front desk line sync buys a real number; no handler test may reach it unasked."""
+    sync = AsyncMock(return_value="absent")
+    monkeypatch.setattr("core.services.text_lines.sync_front_desk", sync)
+    return sync
 
 
 @pytest.fixture(autouse=True)
@@ -401,7 +410,9 @@ async def test_webhook_backup_write_refuses_the_retired_bedrock_choice(mock_repo
 # durable owner, and a failed reconcile pages provision.reconcile.failed.
 
 
-async def _run_state(mock_repo, prior_status, new_status, *, plan="standard", **event_overrides):
+async def _run_state(
+    mock_repo, prior_status, new_status, *, plan="standard", stored_sub=None, front_desk=False, **event_overrides
+):
     """Drive handle_subscription_state across a status transition. Assert on the mocks."""
     mock_repo.get_by_owner_id = AsyncMock(
         return_value={
@@ -410,6 +421,8 @@ async def _run_state(mock_repo, prior_status, new_status, *, plan="standard", **
             "stripe_customer_id": "cus_x",
             "subscription_status": prior_status,
             "plan": plan,
+            **({"stripe_subscription_id": stored_sub} if stored_sub else {}),
+            **({"front_desk": True} if front_desk else {}),
         }
     )
     event = _subscription_event(default_payment_method=None, status=new_status, **event_overrides)
@@ -1021,3 +1034,133 @@ async def test_a_stale_trialing_event_after_the_trial_is_ignored(mock_repo, prio
     """A reordered trialing delivery must not put a post-trial workspace back on its trial (T05)."""
     await _run_state(mock_repo, prior, "trialing")
     mock_repo.set_subscription.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["active", "canceled", "past_due"])
+async def test_subscription_handler_calls_sync_front_desk_after_seats(mock_repo, monkeypatch, status):
+    calls = MagicMock()
+    seats = AsyncMock()
+    front_desk = AsyncMock()
+    calls.attach_mock(seats, "seats")
+    calls.attach_mock(front_desk, "front_desk")
+    monkeypatch.setattr("core.services.billing_service.sync_seat_quantity", seats)
+    monkeypatch.setattr("core.services.text_lines.sync_front_desk", front_desk)
+    monkeypatch.setattr("core.config.settings.STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
+    event = _subscription_event(status=status)
+    event["data"]["object"]["items"]["data"].append({"id": "si_fd", "price": {"id": "price_fd"}})
+    with patch.object(handlers, "stripe"):
+        await handlers.handle_subscription_state(event, MagicMock())
+    front_desk.assert_awaited_once_with(
+        "org_x", subscription_id=event["data"]["object"]["id"], previous_subscription_id=None
+    )
+    if status == "active":
+        assert [c[0] for c in calls.mock_calls] == ["seats", "front_desk"]
+
+
+@pytest.mark.asyncio
+async def test_a_claim_on_the_row_syncs_even_when_the_event_has_no_item(mock_repo, front_desk_sync):
+    """The item was removed: the row's claim is what still owes a release."""
+    await _run_state(mock_repo, "active", "active", front_desk=True)
+    front_desk_sync.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["active", "canceled"])
+async def test_subscription_event_without_the_item_and_without_a_claim_never_calls_stripe_or_release(
+    mock_repo, monkeypatch, status
+):
+    from core.services import text_lines
+
+    monkeypatch.setattr(text_lines, "sync_front_desk", _REAL_SYNC)  # a call would reach Stripe or a release
+    retrieve, release = MagicMock(), AsyncMock()
+    monkeypatch.setattr(text_lines.stripe.Subscription, "retrieve", retrieve)
+    monkeypatch.setattr(text_lines, "release_line", release)
+    monkeypatch.setattr("core.services.billing_service.sync_seat_quantity", AsyncMock())
+    await _run_state(mock_repo, "active", status)
+    retrieve.assert_not_called()
+    release.assert_not_awaited()
+
+
+def _deleted(stored, *, front_desk=True):
+    event = {
+        "id": "evt_del",
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"id": "sub_x", "customer": "cus_x", "metadata": {"owner_id": "org_x"}}},
+    }
+    row = {
+        "owner_id": "org_x",
+        "owner_type": "org",
+        "stripe_customer_id": "cus_x",
+        "stripe_subscription_id": stored,
+        **({"front_desk": True} if front_desk else {}),
+    }
+    return event, row
+
+
+async def _run_deleted(event, row, billing_service, release):
+    """Drive handle_subscription_deleted through the real sync_front_desk. Stripe says the event's
+    subscription (sub_x) is canceled and any other id the row stores is live."""
+    from core.services import text_lines
+
+    def retrieve_stub(sid, *_a, **_k):
+        return {"status": "canceled" if sid == "sub_x" else "active", "items": {"data": []}}
+
+    with (
+        patch.object(handlers, "billing_repo") as repo,
+        patch.object(text_lines.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(text_lines.stripe.Subscription, "retrieve", MagicMock(side_effect=retrieve_stub)) as retrieve,
+        patch("core.services.text_lines.release_line", release),
+        patch("core.services.hermes_provisioning.delete_workspace_runtime", AsyncMock()),
+        patch(
+            "core.services.paperclip_provisioning.build_paperclip_provisioning",
+            AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
+        ),
+        patch(
+            "core.services.entitlement_teardown.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "org_x", "subscription_status": "canceled"}),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value=row)
+        repo.set_plan = AsyncMock()
+        await handlers.handle_subscription_deleted(event, billing_service)
+    return retrieve
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("stored", "released"), [("sub_x", True), ("sub_old", False), (None, True)])
+async def test_subscription_deleted_releases_the_line_only_for_the_current_subscription(
+    facts_mock, monkeypatch, stored, released
+):
+    """The deleted event goes through sync_front_desk's one rule: a superseded subscription skips."""
+    monkeypatch.setattr("core.services.text_lines.sync_front_desk", _REAL_SYNC)
+    billing_service = MagicMock()
+    order = []
+    release = AsyncMock(side_effect=lambda *_a: order.append("release"))
+    billing_service.cancel_subscription = AsyncMock(side_effect=lambda *_a: order.append("cancel"))
+    event, row = _deleted(stored)
+    await _run_deleted(event, row, billing_service, release)
+
+    assert release.await_count == int(released)
+    if released:
+        release.assert_awaited_once_with("org_x")
+        assert order == ["release", "cancel"]
+
+
+@pytest.mark.asyncio
+async def test_subscription_deleted_without_a_claim_never_calls_stripe(facts_mock, monkeypatch):
+    monkeypatch.setattr("core.services.text_lines.sync_front_desk", _REAL_SYNC)
+    billing_service = MagicMock()
+    billing_service.cancel_subscription = AsyncMock()
+    release = AsyncMock()
+    event, row = _deleted("sub_x", front_desk=False)
+    retrieve = await _run_deleted(event, row, billing_service, release)
+    retrieve.assert_not_called()
+    release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_state_handler_hands_the_previously_stored_subscription_to_the_sync(mock_repo, front_desk_sync):
+    """The superseded-subscription decision lives in sync_front_desk, on the fresh retrieve."""
+    await _run_state(mock_repo, "active", "active", stored_sub="sub_old", front_desk=True, id="sub_new")
+    front_desk_sync.assert_awaited_once_with("org_x", subscription_id="sub_new", previous_subscription_id="sub_old")

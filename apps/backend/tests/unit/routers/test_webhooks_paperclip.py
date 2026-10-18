@@ -39,6 +39,7 @@ def lifecycle_io(monkeypatch):
         return "membership_claim_test"
 
     monkeypatch.setattr("core.services.messaging.revoke_human_membership", revoke)
+    monkeypatch.setattr("core.services.text_lines.unlink_member", AsyncMock())
     monkeypatch.setattr(_webhook_dedup, "begin_event_processing", AsyncMock(return_value="claim_test"))
     monkeypatch.setattr(_webhook_dedup, "complete_event_processing", AsyncMock())
     monkeypatch.setattr(_webhook_dedup, "begin_membership_lifecycle", AsyncMock(side_effect=begin_membership))
@@ -137,6 +138,19 @@ async def test_membership_delete_revokes_canonical_rooms_before_paperclip(lifecy
 
     lifecycle_io.assert_awaited_once_with("org_acme", "member")
     assert events[:2] == ["canonical-revoked", "paperclip-archived"]
+
+
+@pytest.mark.asyncio
+async def test_membership_delete_unlinks_the_members_phone_from_the_texting_line(lifecycle_io, monkeypatch):
+    from routers import webhooks
+
+    unlink = AsyncMock()
+    monkeypatch.setattr("core.services.text_lines.unlink_member", unlink)
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+
+    await webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "member"})
+    unlink.assert_awaited_once_with("org_acme", "member")
 
 
 @pytest.mark.asyncio

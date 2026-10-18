@@ -2114,7 +2114,7 @@ def test_create_runtime_gives_up_after_the_bound(monkeypatch):
     monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
     monkeypatch.setattr("time.sleep", lambda s: None)
 
-    with pytest.raises(_ValidationException):
+    with pytest.raises(RuntimeError):
         hermes_provisioning._create_runtime({"agentRuntimeName": "x"})
     assert client.calls == hermes_provisioning._ROLE_PROPAGATION_ATTEMPTS
 

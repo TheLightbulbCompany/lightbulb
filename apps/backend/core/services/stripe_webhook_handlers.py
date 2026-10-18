@@ -610,9 +610,16 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # The Front desk line follows the item, for every status (a canceled subscription releases it).
     # sync_front_desk decides on the fresh subscription; a stale cancel of a superseded one is skipped
     # there, against the id stored before this event's own write (``stored_sub``) and the id stored now.
-    from core.services.text_lines import sync_front_desk
+    # Only a buyer is synced: with no item on the event and no claim on the row there is nothing to buy
+    # or release.
+    if account.get("front_desk") or any(
+        _is_front_desk_item(item or {}) for item in (event_data.get("items") or {}).get("data") or []
+    ):
+        from core.services.text_lines import sync_front_desk
 
-    await sync_front_desk(account["owner_id"], subscription_id=event_data["id"], previous_subscription_id=stored_sub)
+        await sync_front_desk(
+            account["owner_id"], subscription_id=event_data["id"], previous_subscription_id=stored_sub
+        )
     return None
 
 
@@ -664,13 +671,18 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
         },
         set_person={"subscription_status": "canceled", "is_subscribed": False},
     )
-    # Release the texting line only for the workspace's CURRENT subscription: a stale or
-    # superseded one being deleted must not take the line from a live one. A failure raises
-    # so Stripe redelivers.
-    if event_data.get("id") and event_data["id"] == account.get("stripe_subscription_id"):
-        from core.services.text_lines import release_line
+    # The texting line goes through the same rule as every other event (sync_front_desk): a stale or
+    # superseded subscription being deleted never takes the line from a live one. Gated on the claim
+    # alone, since a deleted subscription's items are gone. Before cancel_subscription's own write, so
+    # the stored id is the one this event found. A failure raises so Stripe redelivers.
+    if account.get("front_desk"):
+        from core.services.text_lines import sync_front_desk
 
-        await release_line(account["owner_id"])
+        await sync_front_desk(
+            account["owner_id"],
+            subscription_id=event_data["id"],
+            previous_subscription_id=account.get("stripe_subscription_id"),
+        )
     await billing_service.cancel_subscription(account)
     logger.info("Subscription cancelled for owner %s", account["owner_id"])
 

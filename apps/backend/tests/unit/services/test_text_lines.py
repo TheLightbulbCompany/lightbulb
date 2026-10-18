@@ -25,7 +25,7 @@ def m(monkeypatch):
     o.pending = AsyncMock(return_value=None)
     o.put_pending = AsyncMock(return_value=True)
     o.del_pending = AsyncMock(return_value=True)
-    o.claim = AsyncMock(return_value=True)
+    o.claim = AsyncMock(return_value=0)  # the generation claimed under
     o.set_fd = AsyncMock()
     o.put = AsyncMock(return_value={"address": "+15551230000"})
     o.delete = AsyncMock()
@@ -37,15 +37,6 @@ def m(monkeypatch):
     o.soul = AsyncMock()
     o.mail = AsyncMock()
     o.metric = MagicMock()
-    o.meta = AsyncMock(return_value=(None, 0))
-    clock = [0.0]
-
-    async def _sleep(secs):
-        clock[0] += secs
-
-    o.sleep = AsyncMock(side_effect=_sleep)
-    monkeypatch.setattr(text_lines.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(text_lines.billing_repo, "front_desk_meta", o.meta)
     r = text_lines.agent_email_repo
     monkeypatch.setattr(r, "text_line_for_owner", o.line)
     monkeypatch.setattr(r, "pending_line_for_owner", o.pending)
@@ -54,7 +45,7 @@ def m(monkeypatch):
     monkeypatch.setattr(r, "put_text_line", o.put)
     monkeypatch.setattr(r, "delete_text_line", o.delete)
     monkeypatch.setattr(text_lines.billing_repo, "claim_front_desk", o.claim)
-    monkeypatch.setattr(text_lines.billing_repo, "set_front_desk", o.set_fd)
+    monkeypatch.setattr(text_lines.billing_repo, "release_front_desk_claim", o.set_fd)
     monkeypatch.setattr(photon, "request_dedicated_line", o.request)
     monkeypatch.setattr(photon, "get_operation", o.get_op)
     monkeypatch.setattr(photon, "find_line_user", o.find_user)
@@ -63,7 +54,6 @@ def m(monkeypatch):
     monkeypatch.setattr(text_lines, "refresh_agent_soul", o.soul)
     monkeypatch.setattr(text_lines, "mail_changed", o.mail)
     monkeypatch.setattr(text_lines, "put_metric", o.metric)
-    monkeypatch.setattr(text_lines.asyncio, "sleep", o.sleep)
     row = SimpleNamespace(starter_agent_ids={"customer_operations": "agent_co"})
     repo = MagicMock()
     repo.resolve_owner_row = AsyncMock(return_value=row)
@@ -119,7 +109,7 @@ async def test_ensure_line_fast_path_records_the_line(m):
 async def test_ensure_line_slow_path_returns_pending_and_keeps_the_row(m):
     m.get_op.return_value = RUNNING
     assert await text_lines.ensure_line("org_1") == "pending"
-    assert m.sleep.await_count == 4  # an 8 s wall-clock budget, polled every 2 s
+    m.get_op.assert_awaited_once_with("op_1")  # one look, no poll: the panel's read completes it
     m.put.assert_not_awaited()
     m.del_pending.assert_not_awaited()
     m.set_fd.assert_not_awaited()
@@ -171,12 +161,23 @@ async def test_two_readers_cannot_record_two_lines(m):
 async def test_failed_operation_releases_the_claim_and_raises_from_webhook(m):
     m.pending.return_value = PENDING
     m.get_op.return_value = {"operationId": "op_1", "state": "failed", "error": {"code": "no_inventory"}}
-    with pytest.raises(BillingServiceError, match="line_provision_failed"):
-        await text_lines.complete_pending("org_1", from_webhook=True)
+    assert await text_lines.complete_pending("org_1") == "failed"
     m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
-    m.set_fd.assert_awaited_once_with("org_1", False)
+    m.set_fd.assert_awaited_once_with("org_1")
     m.metric.assert_called_once_with("text_line.provision_failed", dimensions={"code": "no_inventory"})
     m.put.assert_not_awaited()
+    m.pending.return_value = PENDING
+    with pytest.raises(BillingServiceError, match="line_provision_failed"):
+        await text_lines.ensure_line("org_1")  # the webhook caller
+    m.request.assert_not_awaited()
+
+
+async def _read(owner_id="org_1"):
+    """The panel's read (routers.agent_text.get_line): one look, then the subscription re-check on a failure."""
+    from routers import agent_text
+
+    outcome = await text_lines.complete_pending(owner_id)
+    return await agent_text._recheck(owner_id) if outcome == "failed" else outcome
 
 
 async def test_read_after_cancel_does_not_rebuy_when_the_item_is_gone(m, monkeypatch):
@@ -184,10 +185,10 @@ async def test_read_after_cancel_does_not_rebuy_when_the_item_is_gone(m, monkeyp
     _stub_retrieve(monkeypatch, "active", [{}])
     m.pending.return_value = PENDING
     m.get_op.return_value = {"operationId": "op_1", "state": "cancelled", "reason": "by_us"}
-    assert await text_lines.complete_pending("org_1") == "absent"
+    assert await _read() == "absent"
     m.request.assert_not_awaited()
     m.claim.assert_not_awaited()
-    m.set_fd.assert_awaited_with("org_1", False)
+    m.set_fd.assert_awaited_with("org_1")
     m.metric.assert_any_call("text_line.provision_failed", dimensions={"code": "by_us"})
 
 
@@ -195,7 +196,7 @@ async def test_read_after_cancel_without_a_subscription_is_absent(m):
     m.account.return_value = {}
     m.pending.return_value = PENDING
     m.get_op.return_value = {"operationId": "op_1", "state": "cancelled"}
-    assert await text_lines.complete_pending("org_1") == "absent"
+    assert await _read() == "absent"
     m.request.assert_not_awaited()
 
 
@@ -208,7 +209,7 @@ async def test_read_after_failed_rebuys_only_when_the_item_is_still_on_the_subsc
     m.pending.return_value = PENDING
     m.get_op.side_effect = [{"operationId": "op_1", "state": "failed"}, DONE]
     expected = "provisioned" if item_on_subscription else "absent"
-    assert await text_lines.complete_pending("org_1") == expected
+    assert await _read() == expected
     assert m.request.await_count == int(item_on_subscription)
 
 
@@ -217,15 +218,8 @@ async def test_no_pending_row_is_absent(m):
     m.get_op.assert_not_awaited()
 
 
-def _ago(seconds):
-    from datetime import datetime, timedelta, timezone
-
-    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
-
-
 async def test_old_claim_is_repaired(m):
-    m.claim.side_effect = [False, True]
-    m.meta.return_value = (_ago(600), 3)
+    m.claim.side_effect = [None, 3]
     assert await text_lines.ensure_line("org_1") == "provisioned"
     m.set_fd.assert_not_awaited()  # no release, so no generation bump
     assert m.claim.await_args_list[0].kwargs == {}
@@ -234,23 +228,21 @@ async def test_old_claim_is_repaired(m):
 
 
 async def test_crash_retry_reuses_the_request_key(m):
-    m.claim.side_effect = [False, True]
-    m.meta.return_value = (_ago(600), 3)
+    m.claim.side_effect = [None, 3]  # the stale retake returns the generation it kept
     await text_lines.ensure_line("org_1")
     m.request.assert_awaited_once()
     assert m.request.await_args.kwargs["idempotency_key"] == "front-desk:org_1:3"
 
 
 async def test_fresh_claim_is_not_repaired(m):
-    m.claim.return_value = False
-    m.meta.return_value = (_ago(10), 0)
+    m.claim.return_value = None
     assert await text_lines.ensure_line("org_1") == "unchanged"
     m.set_fd.assert_not_awaited()
     m.request.assert_not_awaited()
 
 
 async def test_request_key_is_stable_until_a_release(m):
-    m.meta.return_value = (None, 3)
+    m.claim.return_value = 3
     m.put_pending.side_effect = ValueError("crash after the request")
     for _ in range(2):
         with pytest.raises(ValueError):
@@ -260,7 +252,7 @@ async def test_request_key_is_stable_until_a_release(m):
 
 
 async def test_claim_lost_with_a_row_present_is_unchanged(m):
-    m.claim.return_value = False
+    m.claim.return_value = None
     m.line.side_effect = [None, {"address": "+1555"}]
     assert await text_lines.ensure_line("org_1") == "unchanged"
     m.request.assert_not_awaited()
@@ -268,7 +260,7 @@ async def test_claim_lost_with_a_row_present_is_unchanged(m):
 
 
 async def test_stale_flag_that_stays_claimed_is_unchanged(m):
-    m.claim.return_value = False
+    m.claim.return_value = None
     assert await text_lines.ensure_line("org_1") == "unchanged"
     assert m.claim.await_count == 2
     m.request.assert_not_awaited()
@@ -278,7 +270,7 @@ async def test_request_failure_releases_the_claim_and_raises(m):
     m.request.side_effect = photon.PhotonError(429, "rate_limited")
     with pytest.raises(photon.PhotonError):
         await text_lines.ensure_line("org_1")
-    m.set_fd.assert_awaited_once_with("org_1", False)
+    m.set_fd.assert_awaited_once_with("org_1")
     m.metric.assert_called_once_with("text_line.provision_failed", dimensions={"code": "rate_limited"})
     m.put_pending.assert_not_awaited()
     m.cancel.assert_not_awaited()
@@ -289,18 +281,18 @@ async def test_pending_row_write_failure_cancels_the_operation(m):
     with pytest.raises(ValueError):
         await text_lines.ensure_line("org_1")
     m.cancel.assert_awaited_once_with("op_1")
-    m.set_fd.assert_awaited_once_with("org_1", False)
+    m.set_fd.assert_awaited_once_with("org_1")
 
 
 async def test_transient_record_failure_keeps_the_pending_row(m):
     m.pending.return_value = PENDING
     m.put.side_effect = ValueError("ddb down")
     assert await text_lines.complete_pending("org_1") == "pending"
-    with pytest.raises(BillingServiceError, match="line_record_pending"):
-        await text_lines.complete_pending("org_1", from_webhook=True)
+    assert await text_lines.ensure_line("org_1") == "pending"  # the webhook keeps the row too; a read records it
     m.release.assert_not_awaited()
     m.del_pending.assert_not_awaited()
     m.set_fd.assert_not_awaited()
+    m.request.assert_not_awaited()
 
 
 async def test_unknown_line_user_keeps_the_pending_row(m):
@@ -316,8 +308,7 @@ async def test_line_user_without_a_handle_is_deferred_not_released(m):
     m.pending.return_value = PENDING
     m.find_user.return_value = {"id": "usr_1", "handle": None}
     assert await text_lines.complete_pending("org_1") == "pending"
-    with pytest.raises(BillingServiceError, match="line_record_pending"):
-        await text_lines.complete_pending("org_1", from_webhook=True)
+    assert await text_lines.ensure_line("org_1") == "pending"
     m.put.assert_not_awaited()
     m.release.assert_not_awaited()
     m.del_pending.assert_not_awaited()
@@ -346,7 +337,7 @@ async def test_read_path_second_failure_is_absent_without_looping(m, monkeypatch
     _stub_retrieve(monkeypatch, "active", [{}])
     m.pending.return_value = PENDING
     m.get_op.return_value = {"operationId": "op_1", "state": "failed"}
-    assert await text_lines.complete_pending("org_1") == "absent"
+    assert await _read() == "absent"
     m.request.assert_awaited_once()
 
 
@@ -367,11 +358,12 @@ async def test_ensure_line_unchanged_when_row_exists(m):
 
 async def test_release_cancels_a_pending_operation(m):
     m.pending.return_value = PENDING
+    m.account.return_value = {"front_desk": True}  # a pending row stands on a claim
     m.get_op.return_value = {"operationId": "op_1", "state": "cancelled"}
     assert await text_lines.release_line("org_1") == "released"
     m.cancel.assert_awaited_once_with("op_1")
     m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
-    m.set_fd.assert_awaited_once_with("org_1", False)
+    m.set_fd.assert_awaited_once_with("org_1")
     m.release.assert_not_awaited()
 
 
@@ -387,13 +379,14 @@ async def test_release_keeps_the_row_while_the_operation_still_runs(m):
 async def test_release_of_a_finished_operation_goes_by_resource(m):
     """The cancel lost the race: the line is released by its resource, never recorded first."""
     m.pending.return_value = PENDING
+    m.account.return_value = {"front_desk": True}
     m.get_op.return_value = DONE
     assert await text_lines.release_line("org_1") == "released"
     m.release.assert_awaited_once_with("res_1")
     m.find_user.assert_not_awaited()
     m.put.assert_not_awaited()
     m.del_pending.assert_awaited_once_with("org_1", operation_id="op_1")
-    m.set_fd.assert_awaited_once_with("org_1", False)
+    m.set_fd.assert_awaited_once_with("org_1")
 
 
 async def test_release_of_a_finished_operation_raises_and_keeps_the_row_when_photon_fails(m):
@@ -411,7 +404,7 @@ async def test_release_line_row_calls_photon_and_clears(m):
     assert await text_lines.release_line("org_1") == "released"
     m.release.assert_awaited_once_with("res_1")
     m.delete.assert_awaited_once_with("+15551230000")
-    m.set_fd.assert_awaited_once_with("org_1", False)
+    m.set_fd.assert_awaited_once_with("org_1")
     m.soul.assert_awaited_once_with("org_1", "agent_co")
 
 
@@ -425,8 +418,16 @@ async def test_release_failure_keeps_the_row_and_raises(m):
 
 
 async def test_release_absent_clears_flag(m):
+    m.account.return_value = {"front_desk": True}
     assert await text_lines.release_line("org_1") == "absent"
-    m.set_fd.assert_awaited_once_with("org_1", False)
+    m.set_fd.assert_awaited_once_with("org_1")
+
+
+async def test_release_absent_without_a_flag_writes_nothing(m):
+    assert await text_lines.release_line("org_1") == "absent"
+    m.set_fd.assert_not_awaited()
+    m.delete.assert_not_awaited()
+    m.release.assert_not_awaited()
 
 
 def _stub_retrieve(monkeypatch, status, items):

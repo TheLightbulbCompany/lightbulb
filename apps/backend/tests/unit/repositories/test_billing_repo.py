@@ -1229,12 +1229,12 @@ async def test_front_desk_claim_is_single_flight(dynamodb_table):
     from core.repositories import billing_repo
 
     await billing_repo.create_if_not_exists("org_fd", "cus_fd")
-    assert await billing_repo.claim_front_desk("org_fd") is True
-    assert await billing_repo.claim_front_desk("org_fd") is False
-    await billing_repo.set_front_desk("org_fd", False)
+    assert await billing_repo.claim_front_desk("org_fd") == 0
+    assert await billing_repo.claim_front_desk("org_fd") is None
+    await billing_repo.release_front_desk_claim("org_fd")
     assert (await billing_repo.get_by_owner_id("org_fd"))["front_desk"] is False
-    assert await billing_repo.claim_front_desk("org_fd") is True
-    assert await billing_repo.claim_front_desk("ghost") is False
+    assert await billing_repo.claim_front_desk("org_fd") == 1
+    assert await billing_repo.claim_front_desk("ghost") is None
 
 
 @pytest.mark.asyncio
@@ -1242,14 +1242,14 @@ async def test_front_desk_claim_stamps_time_and_release_bumps_generation(dynamod
     from core.repositories import billing_repo
 
     await billing_repo.create_if_not_exists("org_fd2", "cus_fd2")
-    assert await billing_repo.front_desk_meta("org_fd2") == (None, 0)
-    assert await billing_repo.claim_front_desk("org_fd2") is True
-    claim_at, gen = await billing_repo.front_desk_meta("org_fd2")
-    assert claim_at and gen == 0
-    await billing_repo.set_front_desk("org_fd2", False)
-    assert await billing_repo.front_desk_meta("org_fd2") == (None, 1)
-    await billing_repo.set_front_desk("org_fd2", True)
-    assert (await billing_repo.front_desk_meta("org_fd2"))[1] == 1
+    assert await billing_repo.claim_front_desk("org_fd2") == 0
+    row = await billing_repo.get_by_owner_id("org_fd2")
+    assert row["front_desk_claim_at"] and row["front_desk"] is True
+    await billing_repo.release_front_desk_claim("org_fd2")
+    row = await billing_repo.get_by_owner_id("org_fd2")
+    assert "front_desk_claim_at" not in row and int(row["front_desk_gen"]) == 1
+    await billing_repo.release_front_desk_claim("ghost")  # no row, no claim: a no-op
+    assert await billing_repo.get_by_owner_id("ghost") is None
 
 
 @pytest.mark.asyncio
@@ -1257,17 +1257,17 @@ async def test_stale_claim_is_retaken_in_place_without_bumping_the_generation(dy
     from core.repositories import billing_repo
 
     await billing_repo.create_if_not_exists("org_fd3", "cus_fd3")
-    await billing_repo.set_front_desk("org_fd3", False)  # gen 1
-    assert await billing_repo.claim_front_desk("org_fd3") is True
-    first_at, gen = await billing_repo.front_desk_meta("org_fd3")
-    assert gen == 1
-    assert await billing_repo.claim_front_desk("org_fd3", stale_before="1999-01-01T00:00:00+00:00") is False
-    assert await billing_repo.claim_front_desk("org_fd3", stale_before="2999-01-01T00:00:00+00:00") is True
-    new_at, gen = await billing_repo.front_desk_meta("org_fd3")
-    assert gen == 1 and new_at >= first_at
+    await billing_repo.release_front_desk_claim("org_fd3")  # gen 1
+    assert await billing_repo.claim_front_desk("org_fd3") == 1
+    first_at = (await billing_repo.get_by_owner_id("org_fd3"))["front_desk_claim_at"]
+    assert await billing_repo.claim_front_desk("org_fd3", stale_before="1999-01-01T00:00:00+00:00") is None
+    assert await billing_repo.claim_front_desk("org_fd3", stale_before="2999-01-01T00:00:00+00:00") == 1
+    assert (await billing_repo.get_by_owner_id("org_fd3"))["front_desk_claim_at"] >= first_at
 
     # front_desk = true with no timestamp is also stale
     await billing_repo.create_if_not_exists("org_fd4", "cus_fd4")
-    await billing_repo.set_front_desk("org_fd4", True)
-    assert await billing_repo.claim_front_desk("org_fd4") is False
-    assert await billing_repo.claim_front_desk("org_fd4", stale_before="1999-01-01T00:00:00+00:00") is True
+    dynamodb_table.update_item(
+        Key={"owner_id": "org_fd4"}, UpdateExpression="SET front_desk = :t", ExpressionAttributeValues={":t": True}
+    )
+    assert await billing_repo.claim_front_desk("org_fd4") is None
+    assert await billing_repo.claim_front_desk("org_fd4", stale_before="1999-01-01T00:00:00+00:00") == 0

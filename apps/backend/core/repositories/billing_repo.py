@@ -1177,29 +1177,29 @@ async def set_founding_team(owner_id: str) -> None:
     )
 
 
-async def set_front_desk(owner_id: str, value: bool) -> None:
-    """Record whether the workspace's texting line exists (the Front desk add-on).
+async def release_front_desk_claim(owner_id: str) -> None:
+    """Clear the texting-line flag (the Front desk add-on): a release.
 
-    Clearing it is a release: it drops the claim timestamp and bumps ``front_desk_gen``, which keys the next
-    line request, so a redelivery after a crash reuses the same Photon operation until a release happens.
+    It drops the claim timestamp and bumps ``front_desk_gen``, which keys the next line request, so a redelivery
+    after a crash reuses the same Photon operation until a release happens. A missing billing row has no claim
+    to release (a wipe deletes the row first): a no-op.
     """
-    expr = "SET front_desk = :v, updated_at = :u"
-    if not value:
-        expr += " REMOVE front_desk_claim_at ADD front_desk_gen :one"
-    values = {":v": bool(value), ":u": utc_now_iso()}
-    if not value:
-        values[":one"] = 1
-    await run_in_thread(
-        _get_table().update_item,
-        Key={"owner_id": owner_id},
-        UpdateExpression=expr,
-        ExpressionAttributeValues=values,
-        ConditionExpression="attribute_exists(owner_id)",
-    )
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET front_desk = :f, updated_at = :u REMOVE front_desk_claim_at ADD front_desk_gen :one",
+            ExpressionAttributeValues={":f": False, ":u": utc_now_iso(), ":one": 1},
+            ConditionExpression="attribute_exists(owner_id)",
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
 
 
-async def claim_front_desk(owner_id: str, *, stale_before: str | None = None) -> bool:
-    """Single-flight claim before buying a line: False when another delivery holds it.
+async def claim_front_desk(owner_id: str, *, stale_before: str | None = None) -> int | None:
+    """Single-flight claim before buying a line: the generation claimed under (the request key), or None when
+    another delivery holds it.
 
     ``stale_before`` (an ISO time) also retakes a claim stamped earlier than it, in place: the crash repair
     must not bump ``front_desk_gen``, or the retry would request a second line under a new key.
@@ -1213,24 +1213,19 @@ async def claim_front_desk(owner_id: str, *, stale_before: str | None = None) ->
         )
         values[":stale"] = stale_before
     try:
-        await run_in_thread(
+        resp = await run_in_thread(
             _get_table().update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="SET front_desk = :v, front_desk_claim_at = :u, updated_at = :u",
             ExpressionAttributeValues=values,
             ConditionExpression=f"attribute_exists(owner_id) AND ({condition})",
+            ReturnValues="ALL_NEW",
         )
-        return True
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return False
+            return None
         raise
-
-
-async def front_desk_meta(owner_id: str) -> tuple[str | None, int]:
-    """(``front_desk_claim_at``, ``front_desk_gen``) from the billing row; (None, 0) when unset."""
-    row = await get_by_owner_id(owner_id) or {}
-    return row.get("front_desk_claim_at"), int(row.get("front_desk_gen") or 0)
+    return int(resp["Attributes"].get("front_desk_gen") or 0)
 
 
 async def set_nightly_ceo_opted_out(owner_id: str, opted_out: bool) -> None:

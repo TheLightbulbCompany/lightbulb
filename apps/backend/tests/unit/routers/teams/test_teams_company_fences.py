@@ -44,6 +44,7 @@ ALLOWLIST = {
     ("POST", "/teams/heartbeat-runs/{run_id}/cancel"): _INLINE,
     ("GET", "/teams/local-sessions/{session_id}/work-link"): _SESSION,
     ("PATCH", "/teams/local-sessions/{session_id}/work-link"): _SESSION,
+    ("DELETE", "/teams/inbox-dismissals/{item_key:path}"): "company-scoped via ctx.company_id; per-user upstream",
 }
 
 
@@ -66,7 +67,7 @@ def _unfenced():
     out = set()
     for prefix, r in _walk(router.routes):
         path = prefix + r.path
-        if not re.search(r"\{\w+\}", path):
+        if not re.search(r"\{\w+(?::\w+)?\}", path):
             continue
         if FENCES & set(_calls(r.dependant)):
             continue

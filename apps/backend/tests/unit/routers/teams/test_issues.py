@@ -88,6 +88,64 @@ def test_list_issues_forwards_query_params(client, monkeypatch):
     )
 
 
+def test_list_forwards_blocked_view_params(client, monkeypatch):
+    """The Blocked board view asks upstream for blocked issues with their
+    blocker chains and live-descendant summary; the four params pass through."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value={"issues": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues",
+        params={
+            "attention": "blocked",
+            "includeBlockedInboxAttention": "true",
+            "includeBlockedBy": "true",
+            "includeLiveDescendantSummary": "true",
+            "limit": "200",
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.list_issues.assert_awaited_once_with(
+        company_id="co_abc",
+        session_cookie="cookie",
+        params={
+            "attention": "blocked",
+            "includeBlockedInboxAttention": "true",
+            "includeBlockedBy": "true",
+            "includeLiveDescendantSummary": "true",
+            "limit": "200",
+        },
+    )
+
+
+def test_list_rejects_unsupported_attention(client, monkeypatch):
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value={"issues": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get("/api/v1/teams/issues", params={"attention": "stalled"}, headers={"Authorization": "Bearer x"})
+    assert r.status_code == 422
+    admin.list_issues.assert_not_awaited()
+
+
+def test_list_drops_unknown_params(client, monkeypatch):
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value={"issues": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get("/api/v1/teams/issues", params={"foo": "bar"}, headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    admin.list_issues.assert_awaited_once_with(company_id="co_abc", session_cookie="cookie")
+
+
 def test_list_issues_forwards_exclude_routine_executions(client, monkeypatch):
     """The Tasks panel hides routine-spawned rows by default. Upstream reads the
     flag as the literal string "true", and it must only be sent when asked for —

@@ -55,6 +55,11 @@ export function useAcknowledgedRuns(
         saveAckRuns(companyId, next);
         return next;
       });
+      // Same-tab readers too (the rail's Needs-you badge): a real `storage`
+      // event only reaches other tabs. Deferred so it never lands mid-render.
+      queueMicrotask(() =>
+        window.dispatchEvent(new StorageEvent("storage", { key: inboxStorageKey(companyId, "ack-runs") })),
+      );
     },
     [companyId],
   );

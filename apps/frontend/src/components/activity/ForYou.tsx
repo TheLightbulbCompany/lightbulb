@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActivityAction, ActivityItem, ActivityLinkKind } from "@lightbulb/shared";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { DecisionResolver } from "@/components/teams/inbox/DecisionResolver";
+import { AttentionDesk } from "@/components/teams/inbox/AttentionDesk";
 import { useRunRetry } from "@/components/teams/inbox/FailedRunRow";
 import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { AttentionItem, CompanyAgent } from "@/components/teams/shared/types";
@@ -57,6 +58,8 @@ export interface ForYouProps {
   agents: readonly CompanyAgent[];
   /** An item a notification points at: highlighted and scrolled to. */
   focusId?: string | null;
+  /** The viewer's Clerk id, so a question on the desk can say "You". */
+  currentUserId?: string | null;
 }
 
 /**
@@ -114,12 +117,16 @@ export function ForYou(props: ForYouProps) {
     {incomplete && <p role="alert" className="for-you__notice">
       Couldn&apos;t load some items{props.onRetry && <> · <button type="button" className="for-you__more" onClick={props.onRetry}>Retry</button></>}
     </p>}
+    {/* Needs you: decisions lead; the desk carries its own loading, and claims the
+        all-clear only when no other row is listed and every source answered. */}
+    {filter === "needs-you" && <AttentionDesk agents={agents} currentUserId={props.currentUserId ?? null} hideFailedRuns
+      othersShown={entries.length > 0 || Boolean(incomplete)} />}
     {entries.length > 0 && <ul ref={listRef} className="for-you__list">
       {entries.map((entry) => <EntryRow key={entry.id} entry={entry} highlighted={entry.id === focusId} agentMap={agentMap}
         onRunAction={props.onRunAction} people={props.people} onDismissRuns={props.onDismissRuns}
         onNavigate={(target) => open(entry.id, target)} />)}
     </ul>}
-    {entries.length === 0 && (loading
+    {entries.length === 0 && filter !== "needs-you" && (loading
       ? <p role="status" className="for-you__empty">Loading…</p>
       // The all-clear only when every source answered and nothing older is left to load.
       : !incomplete && !hasMore && <p className="for-you__empty">{unreadOnly ? "Nothing unread." : "You're all caught up."}</p>)}

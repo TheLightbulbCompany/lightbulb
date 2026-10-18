@@ -1,15 +1,20 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActivityItem } from "@lightbulb/shared";
 import { ForYou, type ForYouProps } from "../ForYou";
 import type { ForYouFilter } from "../activityPage";
-import { approval, ask, attention, loginAsk, maya, message, runGroup } from "./fixtures";
+import { approval, ask, assigned, attention, loginAsk, maya, message, runGroup } from "./fixtures";
 
 const wakeAgent = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/components/teams/inbox/hooks/useAgentWake", () => ({ useAgentWake: () => ({ wakeAgent }) }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
+vi.mock("@/components/teams/inbox/AttentionDesk", () => ({
+  AttentionDesk: (props: { hideFailedRuns?: boolean; currentUserId?: string | null; othersShown?: boolean }) =>
+    <div data-testid="attention-desk" data-hide-failed-runs={String(props.hideFailedRuns)} data-user={props.currentUserId ?? ""}
+      data-others-shown={String(props.othersShown)}>Attention desk</div>,
+}));
 vi.mock("@/components/teams/inbox/DecisionResolver", () => ({
   DecisionResolver: ({ decisionId }: { decisionId: string }) => <div>Decision card {decisionId}</div>,
 }));
@@ -78,7 +83,9 @@ describe("ForYou", () => {
     await userEvent.click(chip("Mentions"));
     expect(rows()).toEqual(["mention:m1"]);
     await userEvent.click(chip("Needs you"));
-    expect(rows()).toEqual(["paperclip:approval:a1"]);
+    // The approval is on the attention desk now, not a row.
+    expect(rows()).toEqual([]);
+    expect(screen.getByTestId("attention-desk")).toBeInTheDocument();
     // Re-picking the selected chip changes nothing (no history entry).
     onFilter.mockClear();
     await userEvent.click(chip("Needs you"));
@@ -88,7 +95,50 @@ describe("ForYou", () => {
   it("starts on the chip the link names", () => {
     setup({ activityItems: [approval, message("m1")], filter: "needs-you" });
     expect(chip("Needs you")).toHaveAttribute("aria-pressed", "true");
-    expect(rows()).toEqual(["paperclip:approval:a1"]);
+    expect(screen.getByTestId("attention-desk")).toBeInTheDocument();
+  });
+
+  it("keeps a failed-run group with Retry under Needs you, and the desk leaves its own failed runs out", async () => {
+    setup({ activityItems: [], failedRuns: [runGroup("g1")], filter: "needs-you" });
+    const row = document.querySelector('[data-for-you-id="failed_run:g1"]') as HTMLElement;
+    expect(row).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
+    expect(screen.getByTestId("attention-desk")).toHaveAttribute("data-hide-failed-runs", "true");
+  });
+
+  it("puts the desk above the other Needs-you rows and tells it they are shown", () => {
+    setup({ activityItems: [], failedRuns: [runGroup("g1")], filter: "needs-you" });
+    const desk = screen.getByTestId("attention-desk");
+    const row = document.querySelector('[data-for-you-id="failed_run:g1"]')!;
+    expect(desk.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(desk).toHaveAttribute("data-others-shown", "true");
+  });
+
+  it("lets the desk claim the all-clear only when nothing else is listed and every source answered", () => {
+    setup({ activityItems: [], filter: "needs-you" });
+    expect(screen.getByTestId("attention-desk")).toHaveAttribute("data-others-shown", "false");
+  });
+
+  it("an incomplete load is not an all-clear for the desk either", () => {
+    setup({ activityItems: [], filter: "needs-you", incomplete: true });
+    expect(screen.getByTestId("attention-desk")).toHaveAttribute("data-others-shown", "true");
+  });
+
+  it("Needs you renders the desk, other filters unchanged", async () => {
+    setup({ activityItems: [approval, message("m1"), assigned, loginAsk], attentionItems: [attention("x2", "blocker_attention")],
+      failedRuns: [runGroup("g1")], filter: "needs-you", currentUserId: "user_me" });
+    // The desk carries approvals and attention items; the rows keep the asks and failed runs it does not.
+    const desk = screen.getByTestId("attention-desk");
+    expect(desk).toHaveAttribute("data-user", "user_me");
+    expect(rows()).toEqual(["paperclip:assigned_issue:i9", "login:abc", "failed_run:g1"]);
+    expect(screen.queryByText("You're all caught up.")).not.toBeInTheDocument();
+    await userEvent.click(chip("All"));
+    expect(screen.queryByTestId("attention-desk")).not.toBeInTheDocument();
+    expect(rows()).toEqual(["mention:m1", "paperclip:approval:a1", "paperclip:assigned_issue:i9", "login:abc", "attention:x2", "failed_run:g1"]);
+    await userEvent.click(chip("Mentions"));
+    expect(screen.queryByTestId("attention-desk")).not.toBeInTheDocument();
+    expect(rows()).toEqual(["mention:m1"]);
   });
 
   it("Unread hides read messages and keeps open asks", async () => {

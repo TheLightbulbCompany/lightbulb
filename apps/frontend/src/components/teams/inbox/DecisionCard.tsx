@@ -1,16 +1,21 @@
 // apps/frontend/src/components/teams/inbox/DecisionCard.tsx
 
 // Ported from upstream Paperclip's DecisionCard
-// (paperclip/ui/src/components/DecisionCard.tsx) (MIT, (c) 2025 Paperclip AI).
+// (paperclip/ui/src/components/DecisionCard.tsx @ v2026.1012.0-isol8.4)
+// (MIT, (c) 2025 Paperclip AI). Checked line by line against that tag: every
+// state, string and behaviour of upstream's card is here.
 //
 // Swaps vs upstream (markup, states, copy and behaviour are upstream's):
-//   - MarkdownBody -> MarkdownView
+//   - MarkdownBody -> TaskMarkdown
 //   - issue / run links commit through handleShellLinkClick (in-shell swap)
 //     instead of a router href
 //   - sky -> --link, rose -> --alert, emerald -> --live, amber -> --warn;
 //     shadcn semantic classes -> --fg / --fg-mute / --edge / --plane-*
 //   - the per-control focus ring is dropped for the one global :focus-visible
 //     outline
+//   - additions upstream lacks: `stalenessUnknown` keeps strict options
+//     disabled until targetChanged is read, and the cancel-tree confirm button
+//     also honours required inputs and staleness
 
 "use client";
 
@@ -32,7 +37,7 @@ import { handleShellLinkClick } from "@/lib/shellNav";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { TaskMarkdown } from "@/components/teams/shared/components/TaskMarkdown";
 import { decisionEffectTargetIssueIds } from "@/components/teams/shared/lib/decisions";
 import type {
   Decision,
@@ -417,7 +422,7 @@ export function DecisionCard({
       {/* Body */}
       {decision.body?.trim() && (
         <div className="mt-3 text-ui leading-6 text-[var(--fg)]">
-          <MarkdownView>{decision.body}</MarkdownView>
+          <TaskMarkdown body={decision.body} />
         </div>
       )}
 

@@ -59,7 +59,7 @@ export const RETRY_NOW_OUTCOME_HEADLINE: Record<IssueRetryNowOutcome, string> = 
   gate_suppressed: "Couldn't retry now",
 };
 
-function useRetryNowMutation(issueId: string | null | undefined) {
+export function useRetryNowMutation(issueId: string | null | undefined) {
   const { post, mutate: mutateKey } = useTeamsApi();
   const [isPending, setPending] = useState(false);
   const [data, setData] = useState<IssueRetryNowResponse | null>(null);

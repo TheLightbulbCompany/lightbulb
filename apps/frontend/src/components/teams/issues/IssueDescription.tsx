@@ -9,7 +9,7 @@
 //
 // Adaptations: InlineEditor (mdxeditor) -> a Textarea (Cmd/Ctrl+Enter or blur
 // saves, Esc cancels) plus an explicit "Edit description" button, so links in
-// the rendered markdown stay clickable; MarkdownBody -> TaskChatMarkdown. Not
+// the rendered markdown stay clickable; MarkdownBody -> TaskMarkdown. Not
 // ported: fold curtain, image paste/drop upload, mentions in the editor.
 
 "use client";
@@ -17,7 +17,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Pencil } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
-import { TaskChatMarkdown } from "./task-chat/TaskChatMarkdown";
+import { TaskMarkdown } from "@/components/teams/shared/components/TaskMarkdown";
 import { notifyApiError } from "@/lib/notify";
 
 export function IssueDescription({
@@ -100,7 +100,7 @@ export function IssueDescription({
   return (
     <div className="group/description relative" data-testid="issue-description">
       <div className="text-ui leading-7" style={{ color: "var(--midnight)" }}>
-        <TaskChatMarkdown>{description}</TaskChatMarkdown>
+        <TaskMarkdown skipHtml body={description} />
       </div>
       <button
         type="button"

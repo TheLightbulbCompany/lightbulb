@@ -263,17 +263,38 @@ export interface IssueUpdateInput {
   executionPolicy?: IssueExecutionPolicy | null;
 }
 
-/** A slim issue summary used by the "Blocked by" / "Blocking" relation rows.
+/** A slim issue summary used by the "Blocked by" / "Blocking" relation rows
+ * and the ported IssueBlockedNotice.
  *
  * Ported from upstream Paperclip's ``IssueRelationIssueSummary``
- * (packages/shared/src/types/issue.ts) (MIT, © 2025 Paperclip AI). Trimmed to
- * the fields the Teams relation chips render — upstream's recovery/terminal-
- * blocker fields are deferred. */
+ * (packages/shared/src/types/issue.ts @ v2026.1012.0-isol8.4) (MIT, © 2025
+ * Paperclip AI). The fields past ``status`` are optional here because older
+ * payloads and hand-built summaries omit them. */
 export interface IssueRelationIssueSummary {
   id: string;
   identifier?: string | null;
   title: string;
   status: IssueStatus;
+  priority?: IssuePriority | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  terminalBlockers?: IssueRelationIssueSummary[];
+  activeRecoveryAction?: IssueRecoveryAction | null;
+  scheduledRetry?: IssueScheduledRetry | null;
+}
+
+/** Upstream ``SuccessfulRunHandoffState`` (packages/shared/src/types/issue.ts
+ * @ v2026.1012.0-isol8.4): a run finished but the task still needs a next step. */
+export interface SuccessfulRunHandoffState {
+  state: "required" | "resolved" | "escalated";
+  required: boolean;
+  hasLiveContinuation: boolean;
+  liveRunId?: string | null;
+  sourceRunId: string | null;
+  correctiveRunId: string | null;
+  assigneeAgentId: string | null;
+  detectedProgressSummary: string | null;
+  createdAt: Date | string | null;
 }
 
 /** The monitor schedule that rides on an issue's executionPolicy. Mirrors
@@ -375,6 +396,78 @@ export interface IssueExecutionPolicy {
   stages?: IssueExecutionStage[];
 }
 
+// The Blocked view's per-issue attention, from upstream Paperclip's
+// packages/shared/src/types/issue.ts @ v2026.1012.0-isol8.4 (MIT, (c) 2025
+// Paperclip AI). Verbatim but for IssueStatus/IssuePriority, which are ours.
+export type IssueInboxAttentionKind = "blocked";
+
+export type IssueBlockedInboxState =
+  | "needs_attention"
+  | "awaiting_decision"
+  | "external_wait"
+  | "recovery_open"
+  | "missing_disposition";
+
+export type IssueBlockedInboxSeverity = "critical" | "high" | "medium" | "low";
+
+export type IssueBlockedInboxReason =
+  | "blocked_by_unassigned_issue"
+  | "blocked_by_assigned_backlog_issue"
+  | "blocked_by_uninvokable_assignee"
+  | "blocked_by_cancelled_issue"
+  | "blocked_chain_stalled"
+  | "invalid_review_participant"
+  | "in_review_without_action_path"
+  | "missing_successful_run_disposition"
+  | "pending_board_decision"
+  | "pending_user_decision"
+  | "external_owner_action"
+  | "open_recovery_issue";
+
+export type IssueBlockedInboxOwnerType = "agent" | "user" | "board" | "external" | "unknown";
+
+export interface IssueBlockedInboxIssueRef {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}
+
+export interface IssueBlockedInboxOwner {
+  type: IssueBlockedInboxOwnerType;
+  agentId: string | null;
+  userId: string | null;
+  label: string | null;
+}
+
+export interface IssueBlockedInboxAction {
+  label: string;
+  detail: string | null;
+}
+
+export interface IssueBlockedInboxAttention {
+  kind: IssueInboxAttentionKind;
+  state: IssueBlockedInboxState;
+  reason: IssueBlockedInboxReason;
+  severity: IssueBlockedInboxSeverity;
+  stoppedSinceAt: string | null;
+  owner: IssueBlockedInboxOwner;
+  action: IssueBlockedInboxAction;
+  sourceIssue: IssueBlockedInboxIssueRef | null;
+  leafIssue: IssueBlockedInboxIssueRef | null;
+  recoveryIssue: IssueBlockedInboxIssueRef | null;
+  approvalId: string | null;
+  interactionId: string | null;
+  sampleIssueIdentifier: string | null;
+  redaction: {
+    externalDetailsRedacted: boolean;
+    secretFieldsOmitted: true;
+  };
+}
+
 export interface Issue {
   id: string;
   identifier?: string | null;
@@ -440,6 +533,14 @@ export interface Issue {
    * IssueMonitorBanner falls back to them when executionState has no monitor. */
   monitorNextCheckAt?: string | null;
   monitorAttemptCount?: number | null;
+  /** A successful run left the task open without a next step (detail route);
+   * drives the ported IssueBlockedNotice's handoff alarm. */
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  /** The issue's active recovery action, when upstream attaches it to the read. */
+  activeRecoveryAction?: IssueRecoveryAction | null;
+  /** Why the task is stopped, on the Blocked view's list read only
+   * (`attention=blocked&includeBlockedInboxAttention=true`). */
+  blockedInboxAttention?: IssueBlockedInboxAttention | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +576,12 @@ export type IssueRecoveryActionOutcome =
 export type GitWorktreeBranchAncestryVerdict = "ancestor" | "diverged" | "unknown";
 
 export interface IssueRecoveryAction {
+  /** Read-only activity of the exact native run named by the wake policy. */
+  nativeRunActivity?: {
+    runId: string;
+    status: "queued" | "running";
+    workspaceOperationId: string | null;
+  } | null;
   id: string;
   companyId: string;
   sourceIssueId: string;
@@ -653,6 +760,13 @@ export interface ExecutionBlocker {
   agentId: string | null;
   cause: string;
   nextAction: string;
+  runStatus?: string | null;
+  runError?: string | null;
+  /** Candidate only: admission must still verify termination and all gates. */
+  canContinue?: boolean;
+  /** Explicit Retry candidate; the server rechecks stop proof and execution gates. */
+  canRetry?: boolean;
+  savedMessageCount?: number;
 }
 
 /** Full heartbeat-run row for the run-detail panel (upstream
@@ -1590,6 +1704,18 @@ export interface SubmitIssueThreadInteractionVerdicts {
 
 // --- the discriminated union ---
 
+// Resolver audience (who may resolve an interaction). Shapes from the fork's
+// packages/shared/src/constants.ts @ v2026.1012.0-isol8.4.
+export type IssueThreadInteractionCanonicalResolverPolicy = "anyone" | "not_creator" | "human_only";
+export type IssueThreadInteractionResolverPolicyProvenance =
+  | "explicit"
+  | "inherited"
+  | "legacy_inherited_restriction";
+export type IssueThreadInteractionEffectiveResolverPolicySource =
+  | "requested"
+  | "company_cap"
+  | "governed_action";
+
 export interface IssueThreadInteractionBase
   extends IssueThreadInteractionActorFields {
   id: string;
@@ -1599,6 +1725,14 @@ export interface IssueThreadInteractionBase
   idempotencyKey?: string | null;
   sourceCommentId?: string | null;
   sourceRunId?: string | null;
+  addresseeAgentId?: string | null;
+  addresseeUserId?: string | null;
+  /** Server-evaluated audience. Optional here: rows from an older Paperclip
+   *  omit it, and the audience line then renders nothing. */
+  requestedResolverPolicy?: IssueThreadInteractionCanonicalResolverPolicy;
+  effectiveResolverPolicy?: IssueThreadInteractionCanonicalResolverPolicy;
+  resolverPolicyProvenance?: IssueThreadInteractionResolverPolicyProvenance;
+  effectiveResolverPolicySource?: IssueThreadInteractionEffectiveResolverPolicySource;
   title?: string | null;
   summary?: string | null;
   status: IssueThreadInteractionStatus;
@@ -1817,9 +1951,88 @@ export interface AttentionItem {
   approval?: Approval | null;
   /** BFF-hydrated: the full interaction row (`issue_thread_interaction`). */
   interaction?: IssueThreadInteraction | null;
+  // Desk fields (upstream AttentionItem, fork v2026.1012.0-isol8.4). Optional so
+  // a feed built before them, and older fixtures, still type-check.
+  /** Key for `/inbox-dismissals` (dismiss / snooze / restore). Contains ':'. */
+  dismissalKey?: string;
+  /** Present on `includeDismissed=true` reads when the item is dismissed or snoozed. */
+  dismissal?: AttentionItemDismissal | null;
+  /** `today` | `this_week` | `whenever` | `YYYY-MM-DD`. */
+  decideBy?: string | null;
+  decideByAttribution?: AttentionTriageAttribution | null;
+  snoozedUntil?: string | null;
+  /** Server escalation order; lower is more urgent. */
+  rank?: number;
+  /** Idle past retention: the item belongs on the Aging shelf, not the desk. */
+  shelf?: boolean;
+  decisionVerbs?: AttentionDecisionVerb[];
+  inlineResolvable?: boolean;
+  detail?: AttentionItemDetail | null;
+  /** Set for `issue_thread_interaction` rows only. */
+  resolverAudience?: AttentionResolverAudience | null;
 }
 
+/** Who may resolve an `issue_thread_interaction` attention row (fork
+ *  packages/shared/src/types/attention.ts). */
+export interface AttentionResolverAudience {
+  requestedResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource;
+  resolverPolicyProvenance: IssueThreadInteractionResolverPolicyProvenance;
+  addresseeAgentId: string | null;
+  addresseeUserId?: string | null;
+  addresseeName: string | null;
+  createdByAgentId: string | null;
+  createdByAgentName: string | null;
+}
+
+export interface AttentionDecisionVerb {
+  id: string;
+  label: string;
+  description: string | null;
+}
+
+export interface AttentionItemDismissal {
+  kind: "dismiss" | "snooze";
+  dismissedAt: string;
+  snoozedUntil: string | null;
+  isActive: boolean;
+}
+
+export interface AttentionTriageAttribution {
+  type: "agent" | "user";
+  agentId: string | null;
+  agentName: string | null;
+  userId: string | null;
+  runId: string | null;
+  responsibleUserId: string | null;
+  updatedAt: string;
+}
+
+type AttentionDetailImages = { images?: { assetId: string; alt?: string | null }[] };
+
+export type AttentionItemDetail = AttentionDetailImages & (
+  | { kind: "approval"; approvalType: string; summaryExcerpt: string | null }
+  | { kind: "plan_approval"; issueTitle: string | null; planTitle: string | null; summaryExcerpt: string | null }
+  | { kind: "confirmation"; promptExcerpt: string | null }
+  | { kind: "questions"; questionCount: number; firstQuestionText: string | null }
+  | { kind: "suggested_tasks"; taskCount: number; firstTaskTitle: string | null }
+  | { kind: "checkbox_confirmation"; optionCount: number; promptExcerpt: string | null }
+  | { kind: "item_verdicts"; itemCount: number; promptExcerpt: string | null }
+  | { kind: "failed_run"; agentName: string | null; failureReasonExcerpt: string | null }
+  | { kind: "agent_error"; agentName: string | null; failureReasonExcerpt: string | null }
+  | {
+      kind: "blocker";
+      blockingIssue: { id: string | null; identifier: string | null; title: string | null } | null;
+      blockedTaskCount?: number;
+    }
+  | { kind: "budget"; observedPercent: number; amountObserved: number; amountLimit: number }
+  | { kind: "generic"; summaryExcerpt: string | null }
+);
+
 export interface AttentionFeedResponse {
+  /** Server clock at feed time: the desk's shelves and idle labels use it. */
+  generatedAt?: string;
   items?: AttentionItem[];
   /** Computed upstream BEFORE pagination — safe to render as a badge. */
   totalCount?: number;

@@ -18,7 +18,7 @@
 //                                     (approvals keep their side-panel section):
 //                                     resolved ones are receipt rows here, pending
 //                                     ones take over the composer
-//   - Identity/MarkdownBody/Button -> teams Identity, TaskChatMarkdown, EditorialButton
+//   - Identity/MarkdownBody/Button -> teams Identity, TaskMarkdown, EditorialButton
 //   - react-router Links           -> in-shell run detail anchors
 //   - author labels                -> multi-human: "You" / BFF name / "User";
 //                                     no author ids at all reads "Comment" (no votes)
@@ -56,7 +56,7 @@ import type { IssueThreadInteractionCardProps } from "./IssueThreadInteractionCa
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { formatDateTime } from "./lib/runRetryState";
 import { interactionReplacesComposerSkip } from "./lib/issue-thread-interactions";
-import { TaskChatMarkdown } from "./task-chat/TaskChatMarkdown";
+import { TaskMarkdown } from "@/components/teams/shared/components/TaskMarkdown";
 import { TaskChatComposer } from "./task-chat/TaskChatComposer";
 import {
   TaskChatCompactInteractionCard,
@@ -338,7 +338,7 @@ function CommentCard({
         <div className="text-ui italic">Comment deleted</div>
       ) : (
         <div className="text-ui" style={{ color: "var(--midnight)" }}>
-          <TaskChatMarkdown>{comment.body}</TaskChatMarkdown>
+          <TaskMarkdown skipHtml body={comment.body} />
         </div>
       )}
       {showVotes || (runId && !isDeleted) ? (

@@ -13,6 +13,8 @@
 //     and the card already falls back to generic copy.
 //   - no automatic mutation retry: a failed decide shows its error on the
 //     card, and the person's retry reuses the same idempotency key.
+//   - the attention re-read covers every /teams/attention key: the badge's
+//     `/attention` and the Activity desk's query-stringed read.
 
 "use client";
 
@@ -23,6 +25,7 @@ import { teamsDetailUrl } from "@/lib/shellNav";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import { decisionEffectTargetIssueIds } from "@/components/teams/shared/lib/decisions";
 import { DecisionCard, type DecisionIssueRef } from "@/components/teams/inbox/DecisionCard";
+import { isAttentionKey } from "@/components/teams/inbox/hooks/useAttentionFeed";
 import type {
   AttentionSubject,
   CompanyAgent,
@@ -152,7 +155,7 @@ export function DecisionResolver({ decisionId, originIssue, agentMap, originAgen
       const data = await post<DecisionOutcome>(`${key}/${path}`, body);
       void mutateDecision(data, { revalidate: false });
       void mutate(`/teams${openListKey}`);
-      void mutate(`/teams${teamsQueryKeys.attention()}`);
+      void mutate(isAttentionKey);
       for (const id of Object.keys(decision?.targetSnapshots ?? {})) {
         void mutate(`/teams${teamsQueryKeys.issues.detail(id)}`);
       }
@@ -164,7 +167,7 @@ export function DecisionResolver({ decisionId, originIssue, agentMap, originAgen
       // stale open one that 409s on retry.
       void mutateDecision();
       void mutate(`/teams${openListKey}`);
-      void mutate(`/teams${teamsQueryKeys.attention()}`);
+      void mutate(isAttentionKey);
       return false;
     } finally {
       setBusy(false);

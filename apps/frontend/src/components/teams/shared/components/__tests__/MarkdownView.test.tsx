@@ -3,12 +3,12 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 const download = vi.fn();
 vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ download }),
+  useTeamsApi: () => ({ download, read: () => ({ data: undefined }) }),
 }));
 
 import { MarkdownView } from "../MarkdownView";
 import { AttachmentIssueContext, attachmentPathFromHref } from "@/components/teams/shared/lib/attachments";
-import { TaskChatMarkdown } from "@/components/teams/issues/task-chat/TaskChatMarkdown";
+import { TaskMarkdown } from "@/components/teams/shared/components/TaskMarkdown";
 import { roomUrlTransform } from "@/components/messaging/markdown";
 
 describe("attachmentPathFromHref", () => {
@@ -96,7 +96,7 @@ describe("MarkdownView attachment links", () => {
   });
 
   it("resolves a task-chat attachment link through the issue-scoped route", async () => {
-    render(onIssue(<TaskChatMarkdown>{"Done: [report.pdf](/api/attachments/att-3/content?download=1)"}</TaskChatMarkdown>));
+    render(onIssue(<TaskMarkdown body={"Done: [report.pdf](/api/attachments/att-3/content?download=1)"} />));
     fireEvent.click(screen.getByRole("button", { name: "report.pdf" }));
     await waitFor(() => expect(download).toHaveBeenCalledWith("/issues/iss-7/attachments/att-3/content"));
   });

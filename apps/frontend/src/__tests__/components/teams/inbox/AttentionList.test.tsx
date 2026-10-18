@@ -18,6 +18,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 }));
 
 import { AttentionList } from "@/components/teams/inbox/AttentionList";
+import { isAttentionKey } from "@/components/teams/inbox/hooks/useAttentionFeed";
 
 function installFeed(feed: unknown, opts: { isLoading?: boolean; error?: Error } = {}) {
   read.mockImplementation((path: string) => {
@@ -119,7 +120,7 @@ describe("AttentionList", () => {
       );
     });
     // ...and the answered item is refetched out of this list.
-    expect(mutate).toHaveBeenCalledWith("/teams/attention");
+    expect(mutate).toHaveBeenCalledWith(isAttentionKey);
   });
 
   test("says plainly when nothing needs you", () => {
@@ -245,7 +246,7 @@ describe("AttentionList", () => {
         expect.objectContaining({ optionId: "ship", inputValues: {} }),
       );
     });
-    await waitFor(() => expect(mutate).toHaveBeenCalledWith("/teams/attention"));
+    await waitFor(() => expect(mutate).toHaveBeenCalledWith(isAttentionKey));
     expect(mutate).toHaveBeenCalledWith(`/teams${OPEN_LIST}`);
   });
 
@@ -277,7 +278,7 @@ describe("AttentionList", () => {
     await screen.findByText("Gateway timeout");
     expect(mutateDecision).toHaveBeenCalledWith();
     expect(mutate).toHaveBeenCalledWith(`/teams${OPEN_LIST}`);
-    expect(mutate).toHaveBeenCalledWith("/teams/attention");
+    expect(mutate).toHaveBeenCalledWith(isAttentionKey);
   });
 
   test("retrying a failed decide reuses the idempotency key", async () => {

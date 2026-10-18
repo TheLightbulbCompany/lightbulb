@@ -54,8 +54,9 @@ describe("For you", () => {
     it("All is every row", () => {
       expect(ids("all")).toHaveLength(entries.length);
     });
-    it("Needs you is the actionable part: decisions, tasks, asks, failed runs; no messages", () => {
-      expect(ids("needs-you")).toEqual(["paperclip:approval:a1", "paperclip:assigned_issue:i9", "login:abc", "attention:x2", "failed_run:g1"]);
+    it("Needs you keeps what the attention desk does not carry: tasks, asks, failed runs; no messages", () => {
+      // Approvals, questions and attention items are on the desk rendered beside these rows.
+      expect(ids("needs-you")).toEqual(["paperclip:assigned_issue:i9", "login:abc", "failed_run:g1"]);
     });
     it("Mentions, Threads and DMs are one kind of message each, read or not", () => {
       expect(ids("mentions")).toEqual(["mention:m1", "mention:m2"]);

@@ -33,7 +33,7 @@ vi.mock("@clerk/nextjs", () => {
 });
 
 const activityState = { attentionCount: 0 };
-vi.mock("@/hooks/useActivity", () => ({ useActivity: () => activityState }));
+vi.mock("@/components/activity/useNeedsYouBadge", () => ({ useNeedsYouBadge: () => activityState.attentionCount }));
 vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), useWorkspaceState: () => ({ place }) }));
 
 const recordMessagesNavigation = vi.fn();

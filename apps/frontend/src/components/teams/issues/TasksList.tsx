@@ -11,6 +11,8 @@
 //     status circle (4+ states, opens the status menu), the ISO-N identifier,
 //     title, and a relative "Updated …" timestamp. Row click opens the detail.
 //   - Board view: reuses the existing inbox KanbanBoard verbatim.
+//   - Blocked view: the ported BlockedTasksView (upstream's Inbox Blocked tab),
+//     which fetches its own company-wide attention list.
 //   - List/board view-mode toggle (board is the default; the choice persists
 //     per browser — see `tasksViewMode.ts`), plus list-only Sort, Group, and
 //     tree-nesting toggles.
@@ -26,6 +28,7 @@ import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ArrowUpDown,
+  Ban,
   Check,
   ChevronRight,
   Columns3,
@@ -65,6 +68,13 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { PanelEmptyState } from "@/components/teams/shell";
 import { IssueFiltersPopover } from "@/components/teams/inbox/IssueFiltersPopover";
 import { hideIssueWithUndo } from "./lib/hideIssue";
+import { BlockedTasksView } from "./BlockedTasksView";
+import {
+  BLOCKED_GROUP_OPTIONS,
+  BLOCKED_SORT_OPTIONS,
+  type BlockedInboxGroupBy,
+  type BlockedInboxSort,
+} from "./lib/blockedInbox";
 import {
   KanbanBoard,
   type KanbanBoardProps,
@@ -144,6 +154,13 @@ export interface TasksListProps {
    * create-prompt). The popover's own active filters are tracked internally.
    */
   searchActive?: boolean;
+  /** The panel's search text. The Blocked view fetches its own list, so it
+   * narrows by this itself; list and board get `issues` already narrowed. */
+  searchQuery?: string;
+  /** Scopes the Blocked view's own fetch to one project (project page). */
+  projectId?: string;
+  /** The panel's agent filter ("See her work"); the Blocked view applies it to its own list. */
+  agentFilter?: string | null;
   isLoading?: boolean;
   /** Patches an issue (status / assignee / …). Routed to the BFF PATCH. */
   // Returns the in-flight PATCH so callers that need to sequence on it can —
@@ -474,6 +491,20 @@ function ViewModeToggle({
           </button>
         </TooltipTrigger>
         <TooltipContent>Board view</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className={buttonClass(viewMode === "blocked")}
+            onClick={() => onChange("blocked")}
+            aria-pressed={viewMode === "blocked"}
+            aria-label="Blocked view"
+          >
+            <Ban size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Blocked view</TooltipContent>
       </Tooltip>
     </div>
   );
@@ -877,6 +908,9 @@ export function TasksList({
   externalObjectSummaries,
   currentUserId,
   searchActive = false,
+  searchQuery = "",
+  projectId,
+  agentFilter,
   isLoading,
   onUpdateIssue,
   onNewTask,
@@ -911,6 +945,8 @@ export function TasksList({
     setGroupingDeepLink(Boolean(initialGroupBy));
   }
   const [nestingEnabled, setNestingEnabled] = useState(true);
+  const [blockedGroupBy, setBlockedGroupBy] = useState<BlockedInboxGroupBy>("blocker_type");
+  const [blockedSort, setBlockedSort] = useState<BlockedInboxSort>("urgency");
   const [filterState, setFilterState] = useState<IssueFilterState>(
     defaultIssueFilterState,
   );
@@ -1134,10 +1170,45 @@ export function TasksList({
             />
           </>
         )}
+
+        {viewMode === "blocked" && (
+          <>
+            <MenuPopover<BlockedInboxSort>
+              icon={<ArrowUpDown size={16} />}
+              title="Sort"
+              options={BLOCKED_SORT_OPTIONS}
+              selected={blockedSort}
+              onSelect={setBlockedSort}
+            />
+            <MenuPopover<BlockedInboxGroupBy>
+              icon={<Layers size={16} />}
+              title="Group"
+              active={blockedGroupBy !== "none"}
+              options={BLOCKED_GROUP_OPTIONS}
+              selected={blockedGroupBy}
+              onSelect={setBlockedGroupBy}
+            />
+          </>
+        )}
       </div>
 
       {/* Body */}
-      {isLoading ? (
+      {viewMode === "blocked" ? (
+        // Before the loading / empty branches: this view fetches its own list,
+        // so the passed-in `issues` being empty or loading says nothing about it.
+        <BlockedTasksView
+          searchQuery={searchQuery}
+          agents={agents}
+          members={members}
+          groupBy={blockedGroupBy}
+          sortBy={blockedSort}
+          issueFilters={filterState}
+          currentUserId={currentUserId ?? null}
+          liveIssueIds={liveIssueIds}
+          projectId={projectId}
+          agentFilter={agentFilter ?? null}
+        />
+      ) : isLoading ? (
         <div className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
           Loading…
         </div>

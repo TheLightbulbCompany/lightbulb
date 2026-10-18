@@ -29,6 +29,9 @@ import { SubIssuesSection } from "./SubIssuesSection";
 import { IssueApprovalsSection } from "./IssueApprovalsSection";
 import { IssueRunLedger } from "./IssueRunLedger";
 import { ExecutionBlockerNotice } from "./ExecutionBlockerNotice";
+import { IssueBlockedNotice } from "./IssueBlockedNotice";
+import { collectLiveIssueIds } from "./lib/liveIssueIds";
+import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { IssueTreeControlSection } from "./IssueTreeControlSection";
 import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { IssueWorkProductsSection } from "./IssueWorkProductsSection";
@@ -162,6 +165,7 @@ function IssueDetailView({ issueId, routeId }: { issueId: string; routeId: strin
   const { read, post, put, del, mutate } = useTeamsApi();
   const recovery = read<IssueRecoveryActionsResponse>(`/issues/${issueId}/recovery-actions`);
   const recoveryAction = recovery.data?.active ?? null;
+  const { runs: liveRuns } = useLiveRuns();
   // Upstream reads the continuation handoff as its own system document (the
   // documents list hides system keys); a 404 just means there is no handoff.
   const { data: continuationHandoff } = read<IssueDocument>(
@@ -377,6 +381,30 @@ function IssueDetailView({ issueId, routeId }: { issueId: string; routeId: strin
           {issue.executionBlocker ? (
             <ExecutionBlockerNotice issueId={issue.id} blocker={issue.executionBlocker} />
           ) : null}
+          {/* Upstream IssueChatThread's mount: unresolved = blockedBy minus done/cancelled,
+              and the handoff alarm yields to an active recovery action. */}
+          <IssueBlockedNotice
+            issueId={issue.id}
+            issueStatus={issue.status}
+            blockers={(issue.blockedBy ?? []).filter(
+              (b) => b.status !== "done" && b.status !== "cancelled",
+            )}
+            allBlockers={issue.blockedBy ?? []}
+            liveIssueIds={collectLiveIssueIds(liveRuns, [
+              issue,
+              ...(issue.blockedBy ?? []).flatMap((b) => [b, ...(b.terminalBlockers ?? [])]),
+            ])}
+            blockerAttention={typeof issue.blockerAttention === "object" ? issue.blockerAttention : null}
+            successfulRunHandoff={
+              (recoveryAction ?? issue.activeRecoveryAction) ? null : (issue.successfulRunHandoff ?? null)
+            }
+            scheduledRetry={issue.scheduledRetry ?? null}
+            agentName={
+              issue.successfulRunHandoff?.assigneeAgentId
+                ? (agentMap.get(issue.successfulRunHandoff.assigneeAgentId)?.name ?? null)
+                : null
+            }
+          />
         </div>
         <IssueDescription
           description={issue.description ?? ""}

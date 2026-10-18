@@ -1,17 +1,24 @@
 // apps/frontend/src/components/teams/issues/lib/recovery.ts
 
-// Ported from upstream Paperclip @ v2026.916.1-isol8.2 (MIT, (c) 2025 Paperclip AI):
-//   - ui/src/lib/recovery-lineage.ts        (verbatim)
-//   - ui/src/lib/recovery-display.ts        (deriveRecoveryDisplayState only — the
-//                                            blocker-chip tone table is not ported)
+// Ported from upstream Paperclip @ v2026.1012.0-isol8.4 (MIT, (c) 2025 Paperclip AI):
+//   - ui/src/lib/recovery-lineage.ts        (verbatim, incl. the native_run lane)
+//   - ui/src/lib/recovery-display.ts        (deriveRecoveryDisplayState,
+//                                           deriveActiveRecoveryDisplayState,
+//                                           ActiveRecoveryDisplayState,
+//                                           RECOVERY_CHIP_DEFAULT_TONE, recoveryChipLabel)
 //   - packages/shared/src/types/execution-projection.ts
 //                                           (requiresExecutionReconciliation)
-// Collapsed into one module because IssueRecoveryActionCard is their only consumer here.
+//   - packages/shared/src/workspace-restore.ts
+//                                           (isNativeWorkspaceExportRepairCause)
+// The chip palette's amber/sky/red is mapped onto the brand state tokens warn/info/err.
+// Collapsed into one module: IssueRecoveryActionCard and IssueBlockedNotice consume it.
 
 import type {
   IssueRecoveryAction,
+  IssueRecoveryActionKind,
   IssueScheduledRetry,
 } from "@/components/teams/shared/types";
+import { Eye, OctagonAlert, RefreshCw, TriangleAlert } from "lucide-react";
 import { formatMonitorOffset } from "./issue-monitor";
 
 // --- packages/shared/src/types/execution-projection.ts -----------------------
@@ -43,6 +50,13 @@ export function requiresExecutionReconciliation(
   return EXECUTION_RECONCILIATION_CAUSES.some((value) => value === cause);
 }
 
+// --- packages/shared/src/workspace-restore.ts --------------------------------
+
+/** These failures preserve an accepted native result for board-owned export repair. */
+export function isNativeWorkspaceExportRepairCause(value: unknown): boolean {
+  return value === "native_workspace_sync_out_retry_exhausted";
+}
+
 // --- ui/src/lib/recovery-lineage.ts ------------------------------------------
 
 /**
@@ -54,7 +68,7 @@ export function requiresExecutionReconciliation(
  * therefore the canonical lane signal — every surface reads the same stored value rather
  * than re-deriving liveness on its own.
  */
-export type RecoveryRetryLane = "source_owner" | "recovery_owner" | "board";
+export type RecoveryRetryLane = "source_owner" | "recovery_owner" | "native_run" | "board";
 
 export interface RecoveryRetryLineage {
   lane: RecoveryRetryLane;
@@ -99,6 +113,7 @@ export interface RecoveryRetryLineage {
 const SOURCE_LANE_POLICY = "bounded_owner_disposition_repair";
 const RECOVERY_LANE_POLICY = "bounded_recovery_owner";
 const BOARD_LANE_POLICY = "board_escalation";
+const NATIVE_RESUME_POLICY = "resume_native_run";
 
 /** Scheduled-run states that mean the parked attempt is actually in flight right now. */
 const LIVE_SCHEDULED_RUN_STATUSES = new Set(["queued", "running"]);
@@ -114,7 +129,7 @@ const LIVE_SCHEDULED_RUN_STATUSES = new Set(["queued", "running"]);
 const RETRY_EXPIRY_GRACE_MS = 30_000;
 
 export type RecoveryLineageInput = Pick<IssueRecoveryAction, "wakePolicy"> &
-  Partial<Pick<IssueRecoveryAction, "evidence" | "attemptCount" | "maxAttempts" | "timeoutAt">>;
+  Partial<Pick<IssueRecoveryAction, "evidence" | "attemptCount" | "maxAttempts" | "timeoutAt" | "nativeRunActivity">>;
 
 /**
  * The source issue's scheduled-retry record, which is what lets a surface tell a run that is
@@ -187,13 +202,15 @@ export function readRecoveryRetryLineage(
   const policy = asRecord(action.wakePolicy);
   if (!policy) return null;
   const type = asNonEmptyString(policy.type);
+  const nativeResume = policy.kind === NATIVE_RESUME_POLICY;
   const preservesSourceAssignee = policy.preservesSourceAssignee === true;
   const evidence = asRecord(action.evidence) ?? {};
   const evidenceSourceAttempt = asCount(evidence.sourceAttemptCount);
   const evidenceSourceMaxAttempts = asCount(evidence.sourceMaxAttempts);
 
   let lane: RecoveryRetryLane;
-  if (type === SOURCE_LANE_POLICY) lane = "source_owner";
+  if (nativeResume) lane = "native_run";
+  else if (type === SOURCE_LANE_POLICY) lane = "source_owner";
   else if (type === RECOVERY_LANE_POLICY) lane = "recovery_owner";
   else if (
     type === BOARD_LANE_POLICY &&
@@ -204,11 +221,18 @@ export function readRecoveryRetryLineage(
 
   const attempt = asCount(policy.attempt) ?? asCount(action.attemptCount) ?? 0;
   const maxAttempts = asCount(policy.maxAttempts) ?? asCount(action.maxAttempts);
-  const scheduledRunId = asNonEmptyString(policy.scheduledRunId);
-  const storedRetryAt = asIsoDate(policy.retryAt) ?? asIsoDate(action.timeoutAt);
+  const scheduledRunId = asNonEmptyString(nativeResume ? policy.runId : policy.scheduledRunId);
+  // Native recovery resumes an existing run; its scheduling fields
+  // differ from an agent wake. A retry without that run identity is not a path.
+  if (nativeResume && scheduledRunId === null) return null;
+  const storedRetryAt = nativeResume
+    ? asIsoDate(policy.notBefore)
+    : asIsoDate(policy.retryAt) ?? asIsoDate(action.timeoutAt);
   const exhausted = lane === "board" || (maxAttempts !== null && attempt >= maxAttempts);
   const nextRetryAt = exhausted ? null : storedRetryAt;
-  const liveRunId = resolveLiveRunId(scheduledRunId, context?.scheduledRetry);
+  const liveRunId = nativeResume
+    ? resolveLiveRunId(scheduledRunId, action.nativeRunActivity)
+    : resolveLiveRunId(scheduledRunId, context?.scheduledRetry);
   // A run that is already executing is the reason its due time is behind us, so a confirmed
   // live run is never "missed" — it is the attempt happening.
   const retryExpired =
@@ -228,11 +252,12 @@ export function readRecoveryRetryLineage(
     scheduledRunId,
     liveRunId,
     retryAgentId: asNonEmptyString(policy.retryAgentId) ?? asNonEmptyString(policy.ownerAgentId),
-    preservesSourceAssignee: preservesSourceAssignee || lane === "source_owner",
-    sourceAttempt: lane === "source_owner" ? attempt : evidenceSourceAttempt,
-    sourceMaxAttempts: lane === "source_owner" ? maxAttempts : evidenceSourceMaxAttempts,
+    preservesSourceAssignee: preservesSourceAssignee || lane === "source_owner" || nativeResume,
+    sourceAttempt: nativeResume ? null : lane === "source_owner" ? attempt : evidenceSourceAttempt,
+    sourceMaxAttempts: nativeResume ? null : lane === "source_owner" ? maxAttempts : evidenceSourceMaxAttempts,
     hasDurablePath:
-      !exhausted && (liveRunId !== null || (nextRetryAt !== null && !retryExpired)),
+      (nativeResume && liveRunId !== null) ||
+      (!exhausted && (liveRunId !== null || (nextRetryAt !== null && !retryExpired))),
   };
 }
 
@@ -284,6 +309,34 @@ export type RecoveryDisplayState =
   | "escalated"
   | "resolved";
 
+export type ActiveRecoveryDisplayState = Exclude<RecoveryDisplayState, "resolved">;
+
+export const RECOVERY_CHIP_DEFAULT_TONE: Record<
+  ActiveRecoveryDisplayState,
+  { className: string; icon: typeof TriangleAlert; label: string }
+> = {
+  needed: {
+    className: "border-warn/60 bg-warn/15 text-warn",
+    icon: TriangleAlert,
+    label: "Recovery needed",
+  },
+  in_progress: {
+    className: "border-info/60 bg-info/15 text-info",
+    icon: RefreshCw,
+    label: "Recovery in progress",
+  },
+  observe_only: {
+    className: "border-border bg-muted text-muted-foreground",
+    icon: Eye,
+    label: "Observing active run",
+  },
+  escalated: {
+    className: "border-err/60 bg-err/15 text-err",
+    icon: OctagonAlert,
+    label: "Recovery escalated",
+  },
+};
+
 /**
  * Every surface derives its recovery tone from this one function, so a source issue and
  * the parent views that list it as a blocker never disagree about whether recovery is
@@ -296,12 +349,14 @@ export type RecoveryDisplayInput = Pick<
   Partial<
     Pick<
       IssueRecoveryAction,
+      | "cause"
       | "ownerType"
       | "wakePolicy"
       | "evidence"
       | "attemptCount"
       | "maxAttempts"
       | "timeoutAt"
+      | "nativeRunActivity"
     >
   >;
 
@@ -310,13 +365,7 @@ export function deriveRecoveryDisplayState(
   context?: RecoveryLivenessContext,
 ): RecoveryDisplayState {
   if (action.status === "resolved") return "resolved";
-  if (action.status === "escalated") return "escalated";
   if (action.status === "cancelled") return "resolved";
-  if (action.kind === "active_run_watchdog") {
-    // Native terminal failures also use this kind. Board ownership means a
-    // human must choose recovery; it is not evidence of a still-running turn.
-    return action.ownerType === "board" ? "needed" : "observe_only";
-  }
   // A bounded retry lineage still holding a durable path is work the server will do on its
   // own. Shouting "recovery needed" over it would ask a human to fix something nobody has to
   // fix yet, so the calm tone is reserved for a lane with an attempt genuinely still coming.
@@ -328,9 +377,51 @@ export function deriveRecoveryDisplayState(
     attemptCount: action.attemptCount,
     maxAttempts: action.maxAttempts,
     timeoutAt: action.timeoutAt,
+    nativeRunActivity: action.nativeRunActivity,
   }, context);
+  // An explicit board retry may retain its old owner/budget while the exact
+  // native run is already making progress. Actual activity wins over that
+  // historical repair state, but a merely scheduled board retry does not.
+  if (lineage?.lane === "native_run" && lineage.liveRunId) return "in_progress";
+  if (action.status === "escalated") return "escalated";
+  if (action.kind === "active_run_watchdog") {
+    // Native finalization shares the watchdog kind, but resumes a failed
+    // coordinator rather than observing a live agent turn. Preserve board
+    // ownership and only describe recovery as active while its retry is live.
+    if (action.ownerType === "board") return "needed";
+    if (lineage) return lineage.hasDurablePath ? "in_progress" : "needed";
+    if (action.cause?.startsWith("native_")) return "needed";
+    return "observe_only";
+  }
   if (lineage && lineage.lane !== "board" && lineage.hasDurablePath) return "in_progress";
   if (action.outcome === "delegated") return "in_progress";
   return "needed";
 }
 
+export function deriveActiveRecoveryDisplayState(
+  action: RecoveryDisplayInput,
+  context?: RecoveryLivenessContext,
+): ActiveRecoveryDisplayState | null {
+  if (action.cause === "native_workspace_sync_out_unsafe_archive") return null;
+  const state = deriveRecoveryDisplayState(action, context);
+  return state === "resolved" ? null : state;
+}
+
+export function recoveryChipLabel(
+  state: ActiveRecoveryDisplayState,
+  kind: IssueRecoveryActionKind,
+  lineage?: RecoveryRetryLineage | null,
+): string {
+  if (kind === "workspace_validation" && state === "needed") {
+    return "Workspace recovery needed";
+  }
+  if (
+    state === "in_progress" &&
+    lineage &&
+    lineage.maxAttempts !== null &&
+    lineage.attempt > 0
+  ) {
+    return `Recovery in progress · ${Math.min(lineage.attempt, lineage.maxAttempts)}/${lineage.maxAttempts}`;
+  }
+  return RECOVERY_CHIP_DEFAULT_TONE[state].label;
+}

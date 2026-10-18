@@ -47,11 +47,12 @@ import asyncio
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 
 from . import agents as _agents
 from .deps import TeamsContext
 from .interactions import _enrich_interaction_actors
+from .schemas import INBOX_ITEM_KEY_PATTERN, InboxDismissalBody
 
 router = APIRouter()
 _ctx = _agents._ctx
@@ -214,6 +215,11 @@ async def list_attention(
     sort: Optional[str] = Query(default=None),
     cursor: Optional[str] = Query(default=None),
     include_dismissed: bool = Query(default=False, alias="includeDismissed"),
+    # ``all`` returns the whole desk unpaginated; ``activitySince``/``Until``
+    # bound it by activity time.
+    all_items: bool = Query(default=False, alias="all"),
+    activity_since: Optional[str] = Query(default=None, alias="activitySince", max_length=64),
+    activity_until: Optional[str] = Query(default=None, alias="activityUntil", max_length=64),
 ):
     """The unified list of decisions waiting on this human.
 
@@ -234,6 +240,10 @@ async def list_attention(
             detail=f"sort must be one of {', '.join(_SORT_MODES)}",
         )
 
+    if all_items and (limit is not None or cursor is not None):
+        # Upstream 400s this combination; answer locally so its error body never surfaces.
+        raise HTTPException(status_code=422, detail="all cannot be combined with cursor or limit")
+
     params: dict[str, Any] = {}
     if limit is not None:
         params["limit"] = str(limit)
@@ -243,6 +253,12 @@ async def list_attention(
         params["cursor"] = cursor
     if include_dismissed:
         params["includeDismissed"] = "true"
+    if all_items:
+        params["all"] = "true"
+    if activity_since is not None:
+        params["activitySince"] = activity_since
+    if activity_until is not None:
+        params["activityUntil"] = activity_until
 
     feed = await _agents._admin().list_attention(
         company_id=ctx.company_id,
@@ -269,3 +285,37 @@ async def list_attention(
             logger.exception("attention: interaction hydration failed; serving feed raw")
 
     return feed
+
+
+# Per-user dismiss / snooze state behind the desk. Same SECURITY rule as the
+# feed (module docstring): the caller's own session cookie, never an admin one.
+
+
+@router.get("/inbox-dismissals")
+async def list_inbox_dismissals(ctx: TeamsContext = Depends(_ctx)):
+    return await _agents._admin().list_inbox_dismissals(
+        company_id=ctx.company_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/inbox-dismissals", status_code=201)
+async def create_inbox_dismissal(body: InboxDismissalBody, ctx: TeamsContext = Depends(_ctx)):
+    return await _agents._admin().create_inbox_dismissal(
+        company_id=ctx.company_id,
+        body=body.model_dump(by_alias=True, exclude_none=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.delete("/inbox-dismissals/{item_key:path}", status_code=204)
+async def delete_inbox_dismissal(
+    item_key: str = Path(pattern=INBOX_ITEM_KEY_PATTERN, max_length=500),
+    ctx: TeamsContext = Depends(_ctx),
+):
+    await _agents._admin().delete_inbox_dismissal(
+        company_id=ctx.company_id,
+        item_key=item_key,
+        session_cookie=ctx.session_cookie,
+    )
+    return Response(status_code=204)

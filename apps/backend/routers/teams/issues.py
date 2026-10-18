@@ -95,6 +95,12 @@ async def list_issues(
     sort_dir: Optional[str] = Query(default=None, alias="sortDir", pattern=r"^(asc|desc)$"),
     limit: Optional[int] = Query(default=None, ge=1, le=500),
     exclude_routine_executions: bool = Query(default=False, alias="excludeRoutineExecutions"),
+    # The Blocked board view. Upstream rejects any other ``attention`` value
+    # with a 400, so pin it here as a local 422.
+    attention: Optional[str] = Query(default=None, pattern=r"^blocked$"),
+    include_blocked_inbox_attention: bool = Query(default=False, alias="includeBlockedInboxAttention"),
+    include_blocked_by: bool = Query(default=False, alias="includeBlockedBy"),
+    include_live_descendant_summary: bool = Query(default=False, alias="includeLiveDescendantSummary"),
 ):
     """List issues in the caller's company.
 
@@ -136,6 +142,14 @@ async def list_issues(
     if exclude_routine_executions:
         # Upstream reads this as the literal string "true" / "1".
         upstream_params["excludeRoutineExecutions"] = "true"
+    if attention is not None:
+        upstream_params["attention"] = attention
+    if include_blocked_inbox_attention:
+        upstream_params["includeBlockedInboxAttention"] = "true"
+    if include_blocked_by:
+        upstream_params["includeBlockedBy"] = "true"
+    if include_live_descendant_summary:
+        upstream_params["includeLiveDescendantSummary"] = "true"
 
     kwargs: dict[str, Any] = {
         "company_id": ctx.company_id,

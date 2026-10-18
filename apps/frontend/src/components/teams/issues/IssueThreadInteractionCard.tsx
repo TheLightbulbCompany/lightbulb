@@ -8,7 +8,7 @@
 // request_item_verdicts shows only its prompt + progress (the task chat owns it).
 //
 // Re-theme notes vs upstream:
-//   - MarkdownBody          -> MarkdownView (shared editorial renderer)
+//   - MarkdownBody          -> TaskMarkdown (shared editorial renderer + issue links)
 //   - shadcn Button         -> EditorialButton (default/cta -> primary,
 //                              outline -> secondary, ghost -> ghost)
 //   - Tooltip on the header dropped; created-by / date render bare
@@ -19,6 +19,11 @@
 //   - Link -> next/link via createIssueDetailPath for created-task links;
 //     confirmation-target chips that point at in-issue document anchors (no
 //     Teams route) render as bare spans rather than dead links.
+//   - the resolver-audience line (InteractionAudienceLine under the summary
+//     while pending) is mounted as upstream's
+//     IssueThreadInteractionCard.tsx @ v2026.1012.0-isol8.4; the addressee
+//     resolves through agentMap, and a user addressee falls back to "the
+//     addressed user" (no user-label map here)
 
 "use client";
 
@@ -39,11 +44,13 @@ import { cn } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { EditorialButton } from "@/components/teams/shell";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { TaskMarkdown } from "@/components/teams/shared/components/TaskMarkdown";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { formatAssigneeUserLabel } from "@/components/teams/shared/lib/assignees";
 import { createIssueDetailPath } from "@/components/teams/shared/lib/issueDetailBreadcrumb";
 import { handleShellLinkClick } from "@/lib/shellNav";
+import { InteractionAudienceLine } from "./InteractionAudienceLine";
+import { describeInteractionAudience } from "./lib/interaction-audience";
 import {
   buildIssueThreadInteractionSummary,
   buildSuggestedTaskTree,
@@ -1048,7 +1055,7 @@ function AskUserQuestionsCard({
               <div className="mb-2 label-caps text-ok">
                 Submitted summary
               </div>
-              <MarkdownView>{interaction.result.summaryMarkdown}</MarkdownView>
+              <TaskMarkdown body={interaction.result.summaryMarkdown} />
             </div>
           ) : null}
         </div>
@@ -1318,7 +1325,7 @@ function RequestConfirmationCard({
           </div>
           {interaction.payload.detailsMarkdown ? (
             <div className="border-t border-[var(--edge)] pt-3 text-ui">
-              <MarkdownView>{interaction.payload.detailsMarkdown}</MarkdownView>
+              <TaskMarkdown body={interaction.payload.detailsMarkdown} />
             </div>
           ) : null}
           <RequestConfirmationTargetChip
@@ -1706,7 +1713,7 @@ function RequestCheckboxConfirmationCard({
         <div className="text-ui leading-6 text-[var(--midnight)]">{interaction.payload.prompt}</div>
         {interaction.payload.detailsMarkdown ? (
           <div className="border-t border-[var(--edge)] pt-3 text-ui">
-            <MarkdownView>{interaction.payload.detailsMarkdown}</MarkdownView>
+            <TaskMarkdown body={interaction.payload.detailsMarkdown} />
           </div>
         ) : null}
         <RequestConfirmationTargetChip
@@ -1892,6 +1899,16 @@ export function IssueThreadInteractionCard({
           currentUserId,
         })
       : null;
+  const addresseeLabel = interaction.addresseeAgentId
+    ? resolveActorLabel({ agentId: interaction.addresseeAgentId, agentMap, currentUserId })
+    : formatAssigneeUserLabel(interaction.addresseeUserId, currentUserId, null);
+  // The effective audience, shown before anyone responds, derived from the same
+  // server snapshot the resolver routes enforce.
+  const audience = describeInteractionAudience({
+    interaction,
+    creatorLabel: createdByLabel,
+    addresseeLabel,
+  });
 
   return (
     <div className={cn("rounded-sm border p-5 shadow-none", styles.shell)}>
@@ -1931,6 +1948,9 @@ export function IssueThreadInteractionCard({
             <p className="mt-2 max-w-3xl text-ui leading-6 text-[var(--midnight-muted)]">
               {interaction.summary}
             </p>
+          ) : null}
+          {interaction.status === "pending" && audience ? (
+            <InteractionAudienceLine audience={audience} className="mt-3" />
           ) : null}
         </div>
 

@@ -91,6 +91,7 @@ from __future__ import annotations
 import json as json_lib
 import logging
 from typing import Any, Awaitable, Callable, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -1233,6 +1234,31 @@ class PaperclipAdminClient:
         )
 
     # ------------------------------------------------------------------
+    # Inbox dismissals (per-user: always the caller's own session cookie)
+    # ------------------------------------------------------------------
+
+    async def list_inbox_dismissals(self, *, company_id: str, session_cookie: str) -> list | dict:
+        """``GET /api/companies/{companyId}/inbox-dismissals`` — the caller's dismiss/snooze rows."""
+        return await self._get(f"/api/companies/{company_id}/inbox-dismissals", session_cookie=session_cookie)
+
+    async def create_inbox_dismissal(self, *, company_id: str, body: dict, session_cookie: str) -> dict:
+        """``POST /api/companies/{companyId}/inbox-dismissals`` with ``{itemKey, kind?, snoozedUntil?}``."""
+        return await self._post(
+            f"/api/companies/{company_id}/inbox-dismissals", json=body, session_cookie=session_cookie
+        )
+
+    async def delete_inbox_dismissal(self, *, company_id: str, item_key: str, session_cookie: str) -> dict:
+        """``DELETE /api/companies/{companyId}/inbox-dismissals/{itemKey}`` — restore an item.
+
+        The key is percent-encoded whole (``safe=""``) so a ``/`` or ``?`` in it
+        cannot rewrite the upstream path.
+        """
+        return await self._delete(
+            f"/api/companies/{company_id}/inbox-dismissals/{quote(item_key, safe='')}",
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
     # Approvals
     # ------------------------------------------------------------------
 
@@ -2074,7 +2100,7 @@ class PaperclipAdminClient:
         Paperclip flow that flips an issue's ``inbox_archived_at`` column.
         (Upstream's separate inbox-dismissals concept lives at
         ``POST /api/companies/{id}/inbox-dismissals``, keyed by ``itemKey``;
-        nothing on our side calls it.)
+        see ``create_inbox_dismissal``.)
         """
         return await self._post(
             f"/api/issues/{issue_id}/inbox-archive",

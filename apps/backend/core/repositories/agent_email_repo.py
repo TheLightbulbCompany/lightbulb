@@ -14,7 +14,7 @@ Prefix-convention table (``core.dynamodb.get_table``), matching
 import logging
 from typing import Literal
 
-from boto3.dynamodb.conditions import Attr, Key
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from core.config import settings
@@ -26,6 +26,17 @@ logger = logging.getLogger(__name__)
 
 def _get_table():
     return get_table("agent-email-addresses")
+
+
+async def _conditional(fn, **kwargs) -> bool:
+    """One conditional write: False when its condition failed, any other error raises."""
+    try:
+        await run_in_thread(fn, **kwargs)
+        return True
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
 
 
 def normalize(value: str) -> str:
@@ -60,13 +71,8 @@ async def put(
     }
     if outbound_disabled:
         item["outbound_disabled"] = outbound_disabled
-    try:
-        await run_in_thread(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
-        return item
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return None
-        raise
+    created = await _conditional(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
+    return item if created else None
 
 
 async def get_by_address(address: str) -> dict | None:
@@ -199,8 +205,8 @@ async def put_text_line(
     number: str,
     owner_id: str,
     agent_id: str,
-    photon_resource_id: str | None = None,
-    photon_user_id: str | None = None,
+    photon_resource_id: str,
+    photon_user_id: str,
 ) -> dict | None:
     """Create the workspace's texting-line row, keyed by its E.164 number. A CREATE, never an
     overwrite; None when the number already has a row."""
@@ -211,20 +217,14 @@ async def put_text_line(
         "kind": "text",
         "status": "active",
         "created_at": utc_now_iso(),
+        "photon_resource_id": photon_resource_id,
+        "photon_user_id": photon_user_id,
         "human_threads": {},
         "member_phones": {},
+        "disclosed": {},
     }
-    if photon_resource_id:
-        item["photon_resource_id"] = photon_resource_id
-    if photon_user_id:
-        item["photon_user_id"] = photon_user_id
-    try:
-        await run_in_thread(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
-        return item
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return None
-        raise
+    created = await _conditional(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
+    return item if created else None
 
 
 async def put_pending_line(*, owner_id: str, agent_id: str, operation_id: str) -> bool:
@@ -237,13 +237,7 @@ async def put_pending_line(*, owner_id: str, agent_id: str, operation_id: str) -
         "operation_id": operation_id,
         "created_at": utc_now_iso(),
     }
-    try:
-        await run_in_thread(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
-        return True
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return False
-        raise
+    return await _conditional(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
 
 
 async def pending_line_for_owner(owner_id: str) -> dict | None:
@@ -254,48 +248,26 @@ async def pending_line_for_owner(owner_id: str) -> dict | None:
 async def delete_pending_line(owner_id: str, *, operation_id: str) -> bool:
     """True when this call removed the row; False when it was already gone or now names another operation
     (another reader won, or a newer request replaced it)."""
-    try:
-        await run_in_thread(
-            _get_table().delete_item,
-            Key={"address": f"pending:{owner_id}"},
-            ConditionExpression="kind = :pending AND operation_id = :op",
-            ExpressionAttributeValues={":pending": "text_pending", ":op": operation_id},
-        )
-        return True
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return False
-        raise
+    return await _conditional(
+        _get_table().delete_item,
+        Key={"address": f"pending:{owner_id}"},
+        ConditionExpression="kind = :pending AND operation_id = :op",
+        ExpressionAttributeValues={":pending": "text_pending", ":op": operation_id},
+    )
 
 
 async def delete_text_line(number: str) -> None:
     """Delete a texting-line row; the condition means it can never delete a mail address row."""
-    try:
-        await run_in_thread(
-            _get_table().delete_item,
-            Key={"address": number},
-            ConditionExpression="kind = :text",
-            ExpressionAttributeValues={":text": "text"},
-        )
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-            raise
+    await _conditional(
+        _get_table().delete_item,
+        Key={"address": number},
+        ConditionExpression="kind = :text",
+        ExpressionAttributeValues={":text": "text"},
+    )
 
 
 async def text_line_for_owner(owner_id: str) -> dict | None:
     return next((r for r in await query_by_owner(owner_id) if r.get("kind") == "text"), None)
-
-
-async def text_line_by_photon_user(user_id: str) -> dict | None:
-    # ponytail: rare path (receivedBy.handle missing); a GSI if it is ever hot
-    kwargs: dict = {"FilterExpression": Attr("photon_user_id").eq(user_id) & Attr("kind").eq("text")}
-    while True:
-        resp = await run_in_thread(_get_table().scan, **kwargs)
-        if resp.get("Items"):
-            return resp["Items"][0]
-        if not resp.get("LastEvaluatedKey"):
-            return None
-        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
 
 async def set_business_phone(number: str, phone: str) -> None:
@@ -322,6 +294,19 @@ async def set_thread_mode(number: str, customer: str, mode: Literal["human", "ag
     else:
         kwargs["UpdateExpression"] = "REMOVE human_threads.#c"
     await run_in_thread(_get_table().update_item, **kwargs)
+
+
+async def set_disclosed(number: str, customer: str) -> None:
+    """Record that ``customer`` has been told the line is an automated assistant (the first reply).
+    The first time stands: a later call never moves it."""
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"address": number},
+        UpdateExpression="SET disclosed.#c = if_not_exists(disclosed.#c, :iso)",
+        ConditionExpression="attribute_exists(address)",
+        ExpressionAttributeNames={"#c": customer},
+        ExpressionAttributeValues={":iso": utc_now_iso()},
+    )
 
 
 async def set_member_phone(number: str, phone: str, user_id: str | None) -> None:

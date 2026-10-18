@@ -218,21 +218,6 @@ async def test_put_sent_writes_channel(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_has_sent_to_true_on_first_out_row_to_that_number(monkeypatch):
-    table = MagicMock()
-    table.query.side_effect = [
-        {"Items": [], "LastEvaluatedKey": {"k": 1}},
-        {"Items": [{"direction": "out", "to": "+15551230000"}]},
-    ]
-    monkeypatch.setattr(repo, "_get_table", lambda: table)
-    assert await repo.has_sent_to("A@B.c", "+15551230000") is True
-    assert table.query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"k": 1}
-
-    table.query.side_effect = [{"Items": []}]
-    assert await repo.has_sent_to("a@b.c", "+15559999999") is False
-
-
-@pytest.mark.asyncio
 async def test_has_received_from_matches_inbound_rows_from_that_sender(monkeypatch):
     table = MagicMock()
     table.query.side_effect = [
@@ -250,17 +235,6 @@ async def test_has_received_from_matches_inbound_rows_from_that_sender(monkeypat
 
     table.query.side_effect = [{"Items": []}]
     assert await repo.has_received_from("a@b.c", "+15559999999") is False
-
-
-@pytest.mark.asyncio
-async def test_disclosure_ignores_rows_without_the_prefix(monkeypatch):
-    table = MagicMock()
-    table.query.return_value = {"Items": []}
-    monkeypatch.setattr(repo, "_get_table", lambda: table)
-    await repo.has_sent_to("a@b.c", "+1555", text_prefix="(Automated")
-    assert "BeginsWith" in str(table.query.call_args.kwargs["FilterExpression"].get_expression())
-    await repo.has_sent_to("a@b.c", "+1555")
-    assert "BeginsWith" not in str(table.query.call_args.kwargs["FilterExpression"].get_expression())
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ from core.services import text_lines
 from core.repositories import billing_repo
 from core.repositories.agent_email_repo import (
     set_business_phone,
+    set_disclosed,
     set_member_phone,
     set_thread_mode,
     text_line_for_owner,
@@ -29,7 +30,6 @@ from core.repositories.agent_email_repo import (
 from core.repositories.agent_mail_inbox_repo import (
     get_message,
     has_received_from,
-    has_sent_to,
     parse_reply_key,
     put_sent,
 )
@@ -42,8 +42,25 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-DISCLOSURE_PREFIX = "(Automated assistant for"
-DISCLOSURE = DISCLOSURE_PREFIX + " {business})"
+DISCLOSURE = "(Automated assistant for {business})"
+
+
+def _valid_phone(phone: str) -> bool:
+    return bool(re.fullmatch(r"\+[1-9]\d{6,14}", phone))
+
+
+async def _line_or_404(owner_id: str) -> dict:
+    line = await text_line_for_owner(owner_id)
+    if not line:
+        raise HTTPException(status_code=404, detail="no_line")
+    return line
+
+
+async def _drop_phones(line: dict, user_id: str, keep: str | None = None) -> None:
+    """Remove every phone ``user_id`` holds on the line except ``keep``."""
+    for phone, uid in (line.get("member_phones") or {}).items():
+        if uid == user_id and phone != keep:
+            await set_member_phone(line["address"], phone, None)
 
 
 async def _text_row(owner_id: str, key: str) -> tuple[str, dict] | None:
@@ -73,11 +90,13 @@ async def send_reply(*, owner_id: str, reply_key: str, text: str, by_human: bool
     customer = row["from_addr"]
     if not by_human and customer in (line.get("human_threads") or {}):
         return "human_thread"
-    if (
+    # The agent's first reply to a customer says it is automated; the line row records that it did.
+    disclose = (
         not by_human
         and customer not in (line.get("member_phones") or {})
-        and not await has_sent_to(address, customer, text_prefix=DISCLOSURE_PREFIX)
-    ):
+        and customer not in (line.get("disclosed") or {})
+    )
+    if disclose:
         text = f"{DISCLOSURE.format(business=await business_name(owner_id))} {text}"
     try:
         resp = await photon.send_text(
@@ -90,6 +109,11 @@ async def send_reply(*, owner_id: str, reply_key: str, text: str, by_human: bool
         put_metric("text.send", dimensions={"result": "failed"})
         return "send_failed"
     put_metric("text.send", dimensions={"result": "sent"})
+    if disclose:
+        try:
+            await set_disclosed(line["address"], customer)
+        except Exception:  # noqa: BLE001 -- the text has gone; a missed mark only repeats the disclosure
+            logger.warning("Could not record the disclosure to %s on line %s", customer, line["address"], exc_info=True)
     await put_sent(
         address=address,
         message_id=resp.get("id") or f"photon-reply:{uuid.uuid4().hex}",
@@ -125,11 +149,9 @@ async def hook_send(owner_id: str, body: AgentSend, request: Request) -> dict:
 @router.post("/u/{owner_id}/business-phone")
 async def hook_business_phone(owner_id: str, body: BusinessPhone, request: Request):
     await _require_hook_token(owner_id, request)
-    if not re.fullmatch(r"\+[1-9]\d{6,14}", body.phone):
+    if not _valid_phone(body.phone):
         return JSONResponse(status_code=400, content={"status": "bad_phone"})
-    line = await text_line_for_owner(owner_id)
-    if not line:
-        raise HTTPException(status_code=404, detail="no_line")
+    line = await _line_or_404(owner_id)
     await set_business_phone(line["address"], body.phone)
     return {"status": "ok"}
 
@@ -186,14 +208,11 @@ async def get_line(auth: AuthContext = Depends(get_current_user)) -> dict:
 
 @router.put("/me/phone")
 async def put_my_phone(body: BusinessPhone, auth: AuthContext = Depends(get_current_user)):
-    if not re.fullmatch(r"\+[1-9]\d{6,14}", body.phone):
+    if not _valid_phone(body.phone):
         return JSONResponse(status_code=400, content={"status": "bad_phone"})
     owner_id = resolve_owner_id(auth)
-    line = await text_line_for_owner(owner_id)
-    if not line:
-        raise HTTPException(status_code=404, detail="no_line")
-    phones = line.get("member_phones") or {}
-    if phones.get(body.phone) != auth.user_id:
+    line = await _line_or_404(owner_id)
+    if (line.get("member_phones") or {}).get(body.phone) != auth.user_id:
         # A phone that has texted the line as a customer stays a customer: registering it would route
         # that customer's thread into the main room.
         address = await team_address(owner_id)
@@ -206,20 +225,13 @@ async def put_my_phone(body: BusinessPhone, auth: AuthContext = Depends(get_curr
             return JSONResponse(status_code=409, content={"status": "phone_taken"})
         raise
     # One phone per member: drop any earlier one once the new one is saved.
-    for old, uid in phones.items():
-        if uid == auth.user_id and old != body.phone:
-            await set_member_phone(line["address"], old, None)
+    await _drop_phones(line, auth.user_id, keep=body.phone)
     return {"status": "ok"}
 
 
 @router.delete("/me/phone")
 async def delete_my_phone(auth: AuthContext = Depends(get_current_user)) -> dict:
-    line = await text_line_for_owner(resolve_owner_id(auth))
-    if not line:
-        raise HTTPException(status_code=404, detail="no_line")
-    for phone, uid in (line.get("member_phones") or {}).items():
-        if uid == auth.user_id:
-            await set_member_phone(line["address"], phone, None)
+    await _drop_phones(await _line_or_404(resolve_owner_id(auth)), auth.user_id)
     return {"status": "ok"}
 
 
@@ -235,8 +247,6 @@ async def thread(body: Thread, auth: AuthContext = Depends(get_current_user)) ->
     found = await _text_row(owner_id, body.key)
     if not found:
         raise HTTPException(status_code=404, detail="bad_reply_key")
-    line = await text_line_for_owner(owner_id)
-    if not line:
-        raise HTTPException(status_code=404, detail="no_line")
+    line = await _line_or_404(owner_id)
     await set_thread_mode(line["address"], found[1]["from_addr"], body.mode)
     return {"status": "ok"}

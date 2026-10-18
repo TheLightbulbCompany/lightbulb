@@ -47,7 +47,6 @@ def seams(monkeypatch):
         "record_event_or_skip": AsyncMock(return_value=WebhookDedupResult.RECORDED),
         "delete_event": AsyncMock(),
         "get_by_address": AsyncMock(return_value=dict(LINE_ROW)),
-        "text_line_by_photon_user": AsyncMock(return_value=None),
         "team_address": AsyncMock(return_value=TEAM),
         "find_by_message_id": AsyncMock(return_value=None),
         "put_message": AsyncMock(return_value={"received_key": "2026#m1"}),
@@ -179,11 +178,9 @@ def test_unknown_line_is_dropped(client, seams, row):
     seams["put_message"].assert_not_called()
 
 
-def test_line_found_by_user_id_when_handle_missing(client, seams):
-    seams["text_line_by_photon_user"].return_value = dict(LINE_ROW)
-    assert _post(client, _event(receivedBy={"id": LINE_USER})).json() == {"status": "delivered"}
+def test_a_receiver_without_a_handle_is_an_unknown_line(client, seams):
+    assert _post(client, _event(receivedBy={"id": LINE_USER})).json() == {"status": "dropped_unknown_line"}
     seams["get_by_address"].assert_not_called()
-    seams["text_line_by_photon_user"].assert_awaited_once_with(LINE_USER)
 
 
 def test_stored_and_delivered_with_exact_kwargs(client, seams):
@@ -327,7 +324,6 @@ def test_delivered_text_matches_the_template():
 
 
 def test_typing_skipped_without_a_line_user(client, seams):
-    seams["text_line_by_photon_user"].return_value = {k: v for k, v in LINE_ROW.items() if k != "photon_user_id"}
     seams["get_by_address"].return_value = {k: v for k, v in LINE_ROW.items() if k != "photon_user_id"}
     assert _post(client, _event(receivedBy={"handle": LINE})).json() == {"status": "delivered"}
     seams["send_typing"].assert_not_called()

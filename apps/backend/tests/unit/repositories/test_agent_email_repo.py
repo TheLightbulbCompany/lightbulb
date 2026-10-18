@@ -266,7 +266,9 @@ async def _async(value):
 async def test_put_text_line_item_and_condition(monkeypatch):
     table = MagicMock()
     monkeypatch.setattr(repo, "_get_table", lambda: table)
-    item = await repo.put_text_line(number="+15551230000", owner_id="org_1", agent_id="agent_1")
+    item = await repo.put_text_line(
+        number="+15551230000", owner_id="org_1", agent_id="agent_1", photon_resource_id="res_1", photon_user_id="usr_1"
+    )
     kwargs = table.put_item.call_args.kwargs
     assert kwargs["ConditionExpression"] == "attribute_not_exists(address)"
     assert kwargs["Item"] == item
@@ -277,8 +279,11 @@ async def test_put_text_line_item_and_condition(monkeypatch):
         "kind": "text",
         "status": "active",
         "created_at": item["created_at"],
+        "photon_resource_id": "res_1",
+        "photon_user_id": "usr_1",
         "human_threads": {},
         "member_phones": {},
+        "disclosed": {},
     }
     assert item["created_at"]
 
@@ -287,7 +292,23 @@ async def test_put_text_line_refuses_existing(monkeypatch):
     table = MagicMock()
     table.put_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
     monkeypatch.setattr(repo, "_get_table", lambda: table)
-    assert await repo.put_text_line(number="+15551230000", owner_id="o", agent_id="a") is None
+    assert (
+        await repo.put_text_line(
+            number="+15551230000", owner_id="o", agent_id="a", photon_resource_id="r", photon_user_id="u"
+        )
+        is None
+    )
+
+
+async def test_set_disclosed_records_the_first_time_only(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.set_disclosed("+1555", "+15559998888")
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"address": "+1555"}
+    assert kwargs["UpdateExpression"] == "SET disclosed.#c = if_not_exists(disclosed.#c, :iso)"
+    assert kwargs["ExpressionAttributeNames"] == {"#c": "+15559998888"}
+    assert kwargs["ConditionExpression"] == "attribute_exists(address)"
 
 
 async def test_text_line_for_owner_filters_kind(monkeypatch):
@@ -344,27 +365,6 @@ async def test_delete_text_line_swallows_a_mail_row_or_missing(monkeypatch):
         await repo.delete_text_line("+1555")
 
 
-async def test_text_line_by_photon_user_scans_with_filter(monkeypatch):
-    table = MagicMock()
-    table.scan.return_value = {"Items": [{"address": "+1555", "photon_user_id": "u1", "kind": "text"}]}
-    monkeypatch.setattr(repo, "_get_table", lambda: table)
-    assert (await repo.text_line_by_photon_user("u1"))["address"] == "+1555"
-    assert "FilterExpression" in table.scan.call_args.kwargs
-    table.scan.return_value = {"Items": []}
-    assert await repo.text_line_by_photon_user("u2") is None
-
-
-async def test_put_text_line_stores_photon_ids_only_when_given(monkeypatch):
-    table = MagicMock()
-    monkeypatch.setattr(repo, "_get_table", lambda: table)
-    item = await repo.put_text_line(
-        number="+1555", owner_id="o", agent_id="a", photon_resource_id="res_1", photon_user_id="usr_1"
-    )
-    assert item["photon_resource_id"] == "res_1" and item["photon_user_id"] == "usr_1"
-    plain = await repo.put_text_line(number="+1556", owner_id="o", agent_id="a")
-    assert "photon_resource_id" not in plain and "photon_user_id" not in plain
-
-
 async def test_put_pending_line_item_and_condition(monkeypatch):
     table = MagicMock()
     monkeypatch.setattr(repo, "_get_table", lambda: table)
@@ -398,17 +398,6 @@ async def test_pending_delete_is_fenced_on_the_operation(monkeypatch):
     # A newer request replaced the row (or another reader removed it): the condition fails, nothing is deleted.
     table.delete_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "DeleteItem")
     assert await repo.delete_pending_line("o", operation_id="op_1") is False
-
-
-async def test_text_line_by_photon_user_paginates(monkeypatch):
-    table = MagicMock()
-    table.scan.side_effect = [
-        {"Items": [], "LastEvaluatedKey": {"address": "k1"}},
-        {"Items": [{"address": "+1555", "photon_user_id": "u1", "kind": "text"}]},
-    ]
-    monkeypatch.setattr(repo, "_get_table", lambda: table)
-    assert (await repo.text_line_by_photon_user("u1"))["address"] == "+1555"
-    assert table.scan.call_args_list[1].kwargs["ExclusiveStartKey"] == {"address": "k1"}
 
 
 async def test_set_member_phone_sets_and_removes(monkeypatch):

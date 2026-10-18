@@ -5,7 +5,15 @@ import pytest
 from routers import agent_text
 
 OWNER, KEY = "org_1", "team@acme.thelightbulb.company/rk1"
-LINE = {"address": "+15551230000", "agent_id": "agent_front", "owner_id": OWNER, "kind": "text", "human_threads": {}}
+LINE = {
+    "address": "+15551230000",
+    "agent_id": "agent_front",
+    "owner_id": OWNER,
+    "kind": "text",
+    "human_threads": {},
+    "disclosed": {"+15559870000": "2026-10-17T00:00:00+00:00"},
+}
+NEW_CUSTOMER_LINE = {**LINE, "disclosed": {}}
 PROVIDER = {"space_id": "sp1", "line_user_id": "lu1", "sender_user_id": "su1", "message_id": "m0"}
 ROW = {"owner_id": OWNER, "channel": "text", "from_addr": "+15559870000", "received_key": "rk1", "provider": PROVIDER}
 
@@ -15,7 +23,7 @@ def m(monkeypatch):
     mocks = {
         "get_message": AsyncMock(return_value=dict(ROW)),
         "text_line_for_owner": AsyncMock(return_value=LINE),
-        "has_sent_to": AsyncMock(return_value=True),
+        "set_disclosed": AsyncMock(),
         "send_text": AsyncMock(return_value={"id": "h1"}),
         "put_sent": AsyncMock(),
         "mail_changed": AsyncMock(),
@@ -70,20 +78,36 @@ async def test_row_without_provider_ids_is_bad_reply_key(m):
 
 
 async def test_member_phone_gets_no_disclosure(m):
-    m["has_sent_to"].return_value = False
-    m["text_line_for_owner"].return_value = dict(LINE, member_phones={"+15559870000": "u1"})
+    m["text_line_for_owner"].return_value = dict(NEW_CUSTOMER_LINE, member_phones={"+15559870000": "u1"})
     await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
     assert m["send_text"].await_args.kwargs["text"] == "hi"
+    m["set_disclosed"].assert_not_awaited()
 
 
 async def test_first_reply_carries_the_disclosure_once(m):
-    m["has_sent_to"].return_value = False
+    m["text_line_for_owner"].return_value = NEW_CUSTOMER_LINE
     await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
-    m["has_sent_to"].assert_awaited_once_with(
-        "team@acme.thelightbulb.company", "+15559870000", text_prefix=agent_text.DISCLOSURE_PREFIX
-    )
     assert m["send_text"].await_args.kwargs["text"] == "(Automated assistant for Acme) hi"
     assert m["put_sent"].await_args.kwargs["text"] == "(Automated assistant for Acme) hi"
+
+
+async def test_disclosure_is_recorded_on_the_row_after_the_first_reply(m):
+    m["text_line_for_owner"].return_value = NEW_CUSTOMER_LINE
+    await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
+    m["set_disclosed"].assert_awaited_once_with(LINE["address"], "+15559870000")
+    # A customer already on the row hears no disclosure, and nothing is written.
+    m["set_disclosed"].reset_mock()
+    m["text_line_for_owner"].return_value = LINE
+    await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi again")
+    assert m["send_text"].await_args.kwargs["text"] == "hi again"
+    m["set_disclosed"].assert_not_awaited()
+
+
+async def test_a_failed_send_records_no_disclosure(m):
+    m["text_line_for_owner"].return_value = NEW_CUSTOMER_LINE
+    m["send_text"].side_effect = agent_text.photon.PhotonError(500, "http_500")
+    assert await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi") == "send_failed"
+    m["set_disclosed"].assert_not_awaited()
 
 
 async def test_mail_row_key_is_refused(m):
@@ -176,10 +200,10 @@ async def test_human_reply_on_human_thread_still_sends(m):
 
 
 async def test_human_reply_never_carries_the_disclosure(m):
-    m["has_sent_to"].return_value = False
+    m["text_line_for_owner"].return_value = NEW_CUSTOMER_LINE
     await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi", by_human=True)
     assert m["send_text"].await_args.kwargs["text"] == "hi"
-    m["has_sent_to"].assert_not_awaited()
+    m["set_disclosed"].assert_not_awaited()
 
 
 def test_business_phone_rejects_non_e164(client, monkeypatch):
@@ -273,3 +297,13 @@ def test_line_read_has_my_phone(client, monkeypatch):
     assert client.get("/api/v1/agent-text/line").json()["myPhone"] == "+15551234567"
     _as(client, "you")
     assert client.get("/api/v1/agent-text/line").json()["myPhone"] is None
+
+
+def test_me_phone_replaces_the_callers_earlier_phone(client, monkeypatch):
+    set_phone = _me(monkeypatch, {**LINE, "member_phones": {"+15550001111": "me", "+15550002222": "other"}})
+    _as(client, "me")
+    assert client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"}).json() == {"status": "ok"}
+    assert [c.args for c in set_phone.await_args_list] == [
+        (LINE["address"], "+15551234567", "me"),
+        (LINE["address"], "+15550001111", None),
+    ]

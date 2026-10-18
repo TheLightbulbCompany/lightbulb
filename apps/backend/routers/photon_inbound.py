@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from core.auth import AuthContext
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories.agent_email_repo import get_by_address, text_line_by_photon_user
+from core.repositories.agent_email_repo import get_by_address
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, put_sent, reply_key
 from core.repositories.container_repo import try_consume_stranger_wake
 from core.services.agent_email import mail_changed, team_address
@@ -174,10 +174,9 @@ async def handle_photon_inbound(request: Request):
         recorded = True
 
         received_by, sent_by, space = obj.receivedBy or _Party(), obj.sentBy or _Party(), obj.space or _Space()
+        # Photon's iMessage user snapshot always carries a handle, so the line is found by its number.
         line = await get_by_address(received_by.handle) if received_by.handle else None
         if not line or line.get("kind") != "text":
-            line = await text_line_by_photon_user(received_by.id) if received_by.id else None
-        if not line:
             return _final("dropped_unknown_line")
         owner_id, agent_id = line["owner_id"], line["agent_id"]
         line_user = received_by.id or line.get("photon_user_id")

@@ -926,6 +926,7 @@ export interface IssueDocument {
   updatedAt?: string | null;
   createdAt?: string | null;
   latestRevisionNumber?: number | null;
+  latestRevisionId?: string | null;
 }
 
 /**

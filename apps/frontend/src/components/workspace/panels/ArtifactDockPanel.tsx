@@ -4,14 +4,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FileViewerContent, isPaneViewable, normalizeContentType } from "@/components/media/FileViewerContent";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
-import { roomMarkdown } from "@/components/messaging/roomMarkdown";
-import { CardContext, type CardContextValue } from "@/components/messaging/openui/CardContext";
-import { issueAttachmentContentPath } from "@/components/teams/shared/lib/attachments";
+import { DocumentRow } from "@/components/teams/issues/DocumentRow";
+import { AttachmentIssueContext, issueAttachmentContentPath } from "@/components/teams/shared/lib/attachments";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import type { CompanyAgent, CompanyMember, IssueDocument } from "@/components/teams/shared/types";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useApi } from "@/lib/api";
 import { openPanel } from "../workspaceController";
 import type { PanelProps } from "../panelComponents";
+import { DocumentContents } from "./DocumentContents";
+import { CONTENTS_MIN_HEADINGS, outlineOf } from "./documentOutline";
 import { parseArtifactSource, type ArtifactSource } from "./artifactSource";
 
 type Loaded = { status: "loading" } | { status: "ready"; blob: Blob; url: string; name: string; type: string } | { status: "error"; message: string };
@@ -90,22 +92,31 @@ function FilePane({ source }: { source: FileSource }) {
   );
 }
 
-/** The minimal document view (Track C adds the header details, contents list, comments and editing). */
+/** The document view: title, who changed it and when, a contents list, and the reviewable row (comments, versions). */
 function DocumentPane({ source }: { source: Extract<ArtifactSource, { kind: "document" }> }) {
   const { read } = useTeamsApi();
-  const { data, error } = read<{ id: string; key: string; title?: string | null; body?: string | null }>(`/issues/${encodeURIComponent(source.issue)}/documents/${encodeURIComponent(source.key)}`);
+  const { data, error } = read<IssueDocument>(`/issues/${encodeURIComponent(source.issue)}/documents/${encodeURIComponent(source.key)}`);
+  const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
+  const { data: membersData } = read<{ members: CompanyMember[] }>("/members");
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const openTask = <Button type="button" variant="outline" size="sm" onClick={() => openPanel("teams-issue-detail", { detailId: source.issue }, { pushUrl: true })}>Open task</Button>;
-  // Cards and diagrams in a document render read-only: a provider with no press.
-  const messageId = data?.id ?? source.key;
-  const readOnly: CardContextValue = {
-    messageId, roomId: "", authorId: "", threadRootMessageId: null, attachments: [],
-    answered: null, pending: false, error: null, retry: null,
-  };
+  const agents = agentsData?.agents ?? [];
+  const author = (data?.updatedByAgentId && agents.find((a) => a.id === data.updatedByAgentId)?.name)
+    || (data?.updatedByUserId && membersData?.members.find((m) => m.userId === data.updatedByUserId)?.name)
+    || "Someone";
+  const when = data?.updatedAt ?? data?.createdAt;
+  const outline = outlineOf(data?.body ?? "");
   return (
     <PaneFrame actions={openTask}>
       {error && <p role="alert" className="p-4 text-ui">{describeError(error)}</p>}
       {data && <div className="mx-auto max-w-2xl p-4">
-        <CardContext.Provider value={readOnly}><MarkdownView skipHtml components={roomMarkdown}>{data.body ?? ""}</MarkdownView></CardContext.Provider></div>}
+        <h2 className="text-lg font-semibold">{data.title || data.key}</h2>
+        <p className="mb-3 text-caption text-muted-foreground">{author}{when ? ` · updated ${timeAgo(when)}` : ""} · rev {data.latestRevisionNumber ?? 1}</p>
+        {outline.length >= CONTENTS_MIN_HEADINGS && <DocumentContents entries={outline} bodyRef={bodyRef} />}
+        <AttachmentIssueContext.Provider value={source.issue}>
+          <div ref={bodyRef}><DocumentRow doc={data} agents={agents} issueId={source.issue} defaultOpen hideTitle /></div>
+        </AttachmentIssueContext.Provider>
+      </div>}
     </PaneFrame>
   );
 }

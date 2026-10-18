@@ -42,6 +42,7 @@ export function DocumentRow({
   basePath,
   onRestored,
   defaultOpen,
+  hideTitle,
 }: {
   doc: IssueDocument;
   agents: CompanyAgent[];
@@ -56,6 +57,8 @@ export function DocumentRow({
   // the issue documents read (a case re-reads its detail).
   onRestored?: () => void;
   defaultOpen?: boolean;
+  // The pane shows the title and author line itself; keep only the row's actions.
+  hideTitle?: boolean;
 }) {
   const root = basePath ?? `/issues/${issueId}`;
   const reviewable = doc as ReviewableDocument;
@@ -216,12 +219,12 @@ export function DocumentRow({
           >
             {doc.key}
           </span>
-          {titleShown ? (
+          {hideTitle ? <span className="flex-1" /> : titleShown ? (
             <span className="flex-1 truncate text-[var(--midnight)]">{titleShown}</span>
           ) : (
             <span className="flex-1" />
           )}
-          {when && (
+          {when && !hideTitle && (
             <span className="text-caption text-[var(--midnight-muted)] shrink-0">
               updated {timeAgo(when)}
               {agentName ? ` · ${agentName}` : ""}

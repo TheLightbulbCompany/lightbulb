@@ -13,6 +13,7 @@ import {
 
 import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
+import { DocumentEditSheet } from "./DocumentEditSheet";
 import {
   fetchAttachmentDataUri,
   timeAgo,
@@ -20,6 +21,7 @@ import {
   type IssueAttachment,
   type IssueDocument,
   type IssueWorkProduct,
+  type TeamsAgent,
 } from "../../lib/teamsData";
 
 // ---------------------------------------------------------------------------
@@ -146,11 +148,20 @@ export function WorkProductsSection({
   );
 }
 
-export function DocumentsSection({ documents }: { documents: IssueDocument[] }) {
+export function DocumentsSection({
+  documents,
+  agents,
+  onSave,
+}: {
+  documents: IssueDocument[];
+  agents: TeamsAgent[];
+  onSave: (key: string, title: string, body: string) => Promise<void>;
+}) {
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const styles = SHEETS[scheme];
   const palette = chatPalette[scheme];
   const [openKeys, setOpenKeys] = useState<Set<string>>(new Set());
+  const [editing, setEditing] = useState<IssueDocument | null>(null);
   if (documents.length === 0) return null;
   return (
     <View style={styles.section}>
@@ -182,7 +193,11 @@ export function DocumentsSection({ documents }: { documents: IssueDocument[] }) 
                   {doc.title ?? doc.key}
                 </Text>
                 {doc.updatedAt ? (
-                  <Text style={styles.rowMeta}>updated {timeAgo(doc.updatedAt)}</Text>
+                  <Text style={styles.rowMeta}>
+                    {agents.find((a) => a.id === doc.updatedByAgentId)?.name ?? "Someone"} · updated{" "}
+                    {timeAgo(doc.updatedAt)}
+                    {doc.latestRevisionNumber != null ? ` · rev ${doc.latestRevisionNumber}` : ""}
+                  </Text>
                 ) : null}
               </View>
               <SymbolView
@@ -199,9 +214,22 @@ export function DocumentsSection({ documents }: { documents: IssueDocument[] }) 
                 <Text style={styles.rowMeta}>Empty document.</Text>
               )
             ) : null}
+            {open ? (
+              <Pressable onPress={() => setEditing(doc)} accessibilityRole="button" accessibilityLabel={`Edit ${doc.title ?? doc.key}`}>
+                <Text style={[styles.rowMeta, { color: palette.link }]}>Edit</Text>
+              </Pressable>
+            ) : null}
           </View>
         );
       })}
+      {editing ? (
+        <DocumentEditSheet
+          key={editing.key}
+          document={editing}
+          onSave={(title, body) => onSave(editing.key, title, body)}
+          onClose={() => setEditing(null)}
+        />
+      ) : null}
     </View>
   );
 }

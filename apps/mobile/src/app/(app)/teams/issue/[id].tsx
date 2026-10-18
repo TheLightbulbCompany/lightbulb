@@ -306,6 +306,7 @@ export default function IssueDetailScreen() {
     setDescription,
     addComment,
     createChild,
+    updateDocument,
     approveApproval,
     rejectApproval,
     acceptInteraction,
@@ -362,6 +363,9 @@ export default function IssueDetailScreen() {
         onSetTitle={setTitle}
         onSetDescription={setDescription}
         onCreateChild={createChild}
+        onUpdateDocument={(key, title, body) =>
+          updateDocument(key, title, body, `Edited by ${user?.fullName || user?.firstName || "You"}`)
+        }
         onApproveApproval={approveApproval}
         onRejectApproval={rejectApproval}
         onAcceptInteraction={acceptInteraction}
@@ -415,6 +419,7 @@ function ReadyBody({
   onSetTitle,
   onSetDescription,
   onCreateChild,
+  onUpdateDocument,
   onApproveApproval,
   onRejectApproval,
   onAcceptInteraction,
@@ -443,6 +448,7 @@ function ReadyBody({
   onSetTitle: (title: string) => void;
   onSetDescription: (description: string) => void;
   onCreateChild: (input: CreateIssueInput) => Promise<boolean>;
+  onUpdateDocument: (key: string, title: string, body: string) => Promise<void>;
   onApproveApproval: (approvalId: string) => void;
   onRejectApproval: (approvalId: string, reason: string) => void;
   onAcceptInteraction: (
@@ -626,7 +632,11 @@ function ReadyBody({
 
       {/* Outputs — work products (with board review), documents, attachments. */}
       <WorkProductsSection workProducts={workProducts} onReview={onReviewWorkProduct} />
-      <DocumentsSection documents={documents} />
+      <DocumentsSection
+        documents={documents}
+        agents={agents}
+        onSave={onUpdateDocument}
+      />
       <AttachmentsSection issueId={state.issue.id} attachments={attachments} />
 
       {/* Sub-issues — interactive mini-cards + add affordance. */}

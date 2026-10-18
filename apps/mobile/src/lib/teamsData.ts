@@ -227,6 +227,9 @@ export interface IssueDocument {
   format?: string | null;
   body?: string | null;
   updatedAt?: string | null;
+  latestRevisionId?: string | null;
+  latestRevisionNumber?: number | null;
+  updatedByAgentId?: string | null;
 }
 
 /** A binary attachment from `GET /teams/issues/{id}/attachments`. Content
@@ -620,6 +623,7 @@ export function useTeamsIssue(issueId: string | undefined) {
   const writingRef = useRef<Set<string>>(new Set());
   const postingRef = useRef(false);
   const creatingRef = useRef(false);
+  const savingDocRef = useRef(false);
   // Per-approval in-flight latch for the issue-detail approve/reject actions.
   const decidingRef = useRef<Set<string>>(new Set());
   // Once-per-mount latch for the open-marks-read write.
@@ -904,6 +908,30 @@ export function useTeamsIssue(issueId: string | undefined) {
     [config, issueId, load],
   );
 
+  // Save a document edit, then refetch. Ref-latched. Failures are rethrown so
+  // the edit sheet can tell a conflict from any other error and keep the draft.
+  const updateDocument = useCallback(
+    async (key: string, title: string, body: string, changeSummary: string) => {
+      const current = stateRef.current;
+      if (!issueId || current.kind !== "ready" || savingDocRef.current) return;
+      const doc = current.documents.find((d) => d.key === key);
+      savingDocRef.current = true;
+      try {
+        await updateIssueDocument(config, issueId, key, {
+          title,
+          format: "markdown",
+          body,
+          changeSummary,
+          baseRevisionId: doc?.latestRevisionId ?? null,
+        });
+        await load();
+      } finally {
+        savingDocRef.current = false;
+      }
+    },
+    [config, issueId, load],
+  );
+
   // Approve / reject an approval linked to THIS issue. Optimistically flip the
   // row's status to its resolved value (which hides its Approve/Reject buttons —
   // `isApprovalActionable` goes false), write, then reconcile via refetch. On
@@ -1125,6 +1153,7 @@ export function useTeamsIssue(issueId: string | undefined) {
     setDescription,
     addComment,
     createChild,
+    updateDocument,
     approveApproval: approveIssueApproval,
     rejectApproval: rejectIssueApproval,
     acceptInteraction,
@@ -1410,6 +1439,28 @@ export async function createSubIssue(
     input,
   );
   return (res ?? {}) as CreatedIssue;
+}
+
+export interface UpdateDocumentInput {
+  title: string;
+  format: "markdown";
+  body: string;
+  changeSummary: string;
+  /** The revision the person opened; the server rejects a stale save with 409. */
+  baseRevisionId: string | null;
+}
+
+/** PUT /teams/issues/{issueId}/documents/{key} — save a new revision. */
+export async function updateIssueDocument(
+  config: PlatformAdapter,
+  issueId: string,
+  key: string,
+  input: UpdateDocumentInput,
+): Promise<void> {
+  await createApiClient(config).put(
+    `/teams/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}`,
+    input,
+  );
 }
 
 // ---------------------------------------------------------------------------

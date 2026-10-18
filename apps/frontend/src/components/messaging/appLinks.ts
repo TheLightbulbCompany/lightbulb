@@ -66,7 +66,7 @@ export function appLinkTarget(raw: string | null | undefined, origin = typeof wi
 export function extractAppLinks(text: string, max = 3): AppLink[] {
   const links: AppLink[] = [];
   // A link inside a fenced block belongs to the block (a Sources card draws its own); no chip for it.
-  for (const [match] of text.replace(/```[\s\S]*?(```|$)/g, " ").matchAll(/https?:\/\/[^\s<>()[\]"'`]+/gi)) {
+  for (const [match] of text.replace(/(`{3,}|~{3,})[\s\S]*?(\1|$)/g, " ").matchAll(/https?:\/\/[^\s<>()[\]"'`]+/gi)) {
     const link = appLinkTarget(match.replace(/[.,;:!?*_~]+$/, ""));
     if (!link || links.some((l) => l.href === link.href)) continue;
     links.push(link);

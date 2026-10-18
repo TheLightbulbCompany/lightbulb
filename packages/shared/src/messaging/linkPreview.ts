@@ -35,7 +35,7 @@ const OWN_HOST = /(^|\.)(thelightbulb\.company|flickmeon\.ai)$/i;
 export function extractPreviewUrls(text: string, max = MAX_LINK_PREVIEWS): string[] {
   const urls: string[] = [];
   // A URL inside a fenced block belongs to the block (a Sources card draws its own link); no preview for it.
-  for (const match of text.replace(/```[\s\S]*?(```|$)/g, " ").matchAll(URL_RE)) {
+  for (const match of text.replace(/(`{3,}|~{3,})[\s\S]*?(\1|$)/g, " ").matchAll(URL_RE)) {
     const url = match[0].replace(TRAILING, "");
     let host: string;
     try {

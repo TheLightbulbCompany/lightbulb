@@ -28,6 +28,8 @@ describe("fenced blocks", () => {
   it("a URL inside a fenced block gets no preview: the card draws its own link", () => {
     const text = "See below.\n```openui-lang\nroot = Stack([s])\ns = Sources([Source(\"Stripe\", \"https://docs.stripe.com/billing\")])\n```\nand https://example.com/after";
     expect(extractPreviewUrls(text)).toEqual(["https://example.com/after"]);
+    const tilde = "~~~openui-lang\nroot = Stack([s])\ns = Sources([Source(\"Stripe\", \"https://docs.stripe.com/billing\")])\n~~~\nhttps://example.com/after";
+    expect(extractPreviewUrls(tilde)).toEqual(["https://example.com/after"]);
   });
 });
 

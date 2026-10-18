@@ -81,6 +81,20 @@ async def has_sent_to(address: str, to: str, *, text_prefix: str | None = None) 
     }
     if text_prefix:
         kwargs["FilterExpression"] &= Attr("text").begins_with(text_prefix)
+    return await _any_match(kwargs)
+
+
+async def has_received_from(address: str, from_addr: str) -> bool:
+    """True when this address holds an inbound row from ``from_addr`` (a customer who has texted or mailed)."""
+    return await _any_match(
+        {
+            "KeyConditionExpression": Key("address").eq(_normalize(address)),
+            "FilterExpression": Attr("direction").not_exists() & Attr("from_addr").eq(from_addr),
+        }
+    )
+
+
+async def _any_match(kwargs: dict) -> bool:
     while True:
         resp = await run_in_thread(_get_table().query, **kwargs)
         if resp.get("Items"):

@@ -196,12 +196,41 @@ def test_business_phone_rejects_non_e164(client, monkeypatch):
     save.assert_awaited_once_with(LINE["address"], "+15551234567")
 
 
-def _me(monkeypatch, line, set_phone=None):
+def _me(monkeypatch, line, set_phone=None, *, is_customer=False):
     monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
     monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=line))
+    monkeypatch.setattr(agent_text, "team_address", AsyncMock(return_value="agents@acme.example"))
+    monkeypatch.setattr(agent_text, "has_received_from", AsyncMock(return_value=is_customer))
     set_phone = set_phone or AsyncMock()
     monkeypatch.setattr(agent_text, "set_member_phone", set_phone)
     return set_phone
+
+
+def test_me_phone_taken_by_another_member_is_409(client, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    taken = AsyncMock(side_effect=ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"))
+    _me(monkeypatch, {**LINE, "member_phones": {"+15550001111": "me"}}, taken)
+    _as(client, "me")
+    r = client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"})
+    assert r.status_code == 409 and r.json() == {"status": "phone_taken"}
+    taken.assert_awaited_once_with(LINE["address"], "+15551234567", "me")  # the old phone is kept
+
+
+def test_me_phone_that_has_texted_as_a_customer_is_409(client, monkeypatch):
+    set_phone = _me(monkeypatch, LINE, is_customer=True)
+    _as(client, "me")
+    r = client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"})
+    assert r.status_code == 409 and r.json() == {"status": "phone_is_a_customer"}
+    agent_text.has_received_from.assert_awaited_once_with("agents@acme.example", "+15551234567")
+    set_phone.assert_not_awaited()
+
+
+def test_me_phone_already_mine_skips_the_customer_check(client, monkeypatch):
+    set_phone = _me(monkeypatch, {**LINE, "member_phones": {"+15551234567": "me"}}, is_customer=True)
+    _as(client, "me")
+    assert client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"}).json() == {"status": "ok"}
+    set_phone.assert_awaited_once_with(LINE["address"], "+15551234567", "me")
 
 
 def _as(client, user_id):

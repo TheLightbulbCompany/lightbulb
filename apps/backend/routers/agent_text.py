@@ -11,6 +11,7 @@ import uuid
 from typing import Literal
 
 import httpx
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -24,8 +25,14 @@ from core.repositories.agent_email_repo import (
     set_thread_mode,
     text_line_for_owner,
 )
-from core.repositories.agent_mail_inbox_repo import get_message, has_sent_to, parse_reply_key, put_sent
-from core.services.agent_email import mail_changed
+from core.repositories.agent_mail_inbox_repo import (
+    get_message,
+    has_received_from,
+    has_sent_to,
+    parse_reply_key,
+    put_sent,
+)
+from core.services.agent_email import mail_changed, team_address
 from core.services import photon
 from core.services.text_inbound import business_name
 from routers.agent_mail import _require_hook_token
@@ -163,14 +170,27 @@ async def get_line(auth: AuthContext = Depends(get_current_user)) -> dict:
 async def put_my_phone(body: BusinessPhone, auth: AuthContext = Depends(get_current_user)):
     if not re.fullmatch(r"\+[1-9]\d{6,14}", body.phone):
         return JSONResponse(status_code=400, content={"status": "bad_phone"})
-    line = await text_line_for_owner(resolve_owner_id(auth))
+    owner_id = resolve_owner_id(auth)
+    line = await text_line_for_owner(owner_id)
     if not line:
         raise HTTPException(status_code=404, detail="no_line")
-    # One phone per member: drop any earlier one before saving the new.
-    for old, uid in (line.get("member_phones") or {}).items():
+    phones = line.get("member_phones") or {}
+    if phones.get(body.phone) != auth.user_id:
+        # A phone that has texted the line as a customer stays a customer: registering it would route
+        # that customer's thread into the main room.
+        address = await team_address(owner_id)
+        if address and await has_received_from(address, body.phone):
+            return JSONResponse(status_code=409, content={"status": "phone_is_a_customer"})
+    try:
+        await set_member_phone(line["address"], body.phone, auth.user_id)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return JSONResponse(status_code=409, content={"status": "phone_taken"})
+        raise
+    # One phone per member: drop any earlier one once the new one is saved.
+    for old, uid in phones.items():
         if uid == auth.user_id and old != body.phone:
             await set_member_phone(line["address"], old, None)
-    await set_member_phone(line["address"], body.phone, auth.user_id)
     return {"status": "ok"}
 
 

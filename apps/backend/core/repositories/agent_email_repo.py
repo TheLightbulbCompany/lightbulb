@@ -326,7 +326,9 @@ async def set_thread_mode(number: str, customer: str, mode: Literal["human", "ag
 
 async def set_member_phone(number: str, phone: str, user_id: str | None) -> None:
     """Register (``user_id``) or remove (``None``) a member's phone on the line row, so their texts
-    are posted to the main room as them. The ``member_phones`` map is created with the line."""
+    are posted to the main room as them. The ``member_phones`` map is created with the line.
+
+    A register never takes a phone another member holds: that raises ``ConditionalCheckFailedException``."""
     kwargs: dict = {
         "Key": {"address": number},
         "ConditionExpression": "attribute_exists(address)",
@@ -334,6 +336,9 @@ async def set_member_phone(number: str, phone: str, user_id: str | None) -> None
     }
     if user_id:
         kwargs["UpdateExpression"] = "SET member_phones.#p = :uid"
+        kwargs["ConditionExpression"] = (
+            "attribute_exists(address) AND (attribute_not_exists(member_phones.#p) OR member_phones.#p = :uid)"
+        )
         kwargs["ExpressionAttributeValues"] = {":uid": user_id}
     else:
         kwargs["UpdateExpression"] = "REMOVE member_phones.#p"

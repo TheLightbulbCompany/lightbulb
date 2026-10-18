@@ -229,7 +229,8 @@ def test_stored_and_delivered_with_exact_kwargs(client, seams):
 
 
 def test_attachment_is_stored_as_placeholder(client, seams):
-    event = _event(content={"type": "attachment", "attachmentId": "att_9"})
+    # A caption on the attachment must not replace the placeholder.
+    event = _event(content={"type": "attachment", "attachmentId": "att_9", "text": "look"})
     assert _post(client, event).json() == {"status": "delivered"}
     assert seams["put_message"].await_args.kwargs["text"] == "[Attachment: att_9]"
 
@@ -377,11 +378,23 @@ def test_member_text_never_wakes_the_front_desk(client, seams, member):
     seams["send_text"].assert_not_called()
 
 
-def test_member_post_failure_is_member_post_failed(client, seams, member):
-    member.side_effect = RuntimeError("not in room")
-    assert _post(client).json() == {"status": "member_post_failed"}
+def test_member_post_refused_is_member_post_failed(client, seams, member):
+    from core.services import messaging
+
+    member.side_effect = messaging.ApiProblem("ROOM_FORBIDDEN", "not a room member")
+    r = _post(client)
+    assert r.status_code == 200 and r.json() == {"status": "member_post_failed"}
+    seams["delete_event"].assert_not_called()
     seams["deliver_to_agent"].assert_not_called()
     seams["try_consume_stranger_wake"].assert_not_called()
+
+
+def test_member_post_transient_failure_is_503_and_retried(client, seams, member):
+    member.side_effect = RuntimeError("ddb throttled")
+    r = _post(client)
+    assert r.status_code == 503
+    seams["delete_event"].assert_awaited_once_with("photon:m1")
+    seams["deliver_to_agent"].assert_not_called()
 
 
 def test_unregistered_phone_is_a_customer_again(client, seams, member):

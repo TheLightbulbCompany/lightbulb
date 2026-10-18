@@ -420,8 +420,19 @@ async def test_set_member_phone_sets_and_removes(monkeypatch):
     assert kwargs["UpdateExpression"] == "SET member_phones.#p = :uid"
     assert kwargs["ExpressionAttributeNames"] == {"#p": "+15559998888"}
     assert kwargs["ExpressionAttributeValues"] == {":uid": "user_1"}
-    assert kwargs["ConditionExpression"] == "attribute_exists(address)"
+    assert kwargs["ConditionExpression"] == (
+        "attribute_exists(address) AND (attribute_not_exists(member_phones.#p) OR member_phones.#p = :uid)"
+    )
     await repo.set_member_phone("+1555", "+15559998888", None)
     kwargs = table.update_item.call_args.kwargs
     assert kwargs["UpdateExpression"] == "REMOVE member_phones.#p"
+    assert kwargs["ConditionExpression"] == "attribute_exists(address)"
     assert "ExpressionAttributeValues" not in kwargs
+
+
+async def test_set_member_phone_never_takes_another_members_phone(monkeypatch):
+    table = MagicMock()
+    table.update_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    with pytest.raises(ClientError):
+        await repo.set_member_phone("+1555", "+15559998888", "user_2")

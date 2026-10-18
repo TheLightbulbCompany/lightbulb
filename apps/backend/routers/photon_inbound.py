@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -189,7 +189,7 @@ async def handle_photon_inbound(request: Request):
         if not address:
             return _final("dropped_no_address")
 
-        text = content.text or "" if content.type == "text" else f"[Attachment: {content.attachmentId}]"
+        text = (content.text or "") if content.type == "text" else f"[Attachment: {content.attachmentId}]"
         stored = await find_by_message_id(address, obj.id)
         if not stored:
             stored = await put_message(
@@ -229,8 +229,11 @@ async def handle_photon_inbound(request: Request):
                     ),
                     via="text",
                 )
-            except Exception:  # noqa: BLE001 — e.g. not in the main room; the text stays in the inbox
-                logger.warning("photon_inbound: member post failed for %s", obj.id, exc_info=True)
+            except (messaging.ApiProblem, HTTPException) as e:
+                if e.status_code not in (403, 404):
+                    raise  # transient: the outer handler rolls the dedup back and answers 503
+                # Deterministic, e.g. not in the main room: the text stays in the inbox.
+                logger.warning("photon_inbound: member post refused for %s", obj.id, exc_info=True)
                 return _final("member_post_failed")
             return _final("member_routed")
 

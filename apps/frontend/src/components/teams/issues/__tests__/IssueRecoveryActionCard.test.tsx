@@ -65,6 +65,106 @@ describe("IssueRecoveryActionCard (ported)", () => {
     );
     expect(container).toBeEmptyDOMElement();
   });
+
+  // --- @ v2026.1012.0-isol8.4: the native_run lane ---------------------------
+
+  const NATIVE: IssueRecoveryAction = {
+    ...ACTION,
+    kind: "active_run_watchdog",
+    ownerType: "agent",
+    ownerAgentId: "agent_1",
+    cause: "native_finalization_invalid",
+    nextAction: "Finish the existing run.",
+  };
+
+  it.each(["running", "scheduled", "missed"] as const)(
+    "native_run lane headline: %s finalization names the existing run",
+    (state) => {
+      const { container } = render(
+        <IssueRecoveryActionCard
+          action={{
+            ...NATIVE,
+            wakePolicy: {
+              kind: "resume_native_run",
+              runId: "native-run",
+              notBefore: state === "scheduled" ? "2099-01-01T00:00:00Z" : "2020-01-01T00:00:00Z",
+            },
+            nativeRunActivity:
+              state === "running"
+                ? { runId: "native-run", status: "running", workspaceOperationId: "export-operation" }
+                : null,
+          }}
+        />,
+      );
+      expect(container.querySelector("section")?.getAttribute("data-recovery-state")).toBe(
+        state === "missed" ? "needed" : "in_progress",
+      );
+      expect(container.textContent).toContain("existing run");
+      expect(container.textContent).not.toContain("retrying itself");
+      expect(container.textContent).not.toContain("stopped to wait");
+      expect(
+        container.querySelector('[data-testid="recovery-retry-progress"]')?.getAttribute("data-recovery-lane"),
+      ).toBe("native_run");
+    },
+  );
+
+  it("native_run lane headline: live progress wins over an escalated board retry", () => {
+    const { container } = render(
+      <IssueRecoveryActionCard
+        action={{
+          ...NATIVE,
+          ownerType: "board",
+          status: "escalated",
+          attemptCount: 3,
+          wakePolicy: { kind: "resume_native_run", runId: "native-run" },
+          nativeRunActivity: { runId: "native-run", status: "running", workspaceOperationId: "export-operation" },
+        }}
+      />,
+    );
+    expect(container.querySelector("section")?.getAttribute("data-recovery-state")).toBe("in_progress");
+    expect(container.textContent).toContain("Paperclip is recovering the existing run");
+    expect(container.querySelector('[data-testid="recovery-recovery-owner"]')?.textContent).toContain("Paperclip");
+    expect(container.textContent).not.toContain("Automatic retries are finished");
+  });
+
+  it("workspace-export repair causes hide the matching resolve options", async () => {
+    const user = userEvent.setup();
+    render(
+      <IssueRecoveryActionCard
+        action={{ ...NATIVE, ownerType: "board", cause: "native_workspace_sync_out_retry_exhausted" }}
+        onResolve={vi.fn()}
+        canFalsePositive
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Resolve recovery" }));
+    expect(screen.queryByText("Try again")).not.toBeInTheDocument();
+    expect(screen.queryByText("Mark task done")).not.toBeInTheDocument();
+    expect(screen.queryByText("Send for review")).not.toBeInTheDocument();
+    expect(screen.getByText("False positive, done")).toBeInTheDocument();
+  });
+
+  it("workspace-export repair causes drop the Resolve menu when no option is left", () => {
+    render(
+      <IssueRecoveryActionCard
+        action={{ ...NATIVE, ownerType: "board", cause: "native_workspace_sync_out_retry_exhausted" }}
+        onResolve={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Resolve recovery" })).not.toBeInTheDocument();
+  });
+
+  it.each(["active", "escalated", "resolved"] as const)(
+    "does not show a historical unsafe-export repair card: %s",
+    (status) => {
+      const { container } = render(
+        <IssueRecoveryActionCard
+          action={{ ...NATIVE, status, ownerType: "board", cause: "native_workspace_sync_out_unsafe_archive" }}
+          onResolve={vi.fn()}
+        />,
+      );
+      expect(container).toBeEmptyDOMElement();
+    },
+  );
 });
 
 // --- mounted in the Teams issue detail: resolve goes through the BFF -------------

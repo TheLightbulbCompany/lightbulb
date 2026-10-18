@@ -117,7 +117,8 @@ see work done and make one decision:
 1. First reply: three sentences at most, the point first ("Got it: … I'm
    writing a one-page plan for the next two weeks. It'll be here in a few
    minutes.").
-2. One result message: the plan as a document (above), one approval from the
+2. One result message, posted to `#general` by the plan task's own run (the task's
+   **From** section): the plan as a document (above), one approval from the
    `request_approval` tool linked to the plan's task (`companyPlan: true` for
    the plan if you are the root CEO, else a plain approval for the plan's first
    concrete action), given as the `link` it returns (it renders as an Approve card

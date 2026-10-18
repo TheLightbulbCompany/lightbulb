@@ -29,6 +29,7 @@ def runner_env(monkeypatch):
     import core.repositories.container_repo as _repo_module
 
     monkeypatch.setattr(_repo_module, "mark_provision_error", AsyncMock())
+    monkeypatch.setattr(_repo_module, "note_provision_error", AsyncMock())
     monkeypatch.setattr(_repo_module, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr("core.services.onboarding_brief.reconcile_pending_brief", AsyncMock())
     monkeypatch.setattr("core.repositories.billing_repo.arm_trial_if_unset", AsyncMock())
@@ -98,3 +99,6 @@ async def test_a_transient_prepare_hermes_workspace_failure_stops_the_run_withou
     # Transient: the machine retries it, so no error row is written (MarkFailedExhausted is the backstop).
     assert await provision_runner.run("org_a") == provision_runner.EXIT_TRANSIENT
     runner_env.mark_provision_error.assert_not_awaited()
+    # ...but the reason is recorded (status untouched) so MarkFailedExhausted leaves it showing.
+    runner_env.note_provision_error.assert_awaited_once()
+    assert "boom" in runner_env.note_provision_error.await_args.args[1]

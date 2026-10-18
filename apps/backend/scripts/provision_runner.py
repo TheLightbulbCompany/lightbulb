@@ -260,10 +260,21 @@ async def _record_failure(owner_id: str, exc: Exception, stage: str) -> int:
     if retryable:
         # Same reasoning as the claim loser above: the SFN retries a transient failure within
         # this execution, so an error row now would flash "Setup failed" over a provision that
-        # is about to succeed. MarkFailedExhausted writes it if the retries run out.
+        # is about to succeed. MarkFailedExhausted writes it if the retries run out -- but it
+        # carries no reason, so record the reason now (status untouched).
+        await _note_error(owner_id, f"hermes {stage} failed: {type(exc).__name__}: {exc}")
         return EXIT_TRANSIENT
     await _mark_error(owner_id, f"hermes {stage} failed: {exc}", retryable=False)
     return EXIT_DETERMINISTIC
+
+
+async def _note_error(owner_id: str, last_error: str) -> None:
+    from core.repositories import container_repo
+
+    try:
+        await container_repo.note_provision_error(owner_id, last_error)
+    except Exception:  # noqa: BLE001 — best-effort
+        logger.exception("provision: error note failed for owner %s", owner_id)
 
 
 async def _mark_error(owner_id: str, last_error: str, *, retryable: bool) -> None:

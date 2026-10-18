@@ -49,8 +49,24 @@ const fenceLanguagePlugin = realmPlugin({
   },
 });
 
-/** "```&#x60;&#x60;&#x60;" (a fence whose info string is only escaped backticks) → "```". It also rewrites such a line inside a code block's content; harmless, nobody writes that. */
-const unbacktickFences = (markdown: string) => markdown.replace(/^([ \t]*`{3,})(?:&#x60;)+[ \t]*$/gm, "$1");
+/** "```&#x60;&#x60;&#x60;" (an OPENING fence whose info string is only escaped backticks, saved by MDXEditor 4.3.3) → "```". Lines inside a code block are left as written. */
+export function unbacktickFences(markdown: string): string {
+  let open: string | null = null; // the open fence's run, e.g. "```" or "~~~~"
+  return markdown
+    .split("\n")
+    .map((line) => {
+      const fence = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
+      if (!fence) return line;
+      const [, run, rest] = fence;
+      if (open) {
+        if (run[0] === open[0] && run.length >= open.length && rest.trim() === "") open = null;
+        return line;
+      }
+      open = run;
+      return run[0] === "`" && /^(?:&#x60;)+[ \t]*$/.test(rest) ? line.slice(0, line.length - rest.length) : line;
+    })
+    .join("\n");
+}
 
 /** A markdown editor over MDXEditor: headings, lists, quotes, rules, links, tables, code, images by URL. No upload, no mentions (later). A body it cannot parse (raw HTML, JSX) opens as plain markdown text, never dropped. */
 export function MarkdownEditor({ value, onChange, readOnly = false, placeholder }: {

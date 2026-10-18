@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, it, vi } from "vitest";
-import { MarkdownEditor } from "../MarkdownEditor";
+import { describe, expect, it, vi } from "vitest";
+import { MarkdownEditor, unbacktickFences } from "../MarkdownEditor";
 
 // CodeMirror measures text ranges; jsdom has no layout.
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
@@ -48,4 +48,17 @@ it("a block saved with backticks as its language opens as Plain, and picking Car
   await userEvent.click(screen.getByRole("combobox", { name: "Language" }));
   await userEvent.click(await screen.findByRole("option", { name: "Card" }));
   await vi.waitFor(() => expect(onChange.mock.lastCall?.[0]).toBe("```openui-lang\nx = 1\n```"));
+});
+
+describe("unbacktickFences", () => {
+  it("repairs an opening fence whose info string is escaped backticks", () => {
+    expect(unbacktickFences("```&#x60;&#x60;&#x60;\ncode\n```")).toBe("```\ncode\n```");
+  });
+
+  it("leaves a matching line inside a code block as written", () => {
+    const body = "````\n```&#x60;&#x60;&#x60;\nstill code\n````";
+    expect(unbacktickFences(body)).toBe(body);
+    const inner = "```\n```&#x60;&#x60;&#x60;\n```";
+    expect(unbacktickFences(inner)).toBe("```\n```&#x60;&#x60;&#x60;\n```");
+  });
 });

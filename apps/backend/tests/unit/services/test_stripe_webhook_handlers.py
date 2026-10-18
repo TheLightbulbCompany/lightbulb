@@ -1099,17 +1099,17 @@ def _deleted(stored, *, front_desk=True):
 
 
 async def _run_deleted(event, row, billing_service, release):
-    """Drive handle_subscription_deleted through the real sync_front_desk (Stripe says: canceled)."""
+    """Drive handle_subscription_deleted through the real sync_front_desk. Stripe says the event's
+    subscription (sub_x) is canceled and any other id the row stores is live."""
     from core.services import text_lines
+
+    def retrieve_stub(sid, *_a, **_k):
+        return {"status": "canceled" if sid == "sub_x" else "active", "items": {"data": []}}
 
     with (
         patch.object(handlers, "billing_repo") as repo,
         patch.object(text_lines.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
-        patch.object(
-            text_lines.stripe.Subscription,
-            "retrieve",
-            MagicMock(return_value={"status": "canceled", "items": {"data": []}}),
-        ) as retrieve,
+        patch.object(text_lines.stripe.Subscription, "retrieve", MagicMock(side_effect=retrieve_stub)) as retrieve,
         patch("core.services.text_lines.release_line", release),
         patch("core.services.hermes_provisioning.delete_workspace_runtime", AsyncMock()),
         patch(

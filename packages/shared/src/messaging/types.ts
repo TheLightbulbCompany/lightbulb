@@ -234,6 +234,8 @@ export const MESSAGE_ATTACHMENT_CONTENT_TYPES = [
   "text/csv",
   "text/plain",
   "text/markdown",
+  // HTML -- served as a download, rendered only in a sandboxed frame
+  "text/html",
   // Video -- agent-sent only (the runtime uploads straight to S3); clients play
   // it from `attachmentUrl`, never through the byte route.
   "video/mp4",
@@ -284,6 +286,7 @@ export const MESSAGE_ATTACHMENT_MAX_BYTES: Record<MessageAttachmentContentType, 
   "text/csv": 5 * 1024 * 1024,
   "text/plain": 5 * 1024 * 1024,
   "text/markdown": 5 * 1024 * 1024,
+  "text/html": 5 * 1024 * 1024,
   "video/mp4": 100 * 1024 * 1024,
   "video/webm": 100 * 1024 * 1024,
   "video/quicktime": 100 * 1024 * 1024,

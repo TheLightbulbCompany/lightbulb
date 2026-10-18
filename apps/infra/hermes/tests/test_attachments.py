@@ -298,3 +298,10 @@ def test_a_video_attachment_is_read_from_s3_not_the_backend(home, monkeypatch):
 def test_a_video_is_never_sent_to_the_model_as_an_image():
     assert "video/mp4" in turn.ATTACHMENT_TYPES
     assert not {"video/mp4", "video/webm", "video/quicktime"} & turn.IMAGE_ATTACHMENT_TYPES
+
+
+def test_html_is_a_text_attachment_the_model_never_sees_as_an_image():
+    assert turn.MEDIA_CONTENT_TYPES[".html"] == turn.MEDIA_CONTENT_TYPES[".htm"] == "text/html"
+    assert "text/html" in turn.ATTACHMENT_TYPES
+    assert "text/html" not in turn.IMAGE_ATTACHMENT_TYPES
+    assert turn._sniff("text/html", b"<html>hi</html>")

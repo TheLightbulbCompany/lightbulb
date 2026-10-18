@@ -1040,17 +1040,18 @@ async def get_room_attachment(
     meta, _ = await service.require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]
     attachment, data = await run_in_thread(service.load_attachment, owner_id, room_id, attachment_id)
-    return Response(
-        content=data,
-        media_type=attachment.content_type,
-        headers={
-            "Cache-Control": "private, no-store",
-            "X-Content-Type-Options": "nosniff",
-            # ZIPs are opaque downloads only: never invite a browser/plugin to
-            # render them inline. Images/PDF retain the existing viewer flow.
-            "Content-Disposition": f"{'attachment' if attachment.content_type == 'application/zip' else 'inline'}; filename*=UTF-8''{quote(attachment.file_name, safe='')}",
-        },
-    )
+    # ZIPs are opaque downloads; HTML must never render on this origin (a page an agent
+    # wrote, or was tricked into writing, would run as the API). Both download; the
+    # viewer renders HTML in a sandboxed frame from the fetched text instead.
+    download_only = attachment.content_type in ("application/zip", "text/html")
+    headers = {
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": f"{'attachment' if download_only else 'inline'}; filename*=UTF-8''{quote(attachment.file_name, safe='')}",
+    }
+    if attachment.content_type == "text/html":
+        headers["Content-Security-Policy"] = "sandbox"
+    return Response(content=data, media_type=attachment.content_type, headers=headers)
 
 
 @router.get("/messaging/rooms/{room_id}/attachments/{attachment_id}/url")

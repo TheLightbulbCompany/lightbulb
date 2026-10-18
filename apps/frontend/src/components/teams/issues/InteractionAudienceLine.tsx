@@ -7,7 +7,7 @@
 //
 // Adaptations vs upstream (only what had to change):
 //   - ../lib/interaction-audience -> ./lib/interaction-audience
-//   - text-xs / text-muted-foreground / text-foreground -> text-caption,
+//   - text-x-small / text-muted-foreground / text-foreground -> text-caption,
 //     --fg-mute, --fg
 
 import { Users } from "lucide-react";

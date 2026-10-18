@@ -23,7 +23,7 @@
 //                                         handleShellLinkClick (in-shell run detail)
 //   - amber / blue / sky / red palette -> brand state tokens warn / info / err
 //                                         (.dark re-points them, so dark: variants collapse)
-//   - text-sm / text-xs / --text-micro / --text-nano -> text-ui / text-caption
+//   - text-sm / text-x-small / --text-micro / --text-nano -> text-ui / text-caption
 //   - max-w-(--sz-18rem)               -> max-w-72
 
 "use client";

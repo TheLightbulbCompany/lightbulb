@@ -28,7 +28,7 @@
 //                                         issue.blockerAttention
 //   - IssueGroupHeader                 -> an inline collapsible header button
 //   - AgentIdentity / Identity         -> shared Identity for both owner kinds
-//   - Card / amber palette / text-sm / text-xs / --sz-* widths
+//   - Card / amber palette / text-sm / text-x-small / --sz-* widths
 //                                      -> PanelEmptyState, editorial-card, warn
 //                                         token, text-ui / text-caption, w-* utilities
 

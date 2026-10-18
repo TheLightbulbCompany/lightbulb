@@ -390,7 +390,10 @@ function IssueDetailView({ issueId, routeId }: { issueId: string; routeId: strin
               (b) => b.status !== "done" && b.status !== "cancelled",
             )}
             allBlockers={issue.blockedBy ?? []}
-            liveIssueIds={collectLiveIssueIds(liveRuns, [issue])}
+            liveIssueIds={collectLiveIssueIds(liveRuns, [
+              issue,
+              ...(issue.blockedBy ?? []).flatMap((b) => [b, ...(b.terminalBlockers ?? [])]),
+            ])}
             blockerAttention={typeof issue.blockerAttention === "object" ? issue.blockerAttention : null}
             successfulRunHandoff={
               (recoveryAction ?? issue.activeRecoveryAction) ? null : (issue.successfulRunHandoff ?? null)

@@ -51,6 +51,27 @@ export function getContainerTextOffset(
   };
 }
 
+/**
+ * Markdown spans whose text the projection keeps but the page does not render
+ * as text: images (alt + destination), reference definitions, card/diagram
+ * fences (```openui-lang / ```mermaid, ``` or ~~~) and raw HTML tags.
+ */
+function unrenderedRanges(markdown: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  for (const re of [/!\[[^\]]*\]\([^)]*\)/g, /^[ \t]{0,3}\[[^\]]+\]:.*$/gm, /<\/?[A-Za-z][^>]*>/g]) {
+    for (const m of markdown.matchAll(re)) ranges.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
+  }
+  const fence = /^[ \t]*(`{3,}|~{3,})[ \t]*(openui-lang|mermaid)\b.*$/gm;
+  for (const m of markdown.matchAll(fence)) {
+    const at = m.index ?? 0;
+    const close = new RegExp(`^[ \\t]*${m[1][0] === "`" ? "`" : "~"}{${m[1].length},}[ \\t]*$`, "m");
+    const rest = markdown.slice(at + m[0].length);
+    const end = rest.search(close);
+    ranges.push([at, end === -1 ? markdown.length : at + m[0].length + end]);
+  }
+  return ranges;
+}
+
 const CONTEXT_WORDS = 8;
 const CANDIDATE_WORDS = 16;
 
@@ -139,12 +160,16 @@ export function computeAnchor(input: {
     quote = normalizeAnchorText(needle.replace(/[*_~]/g, "").replace(/\|/g, " "));
     candidates = quote ? findAllOccurrences(projection.text, quote) : [];
   }
+  // Drop candidates inside source the page never renders as text.
+  const hidden = unrenderedRanges(input.markdown);
+  candidates = candidates.filter((start) => {
+    const at = projection.positions[start]?.sourceStart ?? -1;
+    return !hidden.some(([from, to]) => at >= from && at < to);
+  });
   // No match, or over the server's 10,000-character quote cap: it would refuse it.
   if (candidates.length === 0 || quote.length > 10000) return null;
 
-  // The projection also holds text the page never renders (image alt text,
-  // reference-link definitions, raw HTML, card/diagram fence source), so pick
-  // the candidate whose surrounding words match the words around the
+  // Pick the candidate whose surrounding words match the words around the
   // reader's selection.
   const renderedBefore = words(normalizedContainer.slice(0, renderedStart)).slice(-CONTEXT_WORDS).reverse();
   const renderedAfter = words(normalizedContainer.slice(renderedStart + needle.length)).slice(0, CONTEXT_WORDS);

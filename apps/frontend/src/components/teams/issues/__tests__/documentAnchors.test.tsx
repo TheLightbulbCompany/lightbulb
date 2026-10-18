@@ -60,6 +60,27 @@ describe("computeAnchor never pins text the page does not render", () => {
     expect(pinned("plan", 1, body).start).toBe(body.indexOf("and plan") + 4);
   });
 
+  it("skips image alt text whose words match the visible sentence's context", () => {
+    const body = "Intro text.\n\n![Sales grew in March](x)\n\nSales grew in March.";
+    expect(pinned("grew", 0, body)).toEqual({ start: body.lastIndexOf("grew"), text: "grew" }); // 46
+  });
+
+  it("skips a reference definition whose title repeats a visible sentence", () => {
+    const body = "Intro text.\n\n[x]: https://x 'Sales grew in March'\n\nSales grew in March.";
+    expect(pinned("grew", 0, body).start).toBe(body.lastIndexOf("grew"));
+  });
+
+  it("skips the source of a card fence that repeats a visible sentence", () => {
+    // The card renders as a card, not as its source text.
+    const body = "Intro.\n\n```openui-lang\nIntro. Revenue is up. Done\n```\n\nRevenue is up. Done";
+    const containerText = "Intro.\n\nRevenue is up. Done";
+    const start = containerText.indexOf("Revenue is up.");
+    const anchor = computeAnchor({ markdown: body, containerText, startOffset: start, endOffset: start + "Revenue is up.".length });
+    expect(anchor).not.toBeNull();
+    expect(verifyDocumentAnchorSelector({ markdown: body, selector: anchor!.selector }).reason).toBe("verified");
+    expect(anchor!.selector.position.markdownStart).toBe(body.lastIndexOf("Revenue is up."));
+  });
+
   it("refuses a quote over the server's 10,000-character cap", () => {
     const body = "word ".repeat(2500).trim();
     expect(computeAnchor({ markdown: body, containerText: body, startOffset: 0, endOffset: body.length })).toBeNull();

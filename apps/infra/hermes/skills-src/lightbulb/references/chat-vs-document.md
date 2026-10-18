@@ -89,7 +89,7 @@ finished document is announced with `scripts/lightbulb-post.sh`:
 
 > On it. I'll research Habits 365 and put together 5–7 demo video ideas as a doc on a task; I'll post it here in about 10 minutes.
 
-**Progress**, only if it runs past what you promised, in the thread:
+**Running late**, only if it runs past what you promised: one line in the thread with the new time (never a step-by-step update; paperclip SKILL.md "Telling the person about task work"):
 
 > Quick update: the competitor scan is done, and I'm now drafting the video concepts. About 5 more minutes.
 

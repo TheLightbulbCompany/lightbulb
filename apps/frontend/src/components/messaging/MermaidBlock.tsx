@@ -35,9 +35,9 @@ export function MermaidBlock({ source }: { source: string }) {
   }, [id, source]);
   if (!state) return <pre className="rounded-sm p-2 text-caption font-mono" style={{ background: "var(--edge)" }}>{source}</pre>;
   if ("error" in state) return <>
-    <p className="text-caption text-muted-foreground">Couldn't draw this diagram.</p>
+    <p className="text-caption text-muted-foreground">Couldn&apos;t draw this diagram.</p>
     <pre className="rounded-sm p-2 text-caption font-mono overflow-x-auto" style={{ background: "var(--edge)" }}>{source}</pre>
   </>;
-  // eslint-disable-next-line react/no-danger -- mermaid's sanitised SVG (securityLevel strict), rendered once per source
+  // mermaid's sanitised SVG (securityLevel strict), rendered once per source
   return <div role="img" aria-label="Diagram" className="openui-diagram overflow-x-auto my-2" dangerouslySetInnerHTML={{ __html: state.svg }} />;
 }

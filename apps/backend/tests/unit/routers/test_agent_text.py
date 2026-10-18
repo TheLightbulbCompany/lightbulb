@@ -6,7 +6,8 @@ from routers import agent_text
 
 OWNER, KEY = "org_1", "team@acme.thelightbulb.company/rk1"
 LINE = {"address": "+15551230000", "agent_id": "agent_front", "owner_id": OWNER, "kind": "text", "human_threads": {}}
-ROW = {"owner_id": OWNER, "channel": "text", "from_addr": "+15559870000"}
+PROVIDER = {"space_id": "sp1", "line_user_id": "lu1", "sender_user_id": "su1", "message_id": "m0"}
+ROW = {"owner_id": OWNER, "channel": "text", "from_addr": "+15559870000", "received_key": "rk1", "provider": PROVIDER}
 
 
 @pytest.fixture
@@ -15,22 +16,21 @@ def m(monkeypatch):
         "get_message": AsyncMock(return_value=dict(ROW)),
         "text_line_for_owner": AsyncMock(return_value=LINE),
         "has_sent_to": AsyncMock(return_value=True),
-        "send_text": AsyncMock(return_value={"message_handle": "h1"}),
+        "send_text": AsyncMock(return_value={"id": "h1"}),
         "put_sent": AsyncMock(),
         "mail_changed": AsyncMock(),
         "set_thread_mode": AsyncMock(),
         "business_name": AsyncMock(return_value="Acme"),
     }
     for name, mock in mocks.items():
-        monkeypatch.setattr(agent_text, name, mock)
-    monkeypatch.setattr(agent_text, "enabled", lambda: True)
+        monkeypatch.setattr(agent_text.photon if name == "send_text" else agent_text, name, mock)
+    monkeypatch.setattr(agent_text.photon, "enabled", lambda: True)
     return mocks
 
 
 async def test_reply_sends_from_the_line_to_the_customer_and_records_it(m):
     assert await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi") == "sent"
     m["get_message"].assert_awaited_once_with("team@acme.thelightbulb.company", "rk1")
-    m["send_text"].assert_awaited_once_with(from_number=LINE["address"], to_number="+15559870000", content="hi")
     m["put_sent"].assert_awaited_once_with(
         address="team@acme.thelightbulb.company",
         message_id="h1",
@@ -45,13 +45,38 @@ async def test_reply_sends_from_the_line_to_the_customer_and_records_it(m):
     m["set_thread_mode"].assert_not_awaited()
 
 
+async def test_reply_sends_to_the_row_space_as_the_line_user(m):
+    import hashlib
+
+    await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
+    m["send_text"].assert_awaited_once_with(
+        sender_id="lu1",
+        space_id="sp1",
+        text="hi",
+        idempotency_key=f"text-reply:rk1:{hashlib.sha256(b'hi').hexdigest()[:16]}",
+    )
+
+
+async def test_row_without_provider_ids_is_bad_reply_key(m):
+    m["get_message"].return_value = {k: v for k, v in ROW.items() if k != "provider"}
+    assert await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi") == "bad_reply_key"
+    m["send_text"].assert_not_awaited()
+
+
+async def test_member_phone_gets_no_disclosure(m):
+    m["has_sent_to"].return_value = False
+    m["text_line_for_owner"].return_value = dict(LINE, member_phones={"+15559870000": "u1"})
+    await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
+    assert m["send_text"].await_args.kwargs["text"] == "hi"
+
+
 async def test_first_reply_carries_the_disclosure_once(m):
     m["has_sent_to"].return_value = False
     await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
     m["has_sent_to"].assert_awaited_once_with(
         "team@acme.thelightbulb.company", "+15559870000", text_prefix=agent_text.DISCLOSURE_PREFIX
     )
-    assert m["send_text"].await_args.kwargs["content"] == "(Automated assistant for Acme) hi"
+    assert m["send_text"].await_args.kwargs["text"] == "(Automated assistant for Acme) hi"
     assert m["put_sent"].await_args.kwargs["text"] == "(Automated assistant for Acme) hi"
 
 
@@ -97,7 +122,7 @@ def test_clerk_thread_mode_sets_agent(client, monkeypatch):
 
 
 async def test_disabled_sends_nothing(m, monkeypatch):
-    monkeypatch.setattr(agent_text, "enabled", lambda: False)
+    monkeypatch.setattr(agent_text.photon, "enabled", lambda: False)
     assert await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi") == "disabled"
     m["send_text"].assert_not_awaited()
 
@@ -116,7 +141,7 @@ async def test_human_reply_on_human_thread_still_sends(m):
 async def test_human_reply_never_carries_the_disclosure(m):
     m["has_sent_to"].return_value = False
     await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi", by_human=True)
-    assert m["send_text"].await_args.kwargs["content"] == "hi"
+    assert m["send_text"].await_args.kwargs["text"] == "hi"
     m["has_sent_to"].assert_not_awaited()
 
 

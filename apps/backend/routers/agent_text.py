@@ -4,6 +4,7 @@ The backend sends a text only as a reply to a stored inbound text row, always fr
 line and always as the line's agent.
 """
 
+import hashlib
 import re
 import uuid
 from typing import Literal
@@ -18,7 +19,7 @@ from core.observability.metrics import put_metric
 from core.repositories.agent_email_repo import set_business_phone, set_thread_mode, text_line_for_owner
 from core.repositories.agent_mail_inbox_repo import get_message, has_sent_to, parse_reply_key, put_sent
 from core.services.agent_email import mail_changed
-from core.services.sendblue import SendblueError, enabled, send_text
+from core.services import photon
 from core.services.text_inbound import business_name
 from routers.agent_mail import _require_hook_token
 
@@ -37,7 +38,7 @@ async def _text_row(owner_id: str, key: str) -> tuple[str, dict] | None:
 
 
 async def send_reply(*, owner_id: str, reply_key: str, text: str, by_human: bool = False) -> str:
-    if not enabled():
+    if not photon.enabled():
         return "disabled"
     found = await _text_row(owner_id, reply_key)
     if not found:
@@ -46,20 +47,34 @@ async def send_reply(*, owner_id: str, reply_key: str, text: str, by_human: bool
     line = await text_line_for_owner(owner_id)
     if not line:
         return "no_line"
+    provider = row.get("provider") or {}
+    space_id = provider.get("space_id")
+    sender_id = provider.get("line_user_id") or line.get("photon_user_id")
+    if not space_id or not sender_id:
+        return "bad_reply_key"
     customer = row["from_addr"]
     if not by_human and customer in (line.get("human_threads") or {}):
         return "human_thread"
-    if not by_human and not await has_sent_to(address, customer, text_prefix=DISCLOSURE_PREFIX):
+    if (
+        not by_human
+        and customer not in (line.get("member_phones") or {})
+        and not await has_sent_to(address, customer, text_prefix=DISCLOSURE_PREFIX)
+    ):
         text = f"{DISCLOSURE.format(business=await business_name(owner_id))} {text}"
     try:
-        resp = await send_text(from_number=line["address"], to_number=customer, content=text)
-    except (SendblueError, httpx.HTTPError):
+        resp = await photon.send_text(
+            sender_id=sender_id,
+            space_id=space_id,
+            text=text,
+            idempotency_key=f"text-reply:{row['received_key']}:{hashlib.sha256(text.encode()).hexdigest()[:16]}",
+        )
+    except (photon.PhotonError, httpx.HTTPError):
         put_metric("text.send", dimensions={"result": "failed"})
         return "send_failed"
     put_metric("text.send", dimensions={"result": "sent"})
     await put_sent(
         address=address,
-        message_id=resp.get("message_handle") or f"sendblue-reply:{uuid.uuid4().hex}",
+        message_id=resp.get("id") or f"photon-reply:{uuid.uuid4().hex}",
         owner_id=owner_id,
         agent_id=line["agent_id"],
         to=customer,

@@ -25,8 +25,7 @@
 //                                  per-issue interactions read)
 //   - not ported: DecisionTriageStrip (decision queues are not proxied), join-request
 //     and stalled-review verbs (no BFF route: those rows show Open), screenshot
-//     thumbnails / gallery (/api/assets not proxied), the resolver-audience line
-//     (its port lands with the interaction audience line), memo + keyboard
+//     thumbnails / gallery (/api/assets not proxied), memo + keyboard
 //     selection ring, and the Collapsible height animation (plain conditional render)
 //   - Button / Textarea / palette classes -> editorial-btn, for-you-form__field, tokens
 
@@ -53,6 +52,8 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { AttachmentIssueContext } from "@/components/teams/shared/lib/attachments";
 import { DecisionResolver } from "@/components/teams/inbox/DecisionResolver";
 import { IssueThreadInteractionCard } from "@/components/teams/issues/IssueThreadInteractionCard";
+import { InteractionAudienceLine } from "@/components/teams/issues/InteractionAudienceLine";
+import { describeAttentionResolverAudience } from "@/components/teams/issues/lib/interaction-audience";
 import { useInteractionMutations } from "@/components/teams/issues/hooks/useInteractionMutations";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import { isAttentionKey } from "@/components/teams/inbox/hooks/useAttentionFeed";
@@ -140,6 +141,9 @@ export function AttentionQueueRow({
   };
 
   const compactActions = !isHidden ? collectCompactActions(item) : [];
+  // Who the server will let resolve this interaction; null for every other
+  // source and for a feed built before the metadata existed.
+  const audience = describeAttentionResolverAudience(item);
   const showOpen = !inline && !!href;
   const showRestore = isHidden && !!onRestore;
   const provenance = decideByProvenance(item);
@@ -289,6 +293,8 @@ export function AttentionQueueRow({
         <p className="mt-0.5 line-clamp-2 text-caption text-[var(--fg-mute)]">{detailLine}</p>
       </div>
 
+      {/* The audience reads before the verbs it qualifies. */}
+      {inline && !expanded && audience && <InteractionAudienceLine audience={audience} variant="compact" />}
       {inline && !expanded && renderFooter({ compact: true })}
 
       {inline && expanded && (

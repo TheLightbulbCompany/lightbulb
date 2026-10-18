@@ -1704,6 +1704,18 @@ export interface SubmitIssueThreadInteractionVerdicts {
 
 // --- the discriminated union ---
 
+// Resolver audience (who may resolve an interaction). Shapes from the fork's
+// packages/shared/src/constants.ts @ v2026.1012.0-isol8.4.
+export type IssueThreadInteractionCanonicalResolverPolicy = "anyone" | "not_creator" | "human_only";
+export type IssueThreadInteractionResolverPolicyProvenance =
+  | "explicit"
+  | "inherited"
+  | "legacy_inherited_restriction";
+export type IssueThreadInteractionEffectiveResolverPolicySource =
+  | "requested"
+  | "company_cap"
+  | "governed_action";
+
 export interface IssueThreadInteractionBase
   extends IssueThreadInteractionActorFields {
   id: string;
@@ -1713,6 +1725,14 @@ export interface IssueThreadInteractionBase
   idempotencyKey?: string | null;
   sourceCommentId?: string | null;
   sourceRunId?: string | null;
+  addresseeAgentId?: string | null;
+  addresseeUserId?: string | null;
+  /** Server-evaluated audience. Optional here: rows from an older Paperclip
+   *  omit it, and the audience line then renders nothing. */
+  requestedResolverPolicy?: IssueThreadInteractionCanonicalResolverPolicy;
+  effectiveResolverPolicy?: IssueThreadInteractionCanonicalResolverPolicy;
+  resolverPolicyProvenance?: IssueThreadInteractionResolverPolicyProvenance;
+  effectiveResolverPolicySource?: IssueThreadInteractionEffectiveResolverPolicySource;
   title?: string | null;
   summary?: string | null;
   status: IssueThreadInteractionStatus;
@@ -1948,9 +1968,22 @@ export interface AttentionItem {
   decisionVerbs?: AttentionDecisionVerb[];
   inlineResolvable?: boolean;
   detail?: AttentionItemDetail | null;
-  /** Set for `issue_thread_interaction` rows only. Typed loosely here; the
-   *  audience line that reads it is ported separately. */
-  resolverAudience?: Record<string, unknown> | null;
+  /** Set for `issue_thread_interaction` rows only. */
+  resolverAudience?: AttentionResolverAudience | null;
+}
+
+/** Who may resolve an `issue_thread_interaction` attention row (fork
+ *  packages/shared/src/types/attention.ts). */
+export interface AttentionResolverAudience {
+  requestedResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource;
+  resolverPolicyProvenance: IssueThreadInteractionResolverPolicyProvenance;
+  addresseeAgentId: string | null;
+  addresseeUserId?: string | null;
+  addresseeName: string | null;
+  createdByAgentId: string | null;
+  createdByAgentName: string | null;
 }
 
 export interface AttentionDecisionVerb {

@@ -159,6 +159,31 @@ describe("AttentionDesk", () => {
     expect(post).toHaveBeenCalledWith("/approvals/ap-1/reject", { reason: "Over budget" });
   });
 
+  it("a collapsed interaction row says whose decision it is above its verbs", async () => {
+    setDesk([item("ask", {
+      sourceKind: "issue_thread_interaction",
+      subject: { kind: "issue", id: "iss-1", title: "Release v2", identifier: null, status: null, href: null },
+      inlineResolvable: true,
+      decisionVerbs: [{ id: "accept", label: "Accept", description: null }],
+      interaction: {
+        id: "int-1", companyId: "co", issueId: "iss-1", kind: "request_confirmation", status: "pending",
+        continuationPolicy: "none", createdAt: iso(NOW), updatedAt: iso(NOW), payload: { version: 1, prompt: "Ship it?" },
+      },
+      resolverAudience: {
+        requestedResolverPolicy: "anyone", effectiveResolverPolicy: "anyone",
+        effectiveResolverPolicySource: "requested", resolverPolicyProvenance: "inherited",
+        addresseeAgentId: "a1", addresseeName: "Ada", createdByAgentId: null, createdByAgentName: null,
+      },
+    })]);
+    render(<AttentionDesk />);
+    const row = rowOf("Release v2");
+    await userEvent.click(within(row).getAllByRole("button", { name: "Collapse decision" })[0]);
+    const line = within(row).getByTestId("interaction-audience");
+    expect(line).toHaveAttribute("data-audience-variant", "compact");
+    expect(line).toHaveTextContent("Only Ada or the board can respond");
+    expect(line).toHaveAttribute("title", "Only Ada or a person on the board can respond.");
+  });
+
   it("snooze then Snoozed section lists it with Restore", async () => {
     setDesk([item("a")]);
     const { rerender } = render(<AttentionDesk />);

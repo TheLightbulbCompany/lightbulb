@@ -1,7 +1,9 @@
 // apps/frontend/src/components/teams/inbox/DecisionCard.tsx
 
 // Ported from upstream Paperclip's DecisionCard
-// (paperclip/ui/src/components/DecisionCard.tsx) (MIT, (c) 2025 Paperclip AI).
+// (paperclip/ui/src/components/DecisionCard.tsx @ v2026.1012.0-isol8.4)
+// (MIT, (c) 2025 Paperclip AI). Checked line by line against that tag: every
+// state, string and behaviour of upstream's card is here.
 //
 // Swaps vs upstream (markup, states, copy and behaviour are upstream's):
 //   - MarkdownBody -> TaskMarkdown
@@ -11,6 +13,9 @@
 //     shadcn semantic classes -> --fg / --fg-mute / --edge / --plane-*
 //   - the per-control focus ring is dropped for the one global :focus-visible
 //     outline
+//   - additions upstream lacks: `stalenessUnknown` keeps strict options
+//     disabled until targetChanged is read, and the cancel-tree confirm button
+//     also honours required inputs and staleness
 
 "use client";
 

@@ -39,3 +39,33 @@ export function cardAnswersFor(messages: readonly CanonicalRoomMessage[]): Map<s
   }
   return answers;
 }
+
+const norm = (s: string) => s.trim();
+
+/**
+ * Whether a message's answer came from THIS group of options. The answer is the message's
+ * (one per card), so a Form's "Sent." must not make the FollowUps beside it say "You picked
+ * Your name: Ada", and a Choice's pick must not make the Form beside it read "Sent.".
+ */
+export function answerIsFrom(answered: string | null, options: readonly string[], multi = false): boolean {
+  if (answered === null) return false;
+  const opts = new Set(options.map(norm));
+  if (!multi) return opts.has(norm(answered));
+  const parts = answered.split(",").map(norm).filter(Boolean);
+  return parts.length > 0 && parts.every((p) => opts.has(p));
+}
+
+/** A Form's reply is `Label: value` lines (reply.ts); it is this form's when every line names one of its labels. */
+export function answerIsFormOf(answered: string | null, labels: readonly string[]): boolean {
+  if (answered === null) return false;
+  const known = new Set(labels.map(norm));
+  const lines = answered.split("\n").map(norm).filter(Boolean);
+  return lines.length > 0 && lines.every((l) => known.has(norm(l.slice(0, l.indexOf(":") < 0 ? 0 : l.indexOf(":")))));
+}
+
+/** An EditableTable's reply is a markdown table (reply.ts); it is this table's when the header row is its columns. */
+export function answerIsTableOf(answered: string | null, columns: readonly string[]): boolean {
+  if (answered === null) return false;
+  const first = answered.split("\n")[0] ?? "";
+  return first.startsWith("|") && columns.every((c) => first.includes(`| ${norm(c)} `) || first.includes(`| ${norm(c)} |`));
+}

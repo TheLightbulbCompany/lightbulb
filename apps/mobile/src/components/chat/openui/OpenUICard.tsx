@@ -10,13 +10,15 @@ import { mobileCardLibrary, setCardPalette } from "./library";
 export function OpenUICard({ program, palette }: { program: string; palette: ChatPalette }) {
   const ctx = useCardReply();
   const [root, setRoot] = useState<ElementNode | null>(null);
+  const [unparsed, setUnparsed] = useState(false);
   setCardPalette(palette);
   if (new TextEncoder().encode(program).length > CARD_MAX_BYTES) return <Text selectable style={{ color: palette.fg }}>{program}</Text>;
   return (
     <View style={{ marginTop: spacing.sm, borderWidth: 1, borderColor: palette.edge, borderRadius: 10, backgroundColor: palette.raised, padding: spacing.md, gap: spacing.sm }}>
-      <Renderer response={program} library={mobileCardLibrary} isStreaming={false} onParseResult={(r) => setRoot(r?.root ?? null)}>
+      <Renderer response={program} library={mobileCardLibrary} isStreaming={false} onParseResult={(r) => { setRoot(r?.root ?? null); setUnparsed(r !== null && r.root === null); }}>
         <Root node={root} />
       </Renderer>
+      {unparsed ? <Text selectable style={{ fontFamily: fonts.mono, color: palette.fg }}>{program}</Text> : null}
       {ctx?.error ? <Text accessibilityRole="alert" style={{ fontFamily: fonts.sans, color: palette.alert }}>{ctx.error}</Text> : null}
     </View>
   );

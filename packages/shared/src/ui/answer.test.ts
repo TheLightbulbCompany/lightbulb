@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CanonicalRoomMessage } from "../messaging/types";
-import { cardAnswerFor, cardAnswersFor } from "./answer";
+import { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./answer";
 
 const msg = (over: Partial<CanonicalRoomMessage>): CanonicalRoomMessage => ({
   messageId: "m", roomId: "r", messageSeq: 1, roomRevision: 1, author: { kind: "agent", id: "a", displayName: "A" },
@@ -50,5 +50,21 @@ describe("cardAnswersFor", () => {
     const map = cardAnswersFor(messages);
     expect([...map]).toEqual([["tc", "Starter"]]);
     for (const card of [top, inThread]) expect(map.get(card.messageId) ?? null).toBe(cardAnswerFor(messages, card));
+  });
+});
+
+describe("which component an answer belongs to", () => {
+  it("a chip group owns a single pick, a multi group owns a comma list of its own options", () => {
+    expect(answerIsFrom("Studio", ["Starter", " Studio "])).toBe(true);
+    expect(answerIsFrom("Email, Push", ["Email", "SMS", "Push"], true)).toBe(true);
+    expect(answerIsFrom("Email, Fax", ["Email", "SMS", "Push"], true)).toBe(false);
+    expect(answerIsFrom("Your name: Ada\nPlan: Team", ["Compare the plans"])).toBe(false);
+    expect(answerIsFrom(null, ["A"])).toBe(false);
+  });
+  it("a form owns Label: value lines that name its labels; a table owns a markdown table with its columns", () => {
+    expect(answerIsFormOf("Your name: Ada\nPlan: Team", ["Your name", "Plan"])).toBe(true);
+    expect(answerIsFormOf("Studio", ["Your name", "Plan"])).toBe(false);
+    expect(answerIsTableOf("| Item | Qty |\n| --- | --- |\n| Pens | 3 |", ["Item", "Qty"])).toBe(true);
+    expect(answerIsTableOf("Your name: Ada", ["Item", "Qty"])).toBe(false);
   });
 });

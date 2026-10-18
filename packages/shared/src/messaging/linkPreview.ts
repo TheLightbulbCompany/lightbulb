@@ -34,7 +34,8 @@ const OWN_HOST = /(^|\.)(thelightbulb\.company|flickmeon\.ai)$/i;
  * links and our own domain are skipped: they get a document card or task chip, not a web preview. */
 export function extractPreviewUrls(text: string, max = MAX_LINK_PREVIEWS): string[] {
   const urls: string[] = [];
-  for (const match of text.matchAll(URL_RE)) {
+  // A URL inside a fenced block belongs to the block (a Sources card draws its own link); no preview for it.
+  for (const match of text.replace(/```[\s\S]*?(```|$)/g, " ").matchAll(URL_RE)) {
     const url = match[0].replace(TRAILING, "");
     let host: string;
     try {

@@ -87,6 +87,9 @@ function unrenderedRanges(markdown: string): Array<[number, number]> {
 
 const CONTEXT_WORDS = 8;
 const CANDIDATE_WORDS = 16;
+// Characters read around each candidate: enough for CANDIDATE_WORDS words, and it
+// keeps scoring linear when a short quote repeats thousands of times.
+const CONTEXT_CHARS = 600;
 
 function words(text: string): string[] {
   return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
@@ -187,13 +190,13 @@ export function computeAnchor(input: {
 
   // Pick the candidate whose surrounding words match the words around the
   // reader's selection.
-  const renderedBefore = words(normalizedContainer.slice(0, renderedStart)).slice(-CONTEXT_WORDS).reverse();
-  const renderedAfter = words(normalizedContainer.slice(renderedStart + needle.length)).slice(0, CONTEXT_WORDS);
+  const renderedBefore = words(normalizedContainer.slice(Math.max(0, renderedStart - CONTEXT_CHARS), renderedStart)).slice(-CONTEXT_WORDS).reverse();
+  const renderedAfter = words(normalizedContainer.slice(renderedStart + needle.length, renderedStart + needle.length + CONTEXT_CHARS)).slice(0, CONTEXT_WORDS);
   const scored = candidates.map((start) => ({
     start,
     score:
-      contextScore(renderedBefore, words(projection.text.slice(0, start)).slice(-CANDIDATE_WORDS).reverse())
-      + contextScore(renderedAfter, words(projection.text.slice(start + quote.length)).slice(0, CANDIDATE_WORDS)),
+      contextScore(renderedBefore, words(projection.text.slice(Math.max(0, start - CONTEXT_CHARS), start)).slice(-CANDIDATE_WORDS).reverse())
+      + contextScore(renderedAfter, words(projection.text.slice(start + quote.length, start + quote.length + CONTEXT_CHARS)).slice(0, CANDIDATE_WORDS)),
   }));
   const best = Math.max(...scored.map((c) => c.score));
   const sameCount = candidates.length === rendered.length;

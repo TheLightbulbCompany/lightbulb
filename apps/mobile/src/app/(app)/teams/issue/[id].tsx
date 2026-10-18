@@ -636,6 +636,8 @@ function ReadyBody({
       <DocumentsSection
         documents={documents}
         agents={agents}
+        members={members}
+        currentUserId={currentUserId}
         onSave={onUpdateDocument}
       />
       <AttachmentsSection issueId={state.issue.id} attachments={attachments} />

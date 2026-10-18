@@ -230,6 +230,8 @@ export interface IssueDocument {
   latestRevisionId?: string | null;
   latestRevisionNumber?: number | null;
   updatedByAgentId?: string | null;
+  /** The Paperclip user id of a person who saved it. */
+  updatedByUserId?: string | null;
 }
 
 /** A binary attachment from `GET /teams/issues/{id}/attachments`. Content
@@ -262,6 +264,8 @@ export interface TeamsAgent {
  */
 export interface CompanyMember {
   userId: string;
+  /** The member's Paperclip user id (what a saved document's `updatedByUserId` carries). */
+  paperclipUserId?: string | null;
   name?: string | null;
   email?: string | null;
   imageUrl?: string | null;

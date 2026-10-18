@@ -12,7 +12,9 @@ import {
 } from "react-native";
 
 import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
+import { actorName } from "../../lib/actorName";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
+import { CardReplyContext, readOnlyCardReply } from "../chat/openui/CardReplyContext";
 import { DocumentEditSheet } from "./DocumentEditSheet";
 import {
   fetchAttachmentDataUri,
@@ -20,6 +22,7 @@ import {
   useTeamsConfig,
   type IssueAttachment,
   type IssueDocument,
+  type CompanyMember,
   type IssueWorkProduct,
   type TeamsAgent,
 } from "../../lib/teamsData";
@@ -148,13 +151,20 @@ export function WorkProductsSection({
   );
 }
 
+/** A document draws its cards but never answers one: no `press`, so every control is disabled. */
+const READ_ONLY_CARDS = readOnlyCardReply("document");
+
 export function DocumentsSection({
   documents,
   agents,
+  members,
+  currentUserId,
   onSave,
 }: {
   documents: IssueDocument[];
   agents: TeamsAgent[];
+  members: CompanyMember[];
+  currentUserId: string | null;
   onSave: (key: string, title: string, body: string, baseRevisionId: string | null) => Promise<void>;
 }) {
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
@@ -194,7 +204,7 @@ export function DocumentsSection({
                 </Text>
                 {doc.updatedAt ? (
                   <Text style={styles.rowMeta}>
-                    {agents.find((a) => a.id === doc.updatedByAgentId)?.name ?? "Someone"} · updated{" "}
+                    {actorName({ agentId: doc.updatedByAgentId, userId: doc.updatedByUserId, agents, members, currentUserId })} · updated{" "}
                     {timeAgo(doc.updatedAt)}
                     {doc.latestRevisionNumber != null ? ` · rev ${doc.latestRevisionNumber}` : ""}
                   </Text>
@@ -209,7 +219,9 @@ export function DocumentsSection({
             </Pressable>
             {open ? (
               doc.body ? (
-                <MessageMarkdown text={doc.body} palette={palette} />
+                <CardReplyContext.Provider value={READ_ONLY_CARDS}>
+                  <MessageMarkdown text={doc.body} palette={palette} />
+                </CardReplyContext.Provider>
               ) : (
                 <Text style={styles.rowMeta}>Empty document.</Text>
               )

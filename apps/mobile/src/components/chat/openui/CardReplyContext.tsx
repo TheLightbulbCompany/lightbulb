@@ -27,6 +27,8 @@ export interface CardReplyValue {
 }
 
 export const CardReplyContext = createContext<CardReplyValue | null>(null);
+/** The context of a card shown outside a room (a document): no `press`, so every control is disabled. */
+export const readOnlyCardReply = (messageId: string): CardReplyValue => ({ messageId, roomId: "", authorId: "", threadRootMessageId: null, attachments: [], answered: null, pending: false, error: null, retry: null });
 export const useCardReply = () => useContext(CardReplyContext);
 
 export type OnReply = (text: string, clientMessageId: string) => Promise<void>;

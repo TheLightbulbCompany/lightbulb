@@ -68,9 +68,9 @@ export interface SecretNames {
   livekitApiSecret: string;
   recallApiKey: string;
   recallWebhookSecret: string;
-  sendblueApiKeyId: string;
-  sendblueApiSecretKey: string;
-  sendblueWebhookSecret: string;
+  photonApiKey: string;
+  photonProjectId: string;
+  photonWebhookSecret: string;
   huddleWorkerSecret: string;
   /**
    * Symmetric secret used by the FastAPI Paperclip proxy router to sign
@@ -1961,14 +1961,14 @@ export class ServiceStack extends cdk.Stack {
       RECALL_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportRecallWebhookSecret", props.secretNames.recallWebhookSecret),
       ),
-      SENDBLUE_API_KEY_ID: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(this, "ImportSendblueApiKeyId", props.secretNames.sendblueApiKeyId),
+      PHOTON_API_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonApiKey", props.secretNames.photonApiKey),
       ),
-      SENDBLUE_API_SECRET_KEY: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(this, "ImportSendblueApiSecretKey", props.secretNames.sendblueApiSecretKey),
+      PHOTON_PROJECT_ID: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonProjectId", props.secretNames.photonProjectId),
       ),
-      SENDBLUE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(this, "ImportSendblueWebhookSecret", props.secretNames.sendblueWebhookSecret),
+      PHOTON_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonWebhookSecret", props.secretNames.photonWebhookSecret),
       ),
       HUDDLE_WORKER_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportHuddleWorkerSecret", props.secretNames.huddleWorkerSecret),

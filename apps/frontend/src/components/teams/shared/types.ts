@@ -263,17 +263,38 @@ export interface IssueUpdateInput {
   executionPolicy?: IssueExecutionPolicy | null;
 }
 
-/** A slim issue summary used by the "Blocked by" / "Blocking" relation rows.
+/** A slim issue summary used by the "Blocked by" / "Blocking" relation rows
+ * and the ported IssueBlockedNotice.
  *
  * Ported from upstream Paperclip's ``IssueRelationIssueSummary``
- * (packages/shared/src/types/issue.ts) (MIT, © 2025 Paperclip AI). Trimmed to
- * the fields the Teams relation chips render — upstream's recovery/terminal-
- * blocker fields are deferred. */
+ * (packages/shared/src/types/issue.ts @ v2026.1012.0-isol8.4) (MIT, © 2025
+ * Paperclip AI). The fields past ``status`` are optional here because older
+ * payloads and hand-built summaries omit them. */
 export interface IssueRelationIssueSummary {
   id: string;
   identifier?: string | null;
   title: string;
   status: IssueStatus;
+  priority?: IssuePriority | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  terminalBlockers?: IssueRelationIssueSummary[];
+  activeRecoveryAction?: IssueRecoveryAction | null;
+  scheduledRetry?: IssueScheduledRetry | null;
+}
+
+/** Upstream ``SuccessfulRunHandoffState`` (packages/shared/src/types/issue.ts
+ * @ v2026.1012.0-isol8.4): a run finished but the task still needs a next step. */
+export interface SuccessfulRunHandoffState {
+  state: "required" | "resolved" | "escalated";
+  required: boolean;
+  hasLiveContinuation: boolean;
+  liveRunId?: string | null;
+  sourceRunId: string | null;
+  correctiveRunId: string | null;
+  assigneeAgentId: string | null;
+  detectedProgressSummary: string | null;
+  createdAt: Date | string | null;
 }
 
 /** The monitor schedule that rides on an issue's executionPolicy. Mirrors
@@ -440,6 +461,11 @@ export interface Issue {
    * IssueMonitorBanner falls back to them when executionState has no monitor. */
   monitorNextCheckAt?: string | null;
   monitorAttemptCount?: number | null;
+  /** A successful run left the task open without a next step (detail route);
+   * drives the ported IssueBlockedNotice's handoff alarm. */
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  /** The issue's active recovery action, when upstream attaches it to the read. */
+  activeRecoveryAction?: IssueRecoveryAction | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -2,16 +2,21 @@
 
 // Ported from upstream Paperclip @ v2026.916.1-isol8.2 (MIT, (c) 2025 Paperclip AI):
 //   - ui/src/lib/recovery-lineage.ts        (verbatim)
-//   - ui/src/lib/recovery-display.ts        (deriveRecoveryDisplayState only — the
-//                                            blocker-chip tone table is not ported)
+//   - ui/src/lib/recovery-display.ts        (deriveRecoveryDisplayState)
 //   - packages/shared/src/types/execution-projection.ts
 //                                           (requiresExecutionReconciliation)
-// Collapsed into one module because IssueRecoveryActionCard is their only consumer here.
+// and @ v2026.1012.0-isol8.4: recovery-display.ts's ActiveRecoveryDisplayState,
+// RECOVERY_CHIP_DEFAULT_TONE, deriveActiveRecoveryDisplayState and recoveryChipLabel
+// (IssueBlockedNotice's blocker chip), the amber/sky/red palette mapped onto the
+// brand state tokens warn/info/err.
+// Collapsed into one module: IssueRecoveryActionCard and IssueBlockedNotice consume it.
 
 import type {
   IssueRecoveryAction,
+  IssueRecoveryActionKind,
   IssueScheduledRetry,
 } from "@/components/teams/shared/types";
+import { Eye, OctagonAlert, RefreshCw, TriangleAlert } from "lucide-react";
 import { formatMonitorOffset } from "./issue-monitor";
 
 // --- packages/shared/src/types/execution-projection.ts -----------------------
@@ -284,6 +289,34 @@ export type RecoveryDisplayState =
   | "escalated"
   | "resolved";
 
+export type ActiveRecoveryDisplayState = Exclude<RecoveryDisplayState, "resolved">;
+
+export const RECOVERY_CHIP_DEFAULT_TONE: Record<
+  ActiveRecoveryDisplayState,
+  { className: string; icon: typeof TriangleAlert; label: string }
+> = {
+  needed: {
+    className: "border-warn/60 bg-warn/15 text-warn",
+    icon: TriangleAlert,
+    label: "Recovery needed",
+  },
+  in_progress: {
+    className: "border-info/60 bg-info/15 text-info",
+    icon: RefreshCw,
+    label: "Recovery in progress",
+  },
+  observe_only: {
+    className: "border-border bg-muted text-muted-foreground",
+    icon: Eye,
+    label: "Observing active run",
+  },
+  escalated: {
+    className: "border-err/60 bg-err/15 text-err",
+    icon: OctagonAlert,
+    label: "Recovery escalated",
+  },
+};
+
 /**
  * Every surface derives its recovery tone from this one function, so a source issue and
  * the parent views that list it as a blocker never disagree about whether recovery is
@@ -296,6 +329,7 @@ export type RecoveryDisplayInput = Pick<
   Partial<
     Pick<
       IssueRecoveryAction,
+      | "cause"
       | "ownerType"
       | "wakePolicy"
       | "evidence"
@@ -334,3 +368,31 @@ export function deriveRecoveryDisplayState(
   return "needed";
 }
 
+
+export function deriveActiveRecoveryDisplayState(
+  action: RecoveryDisplayInput,
+  context?: RecoveryLivenessContext,
+): ActiveRecoveryDisplayState | null {
+  if (action.cause === "native_workspace_sync_out_unsafe_archive") return null;
+  const state = deriveRecoveryDisplayState(action, context);
+  return state === "resolved" ? null : state;
+}
+
+export function recoveryChipLabel(
+  state: ActiveRecoveryDisplayState,
+  kind: IssueRecoveryActionKind,
+  lineage?: RecoveryRetryLineage | null,
+): string {
+  if (kind === "workspace_validation" && state === "needed") {
+    return "Workspace recovery needed";
+  }
+  if (
+    state === "in_progress" &&
+    lineage &&
+    lineage.maxAttempts !== null &&
+    lineage.attempt > 0
+  ) {
+    return `Recovery in progress · ${Math.min(lineage.attempt, lineage.maxAttempts)}/${lineage.maxAttempts}`;
+  }
+  return RECOVERY_CHIP_DEFAULT_TONE[state].label;
+}

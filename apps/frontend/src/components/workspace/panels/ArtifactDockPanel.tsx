@@ -99,7 +99,11 @@ function DocumentPane({ source }: { source: Extract<ArtifactSource, { kind: "doc
   const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: membersData } = read<{ members: CompanyMember[] }>("/members");
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  const openTask = <Button type="button" variant="outline" size="sm" onClick={() => openPanel("teams-issue-detail", { detailId: source.issue }, { pushUrl: true })}>Open task</Button>;
+  const [editing, setEditing] = useState(false);
+  const actions = <>
+    <Button type="button" variant="outline" size="sm" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>Edit</Button>
+    <Button type="button" variant="outline" size="sm" onClick={() => openPanel("teams-issue-detail", { detailId: source.issue }, { pushUrl: true })}>Open task</Button>
+  </>;
   const agents = agentsData?.agents ?? [];
   const author = (data?.updatedByAgentId && agents.find((a) => a.id === data.updatedByAgentId)?.name)
     || (data?.updatedByUserId && membersData?.members.find((m) => m.userId === data.updatedByUserId)?.name)
@@ -107,14 +111,14 @@ function DocumentPane({ source }: { source: Extract<ArtifactSource, { kind: "doc
   const when = data?.updatedAt ?? data?.createdAt;
   const outline = outlineOf(data?.body ?? "");
   return (
-    <PaneFrame actions={openTask}>
+    <PaneFrame actions={actions}>
       {error && <p role="alert" className="p-4 text-ui">{describeError(error)}</p>}
       {data && <div className="mx-auto max-w-2xl p-4">
         <h2 className="text-lg font-semibold">{data.title || data.key}</h2>
         <p className="mb-3 text-caption text-muted-foreground">{author}{when ? ` · updated ${timeAgo(when)}` : ""} · rev {data.latestRevisionNumber ?? 1}</p>
         {outline.length >= CONTENTS_MIN_HEADINGS && <DocumentContents entries={outline} bodyRef={bodyRef} />}
         <AttachmentIssueContext.Provider value={source.issue}>
-          <div ref={bodyRef}><DocumentRow doc={data} agents={agents} issueId={source.issue} defaultOpen hideTitle /></div>
+          <div ref={bodyRef}><DocumentRow doc={data} agents={agents} issueId={source.issue} defaultOpen hideTitle editing={editing} onEditingChange={setEditing} /></div>
         </AttachmentIssueContext.Provider>
       </div>}
     </PaneFrame>

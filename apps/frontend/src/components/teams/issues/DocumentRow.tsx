@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, ChevronDown, MessageSquare, RotateCcw } from "lucide-react";
+import { ChevronRight, ChevronDown, MessageSquare, Pencil, RotateCcw } from "lucide-react";
+import { useUser } from "@clerk/nextjs";
 import { useSWRConfig } from "swr";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -12,6 +13,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, IssueDocument } from "@/components/teams/shared/types";
 import { DocumentRevisionMenu } from "./DocumentRevisionMenu";
 import { DocumentDiffModal } from "./DocumentDiffModal";
+import { DocumentEditor } from "./DocumentEditor";
 import { DocumentAnnotationLayer, type OverlayThread } from "./DocumentAnnotationLayer";
 import { DocumentAnnotationPanel } from "./DocumentAnnotationPanel";
 import type {
@@ -43,6 +45,8 @@ export function DocumentRow({
   onRestored,
   defaultOpen,
   hideTitle,
+  editing: editingProp,
+  onEditingChange,
 }: {
   doc: IssueDocument;
   agents: CompanyAgent[];
@@ -59,6 +63,10 @@ export function DocumentRow({
   defaultOpen?: boolean;
   // The pane shows the title and author line itself; keep only the row's actions.
   hideTitle?: boolean;
+  // Controlled editing, so the pane's Edit action and the row's own pencil share one state.
+  // Left unset, the row keeps the state itself.
+  editing?: boolean;
+  onEditingChange?: (editing: boolean) => void;
 }) {
   const root = basePath ?? `/issues/${issueId}`;
   const reviewable = doc as ReviewableDocument;
@@ -69,6 +77,14 @@ export function DocumentRow({
   const [pendingAnchor, setPendingAnchor] = useState<PendingAnchor | null>(null);
   const [focusedThreadId, setFocusedThreadId] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
+  const [editingOwn, setEditingOwn] = useState(false);
+  const editing = editingProp ?? editingOwn;
+  const setEditing = useCallback((v: boolean) => {
+    setEditingOwn(v);
+    onEditingChange?.(v);
+  }, [onEditingChange]);
+  const { user } = useUser();
+  const currentUserName = user?.firstName ?? user?.fullName ?? "You";
   // Cards and diagrams in a document render read-only: a context with no press.
   const readOnlyCards = useMemo(() => readOnlyCardContext(doc.id), [doc.id]);
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -256,6 +272,19 @@ export function DocumentRow({
               <MessageSquare size={12} strokeWidth={1.75} />
               <span className="tabular-nums">{openCount}</span>
             </button>
+            {!historicalPreview ? (
+              <button
+                type="button"
+                onClick={() => { setOpen(true); setEditing(!editing); }}
+                aria-pressed={editing}
+                aria-label="Edit document"
+                data-testid={`document-edit-${doc.key}`}
+                className="flex items-center rounded-sm px-1.5 py-0.5"
+                style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)", background: editing ? "var(--edge)" : "transparent" }}
+              >
+                <Pencil size={12} strokeWidth={1.75} />
+              </button>
+            ) : null}
             {open ? (
               <DocumentRevisionMenu
                 issueId={issueId!}
@@ -309,6 +338,16 @@ export function DocumentRow({
               {/* `bodyRef` wraps ONLY the rendered markdown so the annotation
                   layer's text-node walk + selection offsets aren't polluted by
                   the overlay's own chrome (which is a sibling below). */}
+              {editing && reviewEnabled && !historicalPreview ? (
+                <DocumentEditor
+                  issueId={issueId!}
+                  basePath={root}
+                  document={reviewable}
+                  currentUserName={currentUserName}
+                  onSaved={() => { setEditing(false); onRestored?.(); }}
+                  onCancel={() => setEditing(false)}
+                />
+              ) : (<>
               <div ref={bodyRef}>
                 {shownBody && shownBody.trim() ? (
                   <CardContext.Provider value={readOnlyCards}>
@@ -333,6 +372,7 @@ export function DocumentRow({
                   newCommentDisabledReason={newCommentDisabledReason}
                 />
               ) : null}
+              </>)}
             </div>
 
             {reviewEnabled && panelOpen ? (

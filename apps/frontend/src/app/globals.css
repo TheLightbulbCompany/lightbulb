@@ -1570,3 +1570,26 @@
   .live-dot { animation: none; }
   .live-face, .live-agent .lk-audio-bar { transition: none; }
 }
+
+/* MDXEditor reads these --base and --accent variables; map them onto the chat ladder. */
+.mdxeditor.lb-editor {
+  --basePageBg: var(--plane-pane);
+  --baseBg: var(--plane-pane);
+  --baseBgSubtle: var(--plane-raised);
+  --baseBgHover: var(--plane-raised);
+  --baseBgActive: var(--plane-raised);
+  --baseBorder: var(--edge);
+  --baseBorderHover: var(--edge);
+  --baseLine: var(--edge);
+  --baseText: var(--fg);
+  --baseTextContrast: var(--fg);
+  --accentBg: var(--plane-raised);
+  --accentBgHover: var(--plane-raised);
+  --accentBgActive: var(--plane-raised);
+  --accentBorder: var(--edge);
+  --accentText: var(--link);
+  --accentTextContrast: var(--link);
+  --font-body: inherit;
+  color: var(--fg);
+}
+.mdxeditor.lb-editor [contenteditable="true"] { min-height: 12rem; color: var(--fg); }

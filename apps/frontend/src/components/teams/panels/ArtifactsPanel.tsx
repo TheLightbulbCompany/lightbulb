@@ -118,6 +118,7 @@ function SortControl({
 
 export function ArtifactsPanel() {
   const { read, del, download, mutate } = useTeamsApi();
+  const nav = useInlineTeamsNav();
   // The gallery and the issue-detail sections keep SEPARATE SWR caches; deleting
   // here must also invalidate the issue-scoped list (documents/attachments/
   // work-products) or the removed artifact lingers in the task detail. Both
@@ -217,14 +218,13 @@ export function ArtifactsPanel() {
 
   // A card opens the artifact pane. When no pane params can be built, fall back
   // to the old behaviour: download the bytes if there are any, else open the task.
-  const nav = useInlineTeamsNav();
   function openInPane(a: CompanyArtifact) {
     const kind = artifactKind(a.id);
     const issue = a.issue?.id;
     let params: Record<string, string> | null = null;
     if (issue && kind === "document") {
       const key = documentKeyFromArtifact(a);
-      if (key) params = { src: "paperclip", kind, issue, key, ident: a.issue?.identifier };
+      if (key) params = { src: "paperclip", kind, issue, key, ...(a.issue?.identifier ? { ident: a.issue.identifier } : {}) };
     } else if (issue && (kind === "attachment" || kind === "work_product")) {
       const id = kind === "attachment" ? artifactRawId(a.id) : attachmentIdFromHref(a.downloadPath ?? a.openPath);
       if (id) params = { src: "paperclip", kind, issue, id, name: a.title, ...(a.contentType ? { type: a.contentType } : {}) };

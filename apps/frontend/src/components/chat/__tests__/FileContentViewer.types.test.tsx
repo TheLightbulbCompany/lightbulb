@@ -27,11 +27,10 @@ describe("FileContentViewer previews", () => {
     expect(await screen.findByRole("table")).toBeInTheDocument();
   });
 
-  it("renders html in a sandboxed frame", async () => {
-    render(<FileContentViewer file={file({ name: "p.html", path: "p.html", mime_type: "text/html", content: "<p>hi</p>" })} isLoading={false} error={null} />);
-    const frame = await screen.findByTitle("p.html");
-    expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
-    expect(frame.getAttribute("src")).toBeNull();
+  it("keeps html editable (it previews in the right pane, not the tree)", () => {
+    const { container } = render(<FileContentViewer file={file({ name: "p.html", path: "p.html", mime_type: "text/html", content: "<p>hi</p>" })} isLoading={false} error={null} />);
+    expect(screen.getByLabelText("File contents")).toBeInTheDocument();
+    expect(container.querySelector("iframe")).toBeNull();
   });
 
   it("keeps markdown editable", () => {

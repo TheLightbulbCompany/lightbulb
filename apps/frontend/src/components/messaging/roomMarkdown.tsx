@@ -33,7 +33,8 @@ function CodeOrCard(props: CodeProps) {
   }
   // A diagram is inert, so unlike a card it renders for anyone.
   if (typeof className === "string" && className.split(" ").includes(MERMAID_CLASS)) {
-    return <Suspense fallback={<DefaultCode {...props} />}>
+    // PreOrCard unwrapped the <pre> for the diagram, so the loading fallback brings its own.
+    return <Suspense fallback={<DefaultPre><DefaultCode {...props} /></DefaultPre>}>
       <MermaidBlock source={String(children ?? "").replace(/\n$/, "")} />
     </Suspense>;
   }

@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { roomMarkdown } from "../roomMarkdown";
+import mermaid from "mermaid";
 
 vi.mock("mermaid", () => ({
   default: {
@@ -17,6 +18,15 @@ it("draws a mermaid fence as an inline diagram", async () => {
   render(<MarkdownView components={roomMarkdown}>{"```mermaid\ngraph TD; A-->B\n```"}</MarkdownView>);
   expect(await screen.findByRole("img", { name: /diagram/i })).toBeInTheDocument();
   expect(document.querySelector("pre")).toBeNull();
+  // Review Focus 5 rests on this one setting: labels are sanitised.
+  expect(mermaid.initialize).toHaveBeenCalledWith(expect.objectContaining({ securityLevel: "strict", suppressErrorRendering: true }));
+});
+
+it("re-initialises before every diagram, so the theme follows a toggle", async () => {
+  vi.mocked(mermaid.initialize).mockClear();
+  render(<MarkdownView components={roomMarkdown}>{"```mermaid\ngraph TD; C-->D\n```"}</MarkdownView>);
+  await screen.findByRole("img", { name: /diagram/i });
+  expect(mermaid.initialize).toHaveBeenCalledTimes(1);
 });
 
 it("a bad diagram falls back to code", async () => {

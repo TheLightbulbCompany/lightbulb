@@ -13,8 +13,6 @@ function themeVariables(): Record<string, string> {
   };
 }
 
-let initialised = false;
-
 /** A ```mermaid fence drawn inline. `securityLevel: "strict"` sanitises labels; the SVG is mermaid's own output. */
 export function MermaidBlock({ source }: { source: string }) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, "");
@@ -24,7 +22,10 @@ export function MermaidBlock({ source }: { source: string }) {
     (async () => {
       try {
         const mermaid = (await import("mermaid")).default;
-        if (!initialised) { mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "base", fontFamily: "inherit", themeVariables: themeVariables() }); initialised = true; }
+        // mermaid's config is global and LobsterGraphView initialises it too, so set ours (with the
+        // theme as it is now, after any light/dark toggle) before every render. suppressErrorRendering
+        // stops a failed render leaving mermaid's error SVG in document.body.
+        mermaid.initialize({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true, theme: "base", fontFamily: "inherit", themeVariables: themeVariables() });
         const { svg } = await mermaid.render(`m${id}`, source);
         if (live) setState({ svg });
       } catch (e) {

@@ -7,7 +7,10 @@ import { notifyApiError } from "@/lib/notify";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { LobsterGraphView } from "@/components/chat/LobsterGraphView";
 import { useScopedHotkey } from "@/hooks/useScopedHotkey";
-import { FileViewerContent, isPaneViewable } from "@/components/media/FileViewerContent";
+import { FileViewerContent, normalizeContentType } from "@/components/media/FileViewerContent";
+
+/** The only kinds the file tree previews instead of editing (a positive allowlist). */
+const TREE_PREVIEW = new Set(["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv"]);
 
 const isSaveHotkey = (e: KeyboardEvent) => (e.metaKey || e.ctrlKey) && e.key === "s";
 
@@ -55,8 +58,9 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
     return () => URL.revokeObjectURL(url);
   }, [pdfContent]);
 
-  // Spreadsheets and HTML preview from a Blob; markdown/plain text stay editable below.
-  const previewable = file != null && file.content != null && isPaneViewable(file.mime_type) && !["application/pdf", "text/markdown", "text/plain"].includes(file.mime_type);
+  // Spreadsheets preview from a Blob; everything else text (HTML included) stays editable below.
+  // An HTML page previews in the right pane, where its sandbox lives.
+  const previewable = file != null && file.content != null && TREE_PREVIEW.has(normalizeContentType(file.mime_type));
   const previewBlob = React.useMemo(
     () => (previewable && file ? (file.binary ? base64ToBlob(file.content as string, file.mime_type) : new Blob([file.content as string], { type: file.mime_type })) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps

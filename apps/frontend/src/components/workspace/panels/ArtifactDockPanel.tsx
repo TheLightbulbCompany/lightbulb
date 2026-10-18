@@ -104,7 +104,7 @@ function DocumentPane({ source }: { source: Extract<ArtifactSource, { kind: "doc
   const { user } = useUser();
   const [editing, setEditing] = useState(false);
   const [previewing, setPreviewing] = useState(false);
-  const canEdit = !data?.lockedAt && !previewing;
+  const canEdit = (editing || !data?.lockedAt) && !previewing;
   const actions = <>
     {canEdit && <Button type="button" variant="outline" size="sm" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>Edit</Button>}
     <Button type="button" variant="outline" size="sm" onClick={() => openPanel("teams-issue-detail", { detailId: source.issue }, { pushUrl: true })}>Open task</Button>

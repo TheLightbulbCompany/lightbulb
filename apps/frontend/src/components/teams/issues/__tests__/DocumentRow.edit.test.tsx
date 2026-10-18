@@ -31,3 +31,12 @@ it("a locked document has no pencil", () => {
   render(<DocumentRow doc={{ ...doc, lockedAt: "2026-10-16T10:00:00Z" }} agents={[]} issueId="i1" defaultOpen />);
   expect(screen.queryByRole("button", { name: "Edit document" })).toBeNull();
 });
+
+it("a lock that arrives mid-edit keeps the editor mounted but removes the pencil", async () => {
+  const { rerender } = render(<DocumentRow doc={doc} agents={[]} issueId="i1" defaultOpen />);
+  await userEvent.click(screen.getByRole("button", { name: "Edit document" }));
+  await screen.findByRole("textbox", { name: "Body" });
+  rerender(<DocumentRow doc={{ ...doc, lockedAt: "2026-10-16T10:00:00Z" }} agents={[]} issueId="i1" defaultOpen />);
+  expect(screen.getByRole("textbox", { name: "Body" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Edit document" })).toBeNull();
+});

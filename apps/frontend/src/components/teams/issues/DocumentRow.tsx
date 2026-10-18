@@ -102,7 +102,7 @@ export function DocumentRow({
 
   const reviewEnabled = Boolean(issueId);
   // Only issue documents have a save route; a case document keeps comments and versions.
-  const editable = reviewEnabled && !doc.lockedAt && (basePath === undefined || basePath === `/issues/${issueId}`);
+  const editable = reviewEnabled && (basePath === undefined || basePath === `/issues/${issueId}`);
   const latestRevisionNumber = reviewable.latestRevisionNumber ?? 0;
   const latestRevisionId = reviewable.latestRevisionId ?? null;
   const annotationsPath = reviewEnabled
@@ -273,7 +273,7 @@ export function DocumentRow({
               <MessageSquare size={12} strokeWidth={1.75} />
               <span className="tabular-nums">{openCount}</span>
             </button>
-            {editable && !historicalPreview ? (
+            {editable && !doc.lockedAt && !historicalPreview ? (
               <button
                 type="button"
                 onClick={() => { setOpen(true); setEditing(!editing); }}

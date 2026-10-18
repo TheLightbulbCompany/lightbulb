@@ -6,10 +6,10 @@ import { ApiError } from "@lightbulb/shared";
 const mockGet = vi.fn();
 const mockPost = vi.fn();
 const refresh = vi.fn();
-const billing = vi.hoisted(() => ({ price: 7 as number | undefined }));
+const billing = vi.hoisted(() => ({ price: 7 as number | null | undefined, frontDesk: false }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: mockGet, post: mockPost }) }));
 vi.mock("@/hooks/useBilling", () => ({
-  useBilling: () => ({ account: { front_desk_price_usd: billing.price }, refresh }),
+  useBilling: () => ({ account: { front_desk_price_usd: billing.price, front_desk: billing.frontDesk }, refresh }),
 }));
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: { id: "org_1" }, membership: { role: "org:admin" } }),
@@ -32,6 +32,7 @@ describe("MailPanel number", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     billing.price = 7;
+    billing.frontDesk = false;
     line = null;
     mockGet.mockImplementation(async (url: string) => {
       if (url === "/agent-text/line") {
@@ -50,13 +51,9 @@ describe("MailPanel number", () => {
     expect(screen.queryByRole("button", { name: /Get a phone number/ })).toBeNull();
   });
 
-  it("shows the price from pricing, and neutral copy without one", async () => {
-    const { unmount } = renderMail();
-    expect(await screen.findByRole("button", { name: "Get a phone number · $7/month" })).toBeInTheDocument();
-    unmount();
-    billing.price = undefined;
+  it("shows the price from pricing", async () => {
     renderMail();
-    expect(await screen.findByRole("button", { name: "Get a phone number" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Get a phone number · $7/month" })).toBeInTheDocument();
   });
 
   it("checkout status navigates to url", async () => {
@@ -75,5 +72,40 @@ describe("MailPanel number", () => {
     const before = lineReads();
     await waitFor(() => expect(lineReads()).toBeGreaterThan(before));
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it("hides the button without a price", async () => {
+    billing.price = null;
+    renderMail();
+    await waitFor(() => expect(mockGet.mock.calls.some(([u]) => u === "/agent-text/line")).toBe(true));
+    await new Promise((r) => setTimeout(r, 50)); // let the 404 settle
+    expect(screen.queryByRole("button", { name: /Get a phone number/ })).toBeNull();
+  });
+
+  it("shows the pending state while the number is being set up", async () => {
+    billing.frontDesk = true;
+    renderMail();
+    expect(await screen.findByText("Setting up your number…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Get a phone number/ })).toBeNull();
+  });
+
+  it("shows plain words on a failed post", async () => {
+    const cases: [ApiError, string | null][] = [
+      [new ApiError(409, { detail: "apple_managed" }), "Not available on this plan"],
+      [new ApiError(409, { detail: "no_front_desk_agent" }), "This workspace has no Customer Operations agent"],
+      [new ApiError(500, null), "Could not start checkout"],
+    ];
+    for (const [err, words] of cases) {
+      mockPost.mockRejectedValue(err);
+      const { unmount } = renderMail();
+      fireEvent.click(await screen.findByRole("button", { name: /Get a phone number/ }));
+      expect(await screen.findByText(words!)).toBeInTheDocument();
+      unmount();
+    }
+    mockPost.mockRejectedValue(new ApiError(400, { detail: "front_desk_price_unconfigured" }));
+    renderMail();
+    fireEvent.click(await screen.findByRole("button", { name: /Get a phone number/ }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Get a phone number/ })).toBeNull());
+    expect(screen.queryByText(/400|unconfigured/)).toBeNull();
   });
 });

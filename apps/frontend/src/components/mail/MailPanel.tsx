@@ -86,7 +86,8 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
   const { account, refresh: refreshBilling } = useBilling();
   const [buying, setBuying] = useState(false);
   const [buyStatus, setBuyStatus] = useState<string | null>(null);
-  const price = account?.front_desk_price_usd;
+  const [priceGone, setPriceGone] = useState(false);
+  const price = priceGone ? null : account?.front_desk_price_usd;
   const buyNumber = async () => {
     setBuying(true);
     setBuyStatus(null);
@@ -98,7 +99,11 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
       }
       await Promise.all([mutateGlobal(isTextLineKey), refreshBilling()]);
     } catch (e) {
-      setBuyStatus(e instanceof ApiError ? String(e.status) : "failed");
+      const code = e instanceof ApiError ? JSON.stringify(e.body ?? "") : "";
+      if (code.includes("front_desk_price_unconfigured")) setPriceGone(true);
+      else if (code.includes("apple_managed")) setBuyStatus("Not available on this plan");
+      else if (code.includes("no_front_desk_agent")) setBuyStatus("This workspace has no Customer Operations agent");
+      else setBuyStatus("Could not start checkout");
     }
     setBuying(false);
   };
@@ -187,12 +192,14 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
       <CopyButton text={teamAddress} />
     </span>}
     {line.data?.number && <span className="mail-panel__number">{line.data.number}</span>}
-    {isAdmin && line.data === null && <>
+    {isAdmin && line.data === null && (account?.front_desk
+      ? <span role="status" className="mail-panel__number">Setting up your number…</span>
+      : typeof price === "number" && <>
       <Button type="button" variant="ghost" size="sm" disabled={buying} onClick={() => void buyNumber()}>
-        {typeof price === "number" ? `Get a phone number · $${price}/month` : "Get a phone number"}
+        {`Get a phone number · $${price}/month`}
       </Button>
       {buyStatus && <span role="status" className="mail-panel__number">{buyStatus}</span>}
-    </>}
+    </>)}
     <span className="mail-panel__actions">
       <button type="button" className="mail-link" onClick={() => navigateShell(buildPanelUrl("agents", {}))}>Settings</button>
       <Button type="button" variant="ghost" size="sm" aria-label="Refresh mail" disabled={inbox.isValidating}

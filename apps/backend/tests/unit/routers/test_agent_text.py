@@ -61,7 +61,7 @@ async def test_reply_sends_to_the_row_space_as_the_line_user(m):
         sender_id="lu1",
         space_id="sp1",
         text="hi",
-        idempotency_key=f"text-reply:rk1:{hashlib.sha256(b'hi').hexdigest()[:16]}",
+        idempotency_key=f"text-reply:rk1:agent:{hashlib.sha256(b'hi').hexdigest()[:16]}",
     )
 
 
@@ -112,6 +112,17 @@ async def test_a_retry_after_the_disclosure_was_recorded_keeps_the_same_idempote
     await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
     assert m["send_text"].await_args.kwargs["idempotency_key"] == first
     assert m["send_text"].await_args.kwargs["text"] == "hi"
+
+
+async def test_a_person_sending_the_agents_words_is_a_new_send_not_a_replay(m):
+    """The key carries who sends: a human taking over with the same text must not replay the agent's send."""
+    await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
+    agent_key = m["send_text"].await_args.kwargs["idempotency_key"]
+    await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi", by_human=True)
+    human_key = m["send_text"].await_args.kwargs["idempotency_key"]
+    assert agent_key != human_key
+    await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi", by_human=True)
+    assert m["send_text"].await_args.kwargs["idempotency_key"] == human_key  # a human's retry still replays
 
 
 async def test_a_failed_send_records_no_disclosure(m):

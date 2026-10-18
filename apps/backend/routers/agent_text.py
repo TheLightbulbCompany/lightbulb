@@ -96,9 +96,12 @@ async def send_reply(
         and customer not in (line.get("member_phones") or {})
         and customer not in (line.get("disclosed") or {})
     )
-    # Keyed on the reply as written: a retry after the disclosure was recorded carries the same key and
-    # replays the first send instead of texting the customer again without the prefix.
-    idempotency_key = f"text-reply:{row['received_key']}:{hashlib.sha256(text.encode()).hexdigest()[:16]}"
+    # Keyed on the reply as written and on who sends it: a retry after the disclosure was recorded carries the
+    # same key and replays the first send instead of texting the customer again without the prefix, while a
+    # person who takes over and types the same words as the agent did is a new send, not a replay of the agent's.
+    sender = "human" if by_human else "agent"
+    digest = hashlib.sha256(text.encode()).hexdigest()[:16]
+    idempotency_key = f"text-reply:{row['received_key']}:{sender}:{digest}"
     if disclose:
         text = f"{DISCLOSURE.format(business=await business_name(owner_id))} {text}"
     try:

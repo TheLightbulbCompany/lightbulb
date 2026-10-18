@@ -53,23 +53,36 @@ export function getContainerTextOffset(
 
 /**
  * Markdown spans whose text the projection keeps but the page does not render
- * as text: images (alt + destination), reference definitions, card/diagram
- * fences (```openui-lang / ```mermaid, ``` or ~~~) and raw HTML tags.
+ * as text: images (alt + destination), reference definitions (not footnotes,
+ * which render) and card/diagram fences (```openui-lang / ```mermaid, ``` or
+ * ~~~, unclosed runs to the end). Code blocks and code spans render their
+ * source, so nothing inside them is flagged. Raw HTML is not flagged either:
+ * the document view shows it as literal text.
  */
 function unrenderedRanges(markdown: string): Array<[number, number]> {
-  const ranges: Array<[number, number]> = [];
-  for (const re of [/!\[[^\]]*\]\([^)]*\)/g, /^[ \t]{0,3}\[[^\]]+\]:.*$/gm, /<\/?[A-Za-z][^>]*>/g]) {
-    for (const m of markdown.matchAll(re)) ranges.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
-  }
-  const fence = /^[ \t]*(`{3,}|~{3,})[ \t]*(openui-lang|mermaid)\b.*$/gm;
-  for (const m of markdown.matchAll(fence)) {
-    const at = m.index ?? 0;
+  const hidden: Array<[number, number]> = [];
+  const code: Array<[number, number]> = [];
+  const fence = /^[ \t]*(`{3,}|~{3,})(.*)$/gm;
+  for (let m = fence.exec(markdown); m; m = fence.exec(markdown)) {
+    const at = m.index;
     const close = new RegExp(`^[ \\t]*${m[1][0] === "`" ? "`" : "~"}{${m[1].length},}[ \\t]*$`, "m");
-    const rest = markdown.slice(at + m[0].length);
-    const end = rest.search(close);
-    ranges.push([at, end === -1 ? markdown.length : at + m[0].length + end]);
+    const bodyStart = at + m[0].length;
+    const found = markdown.slice(bodyStart).search(close);
+    const end = found === -1 ? markdown.length : bodyStart + found;
+    (/^[ \t]*(openui-lang|mermaid)\b/.test(m[2]) ? hidden : code).push([at, end]);
+    fence.lastIndex = Math.max(end + 1, fence.lastIndex); // skip past the close fence line
   }
-  return ranges;
+  const inBlock = (pos: number) => [...hidden, ...code].some(([from, to]) => pos >= from && pos < to);
+  for (const m of markdown.matchAll(/(`+)[^`][\s\S]*?(?<!`)\1(?!`)/g)) {
+    if (!inBlock(m.index ?? 0)) code.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
+  }
+  // Blank out code so the remaining patterns never see it.
+  let masked = markdown;
+  for (const [from, to] of [...hidden, ...code]) masked = masked.slice(0, from) + masked.slice(from, to).replace(/[^\n]/g, " ") + masked.slice(to);
+  for (const re of [/!\[[^\]]*\]\([^)]*\)/g, /^[ \t]{0,3}\[(?!\^)[^\]]+\]:.*$/gm]) {
+    for (const m of masked.matchAll(re)) hidden.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
+  }
+  return hidden;
 }
 
 const CONTEXT_WORDS = 8;
@@ -160,12 +173,15 @@ export function computeAnchor(input: {
     quote = normalizeAnchorText(needle.replace(/[*_~]/g, "").replace(/\|/g, " "));
     candidates = quote ? findAllOccurrences(projection.text, quote) : [];
   }
-  // Drop candidates inside source the page never renders as text.
+  // Prefer candidates outside source the page never renders as text.
   const hidden = unrenderedRanges(input.markdown);
-  candidates = candidates.filter((start) => {
+  const visible = candidates.filter((start) => {
     const at = projection.positions[start]?.sourceStart ?? -1;
     return !hidden.some(([from, to]) => at >= from && at < to);
   });
+  // The filter only disambiguates. The reader selected visible text, so if
+  // it flags every occurrence the patterns are wrong, not the text.
+  if (visible.length > 0) candidates = visible;
   // No match, or over the server's 10,000-character quote cap: it would refuse it.
   if (candidates.length === 0 || quote.length > 10000) return null;
 

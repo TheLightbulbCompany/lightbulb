@@ -81,6 +81,43 @@ describe("computeAnchor never pins text the page does not render", () => {
     expect(anchor!.selector.position.markdownStart).toBe(body.lastIndexOf("Revenue is up."));
   });
 
+  it("keeps inline code that holds a tag: the code renders", () => {
+    const body = "Set the `<main>` tag first.\n\nSet the main tag first.";
+    expect(pinned("main", 0, body)).toEqual({ start: body.indexOf("main"), text: "main" });
+  });
+
+  it("keeps an autolink: it renders", () => {
+    const body = "Docs at <https://docs.example> today.\n\nDocs at docs.example today.";
+    expect(pinned("docs.example", 0, body)).toEqual({ start: body.indexOf("docs.example"), text: "docs.example" });
+  });
+
+  it("keeps a footnote definition: it renders", () => {
+    const body = "Revenue grew.[^1]\n\nRevenue grew.\n\n[^1]: Revenue grew per report.";
+    expect(pinned("Revenue grew per report", 0, body)).toEqual({
+      start: body.lastIndexOf("Revenue grew per report"),
+      text: "Revenue grew per report",
+    });
+  });
+
+  it("keeps an image or card fence that sits inside a code block", () => {
+    const body = "````markdown\n```mermaid\nflow A\n```\n````\n\nflow A";
+    const containerText = "```mermaid\nflow A\n```\nflow A";
+    const start = containerText.indexOf("flow A");
+    const anchor = computeAnchor({ markdown: body, containerText, startOffset: start, endOffset: start + 6 });
+    expect(anchor!.selector.position.markdownStart).toBe(body.indexOf("flow A"));
+  });
+
+  it("still anchors when the filter flags the only occurrence", () => {
+    // The definition-shaped line is the only "Plan B"; the filter must not hide the Comment button.
+    const body = "Intro.\n\n[Plan B]: is the fallback";
+    const containerText = "Intro.\n[Plan B]: is the fallback";
+    const start = containerText.indexOf("Plan B");
+    const anchor = computeAnchor({ markdown: body, containerText, startOffset: start, endOffset: start + 6 });
+    expect(anchor).not.toBeNull();
+    expect(verifyDocumentAnchorSelector({ markdown: body, selector: anchor!.selector }).reason).toBe("verified");
+    expect(body.slice(anchor!.selector.position.markdownStart, anchor!.selector.position.markdownEnd)).toBe("Plan B");
+  });
+
   it("refuses a quote over the server's 10,000-character cap", () => {
     const body = "word ".repeat(2500).trim();
     expect(computeAnchor({ markdown: body, containerText: body, startOffset: 0, endOffset: body.length })).toBeNull();

@@ -44,11 +44,14 @@ function CodeOrCard(props: CodeProps) {
 /** react-markdown wraps block code in <pre>; a card must not inherit the code box. */
 function PreOrCard(props: PreProps) {
   const ctx = useCardContext();
-  const node = (props as { node?: { children?: { type: string; properties?: { className?: unknown } }[] } }).node;
+  const node = (props as { node?: { children?: { type: string; properties?: { className?: unknown }; children?: { value?: string }[] }[] } }).node;
   const first = node?.children?.find((c) => c.type === "element");
   const cls = Array.isArray(first?.properties?.className) ? (first!.properties!.className as unknown[]).join(" ") : "";
   const classes = cls.split(" ");
   if ((ctx && classes.includes(CARD_CLASS)) || classes.includes(MERMAID_CLASS)) return <>{(props as { children?: ReactNode }).children}</>;
+  // An empty fence (a model's stray ``` pair) draws nothing rather than an empty code box.
+  const text = first?.children?.map((c) => (c as { value?: string }).value ?? "").join("") ?? "";
+  if (first && text.trim() === "") return null;
   return <DefaultPre {...props} />;
 }
 

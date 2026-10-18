@@ -2,12 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { blobBytes } from "./readBlob";
+import { zipInflatedSize } from "./zipInflatedSize";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 export const SHEET_MAX_ROWS = 2_000;
 export const SHEET_MAX_BYTES = 5 * 1024 * 1024;
 export const SHEET_MAX_COLS = 200;
+/** read() inflates every worksheet before sheetRows can cut, so a zip bomb under 5 MiB is refused here. */
+export const SHEET_MAX_INFLATED_BYTES = 64 * 1024 * 1024;
 
 type Sheet = { name: string; header: string[]; rows: string[][]; total: number; cols: number };
 type State = { status: "loading" } | { status: "ready"; sheets: Sheet[] } | { status: "error" };
@@ -36,6 +39,10 @@ export function SheetGrid({ blob, fileName, csv }: { blob: Blob; fileName: strin
         // SheetJS reads any bytes as text, so garbage "parses"; a workbook is a zip ("PK"), only CSV may be bare text.
         const head = new Uint8Array(bytes.slice(0, 2));
         if (!csv && !(head[0] === 0x50 && head[1] === 0x4b)) throw new Error("not a workbook");
+        if (!csv) {
+          const inflated = zipInflatedSize(bytes);
+          if (inflated === null || inflated > SHEET_MAX_INFLATED_BYTES) throw new Error("too large inflated");
+        }
         // sheetRows stops the parse at the header plus 2,000 rows; "!fullref" keeps the real extent.
         const wb = read(bytes, { type: "array", dense: true, sheetRows: SHEET_MAX_ROWS + 1 });
         const sheets = wb.SheetNames.map((name) => {

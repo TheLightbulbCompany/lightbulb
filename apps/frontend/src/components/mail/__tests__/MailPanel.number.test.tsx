@@ -91,6 +91,40 @@ describe("MailPanel number", () => {
     expect(screen.queryByRole("button", { name: /Get a phone number/ })).toBeNull();
   });
 
+  it("polls while the number is pending", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      billing.frontDesk = true;
+      renderMail();
+      expect(await screen.findByText("Setting up your number…")).toBeInTheDocument();
+      const lineReads = () => mockGet.mock.calls.filter(([u]) => u === "/agent-text/line").length;
+      const before = lineReads();
+      line = { number: "+15551230000" };
+      await vi.advanceTimersByTimeAsync(10_000);
+      await waitFor(() => expect(lineReads()).toBeGreaterThan(before));
+      expect(refresh).toHaveBeenCalled(); // billing is re-read on each empty tick
+      expect(await screen.findByText("+15551230000")).toBeInTheDocument();
+      const after = lineReads();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(lineReads()).toBe(after); // the line exists: polling stops
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not poll without a pending number", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderMail();
+      expect(await screen.findByRole("button", { name: /Get a phone number/ })).toBeInTheDocument();
+      const before = mockGet.mock.calls.filter(([u]) => u === "/agent-text/line").length;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(mockGet.mock.calls.filter(([u]) => u === "/agent-text/line").length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows plain words on a failed post", async () => {
     const cases: [ApiError, string | null][] = [
       [new ApiError(409, { detail: "apple_managed" }), "Not available on this plan"],

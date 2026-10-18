@@ -105,11 +105,11 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
   const wide = useWide(rootRef);
   const { orgId, inbox, noAddress, address, loadedAt: now } = useTeamMail();
   const { agents } = useAgents();
-  const line = useTextLine(orgId);
+  const { account, refresh: refreshBilling } = useBilling();
+  const line = useTextLine(orgId, account?.front_desk ? refreshBilling : undefined);
   const isAdmin = useOrganization().membership?.role === "org:admin";
   const api = useApi();
   const { mutate: mutateGlobal } = useSWRConfig();
-  const { account, refresh: refreshBilling } = useBilling();
   const [buying, setBuying] = useState(false);
   const [buyStatus, setBuyStatus] = useState<string | null>(null);
   const [priceGone, setPriceGone] = useState(false);

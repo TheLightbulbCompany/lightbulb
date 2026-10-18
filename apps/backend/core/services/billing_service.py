@@ -362,7 +362,7 @@ async def create_workspace_checkout(
             "front_desk": str(int(front_desk)),
         }
         bucket_start = checkout_bucket * 300
-        # The add-on costs $100 the moment it exists: no Stripe trial with it.
+        # The add-on costs $250 (FRONT_DESK_PRICE_USD) the moment it exists: no Stripe trial with it.
         trial_end = None if front_desk else _checkout_trial_end(account, bucket_start)
         if account.get("founding_team"):
             metadata["price_lock_until"] = price_lock_until(bucket_start)

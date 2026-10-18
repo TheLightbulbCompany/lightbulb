@@ -138,8 +138,10 @@ export interface TextLine { number: string; agentId: string; businessPhone: stri
 const TEXT_LINE_URL = "/agent-text/line";
 export const isTextLineKey = (key: unknown) => Array.isArray(key) && key[0] === TEXT_LINE_URL;
 
-/** One read for the header and every open text; a 404 means no line, quietly. */
-export function useTextLine(orgId: string | undefined) {
+/** One read for the header and every open text; a 404 means no line, quietly.
+ *  ``onPending`` (passed while the workspace's number is being set up) polls every 10 s until the
+ *  line appears and is called on each empty read, so a cleared billing flag shows the buy button again. */
+export function useTextLine(orgId: string | undefined, onPending?: () => void) {
   const api = useApi();
   return useSWR<TextLine | null>(
     orgId ? [TEXT_LINE_URL, orgId] : null,
@@ -151,6 +153,13 @@ export function useTextLine(orgId: string | undefined) {
         throw e;
       }
     },
-    { revalidateOnFocus: false, shouldRetryOnError: false },
+    {
+      revalidateOnFocus: !!onPending,
+      shouldRetryOnError: false,
+      refreshInterval: (latest) => (onPending && latest === null ? 10_000 : 0),
+      onSuccess: (latest) => {
+        if (latest === null) onPending?.();
+      },
+    },
   );
 }

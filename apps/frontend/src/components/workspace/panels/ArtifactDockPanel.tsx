@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { FileViewerContent, isPaneViewable } from "@/components/media/FileViewerContent";
+import { FileViewerContent, isPaneViewable, normalizeContentType } from "@/components/media/FileViewerContent";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { roomMarkdown } from "@/components/messaging/roomMarkdown";
 import { CardContext, type CardContextValue } from "@/components/messaging/openui/CardContext";
@@ -70,10 +70,14 @@ function FilePane({ source }: { source: FileSource }) {
       : teams.download(issueAttachmentContentPath(source.issue, source.id));
     fetchBlob.then((blob) => {
       if (!live) return;
-      url = URL.createObjectURL(blob);
-      // The viewer matches content types exactly; a fetched blob's may carry "; charset=…".
-      const type = source.type ?? (blob.type.split(";")[0] || "application/octet-stream");
-      setState({ status: "ready", blob, url, name: source.name ?? "file", type });
+      // The viewer type is what the server served, never the URL's `type` param: a link that
+      // says "pdf" over HTML bytes would otherwise put the page in an unsandboxed iframe on our
+      // origin. An untyped response previews nothing. The object URL is made from a re-typed
+      // Blob so the bytes behind it carry exactly the type the viewer chose.
+      const type = normalizeContentType(blob.type) || "application/octet-stream";
+      const typed = new Blob([blob], { type });
+      url = URL.createObjectURL(typed);
+      setState({ status: "ready", blob: typed, url, name: source.name ?? "file", type });
     }).catch((e) => { if (live) setState({ status: "error", message: describeError(e) }); });
     return () => { live = false; if (url) URL.revokeObjectURL(url); };
   }, [sourceKey]);

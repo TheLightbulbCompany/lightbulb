@@ -49,3 +49,24 @@ it("refetches only when the source really changes", async () => {
   await screen.findByRole("table");
   expect(downloadBlob).toHaveBeenCalledTimes(2);
 });
+
+it("the viewer type is the served type, never the URL's: html bytes behind type=pdf are not framed by src", async () => {
+  vi.mocked(URL.createObjectURL).mockClear();
+  downloadBlob.mockResolvedValue(new Blob(["<script>parent.x=1</script>"], { type: "text/html; charset=utf-8" }));
+  const { container } = render(<ArtifactDockPanel id="artifact" params={{ src: "attachment", room: "r1", id: "evil", name: "report.pdf", type: "application/pdf" }} />);
+  await screen.findByTitle("report.pdf");
+  const made = vi.mocked(URL.createObjectURL).mock.calls.map(([b]) => (b as Blob).type);
+  expect(made).toEqual(["text/html"]);
+  const frames = [...container.querySelectorAll("iframe")];
+  expect(frames).toHaveLength(1);
+  expect(frames[0]).not.toHaveAttribute("src");
+  expect(frames[0]).toHaveAttribute("sandbox", "allow-scripts");
+});
+
+it("an untyped response previews nothing and offers Download", async () => {
+  downloadBlob.mockResolvedValue(new Blob(["%PDF-1.4"]));
+  const { container } = render(<ArtifactDockPanel id="artifact" params={{ src: "attachment", room: "r1", id: "u1", name: "x.pdf", type: "application/pdf" }} />);
+  expect(await screen.findByText(/no preview/i)).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Download" })).toBeInTheDocument();
+  expect(container.querySelector("iframe")).toBeNull();
+});

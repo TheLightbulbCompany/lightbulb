@@ -8,7 +8,11 @@ import { TextPreview } from "./TextPreview";
 const XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const PANE_VIEWABLE = new Set(["application/pdf", XLSX, "text/csv", "text/html", "text/markdown", "text/plain"]);
 /** Kinds that open in the right pane (documents). Images and video keep the lightbox; zip/docx/pptx have no viewer. */
-export function isPaneViewable(contentType: string): boolean { return PANE_VIEWABLE.has(contentType); }
+export function isPaneViewable(contentType: string): boolean { return PANE_VIEWABLE.has(normalizeContentType(contentType)); }
+/** "Text/Markdown; charset=utf-8" -> "text/markdown"; the viewer matches types exactly. */
+export function normalizeContentType(contentType: string | null | undefined): string {
+  return (contentType ?? "").split(";")[0].trim().toLowerCase();
+}
 
 export interface FileViewerItem {
   fileName: string;

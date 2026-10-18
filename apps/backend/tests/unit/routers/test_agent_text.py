@@ -105,9 +105,29 @@ def test_hook_send_requires_the_token(client):
 def test_clerk_line_404s_without_a_line(client, monkeypatch):
     monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
     monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(agent_text.text_lines, "complete_pending", AsyncMock(return_value="absent"))
     r = client.get("/api/v1/agent-text/line")
     assert r.status_code == 404
     assert r.json() == {"detail": "no_line"}
+
+
+def test_line_read_completes_pending(client, monkeypatch):
+    monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
+    reads = AsyncMock(side_effect=[None, LINE])
+    monkeypatch.setattr(agent_text, "text_line_for_owner", reads)
+    complete = AsyncMock(return_value="provisioned")
+    monkeypatch.setattr(agent_text.text_lines, "complete_pending", complete)
+    r = client.get("/api/v1/agent-text/line")
+    complete.assert_awaited_once_with(OWNER)
+    assert r.status_code == 200 and r.json()["number"] == LINE["address"]
+
+
+def test_line_read_still_pending_is_404_for_the_panel(client, monkeypatch):
+    # useTextLine maps 404 to null; a 202 body without `number` would read as a line.
+    monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
+    monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(agent_text.text_lines, "complete_pending", AsyncMock(return_value="pending"))
+    assert client.get("/api/v1/agent-text/line").status_code == 404
 
 
 def test_clerk_thread_mode_sets_agent(client, monkeypatch):

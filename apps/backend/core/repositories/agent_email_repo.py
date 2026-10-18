@@ -194,7 +194,14 @@ async def update_settings(
     return resp.get("Attributes")
 
 
-async def put_text_line(*, number: str, owner_id: str, agent_id: str) -> dict | None:
+async def put_text_line(
+    *,
+    number: str,
+    owner_id: str,
+    agent_id: str,
+    photon_resource_id: str | None = None,
+    photon_user_id: str | None = None,
+) -> dict | None:
     """Create the workspace's texting-line row, keyed by its E.164 number. A CREATE, never an
     overwrite; None when the number already has a row."""
     item = {
@@ -206,12 +213,56 @@ async def put_text_line(*, number: str, owner_id: str, agent_id: str) -> dict | 
         "created_at": utc_now_iso(),
         "human_threads": {},
     }
+    if photon_resource_id:
+        item["photon_resource_id"] = photon_resource_id
+    if photon_user_id:
+        item["photon_user_id"] = photon_user_id
     try:
         await run_in_thread(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
         return item
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             return None
+        raise
+
+
+async def put_pending_line(*, owner_id: str, agent_id: str, operation_id: str) -> bool:
+    """The in-flight marker for a line Photon is still creating; one per owner. False when one exists."""
+    item = {
+        "address": f"pending:{owner_id}",
+        "owner_id": owner_id,
+        "agent_id": agent_id,
+        "kind": "text_pending",
+        "operation_id": operation_id,
+        "created_at": utc_now_iso(),
+    }
+    try:
+        await run_in_thread(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
+        return True
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+async def pending_line_for_owner(owner_id: str) -> dict | None:
+    row = await get_by_address(f"pending:{owner_id}")
+    return row if row and row.get("kind") == "text_pending" else None
+
+
+async def delete_pending_line(owner_id: str) -> bool:
+    """True when this call removed the row; False when it was already gone (another reader won)."""
+    try:
+        await run_in_thread(
+            _get_table().delete_item,
+            Key={"address": f"pending:{owner_id}"},
+            ConditionExpression="kind = :pending",
+            ExpressionAttributeValues={":pending": "text_pending"},
+        )
+        return True
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
         raise
 
 

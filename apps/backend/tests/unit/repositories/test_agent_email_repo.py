@@ -351,3 +351,48 @@ async def test_text_line_by_photon_user_scans_with_filter(monkeypatch):
     assert "FilterExpression" in table.scan.call_args.kwargs
     table.scan.return_value = {"Items": []}
     assert await repo.text_line_by_photon_user("u2") is None
+
+
+async def test_put_text_line_stores_photon_ids_only_when_given(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    item = await repo.put_text_line(
+        number="+1555", owner_id="o", agent_id="a", photon_resource_id="res_1", photon_user_id="usr_1"
+    )
+    assert item["photon_resource_id"] == "res_1" and item["photon_user_id"] == "usr_1"
+    plain = await repo.put_text_line(number="+1556", owner_id="o", agent_id="a")
+    assert "photon_resource_id" not in plain and "photon_user_id" not in plain
+
+
+async def test_put_pending_line_item_and_condition(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.put_pending_line(owner_id="org_1", agent_id="a", operation_id="op_1") is True
+    kwargs = table.put_item.call_args.kwargs
+    assert kwargs["ConditionExpression"] == "attribute_not_exists(address)"
+    item = kwargs["Item"]
+    assert item["address"] == "pending:org_1" and item["kind"] == "text_pending"
+    assert (item["owner_id"], item["agent_id"], item["operation_id"]) == ("org_1", "a", "op_1")
+    assert item["created_at"]
+    table.put_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+    assert await repo.put_pending_line(owner_id="org_1", agent_id="a", operation_id="op_2") is False
+
+
+async def test_pending_line_for_owner_filters_kind(monkeypatch):
+    row = {"address": "pending:o", "kind": "text_pending"}
+    monkeypatch.setattr(repo, "get_by_address", lambda a: _async(row if a == "pending:o" else None))
+    assert await repo.pending_line_for_owner("o") == row
+    monkeypatch.setattr(repo, "get_by_address", lambda a: _async({"address": a, "kind": "text"}))
+    assert await repo.pending_line_for_owner("o") is None
+
+
+async def test_delete_pending_line_is_conditional_and_reports_loss(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.delete_pending_line("o") is True
+    kwargs = table.delete_item.call_args.kwargs
+    assert kwargs["Key"] == {"address": "pending:o"}
+    assert kwargs["ConditionExpression"] == "kind = :pending"
+    assert kwargs["ExpressionAttributeValues"] == {":pending": "text_pending"}
+    table.delete_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "DeleteItem")
+    assert await repo.delete_pending_line("o") is False

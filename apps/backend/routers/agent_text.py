@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.observability.metrics import put_metric
+from core.services import text_lines
 from core.repositories.agent_email_repo import set_business_phone, set_thread_mode, text_line_for_owner
 from core.repositories.agent_mail_inbox_repo import get_message, has_sent_to, parse_reply_key, put_sent
 from core.services.agent_email import mail_changed
@@ -128,7 +129,12 @@ class Thread(BaseModel):
 
 @router.get("/line")
 async def get_line(auth: AuthContext = Depends(get_current_user)) -> dict:
-    line = await text_line_for_owner(resolve_owner_id(auth))
+    owner_id = resolve_owner_id(auth)
+    line = await text_line_for_owner(owner_id)
+    if not line and await text_lines.complete_pending(owner_id) == "provisioned":
+        line = await text_line_for_owner(owner_id)
+    # A line Photon is still creating reads as 404 too: useTextLine maps 404 to null, and a 202 body
+    # without `number` would read as a line.
     if not line:
         raise HTTPException(status_code=404, detail="no_line")
     return {

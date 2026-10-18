@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import uuid
 
 import stripe
 
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, billing_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import sendblue
+from core.services import photon
+from core.services.agent_email import mail_changed
 from core.services.billing_service import BillingServiceError, _is_front_desk_item
 from core.services.hermes_provisioning import refresh_agent_soul
 
@@ -24,47 +27,150 @@ class _RowExists(RuntimeError):
     pass
 
 
-async def ensure_line(owner_id: str) -> str:
+POLL_S = 2  # Photon operations are polled every 2 s while a caller waits
+
+
+class _RecordFailed(RuntimeError):
+    pass
+
+
+async def _clear_claim(owner_id: str) -> None:
+    try:
+        await billing_repo.set_front_desk(owner_id, False)
+    except Exception:
+        logger.exception("Could not release the front desk claim for owner %s", owner_id)
+
+
+async def _line_or_pending(owner_id: str) -> bool:
+    return bool(
+        await agent_email_repo.text_line_for_owner(owner_id) or await agent_email_repo.pending_line_for_owner(owner_id)
+    )
+
+
+async def ensure_line(owner_id: str, *, from_webhook: bool = False) -> str:
+    """claim -> request the Photon operation -> short wait -> else leave a pending row for completion on read."""
     if await agent_email_repo.text_line_for_owner(owner_id):
         return "unchanged"
+    if await agent_email_repo.pending_line_for_owner(owner_id):
+        done = await complete_pending(owner_id, wait_s=10, from_webhook=from_webhook)
+        if done != "absent":
+            return done
     row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
     agent_id = (getattr(row, "starter_agent_ids", None) or {}).get("customer_operations")
     if not agent_id:
-        raise BillingServiceError("no_front_desk_agent")
-    # ponytail: a process death between the claim and the row write leaves front_desk=True with no row (hand reset); the window is one HTTP call.
+        put_metric("text_line.no_front_desk_agent")
+        return "no_agent"
     if not await billing_repo.claim_front_desk(owner_id):
-        return "unchanged"
-    number = None
+        if await _line_or_pending(owner_id):
+            return "unchanged"
+        # The flag is set with nothing behind it: a crash between the claim and the pending row.
+        await billing_repo.set_front_desk(owner_id, False)
+        if not await billing_repo.claim_front_desk(owner_id):
+            return "unchanged"
+    op = None
     try:
-        number = await sendblue.provision_line()
-        if await agent_email_repo.put_text_line(number=number, owner_id=owner_id, agent_id=agent_id) is None:
-            raise _RowExists(f"text line {number} already recorded")
+        op = await photon.request_dedicated_line(idempotency_key=f"front-desk:{owner_id}:{uuid.uuid4().hex}")
+        if not await agent_email_repo.put_pending_line(
+            owner_id=owner_id, agent_id=agent_id, operation_id=op["operationId"]
+        ):
+            raise _RowExists(f"pending line already recorded for {owner_id}")
     except Exception as e:
-        if number:
+        if op:
             try:
-                await sendblue.deprovision_line(number)
+                await photon.cancel_operation(op["operationId"])
             except Exception:
                 logger.warning(
-                    "Could not release unrecorded line %s (owner %s): it is billing, release it by hand",
-                    number,
+                    "Could not cancel line operation %s (owner %s): it may bill, cancel it by hand",
+                    op.get("operationId"),
                     owner_id,
                     exc_info=True,
                 )
-        try:
-            await billing_repo.set_front_desk(owner_id, False)
-        except Exception:
-            logger.exception("Could not release the front desk claim for owner %s", owner_id)
+        await _clear_claim(owner_id)
         code = "row_exists" if isinstance(e, _RowExists) else str(getattr(e, "code", type(e).__name__))
         put_metric("text_line.provision_failed", dimensions={"code": code})
         raise
+    return await complete_pending(owner_id, wait_s=10, from_webhook=from_webhook)
+
+
+async def complete_pending(owner_id: str, *, wait_s: float = 0, from_webhook: bool = False) -> str:
+    """Finish a requested line if Photon has: poll up to ``wait_s``, then record it, fail it, or leave it pending."""
+    pending = await agent_email_repo.pending_line_for_owner(owner_id)
+    if not pending:
+        return "absent"
+    op = await photon.get_operation(pending["operation_id"])
+    waited = 0.0
+    while op.get("state") in ("pending", "running") and waited < wait_s:
+        await asyncio.sleep(POLL_S)
+        waited += POLL_S
+        op = await photon.get_operation(pending["operation_id"])
+    state = op.get("state")
+    if state in ("failed", "cancelled"):
+        await agent_email_repo.delete_pending_line(owner_id)
+        await _clear_claim(owner_id)
+        code = (op.get("error") or {}).get("code") or op.get("reason") or state
+        put_metric("text_line.provision_failed", dimensions={"code": str(code)})
+        if from_webhook:
+            raise BillingServiceError("line_provision_failed")
+        return "absent"
+    if state != "succeeded":
+        return "pending"
+    resource_id = op["resourceId"]
+    agent_id = pending["agent_id"]
+    try:
+        user = await photon.find_line_user(resource_id)
+        if not user:
+            raise _RecordFailed(f"no Photon user for {resource_id}")
+        recorded = await agent_email_repo.put_text_line(
+            number=user["handle"],
+            owner_id=owner_id,
+            agent_id=agent_id,
+            photon_resource_id=resource_id,
+            photon_user_id=user["id"],
+        )
+        if recorded is None:
+            # Lost the put to a concurrent reader recording the same resource: that is success, not a failure.
+            line = await agent_email_repo.text_line_for_owner(owner_id)
+            if not (line and line.get("photon_resource_id") == resource_id):
+                raise _RecordFailed(f"text line {user['handle']} already recorded")
+    except Exception as e:
+        try:
+            await photon.release_line(resource_id)
+        except Exception:
+            logger.warning(
+                "Could not release unrecorded Photon line %s (owner %s): it is billing, release it by hand",
+                resource_id,
+                owner_id,
+                exc_info=True,
+            )
+        await agent_email_repo.delete_pending_line(owner_id)
+        await _clear_claim(owner_id)
+        code = "record_failed" if isinstance(e, _RecordFailed) else str(getattr(e, "code", type(e).__name__))
+        put_metric("text_line.provision_failed", dimensions={"code": code})
+        raise
+    await agent_email_repo.delete_pending_line(owner_id)  # False: another reader already did; still provisioned
     try:
         await refresh_agent_soul(owner_id, agent_id)
     except Exception:
         logger.warning("Soul refresh failed after provisioning a line for owner %s", owner_id, exc_info=True)
+    try:
+        await mail_changed(owner_id)
+    except Exception:
+        logger.warning("Mail refresh failed after provisioning a line for owner %s", owner_id, exc_info=True)
+    put_metric("text_line.provisioned")
     return "provisioned"
 
 
 async def release_line(owner_id: str) -> str:
+    pending = await agent_email_repo.pending_line_for_owner(owner_id)
+    if pending:
+        await photon.cancel_operation(pending["operation_id"])
+        op = await photon.get_operation(pending["operation_id"])
+        if op.get("state") == "succeeded":
+            await complete_pending(owner_id)  # the cancel lost the race: record the line, then release it below
+        else:
+            await agent_email_repo.delete_pending_line(owner_id)
+            await billing_repo.set_front_desk(owner_id, False)
+            return "released"
     line = await agent_email_repo.text_line_for_owner(owner_id)
     if not line:
         try:
@@ -72,14 +178,11 @@ async def release_line(owner_id: str) -> str:
         except Exception:
             logger.warning("Could not clear the front desk flag for owner %s", owner_id, exc_info=True)
         return "absent"
-    number = line["address"]
-    try:
-        await sendblue.deprovision_line(number)
-    except Exception:
-        logger.warning(
-            "Sendblue deprovision failed for %s (owner %s); release it by hand", number, owner_id, exc_info=True
-        )
-    await agent_email_repo.delete_text_line(number)
+    if line.get("photon_resource_id"):
+        await photon.release_line(line["photon_resource_id"])  # raises on anything but 404; Stripe redelivers
+    else:
+        logger.warning("Line %s (owner %s) has no Photon resource id; release it by hand", line["address"], owner_id)
+    await agent_email_repo.delete_text_line(line["address"])
     await billing_repo.set_front_desk(owner_id, False)
     try:
         await refresh_agent_soul(owner_id, line["agent_id"])
@@ -94,7 +197,7 @@ async def sync_front_desk(owner_id: str, *, subscription_id: str) -> str:
     status = subscription.get("status")
     has = any(_is_front_desk_item(i) for i in subscription["items"]["data"])
     if status in FRONT_DESK_LIVE_STATUSES and has:
-        return await ensure_line(owner_id)
+        return await ensure_line(owner_id, from_webhook=True)
     if not has or status == "canceled":
         return await release_line(owner_id)
     return "skipped"

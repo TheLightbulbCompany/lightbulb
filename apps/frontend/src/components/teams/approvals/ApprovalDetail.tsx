@@ -33,7 +33,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { handleShellLinkClick, navigateShell, teamsDetailUrl, teamsPanelUrl } from "@/lib/shellNav";
 import { Identity } from "@/components/teams/shared/components/Identity";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { TaskMarkdown } from "@/components/teams/shared/components/TaskMarkdown";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
@@ -361,7 +361,7 @@ export function ApprovalDetail({ approvalId }: { approvalId: string }) {
                 </span>
               </div>
               <div className="text-ui">
-                <MarkdownView>{comment.body}</MarkdownView>
+                <TaskMarkdown body={comment.body} />
               </div>
             </div>
           ))}

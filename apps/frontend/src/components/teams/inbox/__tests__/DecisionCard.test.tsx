@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // MarkdownView reaches useTeamsApi (attachment downloads); the card itself never fetches.
 vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ read: vi.fn(), post: vi.fn(), mutate: vi.fn(), download: vi.fn() }),
+  useTeamsApi: () => ({ read: vi.fn(() => ({ data: undefined })), post: vi.fn(), mutate: vi.fn(), download: vi.fn() }),
 }));
 
 import { DecisionCard } from "@/components/teams/inbox/DecisionCard";

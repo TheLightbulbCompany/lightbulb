@@ -8,7 +8,7 @@
 // request_item_verdicts shows only its prompt + progress (the task chat owns it).
 //
 // Re-theme notes vs upstream:
-//   - MarkdownBody          -> MarkdownView (shared editorial renderer)
+//   - MarkdownBody          -> TaskMarkdown (shared editorial renderer + issue links)
 //   - shadcn Button         -> EditorialButton (default/cta -> primary,
 //                              outline -> secondary, ghost -> ghost)
 //   - Tooltip on the header dropped; created-by / date render bare
@@ -39,7 +39,7 @@ import { cn } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { EditorialButton } from "@/components/teams/shell";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { TaskMarkdown } from "@/components/teams/shared/components/TaskMarkdown";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { formatAssigneeUserLabel } from "@/components/teams/shared/lib/assignees";
 import { createIssueDetailPath } from "@/components/teams/shared/lib/issueDetailBreadcrumb";
@@ -1048,7 +1048,7 @@ function AskUserQuestionsCard({
               <div className="mb-2 label-caps text-ok">
                 Submitted summary
               </div>
-              <MarkdownView>{interaction.result.summaryMarkdown}</MarkdownView>
+              <TaskMarkdown body={interaction.result.summaryMarkdown} />
             </div>
           ) : null}
         </div>
@@ -1318,7 +1318,7 @@ function RequestConfirmationCard({
           </div>
           {interaction.payload.detailsMarkdown ? (
             <div className="border-t border-[var(--edge)] pt-3 text-ui">
-              <MarkdownView>{interaction.payload.detailsMarkdown}</MarkdownView>
+              <TaskMarkdown body={interaction.payload.detailsMarkdown} />
             </div>
           ) : null}
           <RequestConfirmationTargetChip
@@ -1706,7 +1706,7 @@ function RequestCheckboxConfirmationCard({
         <div className="text-ui leading-6 text-[var(--midnight)]">{interaction.payload.prompt}</div>
         {interaction.payload.detailsMarkdown ? (
           <div className="border-t border-[var(--edge)] pt-3 text-ui">
-            <MarkdownView>{interaction.payload.detailsMarkdown}</MarkdownView>
+            <TaskMarkdown body={interaction.payload.detailsMarkdown} />
           </div>
         ) : null}
         <RequestConfirmationTargetChip

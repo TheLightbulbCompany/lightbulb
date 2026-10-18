@@ -9,7 +9,7 @@
 //   - typeLabel / approvalSubject / approvalLabel -> already ported in
 //                                       inbox/lib/approvalLabel (one copy, which
 //                                       also labels our own cards)
-//   - MarkdownBody                    -> shared MarkdownView
+//   - MarkdownBody                    -> shared TaskMarkdown
 //   - formatCents                     -> local (the lib helper is not in this app)
 //   - amber palette / CSS-var utilities -> brand warn token, label-caps, text-caption
 //   - the switch gains ONE branch ahead of upstream's: Lightbulb's own cards
@@ -20,7 +20,7 @@
 //     BoardApprovalPayload and lose every action.
 
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { TaskMarkdown } from "@/components/teams/shared/components/TaskMarkdown";
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
 import type { Approval } from "@/components/teams/shared/types";
 
@@ -33,7 +33,7 @@ function formatCents(cents: number): string {
 function MarkdownBody({ className, children }: { className?: string; children: string }) {
   return (
     <div className={className}>
-      <MarkdownView>{children}</MarkdownView>
+      <TaskMarkdown body={children} />
     </div>
   );
 }

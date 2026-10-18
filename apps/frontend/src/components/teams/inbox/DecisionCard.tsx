@@ -4,7 +4,7 @@
 // (paperclip/ui/src/components/DecisionCard.tsx) (MIT, (c) 2025 Paperclip AI).
 //
 // Swaps vs upstream (markup, states, copy and behaviour are upstream's):
-//   - MarkdownBody -> MarkdownView
+//   - MarkdownBody -> TaskMarkdown
 //   - issue / run links commit through handleShellLinkClick (in-shell swap)
 //     instead of a router href
 //   - sky -> --link, rose -> --alert, emerald -> --live, amber -> --warn;
@@ -32,7 +32,7 @@ import { handleShellLinkClick } from "@/lib/shellNav";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { TaskMarkdown } from "@/components/teams/shared/components/TaskMarkdown";
 import { decisionEffectTargetIssueIds } from "@/components/teams/shared/lib/decisions";
 import type {
   Decision,
@@ -417,7 +417,7 @@ export function DecisionCard({
       {/* Body */}
       {decision.body?.trim() && (
         <div className="mt-3 text-ui leading-6 text-[var(--fg)]">
-          <MarkdownView>{decision.body}</MarkdownView>
+          <TaskMarkdown body={decision.body} />
         </div>
       )}
 

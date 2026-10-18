@@ -3,7 +3,7 @@
 import { memo, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Components, UrlTransform } from "react-markdown";
+import type { Components, Options, UrlTransform } from "react-markdown";
 import { remarkSoftBreaks } from "@/components/teams/shared/lib/remark-soft-breaks";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { handleShellLinkClick, shellUrlFromPaperclipPath } from "@/lib/shellNav";
@@ -161,6 +161,11 @@ export interface MarkdownViewProps {
    *  in a link href — e.g. messaging's `mention:` scheme — needs this, or the
    *  href never reaches its `a` override at all. Omit to keep the default. */
   urlTransform?: UrlTransform;
+  /** Extra remark plugins run after the shared gfm + soft-break set. Pass a
+   *  stable array (module constant or memoised) — a fresh one re-parses. Room
+   *  messages pass none, so they never get task-only rewrites such as
+   *  TaskMarkdown's issue-identifier links. */
+  remarkPlugins?: NonNullable<Options["remarkPlugins"]>;
 }
 
 /** Shared read-only markdown renderer (gfm, no raw HTML, link-guarded, CSS-var themed).
@@ -187,14 +192,18 @@ const REMARK_PLUGINS = [remarkGfm, remarkSoftBreaks];
  * by value or by reference (`markdownComponents` and the room's overrides are
  * module constants), so a shallow compare is enough.
  */
-export const MarkdownView = memo(function MarkdownView({ children, components, skipHtml, urlTransform }: MarkdownViewProps) {
+export const MarkdownView = memo(function MarkdownView({ children, components, skipHtml, urlTransform, remarkPlugins }: MarkdownViewProps) {
+  const plugins = useMemo(
+    () => (remarkPlugins?.length ? [...REMARK_PLUGINS, ...remarkPlugins] : REMARK_PLUGINS),
+    [remarkPlugins],
+  );
   const merged = useMemo(
     () => (components ? { ...markdownComponents, ...components } : markdownComponents),
     [components],
   );
   return (
     <div className="min-w-0 [overflow-wrap:anywhere]">
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={merged} skipHtml={skipHtml} urlTransform={urlTransform}>
+      <ReactMarkdown remarkPlugins={plugins} components={merged} skipHtml={skipHtml} urlTransform={urlTransform}>
         {children}
       </ReactMarkdown>
     </div>

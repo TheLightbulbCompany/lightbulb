@@ -9,7 +9,7 @@
 // Skip beside "Apply N").
 //
 // Adaptations: brand tokens replace stock colours (approve = --ok, reject =
-// --err); EditorialButton replaces shadcn Button; TaskChatMarkdown replaces
+// --err); EditorialButton replaces shadcn Button; TaskMarkdown replaces
 // MarkdownBody. Pending request_confirmation / request_checkbox_confirmation /
 // suggest_tasks keep the classic IssueThreadInteractionCard body (stock's
 // compact ConfirmationCard / CheckboxConfirmationCard / SuggestedTasksCard and
@@ -58,7 +58,7 @@ import {
   TaskChatComposerTakeoverHeader,
   useTaskChatComposerTakeoverActions,
 } from "./TaskChatComposerTakeoverContext";
-import { TaskChatMarkdown } from "./TaskChatMarkdown";
+import { TaskMarkdown } from "@/components/teams/shared/components/TaskMarkdown";
 
 export type SubmitInteractionVerdicts = (
   interaction: RequestItemVerdictsInteraction,
@@ -234,7 +234,7 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
         ) : null}
         {interaction.payload.detailsMarkdown ? (
           <div className="mt-2 text-ui">
-            <TaskChatMarkdown>{interaction.payload.detailsMarkdown}</TaskChatMarkdown>
+            <TaskMarkdown body={interaction.payload.detailsMarkdown} />
           </div>
         ) : null}
       </div>
@@ -262,7 +262,7 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
         )}
         {interaction.payload.detailsMarkdown ? (
           <div className="mt-2 text-ui">
-            <TaskChatMarkdown>{interaction.payload.detailsMarkdown}</TaskChatMarkdown>
+            <TaskMarkdown body={interaction.payload.detailsMarkdown} />
           </div>
         ) : null}
       </div>
@@ -288,7 +288,7 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
         <p className="text-ui text-[var(--midnight)]">{interaction.payload.prompt}</p>
         {interaction.payload.detailsMarkdown ? (
           <div className="text-ui">
-            <TaskChatMarkdown>{interaction.payload.detailsMarkdown}</TaskChatMarkdown>
+            <TaskMarkdown body={interaction.payload.detailsMarkdown} />
           </div>
         ) : null}
       </div>
@@ -557,7 +557,7 @@ function ItemVerdictsCard({
       </div>
       {item.previewMarkdown ? (
         <div className="mt-2 rounded-sm bg-[var(--cream-deep)] px-2.5 py-2 text-caption">
-          <TaskChatMarkdown>{item.previewMarkdown}</TaskChatMarkdown>
+          <TaskMarkdown body={item.previewMarkdown} />
         </div>
       ) : null}
       {resolved ? (
@@ -620,7 +620,7 @@ function ItemVerdictsCard({
       ) : null}
       {interaction.payload.detailsMarkdown ? (
         <Details>
-          <TaskChatMarkdown>{interaction.payload.detailsMarkdown}</TaskChatMarkdown>
+          <TaskMarkdown body={interaction.payload.detailsMarkdown} />
         </Details>
       ) : null}
       <div aria-live="assertive" data-testid="interaction-action-error">

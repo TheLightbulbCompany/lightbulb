@@ -1604,7 +1604,13 @@ def pin_profile_defaults(agent_id: str) -> dict:
 # (see the comment there). So this reads `bridge.API`/`bridge.OWNER`/`bridge.HOOK_TOKEN`
 # lazily, at call time, via the module object.
 _EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
-        "application/pdf": ".pdf", "application/zip": ".zip", "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"}
+        "application/pdf": ".pdf", "application/zip": ".zip", "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov",
+        # turn.extract_media types a returned path by its suffix, so every type it accepts
+        # needs one here, or the agent's own received file "couldn't attach".
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+        "text/csv": ".csv", "text/plain": ".txt", "text/markdown": ".md", "text/html": ".html"}
 
 
 def _get_backend_bytes(path: str) -> bytes:

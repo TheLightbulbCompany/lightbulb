@@ -86,7 +86,7 @@ class TestGetBillingAccount:
         mock_repo.get_by_owner_id = AsyncMock(return_value={**row, "front_desk": True})
         data = (await async_client.get("/api/v1/billing/account")).json()
         assert data["front_desk"] is True
-        assert data["front_desk_price_usd"] == 250
+        assert data["front_desk_price_usd"] == 200
         monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "")
         assert (await async_client.get("/api/v1/billing/account")).json()["front_desk_price_usd"] is None
         mock_repo.get_by_owner_id = AsyncMock(return_value=row)
@@ -640,7 +640,7 @@ async def test_prices_include_front_desk(async_client, monkeypatch):
 
     monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
     response = await async_client.get("/api/v1/billing/prices")
-    assert response.json()["front_desk_price_usd"] == 250
+    assert response.json()["front_desk_price_usd"] == 200
 
 
 @pytest.mark.asyncio

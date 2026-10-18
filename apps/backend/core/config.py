@@ -326,8 +326,9 @@ class Settings(BaseSettings):
     ULTRA_PRICE_USD: int = 150
     # Display dollars for STRIPE_SEAT_PRICE_ID (per member from the 6th); lockstep with its unit amount.
     SEAT_PRICE_USD: int = 20
-    # Display dollars for STRIPE_FRONT_DESK_PRICE_ID (Photon's $250/month line price); lockstep with its unit amount.
-    FRONT_DESK_PRICE_USD: int = 250
+    # Display dollars for STRIPE_FRONT_DESK_PRICE_ID; lockstep with its unit amount. Owner 2026-10-18: $200,
+    # below Photon's $250/month line cost on purpose.
+    FRONT_DESK_PRICE_USD: int = 200
 
     # Apple In-App Purchase (App Store guideline 3.1.3(b) — the plan must also
     # be buyable inside the iOS app). ALL default empty, and the feature is off

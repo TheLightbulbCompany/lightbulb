@@ -147,9 +147,9 @@ step's look, rollout order, and the first per-platform adapter.
 
 - The number is an iMessage line by default, created on the spot. The SMS pool is the cheap
   fallback, not the default.
-- The Front desk is an add-on at the line's cost, $250 a month on Photon, with Team unchanged
-  at $50 (owner 2026-10-17, "keep the rates for now", set when the line cost $100; the $250
-  pass-through is my call, override it). WhatsApp is a second $250 line and a connected Meta
+- The Front desk is an add-on at $200 a month (owner 2026-10-18), below the $250 a month the
+  line costs on Photon, with Team unchanged at $50 (owner 2026-10-17, "keep the rates for now").
+  WhatsApp is a second $250 line and a connected Meta
   business account; voice is $0.01 a minute. Revisit when there is volume pricing.
 - Getting the number starts the paid plan: Team plus the add-on, charged then, no trial
   carried over. Sign-up and the website step stay free; the agent can be tried in chat

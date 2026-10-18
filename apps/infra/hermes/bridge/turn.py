@@ -3896,7 +3896,7 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
                 system = with_profile_agents_md(agent_id, f"{request['instructions']}\n\n{rules}\n{CHAT_STYLE}")
                 if conversation:
                     # As _converse runs a room key: its own transcript, observed rows split out.
-                    text = f"{BOUND_WAKE_HEADER.format(issue=identity.get('issueId'))}\n\n{request['input']}"
+                    text = f"{BOUND_WAKE_HEADER.format(issue=identity.get('issueId'), disposition=BOUND_WAKE_DISPOSITION.format(issue=identity.get('issueId')))}\n\n{request['input']}"
                     agent.ephemeral_system_prompt = system
                     history, observed = _room_history(agent)
                     result = _run_conversation(
@@ -4007,13 +4007,20 @@ _ISSUE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
 #: run-less write to the in_progress issue 401s: Paperclip stamped the run as the issue's
 #: execution lock when it started it. Under .lightbulb-turn/, which never syncs.
 ISSUE_RUN_FILE = "paperclip-run.{issue}"
+# Paperclip's liveness check after a run: an issue still todo/in_progress with no durable wait is
+# "parked", re-run twice, then blocked for the board (fork recovery/legacy-continuation.ts). A
+# comment does not count, and the room turn this wake joins is about something else, so say it.
+BOUND_WAKE_DISPOSITION = (" Before this turn ends, leave issue {issue} with a recorded outcome: done, in_review "
+                          "with a real reviewer path, blocked with its blocker, or a scheduled monitor. A comment "
+                          "alone is not one; an issue left todo or in_progress is re-run and then blocked.")
 BOUND_WAKE_HEADER = ("[Paperclip woke you for issue {issue}. This conversation owns that issue, so the wake "
                      "runs here instead of in a separate session. Nothing you write in this turn is posted to "
-                     "the room: record progress on the issue itself.]")
+                     "the room: record progress on the issue itself.{disposition}]")
 BOUND_WAKE_STEER = ("[Paperclip woke you for issue {issue}, which this conversation is already working on. No "
                     "separate run was started: Paperclip run {run} is attached to your Paperclip writes for that "
                     "issue until this turn ends. Carry on here. Mention the issue to the person only if it is now "
-                    "done, needs them, or is what they asked about, in your own words as part of your answer.]")
+                    "done, needs them, or is what they asked about, in your own words as part of your answer."
+                    "{disposition}]")
 
 
 def _issue_binding_path(agent_id: str, issue_id: str) -> Path:
@@ -4149,7 +4156,7 @@ def _route_paperclip_run(identity: dict, request: dict) -> tuple[str, str | None
                 pass
             origin = None
         live = _live_room_run(origin or conversation)  # a live room run is itself proof of membership
-        steer = f"{BOUND_WAKE_STEER.format(issue=issue_id, run=run_id)}\n\n{request['input']}"
+        steer = f"{BOUND_WAKE_STEER.format(issue=issue_id, run=run_id, disposition=BOUND_WAKE_DISPOSITION.format(issue=issue_id))}\n\n{request['input']}"
         # The wake's text is no person's request: the room run's grant drops to the Paperclip run's
         # own (it names no requester) or to none, as a steer by anyone but the requester does.
         lowered = identity.get("localSessionToken") or ""

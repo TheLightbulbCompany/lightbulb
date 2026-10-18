@@ -190,8 +190,27 @@ async def test_find_line_user_stops_after_the_page_cap(monkeypatch):
 @pytest.mark.parametrize("status", [200, 202, 404])
 async def test_release_line_ok(monkeypatch, status):
     calls = _mock(monkeypatch, lambda r: httpx.Response(status, json={}))
-    await photon.release_line("res1")
+    assert await photon.release_line("res1") is None
     assert calls[0].method == "DELETE" and calls[0].url.path == f"{PRJ}/platforms/imessage/dedicated/res1"
+
+
+async def test_release_line_202_is_an_operation_looked_at_once(monkeypatch):
+    """A 202 release counts only once its operation succeeded; an unfinished one comes back for the caller."""
+    op = {"operationId": "op9", "state": "running"}
+
+    def handler(r: httpx.Request):
+        if r.method == "DELETE":
+            return httpx.Response(202, json={"operationId": "op9", "state": "pending"})
+        return httpx.Response(200, json={"operation": op})
+
+    calls = _mock(monkeypatch, handler)
+    assert (await photon.release_line("res1"))["state"] == "running"
+    assert [(c.method, c.url.path) for c in calls] == [
+        ("DELETE", f"{PRJ}/platforms/imessage/dedicated/res1"),
+        ("GET", f"{PRJ}/platforms/operations/op9"),
+    ]
+    op["state"] = "succeeded"
+    assert await photon.release_line("res1") is None
 
 
 async def test_release_line_other_error_raises(monkeypatch):

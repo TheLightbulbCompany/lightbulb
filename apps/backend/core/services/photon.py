@@ -128,5 +128,12 @@ async def find_line_user(resource_id: str) -> dict | None:
     return None
 
 
-async def release_line(resource_id: str) -> None:
-    await _call("DELETE", f"/platforms/imessage/dedicated/{resource_id}", ok_statuses=(404,))
+async def release_line(resource_id: str) -> dict | None:
+    """None once Photon has released the line (200; 404 = already gone). A 202 is an Operation: one look,
+    and one not yet ``succeeded`` is returned, so the caller keeps its row for a retry instead of forgetting
+    a line that bills until it is released."""
+    body = await _call("DELETE", f"/platforms/imessage/dedicated/{resource_id}", ok_statuses=(404,))
+    if not body.get("operationId"):
+        return None
+    op = await get_operation(body["operationId"])
+    return None if op.get("state") == "succeeded" else op

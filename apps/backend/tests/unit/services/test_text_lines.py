@@ -32,7 +32,7 @@ def m(monkeypatch):
     o.get_op = AsyncMock(return_value=DONE)
     o.find_user = AsyncMock(return_value={"id": "usr_1", "handle": "+15551230000"})
     o.cancel = AsyncMock()
-    o.release = AsyncMock()
+    o.release = AsyncMock(return_value=None)  # released now; a 202 still running comes back as the operation
     o.soul = AsyncMock()
     o.mail = AsyncMock()
     o.metric = MagicMock()
@@ -436,6 +436,26 @@ async def test_release_failure_keeps_the_row_and_raises(m):
         await text_lines.release_line("org_1")
     m.delete.assert_not_awaited()
     m.set_fd.assert_not_awaited()
+
+
+async def test_a_release_still_running_keeps_the_row(m):
+    """A 202 release is an operation; the row and the claim stay until it has succeeded."""
+    m.line.return_value = LINE_ROW
+    m.release.return_value = {"operationId": "op_r", "state": "running"}
+    with pytest.raises(BillingServiceError, match="line_release_pending"):
+        await text_lines.release_line("org_1")
+    m.delete.assert_not_awaited()
+    m.set_fd.assert_not_awaited()
+
+
+async def test_a_failed_release_keeps_the_row_and_is_counted(m):
+    m.line.return_value = LINE_ROW
+    m.release.return_value = {"operationId": "op_r", "state": "failed", "error": {"code": "carrier"}}
+    with pytest.raises(BillingServiceError, match="line_release_failed"):
+        await text_lines.release_line("org_1")
+    m.delete.assert_not_awaited()
+    m.set_fd.assert_not_awaited()
+    m.metric.assert_any_call("text_line.release_failed", dimensions={"code": "carrier"})
 
 
 async def test_release_absent_clears_flag(m):

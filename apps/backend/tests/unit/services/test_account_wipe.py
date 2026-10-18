@@ -1493,6 +1493,7 @@ def _line_seams(stack, rows, **photon_calls):
 @pytest.mark.asyncio
 async def test_agent_email_step_deprovisions_text_rows_then_deletes(wipe_mocks):
     calls = MagicMock()
+    calls.deprovision.return_value = None  # released now (a dict here would be a 202 operation still running)
     deprovision = AsyncMock(side_effect=lambda n: calls.deprovision(n))
     wipe_mocks.agent_email_delete.side_effect = lambda oid: calls.delete(oid) or ["x"]
     with ExitStack() as stack:
@@ -1555,7 +1556,7 @@ async def test_a_still_running_pending_operation_is_reported_failed(wipe_mocks):
 async def test_wipe_releases_a_finished_pending_operation(wipe_mocks, release_fails):
     """A cancel that lost the race (409): the finished line is released by its resource, never left billing."""
     row = {"owner_id": OWNER_ID, "address": "pending:x", "kind": "text_pending", "operation_id": "op_1"}
-    release = AsyncMock(side_effect=RuntimeError("photon down") if release_fails else None)
+    release = AsyncMock(side_effect=RuntimeError("photon down") if release_fails else None, return_value=None)
     with ExitStack() as stack:
         _line_seams(
             stack,

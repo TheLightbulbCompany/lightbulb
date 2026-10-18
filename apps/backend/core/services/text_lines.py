@@ -180,6 +180,20 @@ async def complete_pending(owner_id: str) -> str:
     return "provisioned"
 
 
+async def _release_resource(resource_id: str) -> None:
+    """Released now, or raises so the caller's row survives for the retry (Stripe redelivers; the wipe reruns).
+    A 202 release is an operation: only ``succeeded`` frees the row."""
+    op = await photon.release_line(resource_id)
+    if op is None:
+        return
+    state = op.get("state")
+    if state in ("pending", "running"):
+        raise BillingServiceError("line_release_pending")
+    code = (op.get("error") or {}).get("code") or op.get("reason") or state
+    put_metric("text_line.release_failed", dimensions={"code": str(code)})
+    raise BillingServiceError("line_release_failed")
+
+
 async def release_line(owner_id: str) -> str:
     released = False
     pending = await agent_email_repo.pending_line_for_owner(owner_id)
@@ -192,7 +206,7 @@ async def release_line(owner_id: str) -> str:
             raise BillingServiceError("line_release_pending")  # keep the row; Stripe redelivers
         if state == "succeeded":
             # The cancel lost the race: release the finished line by its resource, never through the record step.
-            await photon.release_line(op["resourceId"])  # raises on anything but 404; Stripe redelivers
+            await _release_resource(op["resourceId"])  # raises unless released; Stripe redelivers
         await agent_email_repo.delete_pending_line(owner_id, operation_id=op_id)
         released = True
     line = await agent_email_repo.text_line_for_owner(owner_id)
@@ -202,7 +216,7 @@ async def release_line(owner_id: str) -> str:
             await _clear_claim(owner_id)
         return "released" if released else "absent"
     if line.get("photon_resource_id"):
-        await photon.release_line(line["photon_resource_id"])  # raises on anything but 404; Stripe redelivers
+        await _release_resource(line["photon_resource_id"])  # raises unless released; Stripe redelivers
     else:
         logger.warning("Line %s (owner %s) has no Photon resource id; release it by hand", line["address"], owner_id)
     await agent_email_repo.delete_text_line(line["address"])

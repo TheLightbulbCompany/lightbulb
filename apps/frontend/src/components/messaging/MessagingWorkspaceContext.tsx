@@ -87,6 +87,12 @@ function landingFor(rooms: readonly RoomSummary[]): boolean | null {
 // Make it event-driven if the backend ever says "seeded" explicitly.
 const FRESH_LANDING_WAIT_MS = 60_000;
 
+// Activation is a workspace milestone, not a count of every successful run.
+// Keep the browser marker workspace-scoped so a remount or another room cannot
+// report the same workspace twice. The event itself contains no message, room,
+// run, or agent identifiers: only the stable aggregate join key.
+const CHAT_COMPLETED_STORAGE_PREFIX = "isol8_chat_completed_v1";
+
 const MessagingWorkspaceContext = createContext<MessagingWorkspaceValue | null>(null);
 
 export function useMessagingWorkspace(): MessagingWorkspaceValue {
@@ -204,6 +210,43 @@ export function MessagingWorkspaceProvider({
     true,
     true, // this instance feeds RoomPanel's subagent strip
   );
+  const activeRunIds = useRef(new Set<string>());
+  const completedRunIds = useRef(new Set<string>());
+  useEffect(() => {
+    // A replayed completed run is not a browser-observed completion. Require
+    // this mounted client to have seen the run working before it completed.
+    for (const run of rooms.runs) {
+      if (run.state === "running") activeRunIds.current.add(run.runId);
+      if (run.state === "completed" && activeRunIds.current.has(run.runId)) {
+        completedRunIds.current.add(run.runId);
+      }
+    }
+
+    if (!orgId || !userId || freshLanding !== true || completedRunIds.current.size === 0) return;
+    const storageKey = `${CHAT_COMPLETED_STORAGE_PREFIX}:${orgId}`;
+    if (window.localStorage.getItem(storageKey)) return;
+
+    // A qualifying activation is the first real message this user sent in the
+    // fresh workspace followed by its successful agent run. System-authored,
+    // agent-authored, errored, aborted, and unrelated runs do not qualify.
+    const ownMessages = rooms.messages.filter((message) =>
+      message.author.kind === "human" && message.author.id === userId,
+    );
+    if (ownMessages.length !== 1) return;
+    const firstMessageId = ownMessages[0].messageId;
+    const completedFirstChat = rooms.runs.some((run) =>
+      completedRunIds.current.has(run.runId) &&
+      run.state === "completed" &&
+      run.triggerMessageId === firstMessageId,
+    );
+    if (!completedFirstChat) return;
+
+    // Persist before capture so React remounts and effect replays cannot emit a
+    // duplicate. capture() is browser-only and deliberately receives no chat
+    // content or per-run identifiers.
+    window.localStorage.setItem(storageKey, "1");
+    capture("chat_completed", { workspace_id: orgId });
+  }, [freshLanding, orgId, rooms.messages, rooms.runs, userId]);
   const observedLanding = rooms.roomsLoading || rooms.roomsError ? null : landingFor(rooms.rooms);
   if (freshLanding === null && observedLanding !== null) setLanding({ scope, fresh: observedLanding });
   const awaitingGeneral = freshLanding === null && !rooms.roomsLoading;

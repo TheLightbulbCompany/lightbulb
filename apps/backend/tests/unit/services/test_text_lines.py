@@ -170,11 +170,20 @@ def _ago(seconds):
 
 async def test_old_claim_is_repaired(m):
     m.claim.side_effect = [False, True]
-    m.meta.return_value = (_ago(600), 0)
+    m.meta.return_value = (_ago(600), 3)
     assert await text_lines.ensure_line("org_1") == "provisioned"
-    m.set_fd.assert_any_await("org_1", False)
-    assert m.claim.await_count == 2
+    m.set_fd.assert_not_awaited()  # no release, so no generation bump
+    assert m.claim.await_args_list[0].kwargs == {}
+    assert m.claim.await_args_list[1].kwargs["stale_before"]
     m.request.assert_awaited_once()
+
+
+async def test_crash_retry_reuses_the_request_key(m):
+    m.claim.side_effect = [False, True]
+    m.meta.return_value = (_ago(600), 3)
+    await text_lines.ensure_line("org_1")
+    m.request.assert_awaited_once()
+    assert m.request.await_args.kwargs["idempotency_key"] == "front-desk:org_1:3"
 
 
 async def test_fresh_claim_is_not_repaired(m):
@@ -313,6 +322,15 @@ async def test_release_keeps_the_row_while_the_operation_still_runs(m):
         await text_lines.release_line("org_1")
     m.del_pending.assert_not_awaited()
     m.set_fd.assert_not_awaited()
+
+
+async def test_release_with_deferred_record_after_lost_race_raises(m):
+    m.pending.return_value = PENDING
+    m.get_op.return_value = DONE
+    m.put.side_effect = ValueError("ddb down")
+    with pytest.raises(BillingServiceError, match="line_release_pending"):
+        await text_lines.release_line("org_1")
+    m.release.assert_not_awaited()
 
 
 async def test_release_falls_through_when_cancel_loses_the_race(m):

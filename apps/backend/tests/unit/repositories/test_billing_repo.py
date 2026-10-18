@@ -1250,3 +1250,18 @@ async def test_front_desk_claim_stamps_time_and_release_bumps_generation(dynamod
     assert await billing_repo.front_desk_meta("org_fd2") == (None, 1)
     await billing_repo.set_front_desk("org_fd2", True)
     assert (await billing_repo.front_desk_meta("org_fd2"))[1] == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_claim_is_retaken_in_place_without_bumping_the_generation(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("org_fd3", "cus_fd3")
+    await billing_repo.set_front_desk("org_fd3", False)  # gen 1
+    assert await billing_repo.claim_front_desk("org_fd3") is True
+    first_at, gen = await billing_repo.front_desk_meta("org_fd3")
+    assert gen == 1
+    assert await billing_repo.claim_front_desk("org_fd3", stale_before="1999-01-01T00:00:00+00:00") is False
+    assert await billing_repo.claim_front_desk("org_fd3", stale_before="2999-01-01T00:00:00+00:00") is True
+    new_at, gen = await billing_repo.front_desk_meta("org_fd3")
+    assert gen == 1 and new_at >= first_at

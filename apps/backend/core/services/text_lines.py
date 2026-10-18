@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import time
 
@@ -50,14 +50,6 @@ async def _line_or_pending(owner_id: str) -> bool:
     )
 
 
-async def _claim_is_stale(owner_id: str) -> bool:
-    claim_at, _ = await billing_repo.front_desk_meta(owner_id)
-    if not claim_at:
-        return True
-    age = (datetime.now(timezone.utc) - datetime.fromisoformat(claim_at)).total_seconds()
-    return age > STALE_CLAIM_S
-
-
 async def ensure_line(owner_id: str, *, from_webhook: bool = False) -> str:
     """claim -> request the Photon operation -> short wait -> else leave a pending row for completion on read."""
     if await agent_email_repo.text_line_for_owner(owner_id):
@@ -75,11 +67,9 @@ async def ensure_line(owner_id: str, *, from_webhook: bool = False) -> str:
         if await _line_or_pending(owner_id):
             return "unchanged"
         # The flag is set with nothing behind it. A claim younger than STALE_CLAIM_S may still be inside its
-        # Photon request, so only an old one is a crash between the claim and the pending row.
-        if not await _claim_is_stale(owner_id):
-            return "unchanged"
-        await billing_repo.set_front_desk(owner_id, False)
-        if not await billing_repo.claim_front_desk(owner_id):
+        # Photon request; an older one is a crash, retaken in place so the generation (the request key) is kept.
+        stale_before = (datetime.now(timezone.utc) - timedelta(seconds=STALE_CLAIM_S)).isoformat()
+        if not await billing_repo.claim_front_desk(owner_id, stale_before=stale_before):
             return "unchanged"
     op = None
     try:
@@ -203,7 +193,9 @@ async def release_line(owner_id: str) -> str:
         await photon.cancel_operation(pending["operation_id"])
         op = await photon.get_operation(pending["operation_id"])
         if op.get("state") == "succeeded":
-            await complete_pending(owner_id)  # the cancel lost the race: record the line, then release it below
+            # The cancel lost the race: record the line, then release it below. A deferred record can't be released yet.
+            if await complete_pending(owner_id) == "pending":
+                raise BillingServiceError("line_release_pending")
         elif op.get("state") in ("pending", "running"):
             raise BillingServiceError("line_release_pending")  # keep the row; Stripe redelivers
         else:

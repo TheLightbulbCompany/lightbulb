@@ -1198,16 +1198,25 @@ async def set_front_desk(owner_id: str, value: bool) -> None:
     )
 
 
-async def claim_front_desk(owner_id: str) -> bool:
-    """Single-flight claim before buying a line: False when another delivery holds it."""
+async def claim_front_desk(owner_id: str, *, stale_before: str | None = None) -> bool:
+    """Single-flight claim before buying a line: False when another delivery holds it.
+
+    ``stale_before`` (an ISO time) also retakes a claim stamped earlier than it, in place: the crash repair
+    must not bump ``front_desk_gen``, or the retry would request a second line under a new key.
+    """
     now = utc_now_iso()
+    condition = "attribute_not_exists(front_desk) OR front_desk = :f"
+    values = {":v": True, ":f": False, ":u": now}
+    if stale_before:
+        condition += " OR (attribute_exists(front_desk_claim_at) AND front_desk_claim_at < :stale)"
+        values[":stale"] = stale_before
     try:
         await run_in_thread(
             _get_table().update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="SET front_desk = :v, front_desk_claim_at = :u, updated_at = :u",
-            ExpressionAttributeValues={":v": True, ":f": False, ":u": now},
-            ConditionExpression="attribute_exists(owner_id) AND (attribute_not_exists(front_desk) OR front_desk = :f)",
+            ExpressionAttributeValues=values,
+            ConditionExpression=f"attribute_exists(owner_id) AND ({condition})",
         )
         return True
     except ClientError as e:

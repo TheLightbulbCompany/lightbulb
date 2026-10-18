@@ -52,6 +52,17 @@ function useCopy(text: string | undefined) {
   return { copied, copy };
 }
 
+const PHONE_ERRORS: Record<string, string> = {
+  "400": "Use the form +1XXXXXXXXXX",
+  phone_taken: "Another member already uses this number",
+  phone_is_a_customer: "A customer has texted from this number, so it cannot be a member's",
+};
+
+function phoneErrorKey(e: ApiError): string {
+  const status = typeof e.body === "object" && e.body !== null ? (e.body as { status?: unknown }).status : undefined;
+  return e.status === 409 && typeof status === "string" ? status : String(e.status);
+}
+
 /** Registers the member's own phone so a text from it posts to the main room as them. */
 function MyPhone({ phone }: { phone: string | null | undefined }) {
   const api = useApi();
@@ -64,7 +75,7 @@ function MyPhone({ phone }: { phone: string | null | undefined }) {
       await call();
       await mutate(isTextLineKey);
     } catch (e) {
-      setError(e instanceof ApiError && e.status === 400 ? "Use the form +1XXXXXXXXXX" : "Could not save");
+      setError(e instanceof ApiError ? PHONE_ERRORS[phoneErrorKey(e)] ?? "Could not save" : "Could not save");
     }
   };
   return <div className="mail-panel__myphone">

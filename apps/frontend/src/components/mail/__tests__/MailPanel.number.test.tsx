@@ -168,4 +168,16 @@ describe("MailPanel number", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByText("Use the form +1XXXXXXXXXX")).toBeInTheDocument();
   });
+
+  it("explains a taken phone and a customer's phone", async () => {
+    line = { number: "+15551230000", myPhone: null };
+    mockPut.mockRejectedValueOnce(new ApiError(409, { status: "phone_taken" }));
+    mockPut.mockRejectedValueOnce(new ApiError(409, { status: "phone_is_a_customer" }));
+    renderMail();
+    fireEvent.change(await screen.findByLabelText("Text the team from your phone"), { target: { value: "+15551234567" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Another member already uses this number")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText(/A customer has texted from this number/)).toBeInTheDocument();
+  });
 });

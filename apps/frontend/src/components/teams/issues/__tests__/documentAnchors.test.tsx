@@ -88,9 +88,22 @@ describe("computeAnchor never pins text the page does not render", () => {
 
   it("scores a quote repeated 20,000 times in linear time", () => {
     const body = "a ".repeat(20000) + "end";
+    const start = 19999 * 2;
     const t0 = performance.now();
-    expect(pinned("a", 19999, body).text).toBe("a");
-    expect(performance.now() - t0).toBeLessThan(2000);
+    const anchor = computeAnchor({ markdown: body, containerText: body, startOffset: start, endOffset: start + 1 });
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(anchor!.selector.position.markdownStart).toBe(start);
+  });
+
+  it("filters 20,000 hidden image alts in linear time", () => {
+    // Times computeAnchor alone: rendering 20,000 images for the helper is the slow part.
+    const body = "![foo](x)\n\n".repeat(20000) + "Visible foo here.";
+    const containerText = "Visible foo here.";
+    const start = containerText.indexOf("foo");
+    const t0 = performance.now();
+    const anchor = computeAnchor({ markdown: body, containerText, startOffset: start, endOffset: start + 3 });
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(anchor!.selector.position.markdownStart).toBe(body.lastIndexOf("foo"));
   });
 
   it("never lets a code span cross a blank line", () => {

@@ -91,6 +91,27 @@ const CANDIDATE_WORDS = 16;
 // keeps scoring linear when a short quote repeats thousands of times.
 const CONTEXT_CHARS = 600;
 
+/** Point-in-ranges test in O(log n): ranges sorted by start, with the running
+ *  max end, so a document with thousands of hidden regions stays linear. */
+function hiddenLookup(ranges: Array<[number, number]>): (at: number) => boolean {
+  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+  const maxEnd: number[] = [];
+  for (const [, to] of sorted) maxEnd.push(Math.max(to, maxEnd[maxEnd.length - 1] ?? -Infinity));
+  return (at) => {
+    let lo = 0;
+    let hi = sorted.length - 1;
+    let last = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid][0] <= at) {
+        last = mid;
+        lo = mid + 1;
+      } else hi = mid - 1;
+    }
+    return last >= 0 && maxEnd[last] > at;
+  };
+}
+
 function words(text: string): string[] {
   return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
 }
@@ -177,11 +198,8 @@ export function computeAnchor(input: {
     candidates = quote ? findAllOccurrences(projection.text, quote) : [];
   }
   // Prefer candidates outside source the page never renders as text.
-  const hidden = unrenderedRanges(input.markdown);
-  const visible = candidates.filter((start) => {
-    const at = projection.positions[start]?.sourceStart ?? -1;
-    return !hidden.some(([from, to]) => at >= from && at < to);
-  });
+  const isHidden = hiddenLookup(unrenderedRanges(input.markdown));
+  const visible = candidates.filter((start) => !isHidden(projection.positions[start]?.sourceStart ?? -1));
   // The filter only disambiguates. The reader selected visible text, so if
   // it flags every occurrence the patterns are wrong, not the text.
   if (visible.length > 0) candidates = visible;

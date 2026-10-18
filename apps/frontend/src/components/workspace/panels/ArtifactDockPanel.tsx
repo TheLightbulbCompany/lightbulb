@@ -97,7 +97,7 @@ function FilePane({ source }: { source: FileSource }) {
 /** The document view: title, who changed it and when, a contents list, and the reviewable row (comments, versions). */
 function DocumentPane({ source }: { source: Extract<ArtifactSource, { kind: "document" }> }) {
   const { read } = useTeamsApi();
-  const { data, error } = read<IssueDocument>(`/issues/${encodeURIComponent(source.issue)}/documents/${encodeURIComponent(source.key)}`);
+  const { data, error, mutate: refreshDoc } = read<IssueDocument>(`/issues/${encodeURIComponent(source.issue)}/documents/${encodeURIComponent(source.key)}`);
   const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: membersData } = read<{ members: CompanyMember[] }>("/members");
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -122,7 +122,7 @@ function DocumentPane({ source }: { source: Extract<ArtifactSource, { kind: "doc
         {/* The outline is the latest body's; while a past revision is previewed its headings may differ, so the list hides. */}
         {!previewing && !editing && outline.length >= CONTENTS_MIN_HEADINGS && <DocumentContents entries={outline} bodyRef={bodyRef} />}
         <AttachmentIssueContext.Provider value={source.issue}>
-          <div ref={bodyRef}><DocumentRow doc={data} agents={agents} issueId={source.issue} defaultOpen hideTitle editing={editing} onEditingChange={setEditing} onPreviewingChange={setPreviewing} /></div>
+          <div ref={bodyRef}><DocumentRow doc={data} agents={agents} issueId={source.issue} defaultOpen hideTitle editing={editing} onEditingChange={setEditing} onPreviewingChange={setPreviewing} onRestored={() => { void refreshDoc(); }} /></div>
         </AttachmentIssueContext.Provider>
       </div>}
     </PaneFrame>

@@ -79,7 +79,7 @@ export function DocumentEditor({ issueId, basePath = `/issues/${encodeURICompone
     } catch (e) {
       const c = conflictOf(e);
       if (c) { setConflict(c); void mutate(cacheKey); }
-      else if ((e as { status?: number })?.status === 422) setError(`Couldn't save. The title can be up to ${TITLE_MAX} characters.`);
+      else if ((e as { status?: number })?.status === 422) setError(title.length > TITLE_MAX ? `Couldn't save. The title can be up to ${TITLE_MAX} characters.` : "Couldn't save. The body is over the 512 KB limit.");
       else setError("Couldn't save. Try again.");
     } finally {
       setSaving(false);

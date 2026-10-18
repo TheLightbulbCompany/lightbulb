@@ -9,9 +9,18 @@ export function outlineOf(markdown: string): OutlineEntry[] {
     if (/^\s*(```|~~~)/.test(line)) { fenced = !fenced; continue; }
     if (fenced) continue;
     const m = /^(#{1,3})\s+(.+?)\s*#*$/.exec(line);
-    if (m) out.push({ level: m[1].length as 1 | 2 | 3, text: m[2].replace(/[*_`]/g, "").trim() });
+    if (m) out.push({ level: m[1].length as 1 | 2 | 3, text: headingText(m[2]) });
   }
   return out;
+}
+
+/** The text react-markdown renders for a heading: link and image syntax reduced to their text, emphasis markers dropped. */
+function headingText(raw: string): string {
+  return raw
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[*_`]/g, "")
+    .trim();
 }
 
 export const CONTENTS_MIN_HEADINGS = 4;

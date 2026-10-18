@@ -121,9 +121,9 @@ it("names a human by Paperclip id, and says You for the current user", async () 
   expect(await conflictOn(new ApiError(409, { detail: "stale", upstream_status: 409 }), { members, currentUserId: "user_1" })).toHaveTextContent("You saved rev 4");
 });
 
-it("a 422 names the title limit and a wording match on another status is not a conflict", async () => {
-  const alert = await conflictOn(new ApiError(422, { detail: "title too long, locked" }));
-  expect(alert).toHaveTextContent(/up to 200 characters/);
+it("a 422 names the body limit (the title field already caps itself) and a wording match on another status is not a conflict", async () => {
+  const alert = await conflictOn(new ApiError(422, { detail: "body too long, locked" }));
+  expect(alert).toHaveTextContent(/512 KB/);
   expect(alert).not.toHaveTextContent(/Locked by/);
 });
 

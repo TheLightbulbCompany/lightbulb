@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: vi.fn() }));
 const m = vi.hoisted(() => ({ get: vi.fn(), read: vi.fn() }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: m.get }) }));
 // The viewer's own document read goes through the Teams SWR layer.
@@ -44,13 +45,11 @@ describe("RoomDocumentCards", () => {
     expect(m.get).toHaveBeenCalledWith("/teams/issues/HAB-12/documents/research");
   });
 
-  it("opens the document in a dialog over the chat, with no Delete", async () => {
+  it("opens the document in the artifact pane", async () => {
+    const { openPanel } = await import("@/components/workspace/workspaceController");
     renderText("https://dev.thelightbulb.company/HAB/issues/HAB-12#document-research");
     fireEvent.click(await screen.findByRole("button", { name: /Open Habits 365/ }));
-    const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByTestId("md")).toHaveTextContent("strongest at streak reminders");
-    expect(m.read).toHaveBeenCalledWith("/issues/uuid-12/documents/research");
-    expect(within(dialog).queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(openPanel).toHaveBeenCalledWith("artifact", { src: "paperclip", kind: "document", issue: "uuid-12", key: "research", ident: "HAB-12" }, { pushUrl: true });
   });
 
   it("renders nothing when the task is not readable (another company, deleted)", async () => {

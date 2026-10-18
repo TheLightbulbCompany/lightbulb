@@ -5,6 +5,8 @@ import userEvent from "@testing-library/user-event";
 import { RoomImageAttachments } from "../RoomImageAttachments";
 import type { MessageAttachment } from "@lightbulb/shared";
 
+vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: vi.fn() }));
+
 const ATTACHMENTS: MessageAttachment[] = [
   { id: "att-1", fileName: "cat.png", contentType: "image/png", size: 2048 },
   { id: "att-2", fileName: "dog.jpg", contentType: "image/jpeg", size: 4096 },
@@ -73,21 +75,6 @@ describe("RoomImageAttachments", () => {
     expect(within(dialog).queryByRole("button", { name: /previous attachment/i })).not.toBeInTheDocument();
   });
 
-  it("renders a sent PDF as an accessible authenticated file card", async () => {
-    const user = userEvent.setup();
-    const pdf: MessageAttachment = { id: "pdf-1", fileName: "brief.pdf", contentType: "application/pdf", size: 5000 };
-    const authenticatedDownload = vi.fn(async () => new Blob(["%PDF-1.7"], { type: "application/pdf" }));
-    render(<RoomImageAttachments roomId="room-1" attachments={[pdf]} download={authenticatedDownload} />);
-
-    const card = await screen.findByRole("button", { name: "Open brief.pdf" });
-    expect(authenticatedDownload).toHaveBeenCalledWith("room-1", "pdf-1");
-    expect(screen.getByText("PDF · 4.9 KB")).toBeInTheDocument();
-    await user.click(card);
-
-    const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
-  });
-
   it("renders ZIP as an explicit opaque download without prefetching or previewing it", async () => {
     const user = userEvent.setup();
     const zip: MessageAttachment = { id: "zip-1", fileName: "bundle.zip", contentType: "application/zip", size: 8192 };
@@ -109,12 +96,8 @@ describe("RoomImageAttachments", () => {
   });
 
   it.each([
-    ["report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "XLSX"],
     ["memo.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "DOCX"],
     ["deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "PPTX"],
-    ["data.csv", "text/csv", "CSV"],
-    ["notes.txt", "text/plain", "TXT"],
-    ["readme.md", "text/markdown", "MD"],
   ] as const)("renders %s as an explicit opaque download without prefetching or previewing it", async (fileName, contentType, label) => {
     const user = userEvent.setup();
     const office: MessageAttachment = { id: "office-1", fileName, contentType, size: 8192 };
@@ -135,18 +118,21 @@ describe("RoomImageAttachments", () => {
     click.mockRestore();
   });
 
-  it("offers an actionable retry when an authenticated file download fails", async () => {
-    const user = userEvent.setup();
-    const pdf: MessageAttachment = { id: "pdf-1", fileName: "brief.pdf", contentType: "application/pdf", size: 5000 };
-    const authenticatedDownload = vi.fn()
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce(new Blob(["%PDF-1.7"], { type: "application/pdf" }));
-    render(<RoomImageAttachments roomId="room-1" attachments={[pdf]} download={authenticatedDownload} />);
-
-    await user.click(await screen.findByRole("button", { name: "Retry brief.pdf" }));
-
-    expect(await screen.findByRole("button", { name: "Open brief.pdf" })).toBeEnabled();
-    expect(authenticatedDownload).toHaveBeenCalledTimes(2);
+  it.each([
+    ["report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "XLSX"],
+    ["data.csv", "text/csv", "CSV"],
+    ["page.html", "text/html", "HTML"],
+    ["notes.md", "text/markdown", "MD"],
+    ["report.pdf", "application/pdf", "PDF"],
+  ] as const)("opens %s in the artifact pane without prefetching it", async (fileName, contentType, label) => {
+    const { openPanel } = await import("@/components/workspace/workspaceController");
+    const download = vi.fn();
+    render(<RoomImageAttachments roomId="room-1" attachments={[{ id: "a1", fileName, contentType, size: 10 }]} download={download} />);
+    const card = screen.getByRole("button", { name: new RegExp(`open ${fileName}`, "i") });
+    expect(within(card).getByText(new RegExp(`^${label} ·`))).toBeInTheDocument();
+    expect(download).not.toHaveBeenCalled();
+    await userEvent.click(card);
+    expect(openPanel).toHaveBeenCalledWith("artifact", { src: "attachment", room: "room-1", id: "a1", name: fileName, type: contentType }, { pushUrl: true });
   });
 
   it("plays a video from a presigned URL, never the byte route, with the sibling image as its poster", async () => {

@@ -12,15 +12,15 @@
 //   - ArtifactStackCard  — one task's bundle. The whole card EXPANDS the stack
 //     inline (upstream deep-links; we keep in-component view state). A count
 //     badge sits over the preview.
-//   - ArtifactGalleryCard — one artifact. The whole card opens our
-//     ArtifactViewerDialog (upstream has no viewer and links to the raw file).
+//   - ArtifactGalleryCard — one artifact. The whole card opens the
+//     artifact pane (upstream has no viewer and links to the raw file).
 //     Secondary hover icons (open-in-issue / download / delete) each
 //     stopPropagation so they never trip the card's open-viewer surface.
 //
 // The preview region is the load-bearing port: a fixed aspect box that keeps
 // image / text / placeholder cards from shifting layout as previews load. Image
 // bytes are fetched through the BFF content route (Clerk bearer) into an object
-// URL — the same pattern ArtifactViewerDialog's ContentBody uses, including
+// URL — the same pattern the artifact pane uses, including
 // the mount-ref stability fix — because a bare <img src> to the upstream path
 // can't authenticate.
 

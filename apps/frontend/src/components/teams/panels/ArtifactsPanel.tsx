@@ -16,13 +16,13 @@
 //      one per task. Clicking a stack EXPANDS it inline.
 //   3. EXPANDED STACK — `GET /artifacts?groupBy=task&groupIssueId={id}` → that
 //      task's artifacts as ArtifactGalleryCards, with a back control. Clicking
-//      a card opens the in-app ArtifactViewerDialog.
+//      a card opens the artifact pane.
 //
 // Capabilities preserved from the previous list impl (do not regress):
-//   - VIEW   — clicking an artifact card opens ArtifactViewerDialog, which
+//   - VIEW   — clicking an artifact card opens the artifact pane, which
 //     fetches + renders the artifact's CONTENT in place (routed by its typed id
 //     prefix; see artifactRouting.ts).
-//   - DELETE — an artifact card's trash icon (and the viewer's Delete button)
+//   - DELETE — an artifact card's trash icon
 //     runs a confirm-then-delete flow against the correct BFF DELETE endpoint,
 //     then revalidates EVERY gallery key (one key filter over the global SWR
 //     cache, so the view the owner is NOT on — and any other search — refreshes
@@ -42,10 +42,14 @@ import { ArrowLeft, Images } from "lucide-react";
 import { PanelMasthead, PanelNotice, PanelTabs, PanelToolbar } from "@/components/teams/shell";
 import { EditorialDialog } from "@/components/teams/shell/EditorialDialog";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { ArtifactViewerDialog } from "./ArtifactViewerDialog";
+import { openPanel } from "@/components/workspace/workspaceController";
+import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
 import { ArtifactGalleryCard, ArtifactStackCard } from "./ArtifactCards";
 import {
   artifactContentPath,
+  artifactKind,
+  artifactRawId,
+  documentKeyFromArtifact,
   bucketByRecency,
   deletePathForArtifact,
   issueListPathForArtifact,
@@ -111,6 +115,21 @@ function SortControl({
   );
 }
 
+// A card opens the artifact pane. Bytes-less artifacts (a document with no key,
+// a work product with no attachment) have nothing to show, so they stay inert.
+function openInPane(a: CompanyArtifact) {
+  const kind = artifactKind(a.id);
+  const issue = a.issue?.id;
+  if (!issue) return;
+  if (kind === "document") {
+    const key = documentKeyFromArtifact(a);
+    if (key) openPanel("artifact", { src: "paperclip", kind, issue, key, ident: a.issue?.identifier }, { pushUrl: true });
+  } else if (kind === "attachment" || kind === "work_product") {
+    const id = kind === "attachment" ? artifactRawId(a.id) : attachmentIdFromHref(a.downloadPath ?? a.openPath);
+    if (id) openPanel("artifact", { src: "paperclip", kind, issue, id, name: a.title, ...(a.contentType ? { type: a.contentType } : {}) }, { pushUrl: true });
+  }
+}
+
 export function ArtifactsPanel() {
   const { read, del, download, mutate } = useTeamsApi();
   // The gallery and the issue-detail sections keep SEPARATE SWR caches; deleting
@@ -123,7 +142,6 @@ export function ArtifactsPanel() {
   const [expandedIssueId, setExpandedIssueId] = useState<string | null>(null);
   const [view, setView] = useState<LibraryView>("recent");
   const [sort, setSort] = useState<ArtifactSort>("newest");
-  const [viewing, setViewing] = useState<CompanyArtifact | null>(null);
   const [pendingDelete, setPendingDelete] = useState<CompanyArtifact | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -231,7 +249,7 @@ export function ArtifactsPanel() {
       setDeleting(false);
       return;
     }
-    // Deleted. Close the confirm + the viewer if it was showing this artifact,
+    // Deleted. Close the confirm,
     // then best-effort revalidate BOTH gallery keys AND the issue-scoped list
     // that also holds it (separate SWR caches) so the task detail stops showing
     // it. A revalidation hiccup must not reopen the dialog — the delete
@@ -245,7 +263,6 @@ export function ArtifactsPanel() {
     // every `q` is its own key: deleting under a search and then clearing the
     // box would otherwise still list the deleted deliverable. The issue-scoped
     // list is a different resource and stays an exact key.
-    setViewing((cur) => (cur && cur.id === artifact.id ? null : cur));
     setPendingDelete(null);
     setDeleting(false);
     const issueListPath = issueListPathForArtifact(artifact);
@@ -353,7 +370,7 @@ export function ArtifactsPanel() {
                     <ArtifactGalleryCard
                       key={artifact.id}
                       artifact={artifact}
-                      onOpen={setViewing}
+                      onOpen={openInPane}
                       onDownload={handleDownload}
                       onRequestDelete={setPendingDelete}
                     />
@@ -377,7 +394,7 @@ export function ArtifactsPanel() {
               <ArtifactGalleryCard
                 key={artifact.id}
                 artifact={artifact}
-                onOpen={setViewing}
+                onOpen={openInPane}
                 onDownload={handleDownload}
                 onRequestDelete={setPendingDelete}
               />
@@ -395,14 +412,6 @@ export function ArtifactsPanel() {
           </div>
         )}
       </section>
-
-      {viewing ? (
-        <ArtifactViewerDialog
-          artifact={viewing}
-          onClose={() => setViewing(null)}
-          onRequestDelete={setPendingDelete}
-        />
-      ) : null}
 
       <EditorialDialog
         open={pendingDelete !== null}

@@ -22,7 +22,7 @@ to the agent who wrote the thread; ``list_messages`` never shows those rows (``l
 import logging
 import time
 
-from boto3.dynamodb.conditions import Attr, Key
+from boto3.dynamodb.conditions import Key
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
@@ -68,26 +68,6 @@ async def find_by_message_id(address: str, message_id: str) -> dict | None:
         if item.get("address") == _normalize(address):
             return item
     return None
-
-
-async def has_received_from(address: str, from_addr: str) -> bool:
-    """True when this address holds an inbound row from ``from_addr`` (a customer who has texted or mailed)."""
-    return await _any_match(
-        {
-            "KeyConditionExpression": Key("address").eq(_normalize(address)),
-            "FilterExpression": Attr("direction").not_exists() & Attr("from_addr").eq(from_addr),
-        }
-    )
-
-
-async def _any_match(kwargs: dict) -> bool:
-    while True:
-        resp = await run_in_thread(_get_table().query, **kwargs)
-        if resp.get("Items"):
-            return True
-        if not resp.get("LastEvaluatedKey"):
-            return False
-        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
 
 async def put_message(

@@ -5,11 +5,10 @@ import { ApiError } from "@lightbulb/shared";
 
 const mockGet = vi.fn();
 const mockPost = vi.fn();
-const mockPut = vi.fn();
 const mockDel = vi.fn();
 const refresh = vi.fn();
 const billing = vi.hoisted(() => ({ price: 7 as number | null | undefined, frontDesk: false }));
-vi.mock("@/lib/api", () => ({ useApi: () => ({ get: mockGet, post: mockPost, put: mockPut, del: mockDel }) }));
+vi.mock("@/lib/api", () => ({ useApi: () => ({ get: mockGet, post: mockPost, del: mockDel }) }));
 vi.mock("@/hooks/useBilling", () => ({
   useBilling: () => ({ account: { front_desk_price_usd: billing.price, front_desk: billing.frontDesk }, refresh }),
 }));
@@ -169,39 +168,35 @@ describe("MailPanel number", () => {
     expect(screen.queryByText(/400|unconfigured/)).toBeNull();
   });
 
-  it("saves and removes the member's own phone", async () => {
+  it("links a phone by code", async () => {
     line = { number: "+15551230000", myPhone: null };
-    mockPut.mockResolvedValue({ status: "ok" });
+    mockPost.mockResolvedValue({ code: "004821", number: "+15551230000", expiresAt: "2026-10-18T00:15:00+00:00" });
+    renderMail();
+    fireEvent.click(await screen.findByRole("button", { name: "Link my phone" }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/agent-text/me/phone/code", {}));
+    expect(await screen.findByText("004821")).toBeInTheDocument();
+    expect(screen.getByText(/to \+15551230000 from your phone\. The code works for 15 minutes\./)).toBeInTheDocument();
+    line = { number: "+15551230000", myPhone: "+15551234567" };
+    fireEvent.click(screen.getByRole("button", { name: "Check" }));
+    expect(await screen.findByText("Your phone: +15551234567")).toBeInTheDocument();
+  });
+
+  it("says when a code could not be had", async () => {
+    line = { number: "+15551230000", myPhone: null };
+    mockPost.mockRejectedValue(new ApiError(503, null));
+    renderMail();
+    fireEvent.click(await screen.findByRole("button", { name: "Link my phone" }));
+    expect(await screen.findByText("Could not get a code")).toBeInTheDocument();
+  });
+
+  it("removes the member's own phone", async () => {
+    line = { number: "+15551230000", myPhone: "+15551234567" };
     mockDel.mockResolvedValue({ status: "ok" });
     renderMail();
-    const input = await screen.findByLabelText("Text the team from your phone");
-    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
-    fireEvent.change(input, { target: { value: "+15551234567" } });
-    line = { number: "+15551230000", myPhone: "+15551234567" };
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(mockPut).toHaveBeenCalledWith("/agent-text/me/phone", { phone: "+15551234567" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    expect(await screen.findByText("Your phone: +15551234567")).toBeInTheDocument();
+    line = { number: "+15551230000", myPhone: null };
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(mockDel).toHaveBeenCalledWith("/agent-text/me/phone"));
-  });
-
-  it("explains a bad phone", async () => {
-    line = { number: "+15551230000", myPhone: null };
-    mockPut.mockRejectedValue(new ApiError(400, { status: "bad_phone" }));
-    renderMail();
-    fireEvent.change(await screen.findByLabelText("Text the team from your phone"), { target: { value: "555" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByText("Use the form +1XXXXXXXXXX")).toBeInTheDocument();
-  });
-
-  it("explains a taken phone and a customer's phone", async () => {
-    line = { number: "+15551230000", myPhone: null };
-    mockPut.mockRejectedValueOnce(new ApiError(409, { status: "phone_taken" }));
-    mockPut.mockRejectedValueOnce(new ApiError(409, { status: "phone_is_a_customer" }));
-    renderMail();
-    fireEvent.change(await screen.findByLabelText("Text the team from your phone"), { target: { value: "+15551234567" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByText("Another member already uses this number")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByText(/A customer has texted from this number/)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Link my phone" })).toBeInTheDocument();
   });
 });

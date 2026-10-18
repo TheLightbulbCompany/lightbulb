@@ -218,26 +218,6 @@ async def test_put_sent_writes_channel(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_has_received_from_matches_inbound_rows_from_that_sender(monkeypatch):
-    table = MagicMock()
-    table.query.side_effect = [
-        {"Items": [], "LastEvaluatedKey": {"k": 1}},
-        {"Items": [{"from_addr": "+15551230000"}]},
-    ]
-    monkeypatch.setattr(repo, "_get_table", lambda: table)
-    assert await repo.has_received_from("A@B.c", "+15551230000") is True
-    assert table.query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"k": 1}
-    from boto3.dynamodb.conditions import Attr
-
-    assert table.query.call_args.kwargs["FilterExpression"] == Attr("direction").not_exists() & Attr("from_addr").eq(
-        "+15551230000"
-    )
-
-    table.query.side_effect = [{"Items": []}]
-    assert await repo.has_received_from("a@b.c", "+15559999999") is False
-
-
-@pytest.mark.asyncio
 async def test_put_message_stores_provider_ids_only_when_given(monkeypatch):
     table = MagicMock()
     monkeypatch.setattr(repo, "_get_table", lambda: table)

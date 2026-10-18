@@ -7,11 +7,13 @@ line and always as the line's agent.
 import hashlib
 import logging
 import re
+import secrets
+import time
 import uuid
+from datetime import datetime, timezone
 from typing import Literal
 
 import httpx
-from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -21,6 +23,7 @@ from core.observability.metrics import put_metric
 from core.services import text_lines
 from core.repositories import billing_repo
 from core.repositories.agent_email_repo import (
+    put_phone_code,
     set_business_phone,
     set_disclosed,
     set_member_phone,
@@ -29,11 +32,10 @@ from core.repositories.agent_email_repo import (
 )
 from core.repositories.agent_mail_inbox_repo import (
     get_message,
-    has_received_from,
     parse_reply_key,
     put_sent,
 )
-from core.services.agent_email import mail_changed, team_address
+from core.services.agent_email import mail_changed
 from core.services import photon
 from core.services.text_inbound import business_name
 from routers.agent_mail import _require_hook_token
@@ -56,10 +58,10 @@ async def _line_or_404(owner_id: str) -> dict:
     return line
 
 
-async def _drop_phones(line: dict, user_id: str, keep: str | None = None) -> None:
-    """Remove every phone ``user_id`` holds on the line except ``keep``."""
+async def _drop_phones(line: dict, user_id: str) -> None:
+    """Remove every phone ``user_id`` holds on the line."""
     for phone, uid in (line.get("member_phones") or {}).items():
-        if uid == user_id and phone != keep:
+        if uid == user_id:
             await set_member_phone(line["address"], phone, None)
 
 
@@ -208,27 +210,25 @@ async def get_line(auth: AuthContext = Depends(get_current_user)):
     }
 
 
-@router.put("/me/phone")
-async def put_my_phone(body: BusinessPhone, auth: AuthContext = Depends(get_current_user)):
-    if not _valid_phone(body.phone):
-        return JSONResponse(status_code=400, content={"status": "bad_phone"})
-    owner_id = resolve_owner_id(auth)
-    line = await _line_or_404(owner_id)
-    if (line.get("member_phones") or {}).get(body.phone) != auth.user_id:
-        # A phone that has texted the line as a customer stays a customer: registering it would route
-        # that customer's thread into the main room.
-        address = await team_address(owner_id)
-        if address and await has_received_from(address, body.phone):
-            return JSONResponse(status_code=409, content={"status": "phone_is_a_customer"})
-    try:
-        await set_member_phone(line["address"], body.phone, auth.user_id)
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return JSONResponse(status_code=409, content={"status": "phone_taken"})
-        raise
-    # One phone per member: drop any earlier one once the new one is saved.
-    await _drop_phones(line, auth.user_id, keep=body.phone)
-    return {"status": "ok"}
+PHONE_CODE_TTL_S = 15 * 60
+
+
+@router.post("/me/phone/code")
+async def my_phone_code(auth: AuthContext = Depends(get_current_user)) -> dict:
+    """A member links their phone by texting this code to the line: the inbound text is the proof."""
+    line = await _line_or_404(resolve_owner_id(auth))
+    now = int(time.time())
+    expires_at = now + PHONE_CODE_TTL_S
+    expired = [c for c, v in (line.get("phone_codes") or {}).items() if int(v.get("exp", 0)) <= now]
+    for _ in range(2):  # a live collision is one in a million; draw once more, then give up
+        code = f"{secrets.randbelow(10**6):06d}"
+        if await put_phone_code(line["address"], code, auth.user_id, expires_at, prune=expired):
+            return {
+                "code": code,
+                "number": line["address"],
+                "expiresAt": datetime.fromtimestamp(expires_at, timezone.utc).isoformat(),
+            }
+    raise HTTPException(status_code=503, detail="code_unavailable")
 
 
 @router.delete("/me/phone")

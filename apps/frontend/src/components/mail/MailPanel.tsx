@@ -52,45 +52,43 @@ function useCopy(text: string | undefined) {
   return { copied, copy };
 }
 
-const PHONE_ERRORS: Record<string, string> = {
-  "400": "Use the form +1XXXXXXXXXX",
-  phone_taken: "Another member already uses this number",
-  phone_is_a_customer: "A customer has texted from this number, so it cannot be a member's",
-};
-
 // The buy door's 409/400 answers, by their `detail`.
 const BUY_ERRORS: Record<string, string> = {
   apple_managed: "Not available on this plan",
   no_front_desk_agent: "This workspace has no Customer Operations agent",
 };
 
-function phoneErrorKey(e: ApiError): string {
-  const status = typeof e.body === "object" && e.body !== null ? (e.body as { status?: unknown }).status : undefined;
-  return e.status === 409 && typeof status === "string" ? status : String(e.status);
-}
-
-/** Registers the member's own phone so a text from it posts to the main room as them. */
-function MyPhone({ phone }: { phone: string | null | undefined }) {
+/** Links the member's own phone by texting a code to the line, so a text from it posts to the main room as them. */
+function MyPhone({ phone, number }: { phone: string | null | undefined; number: string }) {
   const api = useApi();
   const { mutate } = useSWRConfig();
-  const [value, setValue] = useState(phone ?? "");
+  const [code, setCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const run = async (call: () => Promise<unknown>) => {
+  const getCode = async () => {
     setError(null);
     try {
-      await call();
+      setCode(((await api.post("/agent-text/me/phone/code", {})) as { code: string }).code);
+    } catch {
+      setError("Could not get a code");
+    }
+  };
+  const remove = async () => {
+    setError(null);
+    try {
+      await api.del("/agent-text/me/phone");
       await mutate(isTextLineKey);
-    } catch (e) {
-      setError(e instanceof ApiError ? PHONE_ERRORS[phoneErrorKey(e)] ?? "Could not save" : "Could not save");
+    } catch {
+      setError("Could not remove");
     }
   };
   return <div className="mail-panel__myphone">
-    <label>
-      <span>Text the team from your phone</span>
-      <input type="tel" value={value} placeholder="+1XXXXXXXXXX" onChange={(e) => setValue(e.target.value)} />
-    </label>
-    <Button type="button" variant="ghost" size="sm" onClick={() => void run(() => api.put("/agent-text/me/phone", { phone: value.trim() }))}>Save</Button>
-    {phone && <Button type="button" variant="ghost" size="sm" onClick={() => void run(async () => { await api.del("/agent-text/me/phone"); setValue(""); })}>Remove</Button>}
+    {phone ? <>
+      <span>Your phone: {phone}</span>
+      <Button type="button" variant="ghost" size="sm" onClick={() => void remove()}>Remove</Button>
+    </> : code ? <>
+      <span>Text <strong>{code}</strong> to {number} from your phone. The code works for 15 minutes.</span>
+      <Button type="button" variant="ghost" size="sm" onClick={() => void mutate(isTextLineKey)}>Check</Button>
+    </> : <Button type="button" variant="ghost" size="sm" onClick={() => void getCode()}>Link my phone</Button>}
     {error && <span role="status" className="mail-panel__number">{error}</span>}
   </div>;
 }
@@ -317,7 +315,7 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
 
   return <section ref={rootRef} className="mail-panel" aria-label="Mail" data-wide={wide || undefined}>
     {header}
-    {line.data?.number && <MyPhone key={line.data.myPhone ?? ""} phone={line.data.myPhone} />}
+    {line.data?.number && <MyPhone key={line.data.myPhone ?? ""} phone={line.data.myPhone} number={line.data.number} />}
     {body}
   </section>;
 }

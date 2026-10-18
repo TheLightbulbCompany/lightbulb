@@ -221,6 +221,7 @@ async def put_text_line(
         "photon_user_id": photon_user_id,
         "human_threads": {},
         "member_phones": {},
+        "phone_codes": {},
         "disclosed": {},
     }
     created = await _conditional(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
@@ -310,10 +311,9 @@ async def set_disclosed(number: str, customer: str) -> None:
 
 
 async def set_member_phone(number: str, phone: str, user_id: str | None) -> None:
-    """Register (``user_id``) or remove (``None``) a member's phone on the line row, so their texts
-    are posted to the main room as them. The ``member_phones`` map is created with the line.
-
-    A register never takes a phone another member holds: that raises ``ConditionalCheckFailedException``."""
+    """Set (``user_id``) or remove (``None``) a member's phone on the line row, so their texts are
+    posted to the main room as them. The ``member_phones`` map is created with the line. A phone is
+    linked by proof (``bind_member_phone``), and the latest proof holds it."""
     kwargs: dict = {
         "Key": {"address": number},
         "ConditionExpression": "attribute_exists(address)",
@@ -321,13 +321,45 @@ async def set_member_phone(number: str, phone: str, user_id: str | None) -> None
     }
     if user_id:
         kwargs["UpdateExpression"] = "SET member_phones.#p = :uid"
-        kwargs["ConditionExpression"] = (
-            "attribute_exists(address) AND (attribute_not_exists(member_phones.#p) OR member_phones.#p = :uid)"
-        )
         kwargs["ExpressionAttributeValues"] = {":uid": user_id}
     else:
         kwargs["UpdateExpression"] = "REMOVE member_phones.#p"
     await run_in_thread(_get_table().update_item, **kwargs)
+
+
+async def put_phone_code(number: str, code: str, user_id: str, expires_at: int, *, prune: list[str]) -> bool:
+    """Store a link code for ``user_id`` (``expires_at`` in epoch seconds) and remove the expired codes in
+    ``prune`` in the same update. False when ``code`` is already on the row."""
+    prune = [c for c in prune if c != code]  # one path may not be both SET and REMOVEd
+    names = {"#c": code, **{f"#e{i}": c for i, c in enumerate(prune)}}
+    expr = "SET phone_codes.#c = :v"
+    if prune:
+        expr += " REMOVE " + ", ".join(f"phone_codes.#e{i}" for i in range(len(prune)))
+    return await _conditional(
+        _get_table().update_item,
+        Key={"address": number},
+        UpdateExpression=expr,
+        ConditionExpression="attribute_exists(address) AND attribute_not_exists(phone_codes.#c)",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues={":v": {"user_id": user_id, "exp": expires_at}},
+    )
+
+
+async def bind_member_phone(number: str, *, code: str, phone: str, user_id: str, now: int, drop: list[str]) -> bool:
+    """Link ``phone`` to ``user_id`` with the code they texted from it: the code is single-use, must belong to
+    ``user_id`` and be live at ``now``. ``drop`` is the user's other phones, so one member holds one phone.
+    False when the code was used or has expired."""
+    drop = [d for d in drop if d != phone]
+    names = {"#c": code, "#p": phone, **{f"#d{i}": d for i, d in enumerate(drop)}}
+    removes = ["phone_codes.#c", *(f"member_phones.#d{i}" for i in range(len(drop)))]
+    return await _conditional(
+        _get_table().update_item,
+        Key={"address": number},
+        UpdateExpression="SET member_phones.#p = :uid REMOVE " + ", ".join(removes),
+        ConditionExpression="phone_codes.#c.user_id = :uid AND phone_codes.#c.exp > :now",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues={":uid": user_id, ":now": now},
+    )
 
 
 async def add_meeting(address: str, meeting_id: str) -> None:

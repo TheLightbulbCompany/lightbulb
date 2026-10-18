@@ -8,6 +8,7 @@ Photon retries; every deterministic drop stays 200.
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -19,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from core.auth import AuthContext
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories.agent_email_repo import get_by_address
+from core.repositories.agent_email_repo import bind_member_phone, get_by_address, set_member_phone
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, put_sent, reply_key
 from core.repositories.container_repo import try_consume_stranger_wake
 from core.services.agent_email import mail_changed, team_address
@@ -101,6 +102,29 @@ def _final(status: str, *, code: int = 200):
     return JSONResponse(status_code=code, content={"status": status})
 
 
+LINKED_REPLY = "Linked. Texts from this phone now reach the team as you."
+
+
+async def _link_by_code(
+    line: dict, sender: str, text: str, line_user: str | None, space_id: str | None, obj_id: str
+) -> bool:
+    """A member links their phone by texting the code the Mail panel showed them; the text is the proof.
+    True when this text linked ``sender``; the code text is not stored."""
+    entry = (line.get("phone_codes") or {}).get(text)
+    now = int(time.time())
+    if not entry or int(entry.get("exp", 0)) <= now:
+        return False
+    user_id = entry["user_id"]
+    drop = [p for p, uid in (line.get("member_phones") or {}).items() if uid == user_id and p != sender]
+    if not await bind_member_phone(line["address"], code=text, phone=sender, user_id=user_id, now=now, drop=drop):
+        return False  # used or expired meanwhile: a customer's text
+    try:
+        await send_text(sender_id=line_user, space_id=space_id, text=LINKED_REPLY, idempotency_key=f"link:{obj_id}")
+    except (PhotonError, httpx.HTTPError):
+        logger.warning("photon_inbound: could not confirm the link for %s", obj_id, exc_info=True)
+    return True
+
+
 async def _rollback_dedup(event_id: str) -> None:
     try:
         await delete_event(event_id)
@@ -156,6 +180,8 @@ async def handle_photon_inbound(request: Request):
             return _final("dropped_no_address")
 
         text = (content.text or "") if content.type == "text" else f"[Attachment: {content.attachmentId}]"
+        if not member_id and await _link_by_code(line, customer, text.strip(), line_user, space.id, obj.id):
+            return _final("member_linked")
         stored = await find_by_message_id(address, obj.id)
         if not stored:
             stored = await put_message(
@@ -179,8 +205,8 @@ async def handle_photon_inbound(request: Request):
             await mail_changed(owner_id)
 
         if member_id:
-            # A registered member is a teammate, not a customer: their text is a room message as
-            # them, so listen modes and Jev pick the responder. Never falls through to the front desk.
+            # A linked member is a teammate, not a customer: their text is a room message as them,
+            # so listen modes and Jev pick the responder.
             key = reply_key(address, stored["received_key"])
             try:
                 await messaging.create_human_message(
@@ -198,10 +224,15 @@ async def handle_photon_inbound(request: Request):
             except (messaging.ApiProblem, HTTPException) as e:
                 if e.status_code not in (403, 404):
                     raise  # transient: the outer handler rolls the dedup back and answers 503
-                # Deterministic, e.g. not in the main room: the text stays in the inbox.
-                logger.warning("photon_inbound: member post refused for %s", obj.id, exc_info=True)
-                return _final("member_post_failed")
-            return _final("member_routed")
+                # No longer a member (removed, or out of the main room): drop the stale link and treat
+                # the text as a customer's.
+                logger.warning("photon_inbound: member post refused for %s; dropping the link", obj.id, exc_info=True)
+                try:
+                    await set_member_phone(line["address"], customer, None)
+                except Exception:  # noqa: BLE001 — the next text retries the drop
+                    logger.warning("photon_inbound: could not drop the link for %s", obj.id, exc_info=True)
+            else:
+                return _final("member_routed")
 
         if customer in (line.get("human_threads") or {}):
             return _final("stored_human_thread")

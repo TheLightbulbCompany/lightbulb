@@ -221,41 +221,12 @@ def test_business_phone_rejects_non_e164(client, monkeypatch):
     save.assert_awaited_once_with(LINE["address"], "+15551234567")
 
 
-def _me(monkeypatch, line, set_phone=None, *, is_customer=False):
+def _me(monkeypatch, line, set_phone=None):
     monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
     monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=line))
-    monkeypatch.setattr(agent_text, "team_address", AsyncMock(return_value="agents@acme.example"))
-    monkeypatch.setattr(agent_text, "has_received_from", AsyncMock(return_value=is_customer))
     set_phone = set_phone or AsyncMock()
     monkeypatch.setattr(agent_text, "set_member_phone", set_phone)
     return set_phone
-
-
-def test_me_phone_taken_by_another_member_is_409(client, monkeypatch):
-    from botocore.exceptions import ClientError
-
-    taken = AsyncMock(side_effect=ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"))
-    _me(monkeypatch, {**LINE, "member_phones": {"+15550001111": "me"}}, taken)
-    _as(client, "me")
-    r = client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"})
-    assert r.status_code == 409 and r.json() == {"status": "phone_taken"}
-    taken.assert_awaited_once_with(LINE["address"], "+15551234567", "me")  # the old phone is kept
-
-
-def test_me_phone_that_has_texted_as_a_customer_is_409(client, monkeypatch):
-    set_phone = _me(monkeypatch, LINE, is_customer=True)
-    _as(client, "me")
-    r = client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"})
-    assert r.status_code == 409 and r.json() == {"status": "phone_is_a_customer"}
-    agent_text.has_received_from.assert_awaited_once_with("agents@acme.example", "+15551234567")
-    set_phone.assert_not_awaited()
-
-
-def test_me_phone_already_mine_skips_the_customer_check(client, monkeypatch):
-    set_phone = _me(monkeypatch, {**LINE, "member_phones": {"+15551234567": "me"}}, is_customer=True)
-    _as(client, "me")
-    assert client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"}).json() == {"status": "ok"}
-    set_phone.assert_awaited_once_with(LINE["address"], "+15551234567", "me")
 
 
 def _as(client, user_id):
@@ -264,24 +235,40 @@ def _as(client, user_id):
     client.app.dependency_overrides[agent_text.get_current_user] = lambda: AuthContext(user_id=user_id, org_id=OWNER)
 
 
-def test_me_phone_requires_e164(client, monkeypatch):
-    set_phone = _me(monkeypatch, LINE)
-    r = client.put("/api/v1/agent-text/me/phone", json={"phone": "555-1234"})
-    assert r.status_code == 400 and r.json() == {"status": "bad_phone"}
-    set_phone.assert_not_awaited()
-
-
-def test_me_phone_without_a_line_is_404(client, monkeypatch):
-    _me(monkeypatch, None)
-    assert client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"}).status_code == 404
-
-
-def test_me_phone_saves_for_the_caller(client, monkeypatch):
-    set_phone = _me(monkeypatch, LINE)
+def test_phone_code_is_issued_and_stored(client, monkeypatch):
+    now = 1_800_000_000
+    monkeypatch.setattr(agent_text.time, "time", lambda: now)
+    monkeypatch.setattr(agent_text.secrets, "randbelow", lambda n: 4821)
+    codes = {"111111": {"user_id": "x", "exp": now - 1}, "222222": {"user_id": "y", "exp": now + 60}}
+    _me(monkeypatch, {**LINE, "phone_codes": codes})
+    put = AsyncMock(return_value=True)
+    monkeypatch.setattr(agent_text, "put_phone_code", put)
     _as(client, "me")
-    r = client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"})
-    assert r.json() == {"status": "ok"}
-    set_phone.assert_awaited_once_with(LINE["address"], "+15551234567", "me")
+    r = client.post("/api/v1/agent-text/me/phone/code")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["code"] == "004821" and body["number"] == LINE["address"]
+    assert agent_text.datetime.fromisoformat(body["expiresAt"]).timestamp() == now + 15 * 60
+    put.assert_awaited_once_with(LINE["address"], "004821", "me", now + 15 * 60, prune=["111111"])
+
+
+def test_phone_code_redraws_once_on_a_live_collision(client, monkeypatch):
+    draws = iter(range(1, 10))
+    monkeypatch.setattr(agent_text.secrets, "randbelow", lambda n: next(draws))
+    _me(monkeypatch, LINE)
+    put = AsyncMock(side_effect=[False, True])
+    monkeypatch.setattr(agent_text, "put_phone_code", put)
+    _as(client, "me")
+    assert client.post("/api/v1/agent-text/me/phone/code").json()["code"] == "000002"
+    assert [c.args[1] for c in put.await_args_list] == ["000001", "000002"]
+    put.reset_mock(side_effect=True)
+    put.side_effect = [False, False]
+    assert client.post("/api/v1/agent-text/me/phone/code").status_code == 503
+
+
+def test_phone_code_without_a_line_is_404(client, monkeypatch):
+    _me(monkeypatch, None)
+    assert client.post("/api/v1/agent-text/me/phone/code").status_code == 404
 
 
 def test_me_phone_delete_removes_the_callers_phone(client, monkeypatch):
@@ -298,16 +285,6 @@ def test_line_read_has_my_phone(client, monkeypatch):
     assert client.get("/api/v1/agent-text/line").json()["myPhone"] == "+15551234567"
     _as(client, "you")
     assert client.get("/api/v1/agent-text/line").json()["myPhone"] is None
-
-
-def test_me_phone_replaces_the_callers_earlier_phone(client, monkeypatch):
-    set_phone = _me(monkeypatch, {**LINE, "member_phones": {"+15550001111": "me", "+15550002222": "other"}})
-    _as(client, "me")
-    assert client.put("/api/v1/agent-text/me/phone", json={"phone": "+15551234567"}).json() == {"status": "ok"}
-    assert [c.args for c in set_phone.await_args_list] == [
-        (LINE["address"], "+15551234567", "me"),
-        (LINE["address"], "+15550001111", None),
-    ]
 
 
 @pytest.mark.parametrize(("again", "status"), [("pending", "pending"), ("absent", "absent")])

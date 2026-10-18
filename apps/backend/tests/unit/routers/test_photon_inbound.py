@@ -374,15 +374,18 @@ def test_member_text_never_wakes_the_front_desk(client, seams, member):
     seams["send_text"].assert_not_called()
 
 
-def test_member_post_refused_is_member_post_failed(client, seams, member):
+def test_removed_member_falls_through_to_the_front_desk(client, seams, member, monkeypatch):
     from core.services import messaging
 
     member.side_effect = messaging.ApiProblem("ROOM_FORBIDDEN", "not a room member")
+    drop = AsyncMock()
+    monkeypatch.setattr(ph, "set_member_phone", drop)
     r = _post(client)
-    assert r.status_code == 200 and r.json() == {"status": "member_post_failed"}
+    assert r.status_code == 200 and r.json() == {"status": "delivered"}
+    drop.assert_awaited_once_with(LINE, CUSTOMER, None)
+    seams["try_consume_stranger_wake"].assert_awaited_once()
+    seams["deliver_to_agent"].assert_awaited_once()
     seams["delete_event"].assert_not_called()
-    seams["deliver_to_agent"].assert_not_called()
-    seams["try_consume_stranger_wake"].assert_not_called()
 
 
 def test_member_post_transient_failure_is_503_and_retried(client, seams, member):
@@ -397,3 +400,60 @@ def test_unregistered_phone_is_a_customer_again(client, seams, member):
     seams["get_by_address"].return_value = {**LINE_ROW, "member_phones": {"+19990000000": MEMBER_ID}}
     assert _post(client).json() == {"status": "delivered"}
     member.assert_not_called()
+
+
+CODE = "483921"
+
+
+@pytest.fixture
+def bind(seams, monkeypatch):
+    seams["get_by_address"].return_value = {
+        **LINE_ROW,
+        "member_phones": {"+19990000000": MEMBER_ID, "+18880000000": "user_other"},
+        "phone_codes": {CODE: {"user_id": MEMBER_ID, "exp": int(time.time()) + 600}},
+    }
+    b = AsyncMock(return_value=True)
+    monkeypatch.setattr(ph, "bind_member_phone", b)
+    return b
+
+
+def test_a_live_code_links_the_sender_and_replies(client, seams, bind):
+    r = _post(client, _event(content={"type": "text", "text": f" {CODE}\n"}))
+    assert r.status_code == 200 and r.json() == {"status": "member_linked"}
+    kwargs = bind.await_args.kwargs
+    assert bind.await_args.args == (LINE,)
+    assert kwargs["code"] == CODE and kwargs["phone"] == CUSTOMER and kwargs["user_id"] == MEMBER_ID
+    assert kwargs["drop"] == ["+19990000000"]
+    seams["send_text"].assert_awaited_once_with(
+        sender_id=LINE_USER, space_id=SPACE, text=ph.LINKED_REPLY, idempotency_key="link:m1"
+    )
+    seams["put_message"].assert_not_called()
+    seams["deliver_to_agent"].assert_not_called()
+
+
+def test_a_failed_link_confirmation_still_links(client, seams, bind):
+    seams["send_text"].side_effect = PhotonError(503, "http_503")
+    assert _post(client, _event(content={"type": "text", "text": CODE})).json() == {"status": "member_linked"}
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_an_expired_or_used_code_is_a_customer_text(client, seams, bind, expired):
+    if expired:
+        row = seams["get_by_address"].return_value
+        row["phone_codes"] = {CODE: {"user_id": MEMBER_ID, "exp": int(time.time()) - 1}}
+    else:
+        bind.return_value = False  # used meanwhile
+    assert _post(client, _event(content={"type": "text", "text": CODE})).json() == {"status": "delivered"}
+    assert bind.await_count == (0 if expired else 1)
+    seams["put_message"].assert_awaited_once()
+    seams["deliver_to_agent"].assert_awaited_once()
+
+
+def test_a_linked_member_never_relinks_by_code(client, seams, bind, member):
+    seams["get_by_address"].return_value = {
+        **seams["get_by_address"].return_value,
+        "member_phones": {CUSTOMER: MEMBER_ID},
+        "phone_codes": {CODE: {"user_id": MEMBER_ID, "exp": int(time.time()) + 600}},
+    }
+    assert _post(client, _event(content={"type": "text", "text": CODE})).json() == {"status": "member_routed"}
+    bind.assert_not_called()

@@ -283,6 +283,7 @@ async def test_put_text_line_item_and_condition(monkeypatch):
         "photon_user_id": "usr_1",
         "human_threads": {},
         "member_phones": {},
+        "phone_codes": {},
         "disclosed": {},
     }
     assert item["created_at"]
@@ -409,9 +410,7 @@ async def test_set_member_phone_sets_and_removes(monkeypatch):
     assert kwargs["UpdateExpression"] == "SET member_phones.#p = :uid"
     assert kwargs["ExpressionAttributeNames"] == {"#p": "+15559998888"}
     assert kwargs["ExpressionAttributeValues"] == {":uid": "user_1"}
-    assert kwargs["ConditionExpression"] == (
-        "attribute_exists(address) AND (attribute_not_exists(member_phones.#p) OR member_phones.#p = :uid)"
-    )
+    assert kwargs["ConditionExpression"] == "attribute_exists(address)"  # proof wins: no holder check
     await repo.set_member_phone("+1555", "+15559998888", None)
     kwargs = table.update_item.call_args.kwargs
     assert kwargs["UpdateExpression"] == "REMOVE member_phones.#p"
@@ -419,9 +418,51 @@ async def test_set_member_phone_sets_and_removes(monkeypatch):
     assert "ExpressionAttributeValues" not in kwargs
 
 
-async def test_set_member_phone_never_takes_another_members_phone(monkeypatch):
+_CCF = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+
+
+async def test_put_phone_code_sets_the_code_and_prunes_expired(monkeypatch):
     table = MagicMock()
-    table.update_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
     monkeypatch.setattr(repo, "_get_table", lambda: table)
-    with pytest.raises(ClientError):
-        await repo.set_member_phone("+1555", "+15559998888", "user_2")
+    assert await repo.put_phone_code("+1555", "123456", "user_1", 1000, prune=["111111", "123456"]) is True
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["UpdateExpression"] == "SET phone_codes.#c = :v REMOVE phone_codes.#e0"
+    assert kwargs["ConditionExpression"] == "attribute_exists(address) AND attribute_not_exists(phone_codes.#c)"
+    assert kwargs["ExpressionAttributeNames"] == {"#c": "123456", "#e0": "111111"}
+    assert kwargs["ExpressionAttributeValues"] == {":v": {"user_id": "user_1", "exp": 1000}}
+    table.update_item.side_effect = _CCF
+    assert await repo.put_phone_code("+1555", "123456", "user_1", 1000, prune=[]) is False
+
+
+async def test_bind_member_phone_is_single_use_and_drops_other_phones(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    ok = await repo.bind_member_phone(
+        "+1555", code="123456", phone="+1999", user_id="u1", now=500, drop=["+1888", "+1999"]
+    )
+    assert ok is True
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["UpdateExpression"] == "SET member_phones.#p = :uid REMOVE phone_codes.#c, member_phones.#d0"
+    assert kwargs["ConditionExpression"] == "phone_codes.#c.user_id = :uid AND phone_codes.#c.exp > :now"
+    assert kwargs["ExpressionAttributeNames"] == {"#c": "123456", "#p": "+1999", "#d0": "+1888"}
+    assert kwargs["ExpressionAttributeValues"] == {":uid": "u1", ":now": 500}
+    table.update_item.side_effect = _CCF
+    assert await repo.bind_member_phone("+1555", code="1", phone="+1999", user_id="u1", now=500, drop=[]) is False
+
+
+@pytest.mark.asyncio
+async def test_phone_code_round_trip_on_dynamodb(agent_email_table):
+    await repo.put_text_line(number="+1555", owner_id="o", agent_id="a", photon_resource_id="r", photon_user_id="u")
+    await repo.set_member_phone("+1555", "+1888", "u1")
+    assert await repo.put_phone_code("+1555", "000001", "u1", 100, prune=[]) is True
+    assert await repo.put_phone_code("+1555", "000001", "u2", 100, prune=[]) is False  # live collision
+    assert await repo.put_phone_code("+1555", "000002", "u1", 900, prune=["000001"]) is True
+    assert await repo.bind_member_phone("+1555", code="000002", phone="+1999", user_id="u2", now=50, drop=[]) is False
+    assert await repo.bind_member_phone("+1555", code="000002", phone="+1999", user_id="u1", now=950, drop=[]) is False
+    assert (
+        await repo.bind_member_phone("+1555", code="000002", phone="+1999", user_id="u1", now=50, drop=["+1888"])
+        is True
+    )
+    row = await repo.get_by_address("+1555")
+    assert row["member_phones"] == {"+1999": "u1"} and row["phone_codes"] == {}
+    assert await repo.bind_member_phone("+1555", code="000002", phone="+1999", user_id="u1", now=50, drop=[]) is False

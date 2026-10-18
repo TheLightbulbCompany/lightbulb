@@ -86,7 +86,8 @@ function BlockerLink({
 }) {
   const { read } = useTeamsApi();
   const issuePathId = blocker.identifier ?? blocker.id;
-  const { error } = read(teamsQueryKeys.issues.detail(issuePathId));
+  // A 404 is an answer, not a transient failure: never retry it.
+  const { error } = read(teamsQueryKeys.issues.detail(issuePathId), { shouldRetryOnError: false });
   if ((error as { status?: number } | undefined)?.status === 404) {
     return (
       <span data-testid="issue-blocked-notice-unreadable" className={cn(className, "hover:no-underline")}>

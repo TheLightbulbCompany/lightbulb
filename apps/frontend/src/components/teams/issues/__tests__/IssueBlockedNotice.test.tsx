@@ -9,7 +9,8 @@ import type {
   SuccessfulRunHandoffState,
 } from "@/components/teams/shared/types";
 
-const { postSpy, mutateSpy, readErrors } = vi.hoisted(() => ({
+const { postSpy, mutateSpy, readErrors, readSpy } = vi.hoisted(() => ({
+  readSpy: vi.fn(),
   postSpy: vi.fn(),
   mutateSpy: vi.fn(),
   readErrors: new Map<string, { status: number }>(),
@@ -17,7 +18,7 @@ const { postSpy, mutateSpy, readErrors } = vi.hoisted(() => ({
 
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
-    read: (path: string) => ({ data: undefined, error: readErrors.get(path), isLoading: false }),
+    read: (path: string, opts?: unknown) => (readSpy(path, opts), { data: undefined, error: readErrors.get(path), isLoading: false }),
     post: postSpy,
     mutate: mutateSpy,
   }),
@@ -66,6 +67,7 @@ const RETRY: IssueScheduledRetry = {
 
 beforeEach(() => {
   readErrors.clear();
+  readSpy.mockReset();
   postSpy.mockReset().mockResolvedValue({ outcome: "promoted", message: "Run starting", scheduledRetry: null });
   mutateSpy.mockReset();
 });
@@ -150,6 +152,8 @@ describe("IssueBlockedNotice (ported)", () => {
     expect(locked.closest("a")).toBeNull();
     expect(screen.queryByRole("link", { name: /ISO-7/ })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /ISO-8/ })).toBeInTheDocument();
+    // The chip's detail read must not retry a 404 forever.
+    expect(readSpy).toHaveBeenCalledWith("/issues/ISO-7", { shouldRetryOnError: false });
   });
 
   it("renders nothing when status is not blocked and there is no handoff", () => {

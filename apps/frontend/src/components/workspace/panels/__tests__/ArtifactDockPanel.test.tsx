@@ -83,5 +83,5 @@ it("encodes every path segment taken from the URL", async () => {
   await vi.waitFor(() => expect(teamsDownload).toHaveBeenCalledWith("/issues/..%2Fi/attachments/a%3Fb/content"));
   teamsRead.mockReturnValue({ data: undefined });
   render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "document", issue: "../i", key: "k/1" }} />);
-  expect(teamsRead).toHaveBeenLastCalledWith("/issues/..%2Fi/documents/k%2F1");
+  expect(teamsRead).toHaveBeenCalledWith("/issues/..%2Fi/documents/k%2F1");
 });

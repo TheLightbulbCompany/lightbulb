@@ -1,14 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, ChevronDown, MessageSquare, RotateCcw } from "lucide-react";
+import { ChevronRight, ChevronDown, MessageSquare, Pencil, RotateCcw } from "lucide-react";
+import { useUser } from "@clerk/nextjs";
 import { useSWRConfig } from "swr";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { CardContext, readOnlyCardContext } from "@/components/messaging/openui/CardContext";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import type { CompanyAgent, IssueDocument } from "@/components/teams/shared/types";
+import type { CompanyAgent, CompanyMember, IssueDocument } from "@/components/teams/shared/types";
 import { DocumentRevisionMenu } from "./DocumentRevisionMenu";
 import { DocumentDiffModal } from "./DocumentDiffModal";
+import { DocumentEditor, documentMarkdown } from "./DocumentEditor";
 import { DocumentAnnotationLayer, type OverlayThread } from "./DocumentAnnotationLayer";
 import { DocumentAnnotationPanel } from "./DocumentAnnotationPanel";
 import type {
@@ -33,6 +36,11 @@ export function DocumentRow({
   issueId,
   basePath,
   onRestored,
+  defaultOpen,
+  hideTitle,
+  editing: editingProp,
+  onEditingChange,
+  onPreviewingChange,
 }: {
   doc: IssueDocument;
   agents: CompanyAgent[];
@@ -46,20 +54,41 @@ export function DocumentRow({
   // Called after a revision restore, for an owner whose document list is not
   // the issue documents read (a case re-reads its detail).
   onRestored?: () => void;
+  defaultOpen?: boolean;
+  // The pane shows the title and author line itself; keep only the row's actions.
+  hideTitle?: boolean;
+  // Controlled editing, so the pane's Edit action and the row's own pencil share one state.
+  // Left unset, the row keeps the state itself.
+  editing?: boolean;
+  onEditingChange?: (editing: boolean) => void;
+  // Tells the pane when a past revision is shown, so it can hide Edit as the row's pencil does.
+  onPreviewingChange?: (previewing: boolean) => void;
 }) {
   const root = basePath ?? `/issues/${issueId}`;
   const reviewable = doc as ReviewableDocument;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(defaultOpen));
   const [panelOpen, setPanelOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [selectedRevisionId, setSelectedRevisionId] = useState<string | null>(null);
   const [pendingAnchor, setPendingAnchor] = useState<PendingAnchor | null>(null);
   const [focusedThreadId, setFocusedThreadId] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
+  const [editingOwn, setEditingOwn] = useState(false);
+  const editing = editingProp ?? editingOwn;
+  const setEditing = useCallback((v: boolean) => {
+    setEditingOwn(v);
+    onEditingChange?.(v);
+  }, [onEditingChange]);
+  const { user } = useUser();
+  const currentUserName = user?.firstName ?? user?.fullName ?? "You";
+  // Cards and diagrams in a document render read-only: a context with no press.
+  const readOnlyCards = useMemo(() => readOnlyCardContext(doc.id), [doc.id]);
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
   const { read, post } = useTeamsApi();
   const { mutate } = useSWRConfig();
+  // Only the editor names the other editor; the pane and the issue page share the one cached read.
+  const { data: membersData } = read<{ members: CompanyMember[] }>(editing ? "/members" : null);
 
   const when = doc.updatedAt ?? doc.createdAt;
   const titleShown =
@@ -72,6 +101,8 @@ export function DocumentRow({
   const Chevron = open ? ChevronDown : ChevronRight;
 
   const reviewEnabled = Boolean(issueId);
+  // Only issue documents have a save route; a case document keeps comments and versions.
+  const editable = reviewEnabled && (basePath === undefined || basePath === `/issues/${issueId}`);
   const latestRevisionNumber = reviewable.latestRevisionNumber ?? 0;
   const latestRevisionId = reviewable.latestRevisionId ?? null;
   const annotationsPath = reviewEnabled
@@ -112,6 +143,7 @@ export function DocumentRow({
     [revData, selectedRevisionId],
   );
   const historicalPreview = selectedRevisionId !== null;
+  useEffect(() => { onPreviewingChange?.(historicalPreview); }, [historicalPreview, onPreviewingChange]);
   const shownBody = historicalPreview ? selectedRevision?.body ?? "" : doc.body ?? "";
 
   // Deep-link / confirmation-chip anchor: expand + scroll when the URL hash
@@ -204,12 +236,12 @@ export function DocumentRow({
           >
             {doc.key}
           </span>
-          {titleShown ? (
+          {hideTitle ? <span className="flex-1" /> : titleShown ? (
             <span className="flex-1 truncate text-[var(--midnight)]">{titleShown}</span>
           ) : (
             <span className="flex-1" />
           )}
-          {when && (
+          {when && !hideTitle && (
             <span className="text-caption text-[var(--midnight-muted)] shrink-0">
               updated {timeAgo(when)}
               {agentName ? ` · ${agentName}` : ""}
@@ -241,6 +273,19 @@ export function DocumentRow({
               <MessageSquare size={12} strokeWidth={1.75} />
               <span className="tabular-nums">{openCount}</span>
             </button>
+            {editable && !doc.lockedAt && !historicalPreview ? (
+              <button
+                type="button"
+                onClick={() => { setOpen(true); setEditing(!editing); }}
+                aria-pressed={editing}
+                aria-label="Edit document"
+                data-testid={`document-edit-${doc.key}`}
+                className="flex items-center rounded-sm px-1.5 py-0.5"
+                style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)", background: editing ? "var(--edge)" : "transparent" }}
+              >
+                <Pencil size={12} strokeWidth={1.75} />
+              </button>
+            ) : null}
             {open ? (
               <DocumentRevisionMenu
                 issueId={issueId!}
@@ -294,9 +339,23 @@ export function DocumentRow({
               {/* `bodyRef` wraps ONLY the rendered markdown so the annotation
                   layer's text-node walk + selection offsets aren't polluted by
                   the overlay's own chrome (which is a sibling below). */}
+              {editing && editable && !historicalPreview ? (
+                <DocumentEditor
+                  issueId={issueId!}
+                  document={reviewable}
+                  agents={agents}
+                  members={membersData?.members}
+                  currentUserId={user?.id}
+                  currentUserName={currentUserName}
+                  onSaved={() => { setEditing(false); onRestored?.(); }}
+                  onCancel={() => setEditing(false)}
+                />
+              ) : (<>
               <div ref={bodyRef}>
                 {shownBody && shownBody.trim() ? (
-                  <MarkdownView>{shownBody}</MarkdownView>
+                  <CardContext.Provider value={readOnlyCards}>
+                    <MarkdownView components={documentMarkdown}>{shownBody}</MarkdownView>
+                  </CardContext.Provider>
                 ) : (
                   <p className="pt-2 text-caption text-[var(--midnight-muted)]">(empty document)</p>
                 )}
@@ -316,6 +375,7 @@ export function DocumentRow({
                   newCommentDisabledReason={newCommentDisabledReason}
                 />
               ) : null}
+              </>)}
             </div>
 
             {reviewEnabled && panelOpen ? (

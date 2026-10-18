@@ -28,6 +28,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@lightbulb/shared": "workspace:*",
     "@livekit/components-react": "^2.9.24",
+    "@mdxeditor/editor": "4.3.3",
     "@openuidev/react-lang": "1.0.1",
     "@vercel/analytics": "^2.0.1",
     "@xterm/xterm": "^5.5.0",

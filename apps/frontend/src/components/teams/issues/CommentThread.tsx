@@ -338,7 +338,7 @@ function CommentCard({
         <div className="text-ui italic">Comment deleted</div>
       ) : (
         <div className="text-ui" style={{ color: "var(--midnight)" }}>
-          <TaskMarkdown body={comment.body} />
+          <TaskMarkdown skipHtml body={comment.body} />
         </div>
       )}
       {showVotes || (runId && !isDeleted) ? (

@@ -100,7 +100,7 @@ export function IssueDescription({
   return (
     <div className="group/description relative" data-testid="issue-description">
       <div className="text-ui leading-7" style={{ color: "var(--midnight)" }}>
-        <TaskMarkdown body={description} />
+        <TaskMarkdown skipHtml body={description} />
       </div>
       <button
         type="button"

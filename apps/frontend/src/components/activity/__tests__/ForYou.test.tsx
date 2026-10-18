@@ -11,8 +11,9 @@ const wakeAgent = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/components/teams/inbox/hooks/useAgentWake", () => ({ useAgentWake: () => ({ wakeAgent }) }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
 vi.mock("@/components/teams/inbox/AttentionDesk", () => ({
-  AttentionDesk: (props: { hideFailedRuns?: boolean; currentUserId?: string | null }) =>
-    <div data-testid="attention-desk" data-hide-failed-runs={String(props.hideFailedRuns)} data-user={props.currentUserId ?? ""}>Attention desk</div>,
+  AttentionDesk: (props: { hideFailedRuns?: boolean; currentUserId?: string | null; othersShown?: boolean }) =>
+    <div data-testid="attention-desk" data-hide-failed-runs={String(props.hideFailedRuns)} data-user={props.currentUserId ?? ""}
+      data-others-shown={String(props.othersShown)}>Attention desk</div>,
 }));
 vi.mock("@/components/teams/inbox/DecisionResolver", () => ({
   DecisionResolver: ({ decisionId }: { decisionId: string }) => <div>Decision card {decisionId}</div>,
@@ -104,6 +105,24 @@ describe("ForYou", () => {
     expect(within(row).getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(within(row).getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
     expect(screen.getByTestId("attention-desk")).toHaveAttribute("data-hide-failed-runs", "true");
+  });
+
+  it("puts the desk above the other Needs-you rows and tells it they are shown", () => {
+    setup({ activityItems: [], failedRuns: [runGroup("g1")], filter: "needs-you" });
+    const desk = screen.getByTestId("attention-desk");
+    const row = document.querySelector('[data-for-you-id="failed_run:g1"]')!;
+    expect(desk.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(desk).toHaveAttribute("data-others-shown", "true");
+  });
+
+  it("lets the desk claim the all-clear only when nothing else is listed and every source answered", () => {
+    setup({ activityItems: [], filter: "needs-you" });
+    expect(screen.getByTestId("attention-desk")).toHaveAttribute("data-others-shown", "false");
+  });
+
+  it("an incomplete load is not an all-clear for the desk either", () => {
+    setup({ activityItems: [], filter: "needs-you", incomplete: true });
+    expect(screen.getByTestId("attention-desk")).toHaveAttribute("data-others-shown", "true");
   });
 
   it("Needs you renders the desk, other filters unchanged", async () => {

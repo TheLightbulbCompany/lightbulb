@@ -60,6 +60,27 @@ describe("TaskMarkdown issue references", () => {
   });
 });
 
+describe("TaskMarkdown hostile input", () => {
+  it("renders malformed escapes in issue references without throwing", () => {
+    const body = "[x](/issues/%E0) and issue://%E0 and `/issues/%ZZ`";
+    const { container } = render(<TaskMarkdown body={body} />);
+    expect(container.textContent).toContain("issue://%E0");
+    expect(container.textContent).toContain("/issues/%ZZ");
+  });
+});
+
+describe("TaskMarkdown raw HTML", () => {
+  it("shows raw HTML as text by default (approvals, decisions)", () => {
+    const { container } = render(<TaskMarkdown body="Swap the <Select> component." />);
+    expect(container.textContent).toContain("<Select>");
+  });
+
+  it("drops raw HTML with skipHtml (task chat)", () => {
+    const { container } = render(<TaskMarkdown skipHtml body="Swap the <Select> component." />);
+    expect(container.textContent).not.toContain("<Select>");
+  });
+});
+
 describe("MarkdownView (room messages)", () => {
   it("MarkdownView without TaskMarkdown leaves ISOA-845 plain", () => {
     const { container } = render(<MarkdownView>{"See ISOA-845."}</MarkdownView>);

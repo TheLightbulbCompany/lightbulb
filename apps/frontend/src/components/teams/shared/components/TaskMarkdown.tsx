@@ -94,7 +94,9 @@ const COMPONENTS: Partial<Components> = {
 };
 
 /** Markdown for task surfaces: MarkdownView plus issue-identifier links and mention chips. */
-export function TaskMarkdown({ body }: { body: string }) {
+/** `skipHtml` drops raw HTML (task chat comments and descriptions, as before);
+ *  without it raw HTML shows as escaped text, so an approval shows all it says. */
+export function TaskMarkdown({ body, skipHtml = false }: { body: string; skipHtml?: boolean }) {
   const { read } = useTeamsApi();
   const issuePrefix = read<{ issuePrefix?: string }>("/settings").data?.issuePrefix;
   const remarkPlugins = useMemo<Options["remarkPlugins"]>(
@@ -103,7 +105,7 @@ export function TaskMarkdown({ body }: { body: string }) {
   );
   return (
     <MarkdownView
-      skipHtml
+      skipHtml={skipHtml}
       components={COMPONENTS}
       urlTransform={mentionUrlTransform}
       remarkPlugins={remarkPlugins ?? undefined}

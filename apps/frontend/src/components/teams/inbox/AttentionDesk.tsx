@@ -19,6 +19,8 @@
 //   - pushToast              -> notifySuccess with an Undo action
 //   - `hideFailedRuns`       -> under For you the Inbox's failed-run groups (with
 //                               Retry) list failures, so the desk leaves its own out
+//   - `othersShown`          -> For you's other Needs-you rows are listed (or some
+//                               failed to load): no all-clear from an empty desk
 //   - not ported: DecisionsToolbar (group / sort / filter), DecisionQueueRail and
 //     DecisionDateChips (decision queues and the date chips' chrome), the
 //     Decided / Expired history curtains, the `?decisionId=` deep link,
@@ -61,9 +63,12 @@ export interface AttentionDeskProps {
   /** Leave the feed's `failed_run` rows out: For you lists the Inbox's failed-run
    *  groups (with Retry) under Needs you already, so the desk would repeat them. */
   hideFailedRuns?: boolean;
+  /** For you lists other Needs-you rows (or could not load them all): an empty
+   *  desk then shows no "all caught up", which would be false. */
+  othersShown?: boolean;
 }
 
-export function AttentionDesk({ agents = [], currentUserId = null, hideFailedRuns = false }: AttentionDeskProps) {
+export function AttentionDesk({ agents = [], currentUserId = null, hideFailedRuns = false, othersShown = false }: AttentionDeskProps) {
   const { read } = useTeamsApi();
   const { data: feed, isLoading, error } = read<AttentionFeedResponse>(teamsQueryKeys.attentionDesk());
   const { dismiss, snooze, restore } = useInboxDismissals();
@@ -199,11 +204,11 @@ export function AttentionDesk({ agents = [], currentUserId = null, hideFailedRun
       )}
 
       {!hasAnything ? (
-        !error && <ZeroState />
+        !error && !othersShown && <ZeroState />
       ) : (
         <div className="flex flex-col gap-4">
           {visibleCount === 0 ? (
-            <CaughtUpNote />
+            !othersShown && <CaughtUpNote />
           ) : (
             shelves.map((shelf) => {
               const collapsed = collapsedShelves.has(shelf.key);

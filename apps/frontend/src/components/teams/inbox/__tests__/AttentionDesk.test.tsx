@@ -300,4 +300,15 @@ describe("AttentionDesk", () => {
     render(<AttentionDesk />);
     expect(screen.getByText("Nothing needs a decision from you right now.")).toBeInTheDocument();
   });
+
+  it("claims no all-clear when other Needs-you rows are shown", () => {
+    setDesk([]);
+    const { unmount } = render(<AttentionDesk othersShown />);
+    expect(screen.queryByText(/all caught up/i)).not.toBeInTheDocument();
+    unmount();
+    // Everything snoozed: the "caught up" note would be just as wrong.
+    setDesk([item("a", { dismissal: { kind: "snooze", dismissedAt: iso(NOW), snoozedUntil: iso(NOW + DAY), isActive: true } })]);
+    render(<AttentionDesk othersShown />);
+    expect(screen.queryByText(/all caught up/i)).not.toBeInTheDocument();
+  });
 });

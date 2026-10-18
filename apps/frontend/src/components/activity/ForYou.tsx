@@ -117,13 +117,15 @@ export function ForYou(props: ForYouProps) {
     {incomplete && <p role="alert" className="for-you__notice">
       Couldn&apos;t load some items{props.onRetry && <> · <button type="button" className="for-you__more" onClick={props.onRetry}>Retry</button></>}
     </p>}
+    {/* Needs you: decisions lead; the desk carries its own loading, and claims the
+        all-clear only when no other row is listed and every source answered. */}
+    {filter === "needs-you" && <AttentionDesk agents={agents} currentUserId={props.currentUserId ?? null} hideFailedRuns
+      othersShown={entries.length > 0 || Boolean(incomplete)} />}
     {entries.length > 0 && <ul ref={listRef} className="for-you__list">
       {entries.map((entry) => <EntryRow key={entry.id} entry={entry} highlighted={entry.id === focusId} agentMap={agentMap}
         onRunAction={props.onRunAction} people={props.people} onDismissRuns={props.onDismissRuns}
         onNavigate={(target) => open(entry.id, target)} />)}
     </ul>}
-    {/* Needs you: the attention desk carries its own loading and all-clear. */}
-    {filter === "needs-you" && <AttentionDesk agents={agents} currentUserId={props.currentUserId ?? null} hideFailedRuns />}
     {entries.length === 0 && filter !== "needs-you" && (loading
       ? <p role="status" className="for-you__empty">Loading…</p>
       // The all-clear only when every source answered and nothing older is left to load.

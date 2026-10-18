@@ -42,6 +42,7 @@ import { ArrowLeft, Images } from "lucide-react";
 import { PanelMasthead, PanelNotice, PanelTabs, PanelToolbar } from "@/components/teams/shell";
 import { EditorialDialog } from "@/components/teams/shell/EditorialDialog";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { openPanel } from "@/components/workspace/workspaceController";
 import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
 import { ArtifactGalleryCard, ArtifactStackCard } from "./ArtifactCards";
@@ -113,21 +114,6 @@ function SortControl({
       })}
     </div>
   );
-}
-
-// A card opens the artifact pane. Bytes-less artifacts (a document with no key,
-// a work product with no attachment) have nothing to show, so they stay inert.
-function openInPane(a: CompanyArtifact) {
-  const kind = artifactKind(a.id);
-  const issue = a.issue?.id;
-  if (!issue) return;
-  if (kind === "document") {
-    const key = documentKeyFromArtifact(a);
-    if (key) openPanel("artifact", { src: "paperclip", kind, issue, key, ident: a.issue?.identifier }, { pushUrl: true });
-  } else if (kind === "attachment" || kind === "work_product") {
-    const id = kind === "attachment" ? artifactRawId(a.id) : attachmentIdFromHref(a.downloadPath ?? a.openPath);
-    if (id) openPanel("artifact", { src: "paperclip", kind, issue, id, name: a.title, ...(a.contentType ? { type: a.contentType } : {}) }, { pushUrl: true });
-  }
 }
 
 export function ArtifactsPanel() {
@@ -227,6 +213,25 @@ export function ArtifactsPanel() {
     } catch (err) {
       notifyApiError(err, "Couldn't download this deliverable");
     }
+  }
+
+  // A card opens the artifact pane. When no pane params can be built, fall back
+  // to the old behaviour: download the bytes if there are any, else open the task.
+  const nav = useInlineTeamsNav();
+  function openInPane(a: CompanyArtifact) {
+    const kind = artifactKind(a.id);
+    const issue = a.issue?.id;
+    let params: Record<string, string> | null = null;
+    if (issue && kind === "document") {
+      const key = documentKeyFromArtifact(a);
+      if (key) params = { src: "paperclip", kind, issue, key, ident: a.issue?.identifier };
+    } else if (issue && (kind === "attachment" || kind === "work_product")) {
+      const id = kind === "attachment" ? artifactRawId(a.id) : attachmentIdFromHref(a.downloadPath ?? a.openPath);
+      if (id) params = { src: "paperclip", kind, issue, id, name: a.title, ...(a.contentType ? { type: a.contentType } : {}) };
+    }
+    if (params) openPanel("artifact", params, { pushUrl: true });
+    else if (artifactContentPath(a)) void handleDownload(a);
+    else if (issue) nav?.openDetail("issue-detail", issue);
   }
 
   async function confirmDelete() {

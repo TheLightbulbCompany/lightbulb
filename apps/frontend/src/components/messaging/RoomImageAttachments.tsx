@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, FileArchive, FileText, Presentation, RotateCcw } from "lucide-react";
+import { Download, FileArchive, FileSpreadsheet, FileText, Presentation, RotateCcw } from "lucide-react";
 import { isVideoAttachmentType, type MessageAttachment, type MessageAttachmentContentType } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { FileViewerDialog } from "@/components/media/FileViewerDialog";
@@ -27,6 +27,7 @@ const PANE_LABEL: Partial<Record<MessageAttachmentContentType, string>> = {
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
   "text/csv": "CSV", "text/html": "HTML", "text/markdown": "MD", "text/plain": "TXT",
 };
+const SPREADSHEET = new Set<string>(["text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
 const opensInPane = (attachment: MessageAttachment) => isPaneViewable(attachment.contentType);
 const isDownloadOnly = (attachment: MessageAttachment) => attachment.contentType in DOWNLOAD_ONLY;
 
@@ -169,7 +170,7 @@ export function RoomImageAttachments({ roomId, attachments, download, attachment
       return <button key={attachment.id} type="button" className="room-link-card room-doc-card" aria-label={`Open ${attachment.fileName}`}
         onClick={() => openPanel("artifact", { src: "attachment", room: roomId, id: attachment.id, name: attachment.fileName, type: attachment.contentType }, { pushUrl: true })}>
         <span className="room-link-card-body">
-          <span className="room-doc-card-head"><FileText size={16} aria-hidden="true" /><span className="room-link-card-title">{attachment.fileName}</span></span>
+          <span className="room-doc-card-head">{SPREADSHEET.has(attachment.contentType) ? <FileSpreadsheet size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}<span className="room-link-card-title">{attachment.fileName}</span></span>
           <span className="room-link-card-meta">{PANE_LABEL[attachment.contentType]} · {formatBytes(attachment.size)}</span>
           <span className="room-doc-card-foot"><span className="room-doc-card-open" aria-hidden="true">Open</span></span>
         </span>

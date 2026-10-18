@@ -376,14 +376,20 @@ describe("ArtifactsPanel — open in the artifact pane", () => {
     expect(openPanel).toHaveBeenCalledWith("artifact", { src: "paperclip", kind: "work_product", issue: "iss_1", id: "att9", name: "Pricing proposal", type: "text/markdown" }, PANE);
   });
 
-  it("does nothing for a work product with no attachment", () => {
+  it("falls back to opening the task when no pane params can be derived", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [WORK_PRODUCT]);
-    render(<ArtifactsPanel />);
+    const openDetail = vi.fn();
+    render(
+      <InlineTeamsNavProvider value={{ openDetail, leaveToList: vi.fn() }}>
+        <ArtifactsPanel />
+      </InlineTeamsNavProvider>,
+    );
     switchToByTask();
     expandStack();
     fireEvent.click(cardFor("Deploy preview"));
     expect(openPanel).not.toHaveBeenCalled();
+    expect(openDetail).toHaveBeenCalledWith("issue-detail", "iss_1");
   });
 });
 

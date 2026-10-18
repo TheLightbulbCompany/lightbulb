@@ -103,7 +103,10 @@ async def complete_pending(owner_id: str) -> str:
     """
     pending = await agent_email_repo.pending_line_for_owner(owner_id)
     if not pending:
-        return "absent"
+        # A claim with no row yet is a request in flight (the window between the claim and the pending row):
+        # still pending, so a reader keeps polling instead of stopping on a one-second gap.
+        account = await billing_repo.get_by_owner_id(owner_id) or {}
+        return "pending" if account.get("front_desk") else "absent"
     op_id = pending["operation_id"]
     op = await photon.get_operation(op_id)
     state = op.get("state")

@@ -210,6 +210,13 @@ async def test_no_pending_row_is_absent(m):
     m.get_op.assert_not_awaited()
 
 
+async def test_read_during_the_claim_window_is_pending(m):
+    # Claimed, Photon request in flight, no pending row yet: a reader keeps polling.
+    m.account.return_value = {"front_desk": True}
+    assert await text_lines.complete_pending("org_1") == "pending"
+    m.get_op.assert_not_awaited()
+
+
 async def test_old_claim_is_repaired(m):
     m.claim.side_effect = [None, 3]
     assert await text_lines.ensure_line("org_1") == "provisioned"

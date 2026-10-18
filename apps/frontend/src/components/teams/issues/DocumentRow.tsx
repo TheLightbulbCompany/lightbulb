@@ -5,6 +5,8 @@ import { ChevronRight, ChevronDown, MessageSquare, RotateCcw } from "lucide-reac
 import { useSWRConfig } from "swr";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { roomMarkdown } from "@/components/messaging/roomMarkdown";
+import { CardContext, readOnlyCardContext } from "@/components/messaging/openui/CardContext";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, IssueDocument } from "@/components/teams/shared/types";
 import { DocumentRevisionMenu } from "./DocumentRevisionMenu";
@@ -33,6 +35,7 @@ export function DocumentRow({
   issueId,
   basePath,
   onRestored,
+  defaultOpen,
 }: {
   doc: IssueDocument;
   agents: CompanyAgent[];
@@ -46,16 +49,19 @@ export function DocumentRow({
   // Called after a revision restore, for an owner whose document list is not
   // the issue documents read (a case re-reads its detail).
   onRestored?: () => void;
+  defaultOpen?: boolean;
 }) {
   const root = basePath ?? `/issues/${issueId}`;
   const reviewable = doc as ReviewableDocument;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(defaultOpen));
   const [panelOpen, setPanelOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [selectedRevisionId, setSelectedRevisionId] = useState<string | null>(null);
   const [pendingAnchor, setPendingAnchor] = useState<PendingAnchor | null>(null);
   const [focusedThreadId, setFocusedThreadId] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
+  // Cards and diagrams in a document render read-only: a context with no press.
+  const readOnlyCards = useMemo(() => readOnlyCardContext(doc.id), [doc.id]);
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
   const { read, post } = useTeamsApi();
@@ -296,7 +302,7 @@ export function DocumentRow({
                   the overlay's own chrome (which is a sibling below). */}
               <div ref={bodyRef}>
                 {shownBody && shownBody.trim() ? (
-                  <MarkdownView>{shownBody}</MarkdownView>
+                  <CardContext.Provider value={readOnlyCards}><MarkdownView skipHtml components={roomMarkdown}>{shownBody}</MarkdownView></CardContext.Provider>
                 ) : (
                   <p className="pt-2 text-caption text-[var(--midnight-muted)]">(empty document)</p>
                 )}

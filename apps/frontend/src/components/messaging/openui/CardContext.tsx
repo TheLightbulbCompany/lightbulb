@@ -33,6 +33,11 @@ export interface CardContextValue {
 
 export const CardContext = createContext<CardContextValue | null>(null);
 
+/** The context of a card shown outside a room (a document): no `press`, so every control is disabled. */
+export function readOnlyCardContext(messageId: string): CardContextValue {
+  return { messageId, roomId: "", authorId: "", threadRootMessageId: null, attachments: [], answered: null, pending: false, error: null, retry: null };
+}
+
 export function useCardContext(): CardContextValue | null {
   return useContext(CardContext);
 }

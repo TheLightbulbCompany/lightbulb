@@ -106,8 +106,8 @@ Subcommands (markdown / freeform text is read from stdin where noted):
               projectId?, assigneeUserId? }
       Reads an optional markdown description from stdin.
       STATUS: backlog|todo|in_progress|in_review|done|blocked|cancelled
-      With --assignee and no --status, sends an EXPLICIT backlog (see
-      "Assigning work" at the bottom) — pass --status todo to start it now.
+      With --assignee and no --status, sends todo, so it starts (see
+      "Assigning work" at the bottom) — pass --status backlog to park it.
 
   create <companyId> --title T [--goal <id>] [--status S]
          [--priority P] [--assignee <agentId>] [--blocked-by "id1,id2"]
@@ -120,8 +120,8 @@ Subcommands (markdown / freeform text is read from stdin where noted):
               projectId?, assigneeUserId? }
       Reads an optional markdown description from stdin.
       STATUS: backlog|todo|in_progress|in_review|done|blocked|cancelled
-      With --assignee and no --status, sends an EXPLICIT backlog (see
-      "Assigning work" at the bottom) — pass --status todo to start it now.
+      With --assignee and no --status, sends todo, so it starts (see
+      "Assigning work" at the bottom) — pass --status backlog to park it.
 
   confirm <issueId> --prompt P [--plan] [--title T] [--idempotency-key K]
           [--continuation none|wake_assignee|wake_assignee_on_accept]
@@ -212,13 +212,11 @@ Subcommands (markdown / freeform text is read from stdin where noted):
 Assigning work (create / subtask):
   An issue that has an assignee AND a status other than `backlog` DISPATCHES
   AN AGENT RUN the moment it is created, and a 30s server-side reconciler
-  re-dispatches it until it escalates to `blocked`. Paperclip's own create
-  default is not neutral about this: omit `status` while passing an assignee
-  and the server silently promotes the issue to `todo` — i.e. it starts.
-  So this helper sends an explicit `backlog` for `--assignee` + no `--status`.
-  Filing work to someone and starting it right now are different acts, and the
-  second one spends money — ask for it with `--status todo`, never by omission.
-  Creates with no assignee are unchanged: `status` stays omitted.
+  re-dispatches it until it escalates to `blocked`. Like Paperclip's own
+  create default, this helper sends `todo` for `--assignee` + no `--status`:
+  assigned work starts. To file assigned work for later without starting it,
+  pass `--status backlog` explicitly.
+  Creates with no assignee are unchanged: `status` stays omitted (backlog).
   `--assignee-user` files a task for a person (it shows in their Inbox); it
   never starts a run.
 
@@ -239,13 +237,13 @@ Examples:
   Review the plan document before accepting.
   MD
 
-  # File assigned work WITHOUT starting it (the default):
+  # Assign AND start it now (the default for an assigned create):
+  scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "Hotfix checkout 500" \
+    --assignee "<agentId>"
+
+  # Park assigned work for later WITHOUT starting it (must be explicit):
   scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "Ship pricing page" \
     --assignee "<agentId>" --status backlog
-
-  # Assign AND start it right now (deliberate — this spends money):
-  scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "Hotfix checkout 500" \
-    --assignee "<agentId>" --status todo
 EOF
 }
 
@@ -868,7 +866,7 @@ cmd_subtask() {
   [[ -n "$parent" ]] || printf 'subtask: warning — no --parent set; subtasks should set parentId.\n' >&2
   [[ -n "$goal" ]] || printf 'subtask: warning — no --goal set; subtasks should set goalId.\n' >&2
 
-  # A person's task never starts a run, so only an agent assignee forces backlog.
+  # A person's task never starts a run, so it defaults to todo with no split.
   if [[ -n "$assignee_user" && -z "$assignee" ]]; then
     status="${status:-todo}"
   else
@@ -938,7 +936,7 @@ cmd_create() {
 
   [[ -n "$title" ]] || die 'create: --title is required.'
 
-  # A person's task never starts a run, so only an agent assignee forces backlog.
+  # A person's task never starts a run, so it defaults to todo with no split.
   if [[ -n "$assignee_user" && -z "$assignee" ]]; then
     status="${status:-todo}"
   else

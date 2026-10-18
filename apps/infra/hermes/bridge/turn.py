@@ -4009,7 +4009,7 @@ BOUND_WAKE_HEADER = ("[Paperclip woke you for issue {issue}. This conversation o
 BOUND_WAKE_STEER = ("[Paperclip woke you for issue {issue}, which this conversation is already working on. No "
                     "separate run was started: Paperclip run {run} is attached to your Paperclip writes for that "
                     "issue until this turn ends. Carry on here. Mention the issue to the person only if it is now "
-                    "done or needs them, in your own words as part of your answer.]")
+                    "done, needs them, or is what they asked about, in your own words as part of your answer.]")
 
 
 def _issue_binding_path(agent_id: str, issue_id: str) -> Path:

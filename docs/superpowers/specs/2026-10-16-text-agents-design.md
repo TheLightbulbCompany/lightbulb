@@ -36,7 +36,11 @@ conversation is the customer, and the agent works for them.
 
 ## Rules
 
-- Every texter is a customer. Members talk to the agent in Lightbulb, never through the number.
+- One number, two kinds of texter (owner 2026-10-17). A texter whose number a workspace member has
+  registered as theirs is a member: their text is posted into the workspace's main room as that
+  member, marked "sent by text", and the normal routing (listen modes, Jev) picks the agent, who
+  answers in the room and texts back. Every other texter is a customer and goes to the front desk.
+  Members register their number in the Mail panel; the webhook decides from the line's own row.
 - The agent acts only on the business's own site and its connected tools, through the
   workspace's cloud browser and terminal. Orders and bookings go under the customer's own
   texting number, after the customer has said yes or paid.
@@ -61,8 +65,8 @@ conversation is the customer, and the agent works for them.
   Photon 2.0 (`api.photon.codes/v1`, Bearer project key, public beta since 2026-10-15), the
   only one with an HTTP send path, typing, read receipts, attachment download and
   Standard-Webhooks delivery. Its line creation is asynchronous (a 202 operation that "can stay
-  running for hours" when capacity is short), so "on the spot" is served from a small pool of
-  lines we hold ahead, refilled by a sweeper. Inbound media arrives as metadata; bytes are a
+  running for hours" when capacity is short), so "on the spot" is the fast case and "your number
+  is being set up" the slow one; one dev purchase measures the wait. Inbound media arrives as metadata; bytes are a
   second call. There is no sandbox: dev buys one line against the $100 starting credit.
   Hermes's own Photon plugin is a personal always-on gateway (a Node sidecar holding a gRPC
   stream); it does not fit an invoke-only runtime, so texts still enter through our backend.
@@ -98,13 +102,13 @@ conversation is the customer, and the agent works for them.
   Photon's `POST /v1/projects/{id}/messages` (sender = the line's agent user, space = the
   customer's DM space from the stored inbound row, an `Idempotency-Key` per send) and records
   the sent text as an inbox item, as mail does. Typing and read receipts are one call each.
-- Numbers: one Lightbulb Photon project on the Business plan. The Stripe webhook assigns a line
-  from the pool (instant) or starts a dedicated-line operation and marks the workspace pending; a
-  one-minute sweeper polls operations, records finished lines, refills the pool to
-  `PHOTON_LINE_POOL_SIZE` (default 0 until Photon's wait times are known), and releases lines
-  whose workspace is gone. The number is a row in the existing agent-email address table
-  (`kind: text`): owner, agent, status, business phone, taken-over threads, Photon resource and
-  user ids. A workspace wipe releases the line.
+- Numbers: one Lightbulb Photon 2.0 project on the Business plan. The Stripe webhook asks Photon
+  for a dedicated line (an asynchronous operation), waits a few seconds for the fast case, and
+  otherwise records the workspace as pending; the Mail panel's "Setting up your number" read
+  completes the operation when Photon has finished, the way the Stripe provisioning workflows
+  advance on read. No pool of idle lines and no sweeper. The number is a row in the existing
+  agent-email address table (`kind: text`): owner, agent, status, business phone, taken-over
+  threads, Photon resource and user ids. A workspace wipe releases the line.
 - Build from URL: a DM to Customer Operations when the first message carries the site (the
   existing intake chip), using the lightbulb skill and OpenCLI in the image (`OPENCLI_CDP_ENDPOINT` set from the CDP address the bridge hands each run).
   It rewrites Customer Operations into the front desk (persona, facts, and a site adapter for

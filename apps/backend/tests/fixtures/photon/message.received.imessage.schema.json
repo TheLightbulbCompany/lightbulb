@@ -1,0 +1,142 @@
+{
+ "additionalProperties": false,
+ "properties": {
+  "apiVersion": {
+   "const": "2026-07-01",
+   "type": "string"
+  },
+  "data": {
+   "additionalProperties": false,
+   "properties": {
+    "object": {
+     "allOf": [
+      {
+       "anyOf": [
+        {
+         "oneOf": [
+          "...",
+          "...",
+          "...",
+          "...",
+          "..."
+         ]
+        },
+        {
+         "oneOf": [
+          "...",
+          "...",
+          "...",
+          "...",
+          "..."
+         ]
+        },
+        {
+         "oneOf": [
+          "...",
+          "...",
+          "...",
+          "...",
+          "..."
+         ]
+        },
+        {
+         "oneOf": [
+          "...",
+          "...",
+          "...",
+          "...",
+          "..."
+         ]
+        },
+        {
+         "oneOf": [
+          "...",
+          "...",
+          "...",
+          "...",
+          "..."
+         ]
+        },
+        {
+         "oneOf": [
+          "...",
+          "...",
+          "...",
+          "...",
+          "..."
+         ]
+        }
+       ],
+       "x-photon-extension": {
+        "discriminator": "platform",
+        "fallback": "#/$defs/UnknownMessage",
+        "reserved": [
+         "sms",
+         "whatsapp",
+         "whatsapp_business",
+         "email",
+         "voice",
+         "imessage",
+         "telegram"
+        ]
+       }
+      },
+      {
+       "additionalProperties": {},
+       "properties": {
+        "platform": {
+         "const": "imessage",
+         "type": "string"
+        },
+        "status": {
+         "const": "received",
+         "type": "string"
+        }
+       },
+       "required": [
+        "platform",
+        "status"
+       ],
+       "type": "object"
+      }
+     ]
+    },
+    "projectId": {
+     "pattern": "^pho_prj_[0-7][0-9a-hjkmnp-tv-z]{25}$",
+     "type": "string"
+    }
+   },
+   "required": [
+    "projectId",
+    "object"
+   ],
+   "type": "object"
+  },
+  "id": {
+   "pattern": "^pho_evt_[0-7][0-9a-hjkmnp-tv-z]{25}$",
+   "type": "string"
+  },
+  "source": {
+   "const": "imessage.photon",
+   "type": "string"
+  },
+  "timestamp": {
+   "format": "date-time",
+   "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+   "type": "string"
+  },
+  "type": {
+   "const": "message.received",
+   "type": "string"
+  }
+ },
+ "required": [
+  "id",
+  "type",
+  "apiVersion",
+  "source",
+  "timestamp",
+  "data"
+ ],
+ "type": "object"
+}

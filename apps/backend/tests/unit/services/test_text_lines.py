@@ -17,10 +17,6 @@ RUNNING = {"operationId": "op_1", "state": "running"}
 LINE_ROW = {"address": "+15551230000", "agent_id": "agent_co", "photon_resource_id": "res_1"}
 
 
-async def _ret(v):
-    return v
-
-
 @pytest.fixture
 def m(monkeypatch):
     """One parent mock so call order is assertable across the collaborators."""
@@ -41,7 +37,15 @@ def m(monkeypatch):
     o.soul = AsyncMock()
     o.mail = AsyncMock()
     o.metric = MagicMock()
-    o.sleep = AsyncMock()
+    o.meta = AsyncMock(return_value=(None, 0))
+    clock = [0.0]
+
+    async def _sleep(secs):
+        clock[0] += secs
+
+    o.sleep = AsyncMock(side_effect=_sleep)
+    monkeypatch.setattr(text_lines.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(text_lines.billing_repo, "front_desk_meta", o.meta)
     r = text_lines.agent_email_repo
     monkeypatch.setattr(r, "text_line_for_owner", o.line)
     monkeypatch.setattr(r, "pending_line_for_owner", o.pending)
@@ -72,6 +76,12 @@ def m(monkeypatch):
         return True
 
     o.put_pending.side_effect = _put_pending
+
+    async def _del_pending(owner_id):
+        o.pending.return_value = None
+        return True
+
+    o.del_pending.side_effect = _del_pending
     return o
 
 
@@ -79,7 +89,7 @@ async def test_ensure_line_fast_path_records_the_line(m):
     assert await text_lines.ensure_line("org_1") == "provisioned"
     m.claim.assert_awaited_once_with("org_1")
     m.request.assert_awaited_once()
-    assert m.request.await_args.kwargs["idempotency_key"].startswith("front-desk:org_1:")
+    assert m.request.await_args.kwargs["idempotency_key"] == "front-desk:org_1:0"
     m.put_pending.assert_awaited_once_with(owner_id="org_1", agent_id="agent_co", operation_id="op_1")
     m.put.assert_awaited_once_with(
         number="+15551230000",
@@ -97,7 +107,7 @@ async def test_ensure_line_fast_path_records_the_line(m):
 async def test_ensure_line_slow_path_returns_pending_and_keeps_the_row(m):
     m.get_op.return_value = RUNNING
     assert await text_lines.ensure_line("org_1") == "pending"
-    assert m.sleep.await_count == 5  # polled for the 10 s budget, every 2 s
+    assert m.sleep.await_count == 4  # an 8 s wall-clock budget, polled every 2 s
     m.put.assert_not_awaited()
     m.del_pending.assert_not_awaited()
     m.set_fd.assert_not_awaited()
@@ -114,7 +124,11 @@ async def test_second_delivery_during_pending_does_not_request_again(m):
 async def test_complete_on_read_records_once_across_two_readers(m):
     m.pending.return_value = PENDING
     wins = iter([True, False])
-    m.del_pending.side_effect = lambda owner: _ret(next(wins))
+
+    async def _del(owner_id):
+        return next(wins)
+
+    m.del_pending.side_effect = _del
     first = await text_lines.complete_pending("org_1")
     # The second reader's put loses to the first reader's row for the SAME Photon resource.
     m.put.return_value = None
@@ -138,9 +152,9 @@ async def test_failed_operation_releases_the_claim_and_raises_from_webhook(m):
 async def test_failed_operation_returns_absent_from_read(m):
     m.pending.return_value = PENDING
     m.get_op.return_value = {"operationId": "op_1", "state": "cancelled", "reason": "by_us"}
-    assert await text_lines.complete_pending("org_1") == "absent"
-    m.set_fd.assert_awaited_once_with("org_1", False)
-    m.metric.assert_called_once_with("text_line.provision_failed", dimensions={"code": "by_us"})
+    assert await text_lines.complete_pending("org_1") == "absent"  # the one retry failed the same way
+    m.set_fd.assert_awaited_with("org_1", False)
+    m.metric.assert_any_call("text_line.provision_failed", dimensions={"code": "by_us"})
 
 
 async def test_no_pending_row_is_absent(m):
@@ -148,12 +162,37 @@ async def test_no_pending_row_is_absent(m):
     m.get_op.assert_not_awaited()
 
 
-async def test_stale_flag_without_rows_is_repaired(m):
+def _ago(seconds):
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+
+async def test_old_claim_is_repaired(m):
     m.claim.side_effect = [False, True]
+    m.meta.return_value = (_ago(600), 0)
     assert await text_lines.ensure_line("org_1") == "provisioned"
     m.set_fd.assert_any_await("org_1", False)
     assert m.claim.await_count == 2
     m.request.assert_awaited_once()
+
+
+async def test_fresh_claim_is_not_repaired(m):
+    m.claim.return_value = False
+    m.meta.return_value = (_ago(10), 0)
+    assert await text_lines.ensure_line("org_1") == "unchanged"
+    m.set_fd.assert_not_awaited()
+    m.request.assert_not_awaited()
+
+
+async def test_request_key_is_stable_until_a_release(m):
+    m.meta.return_value = (None, 3)
+    m.put_pending.side_effect = ValueError("crash after the request")
+    for _ in range(2):
+        with pytest.raises(ValueError):
+            await text_lines.ensure_line("org_1")
+    keys = [c.kwargs["idempotency_key"] for c in m.request.await_args_list]
+    assert keys == ["front-desk:org_1:3", "front-desk:org_1:3"]
 
 
 async def test_claim_lost_with_a_row_present_is_unchanged(m):
@@ -189,22 +228,57 @@ async def test_pending_row_write_failure_cancels_the_operation(m):
     m.set_fd.assert_awaited_once_with("org_1", False)
 
 
-async def test_record_failure_releases_the_bought_line(m):
+async def test_transient_record_failure_keeps_the_pending_row(m):
+    m.pending.return_value = PENDING
+    m.put.side_effect = ValueError("ddb down")
+    assert await text_lines.complete_pending("org_1") == "pending"
+    with pytest.raises(BillingServiceError, match="line_record_pending"):
+        await text_lines.complete_pending("org_1", from_webhook=True)
+    m.release.assert_not_awaited()
+    m.del_pending.assert_not_awaited()
+    m.set_fd.assert_not_awaited()
+
+
+async def test_unknown_line_user_keeps_the_pending_row(m):
+    m.pending.return_value = PENDING
+    m.find_user.return_value = None
+    assert await text_lines.complete_pending("org_1") == "pending"
+    m.release.assert_not_awaited()
+    m.del_pending.assert_not_awaited()
+    m.put.assert_not_awaited()
+
+
+async def test_failure_but_row_already_recorded_is_provisioned(m):
+    m.pending.return_value = PENDING
+    m.put.side_effect = ValueError("timeout after the write landed")
+    m.line.return_value = LINE_ROW
+    assert await text_lines.complete_pending("org_1") == "provisioned"
+    m.release.assert_not_awaited()
+
+
+async def test_conflicting_existing_line_releases_the_extra_one(m):
+    m.pending.return_value = PENDING
     m.put.return_value = None
-    with pytest.raises(Exception):
-        await text_lines.ensure_line("org_1")
+    m.line.return_value = {**LINE_ROW, "photon_resource_id": "res_other"}
+    assert await text_lines.complete_pending("org_1") == "provisioned"
     m.release.assert_awaited_once_with("res_1")
     m.del_pending.assert_awaited_once_with("org_1")
+    m.set_fd.assert_not_awaited()
+
+
+async def test_read_path_failed_requests_again(m):
+    m.pending.return_value = PENDING
+    m.get_op.side_effect = [{"operationId": "op_1", "state": "failed"}, DONE]
+    assert await text_lines.complete_pending("org_1") == "provisioned"
+    m.request.assert_awaited_once()
     m.set_fd.assert_awaited_once_with("org_1", False)
-    m.soul.assert_not_awaited()
 
 
-async def test_unknown_line_user_releases_the_bought_line(m):
-    m.find_user.return_value = None
-    with pytest.raises(Exception):
-        await text_lines.ensure_line("org_1")
-    m.release.assert_awaited_once_with("res_1")
-    m.put.assert_not_awaited()
+async def test_read_path_second_failure_is_absent_without_looping(m):
+    m.pending.return_value = PENDING
+    m.get_op.return_value = {"operationId": "op_1", "state": "failed"}
+    assert await text_lines.complete_pending("org_1") == "absent"
+    m.request.assert_awaited_once()
 
 
 async def test_no_customer_operations_is_no_agent_without_a_request(m):
@@ -230,6 +304,15 @@ async def test_release_cancels_a_pending_operation(m):
     m.del_pending.assert_awaited_once_with("org_1")
     m.set_fd.assert_awaited_once_with("org_1", False)
     m.release.assert_not_awaited()
+
+
+async def test_release_keeps_the_row_while_the_operation_still_runs(m):
+    m.pending.return_value = PENDING
+    m.get_op.return_value = RUNNING
+    with pytest.raises(BillingServiceError, match="line_release_pending"):
+        await text_lines.release_line("org_1")
+    m.del_pending.assert_not_awaited()
+    m.set_fd.assert_not_awaited()
 
 
 async def test_release_falls_through_when_cancel_loses_the_race(m):

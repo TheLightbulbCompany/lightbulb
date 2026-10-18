@@ -1178,24 +1178,35 @@ async def set_founding_team(owner_id: str) -> None:
 
 
 async def set_front_desk(owner_id: str, value: bool) -> None:
-    """Record whether the workspace's texting line exists (the Front desk add-on)."""
+    """Record whether the workspace's texting line exists (the Front desk add-on).
+
+    Clearing it is a release: it drops the claim timestamp and bumps ``front_desk_gen``, which keys the next
+    line request, so a redelivery after a crash reuses the same Photon operation until a release happens.
+    """
+    expr = "SET front_desk = :v, updated_at = :u"
+    if not value:
+        expr += " REMOVE front_desk_claim_at ADD front_desk_gen :one"
+    values = {":v": bool(value), ":u": utc_now_iso()}
+    if not value:
+        values[":one"] = 1
     await run_in_thread(
         _get_table().update_item,
         Key={"owner_id": owner_id},
-        UpdateExpression="SET front_desk = :v, updated_at = :u",
-        ExpressionAttributeValues={":v": bool(value), ":u": utc_now_iso()},
+        UpdateExpression=expr,
+        ExpressionAttributeValues=values,
         ConditionExpression="attribute_exists(owner_id)",
     )
 
 
 async def claim_front_desk(owner_id: str) -> bool:
     """Single-flight claim before buying a line: False when another delivery holds it."""
+    now = utc_now_iso()
     try:
         await run_in_thread(
             _get_table().update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression="SET front_desk = :v, updated_at = :u",
-            ExpressionAttributeValues={":v": True, ":f": False, ":u": utc_now_iso()},
+            UpdateExpression="SET front_desk = :v, front_desk_claim_at = :u, updated_at = :u",
+            ExpressionAttributeValues={":v": True, ":f": False, ":u": now},
             ConditionExpression="attribute_exists(owner_id) AND (attribute_not_exists(front_desk) OR front_desk = :f)",
         )
         return True
@@ -1203,6 +1214,12 @@ async def claim_front_desk(owner_id: str) -> bool:
         if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             return False
         raise
+
+
+async def front_desk_meta(owner_id: str) -> tuple[str | None, int]:
+    """(``front_desk_claim_at``, ``front_desk_gen``) from the billing row; (None, 0) when unset."""
+    row = await get_by_owner_id(owner_id) or {}
+    return row.get("front_desk_claim_at"), int(row.get("front_desk_gen") or 0)
 
 
 async def set_nightly_ceo_opted_out(owner_id: str, opted_out: bool) -> None:

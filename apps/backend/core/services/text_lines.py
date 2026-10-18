@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import logging
-import uuid
+import time
 
 import stripe
 
@@ -28,6 +29,8 @@ class _RowExists(RuntimeError):
 
 
 POLL_S = 2  # Photon operations are polled every 2 s while a caller waits
+WAIT_S = 8  # wall-clock budget for a caller that waits on a fresh operation
+STALE_CLAIM_S = 120  # a claim with no rows behind it is a crash only after this long
 
 
 class _RecordFailed(RuntimeError):
@@ -47,12 +50,20 @@ async def _line_or_pending(owner_id: str) -> bool:
     )
 
 
+async def _claim_is_stale(owner_id: str) -> bool:
+    claim_at, _ = await billing_repo.front_desk_meta(owner_id)
+    if not claim_at:
+        return True
+    age = (datetime.now(timezone.utc) - datetime.fromisoformat(claim_at)).total_seconds()
+    return age > STALE_CLAIM_S
+
+
 async def ensure_line(owner_id: str, *, from_webhook: bool = False) -> str:
     """claim -> request the Photon operation -> short wait -> else leave a pending row for completion on read."""
     if await agent_email_repo.text_line_for_owner(owner_id):
         return "unchanged"
     if await agent_email_repo.pending_line_for_owner(owner_id):
-        done = await complete_pending(owner_id, wait_s=10, from_webhook=from_webhook)
+        done = await complete_pending(owner_id, wait_s=WAIT_S, from_webhook=from_webhook, again=False)
         if done != "absent":
             return done
     row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
@@ -63,13 +74,19 @@ async def ensure_line(owner_id: str, *, from_webhook: bool = False) -> str:
     if not await billing_repo.claim_front_desk(owner_id):
         if await _line_or_pending(owner_id):
             return "unchanged"
-        # The flag is set with nothing behind it: a crash between the claim and the pending row.
+        # The flag is set with nothing behind it. A claim younger than STALE_CLAIM_S may still be inside its
+        # Photon request, so only an old one is a crash between the claim and the pending row.
+        if not await _claim_is_stale(owner_id):
+            return "unchanged"
         await billing_repo.set_front_desk(owner_id, False)
         if not await billing_repo.claim_front_desk(owner_id):
             return "unchanged"
     op = None
     try:
-        op = await photon.request_dedicated_line(idempotency_key=f"front-desk:{owner_id}:{uuid.uuid4().hex}")
+        # Stable until a release bumps the generation: a redelivery after a crash between the request and
+        # the pending row gets the same Photon operation back instead of buying a second line.
+        _, gen = await billing_repo.front_desk_meta(owner_id)
+        op = await photon.request_dedicated_line(idempotency_key=f"front-desk:{owner_id}:{gen}")
         if not await agent_email_repo.put_pending_line(
             owner_id=owner_id, agent_id=agent_id, operation_id=op["operationId"]
         ):
@@ -89,19 +106,30 @@ async def ensure_line(owner_id: str, *, from_webhook: bool = False) -> str:
         code = "row_exists" if isinstance(e, _RowExists) else str(getattr(e, "code", type(e).__name__))
         put_metric("text_line.provision_failed", dimensions={"code": code})
         raise
-    return await complete_pending(owner_id, wait_s=10, from_webhook=from_webhook)
+    return await complete_pending(owner_id, wait_s=WAIT_S, from_webhook=from_webhook, again=False)
 
 
-async def complete_pending(owner_id: str, *, wait_s: float = 0, from_webhook: bool = False) -> str:
-    """Finish a requested line if Photon has: poll up to ``wait_s``, then record it, fail it, or leave it pending."""
+async def _read_failed_retry(owner_id: str) -> str:
+    try:
+        again = await ensure_line(owner_id)
+    except Exception:
+        logger.warning("Re-requesting the line failed for owner %s", owner_id, exc_info=True)
+        return "absent"
+    return again if again in ("provisioned", "pending") else "absent"
+
+
+async def complete_pending(owner_id: str, *, wait_s: float = 0, from_webhook: bool = False, again: bool = True) -> str:
+    """Finish a requested line if Photon has: poll up to ``wait_s``, then record it, fail it, or leave it pending.
+
+    A read that finds the operation failed asks for a new line once (``again``), so a failure is never a dead end.
+    """
     pending = await agent_email_repo.pending_line_for_owner(owner_id)
     if not pending:
         return "absent"
     op = await photon.get_operation(pending["operation_id"])
-    waited = 0.0
-    while op.get("state") in ("pending", "running") and waited < wait_s:
+    deadline = time.monotonic() + wait_s
+    while op.get("state") in ("pending", "running") and time.monotonic() < deadline:
         await asyncio.sleep(POLL_S)
-        waited += POLL_S
         op = await photon.get_operation(pending["operation_id"])
     state = op.get("state")
     if state in ("failed", "cancelled"):
@@ -111,11 +139,12 @@ async def complete_pending(owner_id: str, *, wait_s: float = 0, from_webhook: bo
         put_metric("text_line.provision_failed", dimensions={"code": str(code)})
         if from_webhook:
             raise BillingServiceError("line_provision_failed")
-        return "absent"
+        return await _read_failed_retry(owner_id) if again else "absent"
     if state != "succeeded":
         return "pending"
     resource_id = op["resourceId"]
     agent_id = pending["agent_id"]
+    deferred: Exception | None = None
     try:
         user = await photon.find_line_user(resource_id)
         if not user:
@@ -127,26 +156,34 @@ async def complete_pending(owner_id: str, *, wait_s: float = 0, from_webhook: bo
             photon_resource_id=resource_id,
             photon_user_id=user["id"],
         )
-        if recorded is None:
-            # Lost the put to a concurrent reader recording the same resource: that is success, not a failure.
-            line = await agent_email_repo.text_line_for_owner(owner_id)
-            if not (line and line.get("photon_resource_id") == resource_id):
-                raise _RecordFailed(f"text line {user['handle']} already recorded")
     except Exception as e:
+        recorded, deferred = None, e
+    if recorded is None:
         try:
-            await photon.release_line(resource_id)
-        except Exception:
-            logger.warning(
-                "Could not release unrecorded Photon line %s (owner %s): it is billing, release it by hand",
-                resource_id,
-                owner_id,
-                exc_info=True,
-            )
-        await agent_email_repo.delete_pending_line(owner_id)
-        await _clear_claim(owner_id)
-        code = "record_failed" if isinstance(e, _RecordFailed) else str(getattr(e, "code", type(e).__name__))
-        put_metric("text_line.provision_failed", dimensions={"code": code})
-        raise
+            line = await agent_email_repo.text_line_for_owner(owner_id)
+        except Exception as e:
+            line, deferred = None, deferred or e
+        if line and line.get("photon_resource_id") != resource_id:
+            # The one definite conflict: the owner already has a different line, so this one is surplus.
+            try:
+                await photon.release_line(resource_id)
+            except Exception:
+                logger.warning(
+                    "Could not release surplus Photon line %s (owner %s): it is billing, release it by hand",
+                    resource_id,
+                    owner_id,
+                    exc_info=True,
+                )
+            await agent_email_repo.delete_pending_line(owner_id)
+            put_metric("text_line.surplus_released")
+            return "provisioned"
+        if not line:
+            # Not recorded and nothing proves it is a conflict: keep the paid-for operation and retry later.
+            code = "record_failed" if deferred is None else str(getattr(deferred, "code", type(deferred).__name__))
+            put_metric("text_line.record_deferred", dimensions={"code": code})
+            if from_webhook:
+                raise BillingServiceError("line_record_pending") from deferred
+            return "pending"
     await agent_email_repo.delete_pending_line(owner_id)  # False: another reader already did; still provisioned
     try:
         await refresh_agent_soul(owner_id, agent_id)
@@ -167,6 +204,8 @@ async def release_line(owner_id: str) -> str:
         op = await photon.get_operation(pending["operation_id"])
         if op.get("state") == "succeeded":
             await complete_pending(owner_id)  # the cancel lost the race: record the line, then release it below
+        elif op.get("state") in ("pending", "running"):
+            raise BillingServiceError("line_release_pending")  # keep the row; Stripe redelivers
         else:
             await agent_email_repo.delete_pending_line(owner_id)
             await billing_repo.set_front_desk(owner_id, False)

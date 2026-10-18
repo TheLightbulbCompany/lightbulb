@@ -1235,3 +1235,18 @@ async def test_front_desk_claim_is_single_flight(dynamodb_table):
     assert (await billing_repo.get_by_owner_id("org_fd"))["front_desk"] is False
     assert await billing_repo.claim_front_desk("org_fd") is True
     assert await billing_repo.claim_front_desk("ghost") is False
+
+
+@pytest.mark.asyncio
+async def test_front_desk_claim_stamps_time_and_release_bumps_generation(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("org_fd2", "cus_fd2")
+    assert await billing_repo.front_desk_meta("org_fd2") == (None, 0)
+    assert await billing_repo.claim_front_desk("org_fd2") is True
+    claim_at, gen = await billing_repo.front_desk_meta("org_fd2")
+    assert claim_at and gen == 0
+    await billing_repo.set_front_desk("org_fd2", False)
+    assert await billing_repo.front_desk_meta("org_fd2") == (None, 1)
+    await billing_repo.set_front_desk("org_fd2", True)
+    assert (await billing_repo.front_desk_meta("org_fd2"))[1] == 1

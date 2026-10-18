@@ -431,6 +431,15 @@ async def create_front_desk(
 
     if apple_iap.stripe_is_live(account):
         outcome = await add_front_desk_item(owner_id)
+        if outcome == "already":
+            # The subscription has the add-on but the line may not: a failed purchase leaves no event to retry.
+            from core.services import photon, text_lines
+
+            try:
+                await text_lines.ensure_line(owner_id)
+            except (BillingServiceError, photon.PhotonError) as e:
+                logger.warning("front desk line request failed owner_id=%s: %s", owner_id, e)
+                raise HTTPException(status_code=502, detail="line_provision_failed") from e
         if outcome in ("added", "already"):
             return {"status": outcome}
         raise HTTPException(status_code=400, detail=outcome)

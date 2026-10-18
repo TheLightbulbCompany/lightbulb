@@ -33,6 +33,7 @@ async def test_post_on_live_subscription_adds(outcome, monkeypatch):
     with (
         patch("core.services.billing_service.add_front_desk_item", new=add),
         patch("core.services.billing_service.create_workspace_checkout", new=checkout),
+        patch("core.services.text_lines.ensure_line", new=AsyncMock()),
     ):
         result = await billing.create_front_desk(billing.FrontDeskRequest(), auth=_admin())
 
@@ -138,3 +139,22 @@ async def test_post_on_trial_passes_the_real_plan_check(monkeypatch):
     result = await billing.create_front_desk(billing.FrontDeskRequest(), auth=_admin())
 
     assert result == {"status": "checkout", "url": "https://checkout.test/cs_1"}
+
+
+@pytest.mark.asyncio
+async def test_already_triggers_ensure_line(monkeypatch):
+    from core.services import billing_service, photon
+
+    monkeypatch.setattr(billing, "_get_billing_account", AsyncMock(return_value=LIVE))
+    ensure = AsyncMock(return_value="provisioned")
+    with (
+        patch("core.services.billing_service.add_front_desk_item", new=AsyncMock(return_value="already")),
+        patch("core.services.text_lines.ensure_line", new=ensure),
+    ):
+        assert await billing.create_front_desk(billing.FrontDeskRequest(), auth=_admin()) == {"status": "already"}
+        ensure.assert_awaited_once_with("org_1")
+        for err in (billing_service.BillingServiceError("line_provision_failed"), photon.PhotonError(500, "x")):
+            ensure.side_effect = err
+            with pytest.raises(HTTPException) as e:
+                await billing.create_front_desk(billing.FrontDeskRequest(), auth=_admin())
+            assert e.value.status_code == 502 and e.value.detail == "line_provision_failed"

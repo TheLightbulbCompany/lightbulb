@@ -56,6 +56,7 @@ describe("needsYouBadge", () => {
     // Server: 1 unseen mention + the approval + 1 failed run = 3.
     expect(needsYouBadge({
       serverCount: 3,
+      activityComplete: true,
       activityItems: [message("m1"), approval, failedRunActivity],
       attention: { countsBySourceKind: { approval: 1, decision: 2, failed_run: 4 } },
       failedRunGroups: 2,
@@ -63,10 +64,17 @@ describe("needsYouBadge", () => {
   });
 
   it("keeps the server's count when the desk read is missing, and its failed runs when the runs read is", () => {
-    expect(needsYouBadge({ serverCount: 5, activityItems: [approval], attention: null, failedRunGroups: 1 })).toBe(5);
+    expect(needsYouBadge({ serverCount: 5, activityComplete: true, activityItems: [approval], attention: null, failedRunGroups: 1 })).toBe(5);
     expect(needsYouBadge({
-      serverCount: 2, activityItems: [approval, failedRunActivity], attention: { countsBySourceKind: { approval: 1 } }, failedRunGroups: null,
+      serverCount: 2, activityComplete: true, activityItems: [approval, failedRunActivity], attention: { countsBySourceKind: { approval: 1 } }, failedRunGroups: null,
     })).toBe(1 + 1);
+  });
+
+  it("keeps the server's count while Activity has unloaded pages (31 approvals, 30 loaded)", () => {
+    expect(needsYouBadge({
+      serverCount: 31, activityComplete: false, activityItems: Array(30).fill(approval),
+      attention: { countsBySourceKind: { approval: 31 } }, failedRunGroups: 0,
+    })).toBe(31);
   });
 });
 

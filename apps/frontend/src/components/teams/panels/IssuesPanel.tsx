@@ -322,6 +322,7 @@ export function IssuesPanel({
         isLoading={isLoading}
         onUpdateIssue={handleUpdateIssue}
         onNewTask={() => setCreating(true)}
+        agentFilter={agentFilter}
       />
 
       <NewIssueDialog

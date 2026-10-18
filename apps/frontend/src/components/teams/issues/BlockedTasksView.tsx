@@ -70,6 +70,7 @@ interface BlockedTasksViewProps {
   liveIssueIds?: ReadonlySet<string>;
   /** Narrows the list to one project (the project page's Tasks tab). */
   projectId?: string;
+  agentFilter?: string | null;
 }
 
 const BLOCKED_LIST_LIMIT = 200;
@@ -84,6 +85,7 @@ export function BlockedTasksView({
   currentUserId,
   liveIssueIds,
   projectId,
+  agentFilter = null,
 }: BlockedTasksViewProps) {
   const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
 
@@ -110,8 +112,13 @@ export function BlockedTasksView({
 
   const allRows = useMemo(() => buildBlockedInboxRows(issues ?? []), [issues]);
   const filteredRows = useMemo(
-    () => allRows.filter((row) => blockedRowMatchesSearch(row, searchQuery)),
-    [allRows, searchQuery],
+    () =>
+      allRows.filter(
+        (row) =>
+          (!agentFilter || row.issue.assigneeAgentId === agentFilter) &&
+          blockedRowMatchesSearch(row, searchQuery),
+      ),
+    [agentFilter, allRows, searchQuery],
   );
   const issueFilteredRows = useMemo(() => {
     const visibleIssueIds = new Set(

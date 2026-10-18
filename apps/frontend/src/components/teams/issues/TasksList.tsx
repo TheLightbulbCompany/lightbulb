@@ -159,6 +159,8 @@ export interface TasksListProps {
   searchQuery?: string;
   /** Scopes the Blocked view's own fetch to one project (project page). */
   projectId?: string;
+  /** The panel's agent filter ("See her work"); the Blocked view applies it to its own list. */
+  agentFilter?: string | null;
   isLoading?: boolean;
   /** Patches an issue (status / assignee / …). Routed to the BFF PATCH. */
   // Returns the in-flight PATCH so callers that need to sequence on it can —
@@ -908,6 +910,7 @@ export function TasksList({
   searchActive = false,
   searchQuery = "",
   projectId,
+  agentFilter,
   isLoading,
   onUpdateIssue,
   onNewTask,
@@ -1203,6 +1206,7 @@ export function TasksList({
           currentUserId={currentUserId ?? null}
           liveIssueIds={liveIssueIds}
           projectId={projectId}
+          agentFilter={agentFilter ?? null}
         />
       ) : isLoading ? (
         <div className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">

@@ -26,16 +26,19 @@ function coveredByNeedsYou(item: ActivityItem, runsKnown: boolean): boolean {
  * what Needs you actually shows: the attention desk's items (the feed upstream
  * already returns without dismissed and snoozed rows, its desk's failed runs
  * left out) and the Inbox's failed-run groups. A read that is missing or failed
- * leaves the server's count for that part, as other clients show it.
+ * leaves the server's count for that part, as other clients show it, and so
+ * does an Activity list with pages still unloaded: the swap needs every item.
  */
 export function needsYouBadge(input: {
   serverCount: number;
   activityItems: readonly ActivityItem[];
+  /** False while Activity has unloaded pages: the covered items cannot be counted yet. */
+  activityComplete: boolean;
   attention: AttentionFeedResponse | null;
   failedRunGroups: number | null;
 }): number {
-  const { serverCount, activityItems, attention, failedRunGroups } = input;
-  if (!attention) return serverCount;
+  const { serverCount, activityItems, activityComplete, attention, failedRunGroups } = input;
+  if (!attention || !activityComplete) return serverCount;
   const runsKnown = failedRunGroups !== null;
   const covered = activityItems.filter((item) => coveredByNeedsYou(item, runsKnown)).length;
   return Math.max(0, serverCount - covered) + deskCount(attention) + (failedRunGroups ?? 0);
@@ -68,6 +71,7 @@ export function useNeedsYouBadge(): number {
   return needsYouBadge({
     serverCount: activity.attentionCount,
     activityItems: activity.items,
+    activityComplete: !activity.hasMore,
     attention: attention && !attentionError ? attention : null,
     failedRunGroups: runs.isError || runs.isLoading ? null : groups,
   });

@@ -186,4 +186,18 @@ describe("BlockedTasksView", () => {
     renderView({ searchQuery: "beta", groupBy: "none" });
     expect(titles()).toEqual(["Task beta"]);
   });
+
+  it("keeps the panel's agent filter", () => {
+    readResult.current = {
+      data: {
+        issues: [
+          { ...issue("iso-1", "Task alpha", attention("pending_board_decision", "low", ago(HOUR))), assigneeAgentId: "a1" },
+          { ...issue("iso-2", "Task beta", attention("pending_board_decision", "low", ago(HOUR))), assigneeAgentId: "a2" },
+        ],
+      },
+      isLoading: false,
+    };
+    renderView({ agentFilter: "a2", groupBy: "none" });
+    expect(titles()).toEqual(["Task beta"]);
+  });
 });

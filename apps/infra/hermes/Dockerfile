@@ -127,11 +127,11 @@ RUN npm i -g @pnp/cli-microsoft365@11.11.0 && m365 version
 # npm POSTINSTALL, so this must stay outside any --ignore-scripts install.
 RUN npm i -g --allow-scripts=agent-browser agent-browser@0.38.1 && agent-browser --version
 
-# OpenCLI: the front desk's site adapters (design 2026-10-16). Node >= 20.18.1 is its floor.
+# OpenCLI: the front desk's site adapters (design 2026-10-16). Node >= 20.18.1 is its floor; the
+# `opencli --version` smoke is what fails the build when the base's Node cannot run it.
 # Adapters go to ~/.opencli; the shell's HOME is <profile>/home (TERMINAL_HOME_MODE=profile), so
 # they live in the profile and are saved with it.
-RUN node -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>20||(a===20&&(b>18||(b===18&&c>=1)))?0:1)' \
- && npm i -g @jackwener/opencli@2.0.0 && opencli --version
+RUN npm i -g @jackwener/opencli@2.0.0 && opencli --version
 
 # Hermes advertises browser_* only when _chromium_installed() is true (browser_tool_install.py:227-242):
 # AGENT_BROWSER_EXECUTABLE_PATH is an existing file (a bare os.path.isfile), OR chrome/chromium is on

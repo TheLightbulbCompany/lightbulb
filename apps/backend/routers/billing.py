@@ -21,7 +21,8 @@ from core.auth import (
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
-from core.services import apple_iap, openrouter_keys, trial_cap
+from core.repositories.paperclip_repo import customer_ops_agent_id
+from core.services import apple_iap, billing_service, openrouter_keys, photon, text_lines, trial_cap
 from core.services.billing_service import SEATS_INCLUDED, BillingService
 from core.services.chat_gate import budget_block_reason
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
@@ -416,28 +417,17 @@ async def create_front_desk(
     if apple_iap.apple_is_live(account):
         raise HTTPException(status_code=409, detail="apple_managed")
 
-    from core.services.billing_service import (
-        BillingServiceError,
-        add_front_desk_item,
-        create_workspace_checkout as create_checkout,
-    )
-
     # The add-on needs the Customer Operations agent; refuse before any billing call.
-    from core.repositories.paperclip_repo import PaperclipRepo
-
-    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    if not (getattr(row, "starter_agent_ids", None) or {}).get("customer_operations"):
+    if not await customer_ops_agent_id(owner_id):
         raise HTTPException(status_code=409, detail="no_front_desk_agent")
 
     if apple_iap.stripe_is_live(account):
-        outcome = await add_front_desk_item(owner_id)
+        outcome = await billing_service.add_front_desk_item(owner_id)
         if outcome == "already":
             # The subscription has the add-on but the line may not: a failed purchase leaves no event to retry.
-            from core.services import photon, text_lines
-
             try:
                 await text_lines.ensure_line(owner_id)
-            except (BillingServiceError, photon.PhotonError) as e:
+            except (billing_service.BillingServiceError, photon.PhotonError) as e:
                 logger.warning("front desk line request failed owner_id=%s: %s", owner_id, e)
                 raise HTTPException(status_code=502, detail="line_provision_failed") from e
         if outcome in ("added", "already"):
@@ -456,14 +446,14 @@ async def create_front_desk(
             raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
 
     try:
-        result = await create_checkout(
+        result = await billing_service.create_workspace_checkout(
             owner_id=owner_id,
             clerk_user_id=auth.user_id,
             plan="workspace",
             return_to=body.return_to,
             front_desk=True,
         )
-    except BillingServiceError as e:
+    except billing_service.BillingServiceError as e:
         if str(e) == "checkout_in_progress":
             raise HTTPException(status_code=409, detail="checkout_in_progress") from e
         raise HTTPException(status_code=400, detail=str(e)) from e

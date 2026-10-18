@@ -9,8 +9,8 @@ import stripe
 
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, billing_repo
-from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import photon
+from core.repositories.paperclip_repo import customer_ops_agent_id
+from core.services import onboarding_brief, photon
 from core.services.agent_email import mail_changed
 from core.services.billing_service import BillingServiceError, _is_front_desk_item
 from core.services.hermes_provisioning import refresh_agent_soul
@@ -61,8 +61,7 @@ async def ensure_line(owner_id: str) -> str:
         done = await _settle(owner_id)
         if done != "absent":
             return done
-    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    agent_id = (getattr(row, "starter_agent_ids", None) or {}).get("customer_operations")
+    agent_id = await customer_ops_agent_id(owner_id)
     if not agent_id:
         put_metric("text_line.no_front_desk_agent")
         return "no_agent"
@@ -93,18 +92,6 @@ async def ensure_line(owner_id: str) -> str:
         await _abandon(owner_id, op, "row_exists")
         raise RuntimeError(f"pending line already recorded for {owner_id}")
     return await _settle(owner_id)
-
-
-async def _start_build(owner_id: str) -> None:
-    """Best effort: DM the front desk its build prompt for the website the workspace's brief named."""
-    from core.services import onboarding_brief
-
-    try:
-        found = await onboarding_brief.front_desk_link(owner_id)
-        if found:
-            await onboarding_brief.start_front_desk_build(owner_id, found[0], user_id=found[1])
-    except Exception:
-        logger.warning("Front desk build did not start for owner %s", owner_id, exc_info=True)
 
 
 async def complete_pending(owner_id: str) -> str:
@@ -181,7 +168,11 @@ async def complete_pending(owner_id: str) -> str:
         await mail_changed(owner_id)
     except Exception:
         logger.warning("Mail refresh failed after provisioning a line for owner %s", owner_id, exc_info=True)
-    await _start_build(owner_id)
+    try:
+        # The front desk's build prompt, for the website the workspace's brief named.
+        await onboarding_brief.start_front_desk_build_for_line(owner_id)
+    except Exception:
+        logger.warning("Front desk build did not start for owner %s", owner_id, exc_info=True)
     put_metric("text_line.provisioned")
     return "provisioned"
 

@@ -1020,9 +1020,9 @@ async def test_agent_email_step_deprovisions_text_rows_then_deletes(ws_mocks):
     calls = MagicMock()
     deprovision = AsyncMock(side_effect=lambda n: calls.deprovision(n))
     ws_mocks.agent_email_delete.side_effect = lambda oid: calls.delete(oid) or ["x"]
-    with patch("core.services.account_wipe.photon.release_line", new=deprovision):
+    with patch("core.services.text_lines.release_line", new=deprovision):
         out = await workspace_wipe._agent_email_run(SimpleNamespace(org_id=ORG_ID, email_rows=[MAIL_ROW, TEXT_ROW]))
-    deprovision.assert_awaited_once_with("res_1")
+    deprovision.assert_awaited_once_with(ORG_ID)
     assert [c[0] for c in calls.mock_calls if c[0] in ("deprovision", "delete")] == ["deprovision", "delete"]
     assert "released 1 text line(s)" in out
 
@@ -1035,7 +1035,7 @@ async def test_deprovision_failure_does_not_abort(ws_mocks):
     from core.services import workspace_wipe
 
     deprovision = AsyncMock(side_effect=RuntimeError("sendblue down"))
-    with patch("core.services.account_wipe.photon.release_line", new=deprovision):
+    with patch("core.services.text_lines.release_line", new=deprovision):
         out = await workspace_wipe._agent_email_run(SimpleNamespace(org_id=ORG_ID, email_rows=[TEXT_ROW]))
     ws_mocks.agent_email_delete.assert_awaited_once_with(ORG_ID)
     assert "released 0 text line(s)" in out and "FAILED to release: +15550001111" in out

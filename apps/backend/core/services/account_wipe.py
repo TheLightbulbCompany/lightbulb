@@ -116,7 +116,7 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo
-from core.services import clerk_admin, company_stripe, message_search, photon
+from core.services import clerk_admin, company_stripe, message_search, text_lines
 from core.services.billing_service import delete_stripe_customer
 from core.services.paperclip_api_key import (
     delete_owner_agent_key_secrets,
@@ -133,30 +133,25 @@ logger = logging.getLogger(__name__)
 
 
 async def release_text_lines(rows: list[dict]) -> tuple[int, list[str]]:
-    """Release the Photon line of every ``kind == "text"`` row and cancel every ``text_pending`` operation.
+    """Release the texting line of every owner holding a ``text`` or ``text_pending`` row, through the one
+    release path (``text_lines.release_line``: cancel a pending operation, release a finished one or the line).
 
-    Best effort. Returns (released count, addresses that failed to release)."""
-    released, failed = 0, []
+    Best effort. Returns (owners released, what failed to release: an operation or a line)."""
+    by_owner: dict[str, list[dict]] = {}
     for r in rows:
-        kind = r.get("kind")
-        if kind not in ("text", "text_pending"):
-            continue
+        if r.get("kind") in ("text", "text_pending"):
+            by_owner.setdefault(r.get("owner_id", ""), []).append(r)
+    released, failed = 0, []
+    for owner_id, owned in by_owner.items():
         try:
-            if kind == "text":
-                if not r.get("photon_resource_id"):
-                    raise ValueError("row has no photon_resource_id")
-                await photon.release_line(r["photon_resource_id"])
-            else:
-                # A cancel answered 409 when the operation already finished: release the line by its resource.
-                await photon.cancel_operation(r["operation_id"])
-                op = await photon.get_operation(r["operation_id"])
-                if op.get("state") == "succeeded":
-                    await photon.release_line(op["resourceId"])
+            await text_lines.release_line(owner_id)
             released += 1
         except Exception as exc:
-            logger.warning("wipe: could not release text line %s: %s", r.get("address"), exc)
-            op_id = r.get("operation_id") if kind == "text_pending" else None
-            failed.append(f"operation {op_id}" if op_id else r.get("address") or "?")
+            logger.warning("wipe: could not release the text line of %s: %s", owner_id, exc)
+            failed += [
+                f"operation {r['operation_id']}" if r.get("kind") == "text_pending" else r.get("address") or "?"
+                for r in owned
+            ]
     return released, failed
 
 

@@ -558,3 +558,11 @@ def test_the_openclaw_metadata_write_cannot_come_back():
 
     with _pytest.raises(ModuleNotFoundError):
         importlib.import_module("core.services.config_patcher")
+
+
+@pytest.fixture(autouse=True)
+def _no_text_line(monkeypatch):
+    """Profile writes read the workspace's texting line (the front-desk SOUL section); none here."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    monkeypatch.setattr("core.repositories.agent_email_repo.text_line_for_owner", _AsyncMock(return_value=None))

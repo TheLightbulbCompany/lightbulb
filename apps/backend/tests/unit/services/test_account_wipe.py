@@ -1469,17 +1469,34 @@ async def test_a_roster_read_failure_stops_the_preview_rather_than_hiding_a_tear
 TEXT_ROW = {"owner_id": OWNER_ID, "address": "+15550001111", "kind": "text", "photon_resource_id": "res_1"}
 
 
+def _line_seams(stack, rows, **photon_calls):
+    """The wipe releases through text_lines.release_line; feed it ``rows`` as the owner's line rows and
+    stub its writes. ``photon_calls`` replaces photon.release_line / cancel_operation / get_operation."""
+    from core.services import photon, text_lines
+
+    pending = next((r for r in rows if r.get("kind") == "text_pending"), None)
+    line = next((r for r in rows if r.get("kind") == "text"), None)
+    repo = text_lines.agent_email_repo
+    stack.enter_context(
+        patch("core.services.account_wipe.agent_email_repo.query_by_owner", new=AsyncMock(return_value=rows))
+    )
+    stack.enter_context(patch.object(repo, "pending_line_for_owner", AsyncMock(return_value=pending)))
+    stack.enter_context(patch.object(repo, "text_line_for_owner", AsyncMock(return_value=line)))
+    stack.enter_context(patch.object(repo, "delete_pending_line", AsyncMock(return_value=True)))
+    stack.enter_context(patch.object(repo, "delete_text_line", AsyncMock()))
+    stack.enter_context(patch.object(text_lines.billing_repo, "release_front_desk_claim", AsyncMock()))
+    stack.enter_context(patch.object(text_lines, "refresh_agent_soul", AsyncMock()))
+    for name, mock in photon_calls.items():
+        stack.enter_context(patch.object(photon, name, mock))
+
+
 @pytest.mark.asyncio
 async def test_agent_email_step_deprovisions_text_rows_then_deletes(wipe_mocks):
-    from unittest.mock import AsyncMock, MagicMock, patch
-
     calls = MagicMock()
     deprovision = AsyncMock(side_effect=lambda n: calls.deprovision(n))
     wipe_mocks.agent_email_delete.side_effect = lambda oid: calls.delete(oid) or ["x"]
-    with (
-        patch("core.services.account_wipe.agent_email_repo.query_by_owner", new=AsyncMock(return_value=[TEXT_ROW])),
-        patch("core.services.account_wipe.photon.release_line", new=deprovision),
-    ):
+    with ExitStack() as stack:
+        _line_seams(stack, [TEXT_ROW], release_line=deprovision)
         report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
     deprovision.assert_awaited_once_with("res_1")
     assert [c[0] for c in calls.mock_calls if c[0] in ("deprovision", "delete")] == ["deprovision", "delete"]
@@ -1489,13 +1506,9 @@ async def test_agent_email_step_deprovisions_text_rows_then_deletes(wipe_mocks):
 
 @pytest.mark.asyncio
 async def test_deprovision_failure_does_not_abort(wipe_mocks):
-    from unittest.mock import AsyncMock, patch
-
-    deprovision = AsyncMock(side_effect=RuntimeError("sendblue down"))
-    with (
-        patch("core.services.account_wipe.agent_email_repo.query_by_owner", new=AsyncMock(return_value=[TEXT_ROW])),
-        patch("core.services.account_wipe.photon.release_line", new=deprovision),
-    ):
+    deprovision = AsyncMock(side_effect=RuntimeError("photon down"))
+    with ExitStack() as stack:
+        _line_seams(stack, [TEXT_ROW], release_line=deprovision)
         report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
     wipe_mocks.agent_email_delete.assert_awaited_once_with(OWNER_ID)
     step = next(s for s in report.steps if s.system == "agent_email_addresses")
@@ -1505,17 +1518,17 @@ async def test_deprovision_failure_does_not_abort(wipe_mocks):
 
 @pytest.mark.asyncio
 async def test_pending_row_is_cancelled_on_wipe(wipe_mocks):
-    from unittest.mock import AsyncMock, patch
-
-    row = {"owner_id": OWNER_ID, "address": "TEXT_PENDING#x", "kind": "text_pending", "operation_id": "op_1"}
+    row = {"owner_id": OWNER_ID, "address": "pending:x", "kind": "text_pending", "operation_id": "op_1"}
     cancel = AsyncMock()
     release = AsyncMock()
-    with (
-        patch("core.services.account_wipe.agent_email_repo.query_by_owner", new=AsyncMock(return_value=[row])),
-        patch("core.services.account_wipe.photon.cancel_operation", new=cancel),
-        patch("core.services.account_wipe.photon.get_operation", new=AsyncMock(return_value={"state": "cancelled"})),
-        patch("core.services.account_wipe.photon.release_line", new=release),
-    ):
+    with ExitStack() as stack:
+        _line_seams(
+            stack,
+            [row],
+            cancel_operation=cancel,
+            get_operation=AsyncMock(return_value={"state": "cancelled"}),
+            release_line=release,
+        )
         report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
     cancel.assert_awaited_once_with("op_1")
     release.assert_not_awaited()
@@ -1525,22 +1538,32 @@ async def test_pending_row_is_cancelled_on_wipe(wipe_mocks):
 
 
 @pytest.mark.asyncio
+async def test_a_still_running_pending_operation_is_reported_failed(wipe_mocks):
+    row = {"owner_id": OWNER_ID, "address": "pending:x", "kind": "text_pending", "operation_id": "op_1"}
+    with ExitStack() as stack:
+        _line_seams(
+            stack, [row], cancel_operation=AsyncMock(), get_operation=AsyncMock(return_value={"state": "running"})
+        )
+        report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    wipe_mocks.agent_email_delete.assert_awaited_once_with(OWNER_ID)  # the rows still go
+    step = next(s for s in report.steps if s.system == "agent_email_addresses")
+    assert "released 0 text line(s)" in step.detail and "FAILED to release: operation op_1" in step.detail
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("release_fails", [False, True])
 async def test_wipe_releases_a_finished_pending_operation(wipe_mocks, release_fails):
     """A cancel that lost the race (409): the finished line is released by its resource, never left billing."""
-    from unittest.mock import AsyncMock, patch
-
     row = {"owner_id": OWNER_ID, "address": "pending:x", "kind": "text_pending", "operation_id": "op_1"}
     release = AsyncMock(side_effect=RuntimeError("photon down") if release_fails else None)
-    with (
-        patch("core.services.account_wipe.agent_email_repo.query_by_owner", new=AsyncMock(return_value=[row])),
-        patch("core.services.account_wipe.photon.cancel_operation", new=AsyncMock()),
-        patch(
-            "core.services.account_wipe.photon.get_operation",
-            new=AsyncMock(return_value={"state": "succeeded", "resourceId": "res_9"}),
-        ),
-        patch("core.services.account_wipe.photon.release_line", new=release),
-    ):
+    with ExitStack() as stack:
+        _line_seams(
+            stack,
+            [row],
+            cancel_operation=AsyncMock(),
+            get_operation=AsyncMock(return_value={"state": "succeeded", "resourceId": "res_9"}),
+            release_line=release,
+        )
         report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
     release.assert_awaited_once_with("res_9")
     step = next(s for s in report.steps if s.system == "agent_email_addresses")

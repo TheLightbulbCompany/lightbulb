@@ -1,5 +1,4 @@
 import os
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -54,11 +53,8 @@ def m(monkeypatch):
     monkeypatch.setattr(text_lines, "refresh_agent_soul", o.soul)
     monkeypatch.setattr(text_lines, "mail_changed", o.mail)
     monkeypatch.setattr(text_lines, "put_metric", o.metric)
-    row = SimpleNamespace(starter_agent_ids={"customer_operations": "agent_co"})
-    repo = MagicMock()
-    repo.resolve_owner_row = AsyncMock(return_value=row)
-    o.roster_row = row
-    monkeypatch.setattr(text_lines, "PaperclipRepo", lambda **kw: repo)
+    o.co_agent = AsyncMock(return_value="agent_co")
+    monkeypatch.setattr(text_lines, "customer_ops_agent_id", o.co_agent)
 
     # A pending row exists once it has been put.
     async def _put_pending(**kw):
@@ -78,12 +74,8 @@ def m(monkeypatch):
     o.del_pending.side_effect = _del_pending
     o.account = AsyncMock(return_value={"stripe_subscription_id": "sub_1"})
     monkeypatch.setattr(text_lines.billing_repo, "get_by_owner_id", o.account)
-    from core.services import onboarding_brief
-
-    o.link = AsyncMock(return_value=None)
-    o.build = AsyncMock()
-    monkeypatch.setattr(onboarding_brief, "front_desk_link", o.link, raising=False)
-    monkeypatch.setattr(onboarding_brief, "start_front_desk_build", o.build)
+    o.build = AsyncMock(return_value=False)
+    monkeypatch.setattr(text_lines.onboarding_brief, "start_front_desk_build_for_line", o.build)
     return o
 
 
@@ -342,7 +334,7 @@ async def test_read_path_second_failure_is_absent_without_looping(m, monkeypatch
 
 
 async def test_no_customer_operations_is_no_agent_without_a_request(m):
-    m.roster_row.starter_agent_ids = {"ceo": "x"}
+    m.co_agent.return_value = None
     assert await text_lines.ensure_line("org_1") == "no_agent"
     m.metric.assert_called_once_with("text_line.no_front_desk_agent")
     m.claim.assert_not_awaited()
@@ -507,19 +499,11 @@ async def test_new_active_subscription_provisions_even_when_an_old_id_was_stored
     m.request.assert_awaited_once()
 
 
-async def test_provisioned_line_starts_the_build_from_the_brief_link(m):
-    m.link.return_value = ("https://acme.example", "user_m")
+async def test_provisioned_line_starts_the_build(m):
     assert await text_lines.ensure_line("org_1") == "provisioned"
-    m.build.assert_awaited_once_with("org_1", "https://acme.example", user_id="user_m")
-
-
-async def test_provisioned_line_without_a_brief_link_starts_nothing(m):
-    assert await text_lines.ensure_line("org_1") == "provisioned"
-    m.link.assert_awaited_once_with("org_1")
-    m.build.assert_not_awaited()
+    m.build.assert_awaited_once_with("org_1")
 
 
 async def test_build_failure_does_not_fail_the_provision(m):
-    m.link.return_value = ("https://acme.example", "user_m")
     m.build.side_effect = RuntimeError("messaging down")
     assert await text_lines.ensure_line("org_1") == "provisioned"

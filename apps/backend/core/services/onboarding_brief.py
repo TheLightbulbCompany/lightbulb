@@ -454,42 +454,38 @@ Set up the front desk for {url}.
 """
 
 
-async def front_desk_link(owner_id: str) -> tuple[str, str] | None:
-    """(website, submitter) from the workspace's captured first message when it named a website, else None.
+async def start_front_desk_build_for_line(owner_id: str) -> bool:
+    """DM Customer Operations the build prompt for the website the workspace's captured first message named.
+    False when that message named no website, or the roster has no such agent.
 
-    The pending brief while it waits; once fulfilled it is deleted, so the owner row's stored brief text
-    and submitter are read instead (the same text the pending brief was built from)."""
-    from core.repositories.paperclip_repo import PaperclipRepo
+    The website comes from the pending brief while it waits; once fulfilled it is deleted, so the owner row's
+    stored brief text and submitter are read instead (the same text the pending brief was built from). One
+    message per (workspace, url): the messaging IDEMP receipt makes a repeat a no-op."""
+    import uuid
+
+    from core.auth import AuthContext
+    from core.repositories.paperclip_repo import PaperclipRepo, customer_ops_agent_id
+    from core.services import messaging
 
     repo = PaperclipRepo(table_name="paperclip-companies")
     pending = await repo.get_pending_brief(owner_id)
     if pending:
-        path, link, by = pending.get("path"), pending.get("input"), pending.get("submitted_by")
+        path, url, by = pending.get("path"), pending.get("input"), pending.get("submitted_by")
     else:
         row = await repo.resolve_owner_row(owner_id)
         text = getattr(row, "onboarding_brief_text", None)
         if not text:
-            return None
-        path, link = first_message_intake(text)
+            return False
+        path, url = first_message_intake(text)
         by = getattr(row, "onboarding_submitted_by", None)
-    return (link, str(by)) if path == "grow" and link and by else None
-
-
-async def start_front_desk_build(owner_id: str, url: str, *, user_id: str) -> str | None:
-    """DM Customer Operations the build prompt. One message per (workspace, url): the
-    messaging IDEMP receipt makes a repeat a no-op. None when the roster has no such agent."""
-    import uuid
-
-    from core.auth import AuthContext
-    from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services import messaging
-
-    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    agent_id = (getattr(row, "starter_agent_ids", None) or {}).get("customer_operations")
+    if path != "grow" or not url or not by:
+        return False
+    agent_id = await customer_ops_agent_id(owner_id)
     if not agent_id:
-        return None
+        return False
+    user_id = str(by)
     room_id = await messaging._agent_dm_room_id(owner_id, user_id, agent_id)
-    message = await messaging.create_human_message(
+    await messaging.create_human_message(
         AuthContext(user_id=user_id, org_id=owner_id),
         room_id,
         messaging.CreateMessageRequest(
@@ -500,7 +496,7 @@ async def start_front_desk_build(owner_id: str, url: str, *, user_id: str) -> st
         ),
         via="front_desk",
     )
-    return str(message.message_id)
+    return True
 
 
 async def reconcile_pending_brief(owner_id: str) -> None:

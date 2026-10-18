@@ -503,15 +503,20 @@ async def test_a_new_path_message_lands_with_no_detail():
     assert kwargs["detail"] is None
 
 
-def _desk_repo(ids):
+def _desk_repo(ids, *, pending=None, row=None):
     repo = MagicMock()
-    repo.resolve_owner_row = AsyncMock(return_value=SimpleNamespace(starter_agent_ids=ids))
+    repo.get_pending_brief = AsyncMock(
+        return_value={"path": "grow", "input": "https://acme.example", "submitted_by": "user_m"}
+        if pending is None
+        else pending
+    )
+    repo.resolve_owner_row = AsyncMock(return_value=row or SimpleNamespace(starter_agent_ids=ids))
     return repo
 
 
 @pytest.mark.asyncio
 async def test_start_dms_customer_operations_with_the_prompt():
-    from core.services.onboarding_brief import FRONT_DESK_BUILD_PROMPT, start_front_desk_build
+    from core.services.onboarding_brief import FRONT_DESK_BUILD_PROMPT, start_front_desk_build_for_line
 
     post = AsyncMock(return_value=SimpleNamespace(message_id="m1"))
     dm = AsyncMock(return_value="room-dm")
@@ -522,7 +527,7 @@ async def test_start_dms_customer_operations_with_the_prompt():
         patch("core.services.messaging.create_human_message", post),
         patch("core.services.messaging._agent_dm_room_id", dm),
     ):
-        assert await start_front_desk_build(OWNER, "https://acme.example", user_id="user_m") == "m1"
+        assert await start_front_desk_build_for_line(OWNER) is True
     dm.assert_awaited_once_with(OWNER, "user_m", "co-1")
     args, kwargs = post.await_args
     assert args[1] == "room-dm"
@@ -533,33 +538,37 @@ async def test_start_dms_customer_operations_with_the_prompt():
 
 @pytest.mark.asyncio
 async def test_start_is_idempotent_per_url():
-    from core.services.onboarding_brief import start_front_desk_build
+    from core.services.onboarding_brief import start_front_desk_build_for_line
 
     post = AsyncMock(return_value=SimpleNamespace(message_id="m1"))
-    with (
-        patch(
-            "core.repositories.paperclip_repo.PaperclipRepo", return_value=_desk_repo({"customer_operations": "co-1"})
-        ),
-        patch("core.services.messaging.create_human_message", post),
-        patch("core.services.messaging._agent_dm_room_id", AsyncMock(return_value="r")),
-    ):
-        await start_front_desk_build(OWNER, "https://Acme.example ", user_id="u")
-        await start_front_desk_build(OWNER, "https://acme.example", user_id="u")
-        await start_front_desk_build(OWNER, "https://other.example", user_id="u")
+    briefs = [
+        {"path": "grow", "input": url, "submitted_by": "u"}
+        for url in ("https://Acme.example ", "https://acme.example", "https://other.example")
+    ]
+    for brief in briefs:
+        with (
+            patch(
+                "core.repositories.paperclip_repo.PaperclipRepo",
+                return_value=_desk_repo({"customer_operations": "co-1"}, pending=brief),
+            ),
+            patch("core.services.messaging.create_human_message", post),
+            patch("core.services.messaging._agent_dm_room_id", AsyncMock(return_value="r")),
+        ):
+            await start_front_desk_build_for_line(OWNER)
     ids = [c.args[2].client_message_id for c in post.await_args_list]
     assert ids[0] == ids[1] != ids[2]
 
 
 @pytest.mark.asyncio
 async def test_no_customer_operations_is_a_noop():
-    from core.services.onboarding_brief import start_front_desk_build
+    from core.services.onboarding_brief import start_front_desk_build_for_line
 
     post = AsyncMock()
     with (
         patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=_desk_repo({"ceo": "x"})),
         patch("core.services.messaging.create_human_message", post),
     ):
-        assert await start_front_desk_build(OWNER, "https://acme.example", user_id="u") is None
+        assert await start_front_desk_build_for_line(OWNER) is False
     post.assert_not_awaited()
 
 
@@ -580,7 +589,7 @@ def _website_capture(start):
     return message, (
         patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
         patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
-        patch("core.services.onboarding_brief.start_front_desk_build", start),
+        patch("core.services.onboarding_brief.start_front_desk_build_for_line", start),
         patch(
             "core.repositories.messaging_repo.list_messages_between",
             new=AsyncMock(return_value=[{"messageSeq": 1, "author": {"kind": "agent"}}]),
@@ -605,20 +614,32 @@ async def test_first_message_no_longer_starts_the_build():
         ({"path": "grow", "input": "https://acme.example", "submitted_by": "u1"}, None, ("https://acme.example", "u1")),
         ({"path": "new", "input": "a bakery", "submitted_by": "u1"}, None, None),
         (
-            None,
+            {},
             SimpleNamespace(
-                onboarding_brief_text="Here's our website: https://acme.example", onboarding_submitted_by="u2"
+                onboarding_brief_text="Here's our website: https://acme.example",
+                onboarding_submitted_by="u2",
+                starter_agent_ids={"customer_operations": "co-1"},
             ),
             ("https://acme.example", "u2"),
         ),
-        (None, SimpleNamespace(onboarding_brief_text=None, onboarding_submitted_by="u2"), None),
+        ({}, SimpleNamespace(onboarding_brief_text=None, onboarding_submitted_by="u2"), None),
     ],
 )
-async def test_front_desk_link_reads_the_brief(pending, row, expected):
-    from core.services.onboarding_brief import front_desk_link
+async def test_the_build_reads_the_website_from_the_brief(pending, row, expected):
+    """The pending brief while it waits; once fulfilled, the owner row's stored brief text."""
+    from core.services.onboarding_brief import start_front_desk_build_for_line
 
-    repo = MagicMock()
-    repo.get_pending_brief = AsyncMock(return_value=pending)
-    repo.resolve_owner_row = AsyncMock(return_value=row)
-    with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
-        assert await front_desk_link(OWNER) == expected
+    repo = _desk_repo({"customer_operations": "co-1"}, pending=pending, row=row)
+    post = AsyncMock(return_value=SimpleNamespace(message_id="m1"))
+    dm = AsyncMock(return_value="r")
+    with (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.services.messaging.create_human_message", post),
+        patch("core.services.messaging._agent_dm_room_id", dm),
+    ):
+        assert await start_front_desk_build_for_line(OWNER) is (expected is not None)
+    if expected:
+        url, by = expected
+        assert dm.await_args.args[1] == by and url in post.await_args.args[2].text
+    else:
+        post.assert_not_awaited()

@@ -1,6 +1,14 @@
 "use client";
 
 import { cn, formatBytes } from "@/lib/utils";
+import { HtmlPreview } from "./HtmlPreview";
+import { SheetGrid } from "./SheetGrid";
+import { TextPreview } from "./TextPreview";
+
+const XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const PANE_VIEWABLE = new Set(["application/pdf", XLSX, "text/csv", "text/html", "text/markdown", "text/plain"]);
+/** Kinds that open in the right pane (documents). Images and video keep the lightbox; zip/docx/pptx have no viewer. */
+export function isPaneViewable(contentType: string): boolean { return PANE_VIEWABLE.has(contentType); }
 
 export interface FileViewerItem {
   fileName: string;
@@ -10,6 +18,8 @@ export interface FileViewerItem {
   url: string;
   /** A video's poster frame (an image sent in the same message). */
   poster?: string;
+  /** The bytes, when the caller has them; the spreadsheet, HTML and text branches need them. */
+  blob?: Blob;
 }
 
 /**
@@ -52,6 +62,10 @@ export function FileViewerContent({ item, className }: { item: FileViewerItem; c
       />
     );
   }
+
+  if (item.blob && (item.contentType === XLSX || item.contentType === "text/csv")) return <SheetGrid blob={item.blob} fileName={item.fileName} />;
+  if (item.blob && item.contentType === "text/html") return <HtmlPreview blob={item.blob} fileName={item.fileName} />;
+  if (item.blob && (item.contentType === "text/markdown" || item.contentType === "text/plain")) return <TextPreview blob={item.blob} fileName={item.fileName} markdown={item.contentType === "text/markdown"} />;
 
   return (
     <div className={cn("flex flex-col items-center gap-2 p-8 text-center", className)}>

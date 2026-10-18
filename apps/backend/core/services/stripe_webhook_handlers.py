@@ -373,6 +373,8 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # bridge below can detect transitions (esp. trialing -> active, the
     # trial->paid moment).
     old_status = account.get("subscription_status")
+    # The id the row held BEFORE this event: the handler overwrites it below.
+    stored_sub = account.get("stripe_subscription_id")
     new_status = event_data.get("status", "active")
     if (new_status in ("incomplete", "incomplete_expired") and old_status in ("trial_local", "active", "trialing")) or (
         # A subscription never re-enters its trial, and Checkout only opens a trial for a
@@ -606,6 +608,16 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             logger.exception("Seat sync failed for owner %s; Stripe will redeliver", account["owner_id"])
             raise
     # The Front desk line follows the item, for every status (a canceled subscription releases it).
+    if stored_sub and stored_sub != event_data["id"]:
+        # A late event for a superseded subscription: its fresh state is not the workspace's.
+        logger.warning(
+            "front desk sync skipped for superseded subscription %s (current %s) owner=%s",
+            event_data["id"],
+            stored_sub,
+            account["owner_id"],
+        )
+        put_metric("billing.front_desk_sync", dimensions={"outcome": "stale_subscription"})
+        return None
     from core.services.text_lines import sync_front_desk
 
     await sync_front_desk(account["owner_id"], subscription_id=event_data["id"])

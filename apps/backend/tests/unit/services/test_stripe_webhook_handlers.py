@@ -409,7 +409,7 @@ async def test_webhook_backup_write_refuses_the_retired_bedrock_choice(mock_repo
 # durable owner, and a failed reconcile pages provision.reconcile.failed.
 
 
-async def _run_state(mock_repo, prior_status, new_status, *, plan="standard", **event_overrides):
+async def _run_state(mock_repo, prior_status, new_status, *, plan="standard", stored_sub=None, **event_overrides):
     """Drive handle_subscription_state across a status transition. Assert on the mocks."""
     mock_repo.get_by_owner_id = AsyncMock(
         return_value={
@@ -418,6 +418,7 @@ async def _run_state(mock_repo, prior_status, new_status, *, plan="standard", **
             "stripe_customer_id": "cus_x",
             "subscription_status": prior_status,
             "plan": plan,
+            **({"stripe_subscription_id": stored_sub} if stored_sub else {}),
         }
     )
     event = _subscription_event(default_payment_method=None, status=new_status, **event_overrides)
@@ -1089,3 +1090,19 @@ async def test_subscription_deleted_releases_the_line_only_for_the_current_subsc
     if released:
         release.assert_awaited_once_with("org_x")
         assert order == ["release", "cancel"]
+
+
+@pytest.mark.asyncio
+async def test_state_handler_skips_front_desk_sync_for_a_superseded_subscription(
+    mock_repo, front_desk_sync, reconcile_dispatch
+):
+    """A late event for an old subscription must not release the line the current one owns."""
+    await _run_state(mock_repo, "active", "canceled", stored_sub="sub_old", id="sub_new")
+    front_desk_sync.assert_not_awaited()
+    mock_repo.set_subscription.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_state_handler_syncs_when_no_subscription_was_stored(mock_repo, front_desk_sync):
+    await _run_state(mock_repo, "trial_local", "active", id="sub_new")
+    front_desk_sync.assert_awaited_once_with("org_x", subscription_id="sub_new")

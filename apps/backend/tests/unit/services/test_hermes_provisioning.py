@@ -1703,7 +1703,8 @@ async def test_provision_creates_fresh_when_the_row_arn_names_a_deleted_runtime(
         raise hermes_provisioning._RuntimeGone(arn)
 
     monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", _gone)
-    assert not hasattr(hermes_provisioning, "_wait_for_runtime_gone")
+    waited = []
+    monkeypatch.setattr(hermes_provisioning, "_wait_runtime_gone", lambda arn: waited.append(arn) or True)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:fresh")
     monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
 
@@ -1716,6 +1717,7 @@ async def test_provision_creates_fresh_when_the_row_arn_names_a_deleted_runtime(
 
     arn = await hermes_provisioning.provision_hermes_runtime("org_a")
     assert arn == "arn:fresh"
+    assert waited == ["arn:rolled-back"]  # waited for the old delete BEFORE creating
     assert writes[0] == {"agentcore_runtime_arn": "arn:fresh"}  # stale ARN replaced before the status check
     assert writes[-1]["status"] == "running" and writes[-1]["agentcore_runtime_arn"] == "arn:fresh"
 
@@ -1768,6 +1770,7 @@ async def test_fresh_arn_record_succeeds_against_real_conditional_semantics_when
             raise hermes_provisioning._RuntimeGone(arn)
 
         monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", _gone)
+        monkeypatch.setattr(hermes_provisioning, "_wait_runtime_gone", lambda arn: True)
         monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:fresh")
         monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
 
@@ -1892,6 +1895,7 @@ def test_create_runtime_refuses_to_adopt_a_deleting_runtime(monkeypatch):
     client = _CreateClient([_ConflictException("already exists")], runtime_status="DELETING")
     monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
     monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:deleting")
+    monkeypatch.setattr(hermes_provisioning, "_DELETE_WAIT_TIMEOUT_S", 0.0)  # delete never finishes
 
     with pytest.raises(_ConflictException):
         hermes_provisioning._create_runtime({"agentRuntimeName": "x"})
@@ -1911,8 +1915,61 @@ def test_create_runtime_refuses_to_adopt_a_runtime_that_is_already_gone(monkeypa
     monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
     monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:gone")
 
+    # Gone between the list and the describe: the name is free again, so the retry creates.
+    assert hermes_provisioning._create_runtime({"agentRuntimeName": "x"}) == "arn:created"
+    assert client.calls == 2
+
+
+def test_create_runtime_waits_out_a_deleting_runtime_then_creates_once(monkeypatch):
+    """Teardown immediately followed by a provision: the name is held by a DELETING runtime."""
+    import boto3
+
+    client = _CreateClient([_ConflictException("already exists")], runtime_status="DELETING")
+    polls = {"n": 0}
+    real_get = client.get_agent_runtime
+
+    def _get(agentRuntimeId):
+        polls["n"] += 1
+        if polls["n"] > 3:  # 1 liveness check + 2 DELETING polls, then gone
+            raise _ResourceNotFoundException("gone")
+        return real_get(agentRuntimeId)
+
+    client.get_agent_runtime = _get
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:old/rt-old")
+    slept = []
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
+
+    assert hermes_provisioning._create_runtime({"agentRuntimeName": "x"}) == "arn:created"
+    assert client.calls == 2 and len(slept) == 2
+
+
+def test_create_runtime_gives_up_after_one_conflict_retry(monkeypatch):
+    import boto3
+
+    client = _CreateClient([_ConflictException("a"), _ConflictException("b")])
+    states = iter(["DELETING", "gone", "DELETING", "gone"])
+
+    def _get(agentRuntimeId):
+        if next(states) == "gone":
+            raise _ResourceNotFoundException("gone")
+        return {"status": "DELETING"}
+
+    client.get_agent_runtime = _get
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:old/rt-old")
+
     with pytest.raises(_ConflictException):
         hermes_provisioning._create_runtime({"agentRuntimeName": "x"})
+    assert client.calls == 2
+
+
+def test_wait_runtime_gone_returns_false_for_a_live_runtime(monkeypatch):
+    import boto3
+
+    client = _CreateClient([], runtime_status="READY")
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    assert hermes_provisioning._wait_runtime_gone("arn:x/rt") is False
 
 
 def test_create_runtime_retries_the_role_propagation_rejection_then_succeeds(monkeypatch):

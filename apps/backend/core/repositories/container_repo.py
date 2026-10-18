@@ -932,6 +932,24 @@ async def mark_provision_error(owner_id: str, *, last_error: str, retryable: boo
     publish_status_changed(owner_id)
 
 
+async def note_provision_error(owner_id: str, last_error: str) -> None:
+    """Record WHY a provision attempt failed without changing the row's status (the machine
+    retries a transient failure; ``MarkFailedExhausted`` flips it to error later and does not
+    touch ``last_error``, so this is what the status banner shows). No-op on a running/gone row."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #le = :le, updated_at = :iso",
+            ConditionExpression="attribute_exists(owner_id) AND #s <> :running",
+            ExpressionAttributeNames={"#s": "status", "#le": "last_error"},
+            ExpressionAttributeValues={":le": str(last_error)[:500], ":running": "running", ":iso": utc_now_iso()},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     """Map a caught provision failure to ``(last_error, retryable)`` for
     ``mark_provision_error``.

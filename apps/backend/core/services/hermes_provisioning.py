@@ -218,6 +218,29 @@ _ROLE_PROPAGATION_ATTEMPTS = 12
 _ROLE_PROPAGATION_INTERVAL_S = 5.0
 
 
+#: How long a reprovision waits for the previous same-named runtime to finish DELETING
+#: (a teardown immediately followed by a provision hits this; AgentCore names are deterministic).
+_DELETE_WAIT_TIMEOUT_S = 180.0
+_DELETE_WAIT_INTERVAL_S = 5.0
+
+
+def _wait_runtime_gone(runtime_arn: str) -> bool:
+    """Poll ``get_agent_runtime`` until the runtime no longer exists. Sync — call via
+    ``run_in_thread``. True once gone; False if still present at the timeout (or if it
+    turns out not to be deleting, i.e. a real conflict)."""
+    client = _agentcore_control_client()
+    runtime_id = runtime_arn.rsplit("/", 1)[-1]
+    deadline = time.monotonic() + _DELETE_WAIT_TIMEOUT_S
+    while True:
+        try:
+            status = client.get_agent_runtime(agentRuntimeId=runtime_id).get("status")
+        except client.exceptions.ResourceNotFoundException:
+            return True
+        if status != "DELETING" or time.monotonic() >= deadline:
+            return False
+        time.sleep(_DELETE_WAIT_INTERVAL_S)
+
+
 def _create_runtime(request: dict) -> str:
     """Sync — call via ``run_in_thread``. Retries only the IAM trust-propagation rejection
     (M6-R44, see the constants above). A ConflictException (a concurrent provision run already
@@ -234,6 +257,7 @@ def _create_runtime(request: dict) -> str:
     finishes, instead of the adopt succeeding."""
 
     client = _agentcore_control_client()
+    conflict_retried = False
     for attempt in range(1, _ROLE_PROPAGATION_ATTEMPTS + 1):
         try:
             return client.create_agent_runtime(**request)["agentRuntimeArn"]
@@ -244,7 +268,12 @@ def _create_runtime(request: dict) -> str:
             try:
                 _runtime_image_uri(arn)
             except _RuntimeGone:
-                raise conflict from None
+                # DELETING (or just gone): wait the delete out, then create once more. A
+                # runtime that never finishes deleting re-raises the original conflict.
+                if conflict_retried or not _wait_runtime_gone(arn):
+                    raise conflict from None
+                conflict_retried = True
+                continue
             return arn
         except client.exceptions.ValidationException as exc:
             if "Role validation failed" not in str(exc) or attempt == _ROLE_PROPAGATION_ATTEMPTS:
@@ -1514,6 +1543,7 @@ async def provision_hermes_runtime(owner_id: str) -> str:
             # create path below: if the delete is still in flight the create raises a name
             # conflict, which classifies transient and retries — no process sleeps on AWS here.
             logger.info("hermes provision: runtime %s for owner=%s is gone/deleting -- creating fresh", arn, owner_id)
+            await run_in_thread(_wait_runtime_gone, arn)
             arn = None
         else:
             if current_image and current_image != settings.AGENTCORE_HERMES_IMAGE:

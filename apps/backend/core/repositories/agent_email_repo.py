@@ -212,6 +212,7 @@ async def put_text_line(
         "status": "active",
         "created_at": utc_now_iso(),
         "human_threads": {},
+        "member_phones": {},
     }
     if photon_resource_id:
         item["photon_resource_id"] = photon_resource_id

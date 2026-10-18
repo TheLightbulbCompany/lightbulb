@@ -278,6 +278,7 @@ async def test_put_text_line_item_and_condition(monkeypatch):
         "status": "active",
         "created_at": item["created_at"],
         "human_threads": {},
+        "member_phones": {},
     }
     assert item["created_at"]
 

@@ -890,3 +890,16 @@ class PatchCaseBody(_Strict):
 
     status: Optional[str] = Field(default=None, pattern=r"^(draft|in_progress|in_review|approved|done|cancelled)$")
     label_ids: Optional[list[str]] = Field(default=None, max_length=100)
+
+
+# Upstream ``ITEM_KEY_RE`` in ``server/src/routes/inbox-dismissals.ts``.
+INBOX_ITEM_KEY_PATTERN = r"^(approval|join|run|attention):.+$"
+
+
+class InboxDismissalBody(_Strict):
+    """``POST /teams/inbox-dismissals``. Upstream validates the snooze/dismiss
+    pairing (``snoozedUntil`` required for, and only for, a snooze)."""
+
+    item_key: str = Field(min_length=1, max_length=500, pattern=INBOX_ITEM_KEY_PATTERN)
+    kind: Optional[Literal["dismiss", "snooze"]] = None
+    snoozed_until: Optional[str] = Field(default=None, max_length=64)

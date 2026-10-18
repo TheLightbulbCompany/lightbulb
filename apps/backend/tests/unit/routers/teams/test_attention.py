@@ -214,3 +214,112 @@ def test_caps_interaction_fan_out(client, monkeypatch):
 
     assert r.status_code == 200
     assert admin.list_issue_interactions.await_count == attention_mod._MAX_HYDRATED_ISSUES
+
+
+def test_feed_forwards_all_and_window(client, monkeypatch):
+    admin = _admin(monkeypatch)
+
+    r = client.get(
+        "/api/v1/teams/attention",
+        params={"all": "true", "activitySince": "2026-10-01T00:00:00Z", "activityUntil": "2026-10-18T00:00:00Z"},
+        headers=HEADERS,
+    )
+
+    assert r.status_code == 200
+    admin.list_attention.assert_awaited_once_with(
+        company_id="co_abc",
+        session_cookie="cookie",
+        params={"all": "true", "activitySince": "2026-10-01T00:00:00Z", "activityUntil": "2026-10-18T00:00:00Z"},
+    )
+
+
+def test_dismissals_list_uses_the_callers_session(client, monkeypatch):
+    admin = _admin(monkeypatch, list_inbox_dismissals=[{"itemKey": "run:r1"}])
+
+    r = client.get("/api/v1/teams/inbox-dismissals", headers=HEADERS)
+
+    assert r.status_code == 200
+    assert r.json() == [{"itemKey": "run:r1"}]
+    admin.list_inbox_dismissals.assert_awaited_once_with(company_id="co_abc", session_cookie="cookie")
+
+
+def test_dismissal_create_passthrough(client, monkeypatch):
+    admin = _admin(monkeypatch, create_inbox_dismissal={"itemKey": "approval:a1", "kind": "dismiss"})
+
+    r = client.post("/api/v1/teams/inbox-dismissals", json={"itemKey": "approval:a1"}, headers=HEADERS)
+
+    assert r.status_code == 201
+    admin.create_inbox_dismissal.assert_awaited_once_with(
+        company_id="co_abc", body={"itemKey": "approval:a1"}, session_cookie="cookie"
+    )
+
+
+def test_dismissal_create_snooze_passthrough(client, monkeypatch):
+    admin = _admin(monkeypatch, create_inbox_dismissal={"itemKey": "attention:x", "kind": "snooze"})
+    body = {"itemKey": "attention:x", "kind": "snooze", "snoozedUntil": "2026-10-19T00:00:00Z"}
+
+    r = client.post("/api/v1/teams/inbox-dismissals", json=body, headers=HEADERS)
+
+    assert r.status_code == 201
+    admin.create_inbox_dismissal.assert_awaited_once_with(company_id="co_abc", body=body, session_cookie="cookie")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"itemKey": "foo:1"},
+        {"itemKey": "run:r1", "extra": 1},
+        {"itemKey": "run:r1", "kind": "archive"},
+    ],
+)
+def test_dismissal_create_rejects_bad_body(client, monkeypatch, body):
+    admin = _admin(monkeypatch, create_inbox_dismissal={})
+
+    r = client.post("/api/v1/teams/inbox-dismissals", json=body, headers=HEADERS)
+
+    assert r.status_code == 422
+    admin.create_inbox_dismissal.assert_not_awaited()
+
+
+def test_dismissal_key_with_colon_round_trips(client, monkeypatch):
+    admin = _admin(monkeypatch, delete_inbox_dismissal=None)
+
+    r = client.delete("/api/v1/teams/inbox-dismissals/attention%3Aabc", headers=HEADERS)
+
+    assert r.status_code == 204
+    admin.delete_inbox_dismissal.assert_awaited_once_with(
+        company_id="co_abc", item_key="attention:abc", session_cookie="cookie"
+    )
+
+
+def test_dismissal_key_rejected_outside_pattern(client, monkeypatch):
+    admin = _admin(monkeypatch, delete_inbox_dismissal=None)
+
+    r = client.delete("/api/v1/teams/inbox-dismissals/foo:1", headers=HEADERS)
+
+    assert r.status_code == 422
+    admin.delete_inbox_dismissal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_admin_client_url_encodes_the_dismissal_key():
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+
+    client = PaperclipAdminClient.__new__(PaperclipAdminClient)
+    client._delete = AsyncMock(return_value={})
+
+    await client.delete_inbox_dismissal(company_id="co_abc", item_key="run:a/b?c", session_cookie="cookie")
+
+    client._delete.assert_awaited_once_with(
+        "/api/companies/co_abc/inbox-dismissals/run%3Aa%2Fb%3Fc", session_cookie="cookie"
+    )
+
+
+@pytest.mark.parametrize("extra", [{"limit": "10"}, {"cursor": "c1"}])
+def test_feed_rejects_all_with_pagination(client, monkeypatch, extra):
+    admin = _admin(monkeypatch)
+
+    r = client.get("/api/v1/teams/attention", params={"all": "true", **extra}, headers=HEADERS)
+
+    assert r.status_code == 422
+    admin.list_attention.assert_not_awaited()

@@ -13,8 +13,12 @@ function subscribeToMinute(onChange: () => void): () => void {
   const t = setInterval(onChange, 60_000);
   return () => clearInterval(t);
 }
-function getNow(): number {
-  return Date.now();
+// The snapshot MUST be stable between calls within a tick: React compares it on every render, and a
+// value that changes each call (Date.now()) makes it re-render forever (React #185, the "Something
+// went wrong" overlay seen when a document refreshed under an open editor beside the Library).
+// The banner counts days, so the current minute is all it needs.
+export function getNow(): number {
+  return Math.floor(Date.now() / 60_000) * 60_000;
 }
 function getServerNow(): number {
   // SSR snapshot — return 0 so the banner renders nothing on the server

@@ -68,3 +68,11 @@ describe("TrialBanner", () => {
     expect(screen.getByText(/then \$75\/mo\./)).toBeInTheDocument();
   });
 });
+
+it("the clock snapshot is stable within a minute, so React never sees a changed store on every render", async () => {
+  const { getNow } = await import("../TrialBanner");
+  const a = getNow();
+  const b = getNow();
+  expect(a).toBe(b);
+  expect(a % 60_000).toBe(0);
+});

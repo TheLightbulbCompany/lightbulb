@@ -1,14 +1,17 @@
-// Self-contained annotation-anchor helpers (A3), adapted from upstream
-// Paperclip `ui/src/lib/document-annotation-selection.ts` but WITHOUT the
-// `@paperclipai/shared` markdown-projection dependency (Isol8 does not vendor
-// that package). The anchor a thread carries is a text-quote selector
-// (exact + surrounding context) plus a character-position selector; the server
-// tolerates approximate positions and re-anchors primarily by quote, so we
-// compute positions from the rendered container text + the raw markdown body.
+// Annotation-anchor helpers (A3), adapted from upstream Paperclip
+// `ui/src/lib/document-annotation-selection.ts`. The selector a new thread
+// carries is built with the fork's own markdown→text projection
+// (`./documentAnchors`, ported from `packages/shared/src/document-anchors.ts`),
+// because the server verifies it against that projection and 422s on any
+// mismatch. The rendered DOM selection only supplies the quote and which
+// occurrence the reader picked.
 
-import type { AnnotationAnchorSelector, PendingAnchor } from "./documentReviewTypes";
-
-const CONTEXT_CHARS = 32;
+import {
+  createDocumentAnchorSelector,
+  projectMarkdownToText,
+  resolveProjectionRange,
+} from "./documentAnchors";
+import type { PendingAnchor } from "./documentReviewTypes";
 
 /** Collapse whitespace runs to a single space and trim, mirroring upstream's
  * `normalizeAnchorText` so the same substring matches across renders. */
@@ -74,112 +77,6 @@ function pickClosest(occurrences: number[], expected: number): number | null {
 }
 
 /**
- * Mark every raw-markdown character that lives inside an inline link/image
- * DESTINATION — the `(…)` that follows a `](` label close — as non-selectable.
- * The label text between `[` and `]` renders and stays selectable; only the
- * destination (URL + optional title, parens included) is hidden. Balanced
- * parens and backslash escapes inside the destination are tracked so a URL like
- * `(a(b)c)` masks fully. The projection walk consults this mask so a rendered
- * character can never align onto a character buried in a URL.
- */
-function linkDestinationMask(markdown: string): Uint8Array {
-  const hidden = new Uint8Array(markdown.length);
-  for (let i = 0; i < markdown.length; i += 1) {
-    // A destination opens at "](" — the `]` closing a link/image label, then `(`.
-    if (markdown[i] !== "]" || markdown[i + 1] !== "(") continue;
-    const open = i + 1;
-    let depth = 0;
-    let j = open;
-    for (; j < markdown.length; j += 1) {
-      const ch = markdown[j];
-      if (ch === "\\") {
-        j += 1; // skip the escaped char
-        continue;
-      }
-      if (ch === "(") depth += 1;
-      else if (ch === ")") {
-        depth -= 1;
-        if (depth === 0) break;
-      }
-    }
-    if (j >= markdown.length) continue; // unbalanced — leave it selectable
-    for (let k = open; k <= j; k += 1) hidden[k] = 1;
-    i = j; // resume scanning after the destination
-  }
-  return hidden;
-}
-
-/**
- * Project a selected span from normalized-container (rendered) space into raw
- * markdown offsets by greedily aligning the rendered text as an in-order
- * SUBSEQUENCE of the raw body. Rendered text is the markdown with its inline
- * syntax removed — link labels keep their visible text, but URLs / link targets
- * / emphasis markers are dropped — so, to a good approximation, every rendered
- * character reappears in the raw markdown in order with the hidden-syntax
- * characters interleaved. Walking that subsequence steps OVER the hidden-syntax
- * characters, so the returned offsets can only land on text the user could
- * actually have selected: selecting the visible word `here` in
- * `[click](https://here.example) here` anchors to the trailing rendered `here`,
- * never the `here` buried inside the URL (which the old raw `indexOf` scan could
- * pick when the scaled offset happened to fall closer to it).
- *
- * Skipping non-matching syntax alone isn't enough when a rendered word ABUTS a
- * link with no separating whitespace (`[x](https://word.example)word`): the walk
- * would keep matching the rendered `word` THROUGH the `word` inside the URL. So
- * link/image destinations are masked ({@link linkDestinationMask}) and treated
- * as non-selectable — the walk never aligns a rendered char inside a URL.
- *
- * Consuming the rendered PREFIX before the needle also advances the raw cursor
- * past every earlier occurrence, so a REPEATED phrase resolves to the same
- * occurrence the read/highlight path draws (which disambiguates by
- * `normalizedStart`) — write and read stay in agreement. Returns null when the
- * rendered text cannot be aligned into the raw body (e.g. the renderer injected
- * text absent from the source), in which case the caller keeps the
- * normalized-container offsets.
- */
-function projectRenderedSpanToMarkdown(
-  markdown: string,
-  normalizedContainer: string,
-  normalizedStart: number,
-  normalizedEnd: number,
-): { start: number; end: number } | null {
-  const isSpace = (ch: string) => /\s/.test(ch);
-  const hidden = linkDestinationMask(markdown);
-  // A raw position is a candidate only when it renders — i.e. not inside a
-  // masked link/image destination.
-  const isHidden = (pos: number) => hidden[pos] === 1;
-  let cursor = 0;
-  let start = -1;
-  let lastCharStart = -1; // raw offset of the char at normalizedEnd - 1
-  for (let index = 0; index < normalizedEnd; index += 1) {
-    const target = normalizedContainer[index] ?? "";
-    let matched: number;
-    if (target === " ") {
-      // A normalized space maps to the first whitespace char of the next raw
-      // whitespace run; the run is then consumed so block syntax (blank lines,
-      // heading markers) between words doesn't derail the alignment. Masked
-      // (link-destination) whitespace is skipped, never matched.
-      while (cursor < markdown.length && (isHidden(cursor) || !isSpace(markdown[cursor] ?? "")))
-        cursor += 1;
-      if (cursor >= markdown.length) return null;
-      matched = cursor;
-      while (cursor < markdown.length && !isHidden(cursor) && isSpace(markdown[cursor] ?? ""))
-        cursor += 1;
-    } else {
-      while (cursor < markdown.length && (isHidden(cursor) || markdown[cursor] !== target))
-        cursor += 1;
-      if (cursor >= markdown.length) return null;
-      matched = cursor;
-      cursor += 1;
-    }
-    if (index === normalizedStart) start = matched;
-    if (index === normalizedEnd - 1) lastCharStart = matched;
-  }
-  if (start < 0 || lastCharStart < start) return null;
-  return { start, end: lastCharStart + 1 };
-}
-
-/**
  * Pure anchor computation — testable without a DOM. Builds a valid
  * `AnnotationAnchorSelector` from a raw text selection inside `containerText`,
  * pinned against the raw `markdown` body. Returns null when the selection is
@@ -195,52 +92,37 @@ export function computeAnchor(input: {
   const needle = normalizeAnchorText(rawSelected);
   if (!needle) return null;
 
+  // Which occurrence of the quote the reader selected, in rendered space.
   const normalizedContainer = normalizeAnchorText(input.containerText);
-  const occurrences = findAllOccurrences(normalizedContainer, needle);
-  if (occurrences.length === 0) return null;
-
+  const rendered = findAllOccurrences(normalizedContainer, needle);
+  if (rendered.length === 0) return null;
   const ratio = input.startOffset / Math.max(1, input.containerText.length);
-  const expected = Math.round(ratio * normalizedContainer.length);
-  const normalizedStart = pickClosest(occurrences, expected);
-  if (normalizedStart == null) return null;
-  const normalizedEnd = normalizedStart + needle.length;
+  const renderedStart = pickClosest(rendered, Math.round(ratio * normalizedContainer.length));
+  if (renderedStart == null) return null;
 
-  // Prefix/suffix context from the raw container text (bounded so it never
-  // trips the upstream 1000-char cap).
-  const prefix = input.containerText.slice(Math.max(0, input.startOffset - CONTEXT_CHARS), input.startOffset);
-  const suffix = input.containerText.slice(input.endOffset, input.endOffset + CONTEXT_CHARS);
-
-  // Position into the raw markdown body. Anchor by projecting the RENDERED span
-  // (normalized-container space) into the raw markdown as a subsequence, so we
-  // only ever pin to characters that actually render — never to hidden syntax
-  // like a URL or link target that happens to contain the selected word. The
-  // projection also disambiguates a REPEATED phrase to the user's actual
-  // occurrence (it consumes the rendered prefix first), matching how the read
-  // path resolves spans. Fall back to the normalized-container offsets (which
-  // are rendered-derived and keep end > start) when the rendered text can't be
-  // aligned into the raw body.
-  let markdownStart = normalizedStart;
-  let markdownEnd = normalizedEnd;
-  const projected = projectRenderedSpanToMarkdown(
-    input.markdown,
-    normalizedContainer,
-    normalizedStart,
-    normalizedEnd,
-  );
-  if (projected) {
-    markdownStart = projected.start;
-    markdownEnd = projected.end;
+  // Find the same quote in the server's projection. The projection drops
+  // `*`, `_`, `~` and turns `|` into a space even when they render literally
+  // (escaped or mid-word), so retry with the quote in that shape.
+  const projection = projectMarkdownToText(input.markdown);
+  let quote = needle;
+  let candidates = findAllOccurrences(projection.text, quote);
+  if (candidates.length === 0) {
+    quote = normalizeAnchorText(needle.replace(/[*_~]/g, "").replace(/\|/g, " "));
+    candidates = quote ? findAllOccurrences(projection.text, quote) : [];
   }
+  if (candidates.length === 0) return null; // the server would refuse it
 
-  const selector: AnnotationAnchorSelector = {
-    quote: {
-      exact: rawSelected.slice(0, 10000),
-      prefix: prefix.slice(-1000),
-      suffix: suffix.slice(0, 1000),
-    },
-    position: { normalizedStart, normalizedEnd, markdownStart, markdownEnd },
-  };
-  return { selector, selectedText: rawSelected };
+  // Same occurrence count → take the reader's k-th; otherwise the nearest by
+  // relative position.
+  const projectionStart =
+    candidates.length === rendered.length
+      ? candidates[rendered.indexOf(renderedStart)]
+      : pickClosest(candidates, Math.round((renderedStart / Math.max(1, normalizedContainer.length)) * projection.text.length));
+  if (projectionStart == null) return null;
+
+  const range = resolveProjectionRange(projection, projectionStart, projectionStart + quote.length);
+  if (!range) return null;
+  return { selector: createDocumentAnchorSelector(projection, range), selectedText: rawSelected };
 }
 
 /** Compose {@link getContainerTextOffset} + {@link computeAnchor} for a live

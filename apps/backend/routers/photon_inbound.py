@@ -260,13 +260,16 @@ async def handle_photon_inbound(request: Request):
                     messaging.default_room_id(owner_id),
                     messaging.CreateMessageRequest(
                         client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-text|{obj.id}"),
-                        text=f"{text}\n\n(sent by text from {customer}; to text back: "
-                        f"/app/skills/lightbulb/scripts/lightbulb-text.sh send --reply {key})",
+                        # The backend texts an agent's reply back (core/services/text_relay.py): no send step here.
+                        text=f"{text}\n\n(sent by text from {customer}; a reply here is texted back, so keep it short)",
                         reply_to_message_id=None,
                         thread_root_message_id=None,
                     ),
                     via="text",
+                    text_reply_key=key,
                 )
+                if line_user and space.id:
+                    await send_typing(sender_id=line_user, space_id=space.id)
             except (messaging.ApiProblem, HTTPException) as e:
                 if e.status_code not in (403, 404):
                     raise  # transient: the outer handler rolls the dedup back and answers 503

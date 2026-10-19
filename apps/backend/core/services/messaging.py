@@ -4036,6 +4036,7 @@ async def create_human_message(
     native_hop: int | None = None,
     native_conditions: list[dict] | None = None,
     via: MessageVia | None = None,
+    text_reply_key: str | None = None,
     author_override: dict | None = None,
     expected_room_revision: int | None = None,
     wake: bool = True,
@@ -4181,6 +4182,7 @@ async def create_human_message(
             source_agent_id=None,
             client_message_id=str(request.client_message_id),
             via=via,
+            text_reply_key=text_reply_key,
             session_mentions=session_ids,
             session_target_labels=session_target_labels,
             attachments=attachments,
@@ -4591,6 +4593,9 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
         applied = started is not None
         if started is not None:
             await announce_run(started, "working")
+            from core.services import text_relay
+
+            await text_relay.signal_working(owner_id, started, started=True)
             # "Read" for an agent is its run starting on the message (owner ruling).
             if started.get("triggerMessageId"):
                 await _publish_room_event(
@@ -4610,6 +4615,9 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
         applied = started is not None
         if started is not None:
             await announce_run(started, "working")
+            from core.services import text_relay
+
+            await text_relay.signal_working(owner_id, started, started=False)  # keep the typing bubble up
     else:
         usage = event.usage.model_dump(mode="json", by_alias=True) if event.usage else None
         row = await end_run_and_announce(
@@ -5050,6 +5058,11 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             await _emit_reply_telemetry(owner_id, room_id, agent_id, item, links, room_kind)
         if trigger and (run or {}).get("eventKind") == "room_event":
             await _emit_reply_after_human_answer(room_id, meta, trigger, item, room_kind)
+        if trigger and trigger.get("textReplyKey") and not request.progress:
+            # A member texted the line: whichever agent answered, the answer goes back by text.
+            from core.services import text_relay
+
+            await text_relay.relay_reply(owner_id, trigger, request.text)
         if capped:
             put_metric("messaging.agent_chain.capped", dimensions={"room_kind": room_kind})
             await _post_chain_paused_notice(owner_id, item, agent["name"], (trigger or {}).get("author"))

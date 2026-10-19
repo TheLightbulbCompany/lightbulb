@@ -33,7 +33,14 @@ let isSubscribed: boolean;
 vi.mock("@/components/messaging/TrialRecapCard", () => ({ TrialRecapCard: () => null }));
 vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: billingAccount, isSubscribed }) }));
 vi.mock("@clerk/nextjs", () => ({
-  useUser: () => ({ user: { fullName: "Ada Lovelace" } }),
+  useUser: () => ({
+    user: {
+      fullName: "Ada Lovelace",
+      // Newest first, as Clerk lists them: the active workspace is NOT the first membership.
+      organizationMemberships: [{ organization: { name: "Newer Workspace" } }, { organization: { name: "Acme" } }],
+    },
+  }),
+  useOrganization: () => ({ organization: { name: "Acme" } }),
 }));
 let freshlyInstalledAgentId: string | null;
 const setFreshlyInstalled = vi.fn();
@@ -62,6 +69,12 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("WorkspaceSidebar", () => {
+  it("titles the sidebar with the active workspace, not the newest membership", () => {
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: "Acme" })).toBeTruthy();
+    expect(screen.queryByText("Newer Workspace")).toBeNull();
+  });
+
   it("renders message-first navigation with the account row and no Workspace tools block", () => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
     expect(screen.getAllByRole("navigation", { name: "Conversations" })).toHaveLength(1);

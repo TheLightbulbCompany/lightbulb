@@ -4,7 +4,7 @@
 import "./workspace.css";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { useUser } from "@clerk/nextjs";
+import { useOrganization, useUser } from "@clerk/nextjs";
 
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { useBilling } from "@/hooks/useBilling";
@@ -41,7 +41,10 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: Workspac
   const userName = user?.fullName || user?.firstName || "User";
   // ponytail: first membership stands in for the active org (workspace-first
   // onboarding gives one org per user); read useAuth().orgId if that changes.
-  const workspaceName = user?.organizationMemberships?.[0]?.organization?.name || "Lightbulb";
+  // The ACTIVE workspace, never the first membership: Clerk lists memberships newest first, so a
+  // person in two workspaces saw the newer one's name over the active one's rooms.
+  const { organization } = useOrganization();
+  const workspaceName = organization?.name || "Lightbulb";
   const userInitials = userName
     .split(" ")
     .map((n: string) => n[0])

@@ -54,7 +54,8 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: Workspac
   // person in two workspaces saw the newer one's name over the active one's rooms.
   const { organization } = useOrganization();
   const workspaceName = organization?.name || "Lightbulb";
-  const { userMemberships, setActive } = useOrganizationList({ userMemberships: true });
+  // ponytail: first 50 memberships only (Clerk's default page is 10), as on the phone; page when someone belongs to more.
+  const { userMemberships, setActive } = useOrganizationList({ userMemberships: { pageSize: 50 } });
   const memberships = userMemberships?.data ?? [];
   const switchWorkspace = async (orgId: string) => {
     if (!setActive || orgId === organization?.id) return;

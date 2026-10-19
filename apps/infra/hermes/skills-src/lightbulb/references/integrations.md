@@ -47,8 +47,9 @@ access (the owner shares it, or connects that account in Connections).
 When a `gog` command fails because an API is not enabled or permission is denied
 (for example "Google Docs API has not been used in project ... or it is disabled"),
 quote the error and tell the owner exactly what to enable and where (here: the
-Google Docs API in their Google Cloud project) BEFORE you try any other route. A
-browser workaround is still allowed after that; it does not replace telling them.
+Google Docs API in their Google Cloud project), then wait for them. Never sign the
+live browser in to Google as a workaround: that session would be shared with every
+agent in the workspace.
 
 ## Microsoft 365 (Microsoft Graph)
 

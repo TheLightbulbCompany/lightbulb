@@ -783,10 +783,12 @@ export class ApiStack extends cdk.Stack {
     // stamp on a legacy META row (attribute_not_exists guarded, so this can
     // never clobber a concurrent writer) — see _workspace_id_for_meta.
     messagingTable.grant(projectorFn, "dynamodb:UpdateItem");
-    // Activity feed pointer rows (ACTIVITY#<home>#<user>), written by this stream
-    // consumer after the message commits -- not inside the message transaction,
-    // as a conditional put (idempotent on replay). The LeadingKeys condition scopes
-    // THIS PutItem grant to the Activity partitions; it is not a table-wide write
+    // Activity feed pointer rows (ACTIVITY#<home>#<user>) and away-email checks
+    // (AWAY#<user>, T15), written by this stream consumer after the message commits
+    // -- not inside the message transaction, as conditional puts (idempotent on
+    // replay). A denied AWAY# put fails the record before its room event and push,
+    // which silenced every DM and mention from 2026-10-14 to this fix. The LeadingKeys
+    // condition scopes THIS PutItem grant to those partitions; it is not a table-wide write
     // fence, because the UpdateItem grant above is unscoped and an UpdateItem can
     // itself create an item.
     projectorFn.addToRolePolicy(
@@ -794,7 +796,7 @@ export class ApiStack extends cdk.Stack {
         actions: ["dynamodb:PutItem"],
         resources: [messagingTable.tableArn],
         conditions: {
-          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ACTIVITY#*"] },
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ACTIVITY#*", "AWAY#*"] },
         },
       }),
     );

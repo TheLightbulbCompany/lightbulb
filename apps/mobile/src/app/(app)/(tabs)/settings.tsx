@@ -1,5 +1,5 @@
 import { useAuth, useOrganization, useUser } from "@clerk/expo";
-import { Button, HStack, LabeledContent, Section, Text, VStack } from "@expo/ui/swift-ui";
+import { Button, HStack, LabeledContent, Section, Text, VStack } from "../../../components/ui/swiftui";
 import {
   accessibilityLabel,
   background,

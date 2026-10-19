@@ -5,6 +5,7 @@ import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
 import { useEffect, useMemo, useRef } from "react";
+import { Platform } from "react-native";
 
 import { makeAdapter } from "../../lib/adapter";
 import {
@@ -42,6 +43,15 @@ export function PushRegistration({
     let cancelled = false;
     (async () => {
       if (!Device.isDevice) return; // simulators can't get a real APNs token
+      if (Platform.OS === "android") {
+        // Android 13+ shows the permission prompt only once a channel exists,
+        // and Expo delivers a push with no channelId to the one named
+        // "default"; HIGH importance is what makes it a heads-up banner.
+        await Notifications.setNotificationChannelAsync("default", {
+          name: "Messages",
+          importance: Notifications.AndroidImportance.HIGH,
+        });
+      }
       const settings = await Notifications.getPermissionsAsync();
       let status = settings.status;
       if (status !== "granted") {
@@ -61,7 +71,7 @@ export function PushRegistration({
       const last = await SecureStore.getItemAsync(LAST_REG_KEY).catch(() => null);
       if (last === marker) return; // this user already registered this token
       const deviceId = await getDeviceId();
-      await api.post("/devices", { token, platform: "ios", deviceId });
+      await api.post("/devices", { token, platform: Platform.OS === "android" ? "android" : "ios", deviceId });
       await SecureStore.setItemAsync(LAST_REG_KEY, marker).catch(() => {});
     })().catch(() => {
       // Best-effort: never crash the app over push registration.

@@ -1,4 +1,4 @@
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../../components/ui/SymbolView";
 import { router, Stack } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
 import {

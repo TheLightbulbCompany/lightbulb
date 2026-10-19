@@ -31,6 +31,31 @@ class TestRegisterDevice:
 
     @pytest.mark.asyncio
     @patch("routers.devices.user_repo")
+    async def test_register_accepts_android(self, mock_repo, async_client):
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
+        mock_repo.set_push_token = AsyncMock(return_value=None)
+
+        resp = await async_client.post(
+            "/api/v1/devices",
+            json={"token": "ExponentPushToken[abc]", "platform": "android", "deviceId": "dev_1"},
+        )
+
+        assert resp.status_code == 200
+        assert mock_repo.set_push_token.await_args.args[2]["platform"] == "android"
+
+    @pytest.mark.asyncio
+    @patch("routers.devices.user_repo")
+    async def test_register_rejects_unknown_platform(self, mock_repo, async_client):
+        mock_repo.set_push_token = AsyncMock()
+        resp = await async_client.post(
+            "/api/v1/devices",
+            json={"token": "ExponentPushToken[abc]", "platform": "web", "deviceId": "dev_1"},
+        )
+        assert resp.status_code == 422
+        mock_repo.set_push_token.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.devices.user_repo")
     async def test_register_retires_an_older_row_holding_the_same_token(self, mock_repo, async_client):
         # A reinstall mints a new deviceId for the same Expo token: two rows = two banners.
         mock_repo.get = AsyncMock(

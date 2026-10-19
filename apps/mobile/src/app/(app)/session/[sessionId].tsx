@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../../components/ui/SymbolView";
 import {
   ApiError, buildRows, canControlSession, endedWhy, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, sessionScreenNotice, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
   type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem,

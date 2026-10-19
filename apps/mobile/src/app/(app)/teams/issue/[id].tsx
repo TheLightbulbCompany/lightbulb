@@ -1,5 +1,5 @@
 import { useUser } from "@clerk/expo";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../../../components/ui/SymbolView";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useMemo, useState, type ReactElement, type ReactNode } from "react";
 import {

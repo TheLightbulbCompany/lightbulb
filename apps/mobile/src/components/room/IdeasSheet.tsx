@@ -1,8 +1,8 @@
 import { useAuth } from "@clerk/expo";
 import { ideaSectionKey, ideaSections, orderIdeas, useIdeas, type Idea, type IdeaSectionKey } from "@lightbulb/shared";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../ui/SymbolView";
 import { useState } from "react";
-import { ActionSheetIOS, ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useColorScheme, View } from "react-native";
+import { ActionSheetIOS, ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, useColorScheme, View } from "react-native";
 
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 import { useLiveEvents } from "../../providers/live-events";
@@ -72,15 +72,25 @@ export function IdeasSheet({ visible, onClose, agentId, onStarted }: IdeasSheetP
       setStarting(false);
     }
   };
-  const more = (idea: Idea) =>
+  const more = (idea: Idea) => {
+    const hide = () => {
+      setOpenId(null);
+      void dismiss(idea.id).catch(() => setStartError("The idea could not be hidden. Try again."));
+    };
+    if (Platform.OS !== "ios") {
+      Alert.alert(idea.title, undefined, [
+        { text: "Not interested", style: "destructive", onPress: hide },
+        { text: "Cancel", style: "cancel" },
+      ]);
+      return;
+    }
     ActionSheetIOS.showActionSheetWithOptions(
       { options: ["Not interested", "Cancel"], cancelButtonIndex: 1, destructiveButtonIndex: 0 },
       (index) => {
-        if (index !== 0) return;
-        setOpenId(null);
-        void dismiss(idea.id).catch(() => setStartError("The idea could not be hidden. Try again."));
+        if (index === 0) hide();
       },
     );
+  };
 
   return (
     <BottomSheet visible={visible} onClose={close} large>

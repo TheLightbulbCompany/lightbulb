@@ -1,5 +1,5 @@
 import { Image } from "expo-image";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../ui/SymbolView";
 
 import { colors } from "../../config/theme";
 

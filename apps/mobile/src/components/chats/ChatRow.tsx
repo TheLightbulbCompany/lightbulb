@@ -12,7 +12,7 @@ import {
   type RoomSummary,
 } from "@lightbulb/shared";
 import { Link } from "expo-router";
-import { SymbolView, type SFSymbol } from "expo-symbols";
+import { SymbolView, type SFSymbol } from "../ui/SymbolView";
 import { useRef } from "react";
 import { Pressable, StyleSheet, Text, View, type ViewStyle } from "react-native";
 import ReanimatedSwipeable, {

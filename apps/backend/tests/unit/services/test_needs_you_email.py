@@ -65,8 +65,10 @@ def world(monkeypatch):
 async def test_an_unread_dm_while_away_is_emailed_once_with_the_event(world):
     assert await away.check_one(ROW, NOW) is True
     kw = world.send.await_args.kwargs
-    assert kw["subject"] == "Alice sent you a message"
-    assert 'Alice: "can you look at the deck?"' in kw["text"]
+    # A notification of where something waits, never the message itself (owner ruling 2026-10-19).
+    assert kw["subject"] == "You have unread messages in Lightbulb"
+    assert "New messages are waiting for you in your DM with Alice." in kw["text"]
+    assert "can you look at the deck" not in kw["text"] and "can you look at the deck" not in kw["html"]
     assert "panel=chat&room=room1&message=m1&from=away_email" in kw["text"]
     assert kw["headers"]["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
     world.finish.assert_awaited_once_with("AWAY#user_b", "M#room1#m1")
@@ -111,12 +113,13 @@ async def test_a_deleted_room_sends_nothing(world):
 
 
 @pytest.mark.asyncio
-async def test_an_edited_message_is_emailed_as_edited(world, monkeypatch):
+async def test_neither_the_original_nor_an_edit_reaches_the_email(world, monkeypatch):
     edited = {**MESSAGE, "editedText": "never mind"}
     monkeypatch.setattr(away.messaging_repo, "get_message_by_id", AsyncMock(return_value=edited))
     assert await away.check_one(ROW, NOW) is True
-    text = world.send.await_args.kwargs["text"]
-    assert "never mind" in text and "deck" not in text
+    kw = world.send.await_args.kwargs
+    for body in (kw["text"], kw["html"], kw["subject"]):
+        assert "never mind" not in body and "deck" not in body
 
 
 @pytest.mark.asyncio
@@ -158,16 +161,18 @@ async def test_an_answered_approval_sends_nothing_and_a_pending_one_uses_e4b(wor
     monkeypatch.setattr(away, "_approval_pending", AsyncMock(return_value=True))
     assert await away.check_one(row, NOW) is True
     kw = world.send.await_args.kwargs
-    assert kw["subject"] == "Approval waiting: Launch email"
-    assert "Growth needs your yes on Launch email. Nothing happens until you answer." in kw["text"]
+    assert kw["subject"] == "An approval is waiting in Lightbulb"
+    assert "Growth is waiting on your answer in Lightbulb." in kw["text"]
+    assert "Launch email" not in kw["text"] and "Launch email" not in kw["html"]  # what is approved stays in the app
     assert "panel=teams-approval-detail&detailId=ap1" in kw["text"]
 
 
 def test_mention_copy_names_the_room():
-    out = away.render(
-        {**ROW, "kind": "mention"}, author="Alice", text="hi", room={"kind": "channel", "name": "gtm"}, sent=1
-    )
-    assert out["subject"] == "Alice mentioned you in #gtm"
+    out = away.render({**ROW, "kind": "mention"}, author="Alice", room={"kind": "channel", "name": "gtm"}, sent=1)
+    assert out["subject"] == "You were mentioned in Lightbulb"
+    assert out["lines"][0] == "Alice mentioned you in #gtm."
+    group = away.render(ROW, author="Friday", room={"kind": "group-dm", "name": "Humans + Friday"}, sent=1)
+    assert group["lines"][0] == "New messages are waiting for you in Humans + Friday."
 
 
 def test_unsubscribe_token_is_scoped_to_this_email():

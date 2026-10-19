@@ -58,7 +58,9 @@ These hold whether or not you open a reference.
   `$HERMES_HOME/lightbulb-facts.json`. Never recite any of the three from memory.
 - **Google Workspace on Lightbulb uses the managed `gog` CLI.** Validate it with
   `gog auth list --check`, never `gog auth status` or the generic Google Workspace
-  skill's setup check (wrong credential path). See `references/integrations.md`.
+  skill's setup check (wrong credential path). For a Google Doc, Sheet or Drive file use
+  `gog -a <account>`, never the live browser (it is not signed in to Google; signing it in
+  shares that Google account with every agent). See `references/integrations.md`.
 - **Never write an `Authorization: Bearer …` header yourself** — not in a curl
   you type, not in a script you write. The transcript redaction masks
   that header *including* a `$OPENCLAW_HOOK_TOKEN` reference, so the copy you

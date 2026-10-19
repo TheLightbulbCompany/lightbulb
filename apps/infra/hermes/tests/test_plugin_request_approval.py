@@ -133,3 +133,20 @@ def test_a_room_turn_binds_nothing_and_its_in_review_move_carries_no_run(papercl
     lightbulb._request_approval({"title": "t", "summary": "s", "tasks": ["WAL-6"]}, session_id=room_key)
     assert ("PATCH", f"/api/issues/{ISSUE}", {"status": "in_review"}, None) in paperclip["calls"]
     assert not (tmp_path / "lightbulb-issue-bindings").exists()
+
+
+def test_an_approval_from_a_room_gives_its_task_a_from_section_once(paperclip):
+    room = "11111111-2222-3333-4444-555555555555"
+    paperclip["scope"].update({"LIGHTBULB_ROOM_SESSION_KEY": f"agent:{ME}:lightbulb:channel:{room}",
+                               "LIGHTBULB_ROOM_MESSAGE_ID": "m-1", "LIGHTBULB_ROOM_REQUESTER_ID": "user_ana"})
+    lightbulb._request_approval({"title": "Ship it", "summary": "Go?", "tasks": ["WAL-6"]})
+    [patch] = [c for c in paperclip["calls"] if c[0] == "PATCH"]
+    assert patch[2] == {"status": "in_review", "description":
+                        f"## From\nFiled from room `{room}`. The message that asked: "
+                        f"/chat?panel=chat&room={room}&message=m-1 Asked by user `user_ana`."}
+
+
+def test_an_approval_outside_a_room_only_moves_the_task(paperclip):
+    lightbulb._request_approval({"title": "Ship it", "summary": "Go?", "tasks": ["WAL-6"]})
+    [patch] = [c for c in paperclip["calls"] if c[0] == "PATCH"]
+    assert patch[2] == {"status": "in_review"}

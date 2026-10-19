@@ -250,7 +250,7 @@ FEED_ROUTINE_DESCRIPTION = (
     "Scheduled feed post. Look at what happened since the last scheduled feed post: rooms, Work, "
     "runs, sessions and connected tools. Read the feed's recent posts first and never repeat one; "
     "the feed's topic is the team's brief. If one thing matters, post ONE feed post about it:\n\n"
-    'printf \'%s\' "<post>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --feed --why "<why it matters>"\n\n'
+    "/app/skills/lightbulb/scripts/lightbulb-post.sh --feed --why \"<why it matters>\" <<'EOF'\n<post>\nEOF\n\n"
     "You may also research the web for news relevant to the company and the brief. "
     "If nothing matters, post nothing. How to write a post: the lightbulb skill's references/feed.md."
 )

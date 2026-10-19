@@ -34,11 +34,22 @@ checker only looks for a separate profile-local `google_token.json`, which
 Lightbulb's managed `gog` connection does not create. A missing file there therefore
 says nothing about the managed connection and must not be reported as disconnected.
 
+**Docs, Sheets and Drive go through `gog`, not the browser.** `gog auth list` names
+the connected accounts; pick the one that owns or can edit the file and pass it with
+`-a <email>`. Read a Doc with `gog -a <email> docs cat <docId>`, change it with
+`gog -a <email> docs write|insert <docId>` (`--help` for flags), and read it back after.
+Sheets: `gog -a <email> sheets ...`; Drive files: `gog -a <email> drive ...`. The live
+browser is not signed in to Google, and a Google sign-in there (with its phone prompt)
+would share that account with every agent in the workspace: never start one for a file
+`gog` can reach. If no connected account can open the file, say which account needs
+access (the owner shares it, or connects that account in Connections).
+
 When a `gog` command fails because an API is not enabled or permission is denied
 (for example "Google Docs API has not been used in project ... or it is disabled"),
 quote the error and tell the owner exactly what to enable and where (here: the
-Google Docs API in their Google Cloud project) BEFORE you try any other route. A
-browser workaround is still allowed after that; it does not replace telling them.
+Google Docs API in their Google Cloud project), then wait for them. Never sign the
+live browser in to Google as a workaround: that session would be shared with every
+agent in the workspace.
 
 ## Microsoft 365 (Microsoft Graph)
 

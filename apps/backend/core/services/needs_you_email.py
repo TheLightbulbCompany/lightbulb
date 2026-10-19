@@ -51,7 +51,6 @@ GIVE_UP_S = 3600  # still in the app an hour later: they have seen the badge
 PER_ROOM_S = 1800  # D8: at most one per room per 30 minutes
 QUIET_FROM, QUIET_UNTIL = 22, 8  # D8: local hours
 ROW_TTL_S = 86400
-PREVIEW_CHARS = 140
 UNSUBSCRIBE_KIND = "away_email_unsubscribe"
 UNSUBSCRIBE_TTL = timedelta(days=30)
 _NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:needs_you_email_sent")
@@ -133,34 +132,34 @@ def _link(params: dict, sent: int) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/chat?{query}"
 
 
-def _where(room: dict) -> str:
+def _where(room: dict, author: str = "") -> str:
     kind, name = room.get("kind"), room.get("name")
     if kind == "dm":
-        return "your DM"
+        return f"your DM with {author}" if author else "your DM"
     if kind == "group-dm":
         return name or "your group chat"
-    return f"#{name}" if name else "the channel"
+    return f"#{name}" if name else "a channel"
 
 
-def render(row: dict, *, author: str = "", text: str = "", room: dict | None = None, sent: int) -> dict:
-    """``{subject, lines, url}`` per 12-lifecycle-emails E4a/E4b."""
+def render(row: dict, *, author: str = "", room: dict | None = None, sent: int) -> dict:
+    """``{subject, lines, url}``: a notification of WHERE something waits, never what it says (owner ruling
+    2026-10-19). The message and the approval stay in Lightbulb; the email comes from Lightbulb, never in an
+    agent's voice: an agent that wants to reach someone by email uses its own address."""
     if row["kind"] == "approval":
         who = (row.get("title") or "").split(" · ")[0] or "An agent"
-        what = row.get("body") or "an approval"
-        for prefix in ("Needs your approval: ", "Needs your confirmation: "):
-            if what.startswith(prefix):
-                what = what[len(prefix) :]
         url = _link({"panel": "teams-approval-detail", "detailId": row["approvalId"]}, sent)
         return {
-            "subject": f"Approval waiting: {what}",
-            "lines": [f"{who} needs your yes on {what}. Nothing happens until you answer.", f"Open it: {url}"],
+            "subject": "An approval is waiting in Lightbulb",
+            "lines": [f"{who} is waiting on your answer in Lightbulb.", f"Open it: {url}"],
             "url": url,
         }
-    where = _where(room or {})
-    preview = " ".join(text.split())[:PREVIEW_CHARS] or "Sent an attachment"
+    where = _where(room or {}, author)
     url = _link({"panel": "chat", "room": row["roomId"], "message": row["messageId"]}, sent)
-    subject = f"{author} sent you a message" if row["kind"] == "dm" else f"{author} mentioned you in {where}"
-    return {"subject": subject, "lines": [f'{author}: "{preview}"', f"Reply in {where}: {url}"], "url": url}
+    if row["kind"] == "mention":
+        subject, line = "You were mentioned in Lightbulb", f"{author or 'Someone'} mentioned you in {where}."
+    else:
+        subject, line = "You have unread messages in Lightbulb", f"New messages are waiting for you in {where}."
+    return {"subject": subject, "lines": [line, f"Open Lightbulb: {url}"], "url": url}
 
 
 def _email_parts(content: dict, unsubscribe: str) -> tuple[str, str, dict[str, str]]:
@@ -295,9 +294,7 @@ async def check_one(row: dict, now: datetime) -> bool:
         await _done(row, "room_cap")
         return False
     author = ((message or {}).get("author") or {}).get("displayName") or "Someone"
-    # The text the chat shows: an edit replaces the original (the canonical projection's rule).
-    shown = (message or {}).get("editedText") if "editedText" in (message or {}) else (message or {}).get("text")
-    content = render(row, author=author, text=shown or "", room=room, sent=now_epoch)
+    content = render(row, author=author, room=room, sent=now_epoch)
     text, body, headers = _email_parts(content, unsubscribe_url(user_id))
     message_id = await email_service.send_email(
         to=email,

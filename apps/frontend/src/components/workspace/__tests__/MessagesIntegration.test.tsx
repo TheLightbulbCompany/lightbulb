@@ -16,6 +16,8 @@ vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({ user: { fullName: "Alice" } }),
   // RoomLimitBar's trial recap (TrialRecapCard) reads the viewer's membership.
   useOrganization: () => ({ organization: null, membership: null }),
+  // The sidebar title's workspace switcher: one workspace, so no switcher.
+  useOrganizationList: () => ({ userMemberships: { data: [] }, setActive: undefined }),
 }));
 let defaultId: string | undefined;
 vi.mock("@/hooks/useAgents", () => ({ useAgents: () => ({ agents: [], defaultId }) }));

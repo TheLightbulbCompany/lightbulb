@@ -18,7 +18,7 @@
  * `WorkspaceList` is the same list behind Settings → Switch workspace.
  */
 import { useAuth, useOrganizationList } from "@clerk/expo";
-import { Button, Section } from "@expo/ui/swift-ui";
+import { Button, Section } from "../ui/swiftui";
 import { foregroundStyle } from "@expo/ui/swift-ui/modifiers";
 import { resetSwrCache } from "@lightbulb/shared";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";

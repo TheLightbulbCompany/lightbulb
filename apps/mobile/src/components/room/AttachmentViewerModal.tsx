@@ -1,4 +1,4 @@
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../ui/SymbolView";
 import type { File } from "expo-file-system";
 import { Image } from "expo-image";
 import * as Sharing from "expo-sharing";

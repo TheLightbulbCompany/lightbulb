@@ -4,7 +4,7 @@ import {
 } from "@lightbulb/shared";
 import { RoomContext, useIsSpeaking, useParticipants, useTracks } from "@livekit/components-react";
 import { useTrackVolume } from "@livekit/react-native";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../ui/SymbolView";
 import { Track, type Participant } from "livekit-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AccessibilityInfo, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";

@@ -1,4 +1,4 @@
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../../components/ui/SymbolView";
 import { useState } from "react";
 import {
   FlatList,

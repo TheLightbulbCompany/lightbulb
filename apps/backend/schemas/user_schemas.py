@@ -50,7 +50,7 @@ class DeviceRegisterRequest(BaseModel):
     """Body for POST /api/v1/devices — one device's Expo push token."""
 
     token: str = Field(..., description="Expo push token, ExponentPushToken[...]")
-    platform: Literal["ios"] = Field(default="ios", description="Device platform")
+    platform: Literal["ios", "android"] = Field(default="ios", description="Device platform")
     deviceId: str = Field(..., min_length=1, description="Stable per-install device id")
     timezone: str | None = Field(
         default=None,

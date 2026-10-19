@@ -14,9 +14,24 @@
  */
 const PNPM_PEER_SUFFIX_HASH = /_[a-z0-9]{20,}(?=[/"])/g;
 
+/*
+ * app.json's `android` section is hashed into EVERY platform's expoConfig
+ * source, so adding Android's package id and adaptive icon would have rotated
+ * the iOS runtime and orphaned every installed iPhone from OTAs. Neither key
+ * changes JS compatibility: the icon images still hash as Android external
+ * files, and a new package id is a new app.
+ */
+const ANDROID_KEYS_OFF_FINGERPRINT = ['package', 'adaptiveIcon'];
+
 /** @type {import('@expo/fingerprint').Config} */
 const config = {
   fileHookTransform: (source, chunk, _isEndOfFile, _encoding) => {
+    if (source.type === 'contents' && source.id === 'expoConfig' && chunk !== null) {
+      // Input is already key-sorted; parse/stringify keeps that order.
+      const config = JSON.parse(chunk.toString());
+      for (const key of ANDROID_KEYS_OFF_FINGERPRINT) delete config.android?.[key];
+      return JSON.stringify(config);
+    }
     if (
       source.type === 'contents' &&
       typeof source.id === 'string' &&

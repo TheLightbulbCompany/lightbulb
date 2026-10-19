@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../ui/SymbolView";
 import { agentDisplayName, useAgents, type MemberRef } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

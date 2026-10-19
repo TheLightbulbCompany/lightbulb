@@ -1,7 +1,7 @@
 import { useAuth, useOrganization } from "@clerk/expo";
 import { ApiError, createApiClient } from "@lightbulb/shared";
 import { useFocusEffect } from "expo-router";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../../components/ui/SymbolView";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { ActionSheetIOS, ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 

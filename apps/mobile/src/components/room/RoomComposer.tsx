@@ -1,4 +1,4 @@
-import { SymbolView, type SFSymbol } from "expo-symbols";
+import { SymbolView, type SFSymbol } from "../ui/SymbolView";
 import {
   activeTrigger,
   applyCompletion,

@@ -1,4 +1,4 @@
-import { Section } from "@expo/ui/swift-ui";
+import { Section } from "../../../components/ui/swiftui";
 import type { SFSymbol } from "expo-symbols";
 import { router, type Href } from "expo-router";
 import { useColorScheme } from "react-native";

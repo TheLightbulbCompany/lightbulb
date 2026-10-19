@@ -42,3 +42,26 @@ it("requests a token and POSTs it once", async () => {
   expect(body.platform).toBe("ios");
   expect(typeof body.deviceId).toBe("string");
 });
+
+it("on Android, makes the default channel first and registers as android", async () => {
+  const { Platform } = require("react-native");
+  const Notifications = require("expo-notifications");
+  const os = Platform.OS;
+  Platform.OS = "android";
+  mockPost.mockClear();
+  try {
+    await render(
+      <PushRegistration
+        getCurrentTarget={() => ({ agentId: null, sessionId: null, roomId: null, threadId: null })}
+      />,
+    );
+    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
+    expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith(
+      "default",
+      expect.objectContaining({ importance: Notifications.AndroidImportance.HIGH }),
+    );
+    expect(mockPost.mock.calls[0][1].platform).toBe("android");
+  } finally {
+    Platform.OS = os;
+  }
+});

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../ui/SymbolView";
 import type { SFSymbol } from "expo-symbols";
 
 import type { ChatPalette } from "../../config/theme";

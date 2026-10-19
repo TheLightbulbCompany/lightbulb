@@ -1,5 +1,5 @@
 import { useAuth, useOrganization, useUser } from "@clerk/expo";
-import { Button, HStack, LabeledContent, Section, Text, VStack } from "@expo/ui/swift-ui";
+import { Button, HStack, LabeledContent, Section, Text, VStack } from "../../../components/ui/swiftui";
 import {
   accessibilityLabel,
   background,
@@ -11,7 +11,7 @@ import {
 } from "@expo/ui/swift-ui/modifiers";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
-import { Alert, Linking, useColorScheme } from "react-native";
+import { Alert, Linking, Platform, useColorScheme } from "react-native";
 import { deepLinkToSubscriptions } from "expo-iap";
 import { ApiError, createApiClient } from "@lightbulb/shared";
 
@@ -403,6 +403,19 @@ export default function Settings() {
     // cannot be restored onto a replacement account either. So say so, and put
     // the cancellation one tap away, BEFORE the irreversible step.
     const source = state.kind === "ready" ? state.account.subscription_source : null;
+    if (isAppleManaged(source) && Platform.OS !== "ios") {
+      // On Android the subscriptions deep link opens Google Play, which cannot see an Apple
+      // subscription: say where to cancel it instead of offering a button that goes nowhere.
+      Alert.alert(
+        "Cancel your subscription first",
+        "Your subscription is billed through an Apple Account. Deleting this account does NOT cancel it. Cancel it in Settings on the iPhone or iPad that bought it first.",
+        [
+          { text: "Not now", style: "cancel" },
+          { text: "Delete anyway", style: "destructive", onPress: () => promptDeleteAccount() },
+        ],
+      );
+      return;
+    }
     if (isAppleManaged(source)) {
       Alert.alert(
         "Cancel your subscription first",
@@ -537,7 +550,14 @@ export default function Settings() {
             management, never a purchase call to action. A Stripe/web-billed
             subscriber gets neutral status text and nothing to tap, since that
             management surface is the web (App Store 3.1.3(f)). */}
-        {account.is_subscribed && isAppleManaged(account.subscription_source) ? (
+        {account.is_subscribed && isAppleManaged(account.subscription_source) && Platform.OS !== "ios" ? (
+          // Android's subscriptions deep link opens Google Play, which cannot manage an Apple subscription.
+          <Section title="Subscription">
+            <Text modifiers={m.SECONDARY}>
+              Billed through an Apple Account. Manage or cancel it on the iPhone or iPad that bought it.
+            </Text>
+          </Section>
+        ) : account.is_subscribed && isAppleManaged(account.subscription_source) ? (
           <Section
             title="Subscription"
             footer={<Text>Billed through your Apple Account. Manage or cancel in iOS Settings.</Text>}

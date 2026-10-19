@@ -1,4 +1,4 @@
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../../components/ui/SymbolView";
 import { router } from "expo-router";
 import { useContext, useEffect, useState, type ReactElement } from "react";
 import { HeaderHeightContext } from "expo-router/react-navigation";

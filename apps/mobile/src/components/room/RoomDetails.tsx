@@ -1,4 +1,4 @@
-import { Button, LabeledContent, Picker, Section, Text } from "@expo/ui/swift-ui";
+import { Button, LabeledContent, Picker, Section, Text } from "../ui/swiftui";
 import { font, foregroundStyle, pickerStyle, tag } from "@expo/ui/swift-ui/modifiers";
 import {
   canChangeListenMode,

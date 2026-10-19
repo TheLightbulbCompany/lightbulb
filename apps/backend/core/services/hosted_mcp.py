@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 import time
 import uuid
 from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
+import jwt
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
 from mcp.server import MCPServer
@@ -26,6 +28,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import messaging_repo
 from core.services import clerk_admin, local_sessions, messaging, native_session_tools, session_browser, task_board
+from core.services.machine_auth import MachineIdentity, verify_upgrade
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +106,56 @@ class ClerkOAuthVerifier(TokenVerifier):
             return None
 
 
+class LightbulbVerifier(ClerkOAuthVerifier):
+    """Two callers share one tool set: a person (a Clerk opaque grant) or a shared session on a
+    paired Mac (its device JWT, whose signed ``source`` claim names the calling session)."""
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        if "." not in token:
+            return await super().verify_token(token)
+        device = await verify_upgrade(token, "openclaw-macos")
+        if device is None or not device.device_id or not device.org_id:
+            return None
+        try:
+            await local_sessions._enrolled(device.owner_id, device.user_id, device.device_id)
+        except messaging.ApiProblem:
+            return None
+        claims = jwt.decode(token, options={"verify_signature": False})  # verify_upgrade checked it
+        return AccessToken(
+            token=token,
+            client_id=f"device:{device.device_id}",
+            scopes=[READ_SCOPE, WRITE_SCOPE, "user:org:read"],
+            expires_at=int(claims["exp"]),
+            resource=RESOURCE,
+            subject=device.user_id,
+            claims={"org_id": device.org_id, "device": asdict(device), "source": claims.get("source")},
+        )
+
+
+def _mac() -> MachineIdentity | None:
+    """The paired Mac when a shared session is calling; None for a person's OAuth grant."""
+    token = get_access_token()
+    device = (getattr(token, "claims", None) or {}).get("device")
+    return MachineIdentity(**device) if device else None
+
+
+async def _from_session(device: MachineIdentity, tool: str, arguments: dict) -> dict:
+    """A session's send or receipt: the Mac-native path, which proves the source is this Mac's
+    current session and keeps its own ledger (``NATIVE_TOOL#``)."""
+    source = get_access_token().claims.get("source")
+    try:
+        if not isinstance(source, dict):
+            raise messaging.ApiProblem("INVALID_REQUEST", "A Mac call names its session.")
+        request = native_session_tools.NativeToolRequest.model_validate(
+            {**source, "tool": tool, "arguments": arguments}
+        )
+        return await native_session_tools.execute(device, request)
+    except messaging.ApiProblem as exc:
+        raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
+    except ValueError as exc:  # pydantic: a malformed source claim
+        raise ToolError("INVALID_REQUEST: invalid session source.") from exc
+
+
 def _caller(scope: str = READ_SCOPE) -> AuthContext:
     token = get_access_token()
     if (
@@ -122,7 +175,7 @@ def _caller(scope: str = READ_SCOPE) -> AuthContext:
 
 mcp = MCPServer(
     "Lightbulb",
-    token_verifier=ClerkOAuthVerifier(),
+    token_verifier=LightbulbVerifier(),
     auth=AuthSettings(
         issuer_url=AnyHttpUrl(settings.CLERK_ISSUER),
         resource_server_url=AnyHttpUrl(RESOURCE),
@@ -263,8 +316,13 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
 
 @mcp.tool()
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
-    """Find coding sessions shared with the workspace, and your own that are not (shared false: Only me, takes no message), by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason)."""
-    return await sessions_for(_caller(), query, limit)
+    """Find coding sessions shared with the workspace, and your own that are not (shared false: Only me, takes no message), by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason). Called from a shared session, that session is marked isThisSession: never message it."""
+    result = await sessions_for(_caller(), query, limit)
+    if _mac():
+        own = (get_access_token().claims.get("source") or {}).get("sourceSessionId")
+        for session in result["sessions"]:
+            session["isThisSession"] = session["sessionId"] == own
+    return result
 
 
 @mcp.tool()
@@ -302,10 +360,19 @@ async def update_task(
 
 
 @mcp.tool()
-async def use_browser(where: Literal["mac", "cloud"], session_id: str) -> dict:
-    """Choose where a shared Claude Code or Codex session browses with its lightbulb-browser tools: "mac" (its Mac's Lightbulb agent Chrome, the default) or "cloud" (the workspace's cloud browser). Its next browser connection goes there; one already open stays where it is: to move an open one now, restart the lightbulb-browser MCP server (`/mcp` in Claude Code). session_id comes from find_sessions; only people who may control that session can move it."""
+async def use_browser(where: Literal["mac", "cloud"], session_id: str | None = None) -> dict:
+    """Choose where a shared Claude Code or Codex session browses with its lightbulb-browser tools: "mac" (its Mac's Lightbulb agent Chrome, the default) or "cloud" (the workspace's cloud browser). Its next browser connection goes there; one already open stays where it is: to move an open one now, restart the lightbulb-browser MCP server (`/mcp` in Claude Code). Called from a shared session, omit session_id: it moves that session. Otherwise session_id comes from find_sessions; only people who may control that session can move it."""
     auth = _caller(WRITE_SCOPE)
     try:
+        if device := _mac():
+            source = get_access_token().claims.get("source") or {}
+            if session_id is not None or not isinstance(source.get("sourceSessionId"), str):
+                raise messaging.ApiProblem("INVALID_REQUEST", "From a shared session, omit session_id.")
+            return await session_browser.place_from_mac(
+                device.owner_id, device.user_id, device.device_id, source["sourceSessionId"], where
+            )
+        if session_id is None:
+            raise messaging.ApiProblem("INVALID_REQUEST", "session_id is required.")
         sid = messaging.validate_uuid(session_id, label="session ID")
         row, _ = await local_sessions.authorize_session(auth, None, sid, owner_only=True)
         if not session_browser.live_shared(row):
@@ -416,11 +483,20 @@ async def send_message(
     reply_to_message_id: uuid.UUID | None = None,
     mention_ids: list[str] | None = None,
 ) -> dict:
-    """Send as this client on the signed-in person's behalf to exactly one of room_id, person_id (a member id; opens the DM if needed) or session_id (delivers the text into that session as a follow-up prompt it acts on; it is not a link; see find_sessions canSend). Room and person sends may reply in a thread or address room members."""
+    """Send as this client on the signed-in person's behalf (or, from a shared session, as that session) to exactly one of room_id, person_id (a member id; opens the DM if needed) or session_id (delivers the text into that session as a follow-up prompt it acts on; it is not a link; see find_sessions canSend). Use a new UUID request_id and reuse it on retry. Room and person sends from a person may reply in a thread or address room members; a shared session's send takes neither. Cannot answer permission prompts."""
     auth = _caller(WRITE_SCOPE)
-    slug, client = client_identity(get_access_token().client_id)
     if sum(target is not None for target in (room_id, person_id, session_id)) != 1:
         raise messaging.ApiProblem("INVALID_REQUEST", "Send to exactly one of room_id, person_id or session_id.")
+    if device := _mac():
+        if reply_to_message_id or mention_ids:
+            raise ToolError("INVALID_REQUEST: a session's send takes no thread or mentions.")
+        kind, target = next(
+            (k, v) for k, v in (("room", room_id), ("person", person_id), ("session", session_id)) if v is not None
+        )
+        return await _from_session(
+            device, "send", {"destination": f"{kind}:{target}", "text": text, "requestId": str(request_id)}
+        )
+    slug, client = client_identity(get_access_token().client_id)
     if session_id is not None:
         if reply_to_message_id or mention_ids:
             raise messaging.ApiProblem("INVALID_REQUEST", "A session follow-up takes no thread or mentions.")
@@ -507,6 +583,8 @@ async def send_message(
 async def message_receipt(request_id: uuid.UUID) -> dict:
     """Reconcile a send by its request ID, including when the send response was lost."""
     auth = _caller()
+    if device := _mac():
+        return await _from_session(device, "receipt", {"requestId": str(request_id)})
     pinned = await messaging_repo._get(*_sent_key(auth, request_id))
     if pinned is None:
         return {"state": "unknown"}

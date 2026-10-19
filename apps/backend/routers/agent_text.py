@@ -32,6 +32,7 @@ from core.repositories.agent_email_repo import (
     text_line_for_owner,
 )
 from core.repositories.agent_mail_inbox_repo import (
+    find_by_message_id,
     get_message,
     parse_reply_key,
     put_sent,
@@ -118,16 +119,19 @@ async def send_reply(
             await set_disclosed(line["address"], customer)
         except Exception:  # noqa: BLE001 -- the text has gone; a missed mark only repeats the disclosure
             logger.warning("Could not record the disclosure to %s on line %s", customer, line["address"], exc_info=True)
-    await put_sent(
-        address=address,
-        message_id=resp.get("id") or f"photon-reply:{uuid.uuid4().hex}",
-        owner_id=owner_id,
-        agent_id=line["agent_id"],
-        to=customer,
-        subject="",
-        text=text,
-        channel="text",
-    )
+    sent_id = resp.get("id")
+    # A retried send is Photon's replay of the first (same idempotency key, same message id): record it once.
+    if not (sent_id and await find_by_message_id(address, sent_id)):
+        await put_sent(
+            address=address,
+            message_id=sent_id or f"photon-reply:{uuid.uuid4().hex}",
+            owner_id=owner_id,
+            agent_id=line["agent_id"],
+            to=customer,
+            subject="",
+            text=text,
+            channel="text",
+        )
     await mail_changed(owner_id)
     if by_human:
         await set_thread_mode(line["address"], customer, "human")

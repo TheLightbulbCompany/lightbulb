@@ -21,6 +21,7 @@ ROW = {"owner_id": OWNER, "channel": "text", "from_addr": "+15559870000", "recei
 @pytest.fixture
 def m(monkeypatch):
     mocks = {
+        "find_by_message_id": AsyncMock(return_value=None),
         "get_message": AsyncMock(return_value=dict(ROW)),
         "text_line_for_owner": AsyncMock(return_value=LINE),
         "set_disclosed": AsyncMock(),
@@ -151,6 +152,14 @@ async def test_another_agent_cannot_send_as_the_front_desk(m):
     m["send_text"].assert_not_awaited()
     status = await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi", agent_id=LINE["agent_id"])
     assert status == "sent"
+
+
+async def test_a_retried_send_is_recorded_once(m):
+    """A retry is Photon's replay of the first send (same message id): one sent row, not two."""
+    m["find_by_message_id"].return_value = {"message_id": "h1"}
+    assert await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi") == "sent"
+    m["send_text"].assert_awaited_once()
+    m["put_sent"].assert_not_awaited()
 
 
 async def test_human_reply_marks_the_thread_human(m):

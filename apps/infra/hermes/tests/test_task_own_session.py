@@ -72,7 +72,7 @@ def test_the_native_run_uses_its_own_session_and_has_no_room_for_prompts(monkeyp
 
 # ---- the helper -------------------------------------------------------------------------------
 def _helper(tmp_path, args, *, session_key=ROOM_KEY, room_key=None, message_id=None, stdin="",
-            responses=None, ok=True):
+            responses=None, ok=True, requester=None):
     """Run paperclip-api.sh against a fake curl that records each request. `responses` is one
     [status, body] per request, in order (the last repeats)."""
     calls, count = tmp_path / "calls.jsonl", tmp_path / "count"
@@ -96,12 +96,15 @@ def _helper(tmp_path, args, *, session_key=ROOM_KEY, room_key=None, message_id=N
            "PAPERCLIP_API_URL": "http://pc", "PAPERCLIP_API_KEY": "k", "PAPERCLIP_AGENT_ID": AGENT,
            "HERMES_HOME": str(tmp_path / "profile"), "HERMES_SESSION_KEY": session_key,
            "RESPONSES": json.dumps(responses or [[201, {"id": ISSUE, "status": "todo"}]])}
-    for name in ("PAPERCLIP_RUN_ID", "LIGHTBULB_ROOM_SESSION_KEY", "LIGHTBULB_ROOM_MESSAGE_ID"):
+    for name in ("PAPERCLIP_RUN_ID", "LIGHTBULB_ROOM_SESSION_KEY", "LIGHTBULB_ROOM_MESSAGE_ID",
+                 "LIGHTBULB_ROOM_REQUESTER_ID"):
         env.pop(name, None)
     if room_key:
         env["LIGHTBULB_ROOM_SESSION_KEY"] = room_key
     if message_id:
         env["LIGHTBULB_ROOM_MESSAGE_ID"] = message_id
+    if requester:
+        env["LIGHTBULB_ROOM_REQUESTER_ID"] = requester
     proc = subprocess.run(["bash", str(SCRIPT), *args], input=stdin, env=env, capture_output=True, text=True)
     assert (proc.returncode == 0) is ok, proc.stderr
     return [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
@@ -128,6 +131,13 @@ def test_a_room_create_appends_one_from_section_after_the_description(tmp_path, 
     assert json.loads(create["body"])["description"] == (
         f"Asked by Ana: fix the 500.\n\n{FROM} The message that asked: "
         f"/chat?panel=chat&room={ROOM}&message=m-1")
+
+
+@helper
+def test_the_from_section_names_who_asked(tmp_path):
+    [create] = _helper(tmp_path, ["create", "company-1", "--title", "Fix it", "--assignee", AGENT],
+                       requester="user_ana")
+    assert json.loads(create["body"])["description"] == f"{FROM} Asked by user `user_ana`."
 
 
 @helper

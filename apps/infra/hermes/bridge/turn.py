@@ -3707,8 +3707,13 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
     room_env = None
     if ROOM_SESSION_RE.match(session_key):
         room_env = {"LIGHTBULB_ROOM_SESSION_KEY": session_key}
-        if message_id := (body.get("message") or {}).get("messageId"):
+        message = body.get("message") or {}
+        if message_id := message.get("messageId"):
             room_env["LIGHTBULB_ROOM_MESSAGE_ID"] = str(message_id)
+        author = message.get("author") or {}
+        if author.get("kind") == "human" and author.get("id"):
+            # Who asked: an assignee outside the room reports to their DM instead (lightbulb-post --user).
+            room_env["LIGHTBULB_ROOM_REQUESTER_ID"] = str(author["id"])
     if cdp := browser_control.cdp_url():  # opencli in the shell drives the run's browser
         room_env = {**(room_env or {}), "OPENCLI_CDP_ENDPOINT": cdp}
     with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):

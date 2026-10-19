@@ -424,6 +424,9 @@ with_from_section() {
   if [[ "$message" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
     from+=" The message that asked: /chat?panel=chat&room=$room&message=$message"
   fi
+  if [[ "${LIGHTBULB_ROOM_REQUESTER_ID:-}" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
+    from+=" Asked by user \`$LIGHTBULB_ROOM_REQUESTER_ID\`."
+  fi
   printf '%s' "${description:+$description$'\n\n'}$from"
 }
 

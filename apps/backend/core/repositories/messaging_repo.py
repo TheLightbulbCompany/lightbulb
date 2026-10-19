@@ -996,6 +996,7 @@ async def create_message(
     acting_human_id: str | None = None,
     extra_conditions: list[dict] | None = None,
     via: str | None = None,
+    text_reply_key: str | None = None,
     session_mentions: list[str] | None = None,
     session_target_labels: dict[str, str] | None = None,
     addressing: dict | None = None,
@@ -1073,6 +1074,9 @@ async def create_message(
             }
             if via:
                 message["via"] = via
+            if text_reply_key:
+                # A member's text posted to the room: where an agent's reply is texted back (text_relay).
+                message["textReplyKey"] = text_reply_key
             if acting_human_id:
                 # The accountable human behind a system-authored post (hosted MCP receipts read it).
                 message["actorUserId"] = acting_human_id

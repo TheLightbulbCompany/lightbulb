@@ -403,20 +403,20 @@ def test_member_text_is_posted_to_the_default_room_as_the_member(client, seams, 
         messaging.default_room_id(OWNER_ID),
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb-text|m1"),
-            text=f"do you open at 9?\n\n(sent by text from {CUSTOMER}; to text back: "
-            "/app/skills/lightbulb/scripts/lightbulb-text.sh send --reply "
-            f"{TEAM}/2026#m1)",
+            text=f"do you open at 9?\n\n(sent by text from {CUSTOMER}; a reply here is texted back, so keep it short)",
             reply_to_message_id=None,
             thread_root_message_id=None,
         ),
         via="text",
+        text_reply_key=f"{TEAM}/2026#m1",  # where text_relay texts an agent's answer back
     )
 
 
 def test_member_text_never_wakes_the_front_desk(client, seams, member):
     _post(client)
     seams["deliver_to_agent"].assert_not_called()
-    seams["send_typing"].assert_not_called()
+    # The member sees typing at once; "read" waits for an agent's run to start on the room message.
+    seams["send_typing"].assert_awaited_once_with(sender_id=LINE_USER, space_id=SPACE)
     seams["mark_read"].assert_not_called()
     seams["try_consume_stranger_wake"].assert_not_called()
     seams["send_text"].assert_not_called()

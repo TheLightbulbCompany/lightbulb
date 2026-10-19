@@ -391,7 +391,8 @@ async fn mcp(client: &reqwest::Client, token: &str, body: Value) -> Result<Value
 fn retry_warmed_forbidden(warmed: bool, reply: &Value) -> bool {
     warmed
         && reply["ok"] == false
-        && reply["result"]["content"][0]["text"].as_str().is_some_and(|t| t.starts_with("LOCAL_SESSION_FORBIDDEN"))
+        // FastMCP words a refusal "Error executing tool <name>: <CODE>: <message>" (seen on dev).
+        && reply["result"]["content"][0]["text"].as_str().is_some_and(|t| t.contains(": LOCAL_SESSION_FORBIDDEN:"))
 }
 
 pub(super) async fn serve(
@@ -584,7 +585,7 @@ mod tests {
 
     #[test]
     fn warmed_source_retries_a_transient_forbidden_for_every_post() {
-        let forbidden = json!({"ok":false,"result":{"isError":true,"content":[{"type":"text","text":"LOCAL_SESSION_FORBIDDEN: not current"}]}});
+        let forbidden = json!({"ok":false,"result":{"isError":true,"content":[{"type":"text","text":"Error executing tool send_message: LOCAL_SESSION_FORBIDDEN: Native session source is not current."}]}});
         assert!(retry_warmed_forbidden(true, &forbidden), "use_browser shares this retry");
         assert!(!retry_warmed_forbidden(false, &forbidden), "a settled source is really forbidden");
         let ok = json!({"ok":true,"result":{"isError":false,"content":[{"type":"text","text":"LOCAL_SESSION_FORBIDDEN"}]}});

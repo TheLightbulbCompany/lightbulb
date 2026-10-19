@@ -547,8 +547,13 @@ async def _ensure_paperclip_for_owner(
 
             before_starters = getattr(before, "starter_agent_ids", None) if before else None
             company_starters = getattr(company, "starter_agent_ids", None)
-            fresh_or_partial = before is None or (
-                isinstance(before_starters, dict) and any(not before_starters.get(key) for key in _STARTER_KEYS)
+            # A row that never became active is a first provision still in progress: a seed that failed
+            # before any starter was made leaves status "failed" and NO starter map, which read as
+            # neither fresh nor partial, so its retry skipped #general (GC Pilot, 2026-10-19).
+            fresh_or_partial = (
+                before is None
+                or getattr(before, "status", None) != "active"
+                or (isinstance(before_starters, dict) and any(not before_starters.get(key) for key in _STARTER_KEYS))
             )
             complete = (
                 getattr(company, "status", None) == "active"

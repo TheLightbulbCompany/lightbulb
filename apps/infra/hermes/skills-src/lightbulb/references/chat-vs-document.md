@@ -36,25 +36,25 @@ keep the summary short and take the back-and-forth into the thread.
 
 ## How (the stock issue-documents API)
 
-All writes go through the paperclip helper. Chat turns have no run id; the
-helper omits the header, and every call below works without one.
+All writes go through the paperclip helper. The room turn files the task; the
+task's own run writes the document. Never write the document in the room turn.
 
-1. **Pick the task.** If the conversation is about an existing task (it was
-   named or linked), put the document on it. Otherwise create one task per
-   deliverable, assigned to yourself, **with an explicit `--status backlog`**
-   so no new run starts (you do the work in this turn):
+1. **In the room turn, file the task.** If the conversation is about an
+   existing task (it was named or linked), comment the new ask on it instead.
+   Otherwise create one task per deliverable, assigned to yourself (an assigned
+   task starts on its own), with the full context on stdin: what was asked, by whom, and
+   what done means. The helper adds the **From** section (this room, and a
+   link to the message) by itself:
 
    ```bash
+   printf '%s' "<what was asked, by whom, what done means>" |
    /app/skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" \
-     --title "Habits 365: research & demo video plan" \
-     --assignee "<your agent id>" --status backlog
+     --title "Habits 365: research & demo video plan" --assignee "<your agent id>"
    ```
 
-   Keep the returned `id` and `identifier` (`HAB-12`). A task another agent
-   owns, or one `in_progress` under a live run, refuses a document write from
-   chat: file a subtask under it instead (`subtask … --parent <id>`).
+   Reply with the acknowledgement (below) and stop.
 
-2. **Write the document.** Shape and voice: `references/documents.md`. Key: short, lowercase, `[a-z0-9][a-z0-9_-]*`
+2. **In the task's run, write the document.** Shape and voice: `references/documents.md`. Key: short, lowercase, `[a-z0-9][a-z0-9_-]*`
    (`research`, `video-plan`; `plan` for a plan). Build the body with `jq`:
 
    ```bash
@@ -75,25 +75,28 @@ helper omits the header, and every call below works without one.
    skill's `references/interactions.md` "When a person must decide"). Never
    assign the task to the person as the way to ask.
 
-4. **Reply in chat** with at most five lines: what it is, the link, the two or
-   three takeaways that matter, and the next step. The link is the document
-   path `/<PREFIX>/issues/<IDENTIFIER>#document-<key>`, where the prefix is the
-   identifier's letters (`HAB-12` → `/HAB/issues/HAB-12#document-research`).
-   Never paste the document body into chat.
+4. **Post the result to the room in the task's From section**, one message of
+   at most five lines: what it is, the link, the two or three takeaways that
+   matter, and the next step
+   (`printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --room <roomId>`).
+   The link is the document path `/<PREFIX>/issues/<IDENTIFIER>#document-<key>`,
+   where the prefix is the identifier's letters
+   (`HAB-12` → `/HAB/issues/HAB-12#document-research`). Never paste the
+   document body into chat.
 
 ## What it sounds like
 
-**Acknowledge** only when the work continues after this turn (you filed a task
-a later run will finish). Your reply is then the acknowledgement, and the
-finished document is announced with `scripts/lightbulb-post.sh`:
+**Acknowledge** in the room turn that filed the task: one line saying who has
+it, with the task link. The task's run announces the finished document with
+`scripts/lightbulb-post.sh`:
 
-> On it. I'll research Habits 365 and put together 5–7 demo video ideas as a doc on a task; I'll post it here in about 10 minutes.
+> On it: [HAB-12](/HAB/issues/HAB-12). I'll research Habits 365 and put together 5–7 demo video ideas as a doc; I'll post it here in about 10 minutes.
 
 **Running late**, only if it runs past what you promised: one line in the thread with the new time (never a step-by-step update; paperclip SKILL.md "Telling the person about task work"):
 
 > Quick update: the competitor scan is done, and I'm now drafting the video concepts. About 5 more minutes.
 
-**Deliver:**
+**Deliver** (the task's run, posting to the From room):
 
 > Done: [Habits 365: research & demo video plan](/HAB/issues/HAB-12#document-research)
 > 1. Their hook is "never break a streak", so lead with that.
@@ -114,7 +117,8 @@ see work done and make one decision:
 1. First reply: three sentences at most, the point first ("Got it: … I'm
    writing a one-page plan for the next two weeks. It'll be here in a few
    minutes.").
-2. One result message: the plan as a document (above), one approval from the
+2. One result message, posted to `#general` by the plan task's own run (the task's
+   **From** section): the plan as a document (above), one approval from the
    `request_approval` tool linked to the plan's task (`companyPlan: true` for
    the plan if you are the root CEO, else a plain approval for the plan's first
    concrete action), given as the `link` it returns (it renders as an Approve card

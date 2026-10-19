@@ -85,8 +85,8 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
   6. Create status (SKILL.md "Creating work for someone else" + the
      create/subtask rows in references/hot-routes.md): paperclip-api.sh sends
      an explicit `todo` when a create passes --assignee with no --status — the
-     stock default (resolveCreateIssueStatusDefault), sent explicitly so a
-     room-session create still takes the bind-then-start split. Owner ruling
+     stock default (resolveCreateIssueStatusDefault), sent explicitly in one
+     POST. Owner ruling
      2026-10-18: asked-for work starts; `backlog` is for parking on purpose.
      It replaced a `backlog` default that left tasks filed from chat sitting
      unstarted. Keep the helper default and the doc wording on re-vendor.
@@ -94,9 +94,10 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
      bullet; the CEO checklist's "Room posts" paragraph, mirrored in
      backend core/services/heartbeat_checklist.py): owner ruling 2026-10-18 —
      no progress posts in rooms; a task is mentioned when done, when it needs
-     the person, or when asked, folded into the conversation it came from;
-     self-started work posts one result message. The bridge's BOUND_WAKE_STEER
-     note (bridge/turn.py) says the same to a mid-turn wake. Lightbulb-only.
+     the person, or when asked. A task filed from a room reports back from its
+     OWN run, one message to the room in its description's From section
+     (lightbulb-post.sh --room; item 24); self-started work posts one result
+     message. Lightbulb-only.
   7. Webchat capability section (summarised in SKILL.md; full rules in
      references/heartbeat.md): upstream
      documents only the heartbeat worldview; Lightbulb owners drive agents from a
@@ -317,43 +318,26 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       (apps/infra/test/paperclip-skill-primitives.test.ts) fails if the
       reference grows one. The snapshot never replaces the fresh-check rule.
       Re-apply on re-vendor.
-  24. One conversation per piece of work (SKILL.md webchat summary +
-      references/heartbeat.md's "Work you take on in a room stays in that
-      room's conversation" bullet + the helper's usage text). Replaces the old
-      "assign + `todo` to start a separate run; keep planning in `backlog`"
-      advice, which produced ISOA-680 (2026-10-04): a room turn filed an issue
-      to itself, set it `in_progress`, and Paperclip's stranded-issue
-      reconciler (fork server/src/services/recovery/service.ts
-      `reconcileStrandedAssignedIssues`; `hasActiveExecutionPath` counts only
-      Paperclip's own heartbeat_runs) started a fresh issue session that redid
-      the fix and opened duplicate PR #3712. The mechanism, all of which must
-      move together:
-      - the helper (paperclip-api.sh `send`): a create / issue PATCH / checkout
-        from a room session (HERMES_SESSION_KEY a room key) writes
-        `$HERMES_HOME/lightbulb-issue-bindings/<issueId>.json`
-        `{sessionKey, boundAt}` (synced with the profile; the bridge ages it by
-        `boundAt`, never the mtime a restore resets); a response status of
-        done/cancelled deletes it. The binding exists BEFORE any request that
-        can wake the assignee, by construction, never by timing: an issue
-        PATCH/checkout binds first (an identifier is resolved by a GET) and
-        unbinds if the write fails; an assigned non-backlog create is sent as
-        `backlog` (fork issue-assignment-wakeup.ts skips backlog), bound from
-        the response id, then PATCHed to the asked-for status;
-      - the bridge's `_route_paperclip_run` (bridge/turn.py): a Paperclip run
-        whose issue has a binding is steered into that conversation's live room
-        run and held open until it ends (Paperclip sees a live execution path),
-        else run as a turn IN that conversation (its lock, transcript and
-        folder; nothing posted to the room), else the issue's own session as
-        before. Only the backend's `GET /internal/messaging/rooms/{owner}/
-        {room}/agents/{agent}` 404/409 deletes the binding; 401/403/5xx/network
-        use the issue session for that one wake and keep it;
-      - `attached_run_id` (helper) reads `.lightbulb-turn/paperclip-run.<issueId>`,
-        which the bridge writes for the life of such a run: Paperclip stamps a
-        started run as the issue's `executionRunId`, and the fork's
-        `hasLiveRunLock` (server/src/services/issues.ts, paperclip#26) refuses a
-        run-less write to an `in_progress` issue while it is set. Hence also the
-        heartbeat.md "retry a 401 once" sentence: the window before the run is
-        attached.
+  24. Task work runs in the task's own session (SKILL.md webchat summary +
+      references/heartbeat.md's "Work bigger than a quick answer becomes a
+      task" bullet + lightbulb references/chat-vs-document.md "How" + the
+      helper's usage text). Owner ruling 2026-10-18 ("the task is the durable
+      record ... the work shouldn't really be done in the room"), reversing
+      2026-10-04's "one conversation per piece of work". That design (after
+      ISOA-680's duplicate PR #3712) had the helper record issue -> room
+      conversation in `$HERMES_HOME/lightbulb-issue-bindings/<issueId>.json`
+      and the bridge route Paperclip's wakes into the room conversation; a
+      room turn records no disposition, so Paperclip's liveness repair re-ran
+      the task twice and blocked it (ISOA-860). Now: a room turn files the
+      task (assigned, `todo`, one POST) with full context and stops; every
+      Paperclip run is stock, in the issue's own session
+      (bridge/turn.py `_run_paperclip_session`); the helper's `create`/
+      `subtask` append a `## From` section from a room session (room id from
+      LIGHTBULB_ROOM_SESSION_KEY / HERMES_SESSION_KEY, message link from
+      LIGHTBULB_ROOM_MESSAGE_ID, both exported by bridge `_room_turn_env`;
+      ideas.py work_description's From style), and the task's run posts done /
+      needs-you there. Old binding files on disk are inert; marketplace export
+      skips the dir (backend agent_export.py `_S3_PROFILE_SKIP_TOP_DIRS`).
       Re-apply on re-vendor.
   25. A person's decision is an approval (SKILL.md Critical Rules "A person's
       decision is an approval" + the interactions.md routing row; detail in
@@ -377,11 +361,9 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       UUIDs per createApprovalSchema, so it resolves WAL-6 through GET
       /api/issues/:id, whose router.param accepts identifiers), then PATCHes
       each linked issue to in_review (the linked approval is the review path).
-      Like paperclip-api.sh it binds each linked issue to the room conversation
-      (write_binding's file + format, before the create, so the approval's wake
-      routes to the room) and sends the bridge-attached run id
-      (.lightbulb-turn/paperclip-run.<issue>) on the in_review PATCH; keep the
-      two in step with the helper's write_binding/attached_run_id. `approve_ceo_strategy` is
+      It binds nothing (item 24): the approval's wake runs in the issue's own
+      session, and the in_review PATCH carries the run's id only when called
+      from a Paperclip run. `approve_ceo_strategy` is
       the ROOT CEO's first-plan decision (a first message dispatched to a
       specialist gets `request_board_approval` instead: onboarding_brief.py
       is_root_ceo picks the brief's decision by role, never by name): no server side effect on approve beyond the

@@ -393,6 +393,31 @@ async def test_partial_starter_workspace_gets_default_room_after_completion():
 
 
 @pytest.mark.asyncio
+async def test_retry_after_a_failed_seed_with_no_starters_gets_default_room():
+    """A first seed that failed before any starter existed leaves status "failed" and no starter map
+    at all; the retry that completes it is still the first provision, so #general is seeded."""
+    complete = {
+        key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
+    }
+    failed = MagicMock(status="failed", starter_agent_ids=None)
+    fake_provisioning = MagicMock()
+    fake_provisioning.get_workspace = AsyncMock(return_value=failed)
+    fake_provisioning.provision_org = AsyncMock(return_value=MagicMock(status="active", starter_agent_ids=complete))
+    ensure_default_room = AsyncMock()
+    ensure_feed_room = AsyncMock()
+    with (
+        patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=fake_provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
+        patch("core.services.messaging.ensure_default_room", ensure_default_room),
+        patch("core.services.messaging.ensure_feed_room", ensure_feed_room),
+    ):
+        await _ensure_paperclip_for_owner(owner_id="org_p", owner_user_id="user_p", owner_email="p@example.com")
+
+    ensure_default_room.assert_awaited_once_with("org_p", "user_p")
+    ensure_feed_room.assert_awaited_once_with("org_p", "user_p")
+
+
+@pytest.mark.asyncio
 async def test_org_admin_with_no_company_creates_it():
     """Org has NO active Paperclip company yet → provision_org (create).
     Decided by company existence, not role."""

@@ -31,9 +31,8 @@ Environment (required for live requests; not needed for --dry-run):
   X-Paperclip-Run-Id header is sent only when it is set. Webchat/interactive
   sessions have no run id — the header is omitted; never invent one.
   A create/subtask from a room turn appends a `## From` section to the
-  description (the room id, a link to the message that asked, and that
-  message's words), so the task's own run knows the ask and the room to
-  report back to.
+  description (the room id, and a link to the message that asked), so the
+  task's own run knows which room to report back to.
 
 Subcommands (markdown / freeform text is read from stdin where noted):
 
@@ -424,10 +423,6 @@ with_from_section() {
   message="${LIGHTBULB_ROOM_MESSAGE_ID:-}"
   if [[ "$message" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
     from+=" The message that asked: /chat?panel=chat&room=$room&message=$message"
-  fi
-  if [[ -n "${LIGHTBULB_ROOM_MESSAGE_TEXT:-}" ]]; then
-    # The person's own words, quoted: a thin description still carries the ask.
-    from+=$'\n\n'"${LIGHTBULB_ROOM_MESSAGE_AUTHOR:-Someone} wrote:"$'\n'"$(sed 's/^/> /' <<<"$LIGHTBULB_ROOM_MESSAGE_TEXT")"
   fi
   printf '%s' "${description:+$description$'\n\n'}$from"
 }

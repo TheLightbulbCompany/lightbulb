@@ -2919,7 +2919,6 @@ def _terminal_scope(agent_id: str, session_key: str):
 _turn_locks: dict[tuple[str, str], threading.Lock] = {}
 _turn_locks_guard = threading.Lock()
 #: A ceiling on turns executing at once in this microVM, whatever their agent or conversation.
-ROOM_MESSAGE_TEXT_MAX = 2000  # chars of the triggering message quoted into a task filed from it
 MAX_CONCURRENT_TURNS = max(1, int(os.environ.get("LIGHTBULB_MAX_CONCURRENT_TURNS") or 4))
 _turn_slots = threading.BoundedSemaphore(MAX_CONCURRENT_TURNS)
 #: Off-path compactions (compact_session) take a turn slot too, and at most this many of them at
@@ -3708,13 +3707,8 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
     room_env = None
     if ROOM_SESSION_RE.match(session_key):
         room_env = {"LIGHTBULB_ROOM_SESSION_KEY": session_key}
-        message = body.get("message") or {}
-        if message_id := message.get("messageId"):
+        if message_id := (body.get("message") or {}).get("messageId"):
             room_env["LIGHTBULB_ROOM_MESSAGE_ID"] = str(message_id)
-        if text := (message.get("text") or "").strip():
-            # Quoted into the task's From section; bounded, an env var is no place for a document.
-            room_env["LIGHTBULB_ROOM_MESSAGE_TEXT"] = text[:ROOM_MESSAGE_TEXT_MAX]
-            room_env["LIGHTBULB_ROOM_MESSAGE_AUTHOR"] = _display_name(message.get("author") or {})
     if cdp := browser_control.cdp_url():  # opencli in the shell drives the run's browser
         room_env = {**(room_env or {}), "OPENCLI_CDP_ENDPOINT": cdp}
     with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):

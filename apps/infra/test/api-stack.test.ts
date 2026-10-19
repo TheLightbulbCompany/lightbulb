@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
@@ -842,13 +844,18 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
       );
     expect(JSON.stringify(publishResources)).toContain("channelNamespace/ws");
     expect(JSON.stringify(publishResources)).not.toContain("channelNamespace/rooms");
-    // Its one row-creating write is the Activity pointer, fenced to ACTIVITY# partitions.
+    // Its row-creating writes are the Activity pointer and the away-email check, fenced to their partitions.
     const puts = statements.filter((statement) => actions(statement).includes("dynamodb:PutItem"));
     expect(puts).toHaveLength(1);
     expect(actions(puts[0])).toEqual(["dynamodb:PutItem"]);
-    expect(puts[0].Condition).toEqual({
-      "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ACTIVITY#*"] },
-    });
+    const leading = ["ACTIVITY#*", "AWAY#*"];
+    expect(puts[0].Condition).toEqual({ "ForAllValues:StringLike": { "dynamodb:LeadingKeys": leading } });
+    // Every partition the projector puts must be granted: a denied put fails the record before its
+    // room event and push (AWAY# was missed on 2026-10-14 and silenced every DM and mention).
+    const source = fs.readFileSync(path.join(__dirname, "../lambda/messaging-projector/index.py"), "utf8");
+    const written = [...source.matchAll(/"pk": f"([A-Z_]+)#/g)].map((m) => `${m[1]}#*`);
+    expect(written.length).toBeGreaterThan(0);
+    for (const prefix of written) expect(leading).toContain(prefix);
     for (const forbidden of ["dynamodb:DeleteItem", "dynamodb:BatchWriteItem", "dynamodb:TransactWriteItems"]) {
       expect(granted.has(forbidden)).toBe(false);
     }

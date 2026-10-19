@@ -20,15 +20,23 @@ the genuinely missing piece:
 ## Post outside a room turn
 
 Your room tools only work inside a Lightbulb room turn. From a Paperclip run, a
-heartbeat or a routine, post with the script (body on stdin):
+heartbeat or a routine, post with the script (body on stdin). Pass the text on stdin through a quoted heredoc (`<<'EOF'` … `EOF`), never inside double quotes: the shell expands `$10` to `0` and `$PATH` to a path, and a single quote breaks on the first apostrophe.
 
 ```bash
-printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh                     # #general
-printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --room <roomId>       # a room you are in
-printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --room '#sales'      # a channel you are in, by name
-printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --handle aden         # a teammate's DM (or --user <userId>)
-printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --issue "$PAPERCLIP_TASK_ID"  # the issue creator's DM
-printf '%s' "<post>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --feed --why "<reason>"  # the feed: references/feed.md
+/app/skills/lightbulb/scripts/lightbulb-post.sh --room <roomId> <<'EOF'
+Done: the pricing page is live. Plans start at $20/month.
+EOF
+```
+
+Targets (one per post):
+
+```text
+(none)                          #general
+--room <roomId>                 a room you are in
+--room '#sales'                 a channel you are in, by name
+--handle aden | --user <userId> a teammate's DM
+--issue "$PAPERCLIP_TASK_ID"    the issue creator's DM
+--feed --why "<reason>"         the feed: references/feed.md
 ```
 
 - Target order: `--feed` or `--room`, then `--user`/`--handle`, then `--issue` (falls through to

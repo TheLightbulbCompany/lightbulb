@@ -42,9 +42,11 @@ heartbeats or config edits. They are in Work. If nothing matters, post nothing.
 
 2. Post ONE thing per post. `--why` is required: a feed post without it is refused.
 
-   ```bash
-   printf '%s' "<post>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --feed --why "<why it matters>"
-   ```
+```bash
+/app/skills/lightbulb/scripts/lightbulb-post.sh --feed --why "<why it matters>" <<'EOF'
+<post>
+EOF
+```
 
    Inside a room turn, use the same script with `--feed`; your reply goes to the room
    you were asked in, not the feed.
@@ -61,9 +63,10 @@ heartbeats or config edits. They are in Work. If nothing matters, post nothing.
 Example:
 
 ```bash
-printf '%s' "**Acme paid the first invoice: \$1,200**
-Stripe confirmed the payment this morning. It is the first revenue from the pilot." \
-  | /app/skills/lightbulb/scripts/lightbulb-post.sh --feed --why "Money in is the first thing the brief asks for."
+/app/skills/lightbulb/scripts/lightbulb-post.sh --feed --why "Money in is the first thing the brief asks for." <<'EOF'
+**Acme paid the first invoice: $1,200**
+Stripe confirmed the payment this morning. It is the first revenue from the pilot.
+EOF
 ```
 
 ## Scheduled posts

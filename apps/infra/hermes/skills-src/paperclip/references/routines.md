@@ -25,7 +25,9 @@ Post results to: none          -> do not post (also when the line is missing)
 ```
 
 ```bash
-printf '%s' "<summary + task link>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --room '#sales' --event-id "<routine-id>-<date>"
+/app/skills/lightbulb/scripts/lightbulb-post.sh --room '#sales' --event-id "<routine-id>-<date>" <<'EOF'
+<summary + task link>
+EOF
 ```
 
 Nothing else counts as a target — not the routine's title, not who asked for it.

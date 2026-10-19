@@ -3710,7 +3710,7 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
         message = body.get("message") or {}
         if message_id := message.get("messageId"):
             room_env["LIGHTBULB_ROOM_MESSAGE_ID"] = str(message_id)
-        author = message.get("author") or {}
+        author = message.get("author") or body.get("sender") or {}  # a voice turn names its speaker as sender
         if author.get("kind") == "human" and author.get("id"):
             # Who asked: an assignee outside the room reports to their DM instead (lightbulb-post --user).
             room_env["LIGHTBULB_ROOM_REQUESTER_ID"] = str(author["id"])

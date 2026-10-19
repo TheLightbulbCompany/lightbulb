@@ -46,11 +46,12 @@ task's own run writes the document. Never write the document in the room turn.
    what done means. The helper adds the **From** section (this room, and a
    link to the message) by itself:
 
-   ```bash
-   printf '%s' "<what was asked, by whom, what done means>" |
-   /app/skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" \
-     --title "Habits 365: research & demo video plan" --assignee "<your agent id>"
-   ```
+```bash
+/app/skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" \
+  --title "Habits 365: research & demo video plan" --assignee "<your agent id>" <<'EOF'
+<what was asked, by whom, what done means>
+EOF
+```
 
    Reply with the acknowledgement (below) and stop.
 
@@ -78,7 +79,7 @@ task's own run writes the document. Never write the document in the room turn.
 4. **Post the result to the room in the task's From section**, one message of
    at most five lines: what it is, the link, the two or three takeaways that
    matter, and the next step
-   (`printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --room <roomId>`).
+   (`/app/skills/lightbulb/scripts/lightbulb-post.sh --room <roomId>`, the text on stdin through a quoted heredoc).
    The link is the document path `/<PREFIX>/issues/<IDENTIFIER>#document-<key>`,
    where the prefix is the identifier's letters
    (`HAB-12` → `/HAB/issues/HAB-12#document-research`). Never paste the

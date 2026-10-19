@@ -491,6 +491,26 @@ def _http_error_text(exc: urllib.error.HTTPError) -> str:
     return f"HTTP {exc.code}" + (f": {str(detail)[:200]}" if detail else "")
 
 
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _with_from_section(description: str) -> str:
+    """paperclip-api.sh's ``with_from_section``: a task moved from a room turn records the room
+    (and the message and person that asked), so its own run knows where to report back."""
+    from bridge import turn
+
+    key = _scope_secret("LIGHTBULB_ROOM_SESSION_KEY")  # set for room turns only (turn.py room_env)
+    if not turn.ROOM_SESSION_RE.match(key) or "## From" in description.splitlines():
+        return description
+    room = key.rsplit(":", 1)[-1]
+    text = f"## From\nFiled from room `{room}`."
+    if _SAFE_ID.match(message := _scope_secret("LIGHTBULB_ROOM_MESSAGE_ID")):
+        text += f" The message that asked: /chat?panel=chat&room={room}&message={message}"
+    if _SAFE_ID.match(asker := _scope_secret("LIGHTBULB_ROOM_REQUESTER_ID")):
+        text += f" Asked by user `{asker}`."
+    return f"{description}\n\n{text}" if description else text
+
+
 def _request_approval(args: dict, **_kw) -> str:
     base, key = _scope_secret("PAPERCLIP_API_URL").rstrip("/"), _scope_secret("PAPERCLIP_API_KEY")
     if not base or not key:
@@ -541,7 +561,11 @@ def _request_approval(args: dict, **_kw) -> str:
     not_moved = []
     for issue in issues:
         try:
-            _paperclip_call("PATCH", f"{base}/api/issues/{issue['id']}", key, {"status": "in_review"}, run_id)
+            change = {"status": "in_review"}
+            described = _with_from_section(issue.get("description") or "")
+            if described != (issue.get("description") or ""):
+                change["description"] = described
+            _paperclip_call("PATCH", f"{base}/api/issues/{issue['id']}", key, change, run_id)
         except urllib.error.HTTPError as exc:
             not_moved.append(f"{issue.get('identifier') or issue['id']} ({_http_error_text(exc)})")
         except Exception as exc:  # noqa: BLE001

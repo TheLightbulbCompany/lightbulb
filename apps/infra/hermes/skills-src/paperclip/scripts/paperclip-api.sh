@@ -531,6 +531,14 @@ cmd_update() {
          end)
     '
   )"
+  # A room turn that starts an existing task gives it the room to report back to, as a create does.
+  if [[ "$dry_run" != "1" && ( "$status" == "todo" || "$status" == "in_progress" || -n "$assignee" ) \
+        && "$(room_session_key)" =~ $ROOM_SESSION_RE ]]; then
+    local description from
+    description="$(send GET "$(api_base)/issues/$issue_id" | jq -r '.description // ""')"
+    from="$(with_from_section "$description")"
+    [[ "$from" == "$description" ]] || payload="$(jq -c --arg d "$from" '. + {description: $d}' <<<"$payload")"
+  fi
   send PATCH "$(api_base)/issues/$issue_id" "$payload"
 }
 

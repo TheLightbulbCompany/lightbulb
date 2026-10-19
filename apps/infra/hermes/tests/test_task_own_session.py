@@ -141,6 +141,16 @@ def test_a_from_section_is_never_appended_twice_and_names_the_room_beside_a_call
 
 
 @helper
+def test_starting_an_existing_task_from_a_room_gives_it_a_from_section(tmp_path):
+    get, patch = _helper(tmp_path, ["update", ISSUE, "--assignee", AGENT, "--status", "todo"],
+                         responses=[[200, {"id": ISSUE, "description": "Context."}], [200, {"id": ISSUE}]])
+    assert get["method"] == "GET" and patch["method"] == "PATCH"
+    assert json.loads(patch["body"])["description"] == f"Context.\n\n{FROM}"
+    [patch] = _helper(tmp_path, ["update", ISSUE, "--status", "done"], responses=[[200, {"id": ISSUE}]])
+    assert "description" not in json.loads(patch["body"])  # closing a task never rewrites it
+
+
+@helper
 def test_a_create_outside_a_room_session_appends_nothing(tmp_path):
     [create] = _helper(tmp_path, ["create", "company-1", "--title", "Fix it", "--assignee", AGENT],
                        session_key=f"agent:{AGENT}:{SESSION}", stdin="Context.")

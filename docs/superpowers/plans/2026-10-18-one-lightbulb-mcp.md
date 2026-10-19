@@ -39,7 +39,7 @@ Kept on the Mac, because only the Mac can know it: which session is calling
   prepare-send for a session caller, `isThisSession` in `find_sessions`, and
   `use_browser` with no `session_id`.
 - [x] P3. Backend tests: `test_hosted_mcp_session_caller.py`.
-- [ ] P4. Mac: `session-mcp` forwards `tools/list` and `tools/call` to `/mcp`,
+- [x] P4. Mac: `session-mcp` forwards `tools/list` and `tools/call` to `/mcp`,
   with the `source` claim in the device JWT. Delete the tool list,
   `internal()` and `read()`. Keep `PRIVATE_TOOLS` and `canonical_hook` (they
   key on tool names, which do not change). Unknown-backend fallback: if `/mcp` is
@@ -87,3 +87,12 @@ Reason Network's model, adopted where it fits us. The server stays the hub.
 - Peer-to-peer messaging with no server: we need the ordered log, history
   and revocation.
 - Machine keys as the trust root: Clerk membership stays the root.
+
+## Rollout order (P1-P4 are one PR)
+
+1. Prod-deploy the backend before any desktop build that carries P4: a P4 Mac
+   against an older backend gets 401 from `/mcp` and lists no tools.
+2. Verify on dev with a locally built app (`LIGHTBULB_API_BASE` = dev): every
+   tool from Claude Code and Codex, a send's receipt, a refused send's reason
+   hidden in the shared transcript, `use_browser`, Codex first-turn send.
+3. Then dispatch `desktop-build.yml`.

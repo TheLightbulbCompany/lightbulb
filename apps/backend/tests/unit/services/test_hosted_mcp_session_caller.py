@@ -151,3 +151,29 @@ async def test_use_browser_from_a_session_moves_that_session(as_session, monkeyp
     place.assert_awaited_once_with("org_test", "user_mac", "dev_1", SOURCE_ID, "cloud")
     with pytest.raises(ToolError, match="omit session_id"):
         await hosted_mcp.use_browser("cloud", session_id=SOURCE_ID)
+
+
+@pytest.mark.asyncio
+async def test_exactly_the_nine_tools_and_only_send_is_destructive():
+    listed = {tool.name: tool for tool in await hosted_mcp.mcp.list_tools()}
+    assert sorted(listed) == sorted(
+        [
+            "find_rooms",
+            "find_sessions",
+            "read_messages",
+            "send_message",
+            "message_receipt",
+            "find_tasks",
+            "read_task",
+            "update_task",
+            "use_browser",
+        ]
+    )
+    for name, tool in listed.items():
+        writes = name in {"send_message", "update_task", "use_browser"}
+        assert tool.annotations.read_only_hint is (not writes), name
+        assert tool.annotations.destructive_hint is (name == "send_message"), name
+        assert tool.annotations.open_world_hint is False, name
+    # On the wire the hints are camelCase, as MCP clients read them.
+    wire = listed["send_message"].model_dump(by_alias=True, exclude_none=True)["annotations"]
+    assert wire == {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}

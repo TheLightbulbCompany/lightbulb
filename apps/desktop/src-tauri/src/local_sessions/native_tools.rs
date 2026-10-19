@@ -300,69 +300,47 @@ async fn answer(
         {
             return Err("invalid tool request".into());
         }
+        let tool = request["tool"].as_str().unwrap_or("");
+        if tool == LIST {
+            // The tool list is the backend's (/mcp), so the Mac and hosted servers never drift.
+            let token = crate::device_token::mint_device_token(
+                &identity.private_key_pem, &enrollment.device_id, &enrollment.owner_id, 90,
+            )
+            .map_err(|_| "device authentication unavailable")?;
+            return mcp(&client, &token, json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).await;
+        }
         let (source, warmed) = source_with_turn(&scope, peer, &request["meta"]).await?;
-        if source.provider == "codex" && request["tool"] == "send" {
+        if source.provider == "codex" && tool == "send_message" {
             if let Some(turn) = request["meta"]["x-codex-turn-metadata"]["turn_id"].as_str() {
                 if Some(turn) != source.active_turn.as_deref() {
                     return Err("Codex native send turn changed".into());
                 }
             }
         }
-        let token = crate::device_token::mint_device_token(
-            &identity.private_key_pem,
-            &enrollment.device_id,
-            &enrollment.owner_id,
-            90,
-        )
-        .map_err(|_| "device authentication unavailable")?;
-        let tool = request["tool"].as_str().unwrap_or("");
-        if matches!(tool, "find_rooms" | "find_sessions" | "read_messages" | "find_tasks" | "read_task" | "update_task") {
-            return read(&client, &token, tool, &request["arguments"], &source.session_id).await;
-        }
-        let base = crate::LIGHTBULB_API_BASE.trim_end_matches('/');
-        // use_browser carries its own session-scoped route and body; both ride the same
-        // warmed-source retry below (the open connection stays put, the next one follows).
-        let (url, body) = if tool == "use_browser" {
-            (
-                format!("{base}/api/v1/local-sessions/device/sessions/{}/browser-place", source.session_id),
-                request["arguments"].clone(),
-            )
-        } else {
-            // This route only prepares a private intent. An older backend returns
-            // 404 here, which is safe; it must never fall through to immediate send.
-            let route = if tool == "send" { "native-session-tools/prepare-send" } else { "native-session-tools" };
-            (
-                format!("{base}/api/v1/messaging/{route}"),
-                json!({"sourceSessionId":source.session_id.clone(),"sourceGeneration":source.generation.clone(),
-                "sourceProvider":source.provider.clone(),"sourceConversationId":source.conversation.clone(),
-                "sourceTurnId":source.active_turn.clone(),"originItemId":source.item_id.clone(),
-                "tool":request["tool"],"arguments":request["arguments"]}),
-            )
-        };
+        let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":tool,"arguments":request["arguments"]}});
         let retry_until = tokio::time::Instant::now() + Duration::from_secs(4);
+        let mut source = source;
         loop {
-            let response = client
-                .post(&url)
-                .bearer_auth(&token)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|_| "Lightbulb unavailable")?;
-            let ok = response.status().is_success();
-            let data: Value = response
-                .json()
-                .await
-                .map_err(|_| "invalid Lightbulb response")?;
-            if retry_warmed_forbidden(warmed, ok, &data) && tokio::time::Instant::now() < retry_until
-            {
+            let token = crate::device_token::mint_session_token(
+                &identity.private_key_pem,
+                &enrollment.device_id,
+                &enrollment.owner_id,
+                90,
+                Some(source_claim(&source)),
+            )
+            .map_err(|_| "device authentication unavailable")?;
+            let reply = mcp(&client, &token, call.clone()).await?;
+            if retry_warmed_forbidden(warmed, &reply) && tokio::time::Instant::now() < retry_until {
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 let current = resolve_source(&scope, peer, &request["meta"])?;
                 if !same_source_turn(&source, &current) {
                     return Err("Codex session changed while syncing".into());
                 }
+                source = current;
                 continue;
             }
-            return Ok(json!({"ok":ok,"data":data}));
+            return Ok(reply);
         }
     }
     .await;
@@ -376,52 +354,44 @@ async fn answer(
     }
 }
 
+/// The tool socket's request for the backend's tool list (not a tool name).
+pub(super) const LIST: &str = "tools/list";
+
+/// The signed `source` claim: which shared session this Mac says is calling.
+fn source_claim(source: &Source) -> Value {
+    json!({"sourceSessionId":source.session_id,"sourceGeneration":source.generation,
+        "sourceProvider":source.provider,"sourceConversationId":source.conversation,
+        "sourceTurnId":source.active_turn,"originItemId":source.item_id})
+}
+
+/// One JSON-RPC request to the backend's `/mcp`: the same tools hosted clients use. Answers
+/// `{"ok", "result"}` with the MCP result (`content`, `isError`) passed through unchanged.
+async fn mcp(client: &reqwest::Client, token: &str, body: Value) -> Result<Value> {
+    let url = format!("{}/mcp", crate::LIGHTBULB_API_BASE.trim_end_matches('/'));
+    let response = client
+        .post(url)
+        .bearer_auth(token)
+        .header("Accept", "application/json, text/event-stream")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Lightbulb unavailable")?;
+    if !response.status().is_success() {
+        return Err(format!("Lightbulb refused this Mac ({})", response.status().as_u16()));
+    }
+    let reply: Value = response.json().await.map_err(|_| "invalid Lightbulb response")?;
+    match reply.get("result") {
+        Some(result) => Ok(json!({"ok": result["isError"] != true, "result": result})),
+        None => Err(reply["error"]["message"].as_str().unwrap_or("invalid Lightbulb response").to_owned()),
+    }
+}
+
 /// A warmed first-turn Codex source can be ready locally before the backend has persisted its
 /// session row: a forbidden answer then is transient, for every tool that posts from the source.
-fn retry_warmed_forbidden(warmed: bool, ok: bool, data: &Value) -> bool {
-    warmed && !ok && data["code"] == "LOCAL_SESSION_FORBIDDEN"
-}
-
-/// Reads (and the task-board update) run as the enrolled human through the
-/// device-token routes; the session itself is only the caller `find_sessions` marks.
-async fn read(client: &reqwest::Client, token: &str, tool: &str, args: &Value, own: &str) -> Result<Value> {
-    let base = format!("{}/api/v1/local-sessions/device", crate::LIGHTBULB_API_BASE.trim_end_matches('/'));
-    let param = |key: &str| args.get(key).filter(|v| !v.is_null()).map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
-    let keys: &[&str] = match tool {
-        "read_messages" => &["after_seq", "limit"],
-        "find_tasks" => &["query", "status", "assignee", "limit"],
-        "read_task" => &["comments"],
-        "update_task" => &[],
-        _ => &["query", "limit"],
-    };
-    let query: Vec<(&str, String)> = keys.iter().filter_map(|&k| param(k).map(|v| (k, v))).collect();
-    // `native_mcp::internal` admitted only a path-safe room/task id and these keys.
-    let request = match tool {
-        "read_messages" => client.get(format!("{base}/rooms/{}/messages", args["room_id"].as_str().unwrap_or(""))),
-        "find_rooms" => client.get(format!("{base}/rooms")),
-        "find_tasks" => client.get(format!("{base}/tasks")),
-        "read_task" => client.get(format!("{base}/tasks/{}", args["task"].as_str().unwrap_or(""))),
-        "update_task" => {
-            let mut body = args.clone();
-            body.as_object_mut().map(|b| b.remove("task"));
-            client.patch(format!("{base}/tasks/{}", args["task"].as_str().unwrap_or(""))).json(&body)
-        }
-        _ => client.get(format!("{base}/sessions")),
-    };
-    let response = request.bearer_auth(token).query(&query).send().await
-        .map_err(|_| "Lightbulb unavailable")?;
-    let ok = response.status().is_success();
-    let mut data: Value = response.json().await.map_err(|_| "invalid Lightbulb response")?;
-    if ok && tool == "find_sessions" {
-        mark_own(&mut data, own);
-    }
-    Ok(json!({"ok":ok,"data":data}))
-}
-
-fn mark_own(data: &mut Value, own: &str) {
-    for session in data["sessions"].as_array_mut().into_iter().flatten() {
-        session["isThisSession"] = json!(session["sessionId"] == own);
-    }
+fn retry_warmed_forbidden(warmed: bool, reply: &Value) -> bool {
+    warmed
+        && reply["ok"] == false
+        && reply["result"]["content"][0]["text"].as_str().is_some_and(|t| t.starts_with("LOCAL_SESSION_FORBIDDEN"))
 }
 
 pub(super) async fn serve(
@@ -613,20 +583,24 @@ mod tests {
     }
 
     #[test]
-    fn find_sessions_marks_only_the_calling_session() {
-        let mut data = json!({"sessions":[{"sessionId":"a"},{"sessionId":"b"}],"total":2});
-        mark_own(&mut data, "b");
-        assert_eq!(data["sessions"][0]["isThisSession"], false);
-        assert_eq!(data["sessions"][1]["isThisSession"], true);
+    fn warmed_source_retries_a_transient_forbidden_for_every_post() {
+        let forbidden = json!({"ok":false,"result":{"isError":true,"content":[{"type":"text","text":"LOCAL_SESSION_FORBIDDEN: not current"}]}});
+        assert!(retry_warmed_forbidden(true, &forbidden), "use_browser shares this retry");
+        assert!(!retry_warmed_forbidden(false, &forbidden), "a settled source is really forbidden");
+        let ok = json!({"ok":true,"result":{"isError":false,"content":[{"type":"text","text":"LOCAL_SESSION_FORBIDDEN"}]}});
+        assert!(!retry_warmed_forbidden(true, &ok));
+        let other = json!({"ok":false,"result":{"isError":true,"content":[{"type":"text","text":"OTHER: no"}]}});
+        assert!(!retry_warmed_forbidden(true, &other));
     }
 
     #[test]
-    fn warmed_source_retries_a_transient_forbidden_for_every_post() {
-        let forbidden = json!({"code":"LOCAL_SESSION_FORBIDDEN"});
-        assert!(retry_warmed_forbidden(true, false, &forbidden), "use_browser shares this retry");
-        assert!(!retry_warmed_forbidden(false, false, &forbidden), "a settled source is really forbidden");
-        assert!(!retry_warmed_forbidden(true, true, &forbidden));
-        assert!(!retry_warmed_forbidden(true, false, &json!({"code":"OTHER"})));
+    fn the_source_claim_is_the_backends_native_source_shape() {
+        let source = Source {
+            session_id: "s".into(), generation: "g".into(), provider: "codex".into(),
+            conversation: "c".into(), active_turn: Some("t".into()), item_id: None,
+        };
+        assert_eq!(source_claim(&source), json!({"sourceSessionId":"s","sourceGeneration":"g","sourceProvider":"codex",
+            "sourceConversationId":"c","sourceTurnId":"t","originItemId":null}));
     }
 
     #[test]

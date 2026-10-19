@@ -41,6 +41,10 @@ struct DeviceClaims {
     owner: String,
     iat: u64,
     exp: u64,
+    /// The shared session making this call, for the backend's `/mcp` (signed, so the
+    /// device key vouches for which session it is). Absent on every other token.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    source: Option<serde_json::Value>,
 }
 
 /// Mint an EdDSA device token signed by `private_key_pem` (the CLI device
@@ -51,6 +55,17 @@ pub fn mint_device_token(
     device_id: &str,
     owner_id: &str,
     lifetime_secs: u64,
+) -> Result<String, String> {
+    mint_session_token(private_key_pem, device_id, owner_id, lifetime_secs, None)
+}
+
+/// A device token that also names the calling shared session (`source`), for `/mcp`.
+pub fn mint_session_token(
+    private_key_pem: &str,
+    device_id: &str,
+    owner_id: &str,
+    lifetime_secs: u64,
+    source: Option<serde_json::Value>,
 ) -> Result<String, String> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -64,6 +79,7 @@ pub fn mint_device_token(
         // future-iat rejection; exp is still now + lifetime.
         iat: now.saturating_sub(IAT_BACKDATE_SECS),
         exp: now + lifetime_secs,
+        source,
     };
     let key = EncodingKey::from_ed_pem(private_key_pem.as_bytes())
         .map_err(|e| format!("load device signing key: {e}"))?;

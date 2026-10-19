@@ -21,6 +21,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp_types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
 from core.auth import AuthContext
@@ -31,6 +32,12 @@ from core.services import clerk_admin, local_sessions, messaging, native_session
 from core.services.machine_auth import MachineIdentity, verify_upgrade
 
 logger = logging.getLogger(__name__)
+
+# The same hints the Mac's own list carried: Codex and Claude Code read them to decide
+# which calls ask first. Only send_message is destructive.
+READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
+WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+SEND = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
 READ_SCOPE = "lightbulb:messages:read"
 WRITE_SCOPE = "lightbulb:messages:write"
@@ -308,13 +315,13 @@ async def receipt_for(auth: AuthContext, room_id: str, request_id: uuid.UUID) ->
     return {"state": "posted", "message": messaging.canonical_message(message).model_dump(mode="json", by_alias=True)}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def find_rooms(query: str = "", limit: int = 30) -> dict:
     """Find channels and existing DMs that the signed-in person may read."""
     return await rooms_for(_caller(), query, limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
     """Find coding sessions shared with the workspace, and your own that are not (shared false: Only me, takes no message), by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason). Called from a shared session, that session is marked isThisSession: never message it."""
     result = await sessions_for(_caller(), query, limit)
@@ -325,7 +332,7 @@ async def find_sessions(query: str = "", limit: int = 30) -> dict:
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def read_messages(room_id: str, after_seq: int | None = None, limit: int = 25) -> dict:
     """Read the latest page or continue after a message sequence in a room or DM."""
     return await messages_for(_caller(), room_id, after_seq, limit)
@@ -339,19 +346,19 @@ async def _board(call):
         raise ToolError(f"{exc.status_code}: {exc.detail}") from exc
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def find_tasks(query: str = "", status: str = "", assignee: str = "", limit: int = 25) -> dict:
     """Find tasks on this workspace's task board. Open tasks (backlog, todo, in_progress, in_review, blocked) unless status names others (comma-separated; also done, cancelled). assignee is an agent name. Newest-updated first."""
     return await _board(task_board.find_tasks(_caller(), query, status, assignee, limit))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def read_task(task: str, comments: int = 10) -> dict:
     """Read one task by identifier (e.g. ISOA-123) or id: title, status, priority, assignee, full description, blockers, and its latest comments."""
     return await _board(task_board.read_task(_caller(), task, comments))
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 async def update_task(
     task: str, status: str | None = None, priority: str | None = None, append_note: str | None = None
 ) -> dict:
@@ -359,7 +366,7 @@ async def update_task(
     return await _board(task_board.update_task(_caller(WRITE_SCOPE), task, status, priority, append_note))
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 async def use_browser(where: Literal["mac", "cloud"], session_id: str | None = None) -> dict:
     """Choose where a shared Claude Code or Codex session browses with its lightbulb-browser tools: "mac" (its Mac's Lightbulb agent Chrome, the default) or "cloud" (the workspace's cloud browser). Its next browser connection goes there; one already open stays where it is: to move an open one now, restart the lightbulb-browser MCP server (`/mcp` in Claude Code). Called from a shared session, omit session_id: it moves that session. Otherwise session_id comes from find_sessions; only people who may control that session can move it."""
     auth = _caller(WRITE_SCOPE)
@@ -473,7 +480,7 @@ async def _posted(auth: AuthContext, room_id: str, request_id: uuid.UUID) -> boo
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=SEND)
 async def send_message(
     text: str,
     request_id: uuid.UUID,
@@ -579,7 +586,7 @@ async def send_message(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def message_receipt(request_id: uuid.UUID) -> dict:
     """Reconcile a send by its request ID, including when the send response was lost."""
     auth = _caller()

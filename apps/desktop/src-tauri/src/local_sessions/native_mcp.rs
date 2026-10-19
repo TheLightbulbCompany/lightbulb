@@ -332,45 +332,6 @@ fn read_frame(reader: &mut impl BufRead, limit: u64) -> io::Result<Option<Vec<u8
     Ok(Some(bytes))
 }
 
-fn tools() -> Value {
-    let read = json!({"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false});
-    let search = json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}},
-        "additionalProperties":false});
-    json!({"tools": [
-        {"name":"find_rooms","description":"Find Lightbulb rooms and DMs you can read, with their members. Use a member id as person_id.",
-         "inputSchema":search, "annotations":read},
-        {"name":"find_sessions","description":"Find shared Claude Code and Codex sessions. This session is marked isThisSession; never message it.",
-         "inputSchema":search, "annotations":read},
-        {"name":"read_messages","description":"Read a room's latest messages, or continue in order after after_seq.",
-         "inputSchema":{"type":"object","properties":{"room_id":{"type":"string"},"after_seq":{"type":"integer","minimum":0},
-           "limit":{"type":"integer","minimum":1,"maximum":100}},"required":["room_id"],"additionalProperties":false},
-         "annotations":read},
-        {"name":"send_message","description":"Post one message as this session to exactly one of room_id, person_id or session_id. Use a new UUID request_id and reuse it on retry. Cannot answer permission prompts.",
-         "inputSchema":{"type":"object","properties":{"room_id":{"type":"string"},"person_id":{"type":"string"},"session_id":{"type":"string"},
-           "text":{"type":"string"},"request_id":{"type":"string"},"reply_to_message_id":{"type":"string","description":"Not supported from this Mac yet; omit."}},
-          "required":["text","request_id"],"additionalProperties":false},
-         "annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
-        {"name":"message_receipt","description":"Check delivery of a send_message from this session by request_id.",
-         "inputSchema":{"type":"object","properties":{"request_id":{"type":"string"}},"required":["request_id"],"additionalProperties":false},
-         "annotations":read},
-        {"name":"find_tasks","description":"Find tasks on the workspace task board, newest-updated first. Open tasks (backlog, todo, in_progress, in_review, blocked) unless status names others (comma-separated; also done, cancelled). assignee is an agent name.",
-         "inputSchema":{"type":"object","properties":{"query":{"type":"string"},"status":{"type":"string"},"assignee":{"type":"string"},
-           "limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":false},
-         "annotations":read},
-        {"name":"read_task","description":"Read one task by identifier (e.g. ISOA-123) or id: status, priority, assignee, full description, blockers and latest comments.",
-         "inputSchema":{"type":"object","properties":{"task":{"type":"string"},"comments":{"type":"integer","minimum":0,"maximum":50}},
-           "required":["task"],"additionalProperties":false},
-         "annotations":read},
-        {"name":"update_task","description":"Change a task's status (backlog, todo, in_progress, in_review, blocked, done, cancelled) or priority (critical, high, medium, low), and/or append a dated note to its description. Posts no comment: a task comment wakes the assigned agent and starts a paid run.",
-         "inputSchema":{"type":"object","properties":{"task":{"type":"string"},"status":{"type":"string"},"priority":{"type":"string"},
-           "append_note":{"type":"string"}},"required":["task"],"additionalProperties":false},
-         "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}},
-        {"name":"use_browser","description":"Choose where this session's lightbulb-browser tools browse: \"mac\" (this Mac's Lightbulb agent Chrome, the default) or \"cloud\" (the workspace's cloud browser). It applies to this session's next browser connection: to switch now, restart the lightbulb-browser MCP server (/mcp in Claude Code).",
-         "inputSchema":{"type":"object","properties":{"where":{"type":"string","enum":["mac","cloud"]}},"required":["where"],"additionalProperties":false},
-         "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}
-    ]})
-}
-
 /// Lightbulb tools whose arguments and results stay out of the shared
 /// transcript: destinations, request ids, message bodies and task contents.
 /// Public and internal names; one list for the Claude and Codex scrubbers.
@@ -504,6 +465,26 @@ fn app_call(name: &str, args: &Value, meta: &Value) -> io::Result<Value> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid Mac reply"))
 }
 
+/// Marks a private tool's result so the shared transcript shows none of it
+/// (`claude.rs` reads `_lightbulbNativeSessionTool` from the text's JSON). A
+/// plain-text error is wrapped, so its reason is hidden too.
+fn mark_private(name: &str, mut result: Value) -> Value {
+    if !private_tool(name) {
+        return result;
+    }
+    for item in result["content"].as_array_mut().into_iter().flatten() {
+        if let Some(text) = item["text"].as_str() {
+            let mut value = serde_json::from_str::<Value>(text)
+                .ok()
+                .filter(Value::is_object)
+                .unwrap_or_else(|| json!({"error": text}));
+            value["_lightbulbNativeSessionTool"] = json!(name);
+            item["text"] = json!(value.to_string());
+        }
+    }
+    result
+}
+
 fn handle(request: &Value) -> Option<Value> {
     let id = request.get("id")?.clone();
     let params = &request["params"];
@@ -513,26 +494,21 @@ fn handle(request: &Value) -> Option<Value> {
             "capabilities":{"tools":{}},"serverInfo":{"name":"lightbulb","version":"2"}})
         }
         "ping" => json!({}),
-        "tools/list" => tools(),
+        // Both forward to the backend's /mcp through the app, which proves the calling session:
+        // one tool set for this Mac and every hosted client.
+        "tools/list" => match app_call(super::native_tools::LIST, &json!({}), &json!({})) {
+            Ok(reply) if reply["ok"] == true => reply["result"].clone(),
+            _ => json!({"tools":[]}),
+        },
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
-            let args = &params["arguments"];
-            if let Some((name, args)) = internal(name, args) {
-                match app_call(name, &args, &params["_meta"]) {
-                    Ok(mut reply) => {
-                        let is_error = reply["ok"] != true;
-                        // Marks results the shared transcript must not show.
-                        if private_tool(name) {
-                            reply["_lightbulbNativeSessionTool"] = json!(name);
-                        }
-                        json!({"content":[{"type":"text","text":reply.to_string()}], "isError":is_error})
-                    }
-                    Err(_) => {
-                        json!({"content":[{"type":"text","text":"Lightbulb on this Mac is unavailable or cannot verify this native session."}],"isError":true})
-                    }
+            match app_call(name, &params["arguments"], &params["_meta"]) {
+                Ok(reply) if reply["result"].is_object() => mark_private(name, reply["result"].clone()),
+                Ok(reply) => mark_private(name, json!({"content":[{"type":"text","text":
+                    reply["error"].as_str().unwrap_or("Lightbulb is unavailable.")}],"isError":true})),
+                Err(_) => {
+                    json!({"content":[{"type":"text","text":"Lightbulb on this Mac is unavailable or cannot verify this native session."}],"isError":true})
                 }
-            } else {
-                json!({"content":[{"type":"text","text":"Invalid Lightbulb tool arguments."}],"isError":true})
             }
         }
         _ => {
@@ -609,17 +585,16 @@ mod tests {
     }
 
     #[test]
-    fn exactly_the_nine_tools_and_only_send_is_destructive() {
-        let listed = tools();
-        let names: Vec<_> = listed["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["find_rooms", "find_sessions", "read_messages", "send_message", "message_receipt",
-            "find_tasks", "read_task", "update_task", "use_browser"]);
-        for tool in listed["tools"].as_array().unwrap() {
-            let writes = matches!(tool["name"].as_str(), Some("send_message" | "update_task" | "use_browser"));
-            assert_eq!(tool["annotations"]["readOnlyHint"], !writes);
-            assert_eq!(tool["annotations"]["destructiveHint"], tool["name"] == "send_message");
-            assert_eq!(tool["annotations"]["openWorldHint"], false);
-        }
+    fn a_private_result_is_marked_and_a_plain_error_wrapped() {
+        let posted = mark_private("send_message", json!({"content":[{"type":"text","text":"{\"state\":\"posted\"}"}],"isError":false}));
+        let text: Value = serde_json::from_str(posted["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text, json!({"state":"posted","_lightbulbNativeSessionTool":"send_message"}));
+        let refused = mark_private("message_receipt", json!({"content":[{"type":"text","text":"LOCAL_SESSION_FORBIDDEN: owner secret"}],"isError":true}));
+        let text: Value = serde_json::from_str(refused["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text["_lightbulbNativeSessionTool"], "message_receipt");
+        assert_eq!(refused["isError"], true);
+        let public = json!({"content":[{"type":"text","text":"plain"}]});
+        assert_eq!(mark_private("find_rooms", public.clone()), public);
     }
 
     #[test]

@@ -30,7 +30,7 @@ def room(monkeypatch, created):  # noqa: F811
         "list_members",
         AsyncMock(return_value=[{"kind": "agent", "id": AGENT, "displayName": "CEO", "listenMode": "active"}]),
     )
-    relay = AsyncMock()
+    relay = AsyncMock(return_value="sent")
     monkeypatch.setattr(text_relay, "relay_reply", relay)
 
     def with_trigger(trigger: dict):
@@ -50,6 +50,21 @@ async def test_an_agents_reply_to_a_texted_message_is_texted_back(room, created)
     relay = room(TEXT_TRIGGER)
     await messaging.create_agent_message(OWNER, _request("I'm the CEO, Dana.", runId=str(RUN)))
     relay.assert_awaited_once_with(OWNER, TEXT_TRIGGER, "I'm the CEO, Dana.")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_relay_answers_503_and_the_retry_replay_sends_again(room, created):  # noqa: F811
+    """The reply is stored either way; a failed text makes the container retry, and the replay relays again."""
+    relay = room(TEXT_TRIGGER)
+    relay.return_value = "send_failed"
+    request = _request("I'm the CEO, Dana.", runId=str(RUN))
+    with pytest.raises(messaging.ApiProblem) as failed:
+        await messaging.create_agent_message(OWNER, request)
+    assert failed.value.error.code == "TEXT_RELAY_UNAVAILABLE" and failed.value.status_code == 503
+    created.return_value = (created.return_value[0], True)  # the retry replays the stored reply
+    relay.return_value = "sent"
+    await messaging.create_agent_message(OWNER, request)
+    assert relay.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -74,11 +89,11 @@ async def test_relay_sends_through_the_text_door_without_an_agent_fence(monkeypa
     monkeypatch.setattr(agent_text, "send_reply", send)
     metric = []
     monkeypatch.setattr(text_relay, "put_metric", lambda name, **kw: metric.append((name, kw["dimensions"])))
-    await text_relay.relay_reply(OWNER, TEXT_TRIGGER, "hello")
+    assert await text_relay.relay_reply(OWNER, TEXT_TRIGGER, "hello") == "sent"
     send.assert_awaited_once_with(owner_id=OWNER, reply_key=KEY, text="hello")  # no agent_id: the backend sends
     assert metric == [("text.member_reply_relay", {"status": "sent"})]
     send.reset_mock()
-    await text_relay.relay_reply(OWNER, TEXT_TRIGGER, "   ")
+    assert await text_relay.relay_reply(OWNER, TEXT_TRIGGER, "   ") == "skipped"
     send.assert_not_awaited()
 
 
@@ -95,16 +110,17 @@ def photon(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_run_on_a_texted_message_shows_typing_and_marks_it_read_when_it_starts(photon):
+async def test_a_run_on_a_texted_message_shows_typing_and_marks_it_read(photon):
     typing, read = photon
     run = {"roomId": ROOM, "triggerMessageId": "t1", "runId": "r1"}
-    await text_relay.signal_working(OWNER, run, started=True)
+    await text_relay.signal_working(OWNER, run)
     typing.assert_awaited_once_with(sender_id="lu1", space_id="sp1")
     read.assert_awaited_once_with("pm1")
     typing.reset_mock(), read.reset_mock()
-    await text_relay.signal_working(OWNER, run, started=False)  # a heartbeat keeps the bubble up
+    # A heartbeat keeps the bubble up, and reads too: it may be what started a run whose run.started was lost.
+    await text_relay.signal_working(OWNER, run)
     typing.assert_awaited_once()
-    read.assert_not_awaited()
+    read.assert_awaited_once_with("pm1")
     assert text_relay.messaging_repo.get_message_by_id.await_count == 1  # the trigger is looked up once
 
 
@@ -112,11 +128,11 @@ async def test_a_run_on_a_texted_message_shows_typing_and_marks_it_read_when_it_
 async def test_no_signal_for_an_app_message_or_another_owners_text(photon, monkeypatch):
     typing, read = photon
     monkeypatch.setattr(text_relay.messaging_repo, "get_message_by_id", AsyncMock(return_value={"text": "hi"}))
-    await text_relay.signal_working(OWNER, {"roomId": ROOM, "triggerMessageId": "t2"}, started=True)
+    await text_relay.signal_working(OWNER, {"roomId": ROOM, "triggerMessageId": "t2"})
     other = {"owner_id": "org_other", "provider": PROVIDER}
     monkeypatch.setattr(text_relay.messaging_repo, "get_message_by_id", AsyncMock(return_value={"textReplyKey": KEY}))
     monkeypatch.setattr(text_relay.agent_mail_inbox_repo, "get_message", AsyncMock(return_value=other))
-    await text_relay.signal_working(OWNER, {"roomId": ROOM, "triggerMessageId": "t3"}, started=True)
+    await text_relay.signal_working(OWNER, {"roomId": ROOM, "triggerMessageId": "t3"})
     typing.assert_not_awaited()
     read.assert_not_awaited()
 
@@ -131,4 +147,4 @@ async def test_run_started_and_heartbeat_send_the_working_signal(monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "heartbeat_run", AsyncMock(return_value=STARTED_ROW))
     await messaging.handle_run_event("o", _event(type="run.started", session_key="k"))
     await messaging.handle_run_event("o", _event(type="run.heartbeat"))
-    assert [c.kwargs["started"] for c in signal.await_args_list] == [True, False]
+    assert signal.await_count == 2

@@ -157,6 +157,19 @@ describe("useSessionApproval", () => {
     expect(result.current.pending).toEqual(pending);
   });
 
+  it("A's rejected receipt arriving after the row moved to prompt B leaves B's card up", async () => {
+    let settle: (r: LocalSessionCommandReceipt) => void = () => {};
+    const submit = vi.fn(() => new Promise<LocalSessionCommandReceipt>(resolve => { settle = resolve; }));
+    const b = { ...pending, approvalId: "b1" };
+    const { result, rerender } = renderHook(({ s }) => useSessionApproval({ submitLocalSessionCommand: submit }, s, () => "r1", async () => "abc"),
+      { initialProps: { s: live(pending) } });
+    let answered: Promise<void> = Promise.resolve();
+    act(() => { answered = result.current.answer({ decision: "deny" }); });
+    rerender({ s: live(b) });
+    await act(async () => { settle({ state: "rejected" } as LocalSessionCommandReceipt); await answered; });
+    expect(result.current.pending).toEqual(b);
+  });
+
   it("an unsupported answer keeps the card with the server's reason", async () => {
     const refused = mount(pending);
     refused.submit.mockRejectedValueOnce(new ApiError(409, { code: "LOCAL_SESSION_UNSUPPORTED" }, "This prompt can only be approved in the terminal."));

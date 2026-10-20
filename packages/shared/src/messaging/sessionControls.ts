@@ -299,7 +299,9 @@ export function useSessionApproval(client: Pick<Client, "submitLocalSessionComma
   latest.current = session;
   // A prompt known to be closed is hidden only on the session row that still showed it: any
   // later row that carries the same prompt is newer than that verdict, so it shows again.
-  const pending = state?.status === "gone" && state.base === session ? undefined : session.pendingApproval;
+  // Keyed by the prompt answered, too: a verdict on A never hides a prompt B that replaced it.
+  const pending = state?.status === "gone" && state.base === session && state.approvalId === session.pendingApproval?.approvalId
+    ? undefined : session.pendingApproval;
   const answer = useCallback(async ({ decision, mode, reason }: ApprovalAnswer) => {
     if (!pending) return;
     const text = decision === "deny" ? clipBytes(reason?.trim() ?? "", 500) : "";

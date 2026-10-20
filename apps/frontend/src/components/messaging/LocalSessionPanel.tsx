@@ -319,7 +319,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {session.workspace?.changed && <p role="status" className="text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
     </div>}
     {/* A prompt the Mac holds for a remote answer gets the approval card; any other waits in the terminal. */}
-    <SessionApprovalCard session={session} client={client} own={own} ownerName={ownerName} />
+    <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} own={own} ownerName={ownerName} />
     {waitingOn !== null && !session.pendingApproval && <div role="status" className="local-session-waiting">
       <p className="font-semibold">{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</p>
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}

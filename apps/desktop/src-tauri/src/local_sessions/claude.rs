@@ -37,6 +37,9 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         .as_str()
         .filter(|s| uuid::Uuid::parse_str(s).is_ok())
         .ok_or("invalid native session")?;
+    if headless(entrypoint(home, pid, conversation).as_deref()) {
+        return Err("not a Claude Code session".into());
+    }
     let execution = process(pid)?;
     let root = home.join(".claude/projects");
     let transcript = find_transcript(home, conversation)?;
@@ -235,20 +238,32 @@ pub(super) fn parked_origin(home: &Path, job: &str) -> Option<String> {
     })
 }
 
-/// Whether this conversation runs inside an app, an IDE or an SDK and not in a terminal, by
-/// Claude's own per-pid registry: `entrypoint` says how it was started (`cli` in a terminal,
-/// read from 2.1.289-2.1.294). A file that is missing, unreadable, another conversation's or
-/// silent says a terminal: nothing of the session is then uploaded without a live one.
-// ponytail: the values the Claude desktop app and the IDE extensions write were not observed;
-// anything that is not `cli` counts. Name them here if one of them turns out to have a terminal.
-fn in_app(home: &Path, pid: u32, conversation: &str) -> bool {
+/// How this conversation was started, by Claude's own per-pid registry: `entrypoint` is `cli`
+/// in a terminal, `sdk-cli` for `claude -p`, `sdk-ts`/`sdk-py` for the Agent SDK (2.1.304).
+/// None when the file is missing, unreadable, another conversation's or silent.
+fn entrypoint(home: &Path, pid: u32, conversation: &str) -> Option<String> {
     let mut text = String::new();
     confined_path(home, &home.join(format!(".claude/sessions/{pid}.json")))
         .and_then(|path| secure_file(&path))
         .ok()
         .and_then(|file| file.take(64 * 1024).read_to_string(&mut text).ok())
         .and_then(|_| serde_json::Deserializer::from_str(&text).into_iter::<Value>().next()?.ok())
-        .is_some_and(|row| row["sessionId"] == conversation && row["entrypoint"].as_str().is_some_and(|e| e != "cli"))
+        .filter(|row| row["sessionId"] == conversation)
+        .and_then(|row| row["entrypoint"].as_str().map(str::to_owned))
+}
+
+/// A run a program started (`claude -p`, the Agent SDK), not a person: plugins such as
+/// claude-mem and claude-remember start one per hook, and none is a session to share.
+fn headless(entrypoint: Option<&str>) -> bool {
+    entrypoint.is_some_and(|e| e.starts_with("sdk-"))
+}
+
+/// Whether this conversation runs inside an app, an IDE or an SDK and not in a terminal.
+/// No entrypoint says a terminal: nothing of the session is then uploaded without a live one.
+// ponytail: the values the Claude desktop app and the IDE extensions write were not observed;
+// anything that is not `cli` counts. Name them here if one of them turns out to have a terminal.
+fn in_app(home: &Path, pid: u32, conversation: &str) -> bool {
+    entrypoint(home, pid, conversation).is_some_and(|e| e != "cli")
 }
 
 /// Whether pid `pid` still runs `conversation`, by Claude's own per-pid registry. Leaving a
@@ -2355,6 +2370,10 @@ mod tests {
         fs::write(sessions.join("4242.json"), format!("{{\"pid\":4242,\"sessionId\":\"{a}\",\"entrypoint\":\"claude-desktop\"}}")).unwrap();
         assert!(in_app(home.path(), 4242, a));
         assert!(!in_app(home.path(), 4242, "22222222-2222-4222-8222-222222222222"), "another conversation's file");
+        // A program's run (`claude -p`, the Agent SDK) is never a session to share.
+        fs::write(sessions.join("4242.json"), format!("{{\"pid\":4242,\"sessionId\":\"{a}\",\"entrypoint\":\"sdk-cli\"}}")).unwrap();
+        assert!(headless(entrypoint(home.path(), 4242, a).as_deref()));
+        assert!(!headless(Some("cli")) && !headless(Some("claude-desktop")) && !headless(None));
     }
 
 }

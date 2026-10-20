@@ -22,6 +22,13 @@ it("shows who wants to message which session, the text, and three buttons", asyn
   for (const name of ["Send", "Decline", "Always allow"]) expect(screen.getByRole("button", { name })).toBeInTheDocument();
 });
 
+it("a teammate answering through team control gets Send and Decline, never the owner's Always allow", async () => {
+  render(<SessionAgentAsks client={make().client} sessionId="s" title="Fix login" own={false} />);
+  expect(await screen.findByRole("button", { name: "Send" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Decline" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Always allow" })).toBeNull();
+});
+
 it("Send and Decline answer the ask and clear it", async () => {
   const { client, decide } = make();
   render(<SessionAgentAsks client={client} sessionId="s" title="Fix login" />);

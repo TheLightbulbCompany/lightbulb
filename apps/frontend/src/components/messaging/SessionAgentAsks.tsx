@@ -12,8 +12,10 @@ export type AgentAskClient = Pick<MessagingClient, "listAgentAsks" | "decideAgen
  * the terminal band's own buttons cannot be clicked here). Always allow = send this one and flip
  * the account switch Settings -> Desktop shows ("Agents can message my sessions without asking").
  */
-export function SessionAgentAsks({ client, sessionId, title, onEvent, connected = true }: {
+export function SessionAgentAsks({ client, sessionId, title, onEvent, connected = true, own = true }: {
   client: AgentAskClient; sessionId: string; title: string;
+  /** False for a teammate answering through team control: Always allow is the owner's own setting. */
+  own?: boolean;
   /** Live events: an ask filed for this session (or any session change) refetches. No timer. */
   onEvent?: (handler: (event: LiveEvent) => void) => () => void;
   /** Flips to true on a (re)connect, which refetches once to catch what was missed. */
@@ -67,7 +69,7 @@ export function SessionAgentAsks({ client, sessionId, title, onEvent, connected 
         {!done && <div className="mt-2 flex flex-wrap gap-2">
           <Button size="sm" disabled={busy === ask.requestId} onClick={() => answer(ask, "send")}>Send</Button>
           <Button size="sm" variant="outline" disabled={busy === ask.requestId} onClick={() => answer(ask, "decline")}>Decline</Button>
-          <Button size="sm" variant="outline" disabled={busy === ask.requestId} onClick={() => answer(ask, "send", true)}>Always allow</Button>
+          {own && <Button size="sm" variant="outline" disabled={busy === ask.requestId} onClick={() => answer(ask, "send", true)}>Always allow</Button>}
         </div>}
       </div>;
     })}

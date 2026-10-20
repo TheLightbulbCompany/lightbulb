@@ -221,13 +221,30 @@ fn open_browser(url: &str) {
     let _ = std::process::Command::new("/usr/bin/open").arg(url).status();
 }
 
-async fn post(client: &reqwest::Client, url: String, body: serde_json::Value) -> Result<serde_json::Value, String> {
-    let resp = client.post(url).json(&body).send().await.map_err(|e| e.to_string())?;
+/// A failed request: `retry` for a network error or a 5xx, `timed_out` when no answer came.
+struct Failed {
+    message: String,
+    retry: bool,
+    timed_out: bool,
+}
+
+async fn post(client: &reqwest::Client, url: String, body: serde_json::Value) -> Result<serde_json::Value, Failed> {
+    let network = |e: reqwest::Error| Failed { timed_out: e.is_timeout(), message: e.to_string(), retry: true };
+    let resp = client.post(url).json(&body).send().await.map_err(network)?;
     let status = resp.status();
     if !status.is_success() {
-        return Err(format!("{status}: {}", resp.text().await.unwrap_or_default()));
+        return Err(Failed {
+            message: format!("{status}: {}", resp.text().await.unwrap_or_default()),
+            retry: status.is_server_error(),
+            timed_out: false,
+        });
     }
-    resp.json().await.map_err(|e| e.to_string())
+    resp.json().await.map_err(network)
+}
+
+/// The server's number of seconds, clamped to `lo..=hi`; `default` when absent.
+fn seconds(value: &serde_json::Value, default: f64, lo: f64, hi: f64) -> Duration {
+    Duration::from_secs_f64(value.as_f64().unwrap_or(default).clamp(lo, hi))
 }
 
 /// The browser handoff: start, show the code, poll until approved or `expiresIn`, then write
@@ -251,7 +268,7 @@ pub(crate) async fn join_at(
         "tauriMacPubKey": mac.public_key_pem, "cliPubKey": cli.public_key_pem, "machineName": machine,
     }))
     .await
-    .map_err(|e| format!("Could not start: {e}"))?;
+    .map_err(|e| format!("Could not start: {}", e.message))?;
     let (Some(code), Some(user_code), Some(verify_url)) =
         (start["code"].as_str(), start["userCode"].as_str(), start["verifyUrl"].as_str())
     else {
@@ -259,19 +276,29 @@ pub(crate) async fn join_at(
     };
     println!("Open {verify_url} and enter {user_code}");
     open(verify_url);
-    let interval = Duration::from_secs_f64(start["interval"].as_f64().unwrap_or(5.0).max(0.0));
-    let deadline = Instant::now() + Duration::from_secs_f64(start["expiresIn"].as_f64().unwrap_or(600.0).max(0.0));
+    let interval = seconds(&start["interval"], 5.0, 0.5, 60.0);
+    let deadline = Instant::now() + seconds(&start["expiresIn"], 600.0, 1.0, 3600.0);
+    // The approved reply comes back once: a poll that timed out may have taken it.
+    let mut timed_out = false;
+    let expired = |timed_out: bool| -> String {
+        if timed_out {
+            "Approval may have gone through. Run `lightbulb join` again to finish.".into()
+        } else {
+            "The code expired. Run `lightbulb join` again.".into()
+        }
+    };
     let result = loop {
         if Instant::now() >= deadline {
-            return Err("The code expired. Run `lightbulb join` again.".into());
+            return Err(expired(timed_out));
         }
-        // A failed poll (network, 5xx) is retried until the deadline.
-        if let Ok(reply) = post(&client, format!("{api}/api/v1/auth/device/poll"), json!({ "code": code })).await {
-            match reply["status"].as_str() {
+        match post(&client, format!("{api}/api/v1/auth/device/poll"), json!({ "code": code })).await {
+            Ok(reply) => match reply["status"].as_str() {
                 Some("approved") => break reply,
-                Some("expired") => return Err("The code expired. Run `lightbulb join` again.".into()),
+                Some("expired") => return Err(expired(timed_out)),
                 _ => {}
-            }
+            },
+            Err(e) if e.retry => timed_out |= e.timed_out,
+            Err(e) => return Err(format!("Could not finish: {}", e.message)),
         }
         tokio::time::sleep(interval).await;
     };
@@ -308,7 +335,8 @@ pub(crate) async fn join_at(
     crate::local_sessions::enrollment::save_enrollment(&dir, &enrollment)?;
     Ok(match (result["name"].as_str(), result["workspace"].as_str()) {
         (Some(name), Some(workspace)) => format!("Connected as {name} in {workspace}."),
-        _ => "Connected.".into(),
+        // ponytail: the poll carries no name or workspace yet; name this Mac until it does.
+        _ => format!("Connected {machine}."),
     })
 }
 
@@ -348,6 +376,7 @@ pub fn join() -> i32 {
 fn app_exe() -> Result<PathBuf, String> {
     std::env::current_exe()
         .and_then(fs::canonicalize)
+        .map(|exe| crate::cli::strip_nofollow(&exe))
         .map_err(|e| format!("this program's path: {e}"))
 }
 
@@ -522,14 +551,14 @@ mod tests {
             .and(body_partial_json(json!({"code":"c0de"})))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status":"pending"})))
             .up_to_n_times(if approved.is_some() { 2 } else { u64::MAX })
-            .with_priority(1)
+            .with_priority(2)
             .mount(&server)
             .await;
         if let Some(body) = approved {
             Mock::given(method("POST"))
                 .and(path("/api/v1/auth/device/poll"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(body))
-                .with_priority(2)
+                .with_priority(3)
                 .mount(&server)
                 .await;
         }
@@ -551,7 +580,7 @@ mod tests {
                 "humanUserId":"user_1"}))).await;
             let data = tempfile::tempdir().unwrap();
             let line = join_at(&server.uri(), data.path(), &mac, &cli, "Test Mac", no_browser).await.unwrap();
-            assert_eq!(line, "Connected.");
+            assert_eq!(line, "Connected Test Mac.");
             let pair = crate::pair_state::load(data.path()).expect("pair_state.json in the window's shape");
             assert_eq!((pair.owner_id.as_str(), pair.device_id_mac.as_str()), ("org_1", mac_id.as_str()));
             assert_eq!(pair.relay_url, "wss://bv/api/v1/gateway/ws");
@@ -583,6 +612,28 @@ mod tests {
             assert!(err.contains("expired"), "{err}");
             assert!(started.elapsed() < Duration::from_secs(5));
             assert!(!data.path().join("pair_state.json").exists());
+        });
+    }
+
+    #[test]
+    fn join_fails_fast_on_a_client_error_poll() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        tauri::async_runtime::block_on(async {
+            let mac = crate::keychain::generate_keypair();
+            let cli = crate::keychain::generate_keypair();
+            let server = device_server(600.0, None).await;
+            Mock::given(method("POST"))
+                .and(path("/api/v1/auth/device/poll"))
+                .respond_with(ResponseTemplate::new(422).set_body_string("bad code"))
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            let data = tempfile::tempdir().unwrap();
+            let started = Instant::now();
+            let err = join_at(&server.uri(), data.path(), &mac, &cli, "Test Mac", no_browser).await.unwrap_err();
+            assert!(err.contains("422"), "{err}");
+            assert!(started.elapsed() < Duration::from_secs(5), "no retry until expiresIn");
         });
     }
 

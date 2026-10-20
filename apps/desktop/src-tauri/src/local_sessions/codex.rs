@@ -1208,6 +1208,9 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
         }
     }
     if doc != original {
+        if enabled {
+            super::backup_once(&path)?;
+        }
         replace(
             &path,
             &serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?,
@@ -1239,12 +1242,29 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
     if text == original {
         return Ok(());
     }
+    if enabled {
+        super::backup_once(&config)?;
+    }
     replace(&config, text.as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_backs_up_codex_files_once() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        fs::create_dir(&codex).unwrap();
+        fs::write(codex.join("hooks.json"), r#"{"hooks":{}}"#).unwrap();
+        fs::write(codex.join("config.toml"), "model = \"o3\"\n").unwrap();
+        configure_hooks(home.path(), Path::new("/Applications/A.app/x"), true).unwrap();
+        // A moved app edits both files again; the first backups stay.
+        configure_hooks(home.path(), Path::new("/Applications/B.app/x"), true).unwrap();
+        assert_eq!(fs::read_to_string(codex.join("hooks.json.lightbulb-backup")).unwrap(), r#"{"hooks":{}}"#);
+        assert_eq!(fs::read_to_string(codex.join("config.toml.lightbulb-backup")).unwrap(), "model = \"o3\"\n");
+    }
 
     #[test]
     fn serves_many_is_loose_about_apps_and_the_daemon_directory() {

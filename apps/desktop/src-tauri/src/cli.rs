@@ -628,10 +628,15 @@ pub fn path_line(shell: &str, path: &str, home: &Path) -> Option<String> {
     })
 }
 
+/// `exe` without the `/.nofollow` prefix macOS can report on a running app.
+pub(crate) fn strip_nofollow(exe: &Path) -> PathBuf {
+    exe.strip_prefix("/.nofollow").map(|p| Path::new("/").join(p)).unwrap_or_else(|_| exe.to_path_buf())
+}
+
 /// The path to link to, if `exe` is an installed app. macOS can report the running app as
 /// `/.nofollow/Applications/...` (and `canonicalize` keeps that), so the prefix is dropped first.
 fn installed_exe(exe: &Path, home: &Path) -> Option<PathBuf> {
-    let exe = exe.strip_prefix("/.nofollow").map(|p| Path::new("/").join(p)).unwrap_or_else(|_| exe.to_path_buf());
+    let exe = strip_nofollow(exe);
     (exe.starts_with("/Applications") || exe.starts_with(home.join("Applications"))).then_some(exe)
 }
 
@@ -640,6 +645,10 @@ fn installed_exe(exe: &Path, home: &Path) -> Option<PathBuf> {
 pub fn install_at_launch() {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
     let Ok(exe) = std::env::current_exe().and_then(std::fs::canonicalize) else { return };
+    // Not an installed app (a build folder, the disk image): nothing to link, nothing to log.
+    if installed_exe(&exe, &home).is_none() {
+        return;
+    }
     match link_command(&exe, &home) {
         Ok(line) => {
             let _ = INSTALLED.set(line);

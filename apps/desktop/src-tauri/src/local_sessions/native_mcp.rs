@@ -142,6 +142,13 @@ fn change(home: &Path, cli: &Path, provider: &str, verb: &str, name: &str, line:
     }
 }
 
+/// `change` on the setup path: the provider's config file is backed up once first.
+fn edit(home: &Path, cli: &Path, provider: &str, verb: &str, name: &str, line: &[&std::ffi::OsStr]) -> io::Result<()> {
+    let config = if provider == "claude" { home.join(".claude.json") } else { codex_config(home) };
+    super::backup_once(&config).map_err(io::Error::other)?;
+    change(home, cli, provider, verb, name, line)
+}
+
 /// `lightbulb-browser`: added while sharing is on, removed (only if it is ours) when it goes off.
 /// An entry an earlier release wrote (npx, or another app path) is replaced with the
 /// current one. A server of that name that is not ours is left alone and reported.
@@ -168,11 +175,11 @@ fn configure_browser(home: &Path, cli: &Path, provider: &str, executable: &Path,
         return;
     }
     // An earlier release's entry: `mcp add` refuses a taken name, so remove it first.
-    if is_ours && change(home, cli, provider, "remove", BROWSER_SERVER_NAME, &[]).is_err() {
+    if is_ours && edit(home, cli, provider, "remove", BROWSER_SERVER_NAME, &[]).is_err() {
         return notes.push(format!("{provider} {BROWSER_SERVER_NAME} could not be updated"));
     }
     let line: Vec<&std::ffi::OsStr> = ours.iter().map(std::ffi::OsStr::new).collect();
-    if change(home, cli, provider, "add", BROWSER_SERVER_NAME, &line).is_err() {
+    if edit(home, cli, provider, "add", BROWSER_SERVER_NAME, &line).is_err() {
         notes.push(format!("{provider} {BROWSER_SERVER_NAME} could not be installed"));
     }
 }
@@ -252,6 +259,7 @@ fn configure_codex_policy(home: &Path, executable: &Path) -> io::Result<()> {
     }
     let updated = doc.to_string();
     if updated != original {
+        super::backup_once(&path).map_err(io::Error::other)?;
         super::codex::replace(&path, updated.as_bytes()).map_err(io::Error::other)?;
     }
     Ok(())
@@ -277,7 +285,7 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
         let ours_line = [executable.as_os_str(), std::ffi::OsStr::new("session-mcp")];
         // Any `session-mcp` under the old name is ours, whatever path it named.
         if let Ok(Some(_)) = configured(home, &cli, provider, LEGACY_SERVER_NAME) {
-            let _ = change(home, &cli, provider, "remove", LEGACY_SERVER_NAME, &[]);
+            let _ = if enabled { edit } else { change }(home, &cli, provider, "remove", LEGACY_SERVER_NAME, &[]);
         }
         let current = configured(home, &cli, provider, SERVER_NAME);
         let ours = matches!(&current, Ok(Some(c)) if *c == executable.to_string_lossy());
@@ -299,11 +307,11 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
                 continue;
             }
         };
-        if (stale || foreign) && change(home, &cli, provider, "remove", SERVER_NAME, &[]).is_err() {
+        if (stale || foreign) && edit(home, &cli, provider, "remove", SERVER_NAME, &[]).is_err() {
             notes.push(format!("{provider} has a different {SERVER_NAME} server that could not be replaced"));
             continue;
         }
-        if !ours && change(home, &cli, provider, "add", SERVER_NAME, &ours_line).is_err() {
+        if !ours && edit(home, &cli, provider, "add", SERVER_NAME, &ours_line).is_err() {
             notes.push(format!("{provider} native tools could not be installed"));
             continue;
         }
@@ -554,6 +562,21 @@ pub fn serve_mcp() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_edits_back_up_the_provider_config_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let cli = home.path().join("fake-claude");
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config = home.path().join(".claude.json");
+        std::fs::write(&config, "{\"mine\":1}").unwrap();
+        edit(home.path(), &cli, "claude", "add", SERVER_NAME, &[]).unwrap();
+        std::fs::write(&config, "{\"mine\":2}").unwrap();
+        edit(home.path(), &cli, "claude", "remove", SERVER_NAME, &[]).unwrap();
+        assert_eq!(std::fs::read_to_string(home.path().join(".claude.json.lightbulb-backup")).unwrap(), "{\"mine\":1}");
+    }
 
     #[test]
     fn codex_policy_removes_only_our_send_approval() {

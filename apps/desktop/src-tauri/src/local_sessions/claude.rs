@@ -1298,6 +1298,7 @@ fn hook_settings(path: &Path, executable: &Path, enabled: bool) -> Result<(Value
             existing != &entry
                 && existing != &legacy
                 && !(event == "PermissionRequest" && existing == &report_only)
+                && !(enabled && lightbulb_hook(existing))
         });
         if enabled {
             entries.push(entry);
@@ -1310,6 +1311,15 @@ fn hook_settings(path: &Path, executable: &Path, enabled: bool) -> Result<(Value
         settings.as_object_mut().unwrap().remove("hooks");
     }
     Ok((original, settings))
+}
+
+/// Any Lightbulb hook entry, whatever app path it names: one command, `'<exe>' local-session-hook
+/// [claude]`. An enable replaces one left by a moved app instead of adding a second.
+fn lightbulb_hook(existing: &Value) -> bool {
+    existing["hooks"].as_array().is_some_and(|hooks| hooks.len() == 1)
+        && existing["hooks"][0]["command"].as_str().is_some_and(|c| {
+            c.starts_with('\'') && (c.ends_with("' local-session-hook claude") || c.ends_with("' local-session-hook"))
+        })
 }
 
 pub(super) fn preflight_hooks(path: &Path, executable: &Path) -> Result<()> {
@@ -1519,6 +1529,21 @@ mod tests {
         assert_eq!(restored["crossSessionInbound"], "accept", "off leaves the inbound setting");
         restored.as_object_mut().unwrap().remove("crossSessionInbound");
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn configure_hooks_replaces_a_lightbulb_hook_whose_exe_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-hook"}]}]}}"#).unwrap();
+        configure_hooks(&path, Path::new("/.nofollow/Applications/Old.app/x"), true).unwrap();
+        configure_hooks(&path, Path::new("/Applications/Lightbulb.app/x"), true).unwrap();
+        let v: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let stop = v["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 2, "theirs plus one of ours: {stop:?}");
+        assert_eq!(stop[0]["hooks"][0]["command"], "my-hook");
+        assert_eq!(stop[1]["hooks"][0]["command"], "'/Applications/Lightbulb.app/x' local-session-hook claude");
+        assert_eq!(v["hooks"]["PermissionRequest"].as_array().unwrap().len(), 1);
     }
 
     #[test]

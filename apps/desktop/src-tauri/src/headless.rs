@@ -6,6 +6,7 @@ use crate::local_sessions::enrollment::{local_state_dir, Controller};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const LABEL: &str = "company.thelightbulb.serve";
 
@@ -57,26 +58,45 @@ async fn run(data: &Path) -> i32 {
     };
     crate::log("[serve] local sessions service started");
     // Turning sharing on or off in the window (a viewer while this runs) rewrites
-    // enrollment.json; restart on any change. Read back after `restore`, which rewrites it too.
-    // ponytail: a 2 s look at one local file; a kqueue watch if it ever matters.
-    let path = dir.join("enrollment.json");
-    let mut seen: Option<Vec<u8>> = None;
+    // enrollment.json, and a re-pair rewrites pair_state.json; restart on any change. Read back
+    // after `restore`, which rewrites the enrollment too. A failed start retries with backoff.
+    // ponytail: a 2 s look at two local files; a kqueue watch if it ever matters.
+    let files = || {
+        (
+            fs::read(dir.join("enrollment.json")).ok(),
+            fs::read(data.join("pair_state.json")).ok(),
+        )
+    };
+    let mut seen = (None, None);
+    let mut retry: Option<(Instant, Duration)> = None;
     loop {
-        let now = fs::read(&path).ok();
-        if now.is_some() && now != seen {
-            if let Err(e) = controller.serve_enrolled(data).await {
-                crate::log(&format!("[serve] local sharing unavailable: {e}"));
+        let now = files();
+        let due = retry.is_some_and(|(at, _)| Instant::now() >= at);
+        if now.0.is_some() && (now != seen || due) {
+            match controller.serve_enrolled(data).await {
+                Ok(()) => retry = None,
+                Err(e) => {
+                    crate::log(&format!("[serve] local sharing unavailable: {e}"));
+                    let wait = retry.map_or(STEP, |(_, wait)| next_backoff(wait));
+                    retry = Some((Instant::now() + wait, wait));
+                }
             }
-            seen = fs::read(&path).ok();
+            seen = files();
         }
         tokio::select! {
             _ = term.recv() => break,
             _ = int.recv() => break,
-            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+            _ = tokio::time::sleep(STEP) => {}
         }
     }
     crate::log("[serve] stopped");
     0
+}
+
+const STEP: Duration = Duration::from_secs(2);
+
+fn next_backoff(wait: Duration) -> Duration {
+    (wait * 2).min(Duration::from_secs(60))
 }
 
 fn xml_escape(s: &str) -> String {
@@ -94,17 +114,23 @@ fn launch_agent_plist(exe: &Path) -> String {
 \t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>{}</string>\n\t\t<string>serve</string>\n\t</array>\n\
 \t<key>RunAtLoad</key>\n\t<true/>\n\
 \t<key>KeepAlive</key>\n\t<true/>\n\
+\t<key>ThrottleInterval</key>\n\t<integer>30</integer>\n\
 </dict>\n</plist>\n",
         xml_escape(&exe.to_string_lossy())
     )
 }
 
-/// Writes `~/Library/LaunchAgents/company.thelightbulb.serve.plist` and (re)loads it.
-pub fn install_launch_agent(exe: &Path) -> io::Result<()> {
-    let home = std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME unset"))?;
-    let path = PathBuf::from(home)
+/// `~/Library/LaunchAgents/company.thelightbulb.serve.plist`. While it exists, `serve` owns
+/// local sessions and the window only views them.
+pub fn launch_agent_path() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
         .join("Library/LaunchAgents")
-        .join(format!("{LABEL}.plist"));
+        .join(format!("{LABEL}.plist"))
+}
+
+/// Writes the launch agent plist and (re)loads it.
+pub fn install_launch_agent(exe: &Path) -> io::Result<()> {
+    let path = launch_agent_path();
     fs::create_dir_all(path.parent().unwrap())?;
     fs::write(&path, launch_agent_plist(exe))?;
     let target = format!("gui/{}", unsafe { libc::getuid() });
@@ -151,6 +177,19 @@ mod tests {
     }
 
     #[test]
+    fn failed_start_backoff_doubles_to_a_minute() {
+        assert_eq!(next_backoff(STEP), Duration::from_secs(4));
+        assert_eq!(
+            next_backoff(Duration::from_secs(40)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            next_backoff(Duration::from_secs(60)),
+            Duration::from_secs(60)
+        );
+    }
+
+    #[test]
     fn plist_runs_serve_with_keepalive() {
         let xml = launch_agent_plist(std::path::Path::new(
             "/Applications/Light & bulb.app/Contents/MacOS/lightbulb-desktop",
@@ -164,6 +203,10 @@ mod tests {
         ), "{xml}");
         assert!(xml.contains("<key>RunAtLoad</key>\n\t<true/>"), "{xml}");
         assert!(xml.contains("<key>KeepAlive</key>\n\t<true/>"), "{xml}");
+        assert!(
+            xml.contains("<key>ThrottleInterval</key>\n\t<integer>30</integer>"),
+            "{xml}"
+        );
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
     }
 

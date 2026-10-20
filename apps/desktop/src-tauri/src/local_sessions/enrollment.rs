@@ -255,6 +255,30 @@ impl Controller {
         held.is_some()
     }
 
+    /// The window runs the service only when no launch agent is installed (today's single
+    /// process). With `agent` on disk, `serve` owns local sessions and the window views from
+    /// the start; a lock the window took before the agent was installed is let go.
+    pub(crate) fn window_serves(&self, data: &Path, agent: &Path) -> bool {
+        if agent.exists() {
+            if let Ok(mut held) = self.service.lock() {
+                *held = None;
+            }
+            return false;
+        }
+        self.serves(data)
+    }
+
+    /// The end of an enable. A viewer only records the consent: `serve` sees enrollment.json
+    /// change and starts the run itself.
+    fn finish_enable(&self, path: &Path, enrollment: Enrollment, prepared: Option<PreparedRun>, revision: u64) -> Result<()> {
+        let Some(prepared) = prepared else {
+            let human = self.human.lock().map_err(|_| "sharing state unavailable")?;
+            require_current(&human, self.revision.load(Ordering::SeqCst), revision, &enrollment)?;
+            return private_write(path, &enrollment);
+        };
+        self.publish(Some(path), enrollment, prepared, revision)
+    }
+
     fn prepare(&self, data: &Path, enrollment: &Enrollment) -> Result<PreparedRun> {
         let dir = local_state_dir(data)?;
         let identity = crate::keychain::load_or_generate(
@@ -390,11 +414,21 @@ impl Controller {
 
     pub async fn restore(&self, app: &tauri::AppHandle) -> Result<()> {
         let (data, jwt) = app_auth(app)?;
+        if !self.window_serves(&data, &crate::headless::launch_agent_path()) {
+            let _guard = self.mutation.lock().await;
+            self.stop();
+            if let Ok(mut status) = self.status.lock() {
+                *status = "Local sharing runs in lightbulb-desktop serve.".into();
+            }
+            return Ok(());
+        }
         self.restore_at(&data, &jwt).await
     }
 
-    /// `serve`: share as the enrolled human. Nobody signs in with no window; the consent on
-    /// disk is the enrolled human's own, and the relay authenticates with this Mac's key.
+    /// `serve`: share as the enrolled human, from persisted state, with no live Clerk check
+    /// (nobody signs in with no window). The consent on disk is that human's own and the relay
+    /// authenticates with this Mac's key. Unpairing the Mac, or turning sharing off from any
+    /// device, still revokes it on the server.
     pub(crate) async fn serve_enrolled(&self, data: &Path) -> Result<()> {
         let enrollment: Enrollment = private_read(&local_state_dir(data)?.join("enrollment.json"))?;
         *self.human.lock().map_err(|_| "sharing state unavailable")? = Some(Some(enrollment.human_user_id));
@@ -404,13 +438,6 @@ impl Controller {
     /// `data` is the app data dir. `jwt` is the window's Clerk token, empty with no window.
     async fn restore_at(&self, data: &Path, jwt: &str) -> Result<()> {
         let _guard = self.mutation.lock().await;
-        if !self.serves(data) {
-            // A running `serve` owns sharing; this window only views it.
-            if let Ok(mut status) = self.status.lock() {
-                *status = "Local sharing runs in lightbulb-desktop serve.".into();
-            }
-            return Ok(());
-        }
         let dir = local_state_dir(data)?;
         let path = dir.join("enrollment.json");
         if !path.try_exists().map_err(|_| "sharing state unavailable")? {
@@ -756,11 +783,11 @@ pub async fn local_sessions_set(
     human_user_id: Option<String>,
     workspace_id: Option<String>,
 ) -> Result<u64> {
-    // Refused before any consent is written: a running `serve` would not pick up a new one.
-    // Turning sharing off still works; `serve` sees the enrollment change and stops.
-    if enabled && !state.serves(&app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?) {
-        return Err("Session sharing runs in lightbulb-desktop serve on this Mac. Stop it, then turn sharing on here.".into());
-    }
+    // A viewer enrolls the same way but starts no run: `serve` picks up enrollment.json.
+    let serving = state.window_serves(
+        &app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?,
+        &crate::headless::launch_agent_path(),
+    );
     let revision = {
         let _human = state
             .human
@@ -932,9 +959,13 @@ pub async fn local_sessions_set(
                     let _ = super::native_mcp::configure(&home, &installed, false);
                 }
             }
-            state.prepare(&app_data, &enrollment)
+            if serving {
+                state.prepare(&app_data, &enrollment).map(Some)
+            } else {
+                Ok(None)
+            }
         },
-        |prepared, active| state.publish(Some(&path), active, prepared, revision),
+        |prepared, active| state.finish_enable(&path, active, prepared, revision),
     )
     .await?;
     // Codex hooks and the skill are reported, never fatal: the Claude path that
@@ -1317,6 +1348,35 @@ mod tests {
         codex.kill().unwrap();
         codex.wait().unwrap();
     }
+    #[test]
+    fn window_takes_the_lock_only_without_a_launch_agent() {
+        let data = tempfile::tempdir().unwrap();
+        let agent = data.path().join("company.thelightbulb.serve.plist");
+        fs::write(&agent, "plist").unwrap();
+        let window = Controller::default();
+        assert!(!window.window_serves(data.path(), &agent));
+        assert!(crate::headless::service_lock(data.path()).is_some(), "the window left serve.lock to serve");
+        fs::remove_file(&agent).unwrap();
+        assert!(window.window_serves(data.path(), &agent));
+        assert!(crate::headless::service_lock(data.path()).is_none(), "the window holds serve.lock");
+    }
+
+    #[test]
+    fn viewer_toggle_writes_enrollment() {
+        let dir = tempfile::tempdir().unwrap();
+        private_dir(&dir.path().join("ls")).unwrap();
+        let path = dir.path().join("ls/enrollment.json");
+        let window = Controller::default();
+        *window.human.lock().unwrap() = Some(Some("alice".into()));
+        let mut active = candidate();
+        active.enabled = true;
+        active.attempt = None;
+        window.finish_enable(&path, active.clone(), None, 0).unwrap();
+        assert_eq!(private_read::<Enrollment>(&path).unwrap(), active);
+        assert!(window.running.lock().unwrap().is_none(), "a viewer starts no run");
+        assert!(sharing_on(&dir.path().join("ls")));
+    }
+
     fn candidate() -> Enrollment {
         Enrollment {
             owner_id: "org".into(),

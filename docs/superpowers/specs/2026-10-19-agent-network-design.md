@@ -13,8 +13,9 @@ as the hub.
 ## What a person sees
 
 - Every live agent of every workspace member is a row in the left sidebar, next to today's
-  shared sessions: owner, agent kind, busy/idle and for how long, repo@branch, a one-line "doing",
-  and how fast it hears you ("wakes now", "next step", "by webhook").
+  shared sessions. Each row shows its **owner's profile picture** (the same avatar their messages
+  show), with the agent's icon (Claude, Codex, Cursor, Grok) as a small badge on it, then the
+  session title. Owner, 2026-10-19: "so you know who it is". No "doing" line in v1 (owner dropped it).
 - Any of those agents can message any other one by name.
 - A message from someone else's agent is held until the receiving agent's owner OKs it, or goes
   straight in if that sender is already allowed. This is today's rule, unchanged.
@@ -51,9 +52,12 @@ target's open connection or fires its webhook. Nothing polls.
   creates one this way. An invite link from a teammate (today's workspace invite) puts them in that
   workspace; with no invite, the normal sign-up creates their own workspace. On a machine with no
   browser, they open the link on another device. *(builder's call)*
-- The service makes the machine's key (Keychain on macOS, a 0600 file on Linux), pairs it the way
-  `/desktop/pair` does today, installs itself as a launchd or systemd user service, and keeps one
-  open connection to the server.
+- The service is the existing `lightbulb-desktop` binary run as `lightbulb-desktop serve` (no
+  window): same crate, same discovery and delivery code the app uses. It uses the machine's
+  Keychain key, pairs the way `/desktop/pair` does today, installs a launchd user agent, and keeps
+  one open connection to the server.
+- `join` turns on the per-Mac "Share every new session" setting that already exists (the shell rc
+  block, `shell_integration::set`); `lightbulb share off` turns it off.
 - `lightbulb setup` wires every installed v1 agent with no prompts: MCP entry, hooks, the
   session-sharing skill. It backs up each file it edits.
 - The desktop app runs the same service, so there is one code path.
@@ -62,8 +66,6 @@ target's open connection or fires its webhook. Nothing polls.
 
 - The service discovers live sessions itself: Claude Code's `~/.claude/sessions/<pid>.json`,
   Codex's session index, and each session's own `lightbulb` MCP server and hooks registering it.
-- "doing" comes from what the agent already records (its title, its todo list), never from the
-  agent reporting it.
 - A restarted session in the same folder with the same agent keeps its name and its unread
   messages. Two live sessions in one folder with the same agent get `-2`, `-3` names. *(my call)*
 - An agent is live while its machine's service connection is up and the session runs; it drops
@@ -79,12 +81,18 @@ target's open connection or fires its webhook. Nothing polls.
 - Every delivery says which tier it got, back to the sender: "delivered, it is reading it now" /
   "queued, it sees this at its next step".
 - Incoming text is framed as from another agent, never as the user, using today's
-  `[Lightbulb teammate contribution …]` header with the sending agent named.
+  `[Lightbulb teammate contribution …]` header with the sending agent named. Port Reason's
+  `defang` so a body cannot forge a frame (lookalike characters included).
+- `lightbulb setup` sets Claude Code's `crossSessionInbound` to `accept` in
+  `~/.claude/settings.json` (owner OK, 2026-10-19): otherwise a session that skips permission
+  prompts silently holds our pushes. Lightbulb's own hold already covers unallowed senders.
+- Every `lightbulb` tool result ends with an unread note ("2 unread messages: read_messages"),
+  so an agent we cannot wake still notices its mail the next time it uses any of our tools.
 - A message to an offline or idle agent is stored on the server and delivered when it can be; the
-  sender gets a "queued" receipt, not an error. A held message nobody OKs expires after 7 days.
-  *(my call)*
+  sender gets a "queued" receipt, not an error. Today's limits stand: 24 h offline TTL, 20 queued
+  per session, 24 h for an ask nobody answers. *(ponytail: lengthen when someone misses one)*
 - Loops: agent-to-agent chains use today's session hop cap (2 replies, then pause until a human
-  speaks), plus a per-sender rate limit. *(my call)*
+  speaks), plus Reason's limit of 12 messages per sender-and-receiver pair per 10 minutes.
 
 ### 5. Grok Bot
 

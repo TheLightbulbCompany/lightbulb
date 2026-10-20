@@ -291,12 +291,15 @@ export type ApprovalAnswer = { decision: "allow" | "deny"; mode?: LocalSessionAp
  * `sha256Hex` hashes what a `full` prompt showed: an allow names that digest
  * (`shownDigest`) so the backend admits it only if the viewer saw the whole call.
  */
-export function useSessionApproval(client: Pick<Client, "submitLocalSessionCommand">, session: LocalSession, uuid: () => string,
-  sha256Hex: (text: string) => Promise<string>) {
-  const [state, setState] = useState<{ approvalId: string; status: "sending" | "sent" | "failed" | "gone"; error?: string } | null>(null);
+export function useSessionApproval(client: Pick<Client, "submitLocalSessionCommand"> & Partial<Pick<Client, "getLocalSession">>,
+  session: LocalSession, uuid: () => string, sha256Hex: (text: string) => Promise<string>) {
+  const [state, setState] = useState<{ approvalId: string; status: "sending" | "sent" | "failed" | "gone"; error?: string; base?: LocalSession } | null>(null);
   const ids = useRef(new Map<string, string>());
-  // A prompt the server or the Mac said is no longer open is gone here at once: its buttons never stay up.
-  const pending = state?.status === "gone" && state.approvalId === session.pendingApproval?.approvalId ? undefined : session.pendingApproval;
+  const latest = useRef(session);
+  latest.current = session;
+  // A prompt known to be closed is hidden only on the session row that still showed it: any
+  // later row that carries the same prompt is newer than that verdict, so it shows again.
+  const pending = state?.status === "gone" && state.base === session ? undefined : session.pendingApproval;
   const answer = useCallback(async ({ decision, mode, reason }: ApprovalAnswer) => {
     if (!pending) return;
     const text = decision === "deny" ? clipBytes(reason?.trim() ?? "", 500) : "";
@@ -312,15 +315,24 @@ export function useSessionApproval(client: Pick<Client, "submitLocalSessionComma
         ...(text ? { text } : {}), ...(shownDigest ? { shownDigest } : {}),
       });
       // Admitted is not delivered: a prompt answered in the terminal first comes back rejected.
-      setState({ approvalId: pending.approvalId, status: receipt.state === "rejected" ? "gone" : "sent" });
+      setState(receipt.state === "rejected"
+        ? { approvalId: pending.approvalId, status: "gone", base: latest.current }
+        : { approvalId: pending.approvalId, status: "sent" });
     } catch (e) {
       const code = e instanceof ApiError ? (e.body as { code?: unknown } | null)?.code : undefined;
+      if (e instanceof ApiError && e.status === 409 && code !== "LOCAL_SESSION_UNSUPPORTED") {
+        // A conflict is also a busy row (the write's retries ran out): only the row itself says the prompt closed.
+        const now = await client.getLocalSession?.(session.sessionId).catch(() => null);
+        const open = !now || (now.status === "waiting-approval" && now.pendingApproval?.approvalId === pending.approvalId);
+        setState(open
+          ? { approvalId: pending.approvalId, status: "failed", error: "Could not send the answer. Try again." }
+          : { approvalId: pending.approvalId, status: "gone", base: latest.current });
+        return;
+      }
       // LOCAL_SESSION_UNSUPPORTED is a 409 too, but the prompt is still open: say why, in the server's words.
-      setState(e instanceof ApiError && e.status === 409 && code !== "LOCAL_SESSION_UNSUPPORTED"
-        ? { approvalId: pending.approvalId, status: "gone" }
-        : { approvalId: pending.approvalId, status: "failed", error: e instanceof ApiError && e.status === 409 ? e.message
-          : e instanceof ApiError && e.status === 403 ? "You can no longer control this session."
-            : "Could not send the answer. Try again." });
+      setState({ approvalId: pending.approvalId, status: "failed", error: e instanceof ApiError && e.status === 409 ? e.message
+        : e instanceof ApiError && e.status === 403 ? "You can no longer control this session."
+          : "Could not send the answer. Try again." });
     }
   }, [client, pending, session.sessionId, session.generation, uuid, sha256Hex]);
   const current = state && pending && state.approvalId === pending.approvalId ? state : null;

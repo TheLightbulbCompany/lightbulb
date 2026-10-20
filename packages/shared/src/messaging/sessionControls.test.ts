@@ -119,7 +119,8 @@ describe("useSessionApproval", () => {
   const mount = (p: object) => {
     const submit = vi.fn<(id: string, command: object) => Promise<LocalSessionCommandReceipt>>(async () => ({ state: "dispatched" }) as LocalSessionCommandReceipt);
     const sha = vi.fn(async () => "abc");
-    const { result } = renderHook(() => useSessionApproval({ submitLocalSessionCommand: submit }, session({ sessionId: "s1", generation: "g1", pendingApproval: p } as Partial<LocalSession>), () => "r1", sha));
+    const row = session({ sessionId: "s1", generation: "g1", pendingApproval: p } as Partial<LocalSession>);
+    const { result } = renderHook(() => useSessionApproval({ submitLocalSessionCommand: submit }, row, () => "r1", sha));
     return { result, submit, sha };
   };
 
@@ -132,12 +133,31 @@ describe("useSessionApproval", () => {
     expect(submit.mock.calls[1][1]).not.toHaveProperty("shownDigest");
   });
 
-  it("a prompt the server says is gone leaves at once; an unsupported answer keeps it with the server's reason", async () => {
-    const answered = new ApiError(409, { code: "LOCAL_SESSION_CONFLICT", message: "The session is no longer waiting for approval." }, "The session is no longer waiting for approval.");
-    const gone = mount(pending);
-    gone.submit.mockRejectedValueOnce(answered);
-    await act(() => gone.result.current.answer({ decision: "deny" }));
-    expect(gone.result.current.pending).toBeUndefined();
+  const conflict = () => new ApiError(409, { code: "LOCAL_SESSION_CONFLICT" }, "Session changed. Try again.");
+  const live = (p?: object) => session({ sessionId: "s1", generation: "g1", status: p ? "waiting-approval" : "busy", pendingApproval: p } as Partial<LocalSession>);
+  const mountWith = (getLocalSession: () => Promise<LocalSession>) => {
+    const submit = vi.fn<(id: string, command: object) => Promise<LocalSessionCommandReceipt>>(async () => { throw conflict(); });
+    const hook = renderHook(({ s }) => useSessionApproval({ submitLocalSessionCommand: submit, getLocalSession: vi.fn(getLocalSession) }, s, () => "r1", async () => "abc"),
+      { initialProps: { s: live(pending) } });
+    return { ...hook, submit };
+  };
+
+  it("a conflict while the prompt is still open keeps the card, with a Try again note", async () => {
+    const { result } = mountWith(async () => live(pending));
+    await act(() => result.current.answer({ decision: "deny" }));
+    expect(result.current.pending).toEqual(pending);
+    expect(result.current.state?.error).toBe("Could not send the answer. Try again.");
+  });
+
+  it("a conflict after the prompt closed hides the card; the same prompt on a later row shows again", async () => {
+    const { result, rerender } = mountWith(async () => live());
+    await act(() => result.current.answer({ decision: "deny" }));
+    expect(result.current.pending).toBeUndefined();
+    rerender({ s: live(pending) });
+    expect(result.current.pending).toEqual(pending);
+  });
+
+  it("an unsupported answer keeps the card with the server's reason", async () => {
     const refused = mount(pending);
     refused.submit.mockRejectedValueOnce(new ApiError(409, { code: "LOCAL_SESSION_UNSUPPORTED" }, "This prompt can only be approved in the terminal."));
     await act(() => refused.result.current.answer({ decision: "allow" }));

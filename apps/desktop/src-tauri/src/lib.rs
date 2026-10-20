@@ -7,6 +7,8 @@ pub mod file_access;
 #[cfg(unix)]
 pub mod holder;
 #[cfg(unix)]
+pub mod headless;
+#[cfg(unix)]
 pub mod cli;
 pub mod keychain;
 pub mod local_mcp;

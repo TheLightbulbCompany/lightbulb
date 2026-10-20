@@ -136,6 +136,8 @@ pub struct Controller {
     /// Set once `/desktop/pair` answered this launch; until then every new
     /// sign-in token re-asks it for the relay door (`refresh_relay`).
     relay_checked: AtomicBool,
+    /// `serve.lock`, once this process owns the service (`serves`).
+    service: Mutex<Option<std::fs::File>>,
 }
 
 /// The enrollment captured the relay door (`gatewayUrl`) once, at enable time,
@@ -144,13 +146,10 @@ pub struct Controller {
 /// -- the same idempotent re-pair the switches path sends, with the switches
 /// last granted -- and fall back to the last pair response on disk, so an
 /// offline launch keeps what it had. The flag says `/desktop/pair` answered.
-async fn current_gateway_url(app: &tauri::AppHandle, ask: bool) -> Option<(String, bool)> {
-    let data = app.path().app_data_dir().ok()?;
-    let pair = crate::pair_state::load(&data)?;
-    let jwt = app
-        .try_state::<crate::AuthState>()
-        .and_then(|s| s.current_jwt.read().ok().map(|j| j.clone()))
-        .unwrap_or_default();
+/// `data` is the app data dir; an empty `jwt` (no window, or no sign-in yet) only reads the
+/// persisted pair state.
+async fn current_gateway_url(data: &Path, jwt: &str, ask: bool) -> Option<(String, bool)> {
+    let pair = crate::pair_state::load(data)?;
     // No recorded switches means the switches path re-pairs (and rewrites
     // pair_state) on the next token; never re-pair with an implied grant here.
     if ask && !jwt.is_empty() && pair.paired_permissions.is_some() {
@@ -164,13 +163,13 @@ async fn current_gateway_url(app: &tauri::AppHandle, ask: bool) -> Option<(Strin
             };
             let asked = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
-                crate::pair_client::pair(crate::LIGHTBULB_API_BASE, &jwt, &request),
+                crate::pair_client::pair(crate::LIGHTBULB_API_BASE, jwt, &request),
             )
             .await;
             match asked {
                 Ok(Ok(resp)) if resp.device_id_mac == pair.device_id_mac && resp.device_id_cli == pair.device_id_cli => {
                     let fresh = crate::pair_state::PairState::from_pair_response(&resp, &pair.display_name, pair.paired_permissions.clone());
-                    let _ = crate::pair_state::save(&data, &fresh);
+                    let _ = crate::pair_state::save(data, &fresh);
                     return Some((fresh.gateway_url, true));
                 }
                 Ok(Ok(_)) => transport::relay_log("re-pair named other devices; relay URL kept"),
@@ -194,9 +193,9 @@ fn adopt_gateway_url(path: &Path, url: &str) -> Result<bool> {
 
 impl Controller {
     /// Caller holds `mutation`. True when the enrollment's relay door changed.
-    async fn refresh_gateway_url(&self, app: &tauri::AppHandle, path: &Path) -> bool {
+    async fn refresh_gateway_url(&self, data: &Path, jwt: &str, path: &Path) -> bool {
         let ask = !self.relay_checked.load(Ordering::SeqCst);
-        let Some((url, answered)) = current_gateway_url(app, ask).await else {
+        let Some((url, answered)) = current_gateway_url(data, jwt, ask).await else {
             return false;
         };
         if answered {
@@ -214,8 +213,9 @@ impl Controller {
         }
         let changed = {
             let _guard = self.mutation.lock().await;
-            let path = state_dir(app)?.join("enrollment.json");
-            path.try_exists().unwrap_or(false) && self.refresh_gateway_url(app, &path).await
+            let (data, jwt) = app_auth(app)?;
+            let path = local_state_dir(&data)?.join("enrollment.json");
+            path.try_exists().unwrap_or(false) && self.refresh_gateway_url(&data, &jwt, &path).await
         };
         if changed {
             self.restore(app).await?;
@@ -244,20 +244,24 @@ impl Controller {
         }
     }
 
-    fn prepare(&self, app: &tauri::AppHandle, enrollment: &Enrollment) -> Result<PreparedRun> {
-        let dir = state_dir(app)?;
+    /// This process runs the local-sessions service: it holds `serve.lock` under the app
+    /// data dir, taken on first use and kept for the process's life. False when another
+    /// process (a `serve`, or the window app) already runs it.
+    pub(crate) fn serves(&self, data: &Path) -> bool {
+        let Ok(mut held) = self.service.lock() else { return false };
+        if held.is_none() {
+            *held = crate::headless::service_lock(data);
+        }
+        held.is_some()
+    }
+
+    fn prepare(&self, data: &Path, enrollment: &Enrollment) -> Result<PreparedRun> {
+        let dir = local_state_dir(data)?;
         let identity = crate::keychain::load_or_generate(
             crate::keychain::KeychainSlot::Mac,
             crate::KEYCHAIN_SERVICE,
         )?;
-        let pair = retained_pair(
-            crate::pair_state::load(
-                &app.path()
-                    .app_data_dir()
-                    .map_err(|_| "desktop storage unavailable")?,
-            ),
-            &identity.public_key_pem,
-        )?;
+        let pair = retained_pair(crate::pair_state::load(data), &identity.public_key_pem)?;
         if pair.owner_id != enrollment.owner_id || pair.device_id_mac != enrollment.device_id {
             return Err("Reconnect the enrolled workspace's Mac first".into());
         }
@@ -385,13 +389,34 @@ impl Controller {
     }
 
     pub async fn restore(&self, app: &tauri::AppHandle) -> Result<()> {
+        let (data, jwt) = app_auth(app)?;
+        self.restore_at(&data, &jwt).await
+    }
+
+    /// `serve`: share as the enrolled human. Nobody signs in with no window; the consent on
+    /// disk is the enrolled human's own, and the relay authenticates with this Mac's key.
+    pub(crate) async fn serve_enrolled(&self, data: &Path) -> Result<()> {
+        let enrollment: Enrollment = private_read(&local_state_dir(data)?.join("enrollment.json"))?;
+        *self.human.lock().map_err(|_| "sharing state unavailable")? = Some(Some(enrollment.human_user_id));
+        self.restore_at(data, "").await
+    }
+
+    /// `data` is the app data dir. `jwt` is the window's Clerk token, empty with no window.
+    async fn restore_at(&self, data: &Path, jwt: &str) -> Result<()> {
         let _guard = self.mutation.lock().await;
-        let dir = state_dir(app)?;
+        if !self.serves(data) {
+            // A running `serve` owns sharing; this window only views it.
+            if let Ok(mut status) = self.status.lock() {
+                *status = "Local sharing runs in lightbulb-desktop serve.".into();
+            }
+            return Ok(());
+        }
+        let dir = local_state_dir(data)?;
         let path = dir.join("enrollment.json");
         if !path.try_exists().map_err(|_| "sharing state unavailable")? {
             return Ok(());
         }
-        self.refresh_gateway_url(app, &path).await;
+        self.refresh_gateway_url(data, jwt, &path).await;
         let mut enrollment: Enrollment = private_read(&path)?;
         enrollment.authenticate(
             self.human
@@ -406,7 +431,7 @@ impl Controller {
             return Ok(());
         }
         let revision = self.revision.load(Ordering::SeqCst);
-        let prepared = self.prepare(app, &enrollment)?;
+        let prepared = self.prepare(data, &enrollment)?;
         let notes = reassert(&dir);
         if !notes.is_empty() {
             *self.status.lock().map_err(|_| "sharing state unavailable")? =
@@ -477,22 +502,21 @@ fn home() -> Result<PathBuf> {
 }
 /// Session sharing is on and live for this Mac's signed-in human. A remotely started
 /// session is only launched when it will be mirrored (see `session_start`).
-pub(crate) fn sharing_on(app: &tauri::AppHandle) -> bool {
-    state_dir(app)
-        .and_then(|dir| private_read::<Enrollment>(&dir.join("enrollment.json")))
+/// `state_dir` is the local-sessions dir (`state_dir(app)` in the window).
+pub(crate) fn sharing_on(state_dir: &Path) -> bool {
+    private_read::<Enrollment>(&state_dir.join("enrollment.json"))
         .is_ok_and(|e| e.enabled && !e.paused && !e.remote_disabled)
 }
 /// The workspace this Mac's sessions are shared to, if enrolled.
-pub(crate) fn enrolled_owner(app: &tauri::AppHandle) -> Option<String> {
-    let dir = state_dir(app).ok()?;
-    private_read::<Enrollment>(&dir.join("enrollment.json")).ok().map(|e| e.owner_id)
+pub(crate) fn enrolled_owner(state_dir: &Path) -> Option<String> {
+    private_read::<Enrollment>(&state_dir.join("enrollment.json")).ok().map(|e| e.owner_id)
 }
 pub(crate) fn scope_key(enrollment: &Enrollment) -> String {
     fingerprint(&json!([enrollment.owner_id, enrollment.human_user_id, enrollment.device_id]).to_string())
 }
 
-pub(crate) fn launch_scope(app: &tauri::AppHandle) -> Result<String> {
-    let enrollment: Enrollment = private_read(&state_dir(app)?.join("enrollment.json"))?;
+pub(crate) fn launch_scope(state_dir: &Path) -> Result<String> {
+    let enrollment: Enrollment = private_read(&state_dir.join("enrollment.json"))?;
     if !enrollment.enabled || enrollment.paused || enrollment.remote_disabled {
         return Err("session sharing is off".into());
     }
@@ -500,15 +524,25 @@ pub(crate) fn launch_scope(app: &tauri::AppHandle) -> Result<String> {
 }
 
 /// The dir of this Mac's shared-session mirrors (native_tools reads it), while sharing is on.
-pub(crate) fn session_scope(app: &tauri::AppHandle) -> Result<PathBuf> {
-    Ok(state_dir(app)?.join(launch_scope(app)?))
+pub(crate) fn session_scope(state_dir: &Path) -> Result<PathBuf> {
+    Ok(state_dir.join(launch_scope(state_dir)?))
 }
-fn state_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "desktop storage unavailable")?;
-    fs::create_dir_all(&app_dir).map_err(|_| "desktop storage unavailable")?;
+/// The one Tauri wrapper: the window's local-sessions dir.
+pub(crate) fn state_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
+    local_state_dir(&app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?)
+}
+/// The window's app data dir and its current Clerk token (empty before sign-in).
+fn app_auth(app: &tauri::AppHandle) -> Result<(PathBuf, String)> {
+    let data = app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?;
+    let jwt = app
+        .try_state::<crate::AuthState>()
+        .and_then(|s| s.current_jwt.read().ok().map(|j| j.clone()))
+        .unwrap_or_default();
+    Ok((data, jwt))
+}
+/// `<app data>/local-sessions`, created private.
+pub(crate) fn local_state_dir(app_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(app_dir).map_err(|_| "desktop storage unavailable")?;
     let dir = app_dir.join("local-sessions");
     private_dir(&dir)?;
     Ok(dir)
@@ -722,6 +756,11 @@ pub async fn local_sessions_set(
     human_user_id: Option<String>,
     workspace_id: Option<String>,
 ) -> Result<u64> {
+    // Refused before any consent is written: a running `serve` would not pick up a new one.
+    // Turning sharing off still works; `serve` sees the enrollment change and stops.
+    if enabled && !state.serves(&app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?) {
+        return Err("Session sharing runs in lightbulb-desktop serve on this Mac. Stop it, then turn sharing on here.".into());
+    }
     let revision = {
         let _human = state
             .human
@@ -831,14 +870,8 @@ pub async fn local_sessions_set(
         crate::keychain::KeychainSlot::Mac,
         crate::KEYCHAIN_SERVICE,
     )?;
-    let pair = retained_pair(
-        crate::pair_state::load(
-            &app.path()
-                .app_data_dir()
-                .map_err(|_| "desktop storage unavailable")?,
-        ),
-        &identity.public_key_pem,
-    )?;
+    let app_data = app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?;
+    let pair = retained_pair(crate::pair_state::load(&app_data), &identity.public_key_pem)?;
     if workspace_id.as_deref() != Some(&pair.owner_id) {
         return Err("Connect this Mac in the selected workspace first".into());
     }
@@ -899,7 +932,7 @@ pub async fn local_sessions_set(
                     let _ = super::native_mcp::configure(&home, &installed, false);
                 }
             }
-            state.prepare(&app, &enrollment)
+            state.prepare(&app_data, &enrollment)
         },
         |prepared, active| state.publish(Some(&path), active, prepared, revision),
     )
@@ -934,7 +967,8 @@ pub async fn local_sessions_repair(
     // Retry also re-asks `/desktop/pair` for the relay door and, when it moved,
     // restarts the relay on the new one.
     state.relay_checked.store(false, Ordering::SeqCst);
-    let moved = state.refresh_gateway_url(&app, &path).await;
+    let (data, jwt) = app_auth(&app)?;
+    let moved = state.refresh_gateway_url(&data, &jwt, &path).await;
     let notes = reassert(&dir);
     *state.status.lock().map_err(|_| "sharing state unavailable")? = retried(&notes);
     drop(_guard);

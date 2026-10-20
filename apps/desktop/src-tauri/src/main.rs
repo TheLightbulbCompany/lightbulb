@@ -15,6 +15,10 @@ fn main() {
         return;
     }
     #[cfg(unix)]
+    if std::env::args().nth(1).as_deref() == Some("serve") {
+        lightbulb_desktop::headless::serve();
+    }
+    #[cfg(unix)]
     if std::env::args().nth(1).as_deref() == Some("holder") {
         // `holder <socket> [--size=<cols>x<rows>] -- <argv…>`: one held session, in its own process.
         let args: Vec<String> = std::env::args().collect();

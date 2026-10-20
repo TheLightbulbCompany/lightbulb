@@ -198,7 +198,7 @@ pub fn serve(app: tauri::AppHandle) -> Result<(), String> {
         let size = (side("cols", 80), side("rows", 24));
         let env = environment(&request["env"])?;
         let info = crate::session_start::cli_start(&app, request["start"].clone(), size, env)?;
-        let owner = crate::local_sessions::enrollment::enrolled_owner(&app);
+        let owner = crate::local_sessions::enrollment::state_dir(&app).ok().and_then(|d| crate::local_sessions::enrollment::enrolled_owner(&d));
         let workspace = shared_workspace(WORKSPACE.lock().unwrap().as_ref(), owner.as_deref());
         Ok(Started { socket: info.socket, workspace })
     })

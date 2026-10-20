@@ -206,6 +206,25 @@ def test_approve_without_org_is_409_workspace_required(...):
 - [ ] **Step 4: Run `pnpm vitest run src/components/messaging src/__tests__/brandTokens.test.ts`; PASS.**
 - [ ] **Step 5: Commit** `feat(web): a session row shows its owner's face`
 
+### Task 5b: Answer an agent's ask in the app (Send / Decline)
+
+**Why:** an agent's ask (e.g. Friday wants to message a session) writes a Needs-you Activity row
+(`kind: "session"`, `subtype: "join_request"`, `request: "agent_message"`, `requestId`, `sessionId`,
+`agentName`; `local_sessions._notify_agent_ask` ~:2310) and the decide route exists
+(`POST /api/v1/messaging/sessions/{session_id}/agent-asks/{request_id}`, body `{"decision": "send"|"decline"}`,
+`routers/messaging.py:352`), but no web or phone client calls it: only the terminal band can answer.
+
+**Files:**
+- Modify: `packages/shared/src/messaging/client.ts` (add `decideAgentAsk(sessionId, requestId, decision)` and `listAgentAsks(sessionId)` → GET `/messaging/sessions/{id}/agent-asks`)
+- Modify: the Activity/Needs-you renderer that shows `subtype: "join_request"` items (find it from `useActivity.ts`), and `LocalSessionPanel.tsx` (pending asks above the composer)
+- Test: the renderer's test file and `packages/shared/src/messaging/client.test.ts`
+
+- [ ] **Step 1: Failing tests** — an Activity item with `request: "agent_message"` renders "<agentName> wants to message <session>", the text preview, and **Send** / **Decline**; clicking Send calls `decideAgentAsk(sid, rid, "send")`; a 409 shows the current state instead of an error; the session panel lists pending asks with the same buttons.
+- [ ] **Step 2: Run; FAIL.**
+- [ ] **Step 3: Implement**; reuse the join-request item's layout and buttons.
+- [ ] **Step 4: `pnpm vitest run` on the touched tests + `cd packages/shared && pnpm test`; PASS.**
+- [ ] **Step 5: Commit** `feat(web): answer an agent's ask to message a session from the app`
+
 ### Task 6: `serve`, the local-sessions service with no window
 
 **Files:**

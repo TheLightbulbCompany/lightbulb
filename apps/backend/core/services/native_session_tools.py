@@ -435,11 +435,6 @@ async def session_send(auth: AuthContext, target: dict, text: str, request_id: s
     command = local_sessions.LocalSessionCommand(
         request_id=request_id, expected_generation=target["generation"], kind="send", text=text
     )
-    if not local_sessions.may_control(target, auth.user_id):
-        # Agent network §6: someone the owner has not allowed asks to join, and the send waits
-        # for the owner's Allow (allowing a person allows all of that person's agents).
-        await local_sessions.request_join(auth, session_id)
-        source = {**source, "hold_for": auth.user_id}
     now = int(time.time())
     sender = (
         source.get("source_session_id"),
@@ -449,7 +444,8 @@ async def session_send(auth: AuthContext, target: dict, text: str, request_id: s
     recent = [
         c
         for c in await sessions_repo.list_commands(target["ownerId"], session_id)
-        if c["createdAt"] > now - LOOP_WINDOW_S
+        # submittedAt: the dispatch window rewrites createdAt, so it would hide a queued burst.
+        if c.get("submittedAt", c["createdAt"]) > now - LOOP_WINDOW_S
         and c["requestId"] != request_id  # an idempotent retry is not a new message
         and (
             c.get("sourceSessionId") == sender[0]
@@ -459,6 +455,12 @@ async def session_send(auth: AuthContext, target: dict, text: str, request_id: s
     ]
     if len(recent) >= LOOP_LIMIT:
         raise ApiProblem("LOCAL_SESSION_LOOP", "Too many messages to this session; wait a few minutes.")
+    if not local_sessions.may_control(target, auth.user_id):
+        # Agent network §6: someone the owner has not allowed asks to join, and the send waits
+        # for the owner's Allow (allowing a person allows all of that person's agents).
+        # After the loop check: a refused send files no ask.
+        await local_sessions.request_join(auth, session_id)
+        source = {**source, "hold_for": auth.user_id}
     receipt = await local_sessions.submit_command(auth, None, session_id, command, **source)
     try:
         await get_local_session_relay().dispatch_session(target["ownerId"], session_id)

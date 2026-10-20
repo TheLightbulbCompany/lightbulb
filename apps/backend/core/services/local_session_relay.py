@@ -308,7 +308,9 @@ async def _session_sender_label(command: dict, owner: str | None, target_human: 
     if human and human == target_human:
         return {"kind": "session", "displayName": f"Your {provider or 'coding session'}"}
     try:
-        first = ((await human_display_name(human)) or "").split()[0] if human else ""
+        name = (await human_display_name(human)) or "" if human else ""
+        # A failed lookup answers the raw user id: that is no name, not a first name.
+        first = name.split()[0] if name and name != human else ""
     except Exception:  # noqa: BLE001
         first = ""
     if not first:
@@ -326,7 +328,8 @@ async def _sender_label(command: dict, owner: str | None, target_human: str | No
         from core.services.session_presence import _name  # tolerant: a label never blocks delivery
 
         name = await _name(member_id)
-        return {"kind": "human", "handle": None, "displayName": f"{command['viaClient']} via {name}"}
+        via = command["viaClient"] if name == member_id else f"{command['viaClient']} via {name}"
+        return {"kind": "human", "handle": None, "displayName": via}
     member = None
     if room_id := command.get("roomId"):
         room_members = await store.list_members(room_id)

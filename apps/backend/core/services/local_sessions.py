@@ -1893,6 +1893,8 @@ async def submit_command(
             "state": "awaiting_approval" if held else "pending",
             **({"heldFor": hold_for} if held else {}),
             "createdAt": now,
+            # Server-side only, never rewritten (the dispatch window rewrites createdAt): the loop limit.
+            "submittedAt": now,
             # Server-side only (not in CommandReceipt): the relay's dispatch-latency metric.
             "createdAtMs": int(time.time() * 1000),
             "deliverBy": min(now + 30, auth.expires_at)

@@ -31,3 +31,15 @@ async def test_own_session():
 async def test_removed_source_falls_back():
     got = await label(CMD, None)
     assert got["displayName"] == "Aden's coding session"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_name_lookup_is_no_name_not_the_user_id():
+    with (
+        patch("core.services.messaging.human_display_name", AsyncMock(return_value="user_2abcRAW")),
+        patch.object(
+            relay.repo, "get_session", AsyncMock(return_value={"provider": "codex", "humanUserId": "user_2abcRAW"})
+        ),
+    ):
+        got = await relay._sender_label({**CMD, "sourceHumanUserId": "user_2abcRAW"}, "o", "bob")
+    assert got["displayName"] == "Shared native session"

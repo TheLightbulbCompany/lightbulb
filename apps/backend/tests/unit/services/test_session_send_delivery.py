@@ -171,3 +171,38 @@ async def test_unallowed_send_to_offline_session_waits_and_is_not_dispatched(wir
     receipt = await _send(BOB, sid, "hold-off")
     assert receipt["state"] == "awaiting_approval" and receipt["delivery"] == "waiting for owner"
     assert await _reconnect_and_dispatch(wired, sid) == []
+
+
+@pytest.mark.asyncio
+async def test_a_loop_refused_send_files_no_ask(wired, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    sid = await start(wired)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    for i in range(12):
+        await _send(BOB, sid, f"ask-{i}", via_client="claude")
+    join = AsyncMock()
+    monkeypatch.setattr(native_session_tools.local_sessions, "request_join", join)
+    with pytest.raises(ApiProblem, match="Too many messages"):
+        await _send(BOB, sid, "ask-12", via_client="claude")
+    join.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_loop_window_counts_from_submit_not_from_a_later_dispatch(wired):
+    sid = await start(wired)
+    _offline(sid)
+    for i in range(12):
+        await _send(ALICE, sid, f"sub-{i}", via_client="claude")
+    start_at = time.time()
+    with patch("time.time", return_value=start_at + 500):  # the queue drains late
+        assert await _reconnect_and_dispatch(wired, sid)
+    for row in await repo.list_commands(OWNER, sid):
+        # What the dispatch window stores on each one it sends (the Mac admits only 30 s).
+        messaging_repo._table().update_item(
+            Key={"pk": row["pk"], "sk": row["sk"]},
+            UpdateExpression="SET createdAt = :late",
+            ExpressionAttributeValues={":late": int(start_at) + 500},
+        )
+    with patch("time.time", return_value=start_at + 601):
+        await _send(ALICE, sid, "sub-12", via_client="claude")

@@ -65,6 +65,8 @@ async def create_sign_in_token(
 class DeviceStartRequest(BaseModel):
     tauriMacPubKey: str = Field(..., min_length=1, max_length=4096)
     cliPubKey: str = Field(..., min_length=1, max_length=4096)
+    # The Mac's hostname, shown to the approver so a phished link names a Mac they don't know.
+    machineName: str | None = Field(default=None, max_length=device_login.MACHINE_NAME_MAX)
 
 
 class DeviceApproveRequest(BaseModel):
@@ -82,7 +84,13 @@ class DevicePollRequest(BaseModel):
 @router.post("/device/start")
 async def device_start(body: DeviceStartRequest):
     """`lightbulb join` begins: no auth, the Mac's two public keys in, a code pair out."""
-    return await device_login.start(body.tauriMacPubKey, body.cliPubKey)
+    return await device_login.start(body.tauriMacPubKey, body.cliPubKey, body.machineName)
+
+
+@router.post("/device/describe")
+async def device_describe(body: DeviceApproveRequest, ctx: AuthContext = Depends(get_current_user)):
+    """The approve page's read: the machine name for this code (410 once it is gone)."""
+    return await device_login.describe(body.userCode)
 
 
 @router.post("/device/approve")
@@ -109,7 +117,9 @@ async def device_approve(body: DeviceApproveRequest, ctx: AuthContext = Depends(
         row,
         ctx.user_id,
         {
-            "pair": pair.model_dump(mode="json"),
+            # The poll is unauthenticated: never hand it the workspace gateway token. The
+            # desktop treats the field as optional and authenticates with its device keys.
+            "pair": {**pair.model_dump(mode="json"), "gatewayToken": ""},
             "enrollment": enrollment.model_dump(mode="json"),
             "humanUserId": ctx.user_id,
         },

@@ -36,11 +36,16 @@ describe("connect this Mac", () => {
     );
   });
 
-  it("signed in approves the code and says it is connected", async () => {
-    s.post.mockResolvedValue({ status: "approved" });
+  it("signed in shows the machine name and the warning, then approves", async () => {
+    s.post.mockImplementation(async (url: string) =>
+      url === "/auth/device/describe" ? { machineName: "Ada's MacBook" } : { status: "approved" },
+    );
     render(<ConnectMachinePage />);
-    expect(screen.getByText("Connect this Mac to Acme")).toBeInTheDocument();
+    expect(await screen.findByText("Connect Ada's MacBook to Acme?")).toBeInTheDocument();
     expect(screen.getByText("ABCD-EFGH")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Only continue if you just ran `lightbulb join` on this Mac and the code matches/),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Connect this Mac" }));
     expect(await screen.findByText("Connected. You can close this tab.")).toBeInTheDocument();
     expect(s.post).toHaveBeenCalledWith("/auth/device/approve", { userCode: "ABCD-EFGH" });
@@ -50,7 +55,6 @@ describe("connect this Mac", () => {
     const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
     s.post.mockRejectedValue(new ApiError(410, { detail: "expired" }));
     render(<ConnectMachinePage />);
-    fireEvent.click(screen.getByRole("button", { name: "Connect this Mac" }));
     expect(await screen.findByText("This code expired. Run `lightbulb join` again.")).toBeInTheDocument();
   });
 

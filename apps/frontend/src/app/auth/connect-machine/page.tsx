@@ -2,7 +2,7 @@
 
 import { OrganizationSwitcher, SignIn, useAuth, useOrganization } from "@clerk/nextjs";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ApiError, useApi } from "@/lib/api";
@@ -29,6 +29,17 @@ function ConnectMachine() {
   const api = useApi();
   const [state, setState] = useState<"idle" | "busy" | "done">("idle");
   const [error, setError] = useState<string | null>(null);
+  // The name the Mac reported at `lightbulb join`. A phished link names a Mac the person
+  // does not recognise, which is the point of showing it.
+  const [machineName, setMachineName] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isSignedIn || !code || !organization) return;
+    api
+      .post("/auth/device/describe", { userCode: code })
+      .then((r) => setMachineName((r as { machineName?: string }).machineName || "this Mac"))
+      .catch((err) => setError(errorText(err)));
+  }, [api, code, isSignedIn, organization]);
 
   if (isLoaded && !isSignedIn) {
     return (
@@ -68,10 +79,15 @@ function ConnectMachine() {
   } else {
     body = (
       <>
-        <h1 className="text-xl font-semibold mb-2">Connect this Mac to {organization.name}</h1>
-        <p className="text-sm text-muted-foreground mb-1">Check that your terminal shows this code:</p>
-        <p className="font-mono text-2xl tracking-widest mb-4">{code}</p>
-        <Button onClick={approve} disabled={state === "busy"}>
+        <h1 className="text-xl font-semibold mb-2">
+          Connect {machineName ?? "this Mac"} to {organization.name}?
+        </h1>
+        <p className="font-mono text-3xl tracking-widest my-3">{code}</p>
+        <p className="text-sm text-muted-foreground mb-4 max-w-sm">
+          Only continue if you just ran `lightbulb join` on this Mac and the code matches what your
+          terminal shows.
+        </p>
+        <Button onClick={approve} disabled={state === "busy" || machineName === null}>
           Connect this Mac
         </Button>
         {error && <p className="text-sm text-destructive mt-3">{error}</p>}

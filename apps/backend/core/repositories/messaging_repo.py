@@ -452,6 +452,9 @@ def _is_cancelled(exc: ClientError) -> bool:
     return exc.response.get("Error", {}).get("Code") == "TransactionCanceledException"
 
 
+is_cancelled = _is_cancelled  # the public name for callers outside this module
+
+
 async def _paginate(**kwargs: Any) -> list[dict]:
     """Drain one table query, following ``LastEvaluatedKey`` and honouring ``Limit``."""
     table = _table()

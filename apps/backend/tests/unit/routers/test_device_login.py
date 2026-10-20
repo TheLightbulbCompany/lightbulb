@@ -18,7 +18,21 @@ ORG_A = "org_a"
 ORG_B = "org_b"
 MAC = "a" * 64
 CLI = "b" * 64
-KEYS = {"tauriMacPubKey": "-----BEGIN PUBLIC KEY-----\nMAC\n", "cliPubKey": "-----BEGIN PUBLIC KEY-----\nCLI\n"}
+
+
+def _pem() -> str:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    return (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+
+
+KEYS = {"tauriMacPubKey": _pem(), "cliPubKey": _pem(), "machineName": "Ada's MacBook"}
 
 
 @pytest.fixture
@@ -110,7 +124,9 @@ def test_approve_pairs_and_enrolls_then_poll_returns_once(env):
     first = _poll(client, started["code"])
     second = _poll(client, started["code"])
     assert first["status"] == "approved" and first["pair"]["ownerId"] == ORG_A
-    assert first["pair"]["deviceIdMac"] == MAC and first["pair"]["gatewayToken"] == "tok"
+    assert first["pair"]["deviceIdMac"] == MAC
+    assert first["pair"]["gatewayToken"] == ""  # the unauthenticated poll never gets the gateway token
+    assert "tok" not in str(first)
     assert first["enrollment"]["deviceId"] == MAC and first["enrollment"]["ownerId"] == ORG_A
     assert first["humanUserId"] == "user_alice"
     assert set(first) == {"status", "pair", "enrollment", "humanUserId"}
@@ -159,3 +175,34 @@ def test_approve_without_org_is_409_workspace_required(env):
     assert r.json()["detail"]["code"] == "workspace_required"
     pair.assert_not_awaited()
     assert _poll(client, started["code"]) == {"status": "pending"}
+
+
+def test_start_rejects_a_bad_pem(env):
+    client, *_ = env
+    r = client.post("/api/v1/auth/device/start", json={**KEYS, "cliPubKey": "-----BEGIN PUBLIC KEY-----\nnope\n"})
+    assert r.status_code == 422
+
+
+def test_machine_name_is_cleaned_and_bounded(env):
+    client, *_ = env
+    started = client.post("/api/v1/auth/device/start", json={**KEYS, "machineName": " Ada\x1b[31m\n Mac\u200b "}).json()
+    r = client.post("/api/v1/auth/device/describe", json={"userCode": started["userCode"]})
+    assert r.status_code == 200 and r.json() == {"machineName": "Ada[31m Mac"}
+    too_long = client.post("/api/v1/auth/device/start", json={**KEYS, "machineName": "x" * 65})
+    assert too_long.status_code == 422
+
+
+def test_a_row_taken_between_read_and_claim_is_expired_not_conflict(env, monkeypatch):
+    from core.repositories import messaging_repo
+
+    client, *_ = env
+    started = _start(client)
+    real_claim = messaging_repo.claim_device_login
+
+    async def racing_claim(code_hash, owner_id, user_id):
+        await messaging_repo.take_device_login(code_hash, approved_only=False)
+        return await real_claim(code_hash, owner_id, user_id)
+
+    monkeypatch.setattr(messaging_repo, "claim_device_login", racing_claim)
+    r = client.post("/api/v1/auth/device/approve", json={"userCode": started["userCode"]})
+    assert r.status_code == 410

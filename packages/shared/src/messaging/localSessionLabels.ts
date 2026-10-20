@@ -33,7 +33,7 @@ export const endedWhy = (s: Pick<LocalSession, "status" | "endedReason">, mac: s
 
 export const unavailableReason: Record<NonNullable<LocalSession["controlUnavailableReason"]>, string> = {
   // Owner ruling 2026-10-04: a person never reads "not verified" about their own session.
-  "runtime-unverified": "Sending is unavailable for this session.",
+  "runtime-unverified": "Lightbulb can't send to this session. Use its terminal on the Mac; starting the session again there turns sending back on.",
   "endpoint-unavailable": "The native input connection is unavailable.",
   "unsupported-version": "This provider version does not support verified control.",
   "history-gap": "History has a gap. Control is unavailable until the desktop reconnects safely.",

@@ -34,6 +34,9 @@ export const PREVIEW_LINES = 3;
 export const GLYPH = {
   claude: { prompt: "❯", bullet: "⏺", output: "⎿", thinking: "✻", working: "✻" },
   codex: { prompt: "›", bullet: "•", output: "└", thinking: "•", working: "•" },
+  // Cursor and Grok CLI mirror no transcript yet (agent network phase 2): plain glyphs.
+  cursor: { prompt: "›", bullet: "•", output: "└", thinking: "•", working: "•" },
+  grok: { prompt: "›", bullet: "•", output: "└", thinking: "•", working: "•" },
 } as const;
 
 // Strips terminal escape sequences (color codes, cursor moves) that ride

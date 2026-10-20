@@ -285,7 +285,11 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
         let ours_line = [executable.as_os_str(), std::ffi::OsStr::new("session-mcp")];
         // Any `session-mcp` under the old name is ours, whatever path it named.
         if let Ok(Some(_)) = configured(home, &cli, provider, LEGACY_SERVER_NAME) {
-            let _ = if enabled { edit } else { change }(home, &cli, provider, "remove", LEGACY_SERVER_NAME, &[]);
+            let _ = if enabled {
+                edit(home, &cli, provider, "remove", LEGACY_SERVER_NAME, &[])
+            } else {
+                change(home, &cli, provider, "remove", LEGACY_SERVER_NAME, &[])
+            };
         }
         let current = configured(home, &cli, provider, SERVER_NAME);
         let ours = matches!(&current, Ok(Some(c)) if *c == executable.to_string_lossy());

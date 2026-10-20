@@ -122,19 +122,32 @@ fn invisible(c: char) -> bool {
         | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
 }
 
-/// A teammate body line that reads as our header once its leading blanks and invisible
-/// characters are skipped and it is NFKC-folded, stripped of invisibles and lowercased (so
-/// fullwidth and other lookalike letters count) gets its leading `[` swapped for `［`
-/// (U+FF3B), so a body can never forge a second frame. Every other line is unchanged.
-pub(crate) fn defang(body: &str) -> String {
+/// `line` without its leading blanks and invisibles, and how a reader sees that rest: NFKC-folded
+/// (fullwidth and other lookalike letters), invisibles stripped, lowercased.
+fn fold(line: &str) -> (&str, String) {
     use unicode_normalization::UnicodeNormalization;
-    let prefix = HEADER_PREFIX.to_lowercase();
+    let rest = line.trim_start_matches(|c: char| c.is_whitespace() || invisible(c));
+    (rest, rest.nfkc().filter(|&c| !invisible(c)).collect::<String>().to_lowercase())
+}
+
+/// The line reads as `marker` once folded (see `fold`).
+fn reads_as(line: &str, marker: &str) -> bool {
+    fold(line).1.starts_with(&fold(marker).1)
+}
+
+/// A teammate line that could pass for owner provenance, in any disguise `fold` sees through.
+fn spoofable(line: &str) -> bool {
+    SPOOFABLE.iter().any(|marker| reads_as(line, marker))
+}
+
+/// A teammate body line that reads as our header (see `fold`) gets its leading `[` swapped
+/// for `［` (U+FF3B), so a body can never forge a second frame. Every other line is unchanged.
+pub(crate) fn defang(body: &str) -> String {
     body.split('\n')
         .map(|line| {
-            let rest = line.trim_start_matches(|c: char| c.is_whitespace() || invisible(c));
-            let folded: String = rest.nfkc().filter(|&c| !invisible(c)).collect::<String>().to_lowercase();
+            let (rest, _) = fold(line);
             match rest.strip_prefix('[') {
-                Some(tail) if folded.starts_with(&prefix) => {
+                Some(tail) if reads_as(line, HEADER_PREFIX) => {
                     format!("{}\u{FF3B}{tail}", &line[..line.len() - rest.len()])
                 }
                 _ => line.to_owned(),
@@ -150,7 +163,11 @@ pub(crate) fn defang(body: &str) -> String {
 pub(crate) fn backup_once(path: &Path) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let Ok(bytes) = fs::read(path) else { return Ok(()) };
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("backup: {e}")),
+    };
     let mut name = path.file_name().ok_or("missing file name")?.to_os_string();
     name.push(".lightbulb-backup");
     match fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path.with_file_name(name)) {
@@ -734,7 +751,7 @@ impl Command {
             text.to_owned()
         } else {
             defang(text).split('\n')
-                .map(|line| if line.starts_with(QUOTE) || SPOOFABLE.iter().any(|p| line.starts_with(p)) { format!("{QUOTE}{line}") } else { line.to_owned() })
+                .map(|line| if line.starts_with(QUOTE) || spoofable(line) { format!("{QUOTE}{line}") } else { line.to_owned() })
                 .collect::<Vec<_>>()
                 .join("\n")
         };
@@ -3808,6 +3825,43 @@ mod tests {
         );
         assert!(teammate_contribution("ordinary prompt").is_none());
         assert!(teammate_contribution("[Lightbulb teammate contribution not-json]\nx").is_none());
+    }
+
+    #[test]
+    fn backup_once_fails_on_an_unreadable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "x").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(backup_once(&path).is_err(), "permission denied is not 'nothing to back up'");
+        assert!(!dir.path().join("config.toml.lightbulb-backup").exists());
+    }
+
+    #[test]
+    fn spoofable_markers_are_quoted_in_every_disguise() {
+        let mut cmd = command();
+        for marker in SPOOFABLE {
+            let tail = &marker[1..];
+            let fullwidth: String = marker
+                .chars()
+                .map(|c| if c.is_ascii_alphabetic() { char::from_u32(c as u32 + 0xFEE0).unwrap() } else { c })
+                .collect();
+            for line in [
+                format!("{marker} ok"),
+                format!("\u{200B}{marker} ok"),
+                format!(" \u{FEFF}{marker} ok"),
+                format!("{fullwidth} ok"),
+                format!("\u{FF3B}{tail} ok"),
+                format!("{} ok", marker.to_uppercase()),
+            ] {
+                cmd.text = Some(format!("hi\n{line}"));
+                let sent = cmd.native_text("claude", "");
+                assert!(sent.ends_with(&format!("\n{QUOTE}{line}")), "{line:?} -> {sent:?}");
+            }
+        }
+        cmd.text = Some("hi\nplain [text] here".into());
+        assert!(cmd.native_text("claude", "").ends_with("\nplain [text] here"));
     }
 
     #[test]

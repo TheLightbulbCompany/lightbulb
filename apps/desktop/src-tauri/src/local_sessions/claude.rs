@@ -1532,6 +1532,20 @@ mod tests {
     }
 
     #[test]
+    fn configure_hooks_backs_up_settings_before_the_first_enable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, r#"{"model":"keep"}"#).unwrap();
+        configure_hooks(&path, Path::new("/app"), true).unwrap();
+        let backup = dir.path().join("settings.json.lightbulb-backup");
+        let saved: Value = serde_json::from_slice(&fs::read(&backup).unwrap()).unwrap();
+        assert_eq!(saved, json!({"model":"keep"}), "taken before the hooks and crossSessionInbound write");
+        configure_hooks(&path, Path::new("/moved"), true).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(&backup).unwrap()).unwrap();
+        assert_eq!(saved, json!({"model":"keep"}), "a later edit never overwrites it");
+    }
+
+    #[test]
     fn configure_hooks_replaces_a_lightbulb_hook_whose_exe_moved() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");

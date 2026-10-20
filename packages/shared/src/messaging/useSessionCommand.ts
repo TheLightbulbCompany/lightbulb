@@ -40,6 +40,7 @@ export function receiptChip(attempt: SessionCommandAttempt | null | undefined, a
           : receipt.cancelledAt ? { label: "Cancelled", tone: "warn", detail: "This follow-up will not be delivered." }
             : receipt.state === "rejected" ? attempt.request.kind === "end" ? { label: "Not ended", tone: "error", detail: "This session could not be ended from here. End it on its Mac." }
               : { label: "Not delivered", tone: "error", detail: "This follow-up was not delivered." }
+            : receipt.state === "awaiting_approval" ? { label: "Waiting for the owner", tone: "pending", detail: "The session's owner decides whether it is delivered." }
             : attempt.request.kind === "send" && receipt.state === "applied" ? null
             : receipt.held ? { label: "Queued on your Mac", tone: "pending", detail: "Admission is not completed work." }
             : receipt.state === "applied" ? attempt.request.kind === "end" ? { label: "Ending", tone: "ok", detail: null }
@@ -112,7 +113,7 @@ export function useSessionOutbox(client: SessionControlClient, sessionId: string
     const timer = setTimeout(() => { void refresh(); }, Math.max(0, nextExpiry * 1000 - Date.now()) + 1000);
     return () => clearTimeout(timer);
   }, [nextExpiry, refresh]);
-  const unsettled = commands.some(command => command.state === "pending" || command.state === "dispatched" || command.state === "unknown");
+  const unsettled = commands.some(command => command.state === "awaiting_approval" || command.state === "pending" || command.state === "dispatched" || command.state === "unknown");
   const needsRefresh = unsettled || commands.some(command => command.state === "rejected");
   useEffect(() => {
     if (!client.listLocalSessionOutbox || (online && !needsRefresh)) return;

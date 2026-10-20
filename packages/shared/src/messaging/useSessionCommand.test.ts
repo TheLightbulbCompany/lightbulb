@@ -319,6 +319,8 @@ describe("receiptChip / pendingPrompt", () => {
     expect(receiptChip({ request, state: "received", receipt: { ...receipt(request), held: true } })).toBeNull();
     expect(receiptChip({ request, state: "received", receipt: receipt(request, "unknown") })?.label).toBe("Delivery unknown");
     expect(receiptChip({ request, state: "received", receipt: receipt(request, "rejected") })?.label).toBe("Not delivered");
+    // A teammate's send held for the session owner's Allow (web and mobile outbox both render this).
+    expect(receiptChip({ request, state: "received", receipt: receipt(request, "awaiting_approval") })).toMatchObject({ label: "Waiting for the owner", tone: "pending" });
   });
   it("shows the pending row until the harness echoes the prompt after the baseline", () => {
     const attempt: SessionCommandAttempt = { request, state: "received", receipt: receipt(request) };

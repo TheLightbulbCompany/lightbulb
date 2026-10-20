@@ -659,7 +659,8 @@ export type LocalSessionCommandReceipt = {
   roomId: string;
   commandSeq: number;
   /** applied acknowledges admission to the harness, not successful work. */
-  state: "pending" | "dispatched" | "applied" | "rejected" | "unknown";
+  /** awaiting_approval: a send held until the session's owner answers the sender's Ask to join. */
+  state: "awaiting_approval" | "pending" | "dispatched" | "applied" | "rejected" | "unknown";
   createdAt: number;
   /** Unix seconds; a delivery deadline, never a history TTL. */
   deliverBy: number;

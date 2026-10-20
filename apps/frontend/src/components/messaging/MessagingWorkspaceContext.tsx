@@ -67,12 +67,12 @@ export const pickToken = (): PickToken => ({
 export const pickTokenUnchanged = (a: PickToken, b: PickToken) =>
   a.href === b.href && a.activePanelId === b.activePanelId;
 
-/** Nothing but #general and the vendor shared room: a new workspace, whose home is #general. */
 /** A session owner as a human participant, the shape ParticipantAvatar takes. */
 function ownerFace(id: string, displayName: string): RoomParticipant {
   return { kind: "human", id, displayName, mentionHandle: null, role: "member", listenMode: null, joinedAt: "", joinedSeq: 0 };
 }
 
+/** Nothing but #general and the vendor shared room: a new workspace, whose home is #general. */
 export function isFreshWorkspace(rooms: readonly RoomSummary[]): boolean {
   return rooms.every((room) => room.isDefault || room.shared);
 }

@@ -120,7 +120,12 @@ async def _held_sends(row: dict, users: list[str]) -> dict[str, dict]:
     newest: dict[str, dict] = {}
     count: dict[str, int] = {}
     for command in commands:
-        if command.get("heldFor") in users and command.get("state") == "awaiting_approval":
+        # Only what Allow would release (``release_held``): a held send past its deadline is not.
+        if (
+            command.get("heldFor") in users
+            and command.get("state") == "awaiting_approval"
+            and int(command.get("deliverBy") or 0) > _clock()
+        ):
             newest[command["heldFor"]] = command
             count[command["heldFor"]] = count.get(command["heldFor"], 0) + 1
     out = {}

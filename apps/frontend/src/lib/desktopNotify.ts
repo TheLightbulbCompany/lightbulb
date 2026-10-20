@@ -38,6 +38,18 @@ export function isDesktopApp(): boolean {
   return getTauri() !== null;
 }
 
+/** The desktop app's paired Mac device id; null outside it, unpaired, or on an older build. */
+export async function desktopDeviceId(): Promise<string | null> {
+  const tauri = getTauri();
+  if (!tauri) return null;
+  try {
+    const id = await tauri.invoke("desktop_device_id");
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Native notification permission on this device, in the browser's vocabulary:
  * the desktop app's macOS permission, or the browser's. Null when there is no

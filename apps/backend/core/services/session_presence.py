@@ -118,12 +118,22 @@ async def _held_sends(row: dict, users: list[str]) -> dict[str, dict]:
         logger.warning("held sends unavailable session=%s", row["sessionId"])
         return {}
     newest: dict[str, dict] = {}
+    count: dict[str, int] = {}
     for command in commands:
-        if command.get("heldFor") in users and command.get("state") == "awaiting_approval":
+        # Only what Allow would release (``release_held``): a held send past its deadline is not.
+        if (
+            command.get("heldFor") in users
+            and command.get("state") == "awaiting_approval"
+            and int(command.get("deliverBy") or 0) > _clock()
+        ):
             newest[command["heldFor"]] = command
+            count[command["heldFor"]] = count.get(command["heldFor"], 0) + 1
     out = {}
     for user, command in newest.items():
-        held = {"text": (command.get("text") or "")[: sessions.ASK_PRESENCE_TEXT_CHARS]}
+        # Allow releases every held message, so the preview says how many wait (first, so a
+        # shortened preview keeps it).
+        many = f"{count[user]} messages · " if count[user] > 1 else ""
+        held = {"text": (many + (command.get("text") or ""))[: sessions.ASK_PRESENCE_TEXT_CHARS]}
         label = await _label(row, command)
         if label:
             held["label"] = label

@@ -537,8 +537,8 @@ async def test_asking_again_reminds_the_owner_once_per_window_under_the_same_req
     assert again.join_request == "pending" and again.join_request_id == first.join_request_id
     await ask(BOB, sid, pushes)  # inside the new window: nothing
     assert [(p[0], p[1]) for p in pushes] == [
-        (ALICE.user_id, f"Bob wants to join {sid[:8]}"),
-        (ALICE.user_id, f"Bob is still waiting to join {sid[:8]}"),
+        (ALICE.user_id, "Bob wants to join a session"),
+        (ALICE.user_id, "Bob is still waiting to join a session"),
     ]
     live = [json.loads(h["events"][0]) for h in transport[4]]
     asks = [e["eventId"] for e in live if e["type"] == "workspace.session.attention"]
@@ -601,7 +601,7 @@ async def test_ask_to_join_is_idempotent_and_tells_only_the_owner(transport):
     first = await ask(BOB, sid, pushes)
     assert first.join_request == "pending" and first.allowed_senders == []
     assert (await ask(BOB, sid, pushes)).join_request == "pending"  # a second tap adds nothing
-    assert [(p[0], p[1]) for p in pushes] == [(ALICE.user_id, f"Bob wants to join {sid[:8]}")]
+    assert [(p[0], p[1]) for p in pushes] == [(ALICE.user_id, "Bob wants to join a session")]
     # The request state is the reader's own; who is waiting is the owner's alone.
     assert (await service.get_session(ALICE, sid)).join_request is None
     assert (await service.get_session(ALICE, sid)).pending_joins == [BOB.user_id]
@@ -617,7 +617,7 @@ async def test_ask_to_join_is_idempotent_and_tells_only_the_owner(transport):
     page = await feed(ALICE)
     item = joins(page)[0]
     assert page.items[0] is item and item.kind == "session" and item.state == "open"
-    assert item.summary.title == f"Bob wants to join {sid[:8]}"
+    assert item.summary.title == "Bob wants to join a session"
     assert [(a.id, a.label, a.navigate) for a in item.actions] == [
         ("allow", "Allow", None),
         ("decline", "Decline", None),
@@ -928,7 +928,7 @@ async def test_a_pick_up_request_shows_and_is_answered_in_activity(transport):
     rid = (await repo.get_session(OWNER, sid))["pickupRequests"][BOB.user_id]["requestId"]
     [item] = joins(await feed(ALICE))
     assert item.id == f"pickup:{sid}:{BOB.user_id}:{rid}" and item.state == "open"
-    assert item.summary.title == f"Bob wants to pick up {sid[:8]}"
+    assert item.summary.title == "Bob wants to pick up a session"
     assert item.summary.reason == (
         "Allow lets everyone in the workspace pick up this session on their Mac. It uploads the whole "
         "conversation and your uncommitted changes as they are. Nothing is redacted."

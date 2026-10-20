@@ -15,7 +15,7 @@ const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listL
 function view() {
   const cache = new Map();
   const tree = () => <SWRConfig value={{ provider: () => cache }}><SessionFocus focus={{ sessionId: "session" }} entries={[{ session, ownerName: "Alice", own: false }]} loading={false}
-    hintRevision={1} client={client} resolveSessionOwner={() => ({ ownerName: "Alice", own: false })} onAccessLost={() => {}} onClose={() => {}} /></SWRConfig>;
+    hintRevision={1} client={client} resolveSessionOwner={() => ({ ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 } })} onAccessLost={() => {}} onClose={() => {}} /></SWRConfig>;
   return { ...render(tree()), tree };
 }
 // Linked work is a tab of the session's Details dialog.

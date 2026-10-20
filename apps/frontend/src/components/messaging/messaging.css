@@ -262,6 +262,9 @@
 .native-session-dot-ended { background: var(--border); opacity: 0.5; }
 /* Sidebar session row: the tool logo, with the status dot as a corner badge. */
 .session-tool-badge { position: relative; display: inline-flex; flex-shrink: 0; }
+.session-owner-face { position: relative; display: inline-flex; flex-shrink: 0; }
+.session-tool-badge--corner { position: absolute; right: -4px; bottom: -4px; padding: 1px; border-radius: 9999px; background: var(--background); }
+.session-tool-badge--corner svg { width: 10px; height: 10px; }
 .native-session-prompt-row { display: flex; gap: 8px; align-items: flex-start; }
 .native-session-prompt-row .native-session-glyph { padding-top: 8px; font-family: var(--font-mono), ui-monospace, monospace; }
 .native-session-composer textarea { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; }

@@ -7,7 +7,7 @@ const make = (sessionId: string, title: string, status: "busy" | "offline" | "en
   session: { sessionId, deviceId: "d", humanUserId: "alice", provider: "claude" as const, providerVersion: "2", generation: "g", status, activeTurnId: null,
     capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 3, title,
     lastEventAt: new Date(Date.now() - hoursAgo * 3600_000).toISOString() },
-  ownerName: "Alice", own: false,
+  ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 },
 });
 
 it("lists live sessions first, newest first; ended ones under a collapsed Ended, by day; searches everything", async () => {

@@ -48,7 +48,7 @@ export interface MessagingWorkspaceValue {
   /** Not gated on the active dock panel: a split dock keeps the focused session on screen. */
   sessionSource: SessionSource;
   /** ownerName/own for a session fetched directly, outside the workspace session list. */
-  resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean };
+  resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean; owner: RoomParticipant };
   workspaceSessions: ReturnType<typeof useWorkspaceSessions>;
   scope: string;
   /** Latched at the room list's first load per workspace; null until then. */
@@ -377,13 +377,17 @@ export function MessagingWorkspaceProvider({
   // The same owner-name/own resolution sidebarSessions applies per section, for a
   // session fetched directly rather than found in the workspace list (SessionFocus's
   // single-session fallback).
+  const ownerFace = useCallback((humanUserId: string, displayName: string): RoomParticipant => ({
+    kind: "human", id: humanUserId, displayName, mentionHandle: null, role: "member", listenMode: null, joinedAt: "", joinedSeq: 0 }), []);
   const resolveSessionOwner = useCallback((humanUserId: string) =>
-    ({ ownerName: humanUserId === userId ? "You" : humanName(humanUserId), own: humanUserId === userId }),
-    [userId, humanName]);
+    ({ ownerName: humanUserId === userId ? "You" : humanName(humanUserId), own: humanUserId === userId,
+      owner: ownerFace(humanUserId, humanName(humanUserId)) }),
+    [userId, humanName, ownerFace]);
   const sidebarSessions: SidebarSession[] = useMemo(() =>
     workspaceSections(workspaceSessions.sessions, userId, humanName).flatMap((section) =>
-      section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId, unread: sessionUnread(session, seen) }))),
-    [workspaceSessions.sessions, userId, humanName, seen]);
+      section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId,
+        owner: ownerFace(session.humanUserId, humanName(session.humanUserId)), unread: sessionUnread(session, seen) }))),
+    [workspaceSessions.sessions, userId, humanName, ownerFace, seen]);
   const members: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
   // The feed seats only people; its agents are authors on the roster. They are added here so a
   // Discuss reply can @mention one (by name: an unseated agent has no handle in the room).

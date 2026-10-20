@@ -46,7 +46,7 @@ const SESSION_BODY = ".session-terminal-scroll, .session-terminal-wait, .local-s
  */
 export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner, onEvent, chatOpen = false, onChatOpenChange, onChatRoom, onRemove }: {
   onEvent?: SessionSource["onEvent"];
-  focus: { sessionId: string }; entries: readonly SidebarSession[]; loading: boolean; hintRevision: number;
+  focus: { sessionId: string }; entries: readonly Omit<SidebarSession, "owner">[]; loading: boolean; hintRevision: number;
   client: SessionSource["client"]; resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean };
   onAccessLost: () => void; onClose: () => void;
   /** Workspace humans and agents, for naming prompt authors and receipts. */

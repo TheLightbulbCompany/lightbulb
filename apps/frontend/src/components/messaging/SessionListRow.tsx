@@ -5,6 +5,7 @@ import { endedWhy, sessionEndable, sessionLabel, sessionLive, sessionStatus, ses
 import { SessionToolIcon } from "./SessionToolIcon";
 import { SessionRenameButton } from "./SessionRenameButton";
 import { SessionRemoveButton } from "./SessionRemoveButton";
+import { ParticipantAvatar } from "./ParticipantAvatar";
 import type { SidebarSession } from "./roomSections";
 
 /** Happy's list clock, by the viewer's calendar: a time today, a weekday within the week, then a date. */
@@ -37,7 +38,7 @@ function SessionListTime({ at }: { at: string | null | undefined }) {
  * and the owner when it is someone else's; `oneLine` (the sidebar) drops it, and the
  * accessible label still carries both.
  */
-export function SessionListRow({ entry: { session, ownerName, own, unread }, current, onSelect, onRename, onRemove, oneLine = false }: {
+export function SessionListRow({ entry: { session, ownerName, own, owner, unread }, current, onSelect, onRename, onRemove, oneLine = false }: {
   entry: SidebarSession; current: boolean; onSelect?: (sessionId: string) => void;
   oneLine?: boolean;
   onRename?: (sessionId: string, title: string | null) => Promise<unknown>;
@@ -56,7 +57,10 @@ export function SessionListRow({ entry: { session, ownerName, own, unread }, cur
   return <li className={`room-directory-row room-directory-row--roster session-row${live ? "" : " session-row--gone"}`}>
     <button type="button" className="room-directory-entry" aria-current={current ? "page" : undefined}
       aria-label={`Open ${label}, ${who}${where ? `, ${where}` : ""}, ${sessionStatus[session.status]}${news}${chat}`} onClick={() => onSelect?.(session.sessionId)}>
-      <span className="session-tool-badge" aria-hidden="true"><SessionToolIcon provider={session.provider} /></span>
+      <span className="session-owner-face">
+        <ParticipantAvatar participant={owner} size="sm" showPresence={false} />
+        <span className="session-tool-badge session-tool-badge--corner" aria-hidden="true"><SessionToolIcon provider={session.provider} /></span>
+      </span>
       <span className="min-w-0 flex-1">
         <span className={`block truncate${unread ? " font-semibold" : ""}${live && session.status === "busy" ? " session-title--working" : ""}`} title={label}>{sessionTitle(session)}</span>
         {second && <span className="block truncate text-caption text-muted-foreground">{second}</span>}

@@ -249,7 +249,7 @@ async def test_person_send_posts_into_the_dm_it_finds_or_opens(monkeypatch):
 async def test_session_send_is_a_follow_up_under_the_persons_control_authority(monkeypatch):
     auth, pin = _hosted_sender(monkeypatch)
     sid, request_id = str(uuid.uuid4()), uuid.uuid4()
-    target = {"sessionId": sid, "ownerId": "org_test", "generation": "g1"}
+    target = {"sessionId": sid, "ownerId": "org_test", "humanUserId": "user_sender", "generation": "g1"}
     authorize = AsyncMock(return_value=(target, {}))
     monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", authorize)
     send = AsyncMock(return_value={"state": "pending"})
@@ -262,7 +262,7 @@ async def test_session_send_is_a_follow_up_under_the_persons_control_authority(m
     result = await hosted_mcp.send_message("run the tests", request_id, session_id=sid)
 
     assert result == {"sessionId": sid, "requestId": str(request_id), "state": "pending"}
-    authorize.assert_awaited_once_with(auth, None, sid, owner_only=True)
+    authorize.assert_awaited_once_with(auth, None, sid)  # a read: session_send holds the unallowed
     pin.assert_awaited_once_with(auth, request_id, f"session:{sid}")
     send.assert_awaited_once_with(auth, target, "run the tests", str(request_id), via_client="Claude Code")
     post.assert_not_awaited()  # nothing is posted to a room

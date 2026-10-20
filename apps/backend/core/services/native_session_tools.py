@@ -387,7 +387,8 @@ async def _session_send(auth: AuthContext, source: dict, session_id: str, text: 
     connection, enrollment = await relay.connect(connection_id)
     if connection.get("device_id") != source["deviceId"] or connection.get("user_id") != source["humanUserId"]:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Native session source is not connected.")
-    target, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+    # A read: a person the owner has not allowed is held, not refused (session_send).
+    target, _ = await local_sessions.authorize_session(auth, None, session_id)
     source_conditions = [
         sessions_repo.native_source_condition(source),
         relay._connection_check(connection_id, connection),
@@ -422,6 +423,11 @@ async def session_send(auth: AuthContext, target: dict, text: str, request_id: s
     command = local_sessions.LocalSessionCommand(
         request_id=request_id, expected_generation=target["generation"], kind="send", text=text
     )
+    if not local_sessions.may_control(target, auth.user_id):
+        # Agent network §6: someone the owner has not allowed asks to join, and the send waits
+        # for the owner's Allow (allowing a person allows all of that person's agents).
+        await local_sessions.request_join(auth, session_id)
+        source = {**source, "hold_for": auth.user_id}
     receipt = await local_sessions.submit_command(auth, None, session_id, command, **source)
     try:
         await get_local_session_relay().dispatch_session(target["ownerId"], session_id)

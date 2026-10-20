@@ -608,7 +608,7 @@ async def test_session_send_admits_then_dispatches_and_survives_a_dispatch_failu
     from core.services import local_session_relay
 
     sid = str(uuid.uuid4())
-    target = {"sessionId": sid, "ownerId": "org_a", "generation": "g7"}
+    target = {"sessionId": sid, "ownerId": "org_a", "humanUserId": "user_owner", "generation": "g7"}
     submit = AsyncMock(return_value=SimpleNamespace(state="pending"))
     monkeypatch.setattr(tools.local_sessions, "submit_command", submit)
     relay = SimpleNamespace(dispatch_session=AsyncMock(side_effect=RuntimeError("socket gone")))

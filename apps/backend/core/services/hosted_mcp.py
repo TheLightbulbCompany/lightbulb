@@ -514,7 +514,8 @@ async def send_message(
             # The original destination stays authoritative, so there is no refusal to record.
             raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
         try:
-            target, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+            # A read: session_send holds a person the owner has not allowed until they Allow.
+            target, _ = await local_sessions.authorize_session(auth, None, session_id)
             # The person's own authority (actorUserId) admits and dispatches it, exactly like their
             # follow-up from the session page; the label tells the session a client wrote it.
             result = await native_session_tools.session_send(auth, target, text, str(request_id), via_client=client)

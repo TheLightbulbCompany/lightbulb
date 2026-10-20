@@ -1317,15 +1317,18 @@ class LocalSessionRelay:
         source_checks, source_pairing = [], None
         if native_actor:
             source = await repo.get_session(owner, command["actor"]["id"])
+            # A send held for the owner's Allow (``release_held``) is delivered on that Allow, long
+            # after the turn that wrote it: the owner's decision stands in for the turn's 30 s window.
+            released = command.get("releasedAt") is not None
             if (
                 not source
                 or source.get("humanUserId") != command.get("sourceHumanUserId")
                 or source.get("generation") != command.get("sourceSessionGeneration")
-                or source.get("activeTurnId") != command.get("sourceTurnId")
+                or (not released and source.get("activeTurnId") != command.get("sourceTurnId"))
                 or source.get("unshared")
                 or source.get("endedAt") is not None
                 or int(source.get("onlineUntil") or 0) < int(time.time())
-                or int(command.get("invocationExpiresAt") or 0) <= int(time.time())
+                or (not released and int(command.get("invocationExpiresAt") or 0) <= int(time.time()))
             ):
                 raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Source native session is no longer authorized.")
             source_connection, source_enrollment = await self.connect(source.get("connectionId") or "")
@@ -1396,7 +1399,9 @@ class LocalSessionRelay:
                 # Expire even commands behind an unresolved outcome; never queue old input indefinitely.
                 expired = False
                 for command in commands:
-                    if command["state"] == "pending" and command["deliverBy"] <= int(time.time()):
+                    if command["state"] in {"pending", "awaiting_approval"} and command["deliverBy"] <= int(
+                        time.time()
+                    ):
                         await repo.replace_command(
                             command, _revised(command, state="rejected", updatedAt=int(time.time()))
                         )
@@ -1409,6 +1414,8 @@ class LocalSessionRelay:
                         c
                         for c in commands
                         if c["state"] not in {"applied", "rejected"}
+                        # Held for its owner's Allow (``release_held``): never sent while held.
+                        and not c.get("heldFor")
                         and not (
                             c["state"] == "unknown"
                             and (c["expectedGeneration"] != row["generation"] or c.get("settled"))

@@ -612,6 +612,8 @@ def render_agent_ask(ask: dict, session: dict, *, seen: str | None, stranded: bo
             ActivityAction(id="send", label="Send", style="primary"),
             # A stranded approval was already chosen; only Send (admit it) is left.
             *([ActivityAction(id="decline", label="Decline")] if status == "pending" else []),
+            # Send this one AND flip the person's one switch for every agent (Settings -> Desktop).
+            *([ActivityAction(id="always", label="Always allow")] if status == "pending" else []),
         ]
         if open_
         else [],
@@ -619,7 +621,7 @@ def render_agent_ask(ask: dict, session: dict, *, seen: str | None, stranded: bo
 
 
 async def _run_agent_ask_action(auth: AuthContext, session_id: str, request_id: str, action_id: str) -> ActivityItem:
-    """Send / Decline from Activity: the same door as the session's decision route."""
+    """Send / Decline / Always allow from Activity: the same door as the session's decision route."""
     from core.repositories import local_sessions_repo
     from core.services import local_sessions
 
@@ -636,8 +638,16 @@ async def _run_agent_ask_action(auth: AuthContext, session_id: str, request_id: 
     if item.state != "open":
         return item
     _require_action(item, action_id)
+    if action_id == "always":
+        from core.repositories import user_repo
+
+        if not await user_repo.get(auth.user_id):
+            await user_repo.put(auth.user_id, auth.email)
+        await user_repo.set_prefs(auth.user_id, agent_send_without_asking=True)
     try:
-        await local_sessions.decide_agent_ask(auth, session_id, request_id, action_id)
+        await local_sessions.decide_agent_ask(
+            auth, session_id, request_id, "send" if action_id == "always" else action_id
+        )
     except ApiProblem as exc:
         if exc.error.code != "LOCAL_SESSION_ASK_SETTLED":  # a second tap or another approver won
             raise

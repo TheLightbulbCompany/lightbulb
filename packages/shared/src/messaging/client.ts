@@ -33,6 +33,7 @@ import type {
   PrivateSendApproval,
   LocalSessionEventPage,
   LocalSessionCommand,
+  AgentAskReceipt,
   LocalSessionCommandReceipt,
   LocalSessionOfflineOutbox,
   LocalSessionAuditEntry,
@@ -121,6 +122,10 @@ export interface MessagingClient {
   sendLocalSessionInput(sessionId: string, data: string, epoch: number, size?: { cols: number; rows: number; claim: boolean }): Promise<void>;
   /** The owner allows or declines one person's ask. Allow lets just that person send. */
   decideLocalSessionJoin(sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string): Promise<LocalSession>;
+  /** Agents' asks waiting on this session; empty for anyone who may not answer them. */
+  listAgentAsks(sessionId: string): Promise<AgentAskReceipt[]>;
+  /** Answers one ask. A 409 means it was already answered. */
+  decideAgentAsk(sessionId: string, requestId: string, decision: "send" | "decline"): Promise<AgentAskReceipt>;
   /** The owner takes one allowed person's access back. */
   removeLocalSessionSender(sessionId: string, userId: string): Promise<LocalSession>;
   /** "Resume and send": starts an ended session again on its owner's Mac. Safe to repeat with the same resumeId. */
@@ -225,6 +230,9 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     sendLocalSessionInput: async (sessionId, data, epoch, size) => { await api.post(`${sessionPath(sessionId)}/input`, { ...(data ? { data } : {}), epoch, ...(size ? { size } : {}) }); },
     decideLocalSessionJoin: (sessionId, userId, decision, requestId) =>
       api.post(`${sessionPath(sessionId)}/join-requests/${encodeURIComponent(userId)}`, { decision, ...(requestId ? { requestId } : {}) }) as Promise<LocalSession>,
+    listAgentAsks: (sessionId) => api.get(`${sessionPath(sessionId)}/agent-asks`) as Promise<AgentAskReceipt[]>,
+    decideAgentAsk: (sessionId, requestId, decision) =>
+      api.post(`${sessionPath(sessionId)}/agent-asks/${encodeURIComponent(requestId)}`, { decision }) as Promise<AgentAskReceipt>,
     removeLocalSessionSender: (sessionId, userId) =>
       api.del(`${sessionPath(sessionId)}/senders/${encodeURIComponent(userId)}`) as Promise<LocalSession>,
     resumeLocalSession: (sessionId, request) => api.post(`${sessionPath(sessionId)}/resume`, request) as Promise<LocalSession>,

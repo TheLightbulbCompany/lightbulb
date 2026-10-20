@@ -619,6 +619,8 @@ class AgentCommandReceipt(CommandReceipt):
     reason: str | None = None
     expires_at: int | None = None
     approved_by: str | None = None
+    # An ask's agent, for the strip that lists it (the actor carries only the id).
+    agent_name: str | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
@@ -637,6 +639,7 @@ class AgentCommandReceipt(CommandReceipt):
                 "reason",
                 "expires_at",
                 "approved_by",
+                "agent_name",
                 *_APPROVAL_FIELDS,
             ),
         )
@@ -2072,6 +2075,7 @@ def _ask_receipt(ask: dict) -> AgentCommandReceipt:
         created_at=ask["createdAt"],
         expires_at=ask["expiresAt"],
         approved_by=ask.get("approvedBy"),
+        agent_name=ask.get("agentName"),
         reason=(ask.get("reason") or status) if state == "rejected" else None,
     )
 

@@ -670,6 +670,17 @@ export type LocalSessionCommandReceipt = {
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }
   | { actorUserId?: never; actor: { kind: "agent" | "session"; id: string }; invocationExpiresAt: number });
 
+/** An agent's ask to message (or stop) a session, waiting on `awaiting_approval` for its owner. */
+export interface AgentAskReceipt {
+  requestId: string;
+  sessionId: string;
+  kind: "send" | "interrupt";
+  text: string | null;
+  agentName?: string;
+  state: "awaiting_approval" | "pending" | "dispatched" | "applied" | "rejected" | "unknown";
+  reason?: string;
+}
+
 export interface LocalSessionOfflineOutbox {
   commands: LocalSessionCommandReceipt[];
 }

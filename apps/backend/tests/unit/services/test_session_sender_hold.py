@@ -541,7 +541,7 @@ async def test_each_held_send_is_announced_as_a_message_after_its_command_is_sto
         await _send(BOB, sid, "held-copy-2", text="and run the tests")
     assert [c.args[5] for c in notices.await_args_list] == ["rebase on main please", "and run the tests"]
     assert all("wants to message" in c.args[4] and sid[:8] not in c.args[4] for c in notices.await_args_list)
-    assert all(c.kwargs == {"held": True} for c in notices.await_args_list)
+    assert all(c.kwargs["held"] is True and c.kwargs["host_device_id"] for c in notices.await_args_list)
     assert held_at_notice[0] == ["awaiting_approval"]  # the command was stored before the push
     rows = await messaging_repo._query(messaging_repo.activity_pk(OWNER, ALICE.user_id))
     assert len([r for r in rows if r.get("subtype") == "join_request"]) == 1

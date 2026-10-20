@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
-import { isDesktopApp, nativeNotify, notificationPermission, onDesktopToast } from "@/lib/desktopNotify";
+import { desktopDeviceId, isDesktopApp, nativeNotify, notificationPermission, onDesktopToast } from "@/lib/desktopNotify";
 import { notifySuccess } from "@/lib/notify";
 import type { RoomSummary } from "@lightbulb/shared";
 import { claimRunNotice, setRoomView } from "./roomView";
@@ -94,21 +94,25 @@ export function MessageNotifications(props: {
         const watching = current.current.activeSessionId === sessionId &&
           document.visibilityState === "visible" && document.hasFocus();
         if (watching) return;
-        // ponytail: assumes the session runs on this Mac; a second Mac's window shows nothing.
-        if (event.payload.held && isDesktopApp()) return;
-        capture("notification_shown", { channel: "web", kind: `session_${state}` });
-        const onClick = () => {
-          capture("notification_clicked", { channel: "web", kind: `session_${state}` });
-          current.current.onOpenSession?.(sessionId);
-        };
-        void nativeNotify(push.title, push.body, { onClick, tag: event.eventId }).then((shown) => {
-          if (shown || stopped) return;
-          notifySuccess(push.title, {
-            dedupeKey: `session:${event.eventId}`,
-            description: push.body || undefined,
-            action: { label: "Open", onClick },
+        const show = () => {
+          capture("notification_shown", { channel: "web", kind: `session_${state}` });
+          const onClick = () => {
+            capture("notification_clicked", { channel: "web", kind: `session_${state}` });
+            current.current.onOpenSession?.(sessionId);
+          };
+          void nativeNotify(push.title, push.body, { onClick, tag: event.eventId }).then((shown) => {
+            if (shown || stopped) return;
+            notifySuccess(push.title, {
+              dedupeKey: `session:${event.eventId}`,
+              description: push.body || undefined,
+              action: { label: "Open", onClick },
+            });
           });
-        });
+        };
+        const { held, hostDeviceId } = event.payload;
+        if (!held || !hostDeviceId || !isDesktopApp()) { show(); return; }
+        // The Mac that hosts a held send posts its own notification, with Allow and Decline.
+        void desktopDeviceId().then((here) => { if (!stopped && here !== hostDeviceId) show(); });
         return;
       }
       // `push` is the projector's banner for this reader — the exact text the

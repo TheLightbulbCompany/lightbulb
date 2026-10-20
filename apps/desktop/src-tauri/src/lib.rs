@@ -1228,6 +1228,13 @@ fn is_desktop() -> bool {
     true
 }
 
+/// This Mac's paired device id, the id a session row names as its host. A held session send's
+/// notice skips the window's banner only on that Mac, which posts its own with Allow and Decline.
+#[tauri::command]
+fn desktop_device_id(app: tauri::AppHandle) -> Option<String> {
+    app.path().app_data_dir().ok().and_then(|d| pair_state::load(&d)).map(|p| p.device_id_mac)
+}
+
 /// Returns the current node connection status.
 #[tauri::command]
 fn get_node_status(state: State<'_, NodeState>) -> String {
@@ -1935,6 +1942,7 @@ end tell"#,
             send_auth_token,
             desktop_unpair,
             is_desktop,
+            desktop_device_id,
             get_node_status,
             updater_identity,
             apply_update_manifest,

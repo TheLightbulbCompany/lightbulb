@@ -3152,7 +3152,9 @@ async def _notify_join_request(
     else:
         title = join_request_title(name, row, again=again)
         body = "Allow them to send follow-ups and answer prompts in this session."
-    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{held_request_id or request_id}"))
+    # The ask's Needs-you item is keyed by the ask, so a reminder rewrites it; each held message
+    # still gets a notice of its own.
+    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}"))
     if activity:  # a later held send is the same ask: one Needs-you item
         try:
             await messaging_repo.put_activity_row(
@@ -3174,9 +3176,10 @@ async def _notify_join_request(
             logger.warning("Session join request activity row failed", exc_info=True)
     if again:  # its own live event: clients drop one they have already seen
         event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}|{request['askedAt']}"))
-    await _session_notice(
-        owner, human, sid, "join_request", title, body, event_id, **({"held": True} if held_text is not None else {})
-    )
+    if held_request_id:
+        event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-held|{sid}|{held_request_id}"))
+    held = {"held": True, "host_device_id": row.get("deviceId")} if held_text is not None else {}
+    await _session_notice(owner, human, sid, "join_request", title, body, event_id, **held)
 
 
 async def _push_presence(row: dict) -> None:
@@ -3186,7 +3189,16 @@ async def _push_presence(row: dict) -> None:
 
 
 async def _session_notice(
-    owner: str, user: str, sid: str, state: str, title: str, body: str, event_id: str, *, held: bool = False
+    owner: str,
+    user: str,
+    sid: str,
+    state: str,
+    title: str,
+    body: str,
+    event_id: str,
+    *,
+    held: bool = False,
+    host_device_id: str | None = None,
 ) -> None:
     """A live event on ``user``'s own channel and a push, each best effort on its own."""
     from core.services.live_events import get_live_event_publisher
@@ -3201,7 +3213,12 @@ async def _session_notice(
             make_live_event(
                 "workspace.session.attention",
                 # held: the session's Mac posts its own notification, with Allow and Decline.
-                {"sessionId": sid, "state": state, "push": push, **({"held": True} if held else {})},
+                {
+                    "sessionId": sid,
+                    "state": state,
+                    "push": push,
+                    **({"held": True, "hostDeviceId": host_device_id} if held else {}),
+                },
                 event_id=event_id,
             ),
         )

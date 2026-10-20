@@ -45,6 +45,10 @@ pub struct Notice {
 /// What posts and withdraws request notifications; tests use their own.
 pub trait Center: Send {
     fn post(&self, notice: &Notice);
+    /// The same banner changed (a label that came later, a failed send): replaced, with no sound.
+    fn update(&self, notice: &Notice) {
+        self.post(notice)
+    }
     fn withdraw(&self, ids: &[String]);
 }
 
@@ -55,7 +59,13 @@ pub struct Native;
 impl Center for Native {
     fn post(&self, notice: &Notice) {
         #[cfg(target_os = "macos")]
-        drop(macos::schedule(&notice.title, Some(&notice.body), None, None, &notice.id, Some((REQUEST_CATEGORY, &notice.info))));
+        drop(macos::schedule(&notice.title, Some(&notice.body), None, None, &notice.id, Some((REQUEST_CATEGORY, &notice.info)), true));
+        #[cfg(not(target_os = "macos"))]
+        let _ = notice;
+    }
+    fn update(&self, notice: &Notice) {
+        #[cfg(target_os = "macos")]
+        drop(macos::schedule(&notice.title, Some(&notice.body), None, None, &notice.id, Some((REQUEST_CATEGORY, &notice.info)), false));
         #[cfg(not(target_os = "macos"))]
         let _ = notice;
     }
@@ -97,6 +107,10 @@ pub fn install_headless() {
 pub fn ask_once(wait: std::time::Duration) {
     #[cfg(target_os = "macos")]
     tauri::async_runtime::block_on(async {
+        if notification_permission(false).await != "default" {
+            return; // answered already, or no app bundle: no prompt to wait for
+        }
+        println!("Allow Lightbulb notifications in the macOS prompt");
         let _ = tokio::time::timeout(wait, notification_permission(true)).await;
     });
     #[cfg(not(target_os = "macos"))]
@@ -129,6 +143,7 @@ pub async fn native_notify(
             thread_id.as_deref(),
             &identifier,
             None,
+            true,
         ) {
             Some(accepted) => accepted.await.unwrap_or(false),
             None => false,
@@ -290,14 +305,10 @@ mod macos {
         let delegate: Retained<Delegate> = unsafe { msg_send![super(delegate), init] };
         let center = UNUserNotificationCenter::currentNotificationCenter();
         center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        // Allow and Decline: neither asks to unlock, as the decision route is device-signed.
-        let action = |id: &str, title: &str, options| {
-            UNNotificationAction::actionWithIdentifier_title_options(&NSString::from_str(id), &NSString::from_str(title), options)
+        let action = |id: &str, title: &str| {
+            UNNotificationAction::actionWithIdentifier_title_options(&NSString::from_str(id), &NSString::from_str(title), action_options(id))
         };
-        let actions = NSArray::from_retained_slice(&[
-            action(super::ALLOW, "Allow", UNNotificationActionOptions::empty()),
-            action(super::DECLINE, "Decline", UNNotificationActionOptions::Destructive),
-        ]);
+        let actions = NSArray::from_retained_slice(&[action(super::ALLOW, "Allow"), action(super::DECLINE, "Decline")]);
         let category = UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
             &NSString::from_str(super::REQUEST_CATEGORY),
             &actions,
@@ -311,6 +322,17 @@ mod macos {
         // System Settings → Notifications from first launch, so it can always
         // be switched on there. A no-op once someone has answered the prompt.
         drop(request(UNAuthorizationOptions::Provisional)); // answer is only logged
+    }
+
+    /// Allow lets someone into the session, so it asks for the Mac to be unlocked first: a
+    /// banner on a locked screen is no proof the person is there. Decline lets nobody in and is
+    /// shown as destructive, with no unlock.
+    pub fn action_options(id: &str) -> UNNotificationActionOptions {
+        if id == super::ALLOW {
+            UNNotificationActionOptions::AuthenticationRequired
+        } else {
+            UNNotificationActionOptions::Destructive
+        }
     }
 
     /// What the after-sign-in ask requests: the options that raise the prompt.
@@ -368,6 +390,7 @@ mod macos {
         thread_id: Option<&str>,
         identifier: &str,
         category: Option<(&str, &BTreeMap<String, String>)>,
+        sound: bool,
     ) -> Option<oneshot::Receiver<bool>> {
         if !bundled() {
             return None;
@@ -392,7 +415,9 @@ mod macos {
             // SAFETY: a dictionary of strings is a valid property list, which userInfo must be.
             unsafe { content.setUserInfo(&*(Retained::as_ptr(&dict) as *const NSDictionary)) };
         }
-        content.setSound(Some(&UNNotificationSound::defaultSound()));
+        if sound {
+            content.setSound(Some(&UNNotificationSound::defaultSound()));
+        }
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
             &NSString::from_str(identifier),
             &content,
@@ -445,5 +470,14 @@ mod tests {
         assert!(!act("lightbulb.request.r1".into(), "com.apple.UNNotificationDefaultActionIdentifier", String::new(), info.clone()));
         assert!(!act("lightbulb.request.r1".into(), "com.apple.UNNotificationDismissActionIdentifier", String::new(), info));
         assert_eq!((REQUEST_CATEGORY, ALLOW, DECLINE), ("lightbulb.request", "allow", "decline"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn notify_allow_needs_the_mac_unlocked_and_decline_does_not() {
+        use objc2_user_notifications::UNNotificationActionOptions as O;
+        assert_eq!(macos::action_options(ALLOW), O::AuthenticationRequired);
+        assert_eq!(macos::action_options(DECLINE), O::Destructive);
+        assert!(!macos::action_options(DECLINE).contains(O::AuthenticationRequired));
     }
 }

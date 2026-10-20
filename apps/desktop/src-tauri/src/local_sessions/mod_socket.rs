@@ -124,7 +124,7 @@ fn owed_stops(scope: &Path) -> Vec<(String, String, String)> {
 /// The notice lines for the shared session `pid` is or started (`POST /v1/notice`).
 fn notice_lines(scope: &Path, pid: u32, named: Option<&str>) -> Vec<String> {
     to_share(scope, pid, named)
-        .filter(|(_, m)| m.shared)
+        .filter(|(_, m)| m.shared && m.native.restriction.is_none())
         .and_then(|(_, m)| Some(super::held_notice::untold(m.session_id.as_deref()?, &m.generation)))
         .unwrap_or_default()
 }

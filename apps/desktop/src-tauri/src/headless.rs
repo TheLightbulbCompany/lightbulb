@@ -41,7 +41,12 @@ pub fn serve() -> ! {
         // on its own thread and the main thread serves the main dispatch queue, which a
         // framework callback may need.
         crate::notify::install_headless();
-        std::thread::spawn(|| std::process::exit(tauri::async_runtime::block_on(run(&app_data_dir()))));
+        std::thread::spawn(|| {
+            let code = tauri::async_runtime::block_on(run(&app_data_dir()));
+            // No banner outlives the process that put it up.
+            crate::local_sessions::held_notice::withdraw_all();
+            std::process::exit(code)
+        });
         extern "C" {
             fn dispatch_main() -> !;
         }

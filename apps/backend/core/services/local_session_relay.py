@@ -276,7 +276,7 @@ async def _actor_label(command: dict, owner_human: str | None = None, owner: str
     page stores roomId "") or no row in it still gets the name presence shows. An agent's send
     that a person approved says so: "Friday, approved by you" to the session's owner
     (``owner_human``), "Friday, approved by Sam" when a teammate under team control approved."""
-    label = await _sender_label(command, owner)
+    label = await _sender_label(command, owner, owner_human)
     if label is None or not command.get("approvedBy"):
         return label
     from core.services.session_presence import _name
@@ -295,11 +295,32 @@ async def _agent_roster_name(owner: str, agent_id: str) -> str | None:
         return None
 
 
-async def _sender_label(command: dict, owner: str | None) -> dict | None:
+async def _session_sender_label(command: dict, owner: str | None, target_human: str | None) -> dict:
+    """ "Aden's Codex" / "Your Claude Code": the sending session named as its owner's agent."""
+    from core.services.messaging import human_display_name
+
+    try:
+        row = await repo.get_session(owner, command["actor"]["id"]) if owner else None
+    except Exception:  # noqa: BLE001 -- a label never blocks delivery
+        row = None
+    human = (row or {}).get("humanUserId") or command.get("sourceHumanUserId")
+    provider = {"claude": "Claude Code", "codex": "Codex"}.get((row or {}).get("provider"))
+    if human and human == target_human:
+        return {"kind": "session", "displayName": f"Your {provider or 'coding session'}"}
+    try:
+        first = ((await human_display_name(human)) or "").split()[0] if human else ""
+    except Exception:  # noqa: BLE001
+        first = ""
+    if not first:
+        return {"kind": "session", "displayName": "Shared native session"}
+    return {"kind": "session", "displayName": f"{first}'s {provider or 'coding session'}"}
+
+
+async def _sender_label(command: dict, owner: str | None, target_human: str | None = None) -> dict | None:
     from core.services.messaging import human_emails, with_human_handles
 
     if (command.get("actor") or {}).get("kind") == "session":
-        return {"kind": "session", "displayName": "Shared native session"}
+        return await _session_sender_label(command, owner, target_human)
     kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
     if command.get("viaClient"):
         from core.services.session_presence import _name  # tolerant: a label never blocks delivery

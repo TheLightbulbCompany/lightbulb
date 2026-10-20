@@ -388,6 +388,8 @@ impl Controller {
                 } = prepared;
                 let native_tools = super::native_tools::serve(scope.clone(), enrollment.clone(), identity.clone());
                 let mod_socket = super::mod_socket::serve(scope.clone(), enrollment.clone(), identity.clone());
+                // Whoever runs local sessions posts their requests' notifications (Task 7b).
+                let notices = super::held_notice::run(scope.clone(), enrollment.clone(), identity.clone());
                 // Pick-up snapshots run on their OWN task: sharing one `select!` with the
                 // relay would stall every relay frame while a snapshot does its work.
                 let snapshots = super::snapshot::run(
@@ -422,7 +424,7 @@ impl Controller {
                     // ends only itself.
                     let _snapshots = AbortOnDrop(tauri::async_runtime::spawn(snapshots));
                     let _resumes = AbortOnDrop(tauri::async_runtime::spawn(resumes));
-                    let _sockets = serve_sockets(vec![Box::pin(native_tools), Box::pin(mod_socket)]);
+                    let _sockets = serve_sockets(vec![Box::pin(native_tools), Box::pin(mod_socket), Box::pin(notices)]);
                     let hooks = async move {
                         let mut bytes = [0u8; 2048];
                         loop {
@@ -677,8 +679,10 @@ fn silence(fd: std::os::unix::io::RawFd) {
 /// authority. The one exception to "never a decision" is a Claude permission
 /// prompt the app holds for a remote answer (owner ruling 2026-09-25): that
 /// path keeps a private copy of stdout and writes to it only a decision
-/// `approval::hold` built for that exact prompt. Every other path loses stdout
-/// before a byte of stdin is read (see [`silence`]).
+/// `approval::hold` built for that exact prompt. Codex's PostToolUse writes to
+/// that copy only `additionalContext`, the notice of a waiting request (Task 7b),
+/// never a decision. Every other path loses stdout before a byte of stdin is
+/// read (see [`silence`]).
 pub fn hook(provider: &str) {
     let answer = unsafe { libc::dup(HOOK_DECISION_FD) };
     silence(HOOK_DECISION_FD);
@@ -705,6 +709,24 @@ fn hook_input(
     super::native_mcp::canonical_hook(&mut json);
     if answer >= 0 && super::approval::holdable(provider, &json) {
         super::approval::hold(wake, provider, &json, answer);
+        return;
+    }
+    // Codex's PostToolUse runs only to tell the agent about a request waiting on its person
+    // (Task 7b): one line per request, once, and nothing that answers it.
+    if provider == "codex" && json["hook_event_name"] == "PostToolUse" {
+        if answer >= 0 {
+            let session = json["session_id"].as_str().unwrap_or("");
+            let lines = super::held_notice::ask_app(&wake.with_file_name("mod.sock"), session);
+            if let Some(out) = super::held_notice::hook_output(&lines) {
+                use std::io::Write;
+                use std::os::unix::io::FromRawFd;
+                // SAFETY: `answer` is this hook's own dup of stdout, owned and closed here.
+                let mut stdout = unsafe { fs::File::from_raw_fd(answer) };
+                let _ = stdout.write_all(out.to_string().as_bytes());
+            } else {
+                unsafe { libc::close(answer) };
+            }
+        }
         return;
     }
     if answer >= 0 {
@@ -1366,6 +1388,45 @@ mod tests {
         let _ = outer.wait();
         assert_eq!(found.as_deref(), Some("ab12cd34"));
         assert!(none, "a holder whose provider is another process does not match");
+    }
+
+    /// Task 7b: Codex's PostToolUse hook writes only the app's notice lines, as context, and no
+    /// lifecycle datagram; with nothing to tell, it writes nothing.
+    #[test]
+    fn local_sessions_codex_post_tool_use_hook_relays_the_notice_and_nothing_else() {
+        use std::io::{Read, Write};
+        use std::os::unix::io::FromRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        let wake = dir.path().join("wake.sock");
+        let app = std::os::unix::net::UnixDatagram::bind(&wake).unwrap();
+        app.set_nonblocking(true).unwrap();
+        let line = super::super::held_notice::notice_line("Aden's Codex");
+        let run = |lines: Vec<String>| -> String {
+            let listener = std::os::unix::net::UnixListener::bind(dir.path().join("mod.sock")).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap();
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let body = json!({"lines": lines}).to_string();
+                s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
+                request
+            });
+            let mut fds = [0; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            let stdin = json!({"hook_event_name":"PostToolUse","session_id":"thread-1","tool_name":"shell"});
+            hook_input("codex", stdin, std::process::id(), &[], fds[1], &wake);
+            let request = server.join().unwrap();
+            assert!(request.starts_with("POST /v1/notice ") && request.contains("\"sessionId\":\"thread-1\""));
+            let _ = fs::remove_file(dir.path().join("mod.sock"));
+            let mut out = String::new();
+            unsafe { fs::File::from_raw_fd(fds[0]) }.read_to_string(&mut out).unwrap();
+            out
+        };
+        let out: Value = serde_json::from_str(&run(vec![line.clone()])).unwrap();
+        assert_eq!(out, json!({"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":line}}));
+        assert_eq!(run(vec![]), "", "nothing waiting: no output at all");
+        assert!(app.recv(&mut [0u8; 64]).is_err(), "PostToolUse is not a lifecycle event");
     }
 
     #[test]

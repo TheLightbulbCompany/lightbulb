@@ -74,6 +74,31 @@ async def link_viewers(row: dict, now: int) -> int:
     return min(sum(int(r.get("expiresAt", 0)) > now for r in seats), MAX_LINK_VIEWERS)
 
 
+async def _held_sends(row: dict, users: list[str]) -> dict[str, dict]:
+    """Each asking person's newest held session send (agent network §6) as the fields the Mac's
+    notification reads: the preview and the sender as delivery labels it ("Aden's Codex"). One
+    command read, and only while someone is asking."""
+    if not users:
+        return {}
+    from core.services.local_session_relay import _sender_label  # imports this module
+
+    newest: dict[str, dict] = {}
+    for command in await repo.list_commands(row["ownerId"], row["sessionId"]):  # sorted by commandSeq
+        if command.get("heldFor") in users and command.get("state") == "awaiting_approval":
+            newest[command["heldFor"]] = command
+    out = {}
+    for user, command in newest.items():
+        held = {"text": (command.get("text") or "")[: sessions.ASK_PRESENCE_TEXT_CHARS]}
+        try:
+            label = await _sender_label(command, row["ownerId"], row.get("humanUserId"))
+        except Exception:  # noqa: BLE001 -- a label is decoration; the requester's name stands in
+            label = None
+        if label and label.get("displayName"):
+            held["label"] = label["displayName"]
+        out[user] = held
+    return out
+
+
 async def entry(row: dict, at: int) -> dict:
     """`at`: server milliseconds taken before `row` was read. The Mac keeps the entry with the
     greatest `at`, so an ack and a push that arrive out of order cannot undo a newer read."""
@@ -93,6 +118,8 @@ async def entry(row: dict, at: int) -> dict:
         if AGENT_ASK_FEATURE in row.get("deviceFeatures", ())
         else []
     )
+    joins = pending_joins(row)
+    held = await _held_sends(row, list(joins))
     return {
         "sessionId": row["sessionId"],
         "generation": row["generation"],
@@ -105,8 +132,15 @@ async def entry(row: dict, at: int) -> dict:
         ],
         "joinRequests": sorted(
             [
-                {"userId": u, "name": _asked_as(row, u) or await _name(u), "requestId": rid, "kind": kind}
-                for kind, pending in (("join", pending_joins(row)), ("pickup", shown_pickups(row)))
+                {
+                    "userId": u,
+                    "name": _asked_as(row, u) or await _name(u),
+                    "requestId": rid,
+                    "kind": kind,
+                    # A held session send waits on this ask: the Mac notifies it (Task 7b).
+                    **(held.get(u, {}) if kind == "join" else {}),
+                }
+                for kind, pending in (("join", joins), ("pickup", shown_pickups(row)))
                 for u, rid in pending.items()
             ]
             + [

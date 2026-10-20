@@ -17,14 +17,101 @@
 //! with no bundle id — so the webview falls back to its in-app toast. macOS
 //! itself accepts a request from an app that is switched off and then presents
 //! it as nothing, so the permission is checked before every request.
+//!
+//! A held message or an agent's ask (Task 7b) is a notification of the `REQUEST_CATEGORY`,
+//! whose Allow and Decline come back on `take_actions` to whichever process owns local
+//! sessions. That core needs no Tauri: `serve` installs it with `install_headless`.
 
 use tauri::AppHandle;
+use tokio::sync::mpsc;
+
+/// The category of a request notification, and its two actions.
+pub const REQUEST_CATEGORY: &str = "lightbulb.request";
+pub const ALLOW: &str = "allow";
+pub const DECLINE: &str = "decline";
+
+/// One request notification: `id` is its identifier, which a repeat replaces.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Notice {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+}
+
+/// What posts and withdraws request notifications; tests use their own.
+pub trait Center: Send {
+    fn post(&self, notice: &Notice);
+    fn withdraw(&self, ids: &[String]);
+}
+
+/// The real `UNUserNotificationCenter`. Not allowed (or no app bundle) shows nothing and
+/// changes nothing else: the band, the phone and the web still answer.
+pub struct Native;
+
+impl Center for Native {
+    fn post(&self, notice: &Notice) {
+        #[cfg(target_os = "macos")]
+        drop(macos::schedule(&notice.title, Some(&notice.body), None, None, &notice.id, Some(REQUEST_CATEGORY)));
+        #[cfg(not(target_os = "macos"))]
+        let _ = notice;
+    }
+    fn withdraw(&self, ids: &[String]) {
+        #[cfg(target_os = "macos")]
+        macos::withdraw(ids);
+        #[cfg(not(target_os = "macos"))]
+        let _ = ids;
+    }
+}
+
+/// (notification id, ALLOW | DECLINE): a person's press, the only way one is made.
+pub type Action = (String, String);
+
+static ACTIONS: std::sync::Mutex<Option<mpsc::UnboundedSender<Action>>> = std::sync::Mutex::new(None);
+
+/// The presses from now on; a later call takes them over (local sessions restarted).
+pub fn take_actions() -> mpsc::UnboundedReceiver<Action> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    if let Ok(mut slot) = ACTIONS.lock() {
+        *slot = Some(tx);
+    }
+    rx
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn act(id: String, action: &str) -> bool {
+    if action != ALLOW && action != DECLINE {
+        return false;
+    }
+    let sent = ACTIONS.lock().ok().and_then(|slot| slot.as_ref().map(|tx| tx.send((id, action.to_owned())).is_ok()));
+    if sent != Some(true) {
+        crate::log("[notify] a request was answered here, but this process does not run local sessions");
+    }
+    true
+}
 
 pub fn install(app: &AppHandle) {
     #[cfg(target_os = "macos")]
-    macos::install(app);
+    macos::install(Some(app));
     #[cfg(not(target_os = "macos"))]
     let _ = app;
+}
+
+/// `serve`: the same delegate and category with no window. A click opens nothing; Allow and
+/// Decline still reach `take_actions`.
+pub fn install_headless() {
+    #[cfg(target_os = "macos")]
+    macos::install(None);
+}
+
+/// `lightbulb join`: raise the macOS prompt once, waiting up to `wait` for the answer. A no-op
+/// once someone has answered it, and outside an app bundle.
+pub fn ask_once(wait: std::time::Duration) {
+    #[cfg(target_os = "macos")]
+    tauri::async_runtime::block_on(async {
+        let _ = tokio::time::timeout(wait, notification_permission(true)).await;
+    });
+    #[cfg(not(target_os = "macos"))]
+    let _ = wait;
 }
 
 /// Shows a native notification; `true` once the OS accepted it with permission
@@ -52,6 +139,7 @@ pub async fn native_notify(
             subtitle.as_deref(),
             thread_id.as_deref(),
             &identifier,
+            None,
         ) {
             Some(accepted) => accepted.await.unwrap_or(false),
             None => false,
@@ -110,11 +198,12 @@ mod macos {
     use objc2::rc::Retained;
     use objc2::runtime::{Bool, ProtocolObject};
     use objc2::{define_class, msg_send, AnyThread, DefinedClass};
-    use objc2_foundation::{NSBundle, NSError, NSObject, NSObjectProtocol, NSString};
+    use objc2_foundation::{NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSSet, NSString};
     use objc2_user_notifications::{
         UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent,
-        UNNotification, UNNotificationPresentationOptions, UNNotificationRequest,
-        UNNotificationResponse, UNNotificationSettings, UNNotificationSound,
+        UNNotification, UNNotificationAction, UNNotificationActionOptions,
+        UNNotificationCategory, UNNotificationCategoryOptions, UNNotificationPresentationOptions,
+        UNNotificationRequest, UNNotificationResponse, UNNotificationSettings, UNNotificationSound,
         UNUserNotificationCenter, UNUserNotificationCenterDelegate,
     };
     use tauri::{AppHandle, Emitter};
@@ -123,7 +212,8 @@ mod macos {
     use crate::log;
 
     struct Ivars {
-        app: AppHandle,
+        /// None under `serve`: no window to focus or webview to tell.
+        app: Option<AppHandle>,
     }
 
     define_class!(
@@ -158,7 +248,14 @@ mod macos {
                 completion: &DynBlock<dyn Fn()>,
             ) {
                 let identifier = response.notification().request().identifier().to_string();
-                let app = self.ivars().app.clone();
+                if super::act(identifier.clone(), &response.actionIdentifier().to_string()) {
+                    completion.call(());
+                    return;
+                }
+                let Some(app) = self.ivars().app.clone() else {
+                    completion.call(());
+                    return;
+                };
                 if identifier == crate::agent_chrome::SHOW_TAG {
                     // "Open the Lightbulb agent window": the click made Lightbulb active,
                     // so it can hand activation to the agent Chrome.
@@ -192,15 +289,30 @@ mod macos {
             .unwrap_or_default()
     }
 
-    pub fn install(app: &AppHandle) {
+    pub fn install(app: Option<&AppHandle>) {
         if !bundled() {
             log("[notify] not running from an app bundle; native notifications off");
             return;
         }
-        let delegate = Delegate::alloc().set_ivars(Ivars { app: app.clone() });
+        let delegate = Delegate::alloc().set_ivars(Ivars { app: app.cloned() });
         let delegate: Retained<Delegate> = unsafe { msg_send![super(delegate), init] };
         let center = UNUserNotificationCenter::currentNotificationCenter();
         center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        // Allow and Decline: neither asks to unlock, as the decision route is device-signed.
+        let action = |id: &str, title: &str, options| {
+            UNNotificationAction::actionWithIdentifier_title_options(&NSString::from_str(id), &NSString::from_str(title), options)
+        };
+        let actions = NSArray::from_retained_slice(&[
+            action(super::ALLOW, "Allow", UNNotificationActionOptions::empty()),
+            action(super::DECLINE, "Decline", UNNotificationActionOptions::Destructive),
+        ]);
+        let category = UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+            &NSString::from_str(super::REQUEST_CATEGORY),
+            &actions,
+            &NSArray::new(),
+            UNNotificationCategoryOptions::empty(),
+        );
+        center.setNotificationCategories(&NSSet::from_retained_slice(&[category]));
         // `delegate` is a weak property on the center; ours lives as long as the process.
         std::mem::forget(delegate);
         // Provisional authorization shows no prompt but lists Lightbulb under
@@ -263,6 +375,7 @@ mod macos {
         subtitle: Option<&str>,
         thread_id: Option<&str>,
         identifier: &str,
+        category: Option<&str>,
     ) -> Option<oneshot::Receiver<bool>> {
         if !bundled() {
             return None;
@@ -277,6 +390,9 @@ mod macos {
         }
         if let Some(thread_id) = thread_id {
             content.setThreadIdentifier(&NSString::from_str(thread_id));
+        }
+        if let Some(category) = category {
+            content.setCategoryIdentifier(&NSString::from_str(category));
         }
         content.setSound(Some(&UNNotificationSound::defaultSound()));
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
@@ -297,5 +413,37 @@ mod macos {
         UNUserNotificationCenter::currentNotificationCenter()
             .addNotificationRequest_withCompletionHandler(&request, Some(&done));
         Some(rx)
+    }
+
+    /// Takes these banners out of Notification Center.
+    pub fn withdraw(ids: &[String]) {
+        if !bundled() || ids.is_empty() {
+            return;
+        }
+        let ids: Vec<Retained<NSString>> = ids.iter().map(|id| NSString::from_str(id)).collect();
+        UNUserNotificationCenter::currentNotificationCenter()
+            .removeDeliveredNotificationsWithIdentifiers(&NSArray::from_retained_slice(&ids));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notify_only_allow_and_decline_reach_local_sessions() {
+        let mut presses = take_actions();
+        assert!(act("lightbulb.request.r1".into(), ALLOW));
+        assert!(act("lightbulb.request.r2".into(), DECLINE));
+        // A plain click (the default action) is not a decision: the click path handles it.
+        assert!(!act("lightbulb.request.r3".into(), "com.apple.UNNotificationDefaultActionIdentifier"));
+        assert_eq!(presses.try_recv().ok(), Some(("lightbulb.request.r1".into(), "allow".into())));
+        assert_eq!(presses.try_recv().ok(), Some(("lightbulb.request.r2".into(), "decline".into())));
+        assert!(presses.try_recv().is_err());
+        // Local sessions restarted: the presses go to the new listener only.
+        let mut again = take_actions();
+        act("lightbulb.request.r4".into(), ALLOW);
+        assert!(presses.try_recv().is_err());
+        assert_eq!(again.try_recv().ok().map(|(id, _)| id), Some("lightbulb.request.r4".into()));
     }
 }

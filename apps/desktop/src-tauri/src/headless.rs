@@ -34,6 +34,21 @@ pub(crate) fn service_lock(data: &Path) -> io::Result<Option<fs::File>> {
 }
 
 pub fn serve() -> ! {
+    #[cfg(target_os = "macos")]
+    {
+        // The request notifications' delegate (Task 7b). The binary runs from inside
+        // Lightbulb.app, so the center files them under the app's bundle id. The service runs
+        // on its own thread and the main thread serves the main dispatch queue, which a
+        // framework callback may need.
+        crate::notify::install_headless();
+        std::thread::spawn(|| std::process::exit(tauri::async_runtime::block_on(run(&app_data_dir()))));
+        extern "C" {
+            fn dispatch_main() -> !;
+        }
+        // SAFETY: libdispatch's own entry point; it never returns, and the thread above exits.
+        unsafe { dispatch_main() }
+    }
+    #[cfg(not(target_os = "macos"))]
     std::process::exit(tauri::async_runtime::block_on(run(&app_data_dir())))
 }
 
@@ -401,6 +416,8 @@ pub fn join() -> i32 {
         let window_held = !launch_agent_path().exists() && matches!(service_lock(&data), Ok(None));
         install_launch_agent(&exe).map_err(|e| format!("Could not start the service: {e}"))?;
         println!("{line}");
+        // Once: a teammate's held message or an agent's ask is answered from a Mac notification.
+        crate::notify::ask_once(Duration::from_secs(60));
         if window_held && !lock_freed(&data, Duration::from_secs(6)) {
             println!("Lightbulb is open: quit and reopen it to finish.");
         }

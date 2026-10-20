@@ -30,6 +30,7 @@ def _env(monkeypatch):
     monkeypatch.setattr(
         presence, "human_display_name", AsyncMock(side_effect=lambda u: u.removeprefix("user_").title())
     )
+    monkeypatch.setattr(presence, "_held_sends", AsyncMock(return_value={}))
 
 
 def _rows(viewers=(), typed=()):
@@ -288,3 +289,62 @@ async def test_an_anyone_link_session_still_names_its_watchers_and_counts_link_v
         ("Friday", "Run the tests"),
         ("Zoe", None),
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_join_request_with_a_held_send_carries_its_preview_and_sender_label(monkeypatch):
+    """Task 7b: the Mac notifies a held send, titled by the label delivery uses ("Aden's Codex")."""
+    from core.services import local_session_relay as relay
+
+    monkeypatch.undo()  # the real _held_sends, with only its reads stubbed
+    monkeypatch.setattr(presence, "_clock", lambda: NOW)
+    monkeypatch.setattr(
+        presence, "human_display_name", AsyncMock(side_effect=lambda u: u.removeprefix("user_").title())
+    )
+    monkeypatch.setattr(presence.store, "_query", _rows())
+    commands = [
+        {
+            "heldFor": "user_aden",
+            "state": "awaiting_approval",
+            "text": "old",
+            "commandSeq": 1,
+            "actor": {"kind": "session", "id": "s"},
+        },
+        {
+            "heldFor": "user_aden",
+            "state": "awaiting_approval",
+            "text": "x" * 300,
+            "commandSeq": 2,
+            "actor": {"kind": "session", "id": "s"},
+        },
+        {"heldFor": "user_aden", "state": "rejected", "text": "gone", "commandSeq": 3},
+        {"state": "pending", "text": "not held", "commandSeq": 4},
+    ]
+    monkeypatch.setattr(presence.repo, "list_commands", AsyncMock(return_value=commands))
+    label = AsyncMock(return_value={"kind": "session", "displayName": "Aden's Codex"})
+    monkeypatch.setattr(relay, "_sender_label", label)
+    row = _row(
+        allowedSenders=[],
+        joinRequests={
+            "user_aden": {"state": "pending", "requestId": "r1"},
+            "user_zoe": {"state": "pending", "requestId": "r2"},
+        },
+    )
+    out = (await presence.entry(row, 1))["joinRequests"]
+    assert out == [
+        {
+            "userId": "user_aden",
+            "name": "Aden",
+            "requestId": "r1",
+            "kind": "join",
+            "text": "x" * sessions.ASK_PRESENCE_TEXT_CHARS,
+            "label": "Aden's Codex",
+        },
+        {"userId": "user_zoe", "name": "Zoe", "requestId": "r2", "kind": "join"},
+    ]
+    # The newest held send names the sender, as the session's owner sees it.
+    assert label.await_args.args[0]["commandSeq"] == 2 and label.await_args.args[2] == "user_owner"
+    # No pending join: no command read at all.
+    presence.repo.list_commands.reset_mock()
+    await presence.entry(_row(), 1)
+    presence.repo.list_commands.assert_not_awaited()

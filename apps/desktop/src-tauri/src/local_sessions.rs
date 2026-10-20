@@ -8,6 +8,7 @@ mod native_mcp;
 mod native_tools;
 mod mod_socket;
 pub(crate) mod plugin;
+mod held_notice;
 mod presence;
 pub use native_mcp::serve_mcp;
 

@@ -159,12 +159,18 @@ async def entry(row: dict, at: int) -> dict:
     }
 
 
-async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> dict:
-    """The backstop: the heartbeat ack names presence for this Mac's sessions. Never costs the heartbeat."""
+async def ack_with_presence(ack: dict, owner: str, device: str, session_ids: list[str]) -> dict:
+    """The backstop: the heartbeat ack names presence for this Mac's sessions. Never costs the heartbeat.
+    Only sessions registered from `device`: presence (a held send's preview and its sender among it)
+    is for the session owner's own Mac, never another Mac that names the id."""
     read_at = _ms()
     try:
         out = []
-        rows = [r for r in await repo.get_sessions(owner, session_ids) if r and r.get("endedAt") is None]
+        rows = [
+            r
+            for r in await repo.get_sessions(owner, session_ids)
+            if r and r.get("endedAt") is None and r.get("deviceId") == device
+        ]
         # One frame's sessions concurrently: each entry is a bounded read or two (viewers, ask slots).
         for e in await asyncio.gather(*(entry(row, read_at) for row in rows)):
             if e["viewers"] or e["linkViewers"] or e["joinRequests"] or e["paused"]:

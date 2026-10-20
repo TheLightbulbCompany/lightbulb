@@ -18,24 +18,28 @@
 //! itself accepts a request from an app that is switched off and then presents
 //! it as nothing, so the permission is checked before every request.
 //!
-//! A held message or an agent's ask (Task 7b) is a notification of the `REQUEST_CATEGORY`,
-//! whose Allow and Decline come back on `take_actions` to whichever process owns local
-//! sessions. That core needs no Tauri: `serve` installs it with `install_headless`.
+//! A held message or an agent's ask (Task 7b) is a notification of the `REQUEST_CATEGORY`
+//! that carries its whole decision in `userInfo`. Whichever process macOS hands the Allow or
+//! Decline to, the window or `serve`, sends that decision itself
+//! (`local_sessions::held_notice::on_action`): nothing is forwarded between processes. That
+//! core needs no Tauri: `serve` installs it with `install_headless`.
 
+use std::collections::BTreeMap;
 use tauri::AppHandle;
-use tokio::sync::mpsc;
 
 /// The category of a request notification, and its two actions.
 pub const REQUEST_CATEGORY: &str = "lightbulb.request";
 pub const ALLOW: &str = "allow";
 pub const DECLINE: &str = "decline";
 
-/// One request notification: `id` is its identifier, which a repeat replaces.
+/// One request notification: `id` is its identifier, which a repeat replaces. `info` is its
+/// `userInfo`: everything an Allow or Decline needs to be sent from any process.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Notice {
     pub id: String,
     pub title: String,
     pub body: String,
+    pub info: BTreeMap<String, String>,
 }
 
 /// What posts and withdraws request notifications; tests use their own.
@@ -51,7 +55,7 @@ pub struct Native;
 impl Center for Native {
     fn post(&self, notice: &Notice) {
         #[cfg(target_os = "macos")]
-        drop(macos::schedule(&notice.title, Some(&notice.body), None, None, &notice.id, Some(REQUEST_CATEGORY)));
+        drop(macos::schedule(&notice.title, Some(&notice.body), None, None, &notice.id, Some((REQUEST_CATEGORY, &notice.info))));
         #[cfg(not(target_os = "macos"))]
         let _ = notice;
     }
@@ -63,29 +67,14 @@ impl Center for Native {
     }
 }
 
-/// (notification id, ALLOW | DECLINE): a person's press, the only way one is made.
-pub type Action = (String, String);
-
-static ACTIONS: std::sync::Mutex<Option<mpsc::UnboundedSender<Action>>> = std::sync::Mutex::new(None);
-
-/// The presses from now on; a later call takes them over (local sessions restarted).
-pub fn take_actions() -> mpsc::UnboundedReceiver<Action> {
-    let (tx, rx) = mpsc::unbounded_channel();
-    if let Ok(mut slot) = ACTIONS.lock() {
-        *slot = Some(tx);
-    }
-    rx
-}
-
+/// A press on a request notification: Allow or Decline is answered from this process, with
+/// the decision the notification carries. Anything else (a plain click) is not a decision.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn act(id: String, action: &str) -> bool {
+fn act(id: String, action: &str, title: String, info: BTreeMap<String, String>) -> bool {
     if action != ALLOW && action != DECLINE {
         return false;
     }
-    let sent = ACTIONS.lock().ok().and_then(|slot| slot.as_ref().map(|tx| tx.send((id, action.to_owned())).is_ok()));
-    if sent != Some(true) {
-        crate::log("[notify] a request was answered here, but this process does not run local sessions");
-    }
+    crate::local_sessions::held_notice::on_action(Notice { id, title, body: String::new(), info }, action.to_owned());
     true
 }
 
@@ -97,7 +86,7 @@ pub fn install(app: &AppHandle) {
 }
 
 /// `serve`: the same delegate and category with no window. A click opens nothing; Allow and
-/// Decline still reach `take_actions`.
+/// Decline are still answered.
 pub fn install_headless() {
     #[cfg(target_os = "macos")]
     macos::install(None);
@@ -196,9 +185,10 @@ mod macos {
 
     use block2::{DynBlock, RcBlock};
     use objc2::rc::Retained;
-    use objc2::runtime::{Bool, ProtocolObject};
+    use objc2::runtime::{AnyObject, Bool, ProtocolObject};
     use objc2::{define_class, msg_send, AnyThread, DefinedClass};
-    use objc2_foundation::{NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSSet, NSString};
+    use objc2_foundation::{NSArray, NSBundle, NSDictionary, NSError, NSObject, NSObjectProtocol, NSSet, NSString};
+    use std::collections::BTreeMap;
     use objc2_user_notifications::{
         UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent,
         UNNotification, UNNotificationAction, UNNotificationActionOptions,
@@ -247,8 +237,10 @@ mod macos {
                 response: &UNNotificationResponse,
                 completion: &DynBlock<dyn Fn()>,
             ) {
-                let identifier = response.notification().request().identifier().to_string();
-                if super::act(identifier.clone(), &response.actionIdentifier().to_string()) {
+                let request = response.notification().request();
+                let identifier = request.identifier().to_string();
+                let content = request.content();
+                if super::act(identifier.clone(), &response.actionIdentifier().to_string(), content.title().to_string(), strings(&content.userInfo())) {
                     completion.call(());
                     return;
                 }
@@ -375,7 +367,7 @@ mod macos {
         subtitle: Option<&str>,
         thread_id: Option<&str>,
         identifier: &str,
-        category: Option<&str>,
+        category: Option<(&str, &BTreeMap<String, String>)>,
     ) -> Option<oneshot::Receiver<bool>> {
         if !bundled() {
             return None;
@@ -391,8 +383,14 @@ mod macos {
         if let Some(thread_id) = thread_id {
             content.setThreadIdentifier(&NSString::from_str(thread_id));
         }
-        if let Some(category) = category {
+        if let Some((category, info)) = category {
             content.setCategoryIdentifier(&NSString::from_str(category));
+            let keys: Vec<Retained<NSString>> = info.keys().map(|k| NSString::from_str(k)).collect();
+            let values: Vec<Retained<AnyObject>> = info.values().map(|v| NSString::from_str(v).into_super().into_super()).collect();
+            let keys: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
+            let dict: Retained<NSDictionary<NSString, AnyObject>> = NSDictionary::from_retained_objects(&keys, &values);
+            // SAFETY: a dictionary of strings is a valid property list, which userInfo must be.
+            unsafe { content.setUserInfo(&*(Retained::as_ptr(&dict) as *const NSDictionary)) };
         }
         content.setSound(Some(&UNNotificationSound::defaultSound()));
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
@@ -415,6 +413,15 @@ mod macos {
         Some(rx)
     }
 
+    /// A notification's `userInfo` string pairs; anything else in it is skipped.
+    fn strings(info: &NSDictionary) -> BTreeMap<String, String> {
+        let (keys, values) = info.to_vecs();
+        keys.iter()
+            .zip(values.iter())
+            .filter_map(|(k, v)| Some((k.downcast_ref::<NSString>()?.to_string(), v.downcast_ref::<NSString>()?.to_string())))
+            .collect()
+    }
+
     /// Takes these banners out of Notification Center.
     pub fn withdraw(ids: &[String]) {
         if !bundled() || ids.is_empty() {
@@ -430,20 +437,13 @@ mod macos {
 mod tests {
     use super::*;
 
+    /// Only Allow and Decline are decisions (an Allow here would send one, so tests never press
+    /// it: `held_notice` covers that path against a stub server).
     #[test]
-    fn notify_only_allow_and_decline_reach_local_sessions() {
-        let mut presses = take_actions();
-        assert!(act("lightbulb.request.r1".into(), ALLOW));
-        assert!(act("lightbulb.request.r2".into(), DECLINE));
-        // A plain click (the default action) is not a decision: the click path handles it.
-        assert!(!act("lightbulb.request.r3".into(), "com.apple.UNNotificationDefaultActionIdentifier"));
-        assert_eq!(presses.try_recv().ok(), Some(("lightbulb.request.r1".into(), "allow".into())));
-        assert_eq!(presses.try_recv().ok(), Some(("lightbulb.request.r2".into(), "decline".into())));
-        assert!(presses.try_recv().is_err());
-        // Local sessions restarted: the presses go to the new listener only.
-        let mut again = take_actions();
-        act("lightbulb.request.r4".into(), ALLOW);
-        assert!(presses.try_recv().is_err());
-        assert_eq!(again.try_recv().ok().map(|(id, _)| id), Some("lightbulb.request.r4".into()));
+    fn notify_a_plain_click_is_not_a_decision() {
+        let info = BTreeMap::new();
+        assert!(!act("lightbulb.request.r1".into(), "com.apple.UNNotificationDefaultActionIdentifier", String::new(), info.clone()));
+        assert!(!act("lightbulb.request.r1".into(), "com.apple.UNNotificationDismissActionIdentifier", String::new(), info));
+        assert_eq!((REQUEST_CATEGORY, ALLOW, DECLINE), ("lightbulb.request", "allow", "decline"));
     }
 }

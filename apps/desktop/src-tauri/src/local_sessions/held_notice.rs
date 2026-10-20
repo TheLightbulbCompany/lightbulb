@@ -2,7 +2,9 @@
 //! a teammate whose session send is held until they are allowed, or an agent's ask. Its Allow
 //! and Decline answer through the same device-signed decision the Claude band sends. Only a
 //! person presses a notification action: no tool, MCP call or command an agent can run answers
-//! one. Runs in whichever process owns local sessions (`serve`, or the window when it serves).
+//! one. The process that owns local sessions (`serve`, or the window when it serves) posts the
+//! notifications; the one macOS hands a press to answers it from the notification's own
+//! `userInfo` (`on_action`), serving or not.
 //!
 //! The agent in the target session hears about the request once, as one line from its own hook
 //! (`notice_line`), and is never given a way to answer it.
@@ -24,15 +26,8 @@ pub(super) struct Session {
     pub title: String,
 }
 
-/// One request a notification answers.
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct Pending {
-    pub notice: Notice,
-    pub sid: String,
-    pub generation: String,
-    pub user_id: String,
-    pub request_id: String,
-}
+/// The Mac a decision is signed as: (owner id, device id).
+pub(super) type Mac<'a> = (&'a str, &'a str);
 
 fn id_of(request_id: &str) -> String {
     format!("lightbulb.request.{request_id}")
@@ -60,21 +55,25 @@ fn preview(text: &str) -> String {
 }
 
 /// One notification per pending request, in `sessions` as presence holds them.
-pub(super) fn wanted(sessions: &[Session], presence: impl Fn(&str, &str) -> Option<presence::Entry>) -> Vec<Pending> {
+pub(super) fn wanted(sessions: &[Session], presence: impl Fn(&str, &str) -> Option<presence::Entry>, mac: Mac) -> Vec<Notice> {
     let mut out = vec![];
     for s in sessions {
         let Some(entry) = presence(&s.sid, &s.generation) else { continue };
         for r in entry.join_requests.iter().filter(|r| notifies(r)) {
-            out.push(Pending {
-                notice: Notice {
-                    id: id_of(&r.request_id),
-                    title: format!("{} wants to message {}", who(r), s.title),
-                    body: preview(r.text.as_deref().unwrap_or("")),
-                },
-                sid: s.sid.clone(),
-                generation: s.generation.clone(),
-                user_id: r.user_id.clone(),
-                request_id: r.request_id.clone(),
+            // The whole decision rides along: whichever process gets the press sends it.
+            let info = [
+                ("sessionId", s.sid.as_str()),
+                ("generation", s.generation.as_str()),
+                ("userId", r.user_id.as_str()),
+                ("requestId", r.request_id.as_str()),
+                ("ownerId", mac.0),
+                ("deviceId", mac.1),
+            ];
+            out.push(Notice {
+                id: id_of(&r.request_id),
+                title: format!("{} wants to message {}", who(r), s.title),
+                body: preview(r.text.as_deref().unwrap_or("")),
+                info: info.into_iter().map(|(k, v)| (k.to_owned(), v.to_owned())).collect(),
             });
         }
     }
@@ -84,32 +83,25 @@ pub(super) fn wanted(sessions: &[Session], presence: impl Fn(&str, &str) -> Opti
 /// The notifications this process has up.
 #[derive(Default)]
 pub(super) struct Tracker {
-    posted: BTreeMap<String, Pending>,
+    posted: BTreeMap<String, Notice>,
 }
 
 impl Tracker {
     /// Posts each new request once (a repeat of an id is not news) and withdraws each one that
     /// was answered anywhere or left presence.
-    pub fn sync(&mut self, wanted: Vec<Pending>, center: &dyn Center) {
-        let ids: BTreeSet<String> = wanted.iter().map(|p| p.notice.id.clone()).collect();
+    pub fn sync(&mut self, wanted: Vec<Notice>, center: &dyn Center) {
+        let ids: BTreeSet<String> = wanted.iter().map(|n| n.id.clone()).collect();
         let gone: Vec<String> = self.posted.keys().filter(|id| !ids.contains(*id)).cloned().collect();
         if !gone.is_empty() {
             center.withdraw(&gone);
             self.posted.retain(|id, _| ids.contains(id));
         }
-        for p in wanted {
-            if !self.posted.contains_key(&p.notice.id) {
-                center.post(&p.notice);
-                self.posted.insert(p.notice.id.clone(), p);
+        for n in wanted {
+            if !self.posted.contains_key(&n.id) {
+                center.post(&n);
+                self.posted.insert(n.id.clone(), n);
             }
         }
-    }
-
-    /// The decision a press sends: (session id, body), and the request it answers.
-    pub fn answer(&self, id: &str, action: &str) -> Option<(String, Value, Pending)> {
-        let p = self.posted.get(id)?;
-        let body = mod_socket::decision_body(&p.sid, &p.generation, &json!({"decision": action, "userId": p.user_id, "requestId": p.request_id})).ok()?;
-        Some((p.sid.clone(), body, p.clone()))
     }
 
     fn all(&self) -> Vec<String> {
@@ -118,8 +110,59 @@ impl Tracker {
 }
 
 /// The notification again, after a decision the backend did not take.
-pub(super) fn failed(p: &Pending) -> Notice {
-    Notice { body: FAILED.into(), ..p.notice.clone() }
+pub(super) fn failed(n: &Notice) -> Notice {
+    Notice { body: FAILED.into(), ..n.clone() }
+}
+
+/// What a press sends, from the notification alone: the Mac to sign as, and the band's body.
+/// None for anything but Allow or Decline, or a notification that lacks part of it.
+pub(super) fn decision_request(info: &BTreeMap<String, String>, action: &str) -> Option<(String, String, Value)> {
+    if action != crate::notify::ALLOW && action != crate::notify::DECLINE {
+        return None;
+    }
+    let get = |k: &str| info.get(k).map(String::as_str).filter(|v| !v.is_empty());
+    let body = mod_socket::decision_body(
+        get("sessionId")?,
+        get("generation")?,
+        &json!({"decision": action, "userId": get("userId")?, "requestId": get("requestId")?}),
+    )
+    .ok()?;
+    Some((get("ownerId")?.to_owned(), get("deviceId")?.to_owned(), body))
+}
+
+/// Sends a press's decision to `api` as this Mac (`identity`), the band's device-signed route.
+pub(super) async fn post_decision(api: &str, identity: &crate::keychain::DeviceIdentity, info: &BTreeMap<String, String>, action: &str) -> std::result::Result<(), String> {
+    let (owner, device, body) = decision_request(info, action).ok_or("incomplete notification")?;
+    let token = crate::device_token::mint_device_token(&identity.private_key_pem, &device, &owner, 90).map_err(|_| "device authentication unavailable")?;
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(8)).build().map_err(|e| e.to_string())?;
+    let url = format!("{}/api/v1/messaging/native-session-decisions", api.trim_end_matches('/'));
+    let response = client.post(url).bearer_auth(token).json(&body).send().await.map_err(|_| "Lightbulb is unreachable")?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("refused: {}", response.status()))
+    }
+}
+
+/// A press on Allow or Decline, in whichever process macOS handed it to: the window or `serve`,
+/// serving or not. Signed with this Mac's Keychain key, read only (never generated). Taken: the
+/// banner goes, and the serving process's next presence (the request gone) agrees. Not taken:
+/// the same banner again, saying so.
+pub(crate) fn on_action(notice: Notice, action: String) {
+    tauri::async_runtime::spawn(async move {
+        let center = crate::notify::Native;
+        let taken = match crate::keychain::load(crate::keychain::KeychainSlot::Mac, crate::KEYCHAIN_SERVICE) {
+            Ok(identity) => post_decision(crate::LIGHTBULB_API_BASE, &identity, &notice.info, &action).await,
+            Err(_) => Err("no device key".into()),
+        };
+        match taken {
+            Ok(()) => center.withdraw(std::slice::from_ref(&notice.id)),
+            Err(reason) => {
+                crate::log(&format!("[local-sessions] notification decision not taken: {reason}"));
+                center.post(&failed(&notice));
+            }
+        }
+    });
 }
 
 /// The session's own agent is told about a request once: its hook's one line.
@@ -184,27 +227,12 @@ impl Drop for Live {
     }
 }
 
-pub(super) async fn run(scope: PathBuf, enrollment: Enrollment, identity: crate::keychain::DeviceIdentity) {
-    let Ok(client) = reqwest::Client::builder().timeout(Duration::from_secs(8)).build() else { return };
-    let mut actions = crate::notify::take_actions();
+pub(super) async fn run(scope: PathBuf, enrollment: Enrollment) {
     let mut live = Live { tracker: Tracker::default(), center: Box::new(crate::notify::Native) };
     loop {
-        let wanted = wanted(&sessions(&scope), presence::get);
+        let wanted = wanted(&sessions(&scope), presence::get, (&enrollment.owner_id, &enrollment.device_id));
         live.tracker.sync(wanted, &*live.center);
-        tokio::select! {
-            _ = presence::changed() => {}
-            Some((id, action)) = actions.recv() => {
-                let Some((sid, body, pending)) = live.tracker.answer(&id, &action) else { continue };
-                // Answered elsewhere meanwhile: the next sync withdraws it.
-                if mod_socket::stale(&sid, &body) {
-                    continue;
-                }
-                if let Err(refusal) = mod_socket::decide(&client, &enrollment, &identity, &sid, &body).await {
-                    crate::log(&format!("[local-sessions] notification decision not taken: {}", refusal["error"]));
-                    live.center.post(&failed(&pending));
-                }
-            }
-        }
+        presence::changed().await;
     }
 }
 
@@ -232,6 +260,7 @@ mod tests {
     }
 
     const SID: &str = "77777777-7777-4777-8777-777777777777";
+    const MAC: Mac = ("org_a", "mac_a");
 
     fn session() -> Vec<Session> {
         vec![Session { sid: SID.into(), generation: "g1".into(), title: "Fix login".into() }]
@@ -253,29 +282,36 @@ mod tests {
         move |sid, g| (sid == SID && g == e.generation).then(|| e.clone())
     }
 
+    fn notices(requests: Value) -> Vec<Notice> {
+        wanted(&session(), of(entry(requests)), MAC)
+    }
+
     #[test]
     fn held_notice_maps_a_held_send_and_an_agent_ask_and_skips_plain_joins_and_pickups() {
         let plain = json!({"userId":"user_zoe","name":"Zoe","requestId":"r2","kind":"join"});
         let pickup = json!({"userId":"user_al","name":"Al","requestId":"p1","kind":"pickup"});
-        let out = wanted(&session(), of(entry(json!([held(), ask(), plain, pickup]))));
-        let notices: Vec<_> = out.iter().map(|p| p.notice.clone()).collect();
-        assert_eq!(notices, vec![
-            Notice { id: "lightbulb.request.r1".into(), title: "Aden's Codex wants to message Fix login".into(), body: "Can you rebase on main?".into() },
-            Notice { id: "lightbulb.request.ask-1".into(), title: "Friday wants to message Fix login".into(), body: "Run the tests".into() },
+        let out = notices(json!([held(), ask(), plain, pickup]));
+        let shown: Vec<_> = out.iter().map(|n| (n.id.as_str(), n.title.as_str(), n.body.as_str())).collect();
+        assert_eq!(shown, vec![
+            ("lightbulb.request.r1", "Aden's Codex wants to message Fix login", "Can you rebase on main?"),
+            ("lightbulb.request.ask-1", "Friday wants to message Fix login", "Run the tests"),
         ]);
+        // The notification carries its whole decision, and the Mac to sign it as.
+        let info: Vec<_> = out[0].info.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert_eq!(info, vec![("deviceId", "mac_a"), ("generation", "g1"), ("ownerId", "org_a"), ("requestId", "r1"), ("sessionId", SID), ("userId", "user_aden")]);
         // No label from the backend: the requester's own name.
         let mut bare = held();
         bare.as_object_mut().unwrap().remove("label");
-        assert_eq!(wanted(&session(), of(entry(json!([bare]))))[0].notice.title, "Aden wants to message Fix login");
+        assert_eq!(notices(json!([bare]))[0].title, "Aden wants to message Fix login");
         // Another generation of the session holds nothing for this one.
-        assert!(wanted(&[Session { generation: "g2".into(), ..session().remove(0) }], of(entry(json!([held()])))).is_empty());
+        assert!(wanted(&[Session { generation: "g2".into(), ..session().remove(0) }], of(entry(json!([held()]))), MAC).is_empty());
     }
 
     #[test]
     fn held_notice_body_is_at_most_140_characters() {
         let mut long = held();
         long["text"] = json!("é".repeat(300));
-        let body = wanted(&session(), of(entry(json!([long]))))[0].notice.body.clone();
+        let body = notices(json!([long]))[0].body.clone();
         assert_eq!(body.chars().count(), 140);
         assert!(body.ends_with('…'));
     }
@@ -284,42 +320,71 @@ mod tests {
     fn held_notice_posts_once_per_request_and_withdraws_when_it_is_answered_or_gone() {
         let center = Fake::default();
         let mut tracker = Tracker::default();
-        tracker.sync(wanted(&session(), of(entry(json!([held(), ask()])))), &center);
+        tracker.sync(notices(json!([held(), ask()])), &center);
         assert_eq!(center.take().len(), 2);
         // The same request ids again (another presence push): nothing re-posted.
-        tracker.sync(wanted(&session(), of(entry(json!([held(), ask()])))), &center);
+        tracker.sync(notices(json!([held(), ask()])), &center);
         assert!(center.take().is_empty());
         // The held send was answered elsewhere: its banner is withdrawn, the ask stays.
-        tracker.sync(wanted(&session(), of(entry(json!([ask()])))), &center);
+        tracker.sync(notices(json!([ask()])), &center);
         assert_eq!(center.take(), vec!["withdraw lightbulb.request.r1"]);
         // The session left presence: everything goes.
         tracker.sync(vec![], &center);
         assert_eq!(center.take(), vec!["withdraw lightbulb.request.ask-1"]);
         // Dropping the live set withdraws what is still up.
-        let live = Live { tracker: Tracker::default(), center: Box::new(center.clone()) };
-        let mut live = live;
-        live.tracker.sync(wanted(&session(), of(entry(json!([held()])))), &center);
+        let mut live = Live { tracker: Tracker::default(), center: Box::new(center.clone()) };
+        live.tracker.sync(notices(json!([held()])), &center);
         center.take();
         drop(live);
         assert_eq!(center.take(), vec!["withdraw lightbulb.request.r1"]);
     }
 
     #[test]
-    fn held_notice_allow_and_decline_build_the_band_s_decision_body() {
-        let center = Fake::default();
-        let mut tracker = Tracker::default();
-        tracker.sync(wanted(&session(), of(entry(json!([held(), ask()])))), &center);
-        let (sid, allow, _) = tracker.answer("lightbulb.request.r1", "allow").unwrap();
-        assert_eq!(sid, SID);
+    fn held_notice_allow_and_decline_build_the_band_s_decision_body_from_the_notification_alone() {
+        let n = notices(json!([held(), ask()]));
+        let (owner, device, allow) = decision_request(&n[0].info, "allow").unwrap();
+        assert_eq!((owner.as_str(), device.as_str()), MAC);
         assert_eq!(allow, json!({"sessionId":SID,"generation":"g1","decision":"allow","userId":"user_aden","requestId":"r1"}));
-        let (_, decline, pending) = tracker.answer("lightbulb.request.ask-1", "decline").unwrap();
+        let (_, _, decline) = decision_request(&n[1].info, "decline").unwrap();
         assert_eq!(decline, json!({"sessionId":SID,"generation":"g1","decision":"decline","userId":"agent-friday","requestId":"ask-1"}));
-        // Only Allow and Decline, and only for a notification this process posted.
-        assert!(tracker.answer("lightbulb.request.r1", "pause").is_none());
-        assert!(tracker.answer("lightbulb.request.nope", "allow").is_none());
+        // Only Allow and Decline, and only a notification that carries the whole decision.
+        assert!(decision_request(&n[0].info, "pause").is_none());
+        let mut partial = n[0].info.clone();
+        partial.remove("deviceId");
+        assert!(decision_request(&partial, "allow").is_none());
         // A decision the backend did not take re-posts the same banner with the failure line.
-        assert_eq!(failed(&pending), Notice { body: FAILED.into(), ..pending.notice.clone() });
+        assert_eq!(failed(&n[0]), Notice { body: FAILED.into(), ..n[0].clone() });
         assert_eq!(FAILED, "Could not send. Try again.");
+    }
+
+    /// The press reaches a process that runs no local sessions (no presence, no controller,
+    /// nothing posted): it still sends the right decision, signed as this Mac.
+    #[test]
+    fn held_notice_a_press_in_a_process_that_does_not_serve_still_sends_the_decision() {
+        use wiremock::matchers::{body_json, header_exists, method, path};
+        let _g = presence::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        presence::retain(&[]); // nothing this process knows about the session
+        tauri::async_runtime::block_on(async {
+            let server = wiremock::MockServer::start().await;
+            let expected = json!({"sessionId":SID,"generation":"g1","decision":"allow","userId":"user_aden","requestId":"r1"});
+            wiremock::Mock::given(method("POST"))
+                .and(path("/api/v1/messaging/native-session-decisions"))
+                .and(header_exists("authorization"))
+                .and(body_json(&expected))
+                .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let identity = crate::keychain::generate_keypair();
+            let n = notices(json!([held()])).remove(0);
+            assert_eq!(post_decision(&server.uri(), &identity, &n.info, "allow").await, Ok(()));
+            let token = server.received_requests().await.unwrap()[0].headers["authorization"].to_str().unwrap().to_owned();
+            assert!(token.starts_with("Bearer ") && token.len() > 20);
+            // A refusal is reported, so the banner comes back saying it could not send.
+            let refusing = wiremock::MockServer::start().await;
+            wiremock::Mock::given(method("POST")).respond_with(wiremock::ResponseTemplate::new(409)).mount(&refusing).await;
+            assert!(post_decision(&refusing.uri(), &identity, &n.info, "allow").await.is_err());
+        });
     }
 
     #[test]

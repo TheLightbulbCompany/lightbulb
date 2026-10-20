@@ -208,7 +208,7 @@ async fn reply(socket: &mut UnixStream, status: &str, body: &Value) {
 }
 
 /// One decision sent to the backend as this Mac. Err is the body the mod is answered with.
-pub(super) async fn decide(client: &reqwest::Client, enrollment: &Enrollment, identity: &crate::keychain::DeviceIdentity, sid: &str, payload: &Value) -> std::result::Result<(), Value> {
+async fn decide(client: &reqwest::Client, enrollment: &Enrollment, identity: &crate::keychain::DeviceIdentity, sid: &str, payload: &Value) -> std::result::Result<(), Value> {
     let Ok(token) = crate::device_token::mint_device_token(&identity.private_key_pem, &enrollment.device_id, &enrollment.owner_id, 90) else {
         return Err(json!({"error":"unavailable","message":"Device authentication unavailable."}));
     };

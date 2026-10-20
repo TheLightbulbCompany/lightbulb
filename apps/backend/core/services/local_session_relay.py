@@ -801,7 +801,7 @@ class LocalSessionRelay:
                     if message.session_presence:
                         with step("presence"):
                             response = await session_presence.ack_with_presence(
-                                response, owner, [str(s.session_id) for s in message.sessions]
+                                response, owner, device, [str(s.session_id) for s in message.sessions]
                             )
                     notify_resources = False
                 elif isinstance(message, Ended):

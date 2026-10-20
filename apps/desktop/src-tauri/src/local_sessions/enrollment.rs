@@ -389,7 +389,7 @@ impl Controller {
                 let native_tools = super::native_tools::serve(scope.clone(), enrollment.clone(), identity.clone());
                 let mod_socket = super::mod_socket::serve(scope.clone(), enrollment.clone(), identity.clone());
                 // Whoever runs local sessions posts their requests' notifications (Task 7b).
-                let notices = super::held_notice::run(scope.clone(), enrollment.clone(), identity.clone());
+                let notices = super::held_notice::run(scope.clone(), enrollment.clone());
                 // Pick-up snapshots run on their OWN task: sharing one `select!` with the
                 // relay would stall every relay frame while a snapshot does its work.
                 let snapshots = super::snapshot::run(

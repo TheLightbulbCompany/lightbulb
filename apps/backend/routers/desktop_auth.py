@@ -122,9 +122,26 @@ async def device_approve(body: DeviceApproveRequest, ctx: AuthContext = Depends(
             "pair": {**pair.model_dump(mode="json"), "gatewayToken": ""},
             "enrollment": enrollment.model_dump(mode="json"),
             "humanUserId": ctx.user_id,
+            # What `lightbulb join` prints: "Connected as <name> in <workspace>." None when unknown.
+            **await _approval_names(ctx.user_id, owner_id),
         },
     )
     return {"status": "approved"}
+
+
+async def _approval_names(user_id: str, owner_id: str) -> dict:
+    from core.services import clerk_admin, messaging
+
+    try:
+        name = await messaging.human_display_name(user_id)
+    except Exception:  # noqa: BLE001 -- a label never blocks the approval
+        name = None
+    try:
+        workspace = ((await clerk_admin.get_organization(owner_id)) or {}).get("name")
+    except Exception:  # noqa: BLE001
+        workspace = None
+    # A failed lookup answers the raw user id: that is no name.
+    return {"approverName": None if name == user_id else name, "workspaceName": workspace or None}
 
 
 @router.post("/device/poll")

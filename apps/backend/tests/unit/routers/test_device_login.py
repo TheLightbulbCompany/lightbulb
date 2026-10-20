@@ -40,6 +40,10 @@ def env(table, monkeypatch):
     from routers import desktop_auth, desktop_pair
 
     monkeypatch.setattr(clerk_admin, "get_user", AsyncMock(return_value=None))
+    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value=None))
+    from core.services import messaging
+
+    messaging._display_names.clear()  # a name cached by another test would leak into this one
     monkeypatch.setattr(settings, "FRONTEND_URL", "https://dev.example")
     pair = AsyncMock(
         return_value=MagicMock(
@@ -129,7 +133,9 @@ def test_approve_pairs_and_enrolls_then_poll_returns_once(env):
     assert "tok" not in str(first)
     assert first["enrollment"]["deviceId"] == MAC and first["enrollment"]["ownerId"] == ORG_A
     assert first["humanUserId"] == "user_alice"
-    assert set(first) == {"status", "pair", "enrollment", "humanUserId"}
+    assert set(first) == {"status", "pair", "enrollment", "humanUserId", "approverName", "workspaceName"}
+    # Unknown names (the lookup answered the raw id, no org) are None, never the id.
+    assert first["approverName"] is None and first["workspaceName"] is None
     assert second["status"] == "expired"  # single use
     gone = client.post("/api/v1/auth/device/approve", json={"userCode": started["userCode"]})
     assert gone.status_code == 410
@@ -206,3 +212,13 @@ def test_a_row_taken_between_read_and_claim_is_expired_not_conflict(env, monkeyp
     monkeypatch.setattr(messaging_repo, "claim_device_login", racing_claim)
     r = client.post("/api/v1/auth/device/approve", json={"userCode": started["userCode"]})
     assert r.status_code == 410
+
+
+def test_poll_names_the_approver_and_the_workspace(env, monkeypatch):
+    client, *_ = env
+    monkeypatch.setattr(clerk_admin, "get_user", AsyncMock(return_value={"first_name": "Alice", "last_name": "Ng"}))
+    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme Builders"}))
+    started = _start(client)
+    assert client.post("/api/v1/auth/device/approve", json={"userCode": started["userCode"]}).status_code == 200
+    first = _poll(client, started["code"])
+    assert (first["approverName"], first["workspaceName"]) == ("Alice Ng", "Acme Builders")

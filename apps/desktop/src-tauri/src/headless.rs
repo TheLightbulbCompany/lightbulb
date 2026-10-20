@@ -333,11 +333,16 @@ pub(crate) async fn join_at(
     crate::pair_state::save(data, &state)?;
     let dir = local_state_dir(data)?;
     crate::local_sessions::enrollment::save_enrollment(&dir, &enrollment)?;
-    Ok(match (result["name"].as_str(), result["workspace"].as_str()) {
+    Ok(connected_line(&result, machine))
+}
+
+/// Who approved, and into which workspace; this Mac's name when the server could not say.
+fn connected_line(result: &serde_json::Value, machine: &str) -> String {
+    let text = |key: &str| result[key].as_str().map(str::trim).filter(|s| !s.is_empty());
+    match (text("approverName"), text("workspaceName")) {
         (Some(name), Some(workspace)) => format!("Connected as {name} in {workspace}."),
-        // ponytail: the poll carries no name or workspace yet; name this Mac until it does.
         _ => format!("Connected {machine}."),
-    })
+    }
 }
 
 fn home_dir() -> PathBuf {
@@ -598,6 +603,15 @@ mod tests {
             let mode = fs::metadata(dir.join("enrollment.json")).unwrap().permissions().mode();
             assert_eq!(mode & 0o077, 0);
         });
+    }
+
+    #[test]
+    fn join_names_the_approver_and_workspace() {
+        let both = json!({"approverName":"Alice Ng","workspaceName":"Acme Builders"});
+        assert_eq!(connected_line(&both, "Test Mac"), "Connected as Alice Ng in Acme Builders.");
+        let one = json!({"approverName":"Alice Ng","workspaceName":null});
+        assert_eq!(connected_line(&one, "Test Mac"), "Connected Test Mac.");
+        assert_eq!(connected_line(&json!({}), "Test Mac"), "Connected Test Mac.");
     }
 
     #[test]

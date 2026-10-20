@@ -111,8 +111,11 @@ export function MessageNotifications(props: {
         };
         const { held, hostDeviceId } = event.payload;
         if (!held || !hostDeviceId || !isDesktopApp()) { show(); return; }
-        // The Mac that hosts a held send posts its own notification, with Allow and Decline.
-        void desktopDeviceId().then((here) => { if (!stopped && here !== hostDeviceId) show(); });
+        // The Mac that hosts a held send posts its own notification, with Allow and Decline,
+        // when macOS lets it; with notifications off there, the window's toast still shows.
+        void Promise.all([desktopDeviceId(), notificationPermission()]).then(([here, allowed]) => {
+          if (!stopped && (here !== hostDeviceId || allowed !== "granted")) show();
+        });
         return;
       }
       // `push` is the projector's banner for this reader — the exact text the

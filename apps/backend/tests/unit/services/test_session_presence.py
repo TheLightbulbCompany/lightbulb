@@ -338,7 +338,8 @@ async def test_a_join_request_with_a_held_send_carries_its_preview_and_sender_la
             "name": "Aden",
             "requestId": "r1",
             "kind": "join",
-            "text": "x" * sessions.ASK_PRESENCE_TEXT_CHARS,
+            # Two wait, and Allow releases both: the preview says so, first.
+            "text": ("2 messages · " + "x" * 300)[: sessions.ASK_PRESENCE_TEXT_CHARS],
             "label": "Aden's Codex",
         },
         {"userId": "user_zoe", "name": "Zoe", "requestId": "r2", "kind": "join"},

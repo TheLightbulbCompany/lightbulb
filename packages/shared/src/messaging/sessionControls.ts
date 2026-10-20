@@ -293,9 +293,10 @@ export type ApprovalAnswer = { decision: "allow" | "deny"; mode?: LocalSessionAp
  */
 export function useSessionApproval(client: Pick<Client, "submitLocalSessionCommand">, session: LocalSession, uuid: () => string,
   sha256Hex: (text: string) => Promise<string>) {
-  const [state, setState] = useState<{ approvalId: string; status: "sending" | "sent" | "failed"; error?: string } | null>(null);
+  const [state, setState] = useState<{ approvalId: string; status: "sending" | "sent" | "failed" | "gone"; error?: string } | null>(null);
   const ids = useRef(new Map<string, string>());
-  const pending = session.pendingApproval;
+  // A prompt the server or the Mac said is no longer open is gone here at once: its buttons never stay up.
+  const pending = state?.status === "gone" && state.approvalId === session.pendingApproval?.approvalId ? undefined : session.pendingApproval;
   const answer = useCallback(async ({ decision, mode, reason }: ApprovalAnswer) => {
     if (!pending) return;
     const text = decision === "deny" ? clipBytes(reason?.trim() ?? "", 500) : "";
@@ -311,15 +312,15 @@ export function useSessionApproval(client: Pick<Client, "submitLocalSessionComma
         ...(text ? { text } : {}), ...(shownDigest ? { shownDigest } : {}),
       });
       // Admitted is not delivered: a prompt answered in the terminal first comes back rejected.
-      setState(receipt.state === "rejected"
-        ? { approvalId: pending.approvalId, status: "failed", error: "Not delivered: the prompt was already answered or let go." }
-        : { approvalId: pending.approvalId, status: "sent" });
+      setState({ approvalId: pending.approvalId, status: receipt.state === "rejected" ? "gone" : "sent" });
     } catch (e) {
-      const conflict = e instanceof ApiError && e.status === 409;
-      setState({ approvalId: pending.approvalId, status: "failed", error: conflict
-        ? "That prompt was already answered or has changed."
-        : e instanceof ApiError && e.status === 403 ? "You can no longer control this session."
-          : "Could not send the answer. Try again." });
+      const code = e instanceof ApiError ? (e.body as { code?: unknown } | null)?.code : undefined;
+      // LOCAL_SESSION_UNSUPPORTED is a 409 too, but the prompt is still open: say why, in the server's words.
+      setState(e instanceof ApiError && e.status === 409 && code !== "LOCAL_SESSION_UNSUPPORTED"
+        ? { approvalId: pending.approvalId, status: "gone" }
+        : { approvalId: pending.approvalId, status: "failed", error: e instanceof ApiError && e.status === 409 ? e.message
+          : e instanceof ApiError && e.status === 403 ? "You can no longer control this session."
+            : "Could not send the answer. Try again." });
     }
   }, [client, pending, session.sessionId, session.generation, uuid, sha256Hex]);
   const current = state && pending && state.approvalId === pending.approvalId ? state : null;

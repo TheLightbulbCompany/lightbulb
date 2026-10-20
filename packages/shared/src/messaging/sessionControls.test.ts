@@ -2,6 +2,8 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "../api/error";
+
 import { auditLine, canControlSession, useSessionApproval, useShownInputMatches, sessionFacts, usageLine, withAuditNotices } from "./sessionControls";
 import type { LocalSession, LocalSessionAuditEntry, LocalSessionCommandReceipt, LocalSessionEvent } from "./types";
 
@@ -128,6 +130,26 @@ describe("useSessionApproval", () => {
     expect(submit).toHaveBeenLastCalledWith("s1", expect.objectContaining({ kind: "approve", decision: "allow", shownDigest: "abc" }));
     await act(() => result.current.answer({ decision: "deny" }));
     expect(submit.mock.calls[1][1]).not.toHaveProperty("shownDigest");
+  });
+
+  it("a prompt the server says is gone leaves at once; an unsupported answer keeps it with the server's reason", async () => {
+    const answered = new ApiError(409, { code: "LOCAL_SESSION_CONFLICT", message: "The session is no longer waiting for approval." }, "The session is no longer waiting for approval.");
+    const gone = mount(pending);
+    gone.submit.mockRejectedValueOnce(answered);
+    await act(() => gone.result.current.answer({ decision: "deny" }));
+    expect(gone.result.current.pending).toBeUndefined();
+    const refused = mount(pending);
+    refused.submit.mockRejectedValueOnce(new ApiError(409, { code: "LOCAL_SESSION_UNSUPPORTED" }, "This prompt can only be approved in the terminal."));
+    await act(() => refused.result.current.answer({ decision: "allow" }));
+    expect(refused.result.current.pending).toEqual(pending);
+    expect(refused.result.current.state?.error).toBe("This prompt can only be approved in the terminal.");
+  });
+
+  it("an answer the Mac rejects (answered in the terminal first) removes the card", async () => {
+    const { result, submit } = mount(pending);
+    submit.mockResolvedValueOnce({ state: "rejected" } as LocalSessionCommandReceipt);
+    await act(() => result.current.answer({ decision: "deny" }));
+    expect(result.current.pending).toBeUndefined();
   });
 
   it("an approval from an older Mac (no full) sends no digest", async () => {

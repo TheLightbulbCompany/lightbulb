@@ -984,3 +984,14 @@ async def test_link_changes_log_who_and_which_client_and_never_the_link(caplog):
         assert record.actor_user_id == ALICE.user_id and record.session_id == sid
         assert record.user_agent == "Mozilla/5.0 TestWebView" and record.origin == "https://thelightbulb.company"
         assert "do-not-log" not in str(record.__dict__)
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_takes_no_input_shows_no_answerable_prompt(transport):
+    """Its every answer is refused, so a card with live buttons could only fail (prod 2026-10-19)."""
+    sid = await start(transport)
+    await waiting(transport, sid)
+    row = await repo.get_session(OWNER, sid)
+    assert service._session_public(row, ALICE.user_id).pending_approval is not None
+    for blocked in ({"controlUnavailableReason": "runtime-unverified"}, {"capabilitiesVerified": False}):
+        assert service._session_public({**row, **blocked}, ALICE.user_id).pending_approval is None

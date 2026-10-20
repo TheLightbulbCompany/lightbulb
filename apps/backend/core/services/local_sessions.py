@@ -939,7 +939,9 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     public["shareUsage"] = bool(row.get("shareUsage"))
     if stats.get("usage") and viewer is not None and (viewer == row["humanUserId"] or public["shareUsage"]):
         public["usage"] = stats["usage"]
-    if public["status"] != "waiting-approval":
+    # A session that takes no input refuses every answer (_require_control), so its prompt is
+    # shown as one to answer in the terminal, never as a card whose buttons can only fail.
+    if public["status"] != "waiting-approval" or not row["capabilitiesVerified"] or row.get("controlUnavailableReason"):
         public.pop("pendingApproval", None)
     if row.get("pickupAllowed") or (viewer is not None and viewer == row["humanUserId"]):
         public["pickup"] = _pickup_public(row)

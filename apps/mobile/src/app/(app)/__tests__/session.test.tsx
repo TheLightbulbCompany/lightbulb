@@ -690,7 +690,7 @@ describe("session screen", () => {
       approvalId: "appr-0123456789abcdef0123456789abcdef", tool: "Bash",
       summary: "command is redacted", inputDigest: "b".repeat(64), exact: false, modes: [],
     } };
-    mockSubmit.mockRejectedValueOnce(new ApiError(409, null));
+    mockSubmit.mockRejectedValueOnce(new ApiError(503, null));
     await render(<SessionScreen />);
     expect(await screen.findByText("command is redacted")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
@@ -703,7 +703,7 @@ describe("session screen", () => {
       kind: "approve", approvalId: "appr-0123456789abcdef0123456789abcdef",
       inputDigest: "b".repeat(64), decision: "deny", text: "Needs review",
     }));
-    expect(await screen.findByText("That prompt was already answered or has changed.")).toBeTruthy();
+    expect(await screen.findByText("Could not send the answer. Try again.")).toBeTruthy();
     expect(screen.getByLabelText("Reason for denial").props.value).toBe("Needs review");
     await fireEvent.press(screen.getByRole("button", { name: "Back" }));
     await fireEvent.press(screen.getByRole("button", { name: "Deny…" }));

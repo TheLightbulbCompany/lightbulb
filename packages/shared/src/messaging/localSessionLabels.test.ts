@@ -167,6 +167,6 @@ describe("session archive", () => {
 describe("sendBlockedReason wording", () => {
   it("never tells a person their own session is not verified (owner ruling 2026-10-04)", () => {
     const blocked = { ...base, controlUnavailableReason: "runtime-unverified" } as LocalSession;
-    expect(sendBlockedReason(blocked)).toBe("Sending is unavailable for this session.");
+    expect(sendBlockedReason(blocked)).toBe("Lightbulb can't send to this session. Use its terminal on the Mac; starting the session again there turns sending back on.");
   });
 });

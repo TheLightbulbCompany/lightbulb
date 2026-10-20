@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import { canonicalJson, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
+import { ApiError, canonicalJson, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
 import { SessionApprovalCard } from "../SessionControls";
 
 const pendingApproval = {
@@ -24,6 +24,20 @@ it("lets the owner approve the exact prompt, bound to its digest", async () => {
     kind: "approve", decision: "allow", approvalId: pendingApproval.approvalId, inputDigest: pendingApproval.inputDigest, expectedGeneration: "g",
   }));
   expect(await screen.findByText("Sent to your Mac.")).toBeInTheDocument();
+});
+
+it("drops the card when the prompt is answered in the terminal or the server says it is gone", async () => {
+  const c = client();
+  const { rerender } = render(<SessionApprovalCard session={session()} client={c} own ownerName="You" />);
+  // The next session update carries no prompt: the card goes without a click.
+  rerender(<SessionApprovalCard session={session({ status: "busy", pendingApproval: undefined })} client={c} own ownerName="You" />);
+  expect(screen.queryByLabelText("Permission prompt")).not.toBeInTheDocument();
+  // Still listed as open, but the answer comes back as a conflict: no stale buttons stay up.
+  rerender(<SessionApprovalCard session={session()} client={c} own ownerName="You" />);
+  c.submitLocalSessionCommand.mockRejectedValueOnce(new ApiError(409, { code: "LOCAL_SESSION_CONFLICT" }, "That permission prompt has changed."));
+  await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+  expect(screen.queryByLabelText("Permission prompt")).not.toBeInTheDocument();
+  expect(screen.queryByText("That prompt was already answered or has changed.")).not.toBeInTheDocument();
 });
 
 it("shows a teammate the prompt but no controls until the owner opts in", () => {

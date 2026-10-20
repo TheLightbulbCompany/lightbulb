@@ -313,3 +313,89 @@ async def test_find_sessions_and_list_targets_offer_held_sends_and_say_they_wait
     ]
     listed = {tool.name: tool for tool in await hosted_mcp.mcp.list_tools()}
     assert "needsOwnerOk" in listed["find_sessions"].description
+
+
+async def _held_bob(transport):
+    sid = await start(transport)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await _send(BOB, sid, "held-1")
+    transport[3].clear()
+    return sid
+
+
+def _stale_once(monkeypatch, snapshot):
+    """The next list_commands (release_held's read) returns ``snapshot``; every later read is real."""
+    real = repo.list_commands
+    calls = []
+
+    async def listed(owner, sid):
+        if not calls:
+            calls.append(1)
+            return snapshot
+        return await real(owner, sid)
+
+    monkeypatch.setattr(repo, "list_commands", listed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expire_via", ["dispatch", "receipt"])
+async def test_an_expired_held_send_is_never_revived_by_a_later_allow(wired, expire_via):
+    import time
+
+    transport = wired
+    sid = await _held_bob(transport)
+    later = time.time() + service.ASK_TTL_S + 5
+    with patch("time.time", return_value=later):
+        if expire_via == "dispatch":
+            await relay(transport).dispatch_session(OWNER, sid)
+        else:
+            assert (await service.get_command(BOB, None, sid, "held-1")).state == "rejected"
+        expired = await repo.get_command(OWNER, sid, "held-1")
+        assert expired["state"] == "rejected" and "heldFor" not in expired
+        with patch("core.services.messaging.human_display_name", _name):
+            await service.request_join(BOB, sid)  # the person asks again
+        await decide(ALICE, sid, BOB.user_id, "allow", [])
+    assert (await repo.get_command(OWNER, sid, "held-1"))["state"] == "rejected"
+    assert _delivered(transport) == []
+
+
+@pytest.mark.asyncio
+async def test_two_releases_over_one_snapshot_deliver_once(wired, monkeypatch):
+    transport = wired
+    sid = await _held_bob(transport)
+    snapshot = await repo.list_commands(OWNER, sid)
+    await decide(ALICE, sid, BOB.user_id, "allow", [])  # the first release wins the write
+    _stale_once(monkeypatch, snapshot)
+    assert await service.release_held(OWNER, sid, BOB.user_id, "allow") == 0  # its conditional write loses
+    assert _delivered(transport) == ["held-1"]
+    assert (await repo.get_command(OWNER, sid, "held-1"))["state"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_an_allow_racing_the_expiry_never_delivers(wired, monkeypatch):
+    import time
+
+    transport = wired
+    sid = await _held_bob(transport)
+    snapshot = await repo.list_commands(OWNER, sid)  # the Allow read it while still held
+    with patch("time.time", return_value=time.time() + service.ASK_TTL_S + 5):
+        await relay(transport).dispatch_session(OWNER, sid)  # the expiry lands first
+    with patch("core.services.messaging.human_display_name", _name):
+        await service.decide_join(ALICE, sid, BOB.user_id, "allow")
+    _stale_once(monkeypatch, snapshot)
+    assert await service.release_held(OWNER, sid, BOB.user_id, "allow") == 0
+    assert (await repo.get_command(OWNER, sid, "held-1"))["state"] == "rejected"
+    assert _delivered(transport) == []
+
+
+@pytest.mark.asyncio
+async def test_release_reads_the_session_not_the_callers_decision(wired):
+    transport = wired
+    sid = await _held_bob(transport)
+    # Nobody allowed Bob: an "allow" from a caller is not enough, and the held send is rejected.
+    transport[4].clear()
+    assert await service.release_held(OWNER, sid, BOB.user_id, "allow") == 1
+    assert (await repo.get_command(OWNER, sid, "held-1"))["state"] == "rejected"
+    assert _delivered(transport) == []
+    hints = [h for h in transport[4] if "workspace.sessions.changed" in str(h)]
+    assert hints  # the sender's client learns from the hint, without polling

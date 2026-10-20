@@ -1958,7 +1958,9 @@ async def submit_command(
 async def _expire_pending_command(owner: str, sid: str, row: dict) -> dict:
     if row["state"] not in {"pending", "awaiting_approval"} or row["deliverBy"] > int(time.time()):
         return row
-    expired = {**row, "state": "rejected", "updatedAt": int(time.time()), "revision": str(uuid.uuid4())}
+    # Drops heldFor: an expired held send is settled, and a later Allow must never revive it.
+    expired = {k: v for k, v in row.items() if k != "heldFor"}
+    expired.update(state="rejected", updatedAt=int(time.time()), revision=str(uuid.uuid4()))
     try:
         await repo.replace_command(row, expired)
         if row.get("offlineIdentity"):
@@ -2820,16 +2822,28 @@ async def decide_join(
 
 
 async def release_held(owner: str, session_id: str, user_id: str, decision: Literal["allow", "decline"]) -> int:
-    """Settle this person's held session sends once the owner answered their ask: Allow delivers
-    them, Decline (or a sender no longer in the workspace) rejects them. Returns how many changed."""
-    from core.services.local_session_relay import get_local_session_relay
+    """Settle this person's held session sends once the owner answered their ask. Returns how many
+    changed. The session row decides, not ``decision`` (the answer the caller just wrote): they are
+    delivered only while this person may control the session and is still in the workspace, and
+    rejected otherwise. Only unexpired held rows are touched; an expired one stays rejected."""
+    from core.services.local_session_relay import get_local_session_relay, publish_resources_changed
 
-    held = [c for c in await repo.list_commands(owner, session_id) if c.get("heldFor") == user_id]
+    now = int(time.time())
+    held = [
+        c
+        for c in await repo.list_commands(owner, session_id)
+        if c.get("heldFor") == user_id and c["state"] == "awaiting_approval" and c["deliverBy"] > now
+    ]
     if not held:
         return 0
-    if decision == "allow" and not ((await messaging_repo.get_user_stream(owner, user_id)) or {}).get("active"):
-        decision = "decline"
-    now = int(time.time())
+    row = await repo.get_session(owner, session_id)
+    allowed = (
+        row is not None
+        and row.get("removedAt") is None
+        and may_control(row, user_id)
+        and ((await messaging_repo.get_user_stream(owner, user_id)) or {}).get("active")
+    )
+    decision = "allow" if allowed else "decline"
     changed = 0
     for command in held:
         settled = {k: v for k, v in command.items() if k != "heldFor"}
@@ -2843,9 +2857,26 @@ async def release_held(owner: str, session_id: str, user_id: str, decision: Lite
             # Conditional on the held state and revision this read saw: a racing Allow loses here.
             await repo.replace_command(command, settled)
             changed += 1
+            if decision == "decline" and row is not None:
+                capture_session_event(
+                    row,
+                    "local_session_command_settled",
+                    f"{command['requestId']}:rejected:declined",
+                    actor_user_id=user_id,
+                    request_id=command["requestId"],
+                    command_kind="send",
+                    origin="native" if command.get("actor") else "direct",
+                    state="rejected",
+                    offline_queued=False,
+                    outcome_reason="rejected",
+                )
         except ClientError as exc:
+            # A racing Allow or the expiry pass settled it first: it is theirs.
             if not messaging_repo._is_cancelled(exc):
                 raise
+    if changed and decision == "decline" and row is not None:
+        # The sender's receipt now reads rejected: hint the workspace so their client refetches.
+        await publish_resources_changed(owner, row["humanUserId"])
     if changed and decision == "allow":
         try:
             await get_local_session_relay().dispatch_session(owner, session_id)

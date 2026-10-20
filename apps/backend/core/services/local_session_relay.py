@@ -1408,8 +1408,10 @@ class LocalSessionRelay:
                     if command["state"] in {"pending", "awaiting_approval"} and command["deliverBy"] <= int(
                         time.time()
                     ):
+                        # Drops heldFor: a later Allow must never revive an expired held send.
+                        unheld = {k: v for k, v in command.items() if k != "heldFor"}
                         await repo.replace_command(
-                            command, _revised(command, state="rejected", updatedAt=int(time.time()))
+                            command, _revised(unheld, state="rejected", updatedAt=int(time.time()))
                         )
                         _capture_offline_rejection(row, command, "expired")
                         expired = True

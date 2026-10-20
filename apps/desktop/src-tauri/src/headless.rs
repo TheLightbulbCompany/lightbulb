@@ -17,18 +17,20 @@ pub fn app_data_dir() -> PathBuf {
         .join("Library/Application Support/company.thelightbulb.desktop")
 }
 
-/// An exclusive `flock` on `<data>/serve.lock`, held while the file lives. None when another
-/// process holds it (or the dir is unusable).
-pub(crate) fn service_lock(data: &Path) -> Option<fs::File> {
-    fs::create_dir_all(data).ok()?;
+/// An exclusive `flock` on `<data>/serve.lock`, held while the file lives. Ok(None) when
+/// another process holds it; Err when the dir or file is unusable.
+pub(crate) fn service_lock(data: &Path) -> io::Result<Option<fs::File>> {
+    fs::create_dir_all(data)?;
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(data.join("serve.lock"))
-        .ok()?;
-    file.try_lock().ok()?;
-    Some(file)
+        .open(data.join("serve.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(e)) => Err(e),
+    }
 }
 
 pub fn serve() -> ! {
@@ -37,10 +39,17 @@ pub fn serve() -> ! {
 
 async fn run(data: &Path) -> i32 {
     use tokio::signal::unix::{signal, SignalKind};
-    let controller = Controller::default();
-    if !controller.serves(data) {
-        println!("already running");
-        return 0;
+    let controller = Controller::headless();
+    match controller.serves(data) {
+        Ok(true) => {}
+        Ok(false) => {
+            println!("already running");
+            return 0;
+        }
+        Err(e) => {
+            eprintln!("lightbulb-desktop serve: {e}");
+            return 1;
+        }
     }
     let dir = match local_state_dir(data) {
         Ok(dir) => dir,
@@ -57,43 +66,54 @@ async fn run(data: &Path) -> i32 {
         return 1;
     };
     crate::log("[serve] local sessions service started");
-    // Turning sharing on or off in the window (a viewer while this runs) rewrites
-    // enrollment.json, and a re-pair rewrites pair_state.json; restart on any change. Read back
-    // after `restore`, which rewrites the enrollment too. A failed start retries with backoff.
-    // ponytail: a 2 s look at two local files; a kqueue watch if it ever matters.
-    let files = || {
-        (
-            fs::read(dir.join("enrollment.json")).ok(),
-            fs::read(data.join("pair_state.json")).ok(),
-        )
-    };
-    let mut seen = (None, None);
-    let mut retry: Option<(Instant, Duration)> = None;
+    let mut watch = Watch::default();
     loop {
-        let now = files();
-        let due = retry.is_some_and(|(at, _)| Instant::now() >= at);
-        if now.0.is_some() && (now != seen || due) {
-            match controller.serve_enrolled(data).await {
-                Ok(()) => retry = None,
-                Err(e) => {
-                    crate::log(&format!("[serve] local sharing unavailable: {e}"));
-                    let wait = retry.map_or(STEP, |(_, wait)| next_backoff(wait));
-                    retry = Some((Instant::now() + wait, wait));
-                }
-            }
-            seen = files();
-        }
+        watch.poll(&controller, data, &dir).await;
         tokio::select! {
             _ = term.recv() => break,
             _ = int.recv() => break,
             _ = tokio::time::sleep(STEP) => {}
         }
     }
+    controller.stop();
     crate::log("[serve] stopped");
     0
 }
 
 const STEP: Duration = Duration::from_secs(2);
+
+/// Turning sharing on or off in the window (a viewer while this runs) rewrites
+/// enrollment.json, and a re-pair rewrites pair_state.json; any change restarts sharing. A
+/// failed start (an unreadable key, no pair yet) retries with backoff.
+/// ponytail: a 2 s look at two local files; a kqueue watch if it ever matters.
+#[derive(Default)]
+struct Watch {
+    seen: (Option<Vec<u8>>, Option<Vec<u8>>),
+    retry: Option<(Instant, Duration)>,
+}
+
+impl Watch {
+    async fn poll(&mut self, controller: &Controller, data: &Path, dir: &Path) {
+        let now = (
+            fs::read(dir.join("enrollment.json")).ok(),
+            fs::read(data.join("pair_state.json")).ok(),
+        );
+        let due = self.retry.is_some_and(|(at, _)| Instant::now() >= at);
+        if now.0.is_none() || (now == self.seen && !due) {
+            return;
+        }
+        // Snapshot BEFORE the start: a write that lands while it runs is a change next poll.
+        self.seen = now;
+        match controller.serve_enrolled(data).await {
+            Ok(()) => self.retry = None,
+            Err(e) => {
+                crate::log(&format!("[serve] local sharing unavailable: {e}"));
+                let wait = self.retry.map_or(STEP, |(_, wait)| next_backoff(wait));
+                self.retry = Some((Instant::now() + wait, wait));
+            }
+        }
+    }
+}
 
 fn next_backoff(wait: Duration) -> Duration {
     (wait * 2).min(Duration::from_secs(60))
@@ -105,7 +125,9 @@ fn xml_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn launch_agent_plist(exe: &Path) -> String {
+/// launchd starts agents with a minimal PATH; `path` and `home` are the installing shell's, so
+/// `serve` finds `claude` and `codex` (and `codex queue` delivery works).
+fn launch_agent_plist(exe: &Path, path: &str, home: &str) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
@@ -115,8 +137,14 @@ fn launch_agent_plist(exe: &Path) -> String {
 \t<key>RunAtLoad</key>\n\t<true/>\n\
 \t<key>KeepAlive</key>\n\t<true/>\n\
 \t<key>ThrottleInterval</key>\n\t<integer>30</integer>\n\
+\t<key>EnvironmentVariables</key>\n\t<dict>\n\
+\t\t<key>PATH</key>\n\t\t<string>{}</string>\n\
+\t\t<key>HOME</key>\n\t\t<string>{}</string>\n\
+\t</dict>\n\
 </dict>\n</plist>\n",
-        xml_escape(&exe.to_string_lossy())
+        xml_escape(&exe.to_string_lossy()),
+        xml_escape(path),
+        xml_escape(home),
     )
 }
 
@@ -132,7 +160,8 @@ pub fn launch_agent_path() -> PathBuf {
 pub fn install_launch_agent(exe: &Path) -> io::Result<()> {
     let path = launch_agent_path();
     fs::create_dir_all(path.parent().unwrap())?;
-    fs::write(&path, launch_agent_plist(exe))?;
+    let env = |key| std::env::var(key).unwrap_or_default();
+    fs::write(&path, launch_agent_plist(exe, &env("PATH"), &env("HOME")))?;
     let target = format!("gui/{}", unsafe { libc::getuid() });
     // A loaded agent refuses a second bootstrap; unload it first (absent is fine).
     let _ = std::process::Command::new("/bin/launchctl")
@@ -161,19 +190,88 @@ mod tests {
     #[test]
     fn second_serve_exits_when_lock_held() {
         let dir = tempfile::tempdir().unwrap();
-        let first = service_lock(dir.path()).expect("first serve takes the lock");
+        let first = service_lock(dir.path())
+            .unwrap()
+            .expect("first serve takes the lock");
         assert!(
-            service_lock(dir.path()).is_none(),
+            service_lock(dir.path()).unwrap().is_none(),
             "a second serve must see the lock held"
         );
         // `serve` itself: exits 0 before starting anything; the window's controller views.
         assert_eq!(tauri::async_runtime::block_on(run(dir.path())), 0);
-        assert!(!Controller::default().serves(dir.path()));
+        assert!(!Controller::default().serves(dir.path()).unwrap());
         drop(first);
         assert!(
-            service_lock(dir.path()).is_some(),
+            service_lock(dir.path()).unwrap().is_some(),
             "the lock frees with its holder"
         );
+    }
+
+    fn enrolled(data: &Path) -> PathBuf {
+        let dir = local_state_dir(data).unwrap();
+        let path = dir.join("enrollment.json");
+        fs::write(&path, r#"{"ownerId":"org_1","humanUserId":"user_1","deviceId":"dev","gatewayUrl":"wss://x","enabled":true,"paused":false}"#).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        dir
+    }
+
+    static RACE_FILE: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+    static RACE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    /// Stands in for the key read inside `serve_enrolled`: the window turns sharing off meanwhile.
+    fn window_writes_during_start() -> crate::local_sessions::Result<crate::keychain::DeviceIdentity>
+    {
+        if RACE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            let path = RACE_FILE.lock().unwrap().clone().unwrap();
+            fs::write(path, r#"{"ownerId":"org_1","humanUserId":"user_1","deviceId":"dev","gatewayUrl":"wss://x","enabled":false,"paused":false}"#).unwrap();
+        }
+        Err("no key in test".into())
+    }
+
+    #[test]
+    fn enrollment_write_during_a_start_is_picked_up_next_poll() {
+        let data = tempfile::tempdir().unwrap();
+        let dir = enrolled(data.path());
+        *RACE_FILE.lock().unwrap() = Some(dir.join("enrollment.json"));
+        let controller = Controller::with_identity(window_writes_during_start);
+        let mut watch = Watch::default();
+        tauri::async_runtime::block_on(watch.poll(&controller, data.path(), &dir));
+        assert_eq!(RACE_CALLS.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Sharing is now off on disk: the next poll restarts on it instead of absorbing it.
+        tauri::async_runtime::block_on(watch.poll(&controller, data.path(), &dir));
+        assert!(!crate::local_sessions::enrollment::sharing_on(&dir));
+        assert_eq!(
+            watch.retry, None,
+            "the off enrollment was served (stop), not retried"
+        );
+    }
+
+    static KEY_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    fn unreadable_key() -> crate::local_sessions::Result<crate::keychain::DeviceIdentity> {
+        KEY_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err("keychain read: denied".into())
+    }
+
+    #[test]
+    fn unreadable_key_fails_closed_and_retries() {
+        let data = tempfile::tempdir().unwrap();
+        let dir = enrolled(data.path());
+        let controller = Controller::with_identity(unreadable_key);
+        let mut watch = Watch::default();
+        let reads = || KEY_READS.load(std::sync::atomic::Ordering::SeqCst);
+        tauri::async_runtime::block_on(watch.poll(&controller, data.path(), &dir));
+        assert_eq!(reads(), 1);
+        assert_eq!(watch.retry.map(|(_, wait)| wait), Some(STEP));
+        tauri::async_runtime::block_on(watch.poll(&controller, data.path(), &dir));
+        assert_eq!(reads(), 1, "no retry before the backoff is due");
+        watch.retry = watch.retry.map(|(_, wait)| (Instant::now(), wait));
+        tauri::async_runtime::block_on(watch.poll(&controller, data.path(), &dir));
+        assert_eq!(reads(), 2);
+        assert_eq!(
+            watch.retry.map(|(_, wait)| wait),
+            Some(Duration::from_secs(4))
+        );
+        // Nothing was written in place of the missing key: no pair, no run.
+        assert!(!data.path().join("pair_state.json").exists());
     }
 
     #[test]
@@ -191,9 +289,14 @@ mod tests {
 
     #[test]
     fn plist_runs_serve_with_keepalive() {
-        let xml = launch_agent_plist(std::path::Path::new(
-            "/Applications/Light & bulb.app/Contents/MacOS/lightbulb-desktop",
-        ));
+        let xml = launch_agent_plist(
+            std::path::Path::new("/Applications/Light & bulb.app/Contents/MacOS/lightbulb-desktop"),
+            "/Users/a/.local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+            "/Users/a",
+        );
+        assert!(xml.contains(
+            "<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t<string>/Users/a/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>\n\t\t<key>HOME</key>\n\t\t<string>/Users/a</string>\n\t</dict>"
+        ), "{xml}");
         assert!(
             xml.contains("<key>Label</key>\n\t<string>company.thelightbulb.serve</string>"),
             "{xml}"

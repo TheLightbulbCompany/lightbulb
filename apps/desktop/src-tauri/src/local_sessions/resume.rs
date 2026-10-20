@@ -142,18 +142,17 @@ fn codex_cwd(home: &Path, thread: &str) -> Option<PathBuf> {
 }
 
 /// The local-sessions dir a resume checks sharing in.
-static STATE_DIR: OnceLock<PathBuf> = OnceLock::new();
+/// None inside: the dir was unavailable, so every resume is refused as SHARING_OFF.
+static STATE_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 /// From the app's setup.
 pub(crate) fn install(app: &tauri::AppHandle) {
-    if let Ok(dir) = super::enrollment::state_dir(app) {
-        install_dir(dir);
-    }
+    let _ = STATE_DIR.set(super::enrollment::state_dir(app).ok());
 }
 
 /// From `serve`, which has no app.
 pub(crate) fn install_dir(dir: PathBuf) {
-    let _ = STATE_DIR.set(dir);
+    let _ = STATE_DIR.set(Some(dir));
 }
 
 pub(super) struct Resumer {
@@ -179,7 +178,7 @@ pub(super) async fn run(mut rx: mpsc::Receiver<Vec<Wanted>>, me: Resumer) {
                 continue;
             };
             let short = &wanted.session_id[..8];
-            match start(dir, &wanted, &me).await {
+            match start(dir.as_deref(), &wanted, &me).await {
                 Ok(true) => relay_log(&format!("{short} resumed")),
                 Ok(false) => relay_log(&format!("{short} already runs in a holder; its registration answers the resume")),
                 Err(code) => {
@@ -198,8 +197,8 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
-async fn start(dir: &Path, w: &Wanted, me: &Resumer) -> std::result::Result<bool, &'static str> {
-    if !super::enrollment::sharing_on(dir) {
+async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Result<bool, &'static str> {
+    if !dir.is_some_and(super::enrollment::sharing_on) {
         return Err("SHARING_OFF");
     }
     let own = w.by_user_id == me.human;

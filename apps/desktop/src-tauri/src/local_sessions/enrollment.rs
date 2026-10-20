@@ -138,6 +138,13 @@ pub struct Controller {
     relay_checked: AtomicBool,
     /// `serve.lock`, once this process owns the service (`serves`).
     service: Mutex<Option<std::fs::File>>,
+    /// How `prepare` reads this Mac's key. None: the window's `load_or_generate`.
+    load_identity: Option<fn() -> Result<crate::keychain::DeviceIdentity>>,
+}
+
+/// `serve`'s key read: load only, never generate (see `keychain::load`).
+fn load_mac_identity() -> Result<crate::keychain::DeviceIdentity> {
+    crate::keychain::load(crate::keychain::KeychainSlot::Mac, crate::KEYCHAIN_SERVICE)
 }
 
 /// The enrollment captured the relay door (`gatewayUrl`) once, at enable time,
@@ -230,7 +237,16 @@ impl Controller {
         same && human.is_some() && self.running.lock().is_ok_and(|running| running.is_some())
     }
 
-    fn stop(&self) {
+    /// `serve`'s controller: reads this Mac's key without ever creating one.
+    pub(crate) fn headless() -> Self {
+        Self::with_identity(load_mac_identity)
+    }
+
+    pub(crate) fn with_identity(load: fn() -> Result<crate::keychain::DeviceIdentity>) -> Self {
+        Self { load_identity: Some(load), ..Self::default() }
+    }
+
+    pub(crate) fn stop(&self) {
         if let Ok(mut running) = self.running.lock() {
             if let Some(run) = running.take() {
                 run.stop.store(true, Ordering::SeqCst);
@@ -246,24 +262,27 @@ impl Controller {
 
     /// This process runs the local-sessions service: it holds `serve.lock` under the app
     /// data dir, taken on first use and kept for the process's life. False when another
-    /// process (a `serve`, or the window app) already runs it.
-    pub(crate) fn serves(&self, data: &Path) -> bool {
-        let Ok(mut held) = self.service.lock() else { return false };
+    /// process (a `serve`, or the window app) already runs it. Err: the lock file itself is
+    /// unusable (storage), which is not a reason to become a viewer.
+    pub(crate) fn serves(&self, data: &Path) -> Result<bool> {
+        let mut held = self.service.lock().map_err(|_| "sharing state unavailable")?;
         if held.is_none() {
-            *held = crate::headless::service_lock(data);
+            *held = crate::headless::service_lock(data).map_err(|e| format!("serve.lock unavailable: {e}"))?;
         }
-        held.is_some()
+        Ok(held.is_some())
     }
 
     /// The window runs the service only when no launch agent is installed (today's single
     /// process). With `agent` on disk, `serve` owns local sessions and the window views from
     /// the start; a lock the window took before the agent was installed is let go.
-    pub(crate) fn window_serves(&self, data: &Path, agent: &Path) -> bool {
+    pub(crate) fn window_serves(&self, data: &Path, agent: &Path) -> Result<bool> {
         if agent.exists() {
+            // Stop any run of ours before `serve` can take the lock and start its own.
+            self.stop();
             if let Ok(mut held) = self.service.lock() {
                 *held = None;
             }
-            return false;
+            return Ok(false);
         }
         self.serves(data)
     }
@@ -281,10 +300,10 @@ impl Controller {
 
     fn prepare(&self, data: &Path, enrollment: &Enrollment) -> Result<PreparedRun> {
         let dir = local_state_dir(data)?;
-        let identity = crate::keychain::load_or_generate(
-            crate::keychain::KeychainSlot::Mac,
-            crate::KEYCHAIN_SERVICE,
-        )?;
+        let identity = match self.load_identity {
+            Some(load) => load()?,
+            None => crate::keychain::load_or_generate(crate::keychain::KeychainSlot::Mac, crate::KEYCHAIN_SERVICE)?,
+        };
         let pair = retained_pair(crate::pair_state::load(data), &identity.public_key_pem)?;
         if pair.owner_id != enrollment.owner_id || pair.device_id_mac != enrollment.device_id {
             return Err("Reconnect the enrolled workspace's Mac first".into());
@@ -414,7 +433,7 @@ impl Controller {
 
     pub async fn restore(&self, app: &tauri::AppHandle) -> Result<()> {
         let (data, jwt) = app_auth(app)?;
-        if !self.window_serves(&data, &crate::headless::launch_agent_path()) {
+        if !self.window_serves(&data, &crate::headless::launch_agent_path())? {
             let _guard = self.mutation.lock().await;
             self.stop();
             if let Ok(mut status) = self.status.lock() {
@@ -445,6 +464,7 @@ impl Controller {
         }
         self.refresh_gateway_url(data, jwt, &path).await;
         let mut enrollment: Enrollment = private_read(&path)?;
+        let paused = enrollment.paused;
         enrollment.authenticate(
             self.human
                 .lock()
@@ -452,7 +472,11 @@ impl Controller {
                 .as_ref()
                 .map(|h| h.as_deref()),
         );
-        private_write(&path, &enrollment)?;
+        // Only a change is written: a blind read-then-write here could overwrite a write the
+        // window made in between (sharing on or off while `serve` runs).
+        if enrollment.paused != paused {
+            private_write(&path, &enrollment)?;
+        }
         self.stop();
         if !enrollment.enabled || enrollment.paused || enrollment.attempt.is_some() {
             return Ok(());
@@ -787,7 +811,7 @@ pub async fn local_sessions_set(
     let serving = state.window_serves(
         &app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?,
         &crate::headless::launch_agent_path(),
-    );
+    )?;
     let revision = {
         let _human = state
             .human
@@ -1354,11 +1378,24 @@ mod tests {
         let agent = data.path().join("company.thelightbulb.serve.plist");
         fs::write(&agent, "plist").unwrap();
         let window = Controller::default();
-        assert!(!window.window_serves(data.path(), &agent));
-        assert!(crate::headless::service_lock(data.path()).is_some(), "the window left serve.lock to serve");
+        assert!(!window.window_serves(data.path(), &agent).unwrap());
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_some(), "the window left serve.lock to serve");
         fs::remove_file(&agent).unwrap();
-        assert!(window.window_serves(data.path(), &agent));
-        assert!(crate::headless::service_lock(data.path()).is_none(), "the window holds serve.lock");
+        assert!(window.window_serves(data.path(), &agent).unwrap());
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_none(), "the window holds serve.lock");
+    }
+
+    #[test]
+    fn restore_with_no_change_writes_nothing() {
+        use std::os::unix::fs::MetadataExt;
+        let data = tempfile::tempdir().unwrap();
+        let dir = local_state_dir(data.path()).unwrap();
+        let path = dir.join("enrollment.json");
+        private_write(&path, &candidate()).unwrap();
+        let before = fs::metadata(&path).unwrap().ino();
+        let window = Controller::default();
+        tauri::async_runtime::block_on(window.restore_at(data.path(), "")).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().ino(), before, "an unchanged enrollment is not rewritten");
     }
 
     #[test]

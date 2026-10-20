@@ -18,7 +18,7 @@
 - Allowing a person allows all of that person's agents. Allow lists stay keyed on people (`allowedSenders`).
 - A person's own agents reach each other instantly.
 - Today's limits stand: offline TTL `OFFLINE_SEND_SECONDS` (24 h), `OFFLINE_SEND_PENDING_LIMIT` (20), ask expiry `ASK_TTL_S` (24 h).
-- Loop limit: 12 messages per (source session, target session) per 600 s, beside today's `native_hop` cap.
+- Loop limit: 12 messages per (sender, target session) per 600 s. It is the ONLY loop guard between sessions: the 2-reply `native_hop` cap is removed for session-to-session sends and stays for rooms (owner, 2026-10-19).
 - `lightbulb setup` sets `crossSessionInbound: "accept"` in `~/.claude/settings.json` (owner OK, 2026-10-19).
 - `join` turns on the existing per-Mac "Share every new session" switch (`shell_integration::set(home, true)`).
 - Sidebar rows show the owner's avatar (same `ParticipantAvatar` messages use) with the tool icon as a corner badge. No "doing" line.
@@ -131,6 +131,7 @@ async def test_delivery_word(...):
 - [ ] **Step 2: Run; expect FAIL.**
 - [ ] **Step 3: Implement.**
   - Drop `not source_session_id` and `not via_client` from `offline_send`. Keep every other clause.
+  - Remove the 2-hop cap for session-to-session sends: `submit_command` no longer requires `native_hop in {1,2}` for a session target, and `_outgoing_hop` no longer refuses at 2 for one. Room posts keep `AGENT_REPLY_CAP` and their hop rule unchanged. Test: a third consecutive session-to-session reply is admitted; a room reply at the cap is still capped.
   - The loop check lives in `session_send`. It counts this target's commands with the same `sourceSessionId` and a `createdAt` within the last 600 s, before submitting.
   - `delivery` is derived from the receipt state plus the target's live status.
 - [ ] **Step 4: Run; expect PASS.**

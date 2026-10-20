@@ -252,7 +252,7 @@ async def test_session_send_is_a_follow_up_under_the_persons_control_authority(m
     target = {"sessionId": sid, "ownerId": "org_test", "humanUserId": "user_sender", "generation": "g1"}
     authorize = AsyncMock(return_value=(target, {}))
     monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", authorize)
-    send = AsyncMock(return_value={"state": "pending"})
+    send = AsyncMock(return_value={"state": "pending", "delivery": "now"})
     monkeypatch.setattr(hosted_mcp.native_session_tools, "session_send", send)
     record = AsyncMock()
     monkeypatch.setattr(hosted_mcp, "_record_outcome", record)
@@ -261,7 +261,7 @@ async def test_session_send_is_a_follow_up_under_the_persons_control_authority(m
 
     result = await hosted_mcp.send_message("run the tests", request_id, session_id=sid)
 
-    assert result == {"sessionId": sid, "requestId": str(request_id), "state": "pending"}
+    assert result == {"sessionId": sid, "requestId": str(request_id), "state": "pending", "delivery": "now"}
     authorize.assert_awaited_once_with(auth, None, sid)  # a read: session_send holds the unallowed
     pin.assert_awaited_once_with(auth, request_id, f"session:{sid}")
     send.assert_awaited_once_with(auth, target, "run the tests", str(request_id), via_client="Claude Code")
@@ -398,7 +398,11 @@ async def test_an_accepted_send_is_recorded_and_clears_an_earlier_transient_refu
     pinned = {"destination": f"session:{sid}", "refusal": "LOCAL_SESSION_OFFLINE"}
     monkeypatch.setattr(hosted_mcp, "_pin_destination", AsyncMock(return_value=pinned))
     monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", AsyncMock(return_value=(sid, None)))
-    monkeypatch.setattr(hosted_mcp.native_session_tools, "session_send", AsyncMock(return_value={"state": "queued"}))
+    monkeypatch.setattr(
+        hosted_mcp.native_session_tools,
+        "session_send",
+        AsyncMock(return_value={"state": "queued", "delivery": "queued"}),
+    )
     record = AsyncMock()
     monkeypatch.setattr(hosted_mcp, "_record_outcome", record)
     assert (await hosted_mcp.send_message("hi", request_id, session_id=sid))["state"] == "queued"

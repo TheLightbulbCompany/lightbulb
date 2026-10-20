@@ -1365,8 +1365,9 @@ class LocalSessionRelay:
         else:
             auth = sessions.command_caller(owner, command)
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid, owner_only=True)
-        if command.get("offlineIdentity") and command.get("actorUserId") != current["humanUserId"]:
-            stream = await store.get_user_stream(owner, command["actorUserId"])
+        sender = command.get("actorUserId") or command.get("sourceHumanUserId")
+        if command.get("offlineIdentity") and sender != current["humanUserId"]:
+            stream = await store.get_user_stream(owner, sender)
             if not stream or not stream.get("active"):
                 raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sender is no longer in this workspace.")
         sessions.require_command_scope(auth, current, command["kind"])

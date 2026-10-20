@@ -147,6 +147,7 @@ async def test_hosted_mcp_session_send_from_unallowed_person_is_held(monkeypatch
     monkeypatch.setattr(native_session_tools.local_sessions, "request_join", join)
     submit = AsyncMock(return_value=SimpleNamespace(state="awaiting_approval"))
     monkeypatch.setattr(native_session_tools.local_sessions, "submit_command", submit)
+    monkeypatch.setattr(native_session_tools.sessions_repo, "list_commands", AsyncMock(return_value=[]))
     from core.services import local_session_relay
 
     monkeypatch.setattr(

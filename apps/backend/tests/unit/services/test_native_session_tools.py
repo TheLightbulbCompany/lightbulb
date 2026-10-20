@@ -207,7 +207,8 @@ async def test_native_reply_chain_stops_after_two_hops(monkeypatch):
         {"commandSeq": 2, "actor": {"kind": "session", "id": "second"}, "nativeHop": 2, "state": "applied"}
     )
     with pytest.raises(ApiProblem):
-        await tools._outgoing_hop(source)
+        await tools._outgoing_hop(source)  # a room post keeps the cap
+    assert await tools._outgoing_hop(source, cap=False) == 3  # a session send does not
 
 
 DEVICE = MachineIdentity(
@@ -611,11 +612,17 @@ async def test_session_send_admits_then_dispatches_and_survives_a_dispatch_failu
     target = {"sessionId": sid, "ownerId": "org_a", "humanUserId": "user_owner", "generation": "g7"}
     submit = AsyncMock(return_value=SimpleNamespace(state="pending"))
     monkeypatch.setattr(tools.local_sessions, "submit_command", submit)
+    monkeypatch.setattr(tools.sessions_repo, "list_commands", AsyncMock(return_value=[]))
     relay = SimpleNamespace(dispatch_session=AsyncMock(side_effect=RuntimeError("socket gone")))
     monkeypatch.setattr(local_session_relay, "get_local_session_relay", lambda: relay)
     auth = tools.AuthContext(user_id="user_owner", org_id="org_a")
     result = await tools.session_send(auth, target, "hi", "req-1", via_client="Claude Code")
-    assert result == {"state": "pending", "destination": f"session:{sid}", "targetRequestId": "req-1"}
+    assert result == {
+        "state": "pending",
+        "destination": f"session:{sid}",
+        "targetRequestId": "req-1",
+        "delivery": "now",
+    }
     command = submit.await_args.args[3]
     assert (command.kind, command.text, command.expected_generation) == ("send", "hi", "g7")
     assert submit.await_args.kwargs == {"via_client": "Claude Code"}
@@ -641,36 +648,10 @@ async def test_session_send_refuses_when_control_fails_closed_between_authorize_
     flipped = {**clean, "controlUnavailableReason": "history-gap"}
     monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(flipped, {})))
     monkeypatch.setattr(tools.local_sessions.repo, "get_command", AsyncMock(return_value=None))
+    monkeypatch.setattr(tools.sessions_repo, "list_commands", AsyncMock(return_value=[]))
     admit = AsyncMock()
     monkeypatch.setattr(tools.local_sessions.repo, "admit_command", admit)
     with pytest.raises(ApiProblem) as error:
         await tools.session_send(tools.AuthContext(user_id="user_owner", org_id="org_a"), clean, "hi", "r1")
     assert error.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
-    admit.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_a_hosted_client_send_never_enters_an_offline_sessions_queue(monkeypatch):
-    import time
-
-    sid = str(uuid.uuid4())
-    offline = {
-        "sessionId": sid,
-        "ownerId": "org_a",
-        "humanUserId": "user_owner",
-        "generation": "g",
-        "status": "offline",
-        "onlineUntil": int(time.time()) - 5,
-        "capabilities": {"sendMode": "queue", "interrupt": False},
-        "capabilitiesVerified": True,
-    }
-    monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(offline, {})))
-    monkeypatch.setattr(tools.local_sessions.repo, "get_command", AsyncMock(return_value=None))
-    admit = AsyncMock()
-    monkeypatch.setattr(tools.local_sessions.repo, "admit_command", admit)
-    with pytest.raises(ApiProblem) as error:
-        await tools.session_send(
-            tools.AuthContext(user_id="user_owner", org_id="org_a"), offline, "hi", "r1", via_client="Claude Code"
-        )
-    assert error.value.error.code == "LOCAL_SESSION_OFFLINE"
     admit.assert_not_awaited()

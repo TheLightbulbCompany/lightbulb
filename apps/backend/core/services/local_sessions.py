@@ -1730,7 +1730,7 @@ async def submit_command(
     # A roomless command is stored with roomId "": current desktops require the field as a string.
     room_id = validate_uuid(room_id, label="room ID") if room_id else ""
     session_id = validate_uuid(session_id, label="local session ID")
-    if source_session_id and (request.kind != "send" or native_hop not in {1, 2} or not source_generation):
+    if source_session_id and (request.kind != "send" or not source_generation):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Native sessions can send only bounded messages.")
     if native_hop is not None and not source_session_id:
         raise ApiProblem("INVALID_REQUEST", "Native hop needs a verified source session.")
@@ -1840,9 +1840,6 @@ async def submit_command(
         offline_send = (
             not isinstance(auth, AgentInvocation)
             and not room_id
-            and not source_session_id
-            # A hosted MCP client sends only to a live session (find_sessions canSend), never the offline inbox.
-            and not via_client
             and request.kind == "send"
             and request.expected_turn_id is None
             and (row["status"] == "offline" or row["onlineUntil"] <= now)
@@ -1905,6 +1902,7 @@ async def submit_command(
             **(
                 {
                     "sourceHumanUserId": auth.user_id,
+                    "sourceSessionId": source_session_id,
                     "sourceSessionGeneration": source_generation,
                     "sourceTurnId": source_turn_id,
                 }

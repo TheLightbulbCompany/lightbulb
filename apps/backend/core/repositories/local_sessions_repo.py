@@ -242,8 +242,9 @@ def room_conditions(owner: str, human: str, receipt: dict, *, include_meta: bool
     owner_check = [active_stream(human)] if (receipt.get("actor") or {}).get("kind") == "agent" else []
     if not room:
         # An offline teammate's old token is not authority at delivery time.
-        if receipt.get("offlineIdentity") and receipt.get("actorUserId") != human:
-            return [active_stream(receipt["actorUserId"])]
+        sender = receipt.get("actorUserId") or receipt.get("sourceHumanUserId")
+        if receipt.get("offlineIdentity") and sender != human:
+            return [active_stream(sender)]
         return owner_check
     table = store._table().name
     actor = ("agent", receipt["actor"]["id"]) if "actor" in receipt else ("human", receipt["actorUserId"])

@@ -417,10 +417,14 @@ async def _session_send(auth: AuthContext, source: dict, session_id: str, text: 
         source_session_id=source["sessionId"],
         source_generation=source["generation"],
         source_turn_id=source.get("activeTurnId"),
-        native_hop=await _outgoing_hop(source),
+        native_hop=min(await _outgoing_hop(source, cap=False), 2),
         source_conditions=source_conditions,
         source_pairing=(source["humanUserId"], source["deviceId"]),
     )
+
+
+LOOP_LIMIT = 12
+LOOP_WINDOW_S = 600
 
 
 async def session_send(auth: AuthContext, target: dict, text: str, request_id: str, **source: Any) -> dict:
@@ -436,16 +440,45 @@ async def session_send(auth: AuthContext, target: dict, text: str, request_id: s
         # for the owner's Allow (allowing a person allows all of that person's agents).
         await local_sessions.request_join(auth, session_id)
         source = {**source, "hold_for": auth.user_id}
+    now = int(time.time())
+    sender = (
+        source.get("source_session_id"),
+        None if source.get("source_session_id") else (auth.user_id, source.get("via_client")),
+    )
+    recent = [
+        c
+        for c in await sessions_repo.list_commands(target["ownerId"], session_id)
+        if c["createdAt"] > now - LOOP_WINDOW_S
+        and (
+            c.get("sourceSessionId") == sender[0]
+            if sender[0]
+            else (c.get("actorUserId"), c.get("viaClient")) == sender[1] and not c.get("sourceSessionId")
+        )
+    ]
+    if len(recent) >= LOOP_LIMIT:
+        raise ApiProblem("LOCAL_SESSION_LOOP", "Too many messages to this session; wait a few minutes.")
     receipt = await local_sessions.submit_command(auth, None, session_id, command, **source)
     try:
         await get_local_session_relay().dispatch_session(target["ownerId"], session_id)
     except Exception:
         # Durable admission stays queued; the device heartbeat retries delivery.
         logger.warning("session send dispatch failed session=%s", session_id, exc_info=True)
-    return {"state": receipt.state, "destination": f"session:{session_id}", "targetRequestId": request_id}
+    delivery = (
+        "waiting for owner"
+        if receipt.state == "awaiting_approval"
+        else "queued"
+        if target.get("status") == "offline" or target.get("onlineUntil", now + 1) <= now
+        else "now"
+    )
+    return {
+        "state": receipt.state,
+        "destination": f"session:{session_id}",
+        "targetRequestId": request_id,
+        "delivery": delivery,
+    }
 
 
-async def _outgoing_hop(source: dict) -> int:
+async def _outgoing_hop(source: dict, *, cap: bool = True) -> int:
     commands = await sessions_repo.list_commands(source["ownerId"], source["sessionId"])
     last_human = max((int(c["commandSeq"]) for c in commands if c.get("actorUserId")), default=0)
     # ponytail: direct terminal prompts do not yet reset this cap. A human's
@@ -460,7 +493,8 @@ async def _outgoing_hop(source: dict) -> int:
         ),
         default=0,
     )
-    if incoming >= 2:
+    # Session-to-session sends are not capped by hops (the loop limit in session_send bounds them).
+    if cap and incoming >= 2:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Native session reply loop limit reached.")
     return incoming + 1
 

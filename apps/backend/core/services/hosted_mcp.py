@@ -530,7 +530,12 @@ async def send_message(
             await _record_outcome(auth, request_id, refusal=exc.error.code)
             raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
         await _record_outcome(auth, request_id, accepted=result["state"])
-        return {"sessionId": session_id, "requestId": str(request_id), "state": result["state"]}
+        return {
+            "sessionId": session_id,
+            "requestId": str(request_id),
+            "state": result["state"],
+            "delivery": result["delivery"],
+        }
     try:
         # Checked before any room is opened, so a refused send leaves no empty DM behind.
         messaging.validate_message_text(text)

@@ -67,7 +67,13 @@ async fn run(data: &Path) -> i32 {
     };
     crate::log("[serve] local sessions service started");
     let mut watch = Watch::default();
+    let exe = std::env::current_exe().ok().map(ExeStamp::of);
     loop {
+        if exe.as_ref().is_some_and(ExeStamp::changed) {
+            // An auto-update replaced this binary: KeepAlive restarts only an exited process.
+            crate::log("[serve] the app was updated; restarting on the new binary");
+            break;
+        }
         watch.poll(&controller, data, &dir).await;
         tokio::select! {
             _ = term.recv() => break,
@@ -112,6 +118,28 @@ impl Watch {
                 self.retry = Some((Instant::now() + wait, wait));
             }
         }
+    }
+}
+
+/// The binary `serve` runs from, as it was at start: inode and mtime.
+struct ExeStamp {
+    path: PathBuf,
+    seen: Option<(u64, std::time::SystemTime)>,
+}
+
+impl ExeStamp {
+    fn of(path: PathBuf) -> Self {
+        let seen = Self::read(&path);
+        Self { path, seen }
+    }
+    fn read(path: &Path) -> Option<(u64, std::time::SystemTime)> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(path).ok()?;
+        Some((meta.ino(), meta.modified().ok()?))
+    }
+    /// A missing file (mid-replace) is not a change yet: the next look sees the new one.
+    fn changed(&self) -> bool {
+        Self::read(&self.path).is_some_and(|now| Some(now) != self.seen)
     }
 }
 
@@ -369,11 +397,30 @@ pub fn join() -> i32 {
             Ok(None) => {}
             Err(e) => println!("Note: {e}"),
         }
+        // With no agent yet, a held lock is the window app's: it hands over on its 2 s watch.
+        let window_held = !launch_agent_path().exists() && matches!(service_lock(&data), Ok(None));
         install_launch_agent(&exe).map_err(|e| format!("Could not start the service: {e}"))?;
         println!("{line}");
+        if window_held && !lock_freed(&data, Duration::from_secs(6)) {
+            println!("Lightbulb is open: quit and reopen it to finish.");
+        }
         Ok(())
     };
     report(run())
+}
+
+/// True once `serve.lock` is free within `wait` (taken and let go at once).
+fn lock_freed(data: &Path, wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if matches!(service_lock(data), Ok(Some(_))) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 /// The app binary itself, never the `~/.local/bin/lightbulb` link this may run through: hooks
@@ -455,6 +502,31 @@ mod tests {
             service_lock(dir.path()).unwrap().is_some(),
             "the lock frees with its holder"
         );
+    }
+
+    #[test]
+    fn serve_notices_its_binary_was_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("lightbulb-desktop");
+        fs::write(&exe, "old").unwrap();
+        let stamp = ExeStamp::of(exe.clone());
+        assert!(!stamp.changed());
+        fs::remove_file(&exe).unwrap();
+        assert!(!stamp.changed(), "mid-replace is not a change yet");
+        let new = dir.path().join("new");
+        fs::write(&new, "new").unwrap();
+        fs::rename(&new, &exe).unwrap(); // what an update does: a new file at the same path
+        assert!(stamp.changed());
+    }
+
+    #[test]
+    fn join_sees_whether_the_window_let_go_of_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let window = service_lock(dir.path()).unwrap().unwrap();
+        assert!(!lock_freed(dir.path(), Duration::from_millis(300)), "still the window's");
+        drop(window);
+        assert!(lock_freed(dir.path(), Duration::from_millis(300)));
+        assert!(service_lock(dir.path()).unwrap().is_some(), "join keeps nothing");
     }
 
     fn enrolled(data: &Path) -> PathBuf {

@@ -287,6 +287,35 @@ impl Controller {
         self.serves(data)
     }
 
+    /// `lightbulb join` installed the launch agent while the window runs the service: stop our
+    /// run first, then let go of `serve.lock` so `serve` takes it. True when it handed over.
+    pub(crate) async fn hand_over_to_agent(&self, data: &Path, agent: &Path) -> bool {
+        if !agent.exists() || !self.service.lock().is_ok_and(|held| held.is_some()) {
+            return false;
+        }
+        let _guard = self.mutation.lock().await;
+        let _ = self.window_serves(data, agent); // with the agent on disk: stop, then release
+        if let Ok(mut status) = self.status.lock() {
+            *status = "Local sharing runs in lightbulb-desktop serve.".into();
+        }
+        true
+    }
+
+    /// The window's 2 s look for the launch agent (`hand_over_to_agent`), for the app's life.
+    /// ponytail: a 2 s stat of one file, as `serve` watches its own; a kqueue watch if it matters.
+    pub fn watch_launch_agent(app: tauri::AppHandle) {
+        tauri::async_runtime::spawn(async move {
+            let Ok((data, _)) = app_auth(&app) else { return };
+            let agent = crate::headless::launch_agent_path();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if app.state::<Controller>().hand_over_to_agent(&data, &agent).await {
+                    crate::log("[local-sessions] launch agent installed; the window now only views");
+                }
+            }
+        });
+    }
+
     /// The end of an enable. A viewer only records the consent: `serve` sees enrollment.json
     /// change and starts the run itself.
     fn finish_enable(&self, path: &Path, enrollment: Enrollment, prepared: Option<PreparedRun>, revision: u64) -> Result<()> {
@@ -1391,6 +1420,22 @@ mod tests {
         fs::remove_file(&agent).unwrap();
         assert!(window.window_serves(data.path(), &agent).unwrap());
         assert!(crate::headless::service_lock(data.path()).unwrap().is_none(), "the window holds serve.lock");
+    }
+
+    #[test]
+    fn window_hands_the_lock_to_a_launch_agent_installed_while_it_runs() {
+        let data = tempfile::tempdir().unwrap();
+        let agent = data.path().join("company.thelightbulb.serve.plist");
+        let window = Controller::default();
+        assert!(window.window_serves(data.path(), &agent).unwrap(), "no agent yet: the window serves");
+        assert!(!tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)));
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_none(), "still the window's");
+        fs::write(&agent, "plist").unwrap(); // `lightbulb join` installs it
+        assert!(tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)));
+        assert!(window.running.lock().unwrap().is_none(), "stopped before the lock was let go");
+        assert_eq!(*window.status.lock().unwrap(), "Local sharing runs in lightbulb-desktop serve.");
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_some(), "serve can take serve.lock");
+        assert!(!tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)), "once");
     }
 
     #[test]

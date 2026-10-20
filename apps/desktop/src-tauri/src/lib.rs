@@ -2037,6 +2037,7 @@ end tell"#,
 
             // Native sharing is an independent consented service. A missing
             // OpenClaw sidecar/gateway cannot prevent a retained pair restoring it.
+            local_sessions::enrollment::Controller::watch_launch_agent(app.handle().clone());
             let sharing_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = sharing_app.state::<local_sessions::enrollment::Controller>().restore(&sharing_app).await {

@@ -34,6 +34,9 @@ vi.mock("@/components/control/panels/WebsiteLoginsSection", () => ({
 vi.mock("@/components/control/panels/BrowserExtensionsSection", () => ({
   BrowserExtensionsSection: () => <div />,
 }));
+vi.mock("@/components/control/panels/AgentKeysSection", () => ({
+  AgentKeysSection: () => <div />,
+}));
 vi.mock("@/components/settings/AgentGuardrails", () => ({
   AgentGuardrails: () => <div data-testid="agent-guardrails" />,
 }));

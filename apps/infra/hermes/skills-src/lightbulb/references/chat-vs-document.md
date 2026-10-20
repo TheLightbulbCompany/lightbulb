@@ -87,26 +87,27 @@ EOF
 
 ## What it sounds like
 
+Say these in your own words, the way you would type them to a coworker. The
+lines below show the register, not a script: never start every message the
+same way ("On it", "Done:", "Got it").
+
 **Acknowledge** in the room turn that filed the task: one line saying who has
-it, with the task link. The task's run announces the finished document with
-`scripts/lightbulb-post.sh`:
+it, with the task link, and when they can expect it if that is useful.
 
-> On it: [HAB-12](/HAB/issues/HAB-12). I'll research Habits 365 and put together 5–7 demo video ideas as a doc; I'll post it here in about 10 minutes.
+> I'll dig into Habits 365 and come back with a few demo video ideas, tracking it in [HAB-12](/HAB/issues/HAB-12).
 
-**Running late**, only if it runs past what you promised: one line in the thread with the new time (never a step-by-step update; paperclip SKILL.md "Telling the person about task work"):
+**Running late**, only if it runs past what you promised: one line in the
+thread with the new time, never a step-by-step update (paperclip SKILL.md
+"Telling the person about task work").
 
-> Quick update: the competitor scan is done, and I'm now drafting the video concepts. About 5 more minutes.
+**Deliver** (the task's run, posting to the From room): what you found in a
+sentence or two, the link, and the one thing you need from them, if any.
+Plain sentences; a list only when there really are several separate points.
 
-**Deliver** (the task's run, posting to the From room):
+> Their whole pitch is "never break a streak", and none of their competitors show the widget, so I built the ideas around that: [video plan](/HAB/issues/HAB-12#document-research). Two of them need screen recordings from you. Which ones do you want me to script first?
 
-> Done: [Habits 365: research & demo video plan](/HAB/issues/HAB-12#document-research)
-> 1. Their hook is "never break a streak", so lead with that.
-> 2. Competitors don't show the widget; that's our video #2.
-> 3. Videos 1 and 4 need screen recordings from you.
-> Pick 2 concepts and I'll script them.
-
-The answer is in chat (the takeaways), the detail is one click away, and it
-ends with a clear next step.
+The answer is in chat, the detail is one click away, and the person knows what
+happens next.
 
 ## The first run
 
@@ -115,9 +116,9 @@ first turn on it may run before `BRIEF.md` reaches your home; follow this
 anyway. `BRIEF.md` carries the same contract once it lands. The person should
 see work done and make one decision:
 
-1. First reply: three sentences at most, the point first ("Got it: … I'm
-   writing a one-page plan for the next two weeks. It'll be here in a few
-   minutes.").
+1. First reply: three sentences at most, the point first, in your own words
+   (for example: say what you understood and that a one-page plan for the next
+   two weeks is coming in a few minutes).
 2. One result message, posted to `#general` by the plan task's own run (the task's
    **From** section): the plan as a document (above), one approval from the
    `request_approval` tool linked to the plan's task (`companyPlan: true` for

@@ -417,7 +417,7 @@ async def _session_send(auth: AuthContext, source: dict, session_id: str, text: 
         source_session_id=source["sessionId"],
         source_generation=source["generation"],
         source_turn_id=source.get("activeTurnId"),
-        native_hop=min(await _outgoing_hop(source, cap=False), 2),
+        native_hop=min(await _outgoing_hop(source, cap=False), 2),  # CommandReceipt.native_hop is le=2
         source_conditions=source_conditions,
         source_pairing=(source["humanUserId"], source["deviceId"]),
     )
@@ -445,10 +445,12 @@ async def session_send(auth: AuthContext, target: dict, text: str, request_id: s
         source.get("source_session_id"),
         None if source.get("source_session_id") else (auth.user_id, source.get("via_client")),
     )
+    # ponytail: read-then-write, so concurrent sends can overshoot 12 by the number in flight; a counter row if it matters.
     recent = [
         c
         for c in await sessions_repo.list_commands(target["ownerId"], session_id)
         if c["createdAt"] > now - LOOP_WINDOW_S
+        and c["requestId"] != request_id  # an idempotent retry is not a new message
         and (
             c.get("sourceSessionId") == sender[0]
             if sender[0]

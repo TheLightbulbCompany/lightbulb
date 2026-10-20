@@ -1858,6 +1858,7 @@ async def submit_command(
                 1
                 for item in await repo.list_commands(owner, session_id)
                 if item.get("offlineIdentity")
+                and not item.get("heldFor")  # an unallowed person's held sends are not the owner's backlog
                 and item["state"] not in {"applied", "rejected"}
                 and item["deliverBy"] > now
             )

@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from core.repositories import local_sessions_repo as repo, messaging_repo
-from core.services import native_session_tools
+from core.services import local_sessions as service, native_session_tools
 from core.services.messaging import ApiProblem
 from tests.unit.services import test_local_session_relay as relay_tests, test_local_sessions as registry_tests
 from tests.unit.services.test_local_session_relay import MAC, registration, relay, start
@@ -109,3 +109,65 @@ async def test_third_session_reply_is_admitted(wired):
     for i in range(3):
         receipt = await _send(ALICE, target, f"hop-{i}", **_from(source))
         assert receipt["state"] in {"pending", "dispatched"}
+
+
+async def _reconnect_and_dispatch(transport, sid):
+    _online = {
+        "Key": {"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        "UpdateExpression": "SET onlineUntil = :future",
+        "ExpressionAttributeValues": {":future": int(time.time()) + 600},
+    }
+    messaging_repo._table().update_item(**_online)
+    transport[3].clear()
+    await relay(transport).dispatch_session(OWNER, sid)
+    return [b["command"]["requestId"] for _, b in transport[3] if b["type"] == "local.session.command"]
+
+
+@pytest.mark.asyncio
+async def test_offline_queued_session_send_is_delivered_after_reconnect(wired):
+    source, target = await _two_sessions(wired)
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    _offline(target)
+    await _send(ALICE, target, "q-s", **_from(source))
+    with patch("time.time", return_value=time.time() + 120):  # past the 30 s window
+        assert "q-s" in await _reconnect_and_dispatch(wired, target)
+
+
+@pytest.mark.asyncio
+async def test_offline_queued_hosted_send_is_delivered_after_reconnect(wired):
+    sid = await start(wired)
+    _offline(sid)
+    await _send(ALICE, sid, "q-h", via_client="claude")
+    with patch("time.time", return_value=time.time() + 120):
+        assert "q-h" in await _reconnect_and_dispatch(wired, sid)
+
+
+@pytest.mark.asyncio
+async def test_retry_of_the_twelfth_send_returns_its_receipt(wired):
+    sid = await start(wired)
+    for i in range(12):
+        await _send(ALICE, sid, f"r-{i}", via_client="claude")
+    again = await _send(ALICE, sid, "r-11", via_client="claude")
+    assert again["state"] in {"pending", "dispatched"}
+
+
+@pytest.mark.asyncio
+async def test_held_rows_do_not_fill_the_owners_offline_queue(wired):
+    sid = await start(wired)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    _offline(sid)
+    for i in range(3):
+        await _send(BOB, sid, f"hq-{i}")
+    with patch.object(service, "OFFLINE_SEND_PENDING_LIMIT", 3):
+        receipt = await _send(ALICE, sid, "own", via_client="claude")
+    assert receipt["delivery"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_unallowed_send_to_offline_session_waits_and_is_not_dispatched(wired):
+    sid = await start(wired)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    _offline(sid)
+    receipt = await _send(BOB, sid, "hold-off")
+    assert receipt["state"] == "awaiting_approval" and receipt["delivery"] == "waiting for owner"
+    assert await _reconnect_and_dispatch(wired, sid) == []

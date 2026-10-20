@@ -1319,7 +1319,8 @@ class LocalSessionRelay:
         # the turn that wrote it: the owner's decision stands in for the source's turn, its 30 s
         # window and its liveness (a teammate who closed their terminal still gets it delivered).
         # Only the target's checks below and the sender still being in the workspace apply.
-        if native_actor and command.get("releasedAt") is not None:
+        # An offline-queued send (``offlineIdentity``) is the same: it waits for the target's Mac, not the turn.
+        if native_actor and (command.get("releasedAt") is not None or command.get("offlineIdentity")):
             sender = command["sourceHumanUserId"]
             if not ((await store.get_user_stream(owner, sender)) or {}).get("active"):
                 raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sender is no longer in this workspace.")

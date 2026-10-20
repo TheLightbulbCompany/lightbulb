@@ -284,6 +284,32 @@ def test_approve_without_org_is_409_workspace_required(...):
 - [ ] **Step 4: Run `cargo test --lib`; PASS.**
 - [ ] **Step 5: Commit** `feat(desktop): lightbulb join pairs this Mac from the browser and starts the service`
 
+### Task 7b: A Mac notification answers a held message or an agent's ask (every agent, no window)
+
+**Why (owner, 2026-10-19):** holding is the default (per session, per person once). Codex, Cursor, Grok CLI and
+Grok Bot have no UI of their own for Allow, and a terminal-only user may never open the app. Only a person may
+answer: never a tool or command an agent can run.
+
+**Files:**
+- Modify: `apps/desktop/src-tauri/src/notify.rs` (action buttons; usable from `serve` without an AppHandle)
+- Modify: `apps/desktop/src-tauri/src/headless.rs` and the window's local-sessions path (post the notification when a request arrives)
+- Modify: the relay message the Mac already receives for presence/join requests (`presence.rs` `join_requests`, agent asks) — reuse what the Claude band reads via `mod_socket.rs`; no new backend event unless one is missing
+- Modify: Codex / Cursor / Grok hook output (one-line notice)
+- Test: `notify.rs` / `headless.rs` `#[cfg(test)]`
+
+**Interfaces:**
+- One notification per pending request (a person's join request with a held message, or an agent's ask), deduplicated by request id, withdrawn when answered anywhere.
+- Copy: title `<who> wants to message <session title>` (who = "Aden's Codex" / "Friday"), body = message preview (≤140 chars), actions **Allow** / **Decline**.
+- An action answers through the existing device-signed `POST /api/v1/messaging/native-session-decisions` (`{sessionId, generation, decision, userId | requestId}`) — the route the Claude band uses.
+- The notification is posted by whichever process owns local sessions (`serve`, or the window when it serves). If notification permission is not granted, nothing changes (band, phone, web still work) and `lightbulb join` asks once.
+- Hook notice (Codex / Cursor / Grok CLI, at the next tool call or turn end): `Lightbulb: <who> wants to message this session; your user can allow it from the Mac notification or the Lightbulb app.` No tool or command answers it.
+
+- [ ] **Step 1: Failing tests** — a pending join request with a held message produces exactly one notification with the copy above and both actions; answering elsewhere withdraws it; tapping Allow calls the decision route with the right body; a repeat of the same request id does not re-notify; hook output for codex/cursor/grok carries the notice line and offers no answer path.
+- [ ] **Step 2: Run; FAIL.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: `cargo test --lib notify` / `headless` / `local_sessions` (shared CARGO_TARGET_DIR); PASS.**
+- [ ] **Step 5: Commit** `feat(desktop): a Mac notification answers a held message or an agent's ask`
+
 ### Task 8: Ship and verify phase 1
 
 - [ ] Open one PR per task group (backend 1-4, web 5, desktop 6-7). Merge on a Codex review.

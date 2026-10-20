@@ -189,3 +189,127 @@ async def test_a_released_native_send_outlives_the_turn_that_wrote_it(db, wired,
     await relay(transport).dispatch_session(OWNER, target)
     state = (await repo.get_command(OWNER, target, sent.request_id))["state"]
     assert state == ("dispatched" if released else "rejected")
+
+
+async def _same_mac_native_send(transport):
+    from tests.unit.services.test_local_session_relay import MAC, registration
+    from tests.unit.services.test_local_sessions import command
+
+    source = await start(transport)
+    target = (await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-2")))[
+        "sessionId"
+    ]
+    sent = await service.submit_command(
+        ALICE,
+        None,
+        target,
+        command(service),
+        source_session_id=source,
+        source_generation="generation-1",
+        source_turn_id="turn-1",
+        native_hop=1,
+        source_pairing=(ALICE.user_id, MAC),
+    )
+    return source, target, sent.request_id
+
+
+@pytest.mark.asyncio
+async def test_a_released_send_still_fails_when_the_targets_generation_changed(db, wired):
+    from tests.unit.services.test_local_session_relay import registration
+
+    transport = wired
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    _, target, request_id = await _same_mac_native_send(transport)
+    key = {"pk": repo.session_pk(OWNER, target), "sk": f"COMMAND#{request_id}"}
+    db[0].update_item(Key=key, UpdateExpression="SET releasedAt = :one", ExpressionAttributeValues={":one": 1})
+    await relay(transport).handle_message(
+        "conn-1",
+        {
+            **registration(nativeConversationId="thread-2", generation="generation-2"),
+            "previousGeneration": "generation-1",
+        },
+    )
+    await relay(transport).dispatch_session(OWNER, target)
+    assert (await repo.get_command(OWNER, target, request_id))["state"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_a_held_send_is_delivered_after_its_senders_session_went_offline(db, wired):
+    """A teammate who closed their terminal before the owner allowed them still gets the message there."""
+    transport = wired
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    source, target, request_id = await _same_mac_native_send(transport)
+    # Bob's session wrote it and Alice has not allowed Bob: the shape session_send stores.
+    key = {"pk": repo.session_pk(OWNER, target), "sk": f"COMMAND#{request_id}"}
+    db[0].update_item(
+        Key=key,
+        UpdateExpression="SET #s = :held, heldFor = :bob, sourceHumanUserId = :bob, deliverBy = :later",
+        ExpressionAttributeNames={"#s": "state"},
+        ExpressionAttributeValues={":held": "awaiting_approval", ":bob": BOB.user_id, ":later": 2**40},
+    )
+    # The sending session goes offline.
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, source), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :zero, #s = :offline",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":zero": 0, ":offline": "offline"},
+    )
+    transport[3].clear()
+    with patch("core.services.messaging.human_display_name", _name):
+        await service.request_join(BOB, target)
+    await decide(ALICE, target, BOB.user_id, "allow", [])
+    assert (await repo.get_command(OWNER, target, request_id))["state"] == "dispatched"
+    assert _delivered(transport) == [request_id]
+
+
+def _listed(owner="user_alice", **over):
+    return SimpleNamespace(
+        **{
+            "shared": True,
+            "session_id": str(uuid.uuid4()),
+            "provider": "codex",
+            "display_title": None,
+            "title": "Target",
+            "cwd_name": "repo",
+            "status": "idle",
+            "capabilities_verified": True,
+            "capabilities": SimpleNamespace(send_mode="queue"),
+            "control_unavailable_reason": None,
+            "human_user_id": owner,
+            "team_control": False,
+            "allowed_senders": [],
+            **over,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_find_sessions_and_list_targets_offer_held_sends_and_say_they_wait(monkeypatch):
+    from core.services import hosted_mcp
+
+    stranger, allowed, mine = _listed(), _listed(allowed_senders=[BOB.user_id]), _listed(owner=BOB.user_id)
+    only_me = _listed(owner=BOB.user_id, shared=False)
+    sessions = [stranger, allowed, mine, only_me]
+    monkeypatch.setattr(
+        native_session_tools.local_sessions,
+        "list_workspace_sessions",
+        AsyncMock(return_value=SimpleNamespace(sessions=sessions)),
+    )
+    monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Someone"))
+    monkeypatch.setattr(native_session_tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=[])))
+
+    found = (await hosted_mcp.sessions_for(BOB))["sessions"]
+    assert [(s["canSend"], s["needsOwnerOk"]) for s in found] == [
+        (True, True),
+        (True, False),
+        (True, False),
+        (False, False),
+    ]
+    targets = (await native_session_tools._targets(BOB, "source"))["sessions"]
+    assert [(t["destination"], t["needsOwnerOk"]) for t in targets] == [
+        (f"session:{stranger.session_id}", True),
+        (f"session:{allowed.session_id}", False),
+        (f"session:{mine.session_id}", False),
+    ]
+    listed = {tool.name: tool for tool in await hosted_mcp.mcp.list_tools()}
+    assert "needsOwnerOk" in listed["find_sessions"].description

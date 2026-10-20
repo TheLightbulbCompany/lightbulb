@@ -1315,20 +1315,26 @@ class LocalSessionRelay:
         owner, sid = row["ownerId"], row["sessionId"]
         native_actor = (command.get("actor") or {}).get("kind") == "session"
         source_checks, source_pairing = [], None
-        if native_actor:
+        # A send held for the owner's Allow (``release_held``) is delivered on that Allow, long after
+        # the turn that wrote it: the owner's decision stands in for the source's turn, its 30 s
+        # window and its liveness (a teammate who closed their terminal still gets it delivered).
+        # Only the target's checks below and the sender still being in the workspace apply.
+        if native_actor and command.get("releasedAt") is not None:
+            sender = command["sourceHumanUserId"]
+            if not ((await store.get_user_stream(owner, sender)) or {}).get("active"):
+                raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sender is no longer in this workspace.")
+            auth = sessions.AuthContext(user_id=sender, org_id=owner if owner != sender else None)
+        elif native_actor:
             source = await repo.get_session(owner, command["actor"]["id"])
-            # A send held for the owner's Allow (``release_held``) is delivered on that Allow, long
-            # after the turn that wrote it: the owner's decision stands in for the turn's 30 s window.
-            released = command.get("releasedAt") is not None
             if (
                 not source
                 or source.get("humanUserId") != command.get("sourceHumanUserId")
                 or source.get("generation") != command.get("sourceSessionGeneration")
-                or (not released and source.get("activeTurnId") != command.get("sourceTurnId"))
+                or source.get("activeTurnId") != command.get("sourceTurnId")
                 or source.get("unshared")
                 or source.get("endedAt") is not None
                 or int(source.get("onlineUntil") or 0) < int(time.time())
-                or (not released and int(command.get("invocationExpiresAt") or 0) <= int(time.time()))
+                or int(command.get("invocationExpiresAt") or 0) <= int(time.time())
             ):
                 raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Source native session is no longer authorized.")
             source_connection, source_enrollment = await self.connect(source.get("connectionId") or "")

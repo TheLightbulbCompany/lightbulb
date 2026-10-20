@@ -151,12 +151,14 @@ async def _source(device: MachineIdentity, request: NativeToolRequest) -> dict:
 
 def sendable(session: local_sessions.LocalSession, user_id: str) -> bool:
     """A live, verified session this person may send a follow-up into (both MCP servers list this).
-    Not an Only me session, its owner's included: the Mac carries out nothing but End for one."""
-    return (
-        local_sessions.live_for_input(session)
-        and (session.human_user_id == user_id or session.team_control or user_id in session.allowed_senders)
-        and session.shared
-    )
+    Not an Only me session, its owner's included: the Mac carries out nothing but End for one.
+    A send from someone its owner has not allowed waits for the owner (``needs_owner_ok``)."""
+    return local_sessions.live_for_input(session) and session.shared
+
+
+def needs_owner_ok(session: local_sessions.LocalSession, user_id: str) -> bool:
+    """True when this person's send is held until the session's owner allows them (agent network §6)."""
+    return not (session.human_user_id == user_id or session.team_control or user_id in session.allowed_senders)
 
 
 async def _targets(auth: AuthContext, source_id: str) -> dict:
@@ -185,7 +187,13 @@ async def _targets(auth: AuthContext, source_id: str) -> dict:
         if len(people) >= 20:
             break
     session_rows = [
-        {"destination": f"session:{s.session_id}", "provider": s.provider, "title": s.title, "status": s.status}
+        {
+            "destination": f"session:{s.session_id}",
+            "provider": s.provider,
+            "title": s.title,
+            "status": s.status,
+            "needsOwnerOk": needs_owner_ok(s, auth.user_id),
+        }
         for s in sessions
         if str(s.session_id) != source_id and sendable(s, auth.user_id)
     ][:20]

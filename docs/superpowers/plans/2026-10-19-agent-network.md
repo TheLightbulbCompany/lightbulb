@@ -219,7 +219,8 @@ def test_approve_without_org_is_409_workspace_required(...):
 - Modify: the Activity/Needs-you renderer that shows `subtype: "join_request"` items (find it from `useActivity.ts`), and `LocalSessionPanel.tsx` (pending asks above the composer)
 - Test: the renderer's test file and `packages/shared/src/messaging/client.test.ts`
 
-- [ ] **Step 1: Failing tests** — an Activity item with `request: "agent_message"` renders "<agentName> wants to message <session>", the text preview, and **Send** / **Decline**; clicking Send calls `decideAgentAsk(sid, rid, "send")`; a 409 shows the current state instead of an error; the session panel lists pending asks with the same buttons.
+- [ ] **Step 1: Failing tests** — an Activity item with `request: "agent_message"` renders "<agentName> wants to message <session>", the text preview, and **Send** / **Decline** / **Always allow**; clicking Send calls `decideAgentAsk(sid, rid, "send")`; **Always allow** sends it AND sets the existing pref `agentSendWithoutAsking: true` (`PUT /users/me/prefs`, the same switch as Settings → Desktop "Agents can message my sessions without asking"); a 409 shows the current state instead of an error; the session panel shows pending asks as a strip directly above the terminal view with the same three buttons (the app's terminal view drops mouse clicks by design, `SessionTerminalView.tsx:57`, so the band's own buttons cannot be clicked there).
+- Out of scope: per-agent "always allow" memory (owner may ask later).
 - [ ] **Step 2: Run; FAIL.**
 - [ ] **Step 3: Implement**; reuse the join-request item's layout and buttons.
 - [ ] **Step 4: `pnpm vitest run` on the touched tests + `cd packages/shared && pnpm test`; PASS.**

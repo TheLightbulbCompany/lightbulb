@@ -2764,9 +2764,19 @@ async def _change_session(
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
 
-async def request_join(auth: AuthContext, session_id: str, *, held_text: str | None = None) -> LocalSession:
+async def request_join(auth: AuthContext, session_id: str) -> LocalSession:
     """A teammate asks the owner to let them send. Asking again while pending reminds the owner at
     most once per ASK_AGAIN_AFTER_S and otherwise changes nothing; a declined person may ask again."""
+    row, filed = await file_join_request(auth, session_id)
+    if filed:
+        await _notify_join_request(row, auth.user_id)
+        await _push_presence(row)
+    return _session_public(row, auth.user_id)
+
+
+async def file_join_request(auth: AuthContext, session_id: str) -> tuple[dict, bool]:
+    """The ask alone, with nothing said: (the session, whether this call filed or reminded it).
+    A held session send says it itself once its command exists (``announce_held_send``)."""
     me = auth.user_id
 
     def change(row: dict) -> dict | None:
@@ -2789,9 +2799,20 @@ async def request_join(auth: AuthContext, session_id: str, *, held_text: str | N
     row, audit = await _change_session(auth, session_id, change, "join_requested", None)
     if audit is not None:
         _capture_growth(row, "session_join_requested", me)
-        await _notify_join_request(row, me, held_text=held_text)
-        await _push_presence(row)
-    return _session_public(row, me)
+    return row, audit is not None
+
+
+async def announce_held_send(
+    owner: str, session_id: str, requester: str, text: str, request_id: str, *, filed: bool
+) -> None:
+    """Each held session send tells the owner, after its command is stored: the presence push
+    then carries the message the Mac's notification shows, and a second message is announced
+    too. Only the send that filed the ask adds its Needs-you item; the rest are the same ask."""
+    row = await repo.get_session(owner, session_id)
+    if row is None or (row.get("joinRequests") or {}).get(requester, {}).get("state") != "pending":
+        return
+    await _notify_join_request(row, requester, held_text=text, held_request_id=request_id, activity=filed)
+    await _push_presence(row)
 
 
 async def decide_join(
@@ -3093,7 +3114,15 @@ def join_request_title(name: str, row: dict, *, again: bool = False) -> str:
     return _request_title(name, row, "join", again)
 
 
-async def _notify_join_request(row: dict, requester: str, *, kind: str = "join", held_text: str | None = None) -> None:
+async def _notify_join_request(
+    row: dict,
+    requester: str,
+    *,
+    kind: str = "join",
+    held_text: str | None = None,
+    held_request_id: str | None = None,
+    activity: bool = True,
+) -> None:
     """The owner's "needs you" item, a live event and a push. Best effort, each on its own.
     ``kind="pickup"`` is the same item for a request to pick up (spec 2026-10-05-ask-to-pick-up)."""
     from core.services.local_session_relay import ACTIVITY_TTL_S
@@ -3123,25 +3152,26 @@ async def _notify_join_request(row: dict, requester: str, *, kind: str = "join",
     else:
         title = join_request_title(name, row, again=again)
         body = "Allow them to send follow-ups and answer prompts in this session."
-    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}"))
-    try:
-        await messaging_repo.put_activity_row(
-            {
-                "pk": messaging_repo.activity_pk(owner, human),
-                "sk": messaging_repo.activity_sk(created, f"session:{event_id}"),
-                "kind": "session",
-                "subtype": "join_request",
-                "sessionId": sid,
-                "requesterId": requester,
-                "requesterName": name,
-                "requestId": request_id,
-                "createdAt": created,
-                "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
-                **({"request": "pickup"} if pickup else {}),
-            }
-        )
-    except Exception:
-        logger.warning("Session join request activity row failed", exc_info=True)
+    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{held_request_id or request_id}"))
+    if activity:  # a later held send is the same ask: one Needs-you item
+        try:
+            await messaging_repo.put_activity_row(
+                {
+                    "pk": messaging_repo.activity_pk(owner, human),
+                    "sk": messaging_repo.activity_sk(created, f"session:{event_id}"),
+                    "kind": "session",
+                    "subtype": "join_request",
+                    "sessionId": sid,
+                    "requesterId": requester,
+                    "requesterName": name,
+                    "requestId": request_id,
+                    "createdAt": created,
+                    "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
+                    **({"request": "pickup"} if pickup else {}),
+                }
+            )
+        except Exception:
+            logger.warning("Session join request activity row failed", exc_info=True)
     if again:  # its own live event: clients drop one they have already seen
         event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}|{request['askedAt']}"))
     await _session_notice(

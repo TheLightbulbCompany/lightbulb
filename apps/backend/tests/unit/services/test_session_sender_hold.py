@@ -144,8 +144,10 @@ async def test_hosted_mcp_session_send_from_unallowed_person_is_held(monkeypatch
     monkeypatch.setattr(hosted_mcp, "_record_outcome", AsyncMock())
     authorize = AsyncMock(return_value=(target, {}))
     monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", authorize)
-    join = AsyncMock()
-    monkeypatch.setattr(native_session_tools.local_sessions, "request_join", join)
+    join = AsyncMock(return_value=(target, True))
+    monkeypatch.setattr(native_session_tools.local_sessions, "file_join_request", join)
+    announce = AsyncMock()
+    monkeypatch.setattr(native_session_tools.local_sessions, "announce_held_send", announce)
     submit = AsyncMock(return_value=SimpleNamespace(state="awaiting_approval"))
     monkeypatch.setattr(native_session_tools.local_sessions, "submit_command", submit)
     monkeypatch.setattr(native_session_tools.sessions_repo, "list_commands", AsyncMock(return_value=[]))
@@ -157,7 +159,8 @@ async def test_hosted_mcp_session_send_from_unallowed_person_is_held(monkeypatch
     result = await hosted_mcp.send_message("hi", uuid.uuid4(), session_id=sid)
     assert result["state"] == "awaiting_approval"
     authorize.assert_awaited_once_with(BOB, None, sid)  # a read, not owner_only
-    join.assert_awaited_once_with(BOB, sid, held_text="hi")
+    join.assert_awaited_once_with(BOB, sid)
+    announce.assert_awaited_once()  # after the command: the presence push then carries the message
     assert submit.await_args.kwargs["hold_for"] == BOB.user_id
 
 
@@ -521,16 +524,24 @@ async def test_release_reads_the_session_not_the_callers_decision(wired):
 
 
 @pytest.mark.asyncio
-async def test_a_held_send_is_announced_as_a_message_that_the_mac_answers(wired):
-    """The owner hears "wants to message", with the message, and the desktop window leaves the
-    banner to the Mac's own notification (it carries Allow and Decline)."""
+async def test_each_held_send_is_announced_as_a_message_after_its_command_is_stored(wired):
+    """The owner hears "wants to message", with each message, once its command exists (so the
+    presence push carries it to the Mac's notification), and the desktop window leaves the
+    banner to the Mac. A second message is announced too, without a second Needs-you item."""
     transport = wired
     sid = await start(transport)
     await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
-    notices = AsyncMock()
-    with patch.object(service, "_session_notice", notices):
-        await _send(BOB, sid, "held-copy", text="rebase on main please")
-    args, kwargs = notices.await_args
-    title, body = args[4], args[5]
-    assert "wants to message" in title and sid[:8] not in title
-    assert body == "rebase on main please" and kwargs == {"held": True}
+    notices, held_at_notice = AsyncMock(), []
+
+    async def presence(row):
+        held_at_notice.append(await _states(sid, BOB.user_id))
+
+    with patch.object(service, "_session_notice", notices), patch.object(service, "_push_presence", presence):
+        await _send(BOB, sid, "held-copy-1", text="rebase on main please")
+        await _send(BOB, sid, "held-copy-2", text="and run the tests")
+    assert [c.args[5] for c in notices.await_args_list] == ["rebase on main please", "and run the tests"]
+    assert all("wants to message" in c.args[4] and sid[:8] not in c.args[4] for c in notices.await_args_list)
+    assert all(c.kwargs == {"held": True} for c in notices.await_args_list)
+    assert held_at_notice[0] == ["awaiting_approval"]  # the command was stored before the push
+    rows = await messaging_repo._query(messaging_repo.activity_pk(OWNER, ALICE.user_id))
+    assert len([r for r in rows if r.get("subtype") == "join_request"]) == 1

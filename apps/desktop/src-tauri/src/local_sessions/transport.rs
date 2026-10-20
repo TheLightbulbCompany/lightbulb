@@ -3816,6 +3816,9 @@ pub(super) mod tests {
         mirror.native.app = false;
         mirror.native.process.executable = bin.clone();
         mirror.native.holder = Some("01648c21".into()); // `lightbulb codex`: on the daemon, in a holder
+        let rollout = dir.path().join("rollout.jsonl"); // the send anchors at the rollout's end
+        fs::write(&rollout, "{}\n").unwrap();
+        mirror.native.transcript = Some(rollout);
         assert_eq!(mirror.native.terminal_reason(), None);
         let mut host = test_host(dir.path(), vec![("held", mirror)]);
         host.verify = recaptured;

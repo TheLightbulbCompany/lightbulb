@@ -2391,6 +2391,9 @@ impl Host {
             *why = if eligible { "native session unverified" } else { "stale generation, expired, stopping or not shared" };
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         };
+        // A fresh capture knows nothing of the holder Lightbulb runs the session in: that is the
+        // mirror's. Without it a held Codex reads as one off its daemon and every send is refused.
+        let native = NativeSession { holder: native.holder.clone().or_else(|| mirror.native.holder.clone()), ..native };
         if live && (native.provider != "codex" || native.status != "busy" || native.socket.is_none()
             || native.active_turn != cmd.expected_turn_id)
         {
@@ -3795,6 +3798,35 @@ pub(super) mod tests {
             "createdAt":at,"deliverBy":at + 30,"held":false,"providerMessageId":null}}), "alice").unwrap();
         assert_eq!(host.command(&send, Some(&anchor)).await.unwrap().outcome, "rejected");
         assert!(!dir.path().join("codex.args").exists(), "nothing was queued");
+    }
+
+    #[tokio::test]
+    async fn local_sessions_a_send_to_a_held_codex_is_queued_although_verification_drops_the_holder() {
+        // Verification recaptures the session, and a capture never names a holder.
+        fn recaptured(_: PathBuf, native: NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>> {
+            Box::pin(async move { Ok(NativeSession { holder: None, ..native }) })
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("codex");
+        fs::write(&bin, "#!/bin/sh\necho \"$@\" > \"$0.args\"\n").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut mirror = test_mirror("5eed000f-0000-4000-8000-00000000000f", "g1");
+        mirror.session_id = Some(SID.into());
+        mirror.native.app = false;
+        mirror.native.process.executable = bin.clone();
+        mirror.native.holder = Some("01648c21".into()); // `lightbulb codex`: on the daemon, in a holder
+        assert_eq!(mirror.native.terminal_reason(), None);
+        let mut host = test_host(dir.path(), vec![("held", mirror)]);
+        host.verify = recaptured;
+        let at = epoch_secs();
+        let anchor = ClockAnchor { server: at, round_trip: 0.0, at: Instant::now(), wall: SystemTime::now() };
+        let send = parse_command(&json!({"command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
+            "expectedTurnId":null,"sessionId":SID,"roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched",
+            "createdAt":at,"deliverBy":at + 30,"held":false,"providerMessageId":null}}), "alice").unwrap();
+        let _ = host.command(&send, Some(&anchor)).await;
+        let args = fs::read_to_string(dir.path().join("codex.args")).expect("the send was queued on the daemon");
+        assert!(args.starts_with("queue --thread"), "{args}");
     }
 
     #[test]

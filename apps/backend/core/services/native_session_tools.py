@@ -459,7 +459,7 @@ async def session_send(auth: AuthContext, target: dict, text: str, request_id: s
         # Agent network §6: someone the owner has not allowed asks to join, and the send waits
         # for the owner's Allow (allowing a person allows all of that person's agents).
         # After the loop check: a refused send files no ask.
-        await local_sessions.request_join(auth, session_id)
+        await local_sessions.request_join(auth, session_id, held_text=text)
         source = {**source, "hold_for": auth.user_id}
     receipt = await local_sessions.submit_command(auth, None, session_id, command, **source)
     try:

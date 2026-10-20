@@ -2209,7 +2209,7 @@ async def _file_ask(auth: AgentInvocation, row: dict, request: LocalSessionComma
     return _ask_receipt(ask)
 
 
-async def _settle_ask(ask: dict, status: str, user: str) -> bool:
+async def _settle_ask(ask: dict, status: str, user: str, *, conflict_retries: int = 2) -> bool:
     """pending -> ``status`` exactly once, freeing the agent's slot (``browser_extensions.settle_request``)."""
     now = int(time.time())
     table = messaging_repo._table().name
@@ -2232,9 +2232,15 @@ async def _settle_ask(ask: dict, status: str, user: str) -> bool:
             ]
         )
     except ClientError as exc:
-        if messaging_repo._is_cancelled(exc):
-            return False
-        raise
+        if not messaging_repo._is_cancelled(exc):
+            raise
+        # Two answers at once can both be cancelled as conflicting, which settles nothing: the
+        # second tries again, and only a failed condition (someone answered) is a loss.
+        if conflict_retries and any(
+            r.get("Code") == "TransactionConflict" for r in exc.response.get("CancellationReasons", [])
+        ):
+            return await _settle_ask(ask, status, user, conflict_retries=conflict_retries - 1)
+        return False
     return True
 
 
@@ -2330,7 +2336,7 @@ async def list_agent_asks(auth: AuthContext, session_id: str) -> list[AgentComma
 def agent_ask_title(ask: dict, row: dict) -> str:
     from core.services import notification_copy as copy
 
-    session = copy.line(row.get("displayTitle") or row.get("title"), 40) or row["sessionId"][:8]
+    session = copy.line(row.get("displayTitle") or row.get("title") or row.get("cwdName"), 40) or "a session"
     verb = "stop" if ask["kind"] == "interrupt" else "message"
     return f"{ask.get('agentName') or 'Your agent'} wants to {verb} {session}"
 
@@ -2758,7 +2764,7 @@ async def _change_session(
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
 
-async def request_join(auth: AuthContext, session_id: str) -> LocalSession:
+async def request_join(auth: AuthContext, session_id: str, *, held_text: str | None = None) -> LocalSession:
     """A teammate asks the owner to let them send. Asking again while pending reminds the owner at
     most once per ASK_AGAIN_AFTER_S and otherwise changes nothing; a declined person may ask again."""
     me = auth.user_id
@@ -2783,7 +2789,7 @@ async def request_join(auth: AuthContext, session_id: str) -> LocalSession:
     row, audit = await _change_session(auth, session_id, change, "join_requested", None)
     if audit is not None:
         _capture_growth(row, "session_join_requested", me)
-        await _notify_join_request(row, me)
+        await _notify_join_request(row, me, held_text=held_text)
         await _push_presence(row)
     return _session_public(row, me)
 
@@ -3075,7 +3081,7 @@ PICKUP_ALLOW_COPY = (
 def _request_title(name: str, row: dict, verb: str, again: bool) -> str:
     from core.services import notification_copy as copy
 
-    session = copy.line(row.get("displayTitle") or row.get("title"), 40) or row["sessionId"][:8]
+    session = copy.line(row.get("displayTitle") or row.get("title") or row.get("cwdName"), 40) or "a session"
     return f"{name} {'is still waiting' if again else 'wants'} to {verb} {session}"
 
 
@@ -3087,7 +3093,7 @@ def join_request_title(name: str, row: dict, *, again: bool = False) -> str:
     return _request_title(name, row, "join", again)
 
 
-async def _notify_join_request(row: dict, requester: str, *, kind: str = "join") -> None:
+async def _notify_join_request(row: dict, requester: str, *, kind: str = "join", held_text: str | None = None) -> None:
     """The owner's "needs you" item, a live event and a push. Best effort, each on its own.
     ``kind="pickup"`` is the same item for a request to pick up (spec 2026-10-05-ask-to-pick-up)."""
     from core.services.local_session_relay import ACTIVITY_TTL_S
@@ -3108,6 +3114,12 @@ async def _notify_join_request(row: dict, requester: str, *, kind: str = "join")
     elif request.get("outsider"):
         title = join_request_title(name, row, again=again)
         body = OUTSIDER_ALLOW_COPY
+    elif held_text is not None:
+        # A held session send (agent network §6): what waits is the message itself.
+        from core.services import notification_copy as copy
+
+        title = _request_title(name, row, "message", again)
+        body = copy.line(held_text, 140) or "Allow them to send follow-ups and answer prompts in this session."
     else:
         title = join_request_title(name, row, again=again)
         body = "Allow them to send follow-ups and answer prompts in this session."
@@ -3132,7 +3144,9 @@ async def _notify_join_request(row: dict, requester: str, *, kind: str = "join")
         logger.warning("Session join request activity row failed", exc_info=True)
     if again:  # its own live event: clients drop one they have already seen
         event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}|{request['askedAt']}"))
-    await _session_notice(owner, human, sid, "join_request", title, body, event_id)
+    await _session_notice(
+        owner, human, sid, "join_request", title, body, event_id, **({"held": True} if held_text is not None else {})
+    )
 
 
 async def _push_presence(row: dict) -> None:
@@ -3141,7 +3155,9 @@ async def _push_presence(row: dict) -> None:
     await session_presence.push(row)
 
 
-async def _session_notice(owner: str, user: str, sid: str, state: str, title: str, body: str, event_id: str) -> None:
+async def _session_notice(
+    owner: str, user: str, sid: str, state: str, title: str, body: str, event_id: str, *, held: bool = False
+) -> None:
     """A live event on ``user``'s own channel and a push, each best effort on its own."""
     from core.services.live_events import get_live_event_publisher
     from core.services.messaging import make_live_event
@@ -3154,7 +3170,8 @@ async def _session_notice(owner: str, user: str, sid: str, state: str, title: st
             user,
             make_live_event(
                 "workspace.session.attention",
-                {"sessionId": sid, "state": state, "push": push},
+                # held: the session's Mac posts its own notification, with Allow and Decline.
+                {"sessionId": sid, "state": state, "push": push, **({"held": True} if held else {})},
                 event_id=event_id,
             ),
         )

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.repositories import local_sessions_repo as repo
+from core.repositories import local_sessions_repo as repo, messaging_repo
 from core.services import local_sessions as service
 from core.services.messaging import ApiProblem
 from tests.unit.services.test_local_sessions import (  # noqa: F401 -- db is a fixture
@@ -30,6 +30,15 @@ def test_paperclip_grant_round_trips_and_keeps_a_strict_shape(monkeypatch):
     import jwt
     from core.services import local_session_grants as grants
 
+    # DynamoDB runs a transaction atomically; moto runs two at once and one can undo the other's
+    # write (the two-Sends race below failed 1 run in ~18). One at a time, as DynamoDB orders them.
+    one_at_a_time, transact = asyncio.Lock(), messaging_repo._transact
+
+    async def atomic(items):
+        async with one_at_a_time:
+            return await transact(items)
+
+    monkeypatch.setattr(messaging_repo, "_transact", atomic)
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", KEY)
     hermes_key = f"paperclip:company:c-1:agent:{AGENT}:run:run-1"
     token = grants.mint_paperclip(OWNER, AGENT, hermes_key, "run-1", None)
@@ -532,3 +541,29 @@ async def test_a_listed_ask_names_its_agent(asks):
     await service.agent_command(asks.grant(), sid, command(service, requestId="request-named"))
     listed = await service.list_agent_asks(ALICE, sid)
     assert [a.model_dump(by_alias=True, mode="json")["agentName"] for a in listed] == ["Friday"]
+
+
+@pytest.mark.asyncio
+async def test_an_answer_cancelled_only_as_a_conflict_tries_again(asks, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    sid = await registered()
+    await service.agent_command(asks.grant(), sid, command(service, requestId="request-conflict"))
+    real, calls = messaging_repo._transact, []
+
+    async def conflicts_once(items):
+        calls.append(items)
+        if len(calls) == 1:
+            raise ClientError(
+                {
+                    "Error": {"Code": "TransactionCanceledException"},
+                    "CancellationReasons": [{"Code": "TransactionConflict"}, {"Code": "None"}],
+                },
+                "TransactWriteItems",
+            )
+        return await real(items)
+
+    monkeypatch.setattr(messaging_repo, "_transact", conflicts_once)
+    ask = await service._get_ask(OWNER, sid, "request-conflict")
+    assert await service._settle_ask(ask, "declined", ALICE.user_id) and len(calls) == 2
+    assert (await service._get_ask(OWNER, sid, "request-conflict"))["status"] == "declined"

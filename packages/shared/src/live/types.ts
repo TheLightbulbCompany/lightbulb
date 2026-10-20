@@ -223,6 +223,8 @@ export type SessionAttention = {
    *  the owner answered YOUR request to join theirs. */
   state: "waiting" | "finished" | "join_request" | "join_allowed" | "join_declined";
   push: { title: string; body: string; data: { source: "session"; sessionId: string } };
+  /** A held session send: the session's Mac posts its own notification, with Allow and Decline. */
+  held?: boolean;
 };
 const SCREEN_KINDS = new Set<string>(["snapshot", "output", "history"]);
 const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "join_request", "join_allowed", "join_declined"]);

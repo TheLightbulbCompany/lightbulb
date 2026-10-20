@@ -94,6 +94,8 @@ export function MessageNotifications(props: {
         const watching = current.current.activeSessionId === sessionId &&
           document.visibilityState === "visible" && document.hasFocus();
         if (watching) return;
+        // ponytail: assumes the session runs on this Mac; a second Mac's window shows nothing.
+        if (event.payload.held && isDesktopApp()) return;
         capture("notification_shown", { channel: "web", kind: `session_${state}` });
         const onClick = () => {
           capture("notification_clicked", { channel: "web", kind: `session_${state}` });

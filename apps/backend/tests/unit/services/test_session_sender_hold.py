@@ -157,7 +157,7 @@ async def test_hosted_mcp_session_send_from_unallowed_person_is_held(monkeypatch
     result = await hosted_mcp.send_message("hi", uuid.uuid4(), session_id=sid)
     assert result["state"] == "awaiting_approval"
     authorize.assert_awaited_once_with(BOB, None, sid)  # a read, not owner_only
-    join.assert_awaited_once_with(BOB, sid)
+    join.assert_awaited_once_with(BOB, sid, held_text="hi")
     assert submit.await_args.kwargs["hold_for"] == BOB.user_id
 
 
@@ -518,3 +518,19 @@ async def test_release_reads_the_session_not_the_callers_decision(wired):
     assert _delivered(transport) == []
     hints = [h for h in transport[4] if "workspace.sessions.changed" in str(h)]
     assert hints  # the sender's client learns from the hint, without polling
+
+
+@pytest.mark.asyncio
+async def test_a_held_send_is_announced_as_a_message_that_the_mac_answers(wired):
+    """The owner hears "wants to message", with the message, and the desktop window leaves the
+    banner to the Mac's own notification (it carries Allow and Decline)."""
+    transport = wired
+    sid = await start(transport)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    notices = AsyncMock()
+    with patch.object(service, "_session_notice", notices):
+        await _send(BOB, sid, "held-copy", text="rebase on main please")
+    args, kwargs = notices.await_args
+    title, body = args[4], args[5]
+    assert "wants to message" in title and sid[:8] not in title
+    assert body == "rebase on main please" and kwargs == {"held": True}

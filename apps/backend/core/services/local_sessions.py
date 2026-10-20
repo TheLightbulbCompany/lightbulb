@@ -1868,6 +1868,17 @@ async def submit_command(
             >= OFFLINE_SEND_PENDING_LIMIT
         ):
             raise ApiProblem("LOCAL_SESSION_QUEUE_FULL", "This session has too many waiting follow-ups.")
+        if (
+            held
+            and sum(
+                1
+                for item in await repo.list_commands(owner, session_id)
+                if item.get("heldFor") == hold_for and item["state"] == "awaiting_approval" and item["deliverBy"] > now
+            )
+            >= OFFLINE_SEND_PENDING_LIMIT
+        ):
+            # Held rows are outside the owner's backlog count above, so they get their own bound.
+            raise ApiProblem("LOCAL_SESSION_QUEUE_FULL", "Too many messages are waiting for the owner's answer.")
         receipt = {
             **payload,
             # Backend-only: dispatch re-runs the approval check. No model field names this key,
@@ -2853,7 +2864,9 @@ async def release_held(owner: str, session_id: str, user_id: str, decision: Lite
         settled.update(updatedAt=now, revision=str(uuid.uuid4()))
         if decision == "allow":
             # The ask's 24 h wait is over: from now on it has the ordinary 30 s to reach the Mac.
-            settled.update(state="pending", deliverBy=now + 30, releasedAt=now)
+            # An offline-queued one keeps waiting for the target's Mac, as it would have unheld.
+            wait = OFFLINE_SEND_SECONDS if command.get("offlineIdentity") else 30
+            settled.update(state="pending", deliverBy=now + wait, releasedAt=now)
         else:
             settled["state"] = "rejected"
         try:

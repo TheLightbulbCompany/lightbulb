@@ -3,6 +3,7 @@
 Real Moto transactions through the relay, as in the team-control tests.
 """
 
+import time
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -190,6 +191,123 @@ async def test_a_released_native_send_outlives_the_turn_that_wrote_it(db, wired,
     await relay(transport).dispatch_session(OWNER, target)
     state = (await repo.get_command(OWNER, target, sent.request_id))["state"]
     assert state == ("dispatched" if released else "rejected")
+    if released:
+        # What the Mac receives: its own `authorized_at` refuses a session actor past this.
+        (envelope,) = _envelopes(transport, sent.request_id)
+        assert envelope["invocationExpiresAt"] > time.time()
+
+
+def _envelopes(transport, request_id):
+    return [
+        body["command"]
+        for _, body in transport[3]
+        if body["type"] == "local.session.command" and body["command"]["requestId"] == request_id
+    ]
+
+
+async def _hold_for_bob(db, target, request_id, **extra):
+    """Rewrite a native send into the shape session_send stores for an unallowed Bob."""
+    key = {"pk": repo.session_pk(OWNER, target), "sk": f"COMMAND#{request_id}"}
+    sets = ", ".join(f"{k} = :{k}" for k in extra)
+    db[0].update_item(
+        Key=key,
+        UpdateExpression="SET #s = :held, heldFor = :bob, sourceHumanUserId = :bob, deliverBy = :later"
+        + (", " + sets if sets else ""),
+        ExpressionAttributeNames={"#s": "state"},
+        ExpressionAttributeValues={
+            ":held": "awaiting_approval",
+            ":bob": BOB.user_id,
+            ":later": int(time.time()) + service.ASK_TTL_S,
+            **{f":{k}": v for k, v in extra.items()},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_send_allowed_a_minute_later_reaches_the_mac_unexpired(db, wired):
+    from tests.unit.services.test_local_session_relay import heartbeat
+
+    transport = wired
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    _, target, request_id = await _same_mac_native_send(transport)
+    await _hold_for_bob(db, target, request_id)
+    later = time.time() + 60
+    with patch("time.time", return_value=later):
+        await relay(transport).handle_message("conn-1", heartbeat(target))
+        transport[3].clear()
+        with patch("core.services.messaging.human_display_name", _name):
+            await service.request_join(BOB, target)
+        await decide(ALICE, target, BOB.user_id, "allow", [])
+    (envelope,) = _envelopes(transport, request_id)
+    assert envelope["invocationExpiresAt"] > later
+
+
+@pytest.mark.asyncio
+async def test_an_offline_queued_session_send_reaches_the_mac_unexpired_after_reconnect(db, wired):
+    from tests.unit.services.test_local_session_relay import MAC, connect, registration
+    from tests.unit.services.test_local_sessions import command
+
+    transport = wired
+    source = await start(transport)
+    target = (await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-2")))[
+        "sessionId"
+    ]
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, target), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    sent = await service.submit_command(
+        ALICE,
+        None,
+        target,
+        command(service),
+        source_session_id=source,
+        source_generation="generation-1",
+        source_turn_id="turn-1",
+        native_hop=1,
+        source_pairing=(ALICE.user_id, MAC),
+    )
+    assert sent.state == "pending" and sent.deliver_by - sent.created_at == service.OFFLINE_SEND_SECONDS
+    connect(transport, "conn-2", "2000")
+    later = time.time() + 60
+    with patch("time.time", return_value=later):
+        await relay(transport).handle_message("conn-2", registration(nativeConversationId="thread-2", status="idle"))
+    (envelope,) = _envelopes(transport, sent.request_id)
+    assert envelope["invocationExpiresAt"] > later
+
+
+@pytest.mark.asyncio
+async def test_allowing_an_offline_queued_held_send_keeps_the_offline_wait(db, wired):
+    transport = wired
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    _, target, request_id = await _same_mac_native_send(transport)
+    await _hold_for_bob(db, target, request_id, offlineIdentity={"deviceId": "x"})
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, target), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    now = int(time.time())
+    with patch("core.services.messaging.human_display_name", _name):
+        await service.request_join(BOB, target)
+    await decide(ALICE, target, BOB.user_id, "allow", [])  # the target's Mac is offline
+    row = await repo.get_command(OWNER, target, request_id)
+    assert row["state"] == "pending" and row["deliverBy"] >= now + service.OFFLINE_SEND_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_held_sends_are_capped_per_sender_and_target(wired):
+    from core.services.messaging import ApiProblem
+
+    transport = wired
+    sid = await start(transport)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    with patch.object(service, "OFFLINE_SEND_PENDING_LIMIT", 2):
+        await _send(BOB, sid, "held-1")
+        await _send(BOB, sid, "held-2")
+        with pytest.raises(ApiProblem, match="waiting for the owner"):
+            await _send(BOB, sid, "held-3")
 
 
 async def _same_mac_native_send(transport):

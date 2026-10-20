@@ -1530,6 +1530,13 @@ class LocalSessionRelay:
                             "createdAt": sent_at,
                             "deliverBy": min(claim["deliverBy"], sent_at + DISPATCH_WINDOW_SECONDS),
                         }
+                    # A released or offline-queued session send outlived its source turn's 30 s
+                    # invocation window (``_dispatch_checks`` skips it); the Mac still checks it, so
+                    # it leaves with the dispatch window's own expiry.
+                    if (claim.get("actor") or {}).get("kind") == "session" and (
+                        claim.get("releasedAt") is not None or claim.get("offlineIdentity")
+                    ):
+                        window["invocationExpiresAt"] = window.get("deliverBy", claim["deliverBy"])
                     public = sessions._public(sessions.CommandReceipt, {**claim, **window}).model_dump(
                         mode="json", by_alias=True
                     )

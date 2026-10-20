@@ -2483,6 +2483,18 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_released_session_send_is_authorized_until_its_dispatch_window() {
+        // The backend re-stamps a released/offline-queued session send's expiry to its deliverBy.
+        let mut session = serde_json::to_value(command()).unwrap();
+        session.as_object_mut().unwrap().remove("actorUserId");
+        session["actor"] = json!({"kind":"session","id":"source-1"});
+        session["invocationExpiresAt"] = json!(130);
+        let cmd: Command = serde_json::from_value(session).unwrap();
+        assert!(cmd.authorized_at(125));
+        assert!(!cmd.authorized_at(130));
+    }
+
+    #[test]
     fn local_sessions_journal_anchors_only_future_ingress_and_preserves_terminal_receipt() {
         let dir = tempfile::tempdir().unwrap();
         let transcript = dir.path().join("history.jsonl");

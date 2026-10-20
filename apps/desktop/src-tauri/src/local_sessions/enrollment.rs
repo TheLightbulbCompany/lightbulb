@@ -578,6 +578,10 @@ pub(crate) fn launch_scope(state_dir: &Path) -> Result<String> {
 pub(crate) fn session_scope(state_dir: &Path) -> Result<PathBuf> {
     Ok(state_dir.join(launch_scope(state_dir)?))
 }
+/// `lightbulb join`'s write: the same private enrollment.json the window's enable writes.
+pub(crate) fn save_enrollment(state_dir: &Path, enrollment: &Enrollment) -> Result<()> {
+    private_write(&state_dir.join("enrollment.json"), enrollment)
+}
 /// The one Tauri wrapper: the window's local-sessions dir.
 pub(crate) fn state_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
     local_state_dir(&app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?)
@@ -1165,20 +1169,24 @@ pub(crate) fn remove_skill(state_dir: &Path, _home: &Path) -> Result<()> {
 /// launches, so a resume rewrites them rather than trusting the install that
 /// consent performed. Returns the failures for the status line; none is fatal.
 fn reassert(state_dir: &Path) -> Vec<String> {
+    match std::env::current_exe() {
+        Ok(executable) => reassert_exe(state_dir, &executable),
+        Err(_) => vec!["the desktop executable is unavailable".into()],
+    }
+}
+
+/// `reassert` naming `executable` in the hooks: the CLI passes the resolved app binary, since
+/// it may run through the `~/.local/bin/lightbulb` link, which is not a hook command.
+pub(crate) fn reassert_exe(state_dir: &Path, executable: &Path) -> Vec<String> {
     let home = match home() {
         Ok(home) => home,
         Err(reason) => return vec![reason],
     };
-    match std::env::current_exe() {
-        Ok(executable) => {
-            let mut notes = reassert_at(state_dir, &home, &executable);
-            if let Err(reason) = super::plugin::install(state_dir, &home) {
-                notes.push(format!("the lightbulb Claude plugin was not installed ({reason})"));
-            }
-            notes
-        }
-        Err(_) => vec!["the desktop executable is unavailable".into()],
+    let mut notes = reassert_at(state_dir, &home, executable);
+    if let Err(reason) = super::plugin::install(state_dir, &home) {
+        notes.push(format!("the lightbulb Claude plugin was not installed ({reason})"));
     }
+    notes
 }
 
 fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> {

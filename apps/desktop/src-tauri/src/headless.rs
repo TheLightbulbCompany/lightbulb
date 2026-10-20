@@ -182,9 +182,225 @@ pub fn install_launch_agent(exe: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Boots out and removes the launch agent. Absent is fine.
+pub fn uninstall_launch_agent() -> io::Result<()> {
+    let path = launch_agent_path();
+    let _ = std::process::Command::new("/bin/launchctl")
+        .arg("bootout")
+        .arg(format!("gui/{}", unsafe { libc::getuid() }))
+        .arg(&path)
+        .status();
+    match fs::remove_file(&path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// This Mac's name for the approver: `scutil --get ComputerName`, else `hostname`; at most 64
+/// printable characters (the backend's limit).
+fn machine_name() -> String {
+    let run = |cmd: &str, args: &[&str]| {
+        std::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .filter(|s| !s.is_empty())
+    };
+    run("/usr/sbin/scutil", &["--get", "ComputerName"])
+        .or_else(|| run("/bin/hostname", &[]))
+        .unwrap_or_else(|| "Mac".into())
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(64)
+        .collect()
+}
+
+fn open_browser(url: &str) {
+    let _ = std::process::Command::new("/usr/bin/open").arg(url).status();
+}
+
+async fn post(client: &reqwest::Client, url: String, body: serde_json::Value) -> Result<serde_json::Value, String> {
+    let resp = client.post(url).json(&body).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("{status}: {}", resp.text().await.unwrap_or_default()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+/// The browser handoff: start, show the code, poll until approved or `expiresIn`, then write
+/// pair_state.json and enrollment.json in the window's shapes. Returns the line to print.
+pub(crate) async fn join_at(
+    api: &str,
+    data: &Path,
+    mac: &crate::keychain::DeviceIdentity,
+    cli: &crate::keychain::DeviceIdentity,
+    machine: &str,
+    open: fn(&str),
+) -> Result<String, String> {
+    use serde_json::json;
+    let api = api.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+    let start = post(&client, format!("{api}/api/v1/auth/device/start"), json!({
+        "tauriMacPubKey": mac.public_key_pem, "cliPubKey": cli.public_key_pem, "machineName": machine,
+    }))
+    .await
+    .map_err(|e| format!("Could not start: {e}"))?;
+    let (Some(code), Some(user_code), Some(verify_url)) =
+        (start["code"].as_str(), start["userCode"].as_str(), start["verifyUrl"].as_str())
+    else {
+        return Err("Could not start: unexpected reply".into());
+    };
+    println!("Open {verify_url} and enter {user_code}");
+    open(verify_url);
+    let interval = Duration::from_secs_f64(start["interval"].as_f64().unwrap_or(5.0).max(0.0));
+    let deadline = Instant::now() + Duration::from_secs_f64(start["expiresIn"].as_f64().unwrap_or(600.0).max(0.0));
+    let result = loop {
+        if Instant::now() >= deadline {
+            return Err("The code expired. Run `lightbulb join` again.".into());
+        }
+        // A failed poll (network, 5xx) is retried until the deadline.
+        if let Ok(reply) = post(&client, format!("{api}/api/v1/auth/device/poll"), json!({ "code": code })).await {
+            match reply["status"].as_str() {
+                Some("approved") => break reply,
+                Some("expired") => return Err("The code expired. Run `lightbulb join` again.".into()),
+                _ => {}
+            }
+        }
+        tokio::time::sleep(interval).await;
+    };
+    let pair: crate::pair_client::PairResponse =
+        serde_json::from_value(result["pair"].clone()).map_err(|e| format!("Unexpected pair reply: {e}"))?;
+    let state = crate::pair_state::PairState::from_pair_response(
+        &pair,
+        machine,
+        // What the approve paired with: every switch off.
+        Some(crate::pair_client::DesktopPermissions { screen: false, shell: false, browser: false, files: false }),
+    );
+    if !state.matches_identities(&mac.public_key_pem, &cli.public_key_pem) {
+        return Err("The server paired other keys than this Mac's. Run `lightbulb join` again.".into());
+    }
+    let e = &result["enrollment"];
+    let human = e["humanUserId"].as_str().or(result["humanUserId"].as_str()).unwrap_or_default();
+    if e["ownerId"] != pair.owner_id || e["deviceId"] != pair.device_id_mac || e["enabled"] != true || human.is_empty() {
+        return Err("Unexpected enrollment reply. Run `lightbulb join` again.".into());
+    }
+    let enrollment = crate::local_sessions::Enrollment {
+        owner_id: pair.owner_id.clone(),
+        human_user_id: human.to_owned(),
+        device_id: pair.device_id_mac.clone(),
+        gateway_url: pair.gateway_url.clone(),
+        enabled: true,
+        paused: false,
+        server_revision: e["revision"].as_str().map(str::to_owned),
+        remote_disabled: false,
+        attempt: None,
+    };
+    // Pair first: `serve` starts on an enrollment change and needs the pair already there.
+    crate::pair_state::save(data, &state)?;
+    let dir = local_state_dir(data)?;
+    crate::local_sessions::enrollment::save_enrollment(&dir, &enrollment)?;
+    Ok(match (result["name"].as_str(), result["workspace"].as_str()) {
+        (Some(name), Some(workspace)) => format!("Connected as {name} in {workspace}."),
+        _ => "Connected.".into(),
+    })
+}
+
+fn home_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+}
+
+/// `lightbulb join`: pair this Mac from the browser, then install everything the window's
+/// enable does and start the service. The only headless path that creates Keychain keys.
+pub fn join() -> i32 {
+    let run = || -> Result<(), String> {
+        let keys = |slot| crate::keychain::load_or_generate(slot, crate::KEYCHAIN_SERVICE);
+        let mac = keys(crate::keychain::KeychainSlot::Mac)?;
+        let cli = keys(crate::keychain::KeychainSlot::Cli)?;
+        let data = app_data_dir();
+        let line = tauri::async_runtime::block_on(join_at(
+            crate::LIGHTBULB_API_BASE, &data, &mac, &cli, &machine_name(), open_browser,
+        ))?;
+        let exe = app_exe()?;
+        setup_at(&local_state_dir(&data)?, &exe);
+        let home = home_dir();
+        crate::shell_integration::set(&home, true)?;
+        match crate::cli::link_command(&exe, &home) {
+            Ok(Some(path_line)) => println!("Add ~/.local/bin to your PATH: {path_line}"),
+            Ok(None) => {}
+            Err(e) => println!("Note: {e}"),
+        }
+        install_launch_agent(&exe).map_err(|e| format!("Could not start the service: {e}"))?;
+        println!("{line}");
+        Ok(())
+    };
+    report(run())
+}
+
+/// The app binary itself, never the `~/.local/bin/lightbulb` link this may run through: hooks
+/// and the launch agent name it, and run through the link it would parse as a `lightbulb` command.
+fn app_exe() -> Result<PathBuf, String> {
+    std::env::current_exe()
+        .and_then(fs::canonicalize)
+        .map_err(|e| format!("this program's path: {e}"))
+}
+
+fn setup_at(dir: &Path, exe: &Path) {
+    for note in crate::local_sessions::enrollment::reassert_exe(dir, exe) {
+        println!("Note: {note}");
+    }
+}
+
+/// `lightbulb setup`: hooks, the MCP entry and the skill, for every installed agent.
+pub fn setup() -> i32 {
+    let run = || -> Result<(), String> {
+        setup_at(&local_state_dir(&app_data_dir())?, &app_exe()?);
+        println!("Set up Claude Code and Codex for Lightbulb.");
+        Ok(())
+    };
+    report(run())
+}
+
+/// `lightbulb share on|off`: the "Share every new session" shell block.
+pub fn share(on: bool) -> i32 {
+    let result = crate::shell_integration::set(&home_dir(), on);
+    if result.is_ok() {
+        println!("Share every new session: {}.", if on { "on" } else { "off" });
+    }
+    report(result)
+}
+
+/// `lightbulb leave`: stop and remove the service and turn `share` off. The Mac stays paired.
+pub fn leave() -> i32 {
+    let result = uninstall_launch_agent()
+        .map_err(|e| format!("Could not remove the service: {e}"))
+        .and_then(|()| crate::shell_integration::set(&home_dir(), false));
+    if result.is_ok() {
+        println!("Stopped the Lightbulb service and turned sharing off. This Mac is still paired: disconnect it in the Lightbulb app to unpair it.");
+    }
+    report(result)
+}
+
+fn report<E: std::fmt::Display>(result: Result<(), E>) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("lightbulb: {e}");
+            1
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -285,6 +501,89 @@ mod tests {
             next_backoff(Duration::from_secs(60)),
             Duration::from_secs(60)
         );
+    }
+
+    fn no_browser(_: &str) {}
+
+    async fn device_server(expires_in: f64, approved: Option<Value>) -> wiremock::MockServer {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let server = wiremock::MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/device/start"))
+            .and(body_partial_json(json!({"machineName":"Test Mac"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code":"c0de","userCode":"ABCD-EFGH","verifyUrl":"https://x/auth/connect-machine?code=ABCD-EFGH",
+                "interval":0.05,"expiresIn":expires_in})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/device/poll"))
+            .and(body_partial_json(json!({"code":"c0de"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status":"pending"})))
+            .up_to_n_times(if approved.is_some() { 2 } else { u64::MAX })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        if let Some(body) = approved {
+            Mock::given(method("POST"))
+                .and(path("/api/v1/auth/device/poll"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .with_priority(2)
+                .mount(&server)
+                .await;
+        }
+        server
+    }
+
+    #[test]
+    fn join_writes_state_from_poll_result() {
+        tauri::async_runtime::block_on(async {
+            let mac = crate::keychain::generate_keypair();
+            let cli = crate::keychain::generate_keypair();
+            let mac_id = crate::node_client::derive_device_id(&mac.public_key_pem).unwrap();
+            let cli_id = crate::node_client::derive_device_id(&cli.public_key_pem).unwrap();
+            let server = device_server(10.0, Some(json!({"status":"approved",
+                "pair":{"gatewayUrl":"wss://ws","relayUrl":"wss://bv/api/v1/gateway/ws","gatewayToken":"",
+                    "ownerId":"org_1","deviceIdMac":mac_id,"deviceIdCli":cli_id,"commandsMac":[],"commandsCli":[]},
+                "enrollment":{"deviceId":mac_id,"humanUserId":"user_1","cliDeviceId":cli_id,"ownerId":"org_1",
+                    "enabled":true,"revision":"rev-1"},
+                "humanUserId":"user_1"}))).await;
+            let data = tempfile::tempdir().unwrap();
+            let line = join_at(&server.uri(), data.path(), &mac, &cli, "Test Mac", no_browser).await.unwrap();
+            assert_eq!(line, "Connected.");
+            let pair = crate::pair_state::load(data.path()).expect("pair_state.json in the window's shape");
+            assert_eq!((pair.owner_id.as_str(), pair.device_id_mac.as_str()), ("org_1", mac_id.as_str()));
+            assert_eq!(pair.relay_url, "wss://bv/api/v1/gateway/ws");
+            assert_eq!(pair.display_name, "Test Mac");
+            assert!(pair.matches_identities(&mac.public_key_pem, &cli.public_key_pem));
+            let dir = local_state_dir(data.path()).unwrap();
+            let enrollment: crate::local_sessions::Enrollment =
+                serde_json::from_slice(&fs::read(dir.join("enrollment.json")).unwrap()).unwrap();
+            assert_eq!(enrollment, crate::local_sessions::Enrollment {
+                owner_id: "org_1".into(), human_user_id: "user_1".into(), device_id: mac_id.clone(),
+                gateway_url: "wss://ws".into(), enabled: true, paused: false,
+                server_revision: Some("rev-1".into()), remote_disabled: false, attempt: None,
+            });
+            assert!(crate::local_sessions::enrollment::sharing_on(&dir), "serve can read it");
+            let mode = fs::metadata(dir.join("enrollment.json")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0);
+        });
+    }
+
+    #[test]
+    fn join_times_out_after_expires_in() {
+        tauri::async_runtime::block_on(async {
+            let mac = crate::keychain::generate_keypair();
+            let cli = crate::keychain::generate_keypair();
+            let server = device_server(0.3, None).await;
+            let data = tempfile::tempdir().unwrap();
+            let started = Instant::now();
+            let err = join_at(&server.uri(), data.path(), &mac, &cli, "Test Mac", no_browser).await.unwrap_err();
+            assert!(err.contains("expired"), "{err}");
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert!(!data.path().join("pair_state.json").exists());
+        });
     }
 
     #[test]

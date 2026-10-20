@@ -270,6 +270,7 @@ pub struct Ask {
 
 const USAGE: &str = "Usage: lightbulb claude|codex [any claude or codex arguments]\n\
        lightbulb continue '<link>'\n\
+       lightbulb join | setup | share on|off | leave\n\
 Starts a session in the Lightbulb app on this Mac, with its live terminal there too, or continues\n\
 a shared session from its link in your own Claude Code.";
 
@@ -524,6 +525,18 @@ fn attach(socket: &Path, (cols, rows): (u16, u16), signals: libc::sigset_t) -> i
 
 /// `lightbulb …`: the process exit code.
 pub fn main(args: &[String]) -> i32 {
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["join"] => return crate::headless::join(),
+        ["setup"] => return crate::headless::setup(),
+        ["leave"] => return crate::headless::leave(),
+        ["share", "on"] => return crate::headless::share(true),
+        ["share", "off"] => return crate::headless::share(false),
+        ["share", ..] => {
+            eprintln!("Usage: lightbulb share on|off");
+            return 2;
+        }
+        _ => {}
+    }
     // Before `block_signals`, so Ctrl-C works while it waits for the browser.
     if let Some(link) = continue_link(args) {
         return match link {
@@ -627,15 +640,23 @@ fn installed_exe(exe: &Path, home: &Path) -> Option<PathBuf> {
 pub fn install_at_launch() {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
     let Ok(exe) = std::env::current_exe().and_then(std::fs::canonicalize) else { return };
-    let Some(exe) = installed_exe(&exe, &home) else { return };
-    if let Err(e) = install(&exe, &home) {
-        crate::log(&format!("[cli] {e}"));
-        return;
+    match link_command(&exe, &home) {
+        Ok(line) => {
+            let _ = INSTALLED.set(line);
+        }
+        Err(e) => crate::log(&format!("[cli] {e}")),
     }
+}
+
+/// `~/.local/bin/lightbulb`, for an installed app only (see `install_at_launch`). The PATH line
+/// to show, if one is needed.
+pub fn link_command(exe: &Path, home: &Path) -> Result<Option<String>, String> {
+    let exe = installed_exe(exe, home).ok_or("~/.local/bin/lightbulb is linked only from an app in /Applications")?;
+    install(&exe, home)?;
     // The login shell's PATH, not this GUI app's.
     let env = crate::holder::run::login_environment();
     let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str()).unwrap_or_default();
-    let _ = INSTALLED.set(path_line(&std::env::var("SHELL").unwrap_or_default(), path, &home));
+    Ok(path_line(&std::env::var("SHELL").unwrap_or_default(), path, home))
 }
 
 /// For the New session view: null until the command is installed.

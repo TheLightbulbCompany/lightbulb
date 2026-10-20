@@ -136,6 +136,15 @@ pub struct Controller {
     /// Set once `/desktop/pair` answered this launch; until then every new
     /// sign-in token re-asks it for the relay door (`refresh_relay`).
     relay_checked: AtomicBool,
+    /// `serve.lock`, once this process owns the service (`serves`).
+    service: Mutex<Option<std::fs::File>>,
+    /// How `prepare` reads this Mac's key. None: the window's `load_or_generate`.
+    load_identity: Option<fn() -> Result<crate::keychain::DeviceIdentity>>,
+}
+
+/// `serve`'s key read: load only, never generate (see `keychain::load`).
+fn load_mac_identity() -> Result<crate::keychain::DeviceIdentity> {
+    crate::keychain::load(crate::keychain::KeychainSlot::Mac, crate::KEYCHAIN_SERVICE)
 }
 
 /// The enrollment captured the relay door (`gatewayUrl`) once, at enable time,
@@ -144,13 +153,10 @@ pub struct Controller {
 /// -- the same idempotent re-pair the switches path sends, with the switches
 /// last granted -- and fall back to the last pair response on disk, so an
 /// offline launch keeps what it had. The flag says `/desktop/pair` answered.
-async fn current_gateway_url(app: &tauri::AppHandle, ask: bool) -> Option<(String, bool)> {
-    let data = app.path().app_data_dir().ok()?;
-    let pair = crate::pair_state::load(&data)?;
-    let jwt = app
-        .try_state::<crate::AuthState>()
-        .and_then(|s| s.current_jwt.read().ok().map(|j| j.clone()))
-        .unwrap_or_default();
+/// `data` is the app data dir; an empty `jwt` (no window, or no sign-in yet) only reads the
+/// persisted pair state.
+async fn current_gateway_url(data: &Path, jwt: &str, ask: bool) -> Option<(String, bool)> {
+    let pair = crate::pair_state::load(data)?;
     // No recorded switches means the switches path re-pairs (and rewrites
     // pair_state) on the next token; never re-pair with an implied grant here.
     if ask && !jwt.is_empty() && pair.paired_permissions.is_some() {
@@ -164,13 +170,13 @@ async fn current_gateway_url(app: &tauri::AppHandle, ask: bool) -> Option<(Strin
             };
             let asked = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
-                crate::pair_client::pair(crate::LIGHTBULB_API_BASE, &jwt, &request),
+                crate::pair_client::pair(crate::LIGHTBULB_API_BASE, jwt, &request),
             )
             .await;
             match asked {
                 Ok(Ok(resp)) if resp.device_id_mac == pair.device_id_mac && resp.device_id_cli == pair.device_id_cli => {
                     let fresh = crate::pair_state::PairState::from_pair_response(&resp, &pair.display_name, pair.paired_permissions.clone());
-                    let _ = crate::pair_state::save(&data, &fresh);
+                    let _ = crate::pair_state::save(data, &fresh);
                     return Some((fresh.gateway_url, true));
                 }
                 Ok(Ok(_)) => transport::relay_log("re-pair named other devices; relay URL kept"),
@@ -194,9 +200,9 @@ fn adopt_gateway_url(path: &Path, url: &str) -> Result<bool> {
 
 impl Controller {
     /// Caller holds `mutation`. True when the enrollment's relay door changed.
-    async fn refresh_gateway_url(&self, app: &tauri::AppHandle, path: &Path) -> bool {
+    async fn refresh_gateway_url(&self, data: &Path, jwt: &str, path: &Path) -> bool {
         let ask = !self.relay_checked.load(Ordering::SeqCst);
-        let Some((url, answered)) = current_gateway_url(app, ask).await else {
+        let Some((url, answered)) = current_gateway_url(data, jwt, ask).await else {
             return false;
         };
         if answered {
@@ -214,8 +220,9 @@ impl Controller {
         }
         let changed = {
             let _guard = self.mutation.lock().await;
-            let path = state_dir(app)?.join("enrollment.json");
-            path.try_exists().unwrap_or(false) && self.refresh_gateway_url(app, &path).await
+            let (data, jwt) = app_auth(app)?;
+            let path = local_state_dir(&data)?.join("enrollment.json");
+            path.try_exists().unwrap_or(false) && self.refresh_gateway_url(&data, &jwt, &path).await
         };
         if changed {
             self.restore(app).await?;
@@ -230,7 +237,16 @@ impl Controller {
         same && human.is_some() && self.running.lock().is_ok_and(|running| running.is_some())
     }
 
-    fn stop(&self) {
+    /// `serve`'s controller: reads this Mac's key without ever creating one.
+    pub(crate) fn headless() -> Self {
+        Self::with_identity(load_mac_identity)
+    }
+
+    pub(crate) fn with_identity(load: fn() -> Result<crate::keychain::DeviceIdentity>) -> Self {
+        Self { load_identity: Some(load), ..Self::default() }
+    }
+
+    pub(crate) fn stop(&self) {
         if let Ok(mut running) = self.running.lock() {
             if let Some(run) = running.take() {
                 run.stop.store(true, Ordering::SeqCst);
@@ -244,20 +260,80 @@ impl Controller {
         }
     }
 
-    fn prepare(&self, app: &tauri::AppHandle, enrollment: &Enrollment) -> Result<PreparedRun> {
-        let dir = state_dir(app)?;
-        let identity = crate::keychain::load_or_generate(
-            crate::keychain::KeychainSlot::Mac,
-            crate::KEYCHAIN_SERVICE,
-        )?;
-        let pair = retained_pair(
-            crate::pair_state::load(
-                &app.path()
-                    .app_data_dir()
-                    .map_err(|_| "desktop storage unavailable")?,
-            ),
-            &identity.public_key_pem,
-        )?;
+    /// This process runs the local-sessions service: it holds `serve.lock` under the app
+    /// data dir, taken on first use and kept for the process's life. False when another
+    /// process (a `serve`, or the window app) already runs it. Err: the lock file itself is
+    /// unusable (storage), which is not a reason to become a viewer.
+    pub(crate) fn serves(&self, data: &Path) -> Result<bool> {
+        let mut held = self.service.lock().map_err(|_| "sharing state unavailable")?;
+        if held.is_none() {
+            *held = crate::headless::service_lock(data).map_err(|e| format!("serve.lock unavailable: {e}"))?;
+        }
+        Ok(held.is_some())
+    }
+
+    /// The window runs the service only when no launch agent is installed (today's single
+    /// process). With `agent` on disk, `serve` owns local sessions and the window views from
+    /// the start; a lock the window took before the agent was installed is let go.
+    pub(crate) fn window_serves(&self, data: &Path, agent: &Path) -> Result<bool> {
+        if agent.exists() {
+            // Stop any run of ours before `serve` can take the lock and start its own.
+            self.stop();
+            if let Ok(mut held) = self.service.lock() {
+                *held = None;
+            }
+            return Ok(false);
+        }
+        self.serves(data)
+    }
+
+    /// `lightbulb join` installed the launch agent while the window runs the service: stop our
+    /// run first, then let go of `serve.lock` so `serve` takes it. True when it handed over.
+    pub(crate) async fn hand_over_to_agent(&self, data: &Path, agent: &Path) -> bool {
+        if !agent.exists() || !self.service.lock().is_ok_and(|held| held.is_some()) {
+            return false;
+        }
+        let _guard = self.mutation.lock().await;
+        let _ = self.window_serves(data, agent); // with the agent on disk: stop, then release
+        if let Ok(mut status) = self.status.lock() {
+            *status = "Local sharing runs in lightbulb-desktop serve.".into();
+        }
+        true
+    }
+
+    /// The window's 2 s look for the launch agent (`hand_over_to_agent`), for the app's life.
+    /// ponytail: a 2 s stat of one file, as `serve` watches its own; a kqueue watch if it matters.
+    pub fn watch_launch_agent(app: tauri::AppHandle) {
+        tauri::async_runtime::spawn(async move {
+            let Ok((data, _)) = app_auth(&app) else { return };
+            let agent = crate::headless::launch_agent_path();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if app.state::<Controller>().hand_over_to_agent(&data, &agent).await {
+                    crate::log("[local-sessions] launch agent installed; the window now only views");
+                }
+            }
+        });
+    }
+
+    /// The end of an enable. A viewer only records the consent: `serve` sees enrollment.json
+    /// change and starts the run itself.
+    fn finish_enable(&self, path: &Path, enrollment: Enrollment, prepared: Option<PreparedRun>, revision: u64) -> Result<()> {
+        let Some(prepared) = prepared else {
+            let human = self.human.lock().map_err(|_| "sharing state unavailable")?;
+            require_current(&human, self.revision.load(Ordering::SeqCst), revision, &enrollment)?;
+            return private_write(path, &enrollment);
+        };
+        self.publish(Some(path), enrollment, prepared, revision)
+    }
+
+    fn prepare(&self, data: &Path, enrollment: &Enrollment) -> Result<PreparedRun> {
+        let dir = local_state_dir(data)?;
+        let identity = match self.load_identity {
+            Some(load) => load()?,
+            None => crate::keychain::load_or_generate(crate::keychain::KeychainSlot::Mac, crate::KEYCHAIN_SERVICE)?,
+        };
+        let pair = retained_pair(crate::pair_state::load(data), &identity.public_key_pem)?;
         if pair.owner_id != enrollment.owner_id || pair.device_id_mac != enrollment.device_id {
             return Err("Reconnect the enrolled workspace's Mac first".into());
         }
@@ -312,6 +388,8 @@ impl Controller {
                 } = prepared;
                 let native_tools = super::native_tools::serve(scope.clone(), enrollment.clone(), identity.clone());
                 let mod_socket = super::mod_socket::serve(scope.clone(), enrollment.clone(), identity.clone());
+                // Whoever runs local sessions posts their requests' notifications (Task 7b).
+                let notices = super::held_notice::run(scope.clone(), enrollment.clone());
                 // Pick-up snapshots run on their OWN task: sharing one `select!` with the
                 // relay would stall every relay frame while a snapshot does its work.
                 let snapshots = super::snapshot::run(
@@ -346,7 +424,7 @@ impl Controller {
                     // ends only itself.
                     let _snapshots = AbortOnDrop(tauri::async_runtime::spawn(snapshots));
                     let _resumes = AbortOnDrop(tauri::async_runtime::spawn(resumes));
-                    let _sockets = serve_sockets(vec![Box::pin(native_tools), Box::pin(mod_socket)]);
+                    let _sockets = serve_sockets(vec![Box::pin(native_tools), Box::pin(mod_socket), Box::pin(notices)]);
                     let hooks = async move {
                         let mut bytes = [0u8; 2048];
                         loop {
@@ -385,14 +463,39 @@ impl Controller {
     }
 
     pub async fn restore(&self, app: &tauri::AppHandle) -> Result<()> {
+        let (data, jwt) = app_auth(app)?;
+        if !self.window_serves(&data, &crate::headless::launch_agent_path())? {
+            let _guard = self.mutation.lock().await;
+            self.stop();
+            if let Ok(mut status) = self.status.lock() {
+                *status = "Local sharing runs in lightbulb-desktop serve.".into();
+            }
+            return Ok(());
+        }
+        self.restore_at(&data, &jwt).await
+    }
+
+    /// `serve`: share as the enrolled human, from persisted state, with no live Clerk check
+    /// (nobody signs in with no window). The consent on disk is that human's own and the relay
+    /// authenticates with this Mac's key. Unpairing the Mac, or turning sharing off from any
+    /// device, still revokes it on the server.
+    pub(crate) async fn serve_enrolled(&self, data: &Path) -> Result<()> {
+        let enrollment: Enrollment = private_read(&local_state_dir(data)?.join("enrollment.json"))?;
+        *self.human.lock().map_err(|_| "sharing state unavailable")? = Some(Some(enrollment.human_user_id));
+        self.restore_at(data, "").await
+    }
+
+    /// `data` is the app data dir. `jwt` is the window's Clerk token, empty with no window.
+    async fn restore_at(&self, data: &Path, jwt: &str) -> Result<()> {
         let _guard = self.mutation.lock().await;
-        let dir = state_dir(app)?;
+        let dir = local_state_dir(data)?;
         let path = dir.join("enrollment.json");
         if !path.try_exists().map_err(|_| "sharing state unavailable")? {
             return Ok(());
         }
-        self.refresh_gateway_url(app, &path).await;
+        self.refresh_gateway_url(data, jwt, &path).await;
         let mut enrollment: Enrollment = private_read(&path)?;
+        let paused = enrollment.paused;
         enrollment.authenticate(
             self.human
                 .lock()
@@ -400,13 +503,17 @@ impl Controller {
                 .as_ref()
                 .map(|h| h.as_deref()),
         );
-        private_write(&path, &enrollment)?;
+        // Only a change is written: a blind read-then-write here could overwrite a write the
+        // window made in between (sharing on or off while `serve` runs).
+        if enrollment.paused != paused {
+            private_write(&path, &enrollment)?;
+        }
         self.stop();
         if !enrollment.enabled || enrollment.paused || enrollment.attempt.is_some() {
             return Ok(());
         }
         let revision = self.revision.load(Ordering::SeqCst);
-        let prepared = self.prepare(app, &enrollment)?;
+        let prepared = self.prepare(data, &enrollment)?;
         let notes = reassert(&dir);
         if !notes.is_empty() {
             *self.status.lock().map_err(|_| "sharing state unavailable")? =
@@ -477,22 +584,21 @@ fn home() -> Result<PathBuf> {
 }
 /// Session sharing is on and live for this Mac's signed-in human. A remotely started
 /// session is only launched when it will be mirrored (see `session_start`).
-pub(crate) fn sharing_on(app: &tauri::AppHandle) -> bool {
-    state_dir(app)
-        .and_then(|dir| private_read::<Enrollment>(&dir.join("enrollment.json")))
+/// `state_dir` is the local-sessions dir (`state_dir(app)` in the window).
+pub(crate) fn sharing_on(state_dir: &Path) -> bool {
+    private_read::<Enrollment>(&state_dir.join("enrollment.json"))
         .is_ok_and(|e| e.enabled && !e.paused && !e.remote_disabled)
 }
 /// The workspace this Mac's sessions are shared to, if enrolled.
-pub(crate) fn enrolled_owner(app: &tauri::AppHandle) -> Option<String> {
-    let dir = state_dir(app).ok()?;
-    private_read::<Enrollment>(&dir.join("enrollment.json")).ok().map(|e| e.owner_id)
+pub(crate) fn enrolled_owner(state_dir: &Path) -> Option<String> {
+    private_read::<Enrollment>(&state_dir.join("enrollment.json")).ok().map(|e| e.owner_id)
 }
 pub(crate) fn scope_key(enrollment: &Enrollment) -> String {
     fingerprint(&json!([enrollment.owner_id, enrollment.human_user_id, enrollment.device_id]).to_string())
 }
 
-pub(crate) fn launch_scope(app: &tauri::AppHandle) -> Result<String> {
-    let enrollment: Enrollment = private_read(&state_dir(app)?.join("enrollment.json"))?;
+pub(crate) fn launch_scope(state_dir: &Path) -> Result<String> {
+    let enrollment: Enrollment = private_read(&state_dir.join("enrollment.json"))?;
     if !enrollment.enabled || enrollment.paused || enrollment.remote_disabled {
         return Err("session sharing is off".into());
     }
@@ -500,15 +606,29 @@ pub(crate) fn launch_scope(app: &tauri::AppHandle) -> Result<String> {
 }
 
 /// The dir of this Mac's shared-session mirrors (native_tools reads it), while sharing is on.
-pub(crate) fn session_scope(app: &tauri::AppHandle) -> Result<PathBuf> {
-    Ok(state_dir(app)?.join(launch_scope(app)?))
+pub(crate) fn session_scope(state_dir: &Path) -> Result<PathBuf> {
+    Ok(state_dir.join(launch_scope(state_dir)?))
 }
-fn state_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "desktop storage unavailable")?;
-    fs::create_dir_all(&app_dir).map_err(|_| "desktop storage unavailable")?;
+/// `lightbulb join`'s write: the same private enrollment.json the window's enable writes.
+pub(crate) fn save_enrollment(state_dir: &Path, enrollment: &Enrollment) -> Result<()> {
+    private_write(&state_dir.join("enrollment.json"), enrollment)
+}
+/// The one Tauri wrapper: the window's local-sessions dir.
+pub(crate) fn state_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
+    local_state_dir(&app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?)
+}
+/// The window's app data dir and its current Clerk token (empty before sign-in).
+fn app_auth(app: &tauri::AppHandle) -> Result<(PathBuf, String)> {
+    let data = app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?;
+    let jwt = app
+        .try_state::<crate::AuthState>()
+        .and_then(|s| s.current_jwt.read().ok().map(|j| j.clone()))
+        .unwrap_or_default();
+    Ok((data, jwt))
+}
+/// `<app data>/local-sessions`, created private.
+pub(crate) fn local_state_dir(app_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(app_dir).map_err(|_| "desktop storage unavailable")?;
     let dir = app_dir.join("local-sessions");
     private_dir(&dir)?;
     Ok(dir)
@@ -559,8 +679,10 @@ fn silence(fd: std::os::unix::io::RawFd) {
 /// authority. The one exception to "never a decision" is a Claude permission
 /// prompt the app holds for a remote answer (owner ruling 2026-09-25): that
 /// path keeps a private copy of stdout and writes to it only a decision
-/// `approval::hold` built for that exact prompt. Every other path loses stdout
-/// before a byte of stdin is read (see [`silence`]).
+/// `approval::hold` built for that exact prompt. Codex's PostToolUse writes to
+/// that copy only `additionalContext`, the notice of a waiting request (Task 7b),
+/// never a decision. Every other path loses stdout before a byte of stdin is
+/// read (see [`silence`]).
 pub fn hook(provider: &str) {
     let answer = unsafe { libc::dup(HOOK_DECISION_FD) };
     silence(HOOK_DECISION_FD);
@@ -587,6 +709,24 @@ fn hook_input(
     super::native_mcp::canonical_hook(&mut json);
     if answer >= 0 && super::approval::holdable(provider, &json) {
         super::approval::hold(wake, provider, &json, answer);
+        return;
+    }
+    // Codex's PostToolUse runs only to tell the agent about a request waiting on its person
+    // (Task 7b): one line per request, once, and nothing that answers it.
+    if provider == "codex" && json["hook_event_name"] == "PostToolUse" {
+        if answer >= 0 {
+            let session = json["session_id"].as_str().unwrap_or("");
+            let lines = super::held_notice::ask_app(&wake.with_file_name("mod.sock"), session);
+            if let Some(out) = super::held_notice::hook_output(&lines) {
+                use std::io::Write;
+                use std::os::unix::io::FromRawFd;
+                // SAFETY: `answer` is this hook's own dup of stdout, owned and closed here.
+                let mut stdout = unsafe { fs::File::from_raw_fd(answer) };
+                let _ = stdout.write_all(out.to_string().as_bytes());
+            } else {
+                unsafe { libc::close(answer) };
+            }
+        }
         return;
     }
     if answer >= 0 {
@@ -722,6 +862,11 @@ pub async fn local_sessions_set(
     human_user_id: Option<String>,
     workspace_id: Option<String>,
 ) -> Result<u64> {
+    // A viewer enrolls the same way but starts no run: `serve` picks up enrollment.json.
+    let serving = state.window_serves(
+        &app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?,
+        &crate::headless::launch_agent_path(),
+    )?;
     let revision = {
         let _human = state
             .human
@@ -831,14 +976,8 @@ pub async fn local_sessions_set(
         crate::keychain::KeychainSlot::Mac,
         crate::KEYCHAIN_SERVICE,
     )?;
-    let pair = retained_pair(
-        crate::pair_state::load(
-            &app.path()
-                .app_data_dir()
-                .map_err(|_| "desktop storage unavailable")?,
-        ),
-        &identity.public_key_pem,
-    )?;
+    let app_data = app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?;
+    let pair = retained_pair(crate::pair_state::load(&app_data), &identity.public_key_pem)?;
     if workspace_id.as_deref() != Some(&pair.owner_id) {
         return Err("Connect this Mac in the selected workspace first".into());
     }
@@ -899,9 +1038,13 @@ pub async fn local_sessions_set(
                     let _ = super::native_mcp::configure(&home, &installed, false);
                 }
             }
-            state.prepare(&app, &enrollment)
+            if serving {
+                state.prepare(&app_data, &enrollment).map(Some)
+            } else {
+                Ok(None)
+            }
         },
-        |prepared, active| state.publish(Some(&path), active, prepared, revision),
+        |prepared, active| state.finish_enable(&path, active, prepared, revision),
     )
     .await?;
     // Codex hooks and the skill are reported, never fatal: the Claude path that
@@ -934,7 +1077,8 @@ pub async fn local_sessions_repair(
     // Retry also re-asks `/desktop/pair` for the relay door and, when it moved,
     // restarts the relay on the new one.
     state.relay_checked.store(false, Ordering::SeqCst);
-    let moved = state.refresh_gateway_url(&app, &path).await;
+    let (data, jwt) = app_auth(&app)?;
+    let moved = state.refresh_gateway_url(&data, &jwt, &path).await;
     let notes = reassert(&dir);
     *state.status.lock().map_err(|_| "sharing state unavailable")? = retried(&notes);
     drop(_guard);
@@ -1076,20 +1220,24 @@ pub(crate) fn remove_skill(state_dir: &Path, _home: &Path) -> Result<()> {
 /// launches, so a resume rewrites them rather than trusting the install that
 /// consent performed. Returns the failures for the status line; none is fatal.
 fn reassert(state_dir: &Path) -> Vec<String> {
+    match std::env::current_exe() {
+        Ok(executable) => reassert_exe(state_dir, &executable),
+        Err(_) => vec!["the desktop executable is unavailable".into()],
+    }
+}
+
+/// `reassert` naming `executable` in the hooks: the CLI passes the resolved app binary, since
+/// it may run through the `~/.local/bin/lightbulb` link, which is not a hook command.
+pub(crate) fn reassert_exe(state_dir: &Path, executable: &Path) -> Vec<String> {
     let home = match home() {
         Ok(home) => home,
         Err(reason) => return vec![reason],
     };
-    match std::env::current_exe() {
-        Ok(executable) => {
-            let mut notes = reassert_at(state_dir, &home, &executable);
-            if let Err(reason) = super::plugin::install(state_dir, &home) {
-                notes.push(format!("the lightbulb Claude plugin was not installed ({reason})"));
-            }
-            notes
-        }
-        Err(_) => vec!["the desktop executable is unavailable".into()],
+    let mut notes = reassert_at(state_dir, &home, executable);
+    if let Err(reason) = super::plugin::install(state_dir, &home) {
+        notes.push(format!("the lightbulb Claude plugin was not installed ({reason})"));
     }
+    notes
 }
 
 fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> {
@@ -1242,6 +1390,45 @@ mod tests {
         assert!(none, "a holder whose provider is another process does not match");
     }
 
+    /// Task 7b: Codex's PostToolUse hook writes only the app's notice lines, as context, and no
+    /// lifecycle datagram; with nothing to tell, it writes nothing.
+    #[test]
+    fn local_sessions_codex_post_tool_use_hook_relays_the_notice_and_nothing_else() {
+        use std::io::{Read, Write};
+        use std::os::unix::io::FromRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        let wake = dir.path().join("wake.sock");
+        let app = std::os::unix::net::UnixDatagram::bind(&wake).unwrap();
+        app.set_nonblocking(true).unwrap();
+        let line = super::super::held_notice::notice_line("Aden's Codex");
+        let run = |lines: Vec<String>| -> String {
+            let listener = std::os::unix::net::UnixListener::bind(dir.path().join("mod.sock")).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap();
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let body = json!({"lines": lines}).to_string();
+                s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
+                request
+            });
+            let mut fds = [0; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            let stdin = json!({"hook_event_name":"PostToolUse","session_id":"thread-1","tool_name":"shell"});
+            hook_input("codex", stdin, std::process::id(), &[], fds[1], &wake);
+            let request = server.join().unwrap();
+            assert!(request.starts_with("POST /v1/notice ") && request.contains("\"sessionId\":\"thread-1\""));
+            let _ = fs::remove_file(dir.path().join("mod.sock"));
+            let mut out = String::new();
+            unsafe { fs::File::from_raw_fd(fds[0]) }.read_to_string(&mut out).unwrap();
+            out
+        };
+        let out: Value = serde_json::from_str(&run(vec![line.clone()])).unwrap();
+        assert_eq!(out, json!({"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":line}}));
+        assert_eq!(run(vec![]), "", "nothing waiting: no output at all");
+        assert!(app.recv(&mut [0u8; 64]).is_err(), "PostToolUse is not a lifecycle event");
+    }
+
     #[test]
     fn local_sessions_a_plain_sessions_hook_reaches_the_app() {
         use std::os::unix::fs::PermissionsExt;
@@ -1283,6 +1470,64 @@ mod tests {
         codex.kill().unwrap();
         codex.wait().unwrap();
     }
+    #[test]
+    fn window_takes_the_lock_only_without_a_launch_agent() {
+        let data = tempfile::tempdir().unwrap();
+        let agent = data.path().join("company.thelightbulb.serve.plist");
+        fs::write(&agent, "plist").unwrap();
+        let window = Controller::default();
+        assert!(!window.window_serves(data.path(), &agent).unwrap());
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_some(), "the window left serve.lock to serve");
+        fs::remove_file(&agent).unwrap();
+        assert!(window.window_serves(data.path(), &agent).unwrap());
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_none(), "the window holds serve.lock");
+    }
+
+    #[test]
+    fn window_hands_the_lock_to_a_launch_agent_installed_while_it_runs() {
+        let data = tempfile::tempdir().unwrap();
+        let agent = data.path().join("company.thelightbulb.serve.plist");
+        let window = Controller::default();
+        assert!(window.window_serves(data.path(), &agent).unwrap(), "no agent yet: the window serves");
+        assert!(!tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)));
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_none(), "still the window's");
+        fs::write(&agent, "plist").unwrap(); // `lightbulb join` installs it
+        assert!(tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)));
+        assert!(window.running.lock().unwrap().is_none(), "stopped before the lock was let go");
+        assert_eq!(*window.status.lock().unwrap(), "Local sharing runs in lightbulb-desktop serve.");
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_some(), "serve can take serve.lock");
+        assert!(!tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)), "once");
+    }
+
+    #[test]
+    fn restore_with_no_change_writes_nothing() {
+        use std::os::unix::fs::MetadataExt;
+        let data = tempfile::tempdir().unwrap();
+        let dir = local_state_dir(data.path()).unwrap();
+        let path = dir.join("enrollment.json");
+        private_write(&path, &candidate()).unwrap();
+        let before = fs::metadata(&path).unwrap().ino();
+        let window = Controller::default();
+        tauri::async_runtime::block_on(window.restore_at(data.path(), "")).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().ino(), before, "an unchanged enrollment is not rewritten");
+    }
+
+    #[test]
+    fn viewer_toggle_writes_enrollment() {
+        let dir = tempfile::tempdir().unwrap();
+        private_dir(&dir.path().join("ls")).unwrap();
+        let path = dir.path().join("ls/enrollment.json");
+        let window = Controller::default();
+        *window.human.lock().unwrap() = Some(Some("alice".into()));
+        let mut active = candidate();
+        active.enabled = true;
+        active.attempt = None;
+        window.finish_enable(&path, active.clone(), None, 0).unwrap();
+        assert_eq!(private_read::<Enrollment>(&path).unwrap(), active);
+        assert!(window.running.lock().unwrap().is_none(), "a viewer starts no run");
+        assert!(sharing_on(&dir.path().join("ls")));
+    }
+
     fn candidate() -> Enrollment {
         Enrollment {
             owner_id: "org".into(),

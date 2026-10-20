@@ -284,6 +284,8 @@ async def sessions_for(auth: AuthContext, query: str = "", limit: int = 30) -> d
                 # False: your own session set to Only me. Nobody else sees it, and it takes no message.
                 "shared": session.shared,
                 "canSend": native_session_tools.sendable(session, auth.user_id),
+                # True: the send waits until the session's owner allows you (awaiting_approval).
+                "needsOwnerOk": native_session_tools.needs_owner_ok(session, auth.user_id),
             }
             for session in matches[: max(1, min(limit, 50))]
         ],
@@ -323,7 +325,7 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
 
 @mcp.tool(annotations=READ)
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
-    """Find coding sessions shared with the workspace, and your own that are not (shared false: Only me, takes no message), by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason). Called from a shared session, that session is marked isThisSession: never message it."""
+    """Find coding sessions shared with the workspace, and your own that are not (shared false: Only me, takes no message), by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; with needsOwnerOk true the send waits for the session's owner to allow you, and its state reads awaiting_approval until they do; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason). Called from a shared session, that session is marked isThisSession: never message it."""
     result = await sessions_for(_caller(), query, limit)
     if _mac():
         own = (get_access_token().claims.get("source") or {}).get("sourceSessionId")
@@ -514,7 +516,8 @@ async def send_message(
             # The original destination stays authoritative, so there is no refusal to record.
             raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
         try:
-            target, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+            # A read: session_send holds a person the owner has not allowed until they Allow.
+            target, _ = await local_sessions.authorize_session(auth, None, session_id)
             # The person's own authority (actorUserId) admits and dispatches it, exactly like their
             # follow-up from the session page; the label tells the session a client wrote it.
             result = await native_session_tools.session_send(auth, target, text, str(request_id), via_client=client)
@@ -527,7 +530,12 @@ async def send_message(
             await _record_outcome(auth, request_id, refusal=exc.error.code)
             raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
         await _record_outcome(auth, request_id, accepted=result["state"])
-        return {"sessionId": session_id, "requestId": str(request_id), "state": result["state"]}
+        return {
+            "sessionId": session_id,
+            "requestId": str(request_id),
+            "state": result["state"],
+            "delivery": result["delivery"],
+        }
     try:
         # Checked before any room is opened, so a refused send leaves no empty DM behind.
         messaging.validate_message_text(text)

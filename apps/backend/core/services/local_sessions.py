@@ -579,7 +579,8 @@ class CommandReceipt(LocalSessionCommand):
     actor: AgentActor | None = None
     invocation_expires_at: int | None = None
     command_seq: int
-    state: Literal["pending", "dispatched", "applied", "rejected", "unknown"]
+    # ``awaiting_approval``: a person's session send held until the session's owner allows them.
+    state: Literal["awaiting_approval", "pending", "dispatched", "applied", "rejected", "unknown"]
     created_at: int
     deliver_by: int
     held: bool = False
@@ -618,6 +619,8 @@ class AgentCommandReceipt(CommandReceipt):
     reason: str | None = None
     expires_at: int | None = None
     approved_by: str | None = None
+    # An ask's agent, for the strip that lists it (the actor carries only the id).
+    agent_name: str | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
@@ -636,6 +639,7 @@ class AgentCommandReceipt(CommandReceipt):
                 "reason",
                 "expires_at",
                 "approved_by",
+                "agent_name",
                 *_APPROVAL_FIELDS,
             ),
         )
@@ -1717,12 +1721,19 @@ async def submit_command(
     replaces_request_id: str | None = None,
     via_client: str | None = None,
     remove_on_end: bool = False,
+    hold_for: str | None = None,
 ) -> CommandReceipt:
+    """``hold_for``: the sender, a person, whose session send the owner has not allowed yet. It is
+    stored as ``awaiting_approval`` and never delivered until ``release_held`` (agent network §6)."""
     owner = caller_owner(auth)
+    if hold_for is not None and (
+        isinstance(auth, AgentInvocation) or hold_for != auth.user_id or request.kind != "send" or room_id
+    ):
+        raise ApiProblem("INVALID_REQUEST", "Only a person's session send can wait for its owner.")
     # A roomless command is stored with roomId "": current desktops require the field as a string.
     room_id = validate_uuid(room_id, label="room ID") if room_id else ""
     session_id = validate_uuid(session_id, label="local session ID")
-    if source_session_id and (request.kind != "send" or native_hop not in {1, 2} or not source_generation):
+    if source_session_id and (request.kind != "send" or not source_generation):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Native sessions can send only bounded messages.")
     if native_hop is not None and not source_session_id:
         raise ApiProblem("INVALID_REQUEST", "Native hop needs a verified source session.")
@@ -1772,7 +1783,9 @@ async def submit_command(
         *([{"replacesRequestId": replaces_request_id}] if replaces_request_id else []),
     )
     for _ in range(6):
-        row, enrollment = await authorize_session(auth, room_id, session_id, owner_only=True)
+        row, enrollment = await authorize_session(auth, room_id, session_id, owner_only=hold_for is None)
+        # Allowed in the meantime (or never needed it): no hold, it is delivered as usual.
+        held = hold_for is not None and not may_control(row, hold_for)
         existing = await repo.get_command(owner, session_id, request.request_id)
         if existing:
             if existing["requestHash"] != req_hash:
@@ -1830,9 +1843,6 @@ async def submit_command(
         offline_send = (
             not isinstance(auth, AgentInvocation)
             and not room_id
-            and not source_session_id
-            # A hosted MCP client sends only to a live session (find_sessions canSend), never the offline inbox.
-            and not via_client
             and request.kind == "send"
             and request.expected_turn_id is None
             and (row["status"] == "offline" or row["onlineUntil"] <= now)
@@ -1851,12 +1861,24 @@ async def submit_command(
                 1
                 for item in await repo.list_commands(owner, session_id)
                 if item.get("offlineIdentity")
+                and not item.get("heldFor")  # an unallowed person's held sends are not the owner's backlog
                 and item["state"] not in {"applied", "rejected"}
                 and item["deliverBy"] > now
             )
             >= OFFLINE_SEND_PENDING_LIMIT
         ):
             raise ApiProblem("LOCAL_SESSION_QUEUE_FULL", "This session has too many waiting follow-ups.")
+        if (
+            held
+            and sum(
+                1
+                for item in await repo.list_commands(owner, session_id)
+                if item.get("heldFor") == hold_for and item["state"] == "awaiting_approval" and item["deliverBy"] > now
+            )
+            >= OFFLINE_SEND_PENDING_LIMIT
+        ):
+            # Held rows are outside the owner's backlog count above, so they get their own bound.
+            raise ApiProblem("LOCAL_SESSION_QUEUE_FULL", "Too many messages are waiting for the owner's answer.")
         receipt = {
             **payload,
             # Backend-only: dispatch re-runs the approval check. No model field names this key,
@@ -1868,13 +1890,16 @@ async def submit_command(
             "roomId": room_id,
             **author,
             "commandSeq": row["commandSeq"] + 1,
-            "state": "pending",
+            "state": "awaiting_approval" if held else "pending",
+            **({"heldFor": hold_for} if held else {}),
             "createdAt": now,
+            # Server-side only, never rewritten (the dispatch window rewrites createdAt): the loop limit.
+            "submittedAt": now,
             # Server-side only (not in CommandReceipt): the relay's dispatch-latency metric.
             "createdAtMs": int(time.time() * 1000),
             "deliverBy": min(now + 30, auth.expires_at)
             if isinstance(auth, AgentInvocation)
-            else now + (OFFLINE_SEND_SECONDS if offline_send else 30),
+            else now + (ASK_TTL_S if held else OFFLINE_SEND_SECONDS if offline_send else 30),
             "requestHash": req_hash,
             **(
                 {
@@ -1894,6 +1919,7 @@ async def submit_command(
             **(
                 {
                     "sourceHumanUserId": auth.user_id,
+                    "sourceSessionId": source_session_id,
                     "sourceSessionGeneration": source_generation,
                     "sourceTurnId": source_turn_id,
                 }
@@ -1945,9 +1971,11 @@ async def submit_command(
 
 
 async def _expire_pending_command(owner: str, sid: str, row: dict) -> dict:
-    if row["state"] != "pending" or row["deliverBy"] > int(time.time()):
+    if row["state"] not in {"pending", "awaiting_approval"} or row["deliverBy"] > int(time.time()):
         return row
-    expired = {**row, "state": "rejected", "updatedAt": int(time.time()), "revision": str(uuid.uuid4())}
+    # Drops heldFor: an expired held send is settled, and a later Allow must never revive it.
+    expired = {k: v for k, v in row.items() if k != "heldFor"}
+    expired.update(state="rejected", updatedAt=int(time.time()), revision=str(uuid.uuid4()))
     try:
         await repo.replace_command(row, expired)
         if row.get("offlineIdentity"):
@@ -2060,6 +2088,7 @@ def _ask_receipt(ask: dict) -> AgentCommandReceipt:
         created_at=ask["createdAt"],
         expires_at=ask["expiresAt"],
         approved_by=ask.get("approvedBy"),
+        agent_name=ask.get("agentName"),
         reason=(ask.get("reason") or status) if state == "rejected" else None,
     )
 
@@ -2802,7 +2831,77 @@ async def decide_join(
         if decision == "allow" or not answered.get("outsider"):  # 06 §2: a decline to an outsider is not announced
             await _notify_join_answer(row, user_id, action, answered["requestId"])
         await _push_presence(row)
+    # Also on a repeated answer: a release a failure cut short finishes here, and the conditional
+    # write in release_held keeps any one held command from being delivered twice.
+    await release_held(row["ownerId"], row["sessionId"], user_id, decision)
     return _session_public(row, auth.user_id)
+
+
+async def release_held(owner: str, session_id: str, user_id: str, decision: Literal["allow", "decline"]) -> int:
+    """Settle this person's held session sends once the owner answered their ask. Returns how many
+    changed. The session row decides, not ``decision`` (the answer the caller just wrote): they are
+    delivered only while this person may control the session and is still in the workspace, and
+    rejected otherwise. Only unexpired held rows are touched; an expired one stays rejected."""
+    from core.services.local_session_relay import get_local_session_relay, publish_resources_changed
+
+    now = int(time.time())
+    held = [
+        c
+        for c in await repo.list_commands(owner, session_id)
+        if c.get("heldFor") == user_id and c["state"] == "awaiting_approval" and c["deliverBy"] > now
+    ]
+    if not held:
+        return 0
+    row = await repo.get_session(owner, session_id)
+    allowed = (
+        row is not None
+        and row.get("removedAt") is None
+        and may_control(row, user_id)
+        and ((await messaging_repo.get_user_stream(owner, user_id)) or {}).get("active")
+    )
+    decision = "allow" if allowed else "decline"
+    changed = 0
+    for command in held:
+        settled = {k: v for k, v in command.items() if k != "heldFor"}
+        settled.update(updatedAt=now, revision=str(uuid.uuid4()))
+        if decision == "allow":
+            # The ask's 24 h wait is over: from now on it has the ordinary 30 s to reach the Mac.
+            # An offline-queued one keeps waiting for the target's Mac, as it would have unheld.
+            wait = OFFLINE_SEND_SECONDS if command.get("offlineIdentity") else 30
+            settled.update(state="pending", deliverBy=now + wait, releasedAt=now)
+        else:
+            settled["state"] = "rejected"
+        try:
+            # Conditional on the held state and revision this read saw: a racing Allow loses here.
+            await repo.replace_command(command, settled)
+            changed += 1
+            if decision == "decline" and row is not None:
+                capture_session_event(
+                    row,
+                    "local_session_command_settled",
+                    f"{command['requestId']}:rejected:declined",
+                    actor_user_id=user_id,
+                    request_id=command["requestId"],
+                    command_kind="send",
+                    origin="native" if command.get("actor") else "direct",
+                    state="rejected",
+                    offline_queued=False,
+                    outcome_reason="rejected",
+                )
+        except ClientError as exc:
+            # A racing Allow or the expiry pass settled it first: it is theirs.
+            if not messaging_repo._is_cancelled(exc):
+                raise
+    if changed and decision == "decline" and row is not None:
+        # The sender's receipt now reads rejected: hint the workspace so their client refetches.
+        await publish_resources_changed(owner, row["humanUserId"])
+    if changed and decision == "allow":
+        try:
+            await get_local_session_relay().dispatch_session(owner, session_id)
+        except Exception:
+            # Admitted and pending: the device heartbeat retries delivery.
+            logger.warning("held send dispatch failed session=%s", session_id, exc_info=True)
+    return changed
 
 
 async def _admit_outsider(auth: AuthContext, session_id: str, user_id: str, row: dict, request: dict) -> None:

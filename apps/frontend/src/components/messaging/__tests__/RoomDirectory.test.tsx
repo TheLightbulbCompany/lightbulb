@@ -755,7 +755,7 @@ it("lists live sessions below Channels, hides the section without a session door
   const session = { sessionId: "s1", deviceId: "d", humanUserId: "alice", provider: "claude" as const, providerVersion: "2", generation: "g", status: "busy" as const, activeTurnId: null,
     capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 3, title: "Fix login", cwdName: "web", lastEventAt: new Date().toISOString() };
   const { rerender } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
-    sessions={[{ session, ownerName: "Alice", own: false }]} onSelectSession={onSelectSession} />);
+    sessions={[{ session, ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 } }]} onSelectSession={onSelectSession} />);
   const section = screen.getByRole("region", { name: "Sessions" });
   expect(section.compareDocumentPosition(screen.getByRole("region", { name: "Channels" })) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   // One line: badge, name, dot. Owner and folder stay in the accessible label only.
@@ -792,12 +792,12 @@ it("lists only live sessions, marks the open and unread ones, and links to All s
   const onOpenAllSessions = vi.fn();
   render(<RoomDirectory ownerScopeId="org-live" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
     onSelectSession={onSelectSession} onOpenAllSessions={onOpenAllSessions} currentSessionId="a" sessions={[
-      { session: makeSession("a", "Fix login", "busy"), ownerName: "Alice", own: false, unread: null },
-      { session: makeSession("b", "Ship docs", "idle"), ownerName: "Alice", own: false, unread: "finished" },
-      { session: makeSession("c", "Gone quiet", "offline"), ownerName: "Alice", own: false },
-      { session: makeSession("d", "Old refactor", "ended"), ownerName: "Alice", own: false },
+      { session: makeSession("a", "Fix login", "busy"), ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 }, unread: null },
+      { session: makeSession("b", "Ship docs", "idle"), ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 }, unread: "finished" },
+      { session: makeSession("c", "Gone quiet", "offline"), ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 } },
+      { session: makeSession("d", "Old refactor", "ended"), ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 } },
       // Offline for days: All sessions does not list it, so the count does not either.
-      { session: { ...makeSession("e", "Lost Mac", "offline"), lastEventAt: "2026-01-01T00:00:00Z" }, ownerName: "Alice", own: false },
+      { session: { ...makeSession("e", "Lost Mac", "offline"), lastEventAt: "2026-01-01T00:00:00Z" }, ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 } },
     ]} />);
   const section = screen.getByRole("region", { name: "Sessions" });
   expect(within(section).getAllByRole("button", { name: /^Open / }).map((b) => b.getAttribute("aria-label"))).toEqual([
@@ -814,7 +814,7 @@ it("lists only live sessions, marks the open and unread ones, and links to All s
 });
 
 it("caps the live list at five with +N more that expands in place", async () => {
-  const live = Array.from({ length: 7 }, (_, i) => ({ session: makeSession(`s${i}`, `Task ${i}`, "busy"), ownerName: "Alice", own: false }));
+  const live = Array.from({ length: 7 }, (_, i) => ({ session: makeSession(`s${i}`, `Task ${i}`, "busy"), ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 } }));
   render(<RoomDirectory ownerScopeId="org-cap" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
     onSelectSession={vi.fn()} currentSessionId="s6" sessions={live} />);
   const section = screen.getByRole("region", { name: "Sessions" });
@@ -830,7 +830,7 @@ it("caps the live list at five with +N more that expands in place", async () => 
 it("collapses the Sessions section through the shared prefs and keeps a count", async () => {
   const session = { sessionId: "s1", deviceId: "d", humanUserId: "me", provider: "codex" as const, providerVersion: "0.149.0", generation: "g", status: "idle" as const, activeTurnId: null,
     capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0 };
-  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} sessions={[{ session, ownerName: "Me", own: true }]} />);
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} sessions={[{ session, ownerName: "Me", own: true, owner: { kind: "human" as const, id: "me", displayName: "Me", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 } }]} />);
   await userEvent.click(screen.getByRole("button", { name: "Collapse Sessions" }));
   expect(screen.getByLabelText("1 live session")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /^Open / })).not.toBeInTheDocument();

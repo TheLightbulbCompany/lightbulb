@@ -776,23 +776,13 @@ async def test_offline_send_expires_on_receipt_read_without_a_reconnect(transpor
 
 
 @pytest.mark.asyncio
-async def test_offline_queue_excludes_native_sends_and_live_controls(transport):
+async def test_offline_queue_excludes_live_controls(transport):
     sid = await start(transport)
     messaging_repo._table().update_item(
         Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
         UpdateExpression="SET onlineUntil = :past",
         ExpressionAttributeValues={":past": int(time.time()) - 1},
     )
-    with pytest.raises(ApiProblem, match="offline"):
-        await service.submit_command(
-            ALICE,
-            None,
-            sid,
-            command(service, requestId="native-offline"),
-            source_session_id=sid,
-            source_generation="generation-1",
-            native_hop=1,
-        )
     with pytest.raises(ApiProblem, match="offline"):
         await service.submit_command(ALICE, None, sid, command(service, kind="interrupt", text=None))
 

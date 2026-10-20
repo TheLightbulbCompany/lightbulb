@@ -10,7 +10,7 @@ import { requestFocusComposer, _resetFocusComposerRequestForTests } from "@/lib/
 import type { LiveRoomRun } from "@lightbulb/shared";
 
 const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn(), orgId: "org", capture: vi.fn() }));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "owner", orgId: mocks.orgId }) }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "owner", orgId: mocks.orgId }), useUser: () => ({ user: { fullName: "Olive Owner" } }) }));
 vi.mock("@/lib/analytics", async (importOriginal) => ({ ...(await importOriginal<object>()), capture: mocks.capture }));
 vi.mock("@/hooks/useRooms", () => ({ useRooms: mocks.rooms }));
 type NotificationProps = { roomVisible: boolean; onOpen: (roomId: string, threadId: string | null) => void };

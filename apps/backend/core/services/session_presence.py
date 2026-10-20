@@ -74,6 +74,63 @@ async def link_viewers(row: dict, now: int) -> int:
     return min(sum(int(r.get("expiresAt", 0)) > now for r in seats), MAX_LINK_VIEWERS)
 
 
+LABEL_CHARS = 64
+# A held command's label, by (owner, session, request id): the label reads rooms and names, and
+# presence goes out on every heartbeat while someone is asking.
+# ponytail: process-local and cleared when full; a label stored on the command if it matters.
+_labels: dict[tuple[str, str, str], str | None] = {}
+
+
+def clean_label(value: object) -> str | None:
+    """A sender name as one short line: someone else's text that reaches the target agent before
+    any Allow, so no control, line-break or invisible (format, bidi) characters, at most 64."""
+    if not isinstance(value, str):
+        return None
+    text = "".join(" " if c.isspace() else c for c in value if c.isspace() or c.isprintable())
+    return " ".join(text.split())[:LABEL_CHARS].strip() or None
+
+
+async def _label(row: dict, command: dict) -> str | None:
+    key = (row["ownerId"], row["sessionId"], command.get("requestId") or "")
+    if key not in _labels:
+        from core.services.local_session_relay import _sender_label  # imports this module
+
+        try:
+            label = await _sender_label(command, row["ownerId"], row.get("humanUserId"))
+        except Exception:  # noqa: BLE001 -- a label is decoration; the requester's name stands in
+            return None
+        if len(_labels) >= 4096:
+            _labels.clear()
+        _labels[key] = clean_label((label or {}).get("displayName"))
+    return _labels[key]
+
+
+async def _held_sends(row: dict, users: list[str]) -> dict[str, dict]:
+    """Each asking person's newest held session send (agent network §6) as the fields the Mac's
+    notification reads: the preview and the sender as delivery labels it ("Aden's Codex"). One
+    command read, and only while someone is asking. A failed read leaves them out, never the
+    presence entry."""
+    if not users:
+        return {}
+    try:
+        commands = await repo.list_commands(row["ownerId"], row["sessionId"])  # sorted by commandSeq
+    except Exception:  # noqa: BLE001 -- the join requests still go out, as plain asks
+        logger.warning("held sends unavailable session=%s", row["sessionId"])
+        return {}
+    newest: dict[str, dict] = {}
+    for command in commands:
+        if command.get("heldFor") in users and command.get("state") == "awaiting_approval":
+            newest[command["heldFor"]] = command
+    out = {}
+    for user, command in newest.items():
+        held = {"text": (command.get("text") or "")[: sessions.ASK_PRESENCE_TEXT_CHARS]}
+        label = await _label(row, command)
+        if label:
+            held["label"] = label
+        out[user] = held
+    return out
+
+
 async def entry(row: dict, at: int) -> dict:
     """`at`: server milliseconds taken before `row` was read. The Mac keeps the entry with the
     greatest `at`, so an ack and a push that arrive out of order cannot undo a newer read."""
@@ -93,6 +150,8 @@ async def entry(row: dict, at: int) -> dict:
         if AGENT_ASK_FEATURE in row.get("deviceFeatures", ())
         else []
     )
+    joins = pending_joins(row)
+    held = await _held_sends(row, list(joins))
     return {
         "sessionId": row["sessionId"],
         "generation": row["generation"],
@@ -105,8 +164,15 @@ async def entry(row: dict, at: int) -> dict:
         ],
         "joinRequests": sorted(
             [
-                {"userId": u, "name": _asked_as(row, u) or await _name(u), "requestId": rid, "kind": kind}
-                for kind, pending in (("join", pending_joins(row)), ("pickup", shown_pickups(row)))
+                {
+                    "userId": u,
+                    "name": _asked_as(row, u) or await _name(u),
+                    "requestId": rid,
+                    "kind": kind,
+                    # A held session send waits on this ask: the Mac notifies it (Task 7b).
+                    **(held.get(u, {}) if kind == "join" else {}),
+                }
+                for kind, pending in (("join", joins), ("pickup", shown_pickups(row)))
                 for u, rid in pending.items()
             ]
             + [
@@ -125,12 +191,18 @@ async def entry(row: dict, at: int) -> dict:
     }
 
 
-async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> dict:
-    """The backstop: the heartbeat ack names presence for this Mac's sessions. Never costs the heartbeat."""
+async def ack_with_presence(ack: dict, owner: str, device: str, session_ids: list[str]) -> dict:
+    """The backstop: the heartbeat ack names presence for this Mac's sessions. Never costs the heartbeat.
+    Only sessions registered from `device`: presence (a held send's preview and its sender among it)
+    is for the session owner's own Mac, never another Mac that names the id."""
     read_at = _ms()
     try:
         out = []
-        rows = [r for r in await repo.get_sessions(owner, session_ids) if r and r.get("endedAt") is None]
+        rows = [
+            r
+            for r in await repo.get_sessions(owner, session_ids)
+            if r and r.get("endedAt") is None and r.get("deviceId") == device
+        ]
         # One frame's sessions concurrently: each entry is a bounded read or two (viewers, ask slots).
         for e in await asyncio.gather(*(entry(row, read_at) for row in rows)):
             if e["viewers"] or e["linkViewers"] or e["joinRequests"] or e["paused"]:

@@ -35,7 +35,7 @@ pub(super) enum Band {
 
 /// Every stored mirror with its key. A share or a stop the relay loop has not applied yet
 /// already counts, so an answer is never the moment before the person's own press.
-fn mirrors(scope: &Path) -> Vec<(String, Mirror)> {
+pub(super) fn mirrors(scope: &Path) -> Vec<(String, Mirror)> {
     fs::read_dir(scope)
         .into_iter()
         .flatten()
@@ -119,6 +119,14 @@ fn owed_stops(scope: &Path) -> Vec<(String, String, String)> {
         .filter(|(_, m)| !m.shared && m.stop_owed)
         .filter_map(|(key, m)| Some((key, m.session_id.clone()?, known_generation(&m).to_owned())))
         .collect()
+}
+
+/// The notice lines for the shared session `pid` is or started (`POST /v1/notice`).
+fn notice_lines(scope: &Path, pid: u32, named: Option<&str>) -> Vec<String> {
+    to_share(scope, pid, named)
+        .filter(|(_, m)| m.shared && m.native.restriction.is_none())
+        .and_then(|(_, m)| Some(super::held_notice::untold(m.session_id.as_deref()?, &m.generation)))
+        .unwrap_or_default()
 }
 
 pub(super) fn state_json(sid: &str, terminal: Option<&str>, presence: Option<presence::Entry>, approval_waiting: bool) -> Value {
@@ -245,6 +253,13 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
         // `waiting` is always false now: a session with no live terminal is shared as its
         // conversation (owner ruling 2026-10-11). Kept for plugins that still read it.
         return reply(&mut socket, "200 OK", &json!({"shared": true, "waiting": false})).await;
+    }
+    if route == ("POST", "/v1/notice") {
+        // A Codex hook asks what its session's agent should hear: the session its process is
+        // or started, as for a share. Only lines, never a way to answer (Task 7b).
+        let named = body["sessionId"].as_str().filter(|id| !id.is_empty() && id.len() <= 128);
+        let lines = pid.map(|pid| notice_lines(&scope, pid, named)).unwrap_or_default();
+        return reply(&mut socket, "200 OK", &json!({"lines": lines})).await;
     }
     let caller = match band {
         Some(Band::Shared(caller)) => caller,
@@ -469,6 +484,31 @@ mod tests {
         let restarted = decision_body(sid, "g2", &json!({"decision":"allow","userId":"u2","requestId":"r2"})).unwrap();
         assert!(stale(sid, &restarted), "a request of the old generation cannot be answered by the new one");
         assert!(!stale(sid, &decision_body(sid, "g1", &json!({"decision":"pause"})).unwrap()));
+    }
+
+    #[test]
+    fn mod_socket_notice_names_the_asking_process_s_shared_session_only() {
+        let _g = presence::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let scope = tempfile::tempdir().unwrap();
+        let sid = "99999999-9999-4999-8999-999999999999";
+        let mut mirror = super::super::transport::tests::test_mirror("thread-n", "gen-1");
+        mirror.native.provider = "codex".into();
+        mirror.session_id = Some(sid.into());
+        let path = scope.path().join(format!("{}.json", "9".repeat(64)));
+        mirror.persist(&path).unwrap();
+        presence::offer_frame(&json!({"sessionId":sid,"generation":"gen-1","paused":false,"viewers":[],"at":1,
+            "joinRequests":[{"userId":"u","name":"Aden","requestId":"held-n","kind":"join","text":"hi","label":"Aden's Codex"}]}));
+        // A stranger's process hears nothing; the session's own hears it once.
+        assert!(notice_lines(scope.path(), 1, Some("thread-n")).is_empty());
+        assert_eq!(notice_lines(scope.path(), std::process::id(), Some("thread-n")), vec![super::super::held_notice::notice_line("Aden's Codex")]);
+        assert!(notice_lines(scope.path(), std::process::id(), Some("thread-n")).is_empty());
+        // Not shared: nothing leaves this Mac, and nothing is said.
+        presence::offer_frame(&json!({"sessionId":sid,"generation":"gen-1","paused":false,"viewers":[],"at":2,
+            "joinRequests":[{"userId":"agent-f","name":"Friday","requestId":"ask-n","kind":"agent_message","text":"x"}]}));
+        mirror.shared = false;
+        mirror.persist(&path).unwrap();
+        assert!(notice_lines(scope.path(), std::process::id(), Some("thread-n")).is_empty());
+        presence::retain(&[]);
     }
 
     #[test]

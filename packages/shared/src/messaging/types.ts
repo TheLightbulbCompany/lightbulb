@@ -659,7 +659,8 @@ export type LocalSessionCommandReceipt = {
   roomId: string;
   commandSeq: number;
   /** applied acknowledges admission to the harness, not successful work. */
-  state: "pending" | "dispatched" | "applied" | "rejected" | "unknown";
+  /** awaiting_approval: a send held until the session's owner answers the sender's Ask to join. */
+  state: "awaiting_approval" | "pending" | "dispatched" | "applied" | "rejected" | "unknown";
   createdAt: number;
   /** Unix seconds; a delivery deadline, never a history TTL. */
   deliverBy: number;
@@ -669,6 +670,17 @@ export type LocalSessionCommandReceipt = {
   nativeHop?: 1 | 2;
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }
   | { actorUserId?: never; actor: { kind: "agent" | "session"; id: string }; invocationExpiresAt: number });
+
+/** An agent's ask to message (or stop) a session, waiting on `awaiting_approval` for its owner. */
+export interface AgentAskReceipt {
+  requestId: string;
+  sessionId: string;
+  kind: "send" | "interrupt";
+  text: string | null;
+  agentName?: string;
+  state: "awaiting_approval" | "pending" | "dispatched" | "applied" | "rejected" | "unknown";
+  reason?: string;
+}
 
 export interface LocalSessionOfflineOutbox {
   commands: LocalSessionCommandReceipt[];

@@ -26,6 +26,14 @@ describe("messaging HTTP client", () => {
     expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/sess%201/chat", {});
   });
 
+  it("lists and answers an agent's ask through the session's agent-asks door", async () => {
+    const { client, methods } = setup();
+    await client.listAgentAsks("sess 1");
+    expect(methods.get).toHaveBeenCalledWith("/messaging/sessions/sess%201/agent-asks");
+    await client.decideAgentAsk("sess 1", "req/1", "send");
+    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/sess%201/agent-asks/req%2F1", { decision: "send" });
+  });
+
   it("searches messages in a POST body and warms search", async () => {
     const { client, methods } = setup();
     await client.searchMessages("deploy fix", { roomId, limit: 20 });

@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessionTranscript";
 import { SessionApprovalCard } from "./SessionControls";
+import { SessionAgentAsks, type AgentAskClient } from "./SessionAgentAsks";
 import { SessionTerminalView, type SessionFrames } from "./SessionTerminalView";
 import { SessionBrowserTab, showsBrowserTab } from "./SessionBrowserTab";
 import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
@@ -42,7 +43,7 @@ const SCROLLBACK_SLACK = 240;
 
 type Decide = (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown>;
 type JoinDecider = { decideLocalSessionJoin?: Decide; decideLocalSessionPickup?: Decide };
-type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider & { watchLocalSession?: (sessionId: string) => Promise<unknown>; sendLocalSessionInput?: (sessionId: string, data: string, epoch: number, size?: { cols: number; rows: number; claim: boolean }) => Promise<unknown> };
+type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider & Partial<AgentAskClient> & { watchLocalSession?: (sessionId: string) => Promise<unknown>; sendLocalSessionInput?: (sessionId: string, data: string, epoch: number, size?: { cols: number; rows: number; claim: boolean }) => Promise<unknown> };
 
 /**
  * A shared session: its status on one line and one body: the live terminal, or
@@ -348,6 +349,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         <button type="button" role="tab" aria-selected={showBrowser} onClick={() => setBrowserFor(session.sessionId)}>Browser</button>
       </div>}
       {showBrowser && <SessionBrowserTab sessionId={session.sessionId} frames={frames} canType={control && running && session.shared !== false && !(session.inputPaused && !own)} />}
+      {own && running && client.listAgentAsks && client.decideAgentAsk && <SessionAgentAsks client={client as AgentAskClient} onEvent={onEvent} connected={liveEvents?.liveConnected} sessionId={session.sessionId} title={session.displayTitle || session.title || "this session"} />}
       {watchRemote && <div className="session-terminal-slot" hidden={showBrowser} onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)} resizable={session.terminalResize === true}
         input={client.sendLocalSessionInput ? (bytes, epoch, size) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch, size) : undefined} /></div>}

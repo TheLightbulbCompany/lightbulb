@@ -788,7 +788,7 @@ mod tests {
         let mut e = Entry { generation: "gen-1".into(), paused: false, viewers: vec![], join_requests: vec![], link_viewers: 0, at: 0 };
         set(sid, e.clone());
         assert!(admit(&frame(sid, "gen-1", 7, b"ls\r"), relay).is_some());
-        e.join_requests = vec![JoinRequest { user_id: "u2".into(), name: "Mira".into(), request_id: "r1".into(), kind: "join".into(), action: None, text: None }];
+        e.join_requests = vec![JoinRequest { user_id: "u2".into(), name: "Mira".into(), request_id: "r1".into(), kind: "join".into(), action: None, text: None, label: None }];
         set(sid, e);
         // No paused concept (owner ruling 2026-10-05): while anyone else may type, the band offers
         // no Allow and the owner answers in Lightbulb, so a writer's keys need not be dropped.

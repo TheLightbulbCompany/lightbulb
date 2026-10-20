@@ -457,6 +457,7 @@ pub(crate) fn codex_event_label(event: &str) -> Option<&'static str> {
         "UserPromptSubmit" => "user_prompt_submit",
         "Stop" => "stop",
         "SessionEnd" => "session_end",
+        "PostToolUse" => "post_tool_use",
         _ => return None,
     })
 }

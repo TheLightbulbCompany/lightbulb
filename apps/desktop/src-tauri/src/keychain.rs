@@ -113,6 +113,13 @@ pub fn load_or_generate(slot: KeychainSlot, service: &str) -> Result<DeviceIdent
     }
 }
 
+/// Read only: never generates or writes a key. `serve` uses it, so a Keychain hiccup there
+/// cannot mint a new identity and silently unpair this Mac.
+pub fn load(slot: KeychainSlot, service: &str) -> Result<DeviceIdentity, String> {
+    let bytes = get_generic_password(service, slot.account_suffix()).map_err(|e| format!("keychain read: {e}"))?;
+    parse_stored(&bytes)
+}
+
 pub fn delete(slot: KeychainSlot, service: &str) -> Result<(), String> {
     delete_generic_password(service, slot.account_suffix())
         .map_err(|e| format!("keychain delete: {e}"))

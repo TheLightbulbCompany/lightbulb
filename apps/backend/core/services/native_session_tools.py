@@ -151,12 +151,14 @@ async def _source(device: MachineIdentity, request: NativeToolRequest) -> dict:
 
 def sendable(session: local_sessions.LocalSession, user_id: str) -> bool:
     """A live, verified session this person may send a follow-up into (both MCP servers list this).
-    Not an Only me session, its owner's included: the Mac carries out nothing but End for one."""
-    return (
-        local_sessions.live_for_input(session)
-        and (session.human_user_id == user_id or session.team_control or user_id in session.allowed_senders)
-        and session.shared
-    )
+    Not an Only me session, its owner's included: the Mac carries out nothing but End for one.
+    A send from someone its owner has not allowed waits for the owner (``needs_owner_ok``)."""
+    return local_sessions.live_for_input(session) and session.shared
+
+
+def needs_owner_ok(session: local_sessions.LocalSession, user_id: str) -> bool:
+    """True when this person's send is held until the session's owner allows them (agent network §6)."""
+    return not (session.human_user_id == user_id or session.team_control or user_id in session.allowed_senders)
 
 
 async def _targets(auth: AuthContext, source_id: str) -> dict:
@@ -185,7 +187,13 @@ async def _targets(auth: AuthContext, source_id: str) -> dict:
         if len(people) >= 20:
             break
     session_rows = [
-        {"destination": f"session:{s.session_id}", "provider": s.provider, "title": s.title, "status": s.status}
+        {
+            "destination": f"session:{s.session_id}",
+            "provider": s.provider,
+            "title": s.title,
+            "status": s.status,
+            "needsOwnerOk": needs_owner_ok(s, auth.user_id),
+        }
         for s in sessions
         if str(s.session_id) != source_id and sendable(s, auth.user_id)
     ][:20]
@@ -387,7 +395,8 @@ async def _session_send(auth: AuthContext, source: dict, session_id: str, text: 
     connection, enrollment = await relay.connect(connection_id)
     if connection.get("device_id") != source["deviceId"] or connection.get("user_id") != source["humanUserId"]:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Native session source is not connected.")
-    target, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+    # A read: a person the owner has not allowed is held, not refused (session_send).
+    target, _ = await local_sessions.authorize_session(auth, None, session_id)
     source_conditions = [
         sessions_repo.native_source_condition(source),
         relay._connection_check(connection_id, connection),
@@ -408,10 +417,14 @@ async def _session_send(auth: AuthContext, source: dict, session_id: str, text: 
         source_session_id=source["sessionId"],
         source_generation=source["generation"],
         source_turn_id=source.get("activeTurnId"),
-        native_hop=await _outgoing_hop(source),
+        native_hop=min(await _outgoing_hop(source, cap=False), 2),  # CommandReceipt.native_hop is le=2
         source_conditions=source_conditions,
         source_pairing=(source["humanUserId"], source["deviceId"]),
     )
+
+
+LOOP_LIMIT = 12
+LOOP_WINDOW_S = 600
 
 
 async def session_send(auth: AuthContext, target: dict, text: str, request_id: str, **source: Any) -> dict:
@@ -422,16 +435,54 @@ async def session_send(auth: AuthContext, target: dict, text: str, request_id: s
     command = local_sessions.LocalSessionCommand(
         request_id=request_id, expected_generation=target["generation"], kind="send", text=text
     )
+    now = int(time.time())
+    sender = (
+        source.get("source_session_id"),
+        None if source.get("source_session_id") else (auth.user_id, source.get("via_client")),
+    )
+    # ponytail: read-then-write, so concurrent sends can overshoot 12 by the number in flight; a counter row if it matters.
+    recent = [
+        c
+        for c in await sessions_repo.list_commands(target["ownerId"], session_id)
+        # submittedAt: the dispatch window rewrites createdAt, so it would hide a queued burst.
+        if c.get("submittedAt", c["createdAt"]) > now - LOOP_WINDOW_S
+        and c["requestId"] != request_id  # an idempotent retry is not a new message
+        and (
+            c.get("sourceSessionId") == sender[0]
+            if sender[0]
+            else (c.get("actorUserId"), c.get("viaClient")) == sender[1] and not c.get("sourceSessionId")
+        )
+    ]
+    if len(recent) >= LOOP_LIMIT:
+        raise ApiProblem("LOCAL_SESSION_LOOP", "Too many messages to this session; wait a few minutes.")
+    if not local_sessions.may_control(target, auth.user_id):
+        # Agent network §6: someone the owner has not allowed asks to join, and the send waits
+        # for the owner's Allow (allowing a person allows all of that person's agents).
+        # After the loop check: a refused send files no ask.
+        await local_sessions.request_join(auth, session_id)
+        source = {**source, "hold_for": auth.user_id}
     receipt = await local_sessions.submit_command(auth, None, session_id, command, **source)
     try:
         await get_local_session_relay().dispatch_session(target["ownerId"], session_id)
     except Exception:
         # Durable admission stays queued; the device heartbeat retries delivery.
         logger.warning("session send dispatch failed session=%s", session_id, exc_info=True)
-    return {"state": receipt.state, "destination": f"session:{session_id}", "targetRequestId": request_id}
+    delivery = (
+        "waiting for owner"
+        if receipt.state == "awaiting_approval"
+        else "queued"
+        if target.get("status") == "offline" or target.get("onlineUntil", now + 1) <= now
+        else "now"
+    )
+    return {
+        "state": receipt.state,
+        "destination": f"session:{session_id}",
+        "targetRequestId": request_id,
+        "delivery": delivery,
+    }
 
 
-async def _outgoing_hop(source: dict) -> int:
+async def _outgoing_hop(source: dict, *, cap: bool = True) -> int:
     commands = await sessions_repo.list_commands(source["ownerId"], source["sessionId"])
     last_human = max((int(c["commandSeq"]) for c in commands if c.get("actorUserId")), default=0)
     # ponytail: direct terminal prompts do not yet reset this cap. A human's
@@ -446,7 +497,8 @@ async def _outgoing_hop(source: dict) -> int:
         ),
         default=0,
     )
-    if incoming >= 2:
+    # Session-to-session sends are not capped by hops (the loop limit in session_send bounds them).
+    if cap and incoming >= 2:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Native session reply loop limit reached.")
     return incoming + 1
 

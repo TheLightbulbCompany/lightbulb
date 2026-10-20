@@ -1089,7 +1089,17 @@ fn remove_trust(config: &str, key: &str) -> String {
 /// Codex forces SessionEnd synchronous and normalizes its missing timeout to 1;
 /// every other event normalizes to the written value.
 fn hook_timing(event: &str) -> (u64, bool) {
-    if event == "SessionEnd" { (1, false) } else { (5, true) }
+    match event {
+        "SessionEnd" => (1, false),
+        // Synchronous: its output is how the agent hears a request is waiting (Task 7b).
+        "PostToolUse" => (5, false),
+        _ => (5, true),
+    }
+}
+
+/// The lifecycle events plus PostToolUse, which only Codex is given: Claude has its band.
+fn codex_events() -> impl Iterator<Item = &'static str> {
+    super::claude::HOOK_EVENTS.iter().map(|(event, _)| *event).chain(["PostToolUse"])
 }
 
 /// Read-only: "configured" when every lifecycle group runs `executable` and is
@@ -1106,11 +1116,11 @@ pub(super) fn hooks_state(home: &Path, executable: &Path) -> &'static str {
         let doc: Value = serde_json::from_str(&read(&path)?).ok()?;
         let config = read(&dir.join("config.toml"))?;
         let command = super::claude::hook_command(executable, "codex").ok()?;
-        super::claude::HOOK_EVENTS.iter().all(|(event, _)| {
+        codex_events().all(|event| {
             let Some(label) = lifecycle::codex_event_label(event) else { return true };
             let (timeout, is_async) = hook_timing(event);
             let entry = json!({"hooks":[{"type":"command","command":command,"timeout":timeout,"async":is_async}]});
-            doc["hooks"][*event].as_array().and_then(|entries| entries.iter().position(|e| e == &entry))
+            doc["hooks"][event].as_array().and_then(|entries| entries.iter().position(|e| e == &entry))
                 .is_some_and(|index| {
                     let hash = lifecycle::codex_trust_hash(label, None, &command, timeout, is_async, None);
                     upsert_trust(&config, &lifecycle::codex_trust_key(&path, label, index), &hash) == config
@@ -1156,7 +1166,7 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
     let hooks = doc["hooks"].as_object_mut().ok_or("invalid Codex hooks")?;
     // key -> hash to trust, or None to untrust.
     let mut trust: Vec<(String, Option<String>)> = Vec::new();
-    for (event, _) in super::claude::HOOK_EVENTS {
+    for event in codex_events() {
         let Some(label) = lifecycle::codex_event_label(event) else {
             continue;
         };
@@ -1208,6 +1218,9 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
         }
     }
     if doc != original {
+        if enabled {
+            super::backup_once(&path)?;
+        }
         replace(
             &path,
             &serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?,
@@ -1239,12 +1252,29 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
     if text == original {
         return Ok(());
     }
+    if enabled {
+        super::backup_once(&config)?;
+    }
     replace(&config, text.as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_backs_up_codex_files_once() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        fs::create_dir(&codex).unwrap();
+        fs::write(codex.join("hooks.json"), r#"{"hooks":{}}"#).unwrap();
+        fs::write(codex.join("config.toml"), "model = \"o3\"\n").unwrap();
+        configure_hooks(home.path(), Path::new("/Applications/A.app/x"), true).unwrap();
+        // A moved app edits both files again; the first backups stay.
+        configure_hooks(home.path(), Path::new("/Applications/B.app/x"), true).unwrap();
+        assert_eq!(fs::read_to_string(codex.join("hooks.json.lightbulb-backup")).unwrap(), r#"{"hooks":{}}"#);
+        assert_eq!(fs::read_to_string(codex.join("config.toml.lightbulb-backup")).unwrap(), "model = \"o3\"\n");
+    }
 
     #[test]
     fn serves_many_is_loose_about_apps_and_the_daemon_directory() {
@@ -1385,7 +1415,7 @@ mod tests {
             "Codex has no Notification event"
         );
         let config = fs::read_to_string(fresh.path().join(".codex/config.toml")).unwrap();
-        assert_eq!(config.matches("[hooks.state.").count(), 4);
+        assert_eq!(config.matches("[hooks.state.").count(), 5);
 
         // No Codex on this Mac: nothing to install, and not an error.
         let bare = tempfile::tempdir().unwrap();
@@ -1409,14 +1439,15 @@ mod tests {
         let hooks = doc["hooks"].as_object().unwrap();
         assert_eq!(
             hooks.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"],
-            "Codex installs the five shared events minus Notification, and nothing else"
+            ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "PostToolUse"],
+            "Codex installs the five shared events minus Notification, plus PostToolUse (Task 7b's notice), and nothing else"
         );
         for (event, timeout, is_async) in [
             ("SessionStart", json!(5), json!(true)),
             ("UserPromptSubmit", json!(5), json!(true)),
             ("Stop", json!(5), json!(true)),
             ("SessionEnd", json!(1), json!(false)),
+            ("PostToolUse", json!(5), json!(false)),
         ] {
             assert_eq!(
                 hooks[event],
@@ -1432,6 +1463,7 @@ mod tests {
             (0, "user_prompt_submit", "sha256:1b9663f4792c847238b9ce60fa8356836634675cf6edcd96b9660a8bbac50d5a"),
             (0, "stop", "sha256:560328742055693cdfd246bce82c94a8b396c388029444fb0adb39b8899b547e"),
             (0, "session_end", "sha256:73824c3fd7c65d780e2b8aa1740084f4ce2090a802322de8aac307784a3698d8"),
+            (0, "post_tool_use", "sha256:0be577df5e9da83b39a4848f75b425d09b47d0100006fc1501d19a67d0c4fc6a"),
         ] {
             let key = lifecycle::codex_trust_key(&path, label, index);
             assert!(
@@ -1439,7 +1471,7 @@ mod tests {
                 "{label} trust entry moved"
             );
         }
-        assert_eq!(config.matches("[hooks.state.").count(), 4);
+        assert_eq!(config.matches("[hooks.state.").count(), 5);
     }
 
     #[test]

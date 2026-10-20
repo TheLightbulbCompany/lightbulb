@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth, useUser } from "@clerk/nextjs";
 import { canChangeListenMode, cardReplyRequest, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
@@ -66,6 +66,11 @@ export const pickToken = (): PickToken => ({
 });
 export const pickTokenUnchanged = (a: PickToken, b: PickToken) =>
   a.href === b.href && a.activePanelId === b.activePanelId;
+
+/** A session owner as a human participant, the shape ParticipantAvatar takes. */
+function ownerFace(id: string, displayName: string): RoomParticipant {
+  return { kind: "human", id, displayName, mentionHandle: null, role: "member", listenMode: null, joinedAt: "", joinedSeq: 0 };
+}
 
 /** Nothing but #general and the vendor shared room: a new workspace, whose home is #general. */
 export function isFreshWorkspace(rooms: readonly RoomSummary[]): boolean {
@@ -373,6 +378,9 @@ export function MessagingWorkspaceProvider({
   [activityByAgentId, online, sharing]);
   // A roster row's display name, with the same "Workspace member" fallback everywhere one is missing.
   const rosterName = (member: CompanyMember | undefined) => member?.name || member?.email || "Workspace member";
+  const { user: clerkUser } = useUser();
+  const myName = clerkUser?.fullName || clerkUser?.primaryEmailAddress?.emailAddress || "Workspace member";
+  const isOnRoster = useCallback((id: string) => Boolean(humanRoster?.members?.some((candidate) => candidate.userId === id)), [humanRoster]);
   const humanName = useCallback((id: string) => rosterName(humanRoster?.members?.find((candidate) => candidate.userId === id)), [humanRoster]);
   // The same owner-name/own resolution sidebarSessions applies per section, for a
   // session fetched directly rather than found in the workspace list (SessionFocus's
@@ -382,8 +390,9 @@ export function MessagingWorkspaceProvider({
     [userId, humanName]);
   const sidebarSessions: SidebarSession[] = useMemo(() =>
     workspaceSections(workspaceSessions.sessions, userId, humanName).flatMap((section) =>
-      section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId, unread: sessionUnread(session, seen) }))),
-    [workspaceSessions.sessions, userId, humanName, seen]);
+      section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId,
+        owner: ownerFace(session.humanUserId, session.humanUserId === userId && !isOnRoster(session.humanUserId) ? myName : humanName(session.humanUserId)), unread: sessionUnread(session, seen) }))),
+    [workspaceSessions.sessions, userId, humanName, isOnRoster, myName, seen]);
   const members: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
   // The feed seats only people; its agents are authors on the roster. They are added here so a
   // Discuss reply can @mention one (by name: an unseated agent has no handle in the room).

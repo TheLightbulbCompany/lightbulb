@@ -261,6 +261,7 @@ export type {
   LocalSessionPickupTicket,
   LocalSessionResume,
   LocalSessionCommand,
+  AgentAskReceipt,
   LocalSessionCommandReceipt,
   LocalSessionOfflineOutbox,
   LocalSessionEvent,

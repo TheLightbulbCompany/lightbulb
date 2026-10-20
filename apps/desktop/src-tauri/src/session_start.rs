@@ -169,7 +169,7 @@ fn mac_name() -> Option<String> {
 pub fn options(app: &tauri::AppHandle) -> Value {
     json!({
         "name": mac_name(),
-        "sharing": crate::local_sessions::enrollment::sharing_on(app),
+        "sharing": crate::local_sessions::enrollment::state_dir(app).is_ok_and(|d| crate::local_sessions::enrollment::sharing_on(&d)),
         "folders": approved_folders(),
         "tools": tools(&home()),
         "cli": crate::cli::status(),
@@ -381,13 +381,14 @@ pub async fn start(
 }
 
 fn shared_scope(app: &tauri::AppHandle, cancel: &watch::Receiver<bool>) -> Result<String, Failure> {
-    if !crate::local_sessions::enrollment::sharing_on(app) {
+    let dir = crate::local_sessions::enrollment::state_dir(app).map_err(|_| ("SHARING_OFF", "Turn on session sharing in the Lightbulb app on this Mac first.".to_string()))?;
+    if !crate::local_sessions::enrollment::sharing_on(&dir) {
         return Err(("SHARING_OFF", "Turn on session sharing in the Lightbulb app on this Mac first.".into()));
     }
     if *cancel.borrow() {
         return Err(("CANCELLED", "The start was cancelled.".into()));
     }
-    crate::local_sessions::enrollment::launch_scope(app)
+    crate::local_sessions::enrollment::launch_scope(&dir)
         .map_err(|_| ("SHARING_OFF", "Turn on session sharing in Lightbulb on this Mac first.".to_string()))
 }
 
@@ -433,7 +434,7 @@ pub fn terminal_options(app: tauri::AppHandle) -> Value {
 pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Value, String> {
     let (start, folder, argv) = validate(params, &home()).map_err(|(_, message)| message)?;
     // Sessions started here are shared (ruling 8): without sharing there is nowhere to show it.
-    let scope = crate::local_sessions::enrollment::launch_scope(&app)
+    let scope = crate::local_sessions::enrollment::state_dir(&app).and_then(|d| crate::local_sessions::enrollment::launch_scope(&d))
         .map_err(|_| "Turn on session sharing in Lightbulb on this Mac first.".to_string())?;
     let argv = held_argv(&argv, Some((start.start_id.as_str(), scope.as_str())));
     let info = start_held(folder, argv).await?;
@@ -497,7 +498,7 @@ pub(crate) fn cli_start(
     {
         return Err("Malformed request.".into());
     }
-    let scope = crate::local_sessions::enrollment::launch_scope(app).map_err(|_| {
+    let scope = crate::local_sessions::enrollment::state_dir(app).and_then(|d| crate::local_sessions::enrollment::launch_scope(&d)).map_err(|_| {
         "Session sharing is off in Lightbulb on this Mac. Turn it on in Settings → Desktop → Session sharing, then run this again.".to_string()
     })?;
     let home = home();

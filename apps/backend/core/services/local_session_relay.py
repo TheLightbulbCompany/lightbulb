@@ -276,7 +276,7 @@ async def _actor_label(command: dict, owner_human: str | None = None, owner: str
     page stores roomId "") or no row in it still gets the name presence shows. An agent's send
     that a person approved says so: "Friday, approved by you" to the session's owner
     (``owner_human``), "Friday, approved by Sam" when a teammate under team control approved."""
-    label = await _sender_label(command, owner)
+    label = await _sender_label(command, owner, owner_human)
     if label is None or not command.get("approvedBy"):
         return label
     from core.services.session_presence import _name
@@ -295,17 +295,41 @@ async def _agent_roster_name(owner: str, agent_id: str) -> str | None:
         return None
 
 
-async def _sender_label(command: dict, owner: str | None) -> dict | None:
+async def _session_sender_label(command: dict, owner: str | None, target_human: str | None) -> dict:
+    """ "Aden's Codex" / "Your Claude Code": the sending session named as its owner's agent."""
+    from core.services.messaging import human_display_name
+
+    try:
+        row = await repo.get_session(owner, command["actor"]["id"]) if owner else None
+    except Exception:  # noqa: BLE001 -- a label never blocks delivery
+        row = None
+    human = (row or {}).get("humanUserId") or command.get("sourceHumanUserId")
+    provider = {"claude": "Claude Code", "codex": "Codex"}.get((row or {}).get("provider"))
+    if human and human == target_human:
+        return {"kind": "session", "displayName": f"Your {provider or 'coding session'}"}
+    try:
+        name = (await human_display_name(human)) or "" if human else ""
+        # A failed lookup answers the raw user id: that is no name, not a first name.
+        first = name.split()[0] if name and name != human else ""
+    except Exception:  # noqa: BLE001
+        first = ""
+    if not first:
+        return {"kind": "session", "displayName": "Shared native session"}
+    return {"kind": "session", "displayName": f"{first}'s {provider or 'coding session'}"}
+
+
+async def _sender_label(command: dict, owner: str | None, target_human: str | None = None) -> dict | None:
     from core.services.messaging import human_emails, with_human_handles
 
     if (command.get("actor") or {}).get("kind") == "session":
-        return {"kind": "session", "displayName": "Shared native session"}
+        return await _session_sender_label(command, owner, target_human)
     kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
     if command.get("viaClient"):
         from core.services.session_presence import _name  # tolerant: a label never blocks delivery
 
         name = await _name(member_id)
-        return {"kind": "human", "handle": None, "displayName": f"{command['viaClient']} via {name}"}
+        via = command["viaClient"] if name == member_id else f"{command['viaClient']} via {name}"
+        return {"kind": "human", "handle": None, "displayName": via}
     member = None
     if room_id := command.get("roomId"):
         room_members = await store.list_members(room_id)
@@ -777,7 +801,7 @@ class LocalSessionRelay:
                     if message.session_presence:
                         with step("presence"):
                             response = await session_presence.ack_with_presence(
-                                response, owner, [str(s.session_id) for s in message.sessions]
+                                response, owner, device, [str(s.session_id) for s in message.sessions]
                             )
                     notify_resources = False
                 elif isinstance(message, Ended):
@@ -1315,7 +1339,17 @@ class LocalSessionRelay:
         owner, sid = row["ownerId"], row["sessionId"]
         native_actor = (command.get("actor") or {}).get("kind") == "session"
         source_checks, source_pairing = [], None
-        if native_actor:
+        # A send held for the owner's Allow (``release_held``) is delivered on that Allow, long after
+        # the turn that wrote it: the owner's decision stands in for the source's turn, its 30 s
+        # window and its liveness (a teammate who closed their terminal still gets it delivered).
+        # Only the target's checks below and the sender still being in the workspace apply.
+        # An offline-queued send (``offlineIdentity``) is the same: it waits for the target's Mac, not the turn.
+        if native_actor and (command.get("releasedAt") is not None or command.get("offlineIdentity")):
+            sender = command["sourceHumanUserId"]
+            if not ((await store.get_user_stream(owner, sender)) or {}).get("active"):
+                raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sender is no longer in this workspace.")
+            auth = sessions.AuthContext(user_id=sender, org_id=owner if owner != sender else None)
+        elif native_actor:
             source = await repo.get_session(owner, command["actor"]["id"])
             if (
                 not source
@@ -1356,8 +1390,9 @@ class LocalSessionRelay:
         else:
             auth = sessions.command_caller(owner, command)
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid, owner_only=True)
-        if command.get("offlineIdentity") and command.get("actorUserId") != current["humanUserId"]:
-            stream = await store.get_user_stream(owner, command["actorUserId"])
+        sender = command.get("actorUserId") or command.get("sourceHumanUserId")
+        if command.get("offlineIdentity") and sender != current["humanUserId"]:
+            stream = await store.get_user_stream(owner, sender)
             if not stream or not stream.get("active"):
                 raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sender is no longer in this workspace.")
         sessions.require_command_scope(auth, current, command["kind"])
@@ -1396,9 +1431,13 @@ class LocalSessionRelay:
                 # Expire even commands behind an unresolved outcome; never queue old input indefinitely.
                 expired = False
                 for command in commands:
-                    if command["state"] == "pending" and command["deliverBy"] <= int(time.time()):
+                    if command["state"] in {"pending", "awaiting_approval"} and command["deliverBy"] <= int(
+                        time.time()
+                    ):
+                        # Drops heldFor: a later Allow must never revive an expired held send.
+                        unheld = {k: v for k, v in command.items() if k != "heldFor"}
                         await repo.replace_command(
-                            command, _revised(command, state="rejected", updatedAt=int(time.time()))
+                            command, _revised(unheld, state="rejected", updatedAt=int(time.time()))
                         )
                         _capture_offline_rejection(row, command, "expired")
                         expired = True
@@ -1409,6 +1448,8 @@ class LocalSessionRelay:
                         c
                         for c in commands
                         if c["state"] not in {"applied", "rejected"}
+                        # Held for its owner's Allow (``release_held``): never sent while held.
+                        and not c.get("heldFor")
                         and not (
                             c["state"] == "unknown"
                             and (c["expectedGeneration"] != row["generation"] or c.get("settled"))
@@ -1492,6 +1533,13 @@ class LocalSessionRelay:
                             "createdAt": sent_at,
                             "deliverBy": min(claim["deliverBy"], sent_at + DISPATCH_WINDOW_SECONDS),
                         }
+                    # A released or offline-queued session send outlived its source turn's 30 s
+                    # invocation window (``_dispatch_checks`` skips it); the Mac still checks it, so
+                    # it leaves with the dispatch window's own expiry.
+                    if (claim.get("actor") or {}).get("kind") == "session" and (
+                        claim.get("releasedAt") is not None or claim.get("offlineIdentity")
+                    ):
+                        window["invocationExpiresAt"] = window.get("deliverBy", claim["deliverBy"])
                     public = sessions._public(sessions.CommandReceipt, {**claim, **window}).model_dump(
                         mode="json", by_alias=True
                     )

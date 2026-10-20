@@ -458,7 +458,7 @@ async def test_the_ask_reaches_activity_the_room_and_the_terminal_band(asks, mon
     rows = await messaging_repo._query(messaging_repo.activity_pk(OWNER, ALICE.user_id))
     [item] = await activity._render_session_rows(OWNER, ALICE.user_id, rows, None)
     assert item.id == f"agentmsg:{sid}:request-1" and item.state == "open"
-    assert [a.id for a in item.actions] == ["send", "decline"] and item.summary.preview.text == "continue"
+    assert [a.id for a in item.actions] == ["send", "decline", "always"] and item.summary.preview.text == "continue"
     # The room line, as a progress line from the agent: it wakes and notifies nobody.
     request = line.await_args.args[1]
     assert (str(request.room_id), str(request.agent_id), request.progress) == (ROOM, AGENT, True)
@@ -505,3 +505,30 @@ async def test_an_approved_agent_is_labelled_with_who_approved_it(monkeypatch):
     assert by_teammate["displayName"] == "Friday, approved by Sam"
     unapproved = {k: v for k, v in command_row.items() if k != "approvedBy"}
     assert (await relay._actor_label(unapproved, ALICE.user_id, OWNER))["displayName"] == "Friday"
+
+
+@pytest.mark.asyncio
+async def test_activity_always_allow_sends_this_one_and_flips_the_pref(asks):
+    from core.repositories import user_repo
+    from core.services import activity
+
+    sid = await registered()
+    await _prefs(ALICE.user_id, agent_send_without_asking=False)
+    await service.agent_command(asks.grant(), sid, command(service, requestId="request-always"))
+    ask = await service._get_ask(OWNER, sid, "request-always")
+    item = activity.render_agent_ask(ask, await repo.get_session(OWNER, sid), seen=None)
+    assert [a.id for a in item.actions] == ["send", "decline", "always"]
+    assert [a.label for a in item.actions] == ["Send", "Decline", "Always allow"]
+
+    done = await activity.run_action(ALICE, item.id, "always", activity.ActivityActionRequest(), teams_ctx=None)
+    assert done.state == "resolved"
+    assert user_repo.agent_send_without_asking(await user_repo.get(ALICE.user_id)) is True
+    assert (await _command_ids(sid)).count("request-always") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_listed_ask_names_its_agent(asks):
+    sid = await registered()
+    await service.agent_command(asks.grant(), sid, command(service, requestId="request-named"))
+    listed = await service.list_agent_asks(ALICE, sid)
+    assert [a.model_dump(by_alias=True, mode="json")["agentName"] for a in listed] == ["Friday"]

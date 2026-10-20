@@ -198,7 +198,7 @@ pub fn serve(app: tauri::AppHandle) -> Result<(), String> {
         let size = (side("cols", 80), side("rows", 24));
         let env = environment(&request["env"])?;
         let info = crate::session_start::cli_start(&app, request["start"].clone(), size, env)?;
-        let owner = crate::local_sessions::enrollment::enrolled_owner(&app);
+        let owner = crate::local_sessions::enrollment::state_dir(&app).ok().and_then(|d| crate::local_sessions::enrollment::enrolled_owner(&d));
         let workspace = shared_workspace(WORKSPACE.lock().unwrap().as_ref(), owner.as_deref());
         Ok(Started { socket: info.socket, workspace })
     })
@@ -270,6 +270,7 @@ pub struct Ask {
 
 const USAGE: &str = "Usage: lightbulb claude|codex [any claude or codex arguments]\n\
        lightbulb continue '<link>'\n\
+       lightbulb join | setup | share on|off | leave\n\
 Starts a session in the Lightbulb app on this Mac, with its live terminal there too, or continues\n\
 a shared session from its link in your own Claude Code.";
 
@@ -524,6 +525,18 @@ fn attach(socket: &Path, (cols, rows): (u16, u16), signals: libc::sigset_t) -> i
 
 /// `lightbulb …`: the process exit code.
 pub fn main(args: &[String]) -> i32 {
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["join"] => return crate::headless::join(),
+        ["setup"] => return crate::headless::setup(),
+        ["leave"] => return crate::headless::leave(),
+        ["share", "on"] => return crate::headless::share(true),
+        ["share", "off"] => return crate::headless::share(false),
+        ["share", ..] => {
+            eprintln!("Usage: lightbulb share on|off");
+            return 2;
+        }
+        _ => {}
+    }
     // Before `block_signals`, so Ctrl-C works while it waits for the browser.
     if let Some(link) = continue_link(args) {
         return match link {
@@ -615,10 +628,15 @@ pub fn path_line(shell: &str, path: &str, home: &Path) -> Option<String> {
     })
 }
 
+/// `exe` without the `/.nofollow` prefix macOS can report on a running app.
+pub(crate) fn strip_nofollow(exe: &Path) -> PathBuf {
+    exe.strip_prefix("/.nofollow").map(|p| Path::new("/").join(p)).unwrap_or_else(|_| exe.to_path_buf())
+}
+
 /// The path to link to, if `exe` is an installed app. macOS can report the running app as
 /// `/.nofollow/Applications/...` (and `canonicalize` keeps that), so the prefix is dropped first.
 fn installed_exe(exe: &Path, home: &Path) -> Option<PathBuf> {
-    let exe = exe.strip_prefix("/.nofollow").map(|p| Path::new("/").join(p)).unwrap_or_else(|_| exe.to_path_buf());
+    let exe = strip_nofollow(exe);
     (exe.starts_with("/Applications") || exe.starts_with(home.join("Applications"))).then_some(exe)
 }
 
@@ -627,15 +645,27 @@ fn installed_exe(exe: &Path, home: &Path) -> Option<PathBuf> {
 pub fn install_at_launch() {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
     let Ok(exe) = std::env::current_exe().and_then(std::fs::canonicalize) else { return };
-    let Some(exe) = installed_exe(&exe, &home) else { return };
-    if let Err(e) = install(&exe, &home) {
-        crate::log(&format!("[cli] {e}"));
+    // Not an installed app (a build folder, the disk image): nothing to link, nothing to log.
+    if installed_exe(&exe, &home).is_none() {
         return;
     }
+    match link_command(&exe, &home) {
+        Ok(line) => {
+            let _ = INSTALLED.set(line);
+        }
+        Err(e) => crate::log(&format!("[cli] {e}")),
+    }
+}
+
+/// `~/.local/bin/lightbulb`, for an installed app only (see `install_at_launch`). The PATH line
+/// to show, if one is needed.
+pub fn link_command(exe: &Path, home: &Path) -> Result<Option<String>, String> {
+    let exe = installed_exe(exe, home).ok_or("~/.local/bin/lightbulb is linked only from an app in /Applications")?;
+    install(&exe, home)?;
     // The login shell's PATH, not this GUI app's.
     let env = crate::holder::run::login_environment();
     let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str()).unwrap_or_default();
-    let _ = INSTALLED.set(path_line(&std::env::var("SHELL").unwrap_or_default(), path, &home));
+    Ok(path_line(&std::env::var("SHELL").unwrap_or_default(), path, home))
 }
 
 /// For the New session view: null until the command is installed.

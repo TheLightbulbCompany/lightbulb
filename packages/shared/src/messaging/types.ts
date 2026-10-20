@@ -1,3 +1,4 @@
+import type { LocalSessionProvider } from "./localSessionTranscript";
 export type RoomKind = "channel" | "dm" | "group-dm";
 export type MemberKind = "human" | "agent";
 export type MemberRole = "owner" | "admin" | "member";
@@ -386,7 +387,7 @@ export interface LocalSession {
   sessionId: string;
   deviceId: string;
   humanUserId: string;
-  provider: "claude" | "codex";
+  provider: LocalSessionProvider;
   generation: string;
   status: "idle" | "busy" | "waiting-approval" | "unknown" | "offline" | "ended";
   providerVersion: string;
@@ -520,7 +521,7 @@ export interface LocalSessionPickupPart { url: string; bytes: number; sha256: st
 /** What the receiving Mac needs to continue a session: short-lived links and what to check them against. */
 export interface LocalSessionPickupTicket {
   pickupId: string;
-  session: { sessionId: string; humanUserId: string; title?: string | null; provider: "claude" | "codex" };
+  session: { sessionId: string; humanUserId: string; title?: string | null; provider: LocalSessionProvider };
   manifest: Record<string, unknown>;
   downloads: {
     transcript: (LocalSessionPickupPart & { index: number })[];
@@ -587,7 +588,7 @@ export type SessionLinkAudience = "workspace" | "anyone";
 export interface SessionLink { url: string | null; audience: SessionLinkAudience }
 export interface SessionLinkCode { visibility: "public" | "private" | "none" | "workspace"; remote?: string; branch?: string; commit?: string }
 export interface SessionLinkPage {
-  title: string | null; ownerFirstName: string; provider: "claude" | "codex"; state: "live" | "ended" | "offline";
+  title: string | null; ownerFirstName: string; provider: LocalSessionProvider; state: "live" | "ended" | "offline";
   code: SessionLinkCode; continuable: boolean;
   /** `canAsk`: this outside viewer may Ask to join; `join`: their ask, pending or allowed. */
   me: { signedIn: boolean; member: boolean; canAsk?: boolean; join?: "pending" | "allowed" };

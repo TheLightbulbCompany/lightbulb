@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -27,7 +28,7 @@ from pydantic import AnyHttpUrl
 from core.auth import AuthContext
 from core.config import settings
 from core.dynamodb import run_in_thread
-from core.repositories import messaging_repo
+from core.repositories import local_sessions_repo, messaging_repo
 from core.services import clerk_admin, local_sessions, messaging, native_session_tools, session_browser, task_board
 from core.services.machine_auth import MachineIdentity, verify_upgrade
 
@@ -180,6 +181,43 @@ def _caller(scope: str = READ_SCOPE) -> AuthContext:
     )
 
 
+async def unread_note(owner: str, session_id: str) -> str | None:
+    """Agent network §4: the sends waiting for this session that it has not been given yet, so an
+    agent that cannot be woken (Cursor, Grok CLI) notices its mail at its next lightbulb call."""
+    now = int(time.time())
+    count = sum(
+        1
+        for c in await local_sessions_repo.list_commands(owner, session_id)
+        if c.get("kind") == "send"
+        and c.get("state") in ("pending", "dispatched")
+        and not c.get("heldFor")
+        and int(c.get("deliverBy") or 0) > now
+    )
+    if not count:
+        return None
+    return f"{count} unread message{'' if count == 1 else 's'} for this session; it arrives at your next step."
+
+
+def _noted(tool):
+    """Every tool result for a shared-session caller carries ``unread`` while that session has
+    undelivered sends. A person's OAuth call is unchanged, and the note never fails a tool."""
+
+    @functools.wraps(tool)
+    async def call(*args, **kwargs):
+        result = await tool(*args, **kwargs)
+        device = _mac()
+        source = (get_access_token().claims.get("source") or {}) if device else {}
+        if isinstance(result, dict) and isinstance(source.get("sourceSessionId"), str):
+            try:
+                if note := await unread_note(device.owner_id, source["sourceSessionId"]):
+                    result = {**result, "unread": note}
+            except Exception:  # noqa: BLE001 -- a note never fails the tool it rides on
+                logger.warning("unread note unavailable", exc_info=True)
+        return result
+
+    return call
+
+
 mcp = MCPServer(
     "Lightbulb",
     token_verifier=LightbulbVerifier(),
@@ -318,12 +356,14 @@ async def receipt_for(auth: AuthContext, room_id: str, request_id: uuid.UUID) ->
 
 
 @mcp.tool(annotations=READ)
+@_noted
 async def find_rooms(query: str = "", limit: int = 30) -> dict:
     """Find channels and existing DMs that the signed-in person may read."""
     return await rooms_for(_caller(), query, limit)
 
 
 @mcp.tool(annotations=READ)
+@_noted
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
     """Find coding sessions shared with the workspace, and your own that are not (shared false: Only me, takes no message), by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; with needsOwnerOk true the send waits for the session's owner to allow you, and its state reads awaiting_approval until they do; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason). Called from a shared session, that session is marked isThisSession: never message it."""
     result = await sessions_for(_caller(), query, limit)
@@ -335,6 +375,7 @@ async def find_sessions(query: str = "", limit: int = 30) -> dict:
 
 
 @mcp.tool(annotations=READ)
+@_noted
 async def read_messages(room_id: str, after_seq: int | None = None, limit: int = 25) -> dict:
     """Read the latest page or continue after a message sequence in a room or DM."""
     return await messages_for(_caller(), room_id, after_seq, limit)
@@ -349,18 +390,21 @@ async def _board(call):
 
 
 @mcp.tool(annotations=READ)
+@_noted
 async def find_tasks(query: str = "", status: str = "", assignee: str = "", limit: int = 25) -> dict:
     """Find tasks on this workspace's task board. Open tasks (backlog, todo, in_progress, in_review, blocked) unless status names others (comma-separated; also done, cancelled). assignee is an agent name. Newest-updated first."""
     return await _board(task_board.find_tasks(_caller(), query, status, assignee, limit))
 
 
 @mcp.tool(annotations=READ)
+@_noted
 async def read_task(task: str, comments: int = 10) -> dict:
     """Read one task by identifier (e.g. ISOA-123) or id: title, status, priority, assignee, full description, blockers, and its latest comments."""
     return await _board(task_board.read_task(_caller(), task, comments))
 
 
 @mcp.tool(annotations=WRITE)
+@_noted
 async def update_task(
     task: str, status: str | None = None, priority: str | None = None, append_note: str | None = None
 ) -> dict:
@@ -369,6 +413,7 @@ async def update_task(
 
 
 @mcp.tool(annotations=WRITE)
+@_noted
 async def use_browser(where: Literal["mac", "cloud"], session_id: str | None = None) -> dict:
     """Choose where a shared Claude Code or Codex session browses with its lightbulb-browser tools: "mac" (its Mac's Lightbulb agent Chrome, the default) or "cloud" (the workspace's cloud browser). Its next browser connection goes there; one already open stays where it is: to move an open one now, restart the lightbulb-browser MCP server (`/mcp` in Claude Code). Called from a shared session, omit session_id: it moves that session. Otherwise session_id comes from find_sessions; only people who may control that session can move it."""
     auth = _caller(WRITE_SCOPE)
@@ -483,6 +528,7 @@ async def _posted(auth: AuthContext, room_id: str, request_id: uuid.UUID) -> boo
 
 
 @mcp.tool(annotations=SEND)
+@_noted
 async def send_message(
     text: str,
     request_id: uuid.UUID,
@@ -595,6 +641,7 @@ async def send_message(
 
 
 @mcp.tool(annotations=READ)
+@_noted
 async def message_receipt(request_id: uuid.UUID) -> dict:
     """Reconcile a send by its request ID, including when the send response was lost."""
     auth = _caller()

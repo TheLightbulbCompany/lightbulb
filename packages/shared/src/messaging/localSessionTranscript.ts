@@ -5,7 +5,7 @@ import type { LocalSessionEvent } from "./types";
  * canonical event stream of a shared Claude Code / Codex session into the
  * rows each TUI draws. Pure — no React, no DOM.
  */
-export type LocalSessionProvider = "claude" | "codex";
+export type LocalSessionProvider = "claude" | "codex" | "cursor" | "grok";
 export type TranscriptRow =
   | { kind: "prompt"; seq: number; text: string; who: string | null; ts?: string }
   | { kind: "prose"; seq: number; text: string; final: boolean }

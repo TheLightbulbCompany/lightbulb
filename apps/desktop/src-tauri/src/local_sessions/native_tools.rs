@@ -191,7 +191,9 @@ fn resolve_source(scope: &Path, peer: u32, meta: &Value) -> Result<Source> {
     let mut found = Vec::new();
     for mirror in live_mirrors(scope)? {
         let matches = match mirror.native.provider.as_str() {
-            "claude" => mirror.native.process == parent,
+            // Cursor and Grok CLI start their MCP servers as children of the agent process the
+            // session's hooks recorded; two sessions in one process are refused as ambiguous.
+            "claude" | "cursor" | "grok" => mirror.native.process == parent,
             "codex" => {
                 codex_host
                     && mirror.native.process == parent

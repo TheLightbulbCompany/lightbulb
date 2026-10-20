@@ -8,3 +8,12 @@ it("names each tool's logo for screen readers and falls back to a terminal glyph
   expect(screen.getByRole("img", { name: "Codex" })).toHaveAttribute("fill", "currentColor");
   expect(screen.getByRole("img", { name: "gemini" })).toHaveClass("lucide-terminal");
 });
+
+it("draws Cursor and Grok CLI in ink, not as the unknown terminal", () => {
+  render(<><SessionToolIcon provider="cursor" /><SessionToolIcon provider="grok" /></>);
+  for (const name of ["Cursor", "Grok"]) {
+    const icon = screen.getByRole("img", { name });
+    expect(icon).toHaveAttribute("stroke", "currentColor");
+    expect(icon).not.toHaveClass("lucide-terminal");
+  }
+});

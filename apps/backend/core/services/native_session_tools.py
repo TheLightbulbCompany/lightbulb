@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class NativeToolRequest(ContractModel):
     source_session_id: uuid.UUID
     source_generation: str = Field(min_length=1, max_length=128)
-    source_provider: Literal["claude", "codex"]
+    source_provider: local_sessions.Provider
     source_conversation_id: str = Field(min_length=1, max_length=128)
     source_turn_id: str | None = Field(max_length=128)
     origin_item_id: str | None = Field(default=None, max_length=128)
@@ -476,6 +476,9 @@ async def session_send(auth: AuthContext, target: dict, text: str, request_id: s
         if receipt.state == "awaiting_approval"
         else "queued"
         if target.get("status") == "offline" or target.get("onlineUntil", now + 1) <= now
+        # Cursor and Grok CLI take a message at their next hook: the next tool call or turn end.
+        else "next step"
+        if target.get("provider") in local_sessions.HOOKED_PROVIDERS
         else "now"
     )
     return {

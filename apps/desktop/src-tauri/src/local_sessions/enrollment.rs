@@ -689,12 +689,46 @@ pub fn hook(provider: &str) {
     let mut raw = Vec::new();
     let _ = std::io::Read::take(std::io::stdin(), 65536).read_to_end(&mut raw);
     let json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    if super::hooked::provider(provider) {
+        // Our hook command names the event (`… local-session-hook cursor stop`).
+        let event = std::env::args().nth(3).unwrap_or_default();
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        return hooked_hook(provider, &event, json, answer, &hook_path(), &home);
+    }
     let holders = if provider == "codex" && json["hook_event_name"] == "SessionStart" {
         crate::holder::manager::list()
     } else {
         vec![]
     };
     hook_input(provider, json, std::os::unix::process::parent_id(), &holders, answer, &hook_path());
+}
+
+/// A Cursor or Grok CLI hook (agent network phase 2): it registers its session, wakes the app,
+/// and, on a hook whose output reaches the model, hands over what waits for the session: its
+/// letters, then the one-line notice of a request waiting on its person (Task 7b), which
+/// nothing here answers.
+fn hooked_hook(provider: &str, event: &str, json: serde_json::Value, answer: std::os::unix::io::RawFd, wake: &Path, home: &Path) {
+    let close = |fd: std::os::unix::io::RawFd| if fd >= 0 { unsafe { libc::close(fd) }; };
+    let Some(json) = super::hooked::normalize(provider, event, json) else { return close(answer) };
+    let dir = wake.with_file_name("hooked");
+    let _ = super::hooked::record(&dir, provider, &json, super::lifecycle::hook_process(provider).as_ref(), home);
+    // Before the datagram, which may start discovery of this session.
+    send_hook_datagram(wake, provider, &json);
+    let canonical = json["hook_event_name"].as_str().unwrap_or("");
+    let session = json["session_id"].as_str().unwrap_or("");
+    if answer < 0 || !super::hooked::takes_mail(provider, canonical) {
+        return close(answer);
+    }
+    let mut lines = super::hooked::drain(&dir, provider, session);
+    lines.extend(super::held_notice::ask_app(&wake.with_file_name("mod.sock"), session));
+    if lines.is_empty() {
+        return close(answer);
+    }
+    use std::io::Write;
+    use std::os::unix::io::FromRawFd;
+    // SAFETY: `answer` is this hook's own dup of stdout, owned and closed here.
+    let mut stdout = unsafe { fs::File::from_raw_fd(answer) };
+    let _ = stdout.write_all(super::hooked::output(provider, canonical, &lines.join("\n\n")).to_string().as_bytes());
 }
 
 /// One hook after its stdin is read; `parent` is the hook's parent process.
@@ -912,6 +946,7 @@ pub async fn local_sessions_set(
             codex_notes.extend(
                 super::native_mcp::configure(&home()?, &installed, false)
                     .into_iter()
+                    .chain(super::hooked::configure(&home()?, &installed, false))
                     .map(|note| format!("{note}.")),
             );
             Ok(())
@@ -1036,6 +1071,7 @@ pub async fn local_sessions_set(
                 if let Ok(home) = home() {
                     let _ = codex::configure_hooks(&home, &installed, false);
                     let _ = super::native_mcp::configure(&home, &installed, false);
+                    let _ = super::hooked::configure(&home, &installed, false);
                 }
             }
             if serving {
@@ -1167,7 +1203,8 @@ pub(crate) fn install_skill(state_dir: &Path, home: &Path) -> Result<Vec<PathBuf
     } else {
         vec![]
     };
-    for root in [".claude", ".codex"] {
+    // Cursor reads `~/.cursor/skills`; Grok CLI has no user skill root we know of.
+    for root in [".claude", ".codex", ".cursor"] {
         if !home.join(root).is_dir() {
             continue;
         }
@@ -1255,6 +1292,7 @@ fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> 
         }
         let _ = codex::configure_hooks(home, &installed, false);
         let _ = super::native_mcp::configure(home, &installed, false);
+        let _ = super::hooked::configure(home, &installed, false);
     }
     let mut notes = Vec::new();
     if claude {
@@ -1266,6 +1304,7 @@ fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> 
         notes.push(format!("Codex hooks were not installed ({reason})"));
     }
     notes.extend(super::native_mcp::configure(home, executable, true));
+    notes.extend(super::hooked::configure(home, executable, true));
     if moved {
         if let Err(reason) = private_write(&record, &executable) {
             notes.push(format!("the hook executable record was not updated ({reason})"));
@@ -1427,6 +1466,50 @@ mod tests {
         assert_eq!(out, json!({"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":line}}));
         assert_eq!(run(vec![]), "", "nothing waiting: no output at all");
         assert!(app.recv(&mut [0u8; 64]).is_err(), "PostToolUse is not a lifecycle event");
+    }
+
+    /// Agent network phase 2: a Cursor or Grok CLI hook registers its session, wakes the app with
+    /// a Claude-shaped datagram, and hands a waiting letter over only on a hook the model reads.
+    #[test]
+    fn local_sessions_hooked_agent_hook_registers_and_hands_over_its_letters() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::io::FromRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let wake = dir.path().join("wake.sock");
+        let app = std::os::unix::net::UnixDatagram::bind(&wake).unwrap();
+        app.set_nonblocking(true).unwrap();
+        let hooked = dir.path().join("hooked");
+        let run = |provider: &str, event: &str, stdin: Value| -> String {
+            let mut fds = [0; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            hooked_hook(provider, event, stdin, fds[1], &wake, Path::new("/Users/a"));
+            let mut out = String::new();
+            unsafe { fs::File::from_raw_fd(fds[0]) }.read_to_string(&mut out).unwrap();
+            out
+        };
+        for (provider, id) in [("cursor", "conv-1"), ("grok", "grok-1")] {
+            assert_eq!(run(provider, "session-start", json!({"session_id": id, "cwd": "/w/api"})), "");
+            let mut buf = [0u8; 2048];
+            let n = app.recv(&mut buf).unwrap();
+            let event = super::super::lifecycle::parse_datagram(&buf[..n]).expect("a datagram the app reads");
+            assert_eq!((event.provider.as_str(), event.event.as_str(), event.session_id.as_str()), (provider, "SessionStart", id));
+        }
+        let sessions = super::super::hooked::discover(&hooked);
+        assert_eq!(sessions.len(), 2, "each exists from its first hook");
+        for s in &sessions {
+            super::super::hooked::deliver(&hooked, s, "r-1", "[Lightbulb teammate contribution] hi").unwrap();
+        }
+        // A prompt hook cannot add context: the letter stays for the next tool call.
+        assert_eq!(run("cursor", "user-prompt-submit", json!({"conversation_id": "conv-1"})), "");
+        let out: Value = serde_json::from_str(&run("cursor", "post-tool-use", json!({"conversation_id": "conv-1"}))).unwrap();
+        assert_eq!(out, json!({"additional_context": "[Lightbulb teammate contribution] hi"}));
+        assert_eq!(run("cursor", "stop", json!({"conversation_id": "conv-1"})), "", "handed over once");
+        // Grok's Stop counts only at a turn's end, and its SessionStart output is dropped.
+        assert_eq!(run("grok", "stop", json!({"session_id": "grok-1", "reason": "shutdown"})), "");
+        let out: Value = serde_json::from_str(&run("grok", "stop", json!({"session_id": "grok-1", "reason": "end_turn"}))).unwrap();
+        assert_eq!(out, json!({"decision": "block", "reason": "[Lightbulb teammate contribution] hi"}));
     }
 
     #[test]

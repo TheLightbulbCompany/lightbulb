@@ -15,6 +15,31 @@ pub(crate) const WAITING_TEXT_MAX: usize = 200;
 pub(crate) enum Provider {
     Claude,
     Codex,
+    /// Cursor and Grok CLI: no session registry, no push channel. A session exists from its
+    /// first hook and hears a message at its next one (`super::hooked`).
+    Cursor,
+    Grok,
+}
+
+impl Provider {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Provider::Claude => "claude",
+            Provider::Codex => "codex",
+            Provider::Cursor => "cursor",
+            Provider::Grok => "grok",
+        }
+    }
+
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "claude" => Provider::Claude,
+            "codex" => Provider::Codex,
+            "cursor" => Provider::Cursor,
+            "grok" => Provider::Grok,
+            _ => return None,
+        })
+    }
 }
 
 /// Native process identity, independent of executable aliases and relay generations.
@@ -43,7 +68,10 @@ fn hook_ancestor(
     mut current: super::Process,
     mut parent: impl FnMut(&super::Process) -> Option<super::Process>,
 ) -> Option<HookProcess> {
-    if !matches!(provider, "claude" | "codex") { return None; }
+    if !matches!(provider, "claude" | "codex" | "cursor" | "grok") { return None; }
+    // Cursor's agent runs under more than one executable name (`cursor-agent`, the IDE's helper),
+    // Grok CLI under its runtime's: the agent is the first process above the hook's shells.
+    let hooked = super::hooked::provider(provider);
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..8 {
         if current.pid <= 1 || current.birth_micros == 0 || !seen.insert(current.pid) {
@@ -51,7 +79,8 @@ fn hook_ancestor(
         }
         let path = &current.executable;
         let name = path.file_name()?.to_str()?;
-        if name == provider || (provider == "claude" && crate::holder::run::is_claude_program(path)) {
+        let shell = matches!(name, "sh" | "bash" | "zsh" | "dash");
+        if (hooked && !shell) || name == provider || (provider == "claude" && crate::holder::run::is_claude_program(path)) {
             return Some(HookProcess::of(&current));
         }
         if !matches!(name, "sh" | "bash" | "zsh" | "dash") { return None; }
@@ -77,7 +106,7 @@ fn checked_parent(
     Some(first)
 }
 
-fn hook_process(provider: &str) -> Option<HookProcess> {
+pub(super) fn hook_process(provider: &str) -> Option<HookProcess> {
     let own = super::process(std::process::id()).ok()?;
     let parent = |child: &super::Process| checked_parent(
         child,
@@ -275,11 +304,7 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
         }
         Some(source)
     };
-    let provider = match v["provider"].as_str()? {
-        "claude" => Provider::Claude,
-        "codex" => Provider::Codex,
-        _ => return None,
-    };
+    let provider = Provider::parse(v["provider"].as_str()?)?;
     let s = |k: &str| v[k].as_str().map(str::to_owned);
     Some(HookEvent {
         provider,

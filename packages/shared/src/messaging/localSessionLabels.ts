@@ -1,6 +1,6 @@
 import type { LocalSession } from "./types";
 
-const TOOL_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex" };
+const TOOL_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", cursor: "Cursor", grok: "Grok" };
 /** The coding tool's display name; an unknown future provider shows its raw id. */
 export const sessionToolName = (provider: string): string => TOOL_NAMES[provider] ?? provider;
 /** A tool's title is the first prompt, and a prompt that opens with a pasted link made the title

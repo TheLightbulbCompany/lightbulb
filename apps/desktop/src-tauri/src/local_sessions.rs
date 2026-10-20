@@ -2,6 +2,7 @@
 mod approval;
 mod claude;
 mod codex;
+mod hooked;
 pub mod enrollment;
 pub(crate) mod lifecycle;
 mod native_mcp;

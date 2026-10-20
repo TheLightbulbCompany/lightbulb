@@ -206,3 +206,19 @@ async def test_the_loop_window_counts_from_submit_not_from_a_later_dispatch(wire
         )
     with patch("time.time", return_value=start_at + 601):
         await _send(ALICE, sid, "sub-12", via_client="claude")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["cursor", "grok"])
+async def test_a_hooked_agent_registers_and_its_delivery_word_is_next_step(wired, provider):
+    """Cursor and Grok CLI: a session from its first hook; a message lands at its next hook."""
+    await start(wired)
+    hooked = registration(provider=provider, nativeConversationId=f"{provider}-1", providerVersion="hook")
+    hooked["session"].pop("activeTurnId")
+    sid = (await relay(wired).handle_message("conn-1", hooked))["sessionId"]
+    row = await repo.get_session(OWNER, sid)
+    assert row["provider"] == provider and row["capabilities"]["sendMode"] == "queue"
+    live = await _send(ALICE, sid, f"{provider}-live", via_client="claude")
+    assert live["state"] in {"pending", "dispatched"} and live["delivery"] == "next step"
+    _offline(sid)
+    assert (await _send(ALICE, sid, f"{provider}-off", via_client="claude"))["delivery"] == "queued"

@@ -2230,6 +2230,9 @@ async def agent_channels(owner_id: str, agent_id: str, query: str = "", limit: i
             needle and needle not in (meta.get("name") or "").casefold()
         ):
             continue
+        # The by-member GSI is eventually consistent: a just-removed agent can still be listed.
+        if await messaging_repo.get_member(meta["roomId"], "agent", agent_id) is None:
+            continue
         if await messaging_repo.has_foreign_members(meta["roomId"], owner_id):
             continue
         rooms.append({"roomId": meta["roomId"], "name": meta.get("name"), "kind": "channel"})

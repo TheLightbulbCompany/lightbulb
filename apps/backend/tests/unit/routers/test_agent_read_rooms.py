@@ -221,7 +221,13 @@ def test_a_paperclip_run_reads_back_only_channels_its_agent_is_in(client, monkey
         {"meta": {**meta, "roomId": "a"}},
         {"meta": {**meta, "roomId": "b", "kind": "dm", "name": "GTM dm"}},
         {"meta": {**meta, "roomId": "c", "name": "Sales"}},
+        # A stale by-member GSI row: the agent was just removed, its base member row is gone.
+        {"meta": {**meta, "roomId": "d", "name": "GTM old"}},
     ]
     monkeypatch.setattr(messaging_repo, "list_rooms_for_member", AsyncMock(return_value=listed))
+    seated = {"a", "b", "c"}
+    monkeypatch.setattr(
+        messaging_repo, "get_member", AsyncMock(side_effect=lambda room, kind, mid: {} if room in seated else None)
+    )
     found = client.get("/api/v1/messaging/agent-read/rooms?query=gtm", headers=headers).json()
     assert found == {"rooms": [{"roomId": "a", "name": "GTM Strategy", "kind": "channel"}], "total": 1}

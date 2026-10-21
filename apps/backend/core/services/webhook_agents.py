@@ -372,6 +372,8 @@ async def send(
     sender = ((await _sender_label(label, owner_id, agent["ownerUserId"])) or {}).get("displayName") or "A teammate"
     held = user_id != agent["ownerUserId"] and user_id not in (agent.get("allowedSenders") or [])
     now = int(time.time())
+    # The first held send from this person files the ask (one Needs-you item); later ones join it.
+    asked = (await _held(owner_id, agent_id, user_id))[:1] if held else []
     row = {
         "pk": pk,
         "sk": sk,
@@ -381,11 +383,13 @@ async def send(
         "actorUserId": user_id,
         "from": sender,
         "submittedAt": now,
+        "submittedNs": time.time_ns(),  # orders a burst within one second
         "state": "awaiting_approval" if held else "sending",
         "expiresAt": now + (HOLD_TTL_S if held else SEND_TTL_S),
         **({"sourceSessionId": source_session_id} if source_session_id else {}),
         **({"viaClient": via_client} if via_client else {}),
         **({"text": text} if held else {}),  # kept only until the person answers
+        **({"askId": asked[0].get("askId") or asked[0]["requestId"]} if asked else {}),
     }
     try:
         await run_in_thread(repo._table().put_item, Item=row, ConditionExpression="attribute_not_exists(sk)")
@@ -394,8 +398,72 @@ async def send(
             raise
         return await send(auth, agent_id, text, request_id, via_client=via_client, source_session_id=source_session_id)
     if held:
+        await _announce_held(owner_id, agent, row, filed=not asked)
         return receipt(row)
     return receipt(await _deliver(owner_id, agent, row, text))
+
+
+def ask_item_id(agent_id: str, sender: str, ask_id: str) -> str:
+    """The Activity item for one person's ask to reach a webhook agent (``activity.run_action``)."""
+    return f"agenthook:{agent_id}:{sender}:{ask_id}"
+
+
+def _first(name: str, user_id: str) -> str:
+    return name.split()[0] if name and name != user_id else ""
+
+
+async def _invalidate_activity(owner_id: str, user_id: str) -> None:
+    from core.services.live_events import get_live_event_publisher
+    from core.services.messaging import make_live_event
+
+    try:
+        await get_live_event_publisher().publish_user(
+            owner_id, user_id, make_live_event("runtime.resource.invalidated", {"resource": "activity"})
+        )
+    except Exception:  # noqa: BLE001 -- the badge catches up on the next focus
+        logger.warning("webhook agent activity live event failed owner=%s", owner_id)
+
+
+async def _announce_held(owner_id: str, agent: dict, send: dict, *, filed: bool) -> None:
+    """A held send tells the agent's person the way a held session send does: the ask's Needs-you
+    item (once per ask), a live event, and a push with the message. Each is best effort."""
+    from core.services import notification_copy as copy
+    from core.services.local_session_relay import ACTIVITY_TTL_S
+    from core.services.messaging import human_display_name
+    from core.services.push_service import send_push_to_user
+
+    person, sender = agent["ownerUserId"], send["actorUserId"]
+    try:
+        name, owner_name = await human_display_name(sender), await human_display_name(person)
+    except Exception:  # noqa: BLE001
+        name, owner_name = sender, person
+    who = name if name != sender else "A teammate"
+    whose = f"{_first(owner_name, person)}'s {agent['name']}" if _first(owner_name, person) else agent["name"]
+    if filed:
+        created = utc_now_iso()
+        try:
+            await repo.put_activity_row(
+                {
+                    "pk": repo.activity_pk(owner_id, person),
+                    "sk": repo.activity_sk(created, ask_item_id(agent["agentId"], sender, send["requestId"])),
+                    "kind": "webhook_agent",
+                    "agentId": agent["agentId"],
+                    "requesterId": sender,
+                    "requesterName": who,
+                    "requestId": send["requestId"],
+                    "createdAt": created,
+                    "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
+                }
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("webhook agent ask activity row failed owner=%s", owner_id)
+    await _invalidate_activity(owner_id, person)
+    title = f"{who} wants to message {whose}"
+    body = copy.line(send.get("text"), 140) or "Allow them to message it."
+    try:
+        await send_push_to_user(person, title, body, {"source": "webhook_agent", "webhookAgentId": agent["agentId"]})
+    except Exception:  # noqa: BLE001
+        logger.warning("webhook agent held push failed owner=%s", owner_id)
 
 
 async def _held(owner_id: str, agent_id: str, sender: str | None = None) -> list[dict]:
@@ -408,13 +476,16 @@ async def _held(owner_id: str, agent_id: str, sender: str | None = None) -> list
             and int(s.get("expiresAt") or 0) > now
             and (sender is None or s["actorUserId"] == sender)
         ),
-        key=lambda s: s["submittedAt"],
+        key=lambda s: (s["submittedAt"], s.get("submittedNs", 0)),
     )
 
 
 async def decide(owner_id: str, user_id: str, agent_id: str, sender: str, decision: str) -> int:
-    """The agent's person answers a held sender: allow lets them (and so all their agents) straight
-    in and delivers what waited, oldest first; decline drops what waited. Returns how many."""
+    """The agent's person answers a held sender, from Settings or the Activity item alike: ``send``
+    delivers what waited (oldest first) and nothing more; ``allow`` also lets them (and so all their
+    agents) straight in from now on; ``decline`` drops what waited. Returns how many."""
+    if decision not in ("send", "allow", "decline"):
+        raise ApiProblem("INVALID_REQUEST", "Answer send, allow or decline.")
     agent = await _owned(owner_id, user_id, agent_id)
     table = repo._table()
     if decision == "allow" and sender not in (agent.get("allowedSenders") or []):
@@ -434,7 +505,7 @@ async def decide(owner_id: str, user_id: str, agent_id: str, sender: str, decisi
                 ConditionExpression="#s = :held",
                 ExpressionAttributeNames={"#s": "state"},
                 ExpressionAttributeValues={
-                    ":s": "sending" if decision == "allow" else "declined",
+                    ":s": "declined" if decision == "decline" else "sending",
                     ":held": "awaiting_approval",
                 },
             )
@@ -442,7 +513,7 @@ async def decide(owner_id: str, user_id: str, agent_id: str, sender: str, decisi
             if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                 raise
             continue
-        if decision == "allow":
+        if decision != "decline":
             await _deliver(owner_id, agent, held, held.get("text") or "")
         else:
             await run_in_thread(
@@ -452,7 +523,19 @@ async def decide(owner_id: str, user_id: str, agent_id: str, sender: str, decisi
                 ExpressionAttributeNames={"#text": "text"},
             )
         count += 1
+    if count:
+        await _invalidate_activity(owner_id, user_id)  # the Needs-you item now reads answered
     return count
+
+
+async def ask_view(owner_id: str, agent_id: str, sender: str, ask_id: str) -> tuple[dict, list[dict]] | None:
+    """(the agent, this person's sends still held) for one ask, or None when the agent is gone.
+    The ask is open while the send that filed it is still held."""
+    agent = await get_agent(owner_id, agent_id)
+    if agent is None:
+        return None
+    held = await _held(owner_id, agent_id, sender)
+    return agent, [s for s in held if (s.get("askId") or s["requestId"]) == ask_id]
 
 
 async def remove_sender(owner_id: str, user_id: str, agent_id: str, sender: str) -> None:

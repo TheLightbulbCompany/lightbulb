@@ -192,7 +192,7 @@ async def test_removing_an_agent_or_its_member_deletes_it_and_its_key(calls, tab
     with pytest.raises(ApiProblem):
         await webhook_agents.send(_auth(AGENT_PERSON), first["agentId"], "x", str(uuid.uuid4()))
     await webhook_agents.delete_for_member(OWNER, AGENT_PERSON)
-    assert table.scan()["Items"] == []
+    assert [i for i in table.scan()["Items"] if not i["pk"].startswith("ACTIVITY#")] == []  # asks lapse by TTL
     sm = boto3.client("secretsmanager", region_name="us-east-1")
     for agent in (first, second):
         with pytest.raises(sm.exceptions.ResourceNotFoundException):
@@ -241,3 +241,89 @@ async def test_a_shared_session_sends_to_an_agent_as_itself(calls):
 async def test_a_rejected_register_body_never_echoes_the_key(async_client):
     response = await async_client.post("/api/v1/settings/webhook-agents", json={"key": KEY, "name": 5})
     assert response.status_code == 400 and KEY not in response.text
+
+
+@pytest.fixture
+def notices(calls, monkeypatch):
+    """The owner's push and live events, captured."""
+    from types import SimpleNamespace
+
+    push, live = AsyncMock(), AsyncMock()
+    monkeypatch.setattr("core.services.push_service.send_push_to_user", push)
+    monkeypatch.setattr(
+        "core.services.live_events.get_live_event_publisher", lambda: SimpleNamespace(publish_user=live)
+    )
+    names = {AGENT_PERSON: "Pras Owner", TEAMMATE: "Aden Mate"}
+    monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(side_effect=lambda u: names[u]))
+    return SimpleNamespace(push=push, live=live)
+
+
+async def _items(user: str = AGENT_PERSON):
+    from core.repositories import messaging_repo
+    from core.services import activity
+
+    rows = await messaging_repo._query(messaging_repo.activity_pk(OWNER, user))
+    return await activity._render_webhook_agent_rows(OWNER, user, rows, None)
+
+
+async def _act(user: str, item_id: str, action: str):
+    from core.services import activity
+
+    return await activity.run_action(_auth(user), item_id, action, activity.ActivityActionRequest(), teams_ctx=None)
+
+
+@pytest.mark.asyncio
+async def test_a_held_send_reaches_its_owner_like_a_held_session_send(notices):
+    agent = await _agent()
+    await webhook_agents.send(_auth(TEAMMATE), agent["agentId"], "Can you check the build?", str(uuid.uuid4()))
+    await webhook_agents.send(_auth(TEAMMATE), agent["agentId"], "Second thought", str(uuid.uuid4()))
+    # A push per held message, with its text; one Needs-you item for the ask.
+    assert notices.push.await_count == 2
+    user, title, body, data = notices.push.await_args_list[0].args
+    assert user == AGENT_PERSON and title == "Aden Mate wants to message Pras's Grok Bot"
+    assert body == "Can you check the build?" and data["source"] == "webhook_agent"
+    assert notices.live.await_args.args[:2] == (OWNER, AGENT_PERSON)
+    (item,) = await _items()
+    assert item.state == "open" and item.subtype == "join_request" and item.kind == "session"
+    assert [a.id for a in item.actions] == ["send", "decline", "allow"]
+    assert item.summary.preview.text == "Second thought"
+    assert await _items(TEAMMATE) == []  # only the agent's person is asked
+
+
+@pytest.mark.asyncio
+async def test_send_from_activity_delivers_once_without_allowing(notices, calls):
+    agent = await _agent()
+    await webhook_agents.send(_auth(TEAMMATE), agent["agentId"], "first", str(uuid.uuid4()))
+    (item,) = await _items()
+    with pytest.raises(ApiProblem):  # not their agent: not their item
+        await _act(TEAMMATE, item.id, "send")
+    done = await _act(AGENT_PERSON, item.id, "send")
+    assert done.state == "resolved" and done.actions == [] and len(calls) == 1
+    assert (await _act(AGENT_PERSON, item.id, "send")).state == "resolved" and len(calls) == 1  # a retried tap
+    # Not allowed: the next one waits again, as a new ask.
+    later = await webhook_agents.send(_auth(TEAMMATE), agent["agentId"], "second", str(uuid.uuid4()))
+    assert later["state"] == "awaiting_approval"
+    assert sorted(i.state for i in await _items()) == ["open", "resolved"]
+
+
+@pytest.mark.parametrize("action, state", [("allow", "delivered"), ("decline", "declined")])
+@pytest.mark.asyncio
+async def test_allow_and_decline_from_activity_match_settings(notices, calls, action, state):
+    agent = await _agent()
+    rid = str(uuid.uuid4())
+    await webhook_agents.send(_auth(TEAMMATE), agent["agentId"], "hello", rid)
+    (item,) = await _items()
+    await _act(AGENT_PERSON, item.id, action)
+    assert (await webhook_agents.get_receipt(OWNER, TEAMMATE, agent["agentId"], rid))["state"] == state
+    (mine,) = await webhook_agents.list_mine(OWNER, AGENT_PERSON)
+    assert [p["userId"] for p in mine["allowedSenders"]] == ([TEAMMATE] if action == "allow" else [])
+    assert len(calls) == (1 if action == "allow" else 0)
+
+
+@pytest.mark.asyncio
+async def test_answering_in_settings_resolves_the_activity_item(notices):
+    agent = await _agent()
+    await webhook_agents.send(_auth(TEAMMATE), agent["agentId"], "hello", str(uuid.uuid4()))
+    assert await webhook_agents.decide(OWNER, AGENT_PERSON, agent["agentId"], TEAMMATE, "send") == 1
+    (item,) = await _items()
+    assert item.state == "resolved"

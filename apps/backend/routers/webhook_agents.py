@@ -22,7 +22,7 @@ class RegisterWebhookAgent(BaseModel):
 
 
 class SenderDecision(BaseModel):
-    decision: Literal["allow", "decline"]
+    decision: Literal["send", "allow", "decline"]
 
 
 async def _call(call):

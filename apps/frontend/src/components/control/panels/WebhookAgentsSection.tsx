@@ -103,7 +103,9 @@ export function WebhookAgentsSection() {
                   {a.waiting.map((w) => <div key={w.userId} className="flex flex-wrap items-center gap-2 text-[var(--midnight)]">
                     {w.name} sent {w.count} message{w.count === 1 ? "" : "s"}.
                     <Button size="sm" disabled={busy}
-                      onClick={() => void run(() => api.post(path(a, w.userId), { decision: "allow" }), "Couldn't allow them.")}>Allow</Button>
+                      onClick={() => void run(() => api.post(path(a, w.userId), { decision: "send" }), "Couldn't send it.")}>Send</Button>
+                    <Button size="sm" variant="outline" disabled={busy}
+                      onClick={() => void run(() => api.post(path(a, w.userId), { decision: "allow" }), "Couldn't allow them.")}>Always allow</Button>
                     <Button size="sm" variant="ghost" disabled={busy}
                       onClick={() => void run(() => api.post(path(a, w.userId), { decision: "decline" }), "Couldn't decline.")}>Decline</Button>
                   </div>)}

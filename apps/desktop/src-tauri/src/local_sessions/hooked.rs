@@ -313,8 +313,27 @@ fn private_or_existing_dir(path: &Path) -> Result<()> {
     fs::DirBuilder::new().recursive(true).mode(0o700).create(path).map_err(|e| e.to_string())
 }
 
-fn server_ours(command: Option<&str>, args: &[&str], executable: &Path) -> bool {
-    command == executable.to_str() && args == ["session-mcp"]
+/// Who holds the `lightbulb` MCP name: nobody, this executable's `session-mcp` (command AND args),
+/// Lightbulb's hosted server (replaced, as for Claude and Codex), or another tool (left alone).
+#[derive(PartialEq)]
+enum Slot {
+    Absent,
+    Ours,
+    Hosted,
+    Foreign,
+}
+
+fn slot(present: bool, command: Option<&str>, args: &[&str], url: Option<&str>, executable: &Path) -> Slot {
+    match () {
+        _ if !present => Slot::Absent,
+        _ if command == executable.to_str() && args == ["session-mcp"] => Slot::Ours,
+        _ if command.is_none() && url.is_some_and(|u| u.contains("thelightbulb.company/mcp")) => Slot::Hosted,
+        _ => Slot::Foreign,
+    }
+}
+
+fn foreign_note(agent: &str) -> String {
+    format!("{agent} already has a lightbulb MCP server that is not Lightbulb's; it was left as it is")
 }
 
 /// `~/.cursor/mcp.json`'s `mcpServers.lightbulb`: this executable's `session-mcp`.
@@ -324,22 +343,26 @@ fn cursor_mcp(home: &Path, executable: &Path, enabled: bool, notes: &mut Vec<Str
     let mut doc = original.clone().unwrap_or_else(|| json!({}));
     let current = doc["mcpServers"]["lightbulb"].clone();
     let args: Vec<&str> = current["args"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    let is_ours = !current.is_null() && args == ["session-mcp"];
-    if enabled {
-        if !current.is_null() && !is_ours {
-            notes.push(format!("cursor: {}", super::native_mcp::REPLACED_NOTE));
-        }
-        if !server_ours(current["command"].as_str(), &args, executable) {
+    let held = slot(!current.is_null(), current["command"].as_str(), &args, current["url"].as_str(), executable);
+    match (enabled, held) {
+        (true, Slot::Foreign) => notes.push(foreign_note("cursor")),
+        (true, Slot::Ours) => {}
+        (true, held) => {
+            if held == Slot::Hosted {
+                notes.push(format!("cursor: {}", super::native_mcp::REPLACED_NOTE));
+            }
             let servers = doc.as_object_mut().ok_or("invalid Cursor MCP config")?.entry("mcpServers").or_insert_with(|| json!({}));
             servers.as_object_mut().ok_or("invalid Cursor MCP config")?.insert(
                 "lightbulb".into(),
                 json!({"type": "stdio", "command": executable.to_string_lossy(), "args": ["session-mcp"]}),
             );
         }
-    } else if is_ours {
-        if let Some(servers) = doc.get_mut("mcpServers").and_then(Value::as_object_mut) {
-            servers.remove("lightbulb");
+        (false, Slot::Ours) => {
+            if let Some(servers) = doc.get_mut("mcpServers").and_then(Value::as_object_mut) {
+                servers.remove("lightbulb");
+            }
         }
+        (false, _) => {}
     }
     write_if_changed(&path, &original, &doc)
 }
@@ -347,7 +370,7 @@ fn cursor_mcp(home: &Path, executable: &Path, enabled: bool, notes: &mut Vec<Str
 const GROK_ALLOW: &str = "MCPTool(lightbulb__*)";
 
 /// `~/.grok/config.toml`: `[mcp_servers.lightbulb]`, and the `permission.allow` rule without which
-/// Grok asks before every lightbulb call.
+/// Grok asks before every lightbulb call. Neither is written beside another tool's `lightbulb`.
 fn grok_mcp(home: &Path, executable: &Path, enabled: bool, notes: &mut Vec<String>) -> Result<()> {
     let path = home.join(".grok/config.toml");
     let original = match fs::read_to_string(&path) {
@@ -357,18 +380,21 @@ fn grok_mcp(home: &Path, executable: &Path, enabled: bool, notes: &mut Vec<Strin
     };
     let mut doc: toml_edit::DocumentMut = original.parse().map_err(|_| "invalid Grok config")?;
     let current = doc.get("mcp_servers").and_then(|s| s.get("lightbulb"));
+    let text = |k: &str| current.and_then(|s| s.get(k)).and_then(toml_edit::Item::as_str).map(str::to_owned);
     let args: Vec<String> = current
         .and_then(|s| s.get("args"))
         .and_then(toml_edit::Item::as_array)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
         .unwrap_or_default();
-    let is_ours = current.is_some() && args == ["session-mcp"];
-    let command = current.and_then(|s| s.get("command")).and_then(toml_edit::Item::as_str).map(str::to_owned);
-    if enabled {
-        if current.is_some() && !is_ours {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let held = slot(current.is_some(), text("command").as_deref(), &args, text("url").as_deref(), executable);
+    if enabled && held == Slot::Foreign {
+        notes.push(foreign_note("grok"));
+    } else if enabled {
+        if held == Slot::Hosted {
             notes.push(format!("grok: {}", super::native_mcp::REPLACED_NOTE));
         }
-        if !(is_ours && command.as_deref() == executable.to_str()) {
+        if held != Slot::Ours {
             let servers = doc.entry("mcp_servers").or_insert(toml_edit::table());
             if let Some(t) = servers.as_table_mut() {
                 t.set_implicit(true);
@@ -386,7 +412,7 @@ fn grok_mcp(home: &Path, executable: &Path, enabled: bool, notes: &mut Vec<Strin
                 allow.push(GROK_ALLOW);
             }
         }
-    } else if is_ours {
+    } else if held == Slot::Ours {
         if let Some(servers) = doc.get_mut("mcp_servers").and_then(|t| t.as_table_like_mut()) {
             servers.remove("lightbulb");
         }
@@ -576,5 +602,31 @@ mod tests {
         assert_eq!(notes, vec![format!("cursor: {}", super::super::native_mcp::REPLACED_NOTE)]);
         let mcp: Value = serde_json::from_slice(&fs::read(h.join(".cursor/mcp.json")).unwrap()).unwrap();
         assert_eq!(mcp["mcpServers"]["lightbulb"]["args"], json!(["session-mcp"]));
+    }
+
+    /// Ours is this executable's command AND `session-mcp`: another tool's `lightbulb`, even one
+    /// that also says `session-mcp`, is never overwritten or deleted, and Grok gets no allow rule for it.
+    #[test]
+    fn hooked_setup_never_touches_another_tools_lightbulb_entry() {
+        for theirs in [r#"{"command":"/usr/local/bin/other","args":["serve"]}"#, r#"{"command":"/opt/other","args":["session-mcp"]}"#] {
+            let home = private_tmp();
+            let h = home.path();
+            fs::create_dir_all(h.join(".cursor")).unwrap();
+            fs::create_dir_all(h.join(".grok")).unwrap();
+            let cursor = format!(r#"{{"mcpServers":{{"lightbulb":{theirs}}}}}"#);
+            fs::write(h.join(".cursor/mcp.json"), &cursor).unwrap();
+            let entry: Value = serde_json::from_str(theirs).unwrap();
+            let args = entry["args"].as_array().unwrap().iter().map(|a| format!("{a}")).collect::<Vec<_>>().join(", ");
+            let grok = format!("[mcp_servers.lightbulb]\ncommand = \"{}\"\nargs = [{args}]\n", entry["command"].as_str().unwrap());
+            fs::write(h.join(".grok/config.toml"), &grok).unwrap();
+            for enabled in [true, false] {
+                let notes = configure(h, Path::new(EXE), enabled);
+                assert_eq!(notes, if enabled { vec![foreign_note("cursor"), foreign_note("grok")] } else { vec![] });
+                let mcp: Value = serde_json::from_slice(&fs::read(h.join(".cursor/mcp.json")).unwrap()).unwrap();
+                assert_eq!(mcp["mcpServers"]["lightbulb"], entry, "cursor entry kept ({enabled})");
+                let config = fs::read_to_string(h.join(".grok/config.toml")).unwrap();
+                assert!(config.starts_with(&grok) && !config.contains(GROK_ALLOW), "{config}");
+            }
+        }
     }
 }

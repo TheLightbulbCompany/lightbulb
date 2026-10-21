@@ -26,6 +26,14 @@ it("tells a Mac that shares sessions, once", async () => {
   expect(toast).toHaveBeenCalledTimes(1);
 });
 
+it("shows the Cursor and Grok wording once more to someone who dismissed the old notice", async () => {
+  localStorage.setItem("lightbulb.desktop.allSessionsNotice", "1");
+  invoke.mockResolvedValue({ enrollment: { enabled: true } });
+  render(<ExplicitSharingNotice />);
+  await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+  expect(EXPLICIT_SHARING_SEEN_KEY).not.toBe("lightbulb.desktop.allSessionsNotice");
+});
+
 it("says nothing where sharing is off or outside the desktop app", async () => {
   invoke.mockResolvedValue({ enrollment: null });
   render(<ExplicitSharingNotice />);

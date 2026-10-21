@@ -3,7 +3,9 @@
 import { useEffect } from "react";
 import { toast } from "sonner";
 
-export const EXPLICIT_SHARING_SEEN_KEY = "lightbulb.desktop.allSessionsNotice";
+// v2: the notice names Cursor and Grok CLI, which Share every new session now shares too; anyone
+// who dismissed the Claude-and-Codex wording sees it once more.
+export const EXPLICIT_SHARING_SEEN_KEY = "lightbulb.desktop.allSessionsNotice.v2";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 

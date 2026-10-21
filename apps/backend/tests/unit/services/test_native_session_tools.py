@@ -65,6 +65,7 @@ async def test_native_send_finish_aliases_result_in_write_and_idempotency_check(
 
 @pytest.mark.asyncio
 async def test_people_targets_require_an_existing_direct_message(monkeypatch):
+    monkeypatch.setattr("core.services.webhook_agents.targets", AsyncMock(return_value=[]))
     channel_person = SimpleNamespace(kind="human", id="user_channel", display_name="Channel", mention_handle="channel")
     dm_person = SimpleNamespace(kind="human", id="user_dm", display_name="DM", mention_handle="dm")
     rooms = [
@@ -82,6 +83,8 @@ async def test_people_targets_require_an_existing_direct_message(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_session_targets_exclude_offline_and_unsendable_sessions(monkeypatch):
+    monkeypatch.setattr("core.services.webhook_agents.targets", AsyncMock(return_value=[]))
+
     def session(status: str, send_mode: str, shared: bool = True):
         return SimpleNamespace(
             shared=shared,

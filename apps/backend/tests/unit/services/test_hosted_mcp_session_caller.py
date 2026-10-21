@@ -132,6 +132,7 @@ async def test_a_session_receipt_reads_its_own_ledger(as_session, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_find_sessions_marks_the_calling_session(as_session, monkeypatch):
+    monkeypatch.setattr("core.services.webhook_agents.targets", AsyncMock(return_value=[]))
     await as_session()
     monkeypatch.setattr(
         hosted_mcp,

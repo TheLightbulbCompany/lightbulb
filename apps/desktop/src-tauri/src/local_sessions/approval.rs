@@ -225,7 +225,7 @@ fn private_send_args(input: &Value) -> bool {
     let body = input["text"].as_str().unwrap_or("");
     let request = input["requestId"].as_str().unwrap_or("");
     destination.len() <= 256
-        && ["room:", "person:", "session:"]
+        && ["room:", "person:", "session:", "agent:"]
             .iter()
             .any(|prefix| destination.starts_with(prefix))
         && !body.trim().is_empty()

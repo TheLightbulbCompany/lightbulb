@@ -15,6 +15,21 @@ class CreateAgentKey(BaseModel):
     expires_in_days: int | None = agent_keys.DEFAULT_EXPIRY_DAYS
 
 
+async def require_live_member(auth: AuthContext) -> str:
+    """The caller's workspace, checked with Clerk now: a session JWT can outlive removal (the same
+    check the verifier makes). Fails closed. Webhook agents use it too."""
+    owner_id = resolve_owner_id(auth)
+    try:
+        member = any(
+            o["id"] == owner_id for o in await clerk_admin.list_user_organizations(auth.user_id, limit=100, strict=True)
+        )
+    except Exception:
+        member = False
+    if not member:
+        raise HTTPException(status_code=403, detail="You are not a member of this workspace.")
+    return owner_id
+
+
 @router.get("")
 async def list_agent_keys(auth: AuthContext = Depends(get_current_user)):
     return {"keys": await agent_keys.list_keys(resolve_owner_id(auth), auth.user_id)}
@@ -24,16 +39,7 @@ async def list_agent_keys(auth: AuthContext = Depends(get_current_user)):
 async def create_agent_key(body: CreateAgentKey, auth: AuthContext = Depends(get_current_user)):
     if body.expires_in_days is not None and not 1 <= body.expires_in_days <= 365:
         raise HTTPException(status_code=400, detail="Expiry must be 1-365 days, or none.")
-    owner_id = resolve_owner_id(auth)
-    # A session JWT can outlive removal: ask Clerk now, the same check the verifier makes. Fail closed.
-    try:
-        member = any(
-            o["id"] == owner_id for o in await clerk_admin.list_user_organizations(auth.user_id, limit=100, strict=True)
-        )
-    except Exception:
-        member = False
-    if not member:
-        raise HTTPException(status_code=403, detail="You are not a member of this workspace.")
+    owner_id = await require_live_member(auth)
     try:
         return await agent_keys.create_key(owner_id, auth.user_id, body.name, body.expires_in_days)
     except agent_keys.AgentKeyError as exc:

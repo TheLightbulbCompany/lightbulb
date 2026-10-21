@@ -394,10 +394,10 @@ pub(super) fn internal(name: &str, args: &Value) -> Option<(&'static str, Value)
         {
             Some(("update_task", Value::Object(args.clone())))
         }
-        "send_message" if only(&["room_id", "person_id", "session_id", "text", "request_id", "reply_to_message_id"])
+        "send_message" if only(&["room_id", "person_id", "session_id", "agent_id", "text", "request_id", "reply_to_message_id"])
             && args.get("reply_to_message_id").is_none_or(Value::is_null) =>
         {
-            let mut ids = [("room", "room_id"), ("person", "person_id"), ("session", "session_id")]
+            let mut ids = [("room", "room_id"), ("person", "person_id"), ("session", "session_id"), ("agent", "agent_id")]
                 .into_iter()
                 .filter_map(|(kind, key)| args.get(key).map(|v| (kind, v)));
             let (kind, id) = ids.next()?;
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn public_calls_map_onto_the_internal_send_and_receipt() {
         let r = "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449";
-        for (key, kind) in [("room_id", "room"), ("person_id", "person"), ("session_id", "session")] {
+        for (key, kind) in [("room_id", "room"), ("person_id", "person"), ("session_id", "session"), ("agent_id", "agent")] {
             assert_eq!(
                 internal("send_message", &json!({key:"x1","text":"hi","request_id":r})),
                 Some(("send", json!({"destination":format!("{kind}:x1"),"text":"hi","requestId":r})))

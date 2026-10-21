@@ -519,7 +519,7 @@ async def _handle_organization_membership_deleted(
     if not user_id or not org_id:
         raise HTTPException(status_code=400, detail="Clerk membership deletion target unavailable")
 
-    from core.services import agent_keys
+    from core.services import agent_keys, webhook_agents
     from core.services.mac_browser import revoke_member_soon
     from core.services.messaging import revoke_human_membership
     from core.services.text_lines import unlink_member
@@ -532,6 +532,7 @@ async def _handle_organization_membership_deleted(
         # disabled. Repeated delivery is idempotent.
         await revoke_human_membership(org_id, user_id)
         await agent_keys.delete_for_member(org_id, user_id)  # a rejoin must not revive old keys
+        await webhook_agents.delete_for_member(org_id, user_id)  # their webhook agents and keys go too
         await unlink_member(org_id, user_id)  # their texts to the business's number are a customer's now
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
         # Only once the revocation landed and this delete is still the current lifecycle event:

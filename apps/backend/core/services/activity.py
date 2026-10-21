@@ -756,6 +756,91 @@ async def _render_extension_rows(owner_id: str, rows: list[dict], seen: str | No
     return [render_extension_request(req, seen=seen) for req in found if req]
 
 
+WEBHOOK_ASK_REASON = (
+    "Send delivers what they sent. Always allow also lets them, and their agents, reach it directly from now on."
+)
+
+
+def render_webhook_agent_ask(row: dict, agent: dict, held: list[dict], *, seen: str | None) -> ActivityItem:
+    """A teammate's held message to one of the viewer's webhook agents (``webhook_agents``): the
+    held session send's item (Send / Decline / Always allow), open while what they sent waits."""
+    from core.services import webhook_agents
+
+    sender = row["requesterId"]
+    name = str(row.get("requesterName") or "A teammate")
+    open_ = bool(held)
+    created = _when(row["createdAt"])
+    actor = ActivityActor(kind="human", id=sender, name=name)
+    latest = held[-1].get("text") if held else None
+    first = name.split()[0] if name else "them"
+    return ActivityItem(
+        id=webhook_agents.ask_item_id(agent["agentId"], sender, row["requestId"]),
+        kind="session",
+        subtype="join_request",
+        actor=actor,
+        created_at=created,
+        state="open" if open_ else "resolved",
+        read=not _newer_than(created, seen),
+        summary=ActivitySummary(
+            title=_clip(f"{name} wants to message your {agent['name']}", TITLE_CHARS),
+            requester=actor,
+            reason=WEBHOOK_ASK_REASON,
+            preview=ActivityPreview(text=_clip(latest, PREVIEW_TEXT_CHARS)) if latest else None,
+            links=[],
+        ),
+        actions=[
+            ActivityAction(id="send", label="Send", style="primary"),
+            ActivityAction(id="decline", label="Decline"),
+            ActivityAction(id="allow", label=f"Always allow {first}"),
+        ]
+        if open_
+        else [],
+    )
+
+
+async def _webhook_ask(owner_id: str, user_id: str, row: dict, seen: str | None) -> ActivityItem | None:
+    from core.services import webhook_agents
+
+    found = await webhook_agents.ask_view(owner_id, row["agentId"], row["requesterId"], row["requestId"])
+    if found is None or found[0]["ownerUserId"] != user_id:
+        return None
+    return render_webhook_agent_ask(row, found[0], found[1], seen=seen)
+
+
+async def _render_webhook_agent_rows(
+    owner_id: str, user_id: str, rows: list[dict], seen: str | None
+) -> list[ActivityItem]:
+    rows = [row for row in rows if row.get("kind") == "webhook_agent"]
+    found = await asyncio.gather(*(_webhook_ask(owner_id, user_id, row, seen) for row in rows))
+    return [item for item in found if item]
+
+
+async def _run_webhook_agent_action(
+    auth: AuthContext, agent_id: str, sender: str, ask_id: str, action_id: str
+) -> ActivityItem:
+    """Send / Decline / Always allow from Activity: the same ``webhook_agents.decide`` as Settings."""
+    from core.services import webhook_agents
+
+    from core.dynamodb import utc_now_iso
+
+    owner_id = resolve_owner_id(auth)
+
+    async def current() -> ActivityItem:
+        found = await webhook_agents.ask_view(owner_id, agent_id, sender, ask_id)
+        if found is None or found[0]["ownerUserId"] != auth.user_id:
+            raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
+        name = await messaging.human_display_name(sender)
+        stub = {"requesterId": sender, "requesterName": name, "requestId": ask_id, "createdAt": utc_now_iso()}
+        return render_webhook_agent_ask(stub, found[0], found[1], seen=None)
+
+    item = await current()
+    if item.state != "open":
+        return item  # already answered (a retried tap, or from Settings)
+    _require_action(item, action_id)
+    await webhook_agents.decide(owner_id, auth.user_id, agent_id, sender, action_id)
+    return await current()
+
+
 async def _render_rows(
     owner_id: str,
     user_id: str,
@@ -765,13 +850,14 @@ async def _render_rows(
     *,
     admin: bool = False,
 ) -> list[ActivityItem]:
-    messages, sessions, logins, extensions = await asyncio.gather(
+    messages, sessions, logins, extensions, webhooks = await asyncio.gather(
         _render_message_rows(owner_id, user_id, rows, seen, gates),
         _render_session_rows(owner_id, user_id, rows, seen),
         _render_login_rows(owner_id, rows, seen, admin),
         _render_extension_rows(owner_id, rows, seen),
+        _render_webhook_agent_rows(owner_id, user_id, rows, seen),
     )
-    return sorted(messages + sessions + logins + extensions, key=lambda i: i.created_at, reverse=True)
+    return sorted(messages + sessions + logins + extensions + webhooks, key=lambda i: i.created_at, reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1885,6 +1971,8 @@ async def run_action(
         return await _run_login_action(auth, parts[1], action_id, body)
     if parts[0] == "extension" and len(parts) == 2:
         return await _run_extension_action(auth, parts[1], action_id)
+    if parts[0] == "agenthook" and len(parts) == 4 and all(_ID_RE.match(x) for x in parts[1:]):
+        return await _run_webhook_agent_action(auth, parts[1], parts[2], parts[3], action_id)
     if parts[0] in ("join", "pickup") and len(parts) == 4 and all(_ID_RE.match(x) for x in parts[1:]):
         return await _run_join_action(auth, parts[1], parts[2], parts[3], action_id, pickup=parts[0] == "pickup")
     if parts[0] in _MESSAGE_KINDS and len(parts) == 4:

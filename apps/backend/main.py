@@ -74,6 +74,7 @@ from routers import (
     sendblue_inbound,
     ses_inbound,
     agent_keys as agent_keys_router,
+    webhook_agents as webhook_agents_router,
     settings_keys,
     setup_requests,
     slack_app,
@@ -611,6 +612,8 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
             # session links: a rejected body carries a link token or a PKCE verifier.
             "/api/v1/public",
             "/api/v1/session-links",
+            # webhook agents: a rejected body carries the webhook's key.
+            "/api/v1/settings/webhook-agents",
         )
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
@@ -908,6 +911,7 @@ app.include_router(container_recover.router, prefix="/api/v1/container", tags=["
 app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 
 app.include_router(agent_keys_router.router, prefix="/api/v1/settings/agent-keys", tags=["settings"])
+app.include_router(webhook_agents_router.router, prefix="/api/v1/settings/webhook-agents", tags=["settings"])
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
 
 # Integrations (MCP servers, ClawHub)

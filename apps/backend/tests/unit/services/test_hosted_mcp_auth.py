@@ -108,6 +108,7 @@ async def test_send_resolves_thread_root_and_member_mentions(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_room_target_search_does_not_offer_offline_queue(monkeypatch):
+    monkeypatch.setattr("core.services.webhook_agents.targets", AsyncMock(return_value=[]))
     session = SimpleNamespace(
         session_id=str(uuid.uuid4()),
         human_user_id="user_sender",

@@ -9,6 +9,7 @@ import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccount
 import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsSection";
 import { BrowserExtensionsSection } from "@/components/control/panels/BrowserExtensionsSection";
 import { AgentKeysSection } from "@/components/control/panels/AgentKeysSection";
+import { WebhookAgentsSection } from "@/components/control/panels/WebhookAgentsSection";
 import { AgentGuardrails } from "@/components/settings/AgentGuardrails";
 import { useConnections } from "@/hooks/useConnections";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
@@ -68,6 +69,7 @@ export function ConnectionsPanel() {
         <WebsiteLoginsSection canManage={canManage} />
         <BrowserExtensionsSection />
         <AgentKeysSection />
+        <WebhookAgentsSection />
 
         <ConnectionsList canManage={canManage} exclude={["stripe"]} />
 

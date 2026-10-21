@@ -40,6 +40,7 @@ def lifecycle_io(monkeypatch):
 
     monkeypatch.setattr("core.services.messaging.revoke_human_membership", revoke)
     monkeypatch.setattr("core.services.text_lines.unlink_member", AsyncMock())
+    monkeypatch.setattr("core.services.agent_keys.delete_for_member", AsyncMock())
     monkeypatch.setattr(_webhook_dedup, "begin_event_processing", AsyncMock(return_value="claim_test"))
     monkeypatch.setattr(_webhook_dedup, "complete_event_processing", AsyncMock())
     monkeypatch.setattr(_webhook_dedup, "begin_membership_lifecycle", AsyncMock(side_effect=begin_membership))
@@ -151,6 +152,9 @@ async def test_membership_delete_unlinks_the_members_phone_from_the_texting_line
 
     await webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "member"})
     unlink.assert_awaited_once_with("org_acme", "member")
+    from core.services import agent_keys
+
+    agent_keys.delete_for_member.assert_awaited_once_with("org_acme", "member")  # a rejoin gets no old keys
 
 
 @pytest.mark.asyncio

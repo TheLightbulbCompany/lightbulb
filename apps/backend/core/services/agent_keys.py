@@ -15,6 +15,8 @@ import secrets
 import time
 import uuid
 
+from botocore.exceptions import ClientError
+
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo as repo
 
@@ -37,6 +39,10 @@ def _lookup_pk(key_hash: str) -> str:
     return f"AGENTKEY#{key_hash}"
 
 
+def _count_sk(user_id: str) -> str:
+    return f"AGENTKEYCOUNT#{user_id}"
+
+
 def _list_sk(user_id: str, key_id: str) -> str:
     return f"AGENTKEY#{user_id}#{key_id}"
 
@@ -54,36 +60,110 @@ async def create_key(owner_id: str, user_id: str, name: str, expires_in_days: in
     name = " ".join(name.split())
     if not name or len(name) > 60:
         raise AgentKeyError("Name the agent in 1-60 characters.")
-    if len(await _rows(owner_id, user_id)) >= MAX_KEYS_PER_PERSON:
-        raise AgentKeyError(f"You can have at most {MAX_KEYS_PER_PERSON} agent keys. Revoke one first.")
     key = PREFIX + secrets.token_urlsafe(32)
     key_hash = _hash(key)
     key_id = uuid.uuid4().hex[:12]
     expires_at = int(time.time()) + expires_in_days * 86400 if expires_in_days else None
     row = {"keyId": key_id, "name": name, "createdAt": utc_now_iso(), "expiresAt": expires_at}
-    table = repo._table()
-    await run_in_thread(
-        table.put_item,
-        Item={"pk": _lookup_pk(key_hash), "sk": "META", "ownerId": owner_id, "userId": user_id, **row},
-    )
-    await run_in_thread(
-        table.put_item,
-        Item={"pk": repo.owner_pk(owner_id), "sk": _list_sk(user_id, key_id), "keyHash": key_hash, **row},
-    )
+    table = repo._table().name
+    # One transaction: the counter's condition is the cap, so two racing creates cannot both pass.
+    try:
+        await repo._transact(
+            [
+                {
+                    "Update": {
+                        "TableName": table,
+                        "Key": {"pk": repo.owner_pk(owner_id), "sk": _count_sk(user_id)},
+                        "UpdateExpression": "ADD n :one",
+                        "ConditionExpression": "attribute_not_exists(n) OR n < :max",
+                        "ExpressionAttributeValues": {":one": 1, ":max": MAX_KEYS_PER_PERSON},
+                    }
+                },
+                {
+                    "Put": {
+                        "TableName": table,
+                        "Item": {
+                            "pk": _lookup_pk(key_hash),
+                            "sk": "META",
+                            "ownerId": owner_id,
+                            "userId": user_id,
+                            **row,
+                        },
+                    }
+                },
+                {
+                    "Put": {
+                        "TableName": table,
+                        "Item": {
+                            "pk": repo.owner_pk(owner_id),
+                            "sk": _list_sk(user_id, key_id),
+                            "keyHash": key_hash,
+                            **row,
+                        },
+                    }
+                },
+            ]
+        )
+    except ClientError as exc:
+        if not repo._is_cancelled(exc):
+            raise
+        raise AgentKeyError(f"You can have at most {MAX_KEYS_PER_PERSON} agent keys. Revoke one first.") from exc
     logger.info("agent key created owner=%s user=%s keyId=%s", owner_id, user_id, key_id)
     return {**row, "key": key}  # the only time the key text exists outside the caller
 
 
 async def revoke_key(owner_id: str, user_id: str, key_id: str) -> bool:
-    """Delete the lookup row first: that is what stops the next call."""
+    """One transaction removes the lookup (which stops the next call), the list row and a count."""
     listed = await repo._get(repo.owner_pk(owner_id), _list_sk(user_id, key_id))
     if listed is None:
         return False
-    table = repo._table()
-    await run_in_thread(table.delete_item, Key={"pk": _lookup_pk(listed["keyHash"]), "sk": "META"})
-    await run_in_thread(table.delete_item, Key={"pk": listed["pk"], "sk": listed["sk"]})
+    table = repo._table().name
+    try:
+        await repo._transact(
+            [
+                {"Delete": {"TableName": table, "Key": {"pk": _lookup_pk(listed["keyHash"]), "sk": "META"}}},
+                {
+                    "Delete": {
+                        "TableName": table,
+                        "Key": {"pk": listed["pk"], "sk": listed["sk"]},
+                        "ConditionExpression": "attribute_exists(sk)",
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": table,
+                        "Key": {"pk": repo.owner_pk(owner_id), "sk": _count_sk(user_id)},
+                        "UpdateExpression": "ADD n :neg",
+                        "ConditionExpression": "n > :zero",
+                        "ExpressionAttributeValues": {":neg": -1, ":zero": 0},
+                    }
+                },
+            ]
+        )
+    except ClientError as exc:
+        if not repo._is_cancelled(exc):
+            raise
+        return False  # a concurrent revoke won
     logger.info("agent key revoked owner=%s user=%s keyId=%s", owner_id, user_id, key_id)
     return True
+
+
+async def _delete_rows(rows: list[dict]) -> None:
+    table = repo._table()
+    for r in rows:
+        await run_in_thread(table.delete_item, Key={"pk": _lookup_pk(r["keyHash"]), "sk": "META"})  # lookup first
+        await run_in_thread(table.delete_item, Key={"pk": r["pk"], "sk": r["sk"]})
+
+
+async def delete_for_member(owner_id: str, user_id: str) -> None:
+    """Membership removal: a person who rejoins must not get their old keys back."""
+    await _delete_rows(await _rows(owner_id, user_id))
+    await run_in_thread(repo._table().delete_item, Key={"pk": repo.owner_pk(owner_id), "sk": _count_sk(user_id)})
+
+
+async def delete_for_owner(owner_id: str) -> None:
+    """Workspace/account wipe: the lookup rows live outside the OWNER# partition, so find them here."""
+    await _delete_rows(await repo._query(repo.owner_pk(owner_id), begins_with="AGENTKEY#"))
 
 
 async def resolve(key: str) -> dict | None:

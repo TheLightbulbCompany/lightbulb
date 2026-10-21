@@ -3331,6 +3331,9 @@ async def delete_room_partition(room_id: str) -> int:
 
 async def delete_owner_partition(owner_id: str) -> int:
     """Delete owner rows, reverse streams and retained local-session history."""
+    from core.services import agent_keys
+
+    await agent_keys.delete_for_owner(owner_id)  # their lookup rows sit outside this partition
     streams = await _query(owner_pk(owner_id), begins_with="USERSTREAM#")
     count = 0
     for s in streams:

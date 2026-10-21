@@ -896,9 +896,10 @@ impl Journal {
             return Err("intent already anchored".into());
         }
         // A plain `claude` with no turn yet has no transcript: Claude writes it on the first
-        // turn, which this send may be. Admission then reads that file from its start.
+        // turn, which this send may be. Admission then reads that file from its start. Cursor and
+        // Grok CLI keep none Lightbulb reads: their letter waits in the hook inbox instead.
         let cursor = match native.transcript.as_ref() {
-            None if native.provider == "claude" => Cursor::default(),
+            None if native.provider == "claude" || hooked::provider(&native.provider) => Cursor::default(),
             None => return Err("transcript unavailable".into()),
             Some(path) => {
                 let mut file = secure_file(path)?;
@@ -2613,6 +2614,18 @@ mod tests {
         journal.finish("s1", "r1", None, false).unwrap();
         assert!(journal.admit(&other, "g1", 110).unwrap());
         assert!(journal.anchor(&other, &codex, "x".into(), None).is_err());
+        // Cursor and Grok CLI have no transcript to anchor at: their send still anchors (prod
+        // e2e 2026-10-21: "intent not anchored" rejected every send to a Grok session).
+        for provider in ["grok", "cursor"] {
+            let hooked = NativeSession { provider: provider.into(), transcript: None, ..codex.clone() };
+            let mut cmd = command();
+            cmd.request_id = format!("r-{provider}");
+            cmd.command_seq = other.command_seq + if provider == "grok" { 1 } else { 2 };
+            journal.finish("s1", &other.request_id, None, false).ok();
+            journal.finish("s1", "r-grok", None, false).ok();
+            assert!(journal.admit(&cmd, "g1", 110).unwrap(), "{provider}");
+            assert!(journal.anchor(&cmd, &hooked, "x".into(), None).is_ok(), "{provider}");
+        }
     }
 
     #[test]

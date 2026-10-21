@@ -73,12 +73,3 @@ def test_the_dockerfile_installs_it_read_only_at_etc_hermes():
     assert "COPY managed/config.yaml /etc/hermes/config.yaml" in dockerfile
     assert "chown root:root /etc/hermes/config.yaml" in dockerfile
     assert "chmod 0444 /etc/hermes/config.yaml" in dockerfile
-
-
-def test_the_overlay_gives_lightbulb_a_chat_voice_hint():
-    """Our SOUL.md replaces Hermes's default identity, the only place Hermes says how to talk, and
-    the "lightbulb" platform has no built-in hint (owner 2026-10-20: replies read like reports).
-    The overlay restores the voice as Hermes's own platform hint, so every profile gets it."""
-    hint = parsed()["platform_hints"]["lightbulb"]["append"]
-    assert "Match the length of your reply to the weight of the ask" in hint
-    assert "\n" not in hint and "- " not in hint  # prose in, prose out

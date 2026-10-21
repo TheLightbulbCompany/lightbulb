@@ -376,8 +376,8 @@ READ_ROOMS_SCHEMA = {
                    "\"find\" lists rooms (optional query matches a room or member name); \"read\" returns "
                    "a room's latest messages, or those after afterSeq. In a Google Meet you read only "
                    "channels the whole workspace is in (never a DM, group chat or narrower channel), and "
-                   "everyone on the call hears what you say. With no signed-in person behind this turn (a routine) "
-                   "nothing is readable: say so.",
+                   "everyone on the call hears what you say. In a task run, heartbeat or routine (no signed-in "
+                   "person) you read only channels you are in -- e.g. to read back what you posted -- never a DM.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -390,8 +390,9 @@ READ_ROOMS_SCHEMA = {
         "required": ["action"],
     },
 }
-READ_ROOMS_REFUSED = ("No rooms can be read for this turn: no signed-in person asked for it, or they "
-                      "cannot open that room. Say so; do not guess what was said there.")
+READ_ROOMS_REFUSED = ("That room cannot be read for this turn: the person who asked cannot open it, or "
+                      "(in a task run or routine) you are not in that channel. Say so; do not guess what was "
+                      "said there.")
 
 
 def _read_rooms(args: dict, *, session_id: str = "", **_kw) -> str:

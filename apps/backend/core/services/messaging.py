@@ -2205,13 +2205,74 @@ async def get_feed(auth: AuthContext) -> FeedResponse:
     return FeedResponse(room_id=room_id, topic=meta.get("topic"))
 
 
+def _agent_readable_channel(meta: dict | None, owner_id: str) -> bool:
+    """A channel a Paperclip run (routine, heartbeat, task run) may read as its own agent: a live
+    channel of this workspace with no other org in it. Never a DM, group DM or session chat --
+    those are private to the people in them, and nobody signed in asked for this read."""
+    return bool(
+        meta
+        and meta.get("kind") == "channel"
+        and not meta.get("deletedAt")
+        and not meta.get("session")
+        and meta.get("ownerId") == owner_id
+    )
+
+
+async def agent_channels(owner_id: str, agent_id: str, query: str = "", limit: int = 30) -> dict[str, Any]:
+    """``lightbulb_read_rooms`` find for a Paperclip run: the channels the agent sits in. A routine
+    posts to a channel it is in (``resolve_agent_post_room``) and must be able to read it back;
+    it reads nothing else, so this widens no person's view."""
+    needle = query.casefold().strip()
+    rooms = []
+    for row in await messaging_repo.list_rooms_for_member(owner_id, "agent", agent_id):
+        meta = row["meta"]
+        if not _agent_readable_channel(meta, owner_id) or (
+            needle and needle not in (meta.get("name") or "").casefold()
+        ):
+            continue
+        # The by-member GSI is eventually consistent: a just-removed agent can still be listed.
+        if await messaging_repo.get_member(meta["roomId"], "agent", agent_id) is None:
+            continue
+        if await messaging_repo.has_foreign_members(meta["roomId"], owner_id):
+            continue
+        rooms.append({"roomId": meta["roomId"], "name": meta.get("name"), "kind": "channel"})
+    return {"rooms": rooms[: max(1, min(limit, 50))], "total": len(rooms)}
+
+
+async def agent_channel_messages(
+    owner_id: str, agent_id: str, room_id: str, after_seq: int | None = None, limit: int = 25
+) -> dict[str, Any]:
+    """``lightbulb_read_rooms`` read for a Paperclip run: one channel the agent is still in."""
+    room_id = validate_uuid(room_id, label="room ID")
+    meta = await messaging_repo.get_room(room_id)
+    if (
+        not _agent_readable_channel(meta, owner_id)
+        or await messaging_repo.get_member(room_id, "agent", agent_id) is None
+        or await messaging_repo.has_foreign_members(room_id, owner_id)
+    ):
+        raise ApiProblem("ROOM_FORBIDDEN", "This run can read only channels its agent is in.")
+    count = max(1, min(limit, 50))
+    if after_seq is None:
+        rows, next_before = await messaging_repo.list_messages_before_page(
+            room_id, int(meta.get("lastSeq") or 0) + 1, count
+        )
+        page = MessagePage(
+            messages=[canonical_message(r) for r in rows], next_after_seq=None, next_before_seq=next_before
+        )
+    else:
+        rows, next_after = await messaging_repo.list_messages(room_id, max(0, after_seq), count)
+        page = MessagePage(messages=[canonical_message(r) for r in rows], next_after_seq=next_after)
+    return page.model_dump(mode="json", by_alias=True)
+
+
 #: How many recent feed posts an agent reads before it writes one.
 FEED_AGENT_READ_LIMIT = 20
 
 
 async def agent_feed(owner_id: str) -> dict[str, Any]:
     """The feed's brief and latest posts for an agent outside a room turn (a scheduled run has
-    no signed-in person, so ``lightbulb_read_rooms`` reads nothing). Every workspace human is in
+    no signed-in person, and ``lightbulb_read_rooms`` reads only channels the agent sits in, which
+    the feed's authors do not). Every workspace human is in
     the feed, so this widens nobody's view."""
     room_id = await ensure_feed_room(owner_id)
     if room_id is None:

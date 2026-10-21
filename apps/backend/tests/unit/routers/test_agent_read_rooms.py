@@ -178,3 +178,56 @@ def test_a_meet_turn_reads_only_channels_the_whole_workspace_is_in(client, monke
     assert read.await_count == 1
     monkeypatch.setattr(router.hosted_mcp, "workspace_people", AsyncMock(return_value=frozenset()))  # Clerk down
     assert client.get("/api/v1/messaging/agent-read/rooms?query=launch", headers=reader).json()["total"] == 0
+
+
+def _paperclip_grant():
+    return local_session_grants.mint_paperclip(
+        "org_1", "gauge", "paperclip:company:c1:agent:gauge:run:run-1", "run-1", None
+    )
+
+
+def test_a_paperclip_run_reads_back_only_channels_its_agent_is_in(client, monkeypatch, agent_in_room):
+    """Gauge 2026-10-19 (ISOA-873): a routine posted its brief to a channel and could not read it back,
+    because a Paperclip grant names no person and no room. It now reads as its own agent: channels it
+    sits in, never a DM, a session chat, a deleted room or one another org is in."""
+    from core.repositories import messaging_repo
+
+    meta = {"roomId": ROOM, "ownerId": "org_1", "kind": "channel", "name": "GTM Strategy", "lastSeq": 7}
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value=meta))
+    page = AsyncMock(return_value=([], None))
+    monkeypatch.setattr(messaging_repo, "list_messages_before_page", page)
+    monkeypatch.setattr(router.hosted_mcp, "messages_for", AsyncMock())  # never the person-shaped read
+    url = f"/api/v1/messaging/agent-read/messages?room_id={ROOM}"
+    headers = {"Authorization": f"Bearer {_paperclip_grant()}"}
+
+    agent_in_room.seated.add(("agent", "gauge"))
+    got = client.get(url, headers=headers)
+    assert got.status_code == 200 and got.json()["messages"] == []
+    assert page.await_args.args == (ROOM, 8, 25)  # the latest page, ending at the room's last message
+
+    for refused in ({"kind": "dm"}, {"session": {"ownerId": "user_ana"}}, {"deletedAt": "x"}, {"ownerId": "org_2"}):
+        monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={**meta, **refused}))
+        assert client.get(url, headers=headers).json()["code"] == "ROOM_FORBIDDEN", refused
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value=meta))
+    monkeypatch.setattr(messaging_repo, "has_foreign_members", AsyncMock(return_value=True))
+    assert client.get(url, headers=headers).status_code == 403
+    monkeypatch.setattr(messaging_repo, "has_foreign_members", AsyncMock(return_value=False))
+    agent_in_room.seated.discard(("agent", "gauge"))
+    assert client.get(url, headers=headers).status_code == 403
+    assert page.await_count == 1
+    router.hosted_mcp.messages_for.assert_not_awaited()
+
+    listed = [
+        {"meta": {**meta, "roomId": "a"}},
+        {"meta": {**meta, "roomId": "b", "kind": "dm", "name": "GTM dm"}},
+        {"meta": {**meta, "roomId": "c", "name": "Sales"}},
+        # A stale by-member GSI row: the agent was just removed, its base member row is gone.
+        {"meta": {**meta, "roomId": "d", "name": "GTM old"}},
+    ]
+    monkeypatch.setattr(messaging_repo, "list_rooms_for_member", AsyncMock(return_value=listed))
+    seated = {"a", "b", "c"}
+    monkeypatch.setattr(
+        messaging_repo, "get_member", AsyncMock(side_effect=lambda room, kind, mid: {} if room in seated else None)
+    )
+    found = client.get("/api/v1/messaging/agent-read/rooms?query=gtm", headers=headers).json()
+    assert found == {"rooms": [{"roomId": "a", "name": "GTM Strategy", "kind": "channel"}], "total": 1}

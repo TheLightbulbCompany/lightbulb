@@ -87,8 +87,9 @@ in #launch?", "check our recent conversations"), use `lightbulb_read_rooms`:
 `find` the room, then `read` its latest messages. You see exactly what the person
 who asked can open, nothing more. In a Google Meet you read only channels the whole
 workspace is in, never a DM, group chat or narrower channel, and everyone on the call
-hears what you say. With no signed-in person behind the turn (a routine), nothing is
-readable: say so instead of guessing. Do not
+hears what you say. With no signed-in person behind the turn (a task run, heartbeat or
+routine), you read only channels you are in, never a DM or group chat: use it to read
+back a message you posted. Anything else is refused: say so instead of guessing. Do not
 repeat a private DM into a room with other people unless the person asking wants it.
 
 ## Human-shared local sessions (optional native adapter)

@@ -2,10 +2,12 @@
 real DynamoDB conditions under Moto, notifications and delivery stubbed."""
 
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import botocore.client
 import pytest
 
 from core.repositories import local_sessions_repo as repo, messaging_repo
@@ -30,15 +32,6 @@ def test_paperclip_grant_round_trips_and_keeps_a_strict_shape(monkeypatch):
     import jwt
     from core.services import local_session_grants as grants
 
-    # DynamoDB runs a transaction atomically; moto runs two at once and one can undo the other's
-    # write (the two-Sends race below failed 1 run in ~18). One at a time, as DynamoDB orders them.
-    one_at_a_time, transact = asyncio.Lock(), messaging_repo._transact
-
-    async def atomic(items):
-        async with one_at_a_time:
-            return await transact(items)
-
-    monkeypatch.setattr(messaging_repo, "_transact", atomic)
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", KEY)
     hermes_key = f"paperclip:company:c-1:agent:{AGENT}:run:run-1"
     token = grants.mint_paperclip(OWNER, AGENT, hermes_key, "run-1", None)
@@ -70,6 +63,16 @@ def asks(db, monkeypatch):  # noqa: F811
     """An agent seated in ROOM; ALICE's session; notifications and delivery stubbed."""
     from core.services import local_session_grants as grants, local_session_relay, website_logins
 
+    # DynamoDB runs each call atomically; moto runs two threads' calls at once, and one can undo or
+    # trip over the other (the two-Sends race below failed about 1 run in 18). One boto call at a
+    # time, as DynamoDB orders them; the race between the two answers is still real.
+    one_at_a_time, call = threading.Lock(), botocore.client.BaseClient._make_api_call
+
+    def atomic(self, *args, **kwargs):
+        with one_at_a_time:
+            return call(self, *args, **kwargs)
+
+    monkeypatch.setattr(botocore.client.BaseClient, "_make_api_call", atomic)
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", KEY)
     db[0].put_item(Item={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#agent#{AGENT}", "kind": "agent", "id": AGENT})
     monkeypatch.setattr(website_logins, "_agent_name", AsyncMock(return_value="Friday"))

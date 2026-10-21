@@ -20,6 +20,16 @@ function getTauri(): TauriBridge | null {
 // `notification:clicked` with the request identifier (our `tag`); the handler
 // registered under that tag opens the conversation. One-shot per tag.
 const clickHandlers = new Map<string, () => void>();
+const SESSION_CLICK = "lightbulb.session.";
+let sessionClick: ((sessionId: string) => void) | null = null;
+
+/** Opens the session a Mac request notification is about when its body is clicked. */
+export function onSessionNoticeClick(handler: (sessionId: string) => void): () => void {
+  sessionClick = handler;
+  const tauri = getTauri();
+  if (tauri) routeClicks(tauri);
+  return () => { if (sessionClick === handler) sessionClick = null; };
+}
 let routing = false;
 function routeClicks(tauri: TauriBridge): void {
   if (routing || !tauri.listen) return;
@@ -27,6 +37,11 @@ function routeClicks(tauri: TauriBridge): void {
   tauri.listen("notification:clicked", (event) => {
     const tag = typeof event.payload === "string" ? event.payload : null;
     const handler = tag === null ? undefined : clickHandlers.get(tag);
+    // A request the Mac posted itself (a held message, an agent's ask) names its session.
+    if (!handler && tag?.startsWith(SESSION_CLICK)) {
+      sessionClick?.(tag.slice(SESSION_CLICK.length));
+      return;
+    }
     if (!handler) return;
     clickHandlers.delete(tag as string);
     handler();

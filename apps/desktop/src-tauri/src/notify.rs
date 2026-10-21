@@ -33,6 +33,16 @@ pub const ALLOW: &str = "allow";
 pub const DECLINE: &str = "decline";
 
 /// One request notification: `id` is its identifier, which a repeat replaces. `info` is its
+/// The click on a request notification's body, as the window routes it: `lightbulb.session.<id>`.
+pub(crate) fn session_click(identifier: &str, info: &BTreeMap<String, String>) -> Option<String> {
+    identifier
+        .starts_with("lightbulb.request.")
+        .then(|| info.get("sessionId"))
+        .flatten()
+        .filter(|sid| !sid.is_empty())
+        .map(|sid| format!("lightbulb.session.{sid}"))
+}
+
 /// `userInfo`: everything an Allow or Decline needs to be sent from any process.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Notice {
@@ -276,6 +286,9 @@ mod macos {
                 let focus = app.clone();
                 let _ =
                     app.run_on_main_thread(move || crate::focus_or_recreate_main_window(&focus));
+                // A request this Mac posted itself (held message, agent ask): the window has no
+                // handler for its id, so it is told which session to open instead.
+                let identifier = super::session_click(&identifier, &strings(&content.userInfo())).unwrap_or(identifier);
                 let _ = app.emit("notification:clicked", identifier);
                 completion.call(());
             }
@@ -468,6 +481,11 @@ mod tests {
     fn notify_a_plain_click_is_not_a_decision() {
         let info = BTreeMap::new();
         assert!(!act("lightbulb.request.r1".into(), "com.apple.UNNotificationDefaultActionIdentifier", String::new(), info.clone()));
+        // Its body opens the session it is about, not just the window.
+        let with_session = BTreeMap::from([("sessionId".to_owned(), "s-1".to_owned())]);
+        assert_eq!(session_click("lightbulb.request.r1", &with_session).as_deref(), Some("lightbulb.session.s-1"));
+        assert_eq!(session_click("lightbulb.request.r1", &info), None);
+        assert_eq!(session_click("message-123", &with_session), None);
         assert!(!act("lightbulb.request.r1".into(), "com.apple.UNNotificationDismissActionIdentifier", String::new(), info));
         assert_eq!((REQUEST_CATEGORY, ALLOW, DECLINE), ("lightbulb.request", "allow", "decline"));
     }

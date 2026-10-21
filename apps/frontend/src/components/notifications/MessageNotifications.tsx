@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
-import { desktopDeviceId, isDesktopApp, nativeNotify, notificationPermission, onDesktopToast } from "@/lib/desktopNotify";
+import { desktopDeviceId, isDesktopApp, nativeNotify, notificationPermission, onDesktopToast, onSessionNoticeClick } from "@/lib/desktopNotify";
 import { notifySuccess } from "@/lib/notify";
 import type { RoomSummary } from "@lightbulb/shared";
 import { claimRunNotice, setRoomView } from "./roomView";
@@ -81,6 +81,9 @@ export function MessageNotifications(props: {
     });
     return () => { cancelled = true; stopWaiting(); };
   }, [userId]);
+
+  // A Mac request notification (held message, agent ask) opens the session it is about.
+  useEffect(() => onSessionNoticeClick((sessionId) => current.current.onOpenSession?.(sessionId)), []);
 
   useEffect(() => {
     const seen = new Set<string>();

@@ -26,7 +26,7 @@ it("offers sharing with the other permissions once and sends nothing until Conti
     return { enrollment:null, pairedWorkspaceId:"org", status:"paused" };
   });
   render(<DesktopPermissionsGate />);
-  expect(await screen.findByRole("button", {name:/Share Claude & Codex sessions/})).toHaveAttribute("aria-pressed", "true");
+  expect(await screen.findByRole("button", {name:/Share coding sessions/})).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByRole("alertdialog", {name:"Connect this Mac"})).toBeInTheDocument();
   expect(screen.getByRole("button", {name:/Browser/})).toBeInTheDocument();
   // Reads only: the two status commands change nothing.
@@ -38,7 +38,7 @@ it("offers sharing with the other permissions once and sends nothing until Conti
 it("keeps an initial off choice off after reopening without requesting a token", async () => {
   invoke.mockResolvedValue({ enrollment:null, pairedWorkspaceId:"org", status:"paused" });
   const view = render(<DesktopPermissionsGate />);
-  await userEvent.click(await screen.findByRole("button", {name:/Share Claude & Codex sessions/}));
+  await userEvent.click(await screen.findByRole("button", {name:/Share coding sessions/}));
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
   await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"});
@@ -315,7 +315,7 @@ it("leaves Share every new session off on a fresh pairing when the box is untouc
   render(<DesktopPermissionsGate />);
   const live = await screen.findByRole("button", {name:/Share every new session/});
   expect(live).toHaveAttribute("aria-pressed", "false");
-  expect(live).toHaveTextContent("On, while session sharing is on: every claude or codex you type in a new terminal tab is shared with your workspace");
+  expect(live).toHaveTextContent("On, while session sharing is on: every new Claude Code, Codex, Cursor or Grok CLI session on this Mac is shared with your workspace");
   expect(live).toHaveTextContent("~/.zshrc, ~/.bashrc and your bash login file");
   expect(screen.getByText(/Nothing is shared until you start a session with Lightbulb/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
@@ -401,10 +401,10 @@ it("never shows the switch off over a Mac that is on: it and Continue wait for t
 
 it("names the workspace sharing is on in, never its raw id, and shows the desktop status as its own note", async () => {
   const on = (status: string) => ({enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false},pairedWorkspaceId:"org",status});
-  invoke.mockResolvedValue(on("Setup retried; Claude Code and Codex are configured for new sessions."));
+  invoke.mockResolvedValue(on("Setup retried; Claude Code, Codex, Cursor and Grok CLI are configured for new sessions."));
   const view = render(<LocalSessions />);
   expect(await screen.findByText("On · Acme")).toBeInTheDocument();
-  expect(screen.getByText("Setup retried; Claude Code and Codex are configured for new sessions.")).toBeInTheDocument();
+  expect(screen.getByText("Setup retried; Claude Code, Codex, Cursor and Grok CLI are configured for new sessions.")).toBeInTheDocument();
   // The healthy state is the single word "connected": "On" already says it.
   invoke.mockResolvedValue(on("connected"));
   await userEvent.click(screen.getByRole("button", {name:"Check again"}));

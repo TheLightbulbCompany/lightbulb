@@ -83,7 +83,7 @@ export function DesktopPermissions() {
 
 export const SHARE_LIVE_LABEL = "Share every new session";
 export const SHARE_LIVE_FILES = "~/.zshrc, ~/.bashrc and your bash login file (~/.bash_profile, ~/.bash_login or ~/.profile, whichever you have)";
-export const SHARE_LIVE_DESCRIPTION = `On, while session sharing is on: every claude or codex you type in a new terminal tab is shared with your workspace, live, from its start. Off: a session is shared only when you choose to share it. Adds a marked block to ${SHARE_LIVE_FILES}; turning it off removes it.`;
+export const SHARE_LIVE_DESCRIPTION = `On, while session sharing is on: every new Claude Code, Codex, Cursor or Grok CLI session on this Mac is shared with your workspace, from its start (a claude or codex you type in a new terminal tab is shared live). Off: a session is shared only when you choose to share it. Adds a marked block to ${SHARE_LIVE_FILES}; turning it off removes it.`;
 
 /** Settings row: "Share every new session" — the `claude`/`codex` shell functions (the desktop's
  *  shell_integration module). Hidden in a browser and on a desktop build without the command. */
@@ -146,7 +146,7 @@ export function AgentSessionSwitches() {
     <div className="settings-card-header settings-card-header--rows">
       <div>
         <div className="settings-card-title">Agents and your sessions</div>
-        <div className="settings-card-desc">When an agent may message your shared Claude Code and Codex sessions.</div>
+        <div className="settings-card-desc">When an agent may message your shared Claude Code, Codex, Cursor and Grok CLI sessions.</div>
       </div>
     </div>
     {AGENT_SESSION_PREFS.map(({ key, title, description }) => (
@@ -238,7 +238,7 @@ export function useLocalSessions(waitForRemoteDisable = false) {
 }
 
 
-/** Settings card: "Session sharing" — the Claude Code and Codex sessions this Mac shares,
+/** Settings card: "Session sharing" — the Claude Code, Codex, Cursor and Grok CLI sessions this Mac shares,
  *  plus the "Share every new session" row and the details of what sharing changes. */
 export function LocalSessions() {
   const {state,desktop,consent,setConsent,busy,error,setError,enabled,recoveryPending,canRecover,sameWorkspace,userId,setEnabled,refresh,operation} = useLocalSessions();
@@ -258,7 +258,7 @@ export function LocalSessions() {
     <div className="settings-card-header settings-card-header--rows">
       <div>
         <h2 id="session-sharing-heading" className="settings-card-title">Session sharing</h2>
-        <div className="settings-card-desc">People in your conversations can see the Claude Code and Codex sessions you share from this Mac.</div>
+        <div className="settings-card-desc">People in your conversations can see the Claude Code, Codex, Cursor and Grok CLI sessions you share from this Mac.</div>
       </div>
     </div>
     <SettingRow title="Share sessions from this Mac" description={status}>
@@ -291,8 +291,8 @@ export function LocalSessions() {
       <div className="settings-details-body">
         <p><strong>Who sees it.</strong> Every member of the workspace where sharing is on, and its AI agents, can see a shared session, and someone who joins later sees it too. Nobody outside the workspace does, unless you choose “Anyone with the link” for that session: then anyone with its link can watch its live terminal, view only. You can switch any session back to Only me. Sessions you have not shared and personal memory files stay on this Mac.</p>
         <p><strong>What is shared.</strong> A session you start with Lightbulb (New session, <code>lightbulb claude</code>, <code>lightbulb codex</code>), every new session while Share every new session is on, and any other session once you choose Share to Lightbulb in it. Nothing of any other session leaves this Mac. A shared session is its live terminal, whole, from its start; one that runs inside the Claude or Codex app has no terminal and is shared as its conversation. A credential filter runs on this Mac, but it is not a guarantee.</p>
-        <p><strong>Where it works.</strong> Claude Code and Codex in ordinary local macOS terminals with default profiles, not over SSH, in containers, in IDE runtimes or with custom data folders. A Codex session appears after its first prompt. For a session shared as its conversation, approvals stay on your Mac.</p>
-        <p><strong>What it changes on this Mac.</strong> Sharing installs a <code>lightbulb-session-sharing</code> skill and a Claude wake hook, and this Mac serves the <code>lightbulb</code> MCP server to Claude Code and Codex in place of a hosted <code>lightbulb</code> entry. Setup keeps a recoverable backup of your Claude settings and changes no Codex launch configuration. Turning sharing off removes them and restores nothing. To use Lightbulb without the app, install the Lightbulb plugin from the <code>TheLightbulbCompany/lightbulb-plugin</code> marketplace in its place: <code>claude plugin marketplace remove lightbulb --scope user</code>, then <code>claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin</code> and <code>claude plugin install lightbulb@lightbulb</code>. Keep Lightbulb running (the menu bar counts). Changing the selected workspace does not move sharing. Anything Lightbulb cannot share (sharing off, the app closed, <code>claude -p</code>, scripts) runs as usual.</p>
+        <p><strong>Where it works.</strong> Claude Code, Codex, Cursor and Grok CLI in ordinary local macOS terminals with default profiles, not over SSH, in containers, in IDE runtimes or with custom data folders. A Codex session appears after its first prompt; a Cursor or Grok CLI session appears at its first hook and reads messages at its next tool call or turn end. For a session shared as its conversation, approvals stay on your Mac.</p>
+        <p><strong>What it changes on this Mac.</strong> Sharing installs a <code>lightbulb-session-sharing</code> skill and a Claude wake hook, and this Mac serves the <code>lightbulb</code> MCP server to Claude Code, Codex, Cursor and Grok CLI in place of a hosted <code>lightbulb</code> entry. It adds hooks to <code>~/.cursor/hooks.json</code> and <code>~/.grok/hooks/lightbulb.json</code> and the MCP entry to <code>~/.cursor/mcp.json</code> and <code>~/.grok/config.toml</code>. Setup keeps a recoverable backup of each file it edits and changes no Codex launch configuration. Turning sharing off removes them and restores nothing. To use Lightbulb without the app, install the Lightbulb plugin from the <code>TheLightbulbCompany/lightbulb-plugin</code> marketplace in its place: <code>claude plugin marketplace remove lightbulb --scope user</code>, then <code>claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin</code> and <code>claude plugin install lightbulb@lightbulb</code>. Keep Lightbulb running (the menu bar counts). Changing the selected workspace does not move sharing. Anything Lightbulb cannot share (sharing off, the app closed, <code>claude -p</code>, scripts) runs as usual.</p>
       </div>
     </details>
   </section>;

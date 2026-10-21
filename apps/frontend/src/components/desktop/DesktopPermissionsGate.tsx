@@ -152,7 +152,7 @@ export function DesktopPermissionsGate() {
   };
   const items: Array<{key:keyof DesktopPermissionSet | "sessions" | "live";label:string;description:string;Icon:LucideIcon}> = [
     ...DESKTOP_PERMISSION_ITEMS,
-    {key:"sessions",label:"Share Claude & Codex sessions",description:"Lets you share Claude Code and Codex sessions from this Mac with your workspace. On its own this shares nothing.",Icon:Terminal},
+    {key:"sessions",label:"Share coding sessions",description:"Lets you share Claude Code, Codex, Cursor and Grok CLI sessions from this Mac with your workspace. On its own this shares nothing.",Icon:Terminal},
     ...(sessionChoice ? [{key:"live" as const,label:SHARE_LIVE_LABEL,description:SHARE_LIVE_DESCRIPTION,Icon:Radio}] : []),
   ];
 

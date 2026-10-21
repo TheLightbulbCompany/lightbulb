@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { approvalInputView, buildRows, hasHiddenChars, canonicalJson, groupRows, inputDiff, lifecycleLabel, mainEvents, numberedDiff, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolActivity, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
+import { approvalInputView, buildRows, hasHiddenChars, canonicalJson, groupRows, inputDiff, lifecycleLabel, mainEvents, numberedDiff, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolActivity, toolHeader, toolRowView, type TranscriptRow, pendingApproval, sessionGlyph, GLYPH } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -584,5 +584,14 @@ describe("hidden characters in an approval's input", () => {
     const view = approvalInputView("Bash", { command: "echo \u202Egnp.exe" });
     expect(view).toEqual({ kind: "json", text: '{\n  "command": "echo \\u202Egnp.exe"\n}' });
     expect(approvalInputView("Bash", { command: "rm\u00A0-rf x" })).toEqual({ kind: "json", text: '{\n  "command": "rm\\u00A0-rf x"\n}' });
+  });
+});
+
+describe("sessionGlyph", () => {
+  it("draws every known provider and falls back for an unknown one instead of crashing", () => {
+    expect(sessionGlyph("claude")).toBe(GLYPH.claude);
+    expect(sessionGlyph("cursor").prompt).toBe("›");
+    expect(sessionGlyph("grok").bullet).toBe("•");
+    expect(sessionGlyph("gemini")).toBe(GLYPH.codex);
   });
 });

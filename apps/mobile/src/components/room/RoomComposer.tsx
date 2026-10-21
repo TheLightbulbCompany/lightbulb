@@ -13,7 +13,7 @@ import {
   type RoomAttachmentInput,
   type RoomKind,
   type RoomMember,
-  type SessionMentionCandidate,
+  type SessionMentionCandidate, sessionAgentName,
 } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
 import { TextInputWrapper, type PasteEventPayload } from "expo-paste-input";
@@ -260,7 +260,7 @@ export function RoomComposer({
     ? sessionTargets.filter(({ candidate, ownerName }) => {
       const needle = trigger.query.toLocaleLowerCase();
       return candidate.handle.toLocaleLowerCase().includes(needle)
-        || (candidate.session.provider === "claude" ? "claude code" : "codex").includes(needle)
+        || sessionAgentName(candidate.session.provider).toLowerCase().includes(needle)
         || sessionMatches(candidate.session, needle, ownerName);
     }).slice(0, 6)
     : [];
@@ -601,12 +601,12 @@ export function RoomComposer({
                 complete(`@${candidate.handle}`);
               }}
               accessibilityRole="button"
-              accessibilityLabel={`Mention ${candidate.session.provider === "claude" ? "Claude Code" : "Codex"} session ${sessionTitle(candidate.session)}, owned by ${ownerName}`}
+              accessibilityLabel={`Mention ${sessionAgentName(candidate.session.provider)} session ${sessionTitle(candidate.session)}, owned by ${ownerName}`}
             >
               <Avatar name={ownerName} kind="agent" size={22} palette={palette} vendor={candidate.session.provider} />
               <View style={styles.optionLabels}>
                 <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
-                  {candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {sessionTitle(candidate.session)}
+                  {sessionAgentName(candidate.session.provider)} · {sessionTitle(candidate.session)}
                 </Text>
                 <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>
                   {ownerName}{candidate.collided ? ` · ${candidate.session.cwdName ? `${candidate.session.cwdName} · ` : ""}${candidate.session.sessionId.slice(0, 8)}` : ""}

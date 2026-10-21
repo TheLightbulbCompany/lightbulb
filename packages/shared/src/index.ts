@@ -184,6 +184,7 @@ export {
 } from "./messaging/notificationCopy";
 export {
   GLYPH,
+  sessionGlyph,
   PREVIEW_LINES,
   buildRows,
   diffLines,
@@ -232,7 +233,7 @@ export type { FileChange, PlanStatus, PlanStep } from "./messaging/localSessionO
 export { accessLost, useHistorySource, useLocalSessionHistory } from "./messaging/useLocalSessionHistory";
 export type { SessionSource } from "./messaging/useLocalSessionHistory";
 export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
-export { canSendToSession, endedWhy, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, SIDEBAR_SESSION_CAP, sessionArchived, sessionEndable, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
+export { canSendToSession, endedWhy, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, SIDEBAR_SESSION_CAP, sessionArchived, sessionEndable, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionAgentName, SESSION_AGENTS, sessionUnread, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
 export type { SessionDayGroup, SessionSeen, WorkspaceSection } from "./messaging/localSessionLabels";
 export { conversationOnly, sessionScreenNotice } from "./messaging/sessionStates";
 export { agentRingState, mergeChats, roomActivityAt, roomPreview, sessionActivityAt, sessionPreview, sessionRingState } from "./messaging/chatList";

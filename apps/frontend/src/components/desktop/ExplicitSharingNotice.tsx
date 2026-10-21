@@ -18,7 +18,7 @@ export function ExplicitSharingNotice() {
     invoke<{ enrollment: { enabled: boolean } | null }>("local_sessions_status").then((status) => {
       if (!live || !status.enrollment?.enabled) return;
       try { localStorage.setItem(EXPLICIT_SHARING_SEEN_KEY, "1"); } catch { /* storage off: shown again next launch */ }
-      toast(<span>A Claude Code or Codex session on this Mac is shared with your workspace when you start it with Lightbulb, choose Share to Lightbulb in it, or have Share every new session on. Any other session is only yours. Stop sharing one, or turn sharing off in Settings.</span>,
+      toast(<span>A Claude Code, Codex, Cursor or Grok CLI session on this Mac is shared with your workspace when you start it with Lightbulb, choose Share to Lightbulb in it, or have Share every new session on. Any other session is only yours. Stop sharing one, or turn sharing off in Settings.</span>,
         { duration: Infinity });
     }, () => {});
     return () => { live = false; };

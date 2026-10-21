@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSendToSession, endedWhy, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, workspaceSections } from "./localSessionLabels";
+import { canSendToSession, endedWhy, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionAgentName, SESSION_AGENTS, sessionUnread, workspaceSections } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
 const base = { capabilities: { sendMode: "queue" }, controlUnavailableReason: null, capabilitiesVerified: true } as unknown as LocalSession;
@@ -28,6 +28,13 @@ describe("session labels", () => {
     expect(sessionLabel(s)).toBe("Claude · Fix relay");
     expect(sessionToolName("codex")).toBe("Codex");
     expect(sessionToolName("gemini")).toBe("gemini");
+  });
+
+  it("names every agent by its product, never 'Codex' for a non-Claude one", () => {
+    expect(["claude", "codex", "cursor", "grok"].map(sessionAgentName)).toEqual(["Claude Code", "Codex", "Cursor", "Grok CLI"]);
+    expect(["cursor", "grok"].map(sessionToolName)).toEqual(["Cursor", "Grok"]);
+    expect(sessionAgentName("gemini")).toBe("gemini");
+    expect(SESSION_AGENTS).toBe("Claude Code, Codex, Cursor and Grok CLI");
   });
 
   it("shows a title that opens with a URL as its host and the words after it", () => {

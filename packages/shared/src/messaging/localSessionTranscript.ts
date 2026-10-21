@@ -39,6 +39,11 @@ export const GLYPH = {
   grok: { prompt: "›", bullet: "•", output: "└", thinking: "•", working: "•" },
 } as const;
 
+/** A provider's glyphs; one this build does not know draws Codex's plain set, never crashes. */
+export function sessionGlyph(provider: string): (typeof GLYPH)[keyof typeof GLYPH] {
+  return GLYPH[provider as keyof typeof GLYPH] ?? GLYPH.codex;
+}
+
 // Strips terminal escape sequences (color codes, cursor moves) that ride
 // along in raw tool output — they render as garbage in a <pre>.
 // The \x1b escape is written textually on purpose so the raw control byte never lives in source.

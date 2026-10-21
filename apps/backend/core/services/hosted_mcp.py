@@ -37,6 +37,7 @@ from core.services import (
     native_session_tools,
     session_browser,
     task_board,
+    webhook_agents,
 )
 from core.services.machine_auth import MachineIdentity, verify_upgrade
 
@@ -402,8 +403,15 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
 @mcp.tool(annotations=READ)
 @_noted
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
-    """Find coding sessions shared with the workspace, and your own that are not (shared false: Only me, takes no message), by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; with needsOwnerOk true the send waits for the session's owner to allow you, and its state reads awaiting_approval until they do; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason). Called from a shared session, that session is marked isThisSession: never message it."""
-    result = await sessions_for(_caller(), query, limit)
+    """Find coding sessions shared with the workspace, and your own that are not (shared false: Only me, takes no message), by readable title, provider or folder. Also lists agents: webhook agents such as "Aden's Grok Bot" that live in another cloud; pass an agentId as send_message agent_id (with needsOwnerOk true it waits for that agent's person to allow you). Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; with needsOwnerOk true the send waits for the session's owner to allow you, and its state reads awaiting_approval until they do; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason). Called from a shared session, that session is marked isThisSession: never message it."""
+    auth = _caller()
+    result = await sessions_for(auth, query, limit)
+    needle = query.casefold().strip()
+    result["agents"] = [
+        a
+        for a in await webhook_agents.targets(auth.org_id, auth.user_id)
+        if not needle or any(needle in a[k].casefold() for k in ("displayName", "kind", "ownerName"))
+    ][: max(1, min(limit, 50))]
     if _mac():
         own = (get_access_token().claims.get("source") or {}).get("sourceSessionId")
         for session in result["sessions"]:
@@ -581,21 +589,32 @@ async def send_message(
     session_id: str | None = None,
     reply_to_message_id: uuid.UUID | None = None,
     mention_ids: list[str] | None = None,
+    agent_id: str | None = None,
 ) -> dict:
-    """Send as this client on the signed-in person's behalf (or, from a shared session, as that session) to exactly one of room_id, person_id (a member id; opens the DM if needed) or session_id (delivers the text into that session as a follow-up prompt it acts on; it is not a link; see find_sessions canSend). Use a new UUID request_id and reuse it on retry. Room and person sends from a person may reply in a thread or address room members; a shared session's send takes neither. Cannot answer permission prompts."""
+    """Send as this client on the signed-in person's behalf (or, from a shared session, as that session) to exactly one of room_id, person_id (a member id; opens the DM if needed), session_id (delivers the text into that session as a follow-up prompt it acts on; it is not a link; see find_sessions canSend) or agent_id (a webhook agent from find_sessions agents: one webhook call; state delivered, failed or awaiting_approval). Use a new UUID request_id and reuse it on retry. Room and person sends from a person may reply in a thread or address room members; a shared session's send takes neither. Cannot answer permission prompts."""
     auth = _caller(WRITE_SCOPE)
-    if sum(target is not None for target in (room_id, person_id, session_id)) != 1:
-        raise messaging.ApiProblem("INVALID_REQUEST", "Send to exactly one of room_id, person_id or session_id.")
+    targets = (("room", room_id), ("person", person_id), ("session", session_id), ("agent", agent_id))
+    if sum(target is not None for _, target in targets) != 1:
+        raise messaging.ApiProblem(
+            "INVALID_REQUEST", "Send to exactly one of room_id, person_id, session_id or agent_id."
+        )
     if device := _mac():
         if reply_to_message_id or mention_ids:
             raise ToolError("INVALID_REQUEST: a session's send takes no thread or mentions.")
-        kind, target = next(
-            (k, v) for k, v in (("room", room_id), ("person", person_id), ("session", session_id)) if v is not None
-        )
+        kind, target = next((k, v) for k, v in targets if v is not None)
         return await _from_session(
             device, "send", {"destination": f"{kind}:{target}", "text": text, "requestId": str(request_id)}
         )
     slug, client = _sender(get_access_token())
+    if agent_id is not None:
+        if reply_to_message_id or mention_ids:
+            raise messaging.ApiProblem("INVALID_REQUEST", "An agent send takes no thread or mentions.")
+        agent_id = messaging.validate_uuid(agent_id, label="agent ID")
+        try:
+            await _pin_destination(auth, request_id, f"agent:{agent_id}")
+            return await webhook_agents.send(auth, agent_id, text, str(request_id), via_client=client)
+        except messaging.ApiProblem as exc:
+            raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
     if session_id is not None:
         if reply_to_message_id or mention_ids:
             raise messaging.ApiProblem("INVALID_REQUEST", "A session follow-up takes no thread or mentions.")
@@ -701,6 +720,10 @@ async def message_receipt(request_id: uuid.UUID) -> dict:
         kind, target = "room", pinned["roomId"]
     if kind == "room":
         return await receipt_for(auth, target, request_id)
+    if kind == "agent":
+        return await webhook_agents.get_receipt(auth.org_id, auth.user_id, target, str(request_id)) or {
+            "state": "unknown"
+        }
     try:
         command = await local_sessions.get_command(auth, None, target, str(request_id))
     except messaging.ApiProblem as exc:

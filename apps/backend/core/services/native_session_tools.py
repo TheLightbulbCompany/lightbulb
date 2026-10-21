@@ -197,7 +197,13 @@ async def _targets(auth: AuthContext, source_id: str) -> dict:
         for s in sessions
         if str(s.session_id) != source_id and sendable(s, auth.user_id)
     ][:20]
-    return {"rooms": room_rows, "people": list(people.values())[:20], "sessions": session_rows}
+    from core.services import webhook_agents
+
+    agent_rows = [
+        {"destination": f"agent:{a['agentId']}", "name": a["displayName"], "needsOwnerOk": a["needsOwnerOk"]}
+        for a in await webhook_agents.targets(auth.org_id, auth.user_id)
+    ][:20]
+    return {"rooms": room_rows, "people": list(people.values())[:20], "sessions": session_rows, "agents": agent_rows}
 
 
 def _send_args(args: dict[str, Any]) -> tuple[str, str, str]:
@@ -207,7 +213,7 @@ def _send_args(args: dict[str, Any]) -> tuple[str, str, str]:
     if (
         not isinstance(destination, str)
         or len(destination) > 256
-        or not destination.startswith(("room:", "person:", "session:"))
+        or not destination.startswith(("room:", "person:", "session:", "agent:"))
     ):
         raise ApiProblem("INVALID_REQUEST", "Invalid destination.")
     if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > 4096:
@@ -318,6 +324,12 @@ async def _committed_result(owner: str, source: str, destination: str, request_i
         command = await sessions_repo.get_command(owner, target, request_id)
         if command and command.get("actor") == {"kind": "session", "id": source}:
             return {"state": command["state"], "destination": destination, "targetRequestId": request_id}
+    elif destination.startswith("agent:"):
+        from core.services import webhook_agents
+
+        send = await webhook_agents.sent(owner, destination.removeprefix("agent:"), request_id)
+        if send and send.get("sourceSessionId") == source:
+            return webhook_agents.receipt(send)
     elif destination.startswith("room:"):
         room_id = destination.removeprefix("room:")
         receipt = await messaging_repo._get(
@@ -427,6 +439,29 @@ LOOP_LIMIT = 12
 LOOP_WINDOW_S = 600
 
 
+def over_loop_limit(
+    rows: list[dict], request_id: str, user_id: str, source_session_id: str | None, via_client: str | None
+) -> bool:
+    """Reason's limit: LOOP_LIMIT messages per sender-and-receiver pair per LOOP_WINDOW_S. ``rows`` are
+    the receiver's earlier sends; the sender is a shared session, else a person through one client.
+    Sessions and webhook agents both check it."""
+    now = int(time.time())
+    # ponytail: read-then-write, so concurrent sends can overshoot 12 by the number in flight; a counter row if it matters.
+    recent = [
+        c
+        for c in rows
+        # submittedAt: the dispatch window rewrites createdAt, so it would hide a queued burst.
+        if c.get("submittedAt", c.get("createdAt", 0)) > now - LOOP_WINDOW_S
+        and c["requestId"] != request_id  # an idempotent retry is not a new message
+        and (
+            c.get("sourceSessionId") == source_session_id
+            if source_session_id
+            else (c.get("actorUserId"), c.get("viaClient")) == (user_id, via_client) and not c.get("sourceSessionId")
+        )
+    ]
+    return len(recent) >= LOOP_LIMIT
+
+
 async def session_send(auth: AuthContext, target: dict, text: str, request_id: str, **source: Any) -> dict:
     """One follow-up into an authorized target session; the native and hosted MCP sends both land here."""
     from core.services.local_session_relay import get_local_session_relay
@@ -436,24 +471,13 @@ async def session_send(auth: AuthContext, target: dict, text: str, request_id: s
         request_id=request_id, expected_generation=target["generation"], kind="send", text=text
     )
     now = int(time.time())
-    sender = (
+    if over_loop_limit(
+        await sessions_repo.list_commands(target["ownerId"], session_id),
+        request_id,
+        auth.user_id,
         source.get("source_session_id"),
-        None if source.get("source_session_id") else (auth.user_id, source.get("via_client")),
-    )
-    # ponytail: read-then-write, so concurrent sends can overshoot 12 by the number in flight; a counter row if it matters.
-    recent = [
-        c
-        for c in await sessions_repo.list_commands(target["ownerId"], session_id)
-        # submittedAt: the dispatch window rewrites createdAt, so it would hide a queued burst.
-        if c.get("submittedAt", c["createdAt"]) > now - LOOP_WINDOW_S
-        and c["requestId"] != request_id  # an idempotent retry is not a new message
-        and (
-            c.get("sourceSessionId") == sender[0]
-            if sender[0]
-            else (c.get("actorUserId"), c.get("viaClient")) == sender[1] and not c.get("sourceSessionId")
-        )
-    ]
-    if len(recent) >= LOOP_LIMIT:
+        source.get("via_client"),
+    ):
         raise ApiProblem("LOCAL_SESSION_LOOP", "Too many messages to this session; wait a few minutes.")
     if not local_sessions.may_control(target, auth.user_id):
         # Agent network §6: someone the owner has not allowed asks to join, and the send waits
@@ -557,6 +581,14 @@ async def _dispatch_native(
 ) -> dict:
     if destination.startswith("session:"):
         return await _session_send(auth, source, destination.removeprefix("session:"), text, request_id)
+    if destination.startswith("agent:"):
+        from core.services import webhook_agents
+
+        try:
+            agent_id = str(uuid.UUID(destination.removeprefix("agent:")))
+        except ValueError:
+            raise ApiProblem("INVALID_REQUEST", "Invalid agent destination.") from None
+        return await webhook_agents.send(auth, agent_id, text, request_id, source_session_id=source["sessionId"])
     return await _room_send(auth, source, destination.removeprefix("room:"), text, request_id)
 
 
@@ -587,6 +619,9 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
             committed = await _committed_legacy(device.owner_id, source_id, resolved, request_id, auth)
             if committed:
                 result = await _finish(device.owner_id, source_id, request_id, row["destination"], committed)
+        if result["state"] in ("awaiting_approval", "sending") and row["destination"].startswith("agent:"):
+            # A held send settles later (its person's Allow): read where it got to.
+            result = await _committed_result(device.owner_id, source_id, row["destination"], request_id) or result
         if result.get("targetRequestId"):
             target = result["destination"].removeprefix("session:")
             command = await sessions_repo.get_command(device.owner_id, target, result["targetRequestId"])

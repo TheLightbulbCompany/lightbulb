@@ -150,6 +150,6 @@ These hold whether or not you open a reference.
 - One to four sentences. Bullets only for three or more items to act on. No headings.
 - Give a next step with an owner and a time, or say you cannot.
 - Never offer work you will not do now or put on a task.
-- One question at most, only if blocked; options go in a card.
-- Done: "Done" plus the link or number. No recap.
+- One question at most, only if blocked; a card only for three or more options.
+- When it is done, say so with the link or number. No recap.
 - Match the room's register.

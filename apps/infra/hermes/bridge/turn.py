@@ -3854,20 +3854,25 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
     return "completed", None, reply, usage
 
 
-_ROOM_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+#: The `## From` section paperclip-api.sh writes (with_from_section): its heading line, then
+#: "Filed from room `<id>`." Only that room counts: a task that merely mentions a room id names
+#: no place to post.
+_FROM_ROOM_RE = re.compile(
+    r"^## From[ \t]*\r?\n(?:[ \t]*\r?\n)*Filed from room `([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`",
+    re.MULTILINE | re.IGNORECASE)
 #: The env name lightbulb-post.sh reads. Always non-empty in a task run ("rooms:" names none): an
 #: empty value is the process-wide placeholder every shell sees (_declare_child_env_names).
 POST_ROOMS_ENV = "LIGHTBULB_POST_ROOMS"
 
 
 def task_rooms(agent_id: str, session_id: str, request: dict) -> list[str]:
-    """The room ids a Paperclip run may post to by id: the ones its task's own text names (the
-    From section a room turn writes, a routine's or an idea's target). The run's input first;
-    then the session's earlier wakes, since Paperclip strips the description from a resumed
-    session's prompt. Without this a run picked rooms from its own recall: ISOA-860's run, filed
-    before From sections existed, "looped Prasiddha in" by posting into a group DM quiet since
-    Oct 7 (prod 2026-10-19 04:48Z, room e362794c). A channel stays reachable by '#name' and a
-    person by their DM (lightbulb-post.sh --room '#x' / --user / --handle)."""
+    """The room ids a Paperclip run may post to by id: the room in its task's `## From` section.
+    The run's input first; then the session's earlier wakes (the first one carried the full
+    brief), since Paperclip strips the description from a resumed session's prompt. Without this
+    a run picked rooms from its own recall: ISOA-860's run, filed before From sections existed,
+    "looped Prasiddha in" by posting into a group DM quiet since Oct 7 (prod 2026-10-19 04:48Z,
+    room e362794c). A channel stays reachable by '#name' and a person by their DM
+    (lightbulb-post.sh --room '#x' / --user / --handle)."""
     texts = [str(request.get("input") or "")]
     db = _session_db(agent_id)
     if db is not None:
@@ -3876,7 +3881,7 @@ def task_rooms(agent_id: str, session_id: str, request: dict) -> list[str]:
                       if m.get("role") == "user"]
         except Exception:  # noqa: BLE001 -- the current input still names the From room on a first wake
             log.warning("task room scan failed for %s", session_id, exc_info=True)
-    return sorted({m for text in texts for m in _ROOM_UUID_RE.findall(text.lower())})
+    return sorted({m.lower() for text in texts for m in _FROM_ROOM_RE.findall(text)})
 
 
 def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:

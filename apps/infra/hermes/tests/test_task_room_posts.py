@@ -24,7 +24,10 @@ FROM_ROOM = "ed0016e3-58c8-5f51-8abe-9847ef2c9a71"
 SESSION = "paperclip:company:company-1:agent:agent-1:issue:issue-1"
 IDENTITY = {"runId": "run-1", "companyId": "company-1", "agentId": "agent-1", "sessionId": SESSION,
             "issueId": "issue-1", "paperclipApiUrl": "http://paperclip.internal:3100"}
-FRESH = {"input": f"# Task\nFix pushes.\n\n## From\nFiled from room `{FROM_ROOM.upper()}`.",
+# The task mentions the stale room outside its From section: a mention is not a place to post.
+FRESH = {"input": f"# Task\nFix pushes. Earlier context was in room {STALE_DM} (`{STALE_DM}`).\n\n"
+                  f"## From\nFiled from room `{FROM_ROOM.upper()}`. The message that asked: "
+                  f"/chat?panel=chat&room={FROM_ROOM}&message=4b800e3f-b3cd-4e19-977e-783a15c40a12",
          "instructions": f"Your notes mention {STALE_DM}.", "session_id": SESSION}
 
 
@@ -39,13 +42,15 @@ class _Db:
         return self.rows
 
 
-def test_task_rooms_come_from_the_task_text_never_the_instructions(monkeypatch):
+def test_task_rooms_are_only_the_from_section_room(monkeypatch):
     monkeypatch.setattr(turn, "_session_db", lambda agent_id: None)
     assert turn.task_rooms("agent-1", SESSION, FRESH) == [FROM_ROOM]
+    assert turn.task_rooms("agent-1", SESSION, {"input": f"Post to {STALE_DM}.\n## From\nsomewhere"}) == []
     # A resumed session's prompt has no description; its first wake, in the session, still does.
     resumed = {"input": "New comment: ship it.", "instructions": "", "session_id": SESSION}
     rows = [{"role": "user", "content": FRESH["input"]},
-            {"role": "assistant", "content": f"I could post in {STALE_DM}."}]
+            {"role": "user", "content": f"Comment: also see room {STALE_DM}."},
+            {"role": "assistant", "content": f"## From\nFiled from room `{STALE_DM}`."}]
     monkeypatch.setattr(turn, "_session_db", lambda agent_id: _Db(rows))
     assert turn.task_rooms("agent-1", SESSION, resumed) == [FROM_ROOM]
 

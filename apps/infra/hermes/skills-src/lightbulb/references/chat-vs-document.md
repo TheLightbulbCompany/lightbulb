@@ -42,7 +42,9 @@ task's own run writes the document. Never write the document in the room turn.
 1. **In the room turn, file the task.** If the conversation is about an
    existing task (it was named or linked), comment the new ask on it instead.
    Otherwise create one task per deliverable, assigned to yourself (an assigned
-   task starts on its own), with the full context on stdin: what was asked, by whom, and
+   task starts on its own; filing your own new task is not the paperclip
+   skill's "take a task that is not yours", and Paperclip accepts it from a
+   room turn), with the full context on stdin: what was asked, by whom, and
    what done means. The helper adds the **From** section (this room, and a
    link to the message) by itself:
 

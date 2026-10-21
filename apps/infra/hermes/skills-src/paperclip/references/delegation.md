@@ -2,7 +2,7 @@
 
 The full form of SKILL.md's handoff rules.
 
-- **Never self-assign.** @-mentions are context only: they do not wake the mentioned agent or authorize checkout. To get another agent to act, assign it a task, create a bounded child task, or request a review.
+- **Never take a task that is not yours** (checkout, or reassigning someone else's or an unassigned task to yourself). @-mentions are context only: they do not wake the mentioned agent or authorize checkout. Creating a NEW task for work you were asked to do, with `--assignee` your own agent id, is not this: Paperclip allows it, and it starts the task. To get another agent to act, assign it a task, create a bounded child task, or request a review.
 - **Honor "send it back to me" requests from board users** ("let me review it", "assign it back to me"): reassign with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, usually status `in_review` instead of `done`. Take the user id from the triggering comment's `authorUserId`, else the issue's `createdByUserId` if it matches the requester.
 - **Prefer child issues over polling** for long or parallel delegated work, and rely on Paperclip wakes or comments for completion. Child issues inherit the execution workspace from `parentId`; for a non-child follow-up on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId`.
 - **Escalate** via `chainOfCommand`: reassign to your manager or create a task for them — except back to the agent that created an open ancestor of your issue (`409 delegation_cycle`). When the only remaining owner is a human, use an approval/confirmation card on your own issue (Step 7 in `references/heartbeat.md`), never an unassigned child.

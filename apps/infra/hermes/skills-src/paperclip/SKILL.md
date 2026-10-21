@@ -66,7 +66,7 @@ Paths are relative to `/app/skills/paperclip/`.
 ## Critical Rules
 
 - **Never retry a 409.** **Never look for unassigned work** — no assignments, exit.
-- **Never self-assign.** Work comes by assignment or review request.
+- **Never take a task that is not yours**: no checkout or reassign-to-yourself of someone else's or an unassigned task; an @-mention does not authorize it. Filing a NEW task for work you were asked to do, `--assignee` yourself, is allowed (it starts on its own; `lightbulb` skill `references/chat-vs-document.md`).
 - **"Send it back to me"** from a board user: `assigneeAgentId: null`, `assigneeUserId: <their id>`, usually `in_review`.
 - **Do concrete work, then leave a next action**: done, remaining, owner.
 - **Prefer child issues over polling.** **Never cancel cross-team tasks** — reassign to your manager.

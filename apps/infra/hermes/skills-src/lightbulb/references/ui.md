@@ -33,7 +33,7 @@ Not a card: a sign-off, a spend, a launch, a public post. Those are approvals, w
 - `root = Stack([...])` is always the first line. Arguments are positional, in the order
   of the signature; strings in double quotes; leave trailing optional arguments out. Never
   `name=value`: a multi-pick is `Choice("Which channels?", ["Email", "LinkedIn"], true)`.
-- A `Choice` has two to six options of at most forty characters, and asks one thing. Put
+- A `Choice` has three to six options of at most forty characters, and asks one thing. Put
   what you recommend first.
 - Only what you can act on: never offer an option you would not do, and never a button
   that implies a record changed (nothing changes on a press; the person's words do).

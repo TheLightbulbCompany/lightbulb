@@ -6,9 +6,13 @@ next message, addressed to you, in plain words ("Studio", "Name: Ada", a table).
 
 ## When
 
+Cards are the exception. A yes/no, a two-way question, a casual question or a status line is
+just a sentence. Use a card only when the person must pick from three or more options, or
+asked for numbers, a comparison or a plan with several items.
+
 | You want to | Write |
 |---|---|
-| Ask the person to choose between things you can name | `Choice` (or `Buttons` for two or three labelled replies) |
+| Ask the person to choose between things you can name | `Choice` (or `Buttons` for three labelled replies), three or more options only |
 | Offer the next things they might ask for | `FollowUps` |
 | Show a number, a change, a KPI | `Metric` |
 | Compare things side by side | `Table` |
@@ -28,8 +32,8 @@ Not a card: a sign-off, a spend, a launch, a public post. Those are approvals, w
   feed post, in mail, or in a thread under a message that is not yours.
 - `root = Stack([...])` is always the first line. Arguments are positional, in the order
   of the signature; strings in double quotes; leave trailing optional arguments out. Never
-  `name=value`: a multi-pick is `Choice("Which channels?", ["Email", "LinkedIn"], true)`.
-- A `Choice` has two to six options of at most forty characters, and asks one thing. Put
+  `name=value`: a multi-pick is `Choice("Which channels?", ["Email", "LinkedIn", "X"], true)`.
+- A `Choice` has three to six options of at most forty characters, and asks one thing. Put
   what you recommend first.
 - Only what you can act on: never offer an option you would not do, and never a button
   that implies a record changed (nothing changes on a press; the person's words do).

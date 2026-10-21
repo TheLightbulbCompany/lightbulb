@@ -50,9 +50,9 @@ def test_send_room_message_defaults_to_the_turns_thread_root(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("thread", [None, "abc"])
-def test_a_paperclip_run_posts_to_any_room_as_a_routine_post(tmp_path, monkeypatch, thread):
+def test_a_paperclip_run_posts_to_its_task_room_as_a_routine_post(tmp_path, monkeypatch, thread):
     monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
-    own = ctx(tmp_path, family="paperclip")
+    own = ctx(tmp_path, family="paperclip", postRooms=["11111111-1111-4111-8111-111111111111"])
     sent = {}
     monkeypatch.setattr(lightbulb, "_post", lambda url, token, body: sent.update(body=body) or {"messageId": "m1"})
     # Its own room too: a Paperclip run's answer is the issue result, so nothing posts twice.

@@ -10,7 +10,8 @@ Usage: lightbulb-post.sh [--feed | --room <roomId> | --user <userId> | --handle 
                          [--why "<reason>"] [--as <agent_id>] [--event-id <id>]   (message body on stdin)
 Target, first that applies:
   --room    that room (you must already be a member); a room id, or '#name' for the
-            channel of that name you are in
+            channel of that name you are in. In a task run, a room id must be one the
+            task names (its From section)
   --feed    the workspace feed (Activity); see references/feed.md
   --user / --handle   that workspace member's DM with you (created if missing)
   --issue   the DM of the human who created that Paperclip issue
@@ -56,6 +57,12 @@ done
 n=0; for t in "$feed" "$room" "$user" "$handle"; do [[ -n "$t" ]] && n=$((n+1)); done
 [[ $n -le 1 ]] || die 'Pick at most one of --feed, --room, --user, --handle.'
 [[ -z "$feed" || -n "${why//[[:space:]]/}" ]] || { usage >&2; die '--feed needs --why "<why it matters>".'; }
+# In a task run the bridge lists the rooms the task names (LIGHTBULB_POST_ROOMS="rooms:<id> ...").
+# A room id outside it is refused: a run once picked a stale group DM from its own recall.
+if [[ -n "$room" && "$room" != \#* && "${LIGHTBULB_POST_ROOMS:-}" == rooms:* ]]; then
+  [[ " ${LIGHTBULB_POST_ROOMS#rooms:} " == *" $(tr 'A-Z' 'a-z' <<<"$room") "* ]] \
+    || die "Not posted: your task does not name room $room. A task run posts by room id only to the room its task names (its From section). Reach a person with --user <userId> or --handle <handle> (their DM), a channel with --room '#name'."
+fi
 body="$(cat)"; [[ -n "${body//[[:space:]]/}" ]] || die 'Empty body: pipe the message text on stdin.'
 
 sha() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi | cut -c1-32; }

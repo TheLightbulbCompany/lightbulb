@@ -5,7 +5,7 @@ import type { LocalSessionEvent } from "./types";
  * canonical event stream of a shared Claude Code / Codex session into the
  * rows each TUI draws. Pure — no React, no DOM.
  */
-export type LocalSessionProvider = "claude" | "codex";
+export type LocalSessionProvider = "claude" | "codex" | "cursor" | "grok";
 export type TranscriptRow =
   | { kind: "prompt"; seq: number; text: string; who: string | null; ts?: string }
   | { kind: "prose"; seq: number; text: string; final: boolean }
@@ -34,7 +34,15 @@ export const PREVIEW_LINES = 3;
 export const GLYPH = {
   claude: { prompt: "❯", bullet: "⏺", output: "⎿", thinking: "✻", working: "✻" },
   codex: { prompt: "›", bullet: "•", output: "└", thinking: "•", working: "•" },
+  // Cursor and Grok CLI mirror no transcript yet (agent network phase 2): plain glyphs.
+  cursor: { prompt: "›", bullet: "•", output: "└", thinking: "•", working: "•" },
+  grok: { prompt: "›", bullet: "•", output: "└", thinking: "•", working: "•" },
 } as const;
+
+/** A provider's glyphs; one this build does not know draws Codex's plain set, never crashes. */
+export function sessionGlyph(provider: string): (typeof GLYPH)[keyof typeof GLYPH] {
+  return GLYPH[provider as keyof typeof GLYPH] ?? GLYPH.codex;
+}
 
 // Strips terminal escape sequences (color codes, cursor moves) that ride
 // along in raw tool output — they render as garbage in a <pre>.

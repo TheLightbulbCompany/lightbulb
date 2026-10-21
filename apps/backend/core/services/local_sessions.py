@@ -36,6 +36,12 @@ EndedReason = Literal["exited", "process-exited", "on-purpose", "login-session-e
 # What a device may claim. `offline` is the backend's verdict on a lapsed lease and
 # `ended` is written by the ended frame; neither is ever a status the device reports.
 INPUT_STATUSES = Literal["idle", "busy", "waiting-approval", "unknown"]
+# The coding agents a Mac mirrors (agent network §3). Cursor and Grok CLI have no session
+# registry and no push channel: a session exists from its first hook, and a message reaches it
+# at its next hook (its next tool call or turn end).
+Provider = Literal["claude", "codex", "cursor", "grok"]
+HOOKED_PROVIDERS = frozenset({"cursor", "grok"})
+PROVIDER_NAMES = {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor", "grok": "Grok CLI"}
 
 
 def iso(epoch: int | None) -> str | None:
@@ -124,7 +130,7 @@ class WorkspaceSummary(ContractModel):
 
 class SessionRegistration(ContractModel):
     workspace: WorkspaceSummary = Field(default_factory=WorkspaceSummary)
-    provider: Literal["claude", "codex"]
+    provider: Provider
     profile_fingerprint: DeviceId
     native_conversation_id: OpaqueId
     generation: OpaqueId
@@ -266,7 +272,7 @@ class LocalSession(ContractModel):
     session_id: str
     device_id: str
     human_user_id: str
-    provider: Literal["claude", "codex"]
+    provider: Provider
     generation: str
     status: STATUSES
     provider_version: str

@@ -464,7 +464,7 @@ fn setup_at(dir: &Path, exe: &Path) {
 pub fn setup() -> i32 {
     let run = || -> Result<(), String> {
         setup_at(&local_state_dir(&app_data_dir())?, &app_exe()?);
-        println!("Set up Claude Code and Codex for Lightbulb.");
+        println!("Set up Claude Code, Codex, Cursor and Grok CLI (each one installed) for Lightbulb.");
         Ok(())
     };
     report(run())

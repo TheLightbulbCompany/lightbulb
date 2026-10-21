@@ -43,3 +43,10 @@ async def test_a_failed_name_lookup_is_no_name_not_the_user_id():
     ):
         got = await relay._sender_label({**CMD, "sourceHumanUserId": "user_2abcRAW"}, "o", "bob")
     assert got["displayName"] == "Shared native session"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("provider", "name"), [("cursor", "Aden's Cursor"), ("grok", "Aden's Grok CLI")])
+async def test_hooked_agents_are_named_for_their_owner(provider, name):
+    got = await label(CMD, {"provider": provider, "humanUserId": "aden"})
+    assert got["displayName"] == name

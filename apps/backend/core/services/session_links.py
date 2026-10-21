@@ -174,7 +174,7 @@ class LinkMe(ContractModel):
 class LinkPage(ContractModel):
     title: str | None
     owner_first_name: str
-    provider: Literal["claude", "codex"]
+    provider: sessions.Provider
     state: Literal["live", "ended", "offline"]
     code: LinkCode
     continuable: bool

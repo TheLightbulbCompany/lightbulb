@@ -851,10 +851,7 @@ impl Host {
     /// One hook datagram. Returns the key whose mirror moved, so the caller can
     /// send an early heartbeat instead of waiting out the ten-second cadence.
     fn apply_hook(&mut self, event: &lifecycle::HookEvent) -> Result<Option<String>> {
-        let provider = match event.provider {
-            lifecycle::Provider::Claude => "claude",
-            lifecycle::Provider::Codex => "codex",
-        };
+        let provider = event.provider.as_str();
         // An unknown session is not an error: a start hook wakes discovery, and the
         // 60s sweep picks up anything whose start was missed. An ended one is over.
         let Some(key) = self
@@ -1455,6 +1452,8 @@ impl Host {
                 }
                 last = Instant::now();
                 let (claude, codex) = tokio::join!(claude::discover(&home), codex::discover(&home));
+                // Cursor and Grok CLI: whatever their hooks recorded (agent network phase 2).
+                let hooked: Result<Vec<NativeSession>> = Ok(super::hooked::discover(&super::hooked::dir()));
                 // One provider's broken listing must not hide the other's sessions,
                 // so the pass is the union of whatever answered.
                 // Liveness reads the raw Claude listing, not the sessions that captured: a row
@@ -1464,7 +1463,7 @@ impl Host {
                     Err(e) => (Err(e), None),
                 };
                 let claude_ok = listed.is_some();
-                let listings = [claude, codex];
+                let listings = [claude, codex, hooked];
                 let providers = listings.len();
                 let mut found = vec![];
                 let mut failures = vec![];
@@ -2498,6 +2497,14 @@ impl Host {
         }
         // From this point failure/cancellation is unknown, never a retry/rejection.
         *why = "";
+        // Cursor and Grok CLI: the letter waits for the session's next hook. Applied and held,
+        // as a Codex send sits in `codex queue`.
+        if super::hooked::provider(&native.provider) {
+            if super::hooked::deliver(&super::hooked::dir(), &native, &cmd.request_id, &text).is_ok() {
+                return journal.finish(&cmd.session_id, &cmd.request_id, Some(cmd.request_id.clone()), true);
+            }
+            return self.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation).await;
+        }
         if let Some(socket) = &mut socket {
             let from = claude::sender_handle(cmd.own, cmd.label.as_ref().and_then(|l| l.handle.as_deref()));
             let _ = claude::send(socket, &text, &from).await;
@@ -2806,6 +2813,9 @@ fn verify_native(home: PathBuf, native: NativeSession) -> std::pin::Pin<Box<dyn 
 async fn verify_identity(home: &Path, native: &NativeSession) -> Result<NativeSession> {
     if native.status == "ended" || native.restriction.is_some() {
         return Err("control unavailable".into());
+    }
+    if super::hooked::provider(&native.provider) {
+        return super::hooked::verify(native);
     }
     let program = if native.provider == "codex" {
         codex::program(home)

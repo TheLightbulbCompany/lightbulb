@@ -2,7 +2,7 @@ import { useAuth } from "@clerk/expo";
 import { SymbolView } from "../../../components/ui/SymbolView";
 import {
   ApiError, buildRows, canControlSession, endedWhy, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, sessionScreenNotice, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
-  type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem,
+  type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem, sessionAgentName,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
@@ -533,7 +533,7 @@ function SessionBody({
               {`${ownerName} · ${sessionStatus[session.status]}${session.cwdName ? ` · ${session.cwdName}` : ""}`}
             </Text>
             <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>
-              {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${own ? "your" : `${ownerName}’s`} Mac. ${session.provider === "claude" ? "Exact Claude permissions can be answered here; questions stay in the terminal." : "Codex permissions and first-run folder trust stay in the terminal."}${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}
+              {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${own ? "your" : `${ownerName}’s`} Mac. ${session.provider === "claude" ? "Exact Claude permissions can be answered here; questions stay in the terminal." : session.provider === "codex" ? "Codex permissions and first-run folder trust stay in the terminal." : `${sessionAgentName(session.provider)} permissions stay in the terminal.`}${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}
             </Text>
             {session.controlUnavailableReason && (
               <Text style={[styles.sheetMeta, { color: palette.warn }]}>{unavailableReason[session.controlUnavailableReason]}</Text>
@@ -545,7 +545,7 @@ function SessionBody({
               <View style={styles.waitingBlock} accessibilityLiveRegion="polite">
                 <Text style={[styles.waitingTitle, { color: palette.fg }]}>{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</Text>
                 {waitingOn ? <Text style={[styles.waitingReason, { color: palette.fgSoft }]}>{waitingOn}</Text> : null}
-                {own ? <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>{session.provider === "claude" ? "Claude questions and prompts without an exact remote approval must be answered on your Mac." : "Codex permissions and first-run folder trust must be answered on your Mac."}</Text> : (
+                {own ? <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>{session.provider === "claude" ? "Claude questions and prompts without an exact remote approval must be answered on your Mac." : session.provider === "codex" ? "Codex permissions and first-run folder trust must be answered on your Mac." : `${sessionAgentName(session.provider)} permissions must be answered on your Mac.`}</Text> : (
                   <Pressable onPress={onMessageOwner} accessibilityRole="button" accessibilityLabel={`Message ${ownerName}`}>
                     <Text style={[styles.bannerLink, { color: palette.link }]}>Message {ownerName}</Text>
                   </Pressable>

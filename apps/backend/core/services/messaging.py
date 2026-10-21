@@ -761,6 +761,14 @@ class RunUsage(ContractModel):
 
 
 PROVIDER_QUOTA_EXHAUSTED = "provider_quota_exhausted"
+
+
+def _session_tool_name(provider: str | None) -> str:
+    from core.services.local_sessions import PROVIDER_NAMES  # lazy: local_sessions imports this module
+
+    return PROVIDER_NAMES.get(provider or "claude", "Coding")
+
+
 QUOTA_PROVIDER_NAMES = {"chatgpt": "ChatGPT", "openai": "OpenAI", "anthropic": "Anthropic"}
 
 
@@ -4092,7 +4100,7 @@ async def create_human_message(
                     raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "The session owner is not in this room.")
                 session_target_labels[session_id] = " · ".join(
                     (
-                        "Claude Code" if row["provider"] == "claude" else "Codex",
+                        local_sessions.PROVIDER_NAMES.get(row["provider"], "Coding session"),
                         notification_copy.line(
                             row.get("displayTitle") or row.get("title") or row.get("cwdName") or "Session", 80
                         ),
@@ -4108,7 +4116,7 @@ async def create_human_message(
         {
             "kind": "system",
             "id": native_source_id,
-            "displayName": "Codex session" if native_provider == "codex" else "Claude Code session",
+            "displayName": f"{_session_tool_name(native_provider)} session",
         }
         if native_source_id
         else {"kind": "human", "id": auth.user_id, "displayName": await human_display_name(auth.user_id)}

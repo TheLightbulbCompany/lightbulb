@@ -1,5 +1,5 @@
 import { SymbolView } from "../ui/SymbolView";
-import { sendBlockedReason, type LocalSession, type useSessionCommand } from "@lightbulb/shared";
+import { sendBlockedReason, type LocalSession, type useSessionCommand, sessionToolName } from "@lightbulb/shared";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -22,7 +22,7 @@ export function SessionPromptRow({ session, text, onChangeText, command, pending
 }) {
   const palette = useChatPalette();
   const insets = useSafeAreaInsets();
-  const target = session.provider === "claude" ? "Claude" : "Codex";
+  const target = sessionToolName(session.provider);
   const reason = sendBlockedReason(session);
   const chip = command.chip;
   const sendDisabled = command.locked || !text.trim();

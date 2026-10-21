@@ -171,4 +171,16 @@ describe("session mentions", () => {
       sessionMentions: [id], sessionTargetLabels: { [id]: "Claude Code · Launch check · phase 2 · Aden" },
     })).toBe(`Ask [@Claude Code · Launch check · phase 2 · Aden](mention:session:${id})`);
   });
+
+  it("makes Cursor and Grok CLI handles chips too, from a sent label, a live session or a legacy id", () => {
+    const id = "514fe2b5-9032-5f8a-b9a6-899456e31363";
+    expect(linkifySessionMentions("Ask @grok-launch-check", { sessionMentions: [id], sessionTargetLabels: { [id]: "Grok CLI · Launch check · Aden" } }))
+      .toBe(`Ask [@Grok CLI · Launch check · Aden](mention:session:${id})`);
+    expect(displaySessionMentions("Ask @cursor-api", undefined, [session({ sessionId: id, provider: "cursor", title: "api" })]))
+      .toBe("Ask @Cursor · api");
+    expect(displaySessionMentions(`Ask @cursor-api-${id}`, undefined)).toBe("Ask @Cursor session");
+    expect(resolveTypedSessionMentions("@grok-gone", []).unresolved).toEqual(["grok-gone"]);
+    const grok = session({ sessionId: "g1", provider: "grok", title: "api" });
+    expect(resolveTypedSessionMentions("@grok-api", [grok]).ids).toEqual(["g1"]);
+  });
 });

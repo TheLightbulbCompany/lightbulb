@@ -1,6 +1,6 @@
 import {
   PREVIEW_LINES, buildRows, groupRows, lifecycleLabel, subagentLabel, subagentStatus, subagentTags, thinkingLabel, toolHeader, toolRowView,
-  type LocalSessionEvent, type LocalSessionProvider, type SessionSubagent, type SessionReceiptChip, type ThinkingTranscriptRow, type ToolTranscriptRow, type TranscriptItem,
+  type LocalSessionEvent, type LocalSessionProvider, type SessionSubagent, type SessionReceiptChip, type ThinkingTranscriptRow, type ToolTranscriptRow, type TranscriptItem, sessionToolName,
 } from "@lightbulb/shared";
 import { memo, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -64,7 +64,7 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
     }
     case "prose": {
       const final = provider === "codex" && row.final;
-      const author = provider === "codex" ? "Codex" : "Claude";
+      const author = sessionToolName(provider);
       return (
         <View style={styles.row}>
           <Bubble mine={false} palette={palette} accessibilityLabel={`${author}: ${row.text}`}>

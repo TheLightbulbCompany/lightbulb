@@ -18,12 +18,20 @@ it("tells a Mac that shares sessions, once", async () => {
   const first = render(<ExplicitSharingNotice />);
   await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
   const { container } = render(<>{toast.mock.calls[0][0]}</>);
-  expect(container.textContent).toBe("A Claude Code or Codex session on this Mac is shared with your workspace when you start it with Lightbulb, choose Share to Lightbulb in it, or have Share every new session on. Any other session is only yours. Stop sharing one, or turn sharing off in Settings.");
+  expect(container.textContent).toBe("A Claude Code, Codex, Cursor or Grok CLI session on this Mac is shared with your workspace when you start it with Lightbulb, choose Share to Lightbulb in it, or have Share every new session on. Any other session is only yours. Stop sharing one, or turn sharing off in Settings.");
   expect(localStorage.getItem(EXPLICIT_SHARING_SEEN_KEY)).toBe("1");
   first.unmount();
   render(<ExplicitSharingNotice />);
   await Promise.resolve();
   expect(toast).toHaveBeenCalledTimes(1);
+});
+
+it("shows the Cursor and Grok wording once more to someone who dismissed the old notice", async () => {
+  localStorage.setItem("lightbulb.desktop.allSessionsNotice", "1");
+  invoke.mockResolvedValue({ enrollment: { enabled: true } });
+  render(<ExplicitSharingNotice />);
+  await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+  expect(EXPLICIT_SHARING_SEEN_KEY).not.toBe("lightbulb.desktop.allSessionsNotice");
 });
 
 it("says nothing where sharing is off or outside the desktop app", async () => {

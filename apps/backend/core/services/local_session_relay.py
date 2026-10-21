@@ -63,7 +63,7 @@ HolderId = Annotated[str, Field(pattern=r"^[0-9a-f]{8}$")]
 
 class Descriptor(ContractModel):
     workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
-    provider: Literal["claude", "codex"]
+    provider: sessions.Provider
     profile_fingerprint: sessions.DeviceId
     native_conversation_id: sessions.OpaqueId
     generation: sessions.OpaqueId
@@ -304,7 +304,7 @@ async def _session_sender_label(command: dict, owner: str | None, target_human: 
     except Exception:  # noqa: BLE001 -- a label never blocks delivery
         row = None
     human = (row or {}).get("humanUserId") or command.get("sourceHumanUserId")
-    provider = {"claude": "Claude Code", "codex": "Codex"}.get((row or {}).get("provider"))
+    provider = sessions.PROVIDER_NAMES.get((row or {}).get("provider"))
     if human and human == target_human:
         return {"kind": "session", "displayName": f"Your {provider or 'coding session'}"}
     try:
@@ -449,7 +449,9 @@ def attention_copy(row: dict, state: str, subagent: str | None = None) -> tuple[
     ``subagent`` is a finished background subagent's own line ('Agent "…" finished'), which is the body."""
     from core.services import notification_copy as copy
 
-    tool = {"claude": "Claude", "codex": "Codex"}.get(row.get("provider", ""), "Session")
+    tool = {"claude": "Claude", "codex": "Codex", "cursor": "Cursor", "grok": "Grok"}.get(
+        row.get("provider", ""), "Session"
+    )
     where = copy.line(row.get("title"), 40) or row["sessionId"][:8]
     if subagent:
         return copy.title(tool, where), copy.line(subagent)

@@ -6,7 +6,7 @@ import { MessageSquare } from "lucide-react";
 import {
   auditLine, pickupSource, pickupStatus, sessionChanges, sessionFacts, sessionPlan, sessionStatus, sessionTitle, sessionToolName, usageLine,
   useSessionAudit, useTeamControl, useUsageSharing,
-  type LocalSession, type LocalSessionEvent, type SessionControlClient,
+  type LocalSession, type LocalSessionEvent, type SessionControlClient, sessionAgentName,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -28,7 +28,7 @@ type Client = SessionControlClient & PickupClient & Parameters<typeof SessionSha
 /** "Claude Code 2.1.283": the tool by its name, then the version out of whatever its `--version` printed. */
 function toolVersion(session: LocalSession): string {
   const version = session.providerVersion.match(/\d+(?:\.\d+)+/)?.[0];
-  return [session.provider === "claude" ? "Claude Code" : "Codex", version].filter(Boolean).join(" ");
+  return [sessionAgentName(session.provider), version].filter(Boolean).join(" ");
 }
 
 /** One fact about the session: what it is, and the value as its terminal would print it. */

@@ -211,6 +211,9 @@ class AgentRead:
 
     auth: AuthContext
     workspace_only: bool
+    # A Paperclip run (routine, heartbeat, task run): nobody signed in asked, so it reads as its own
+    # agent -- only channels that agent sits in (service.agent_channels), never a DM.
+    agent_id: str | None = None
 
 
 async def agent_reader(
@@ -220,8 +223,11 @@ async def agent_reader(
     hosted MCP's find_rooms/read_messages). The person is the turn grant's requester, set by the
     backend from the canonical trigger -- the human author of a typed message, the signed-in speaker
     of a Live run -- never by the agent. A Google Meet's turn reads as the member who invited the agents
-    (the grant's reader, owner ruling 2026-10-13). Neither (a voice run another member steered, a
-    Paperclip run, an agent's message): nothing is readable, since every room is private to its members."""
+    (the grant's reader, owner ruling 2026-10-13). A Paperclip run reads as its agent: the channels it
+    sits in, so a routine can read back the brief it posted (Gauge, 2026-10-19). Otherwise (a voice run
+    another member steered, an agent's message): nothing is readable, since every room is private."""
+    if (auth.origin or {}).get("kind") == "paperclip":
+        return AgentRead(AuthContext(user_id="", org_id=auth.owner_id), workspace_only=False, agent_id=auth.agent_id)
     person = auth.requester_id or auth.reader_id
     if not person or not auth.room_id:
         raise ApiProblem("ROOM_FORBIDDEN", "No signed-in person asked for this, so no rooms can be read for it.")
@@ -236,6 +242,8 @@ async def agent_reader(
 
 @router.get("/messaging/agent-read/rooms")
 async def agent_find_rooms(query: str = "", limit: int = 30, read: AgentRead = Depends(agent_reader)):
+    if read.agent_id:
+        return await service.agent_channels(read.auth.org_id, read.agent_id, query, limit)
     return await hosted_mcp.rooms_for(read.auth, query, limit, workspace_only=read.workspace_only)
 
 
@@ -243,6 +251,8 @@ async def agent_find_rooms(query: str = "", limit: int = 30, read: AgentRead = D
 async def agent_read_messages(
     room_id: str, after_seq: int | None = None, limit: int = 25, read: AgentRead = Depends(agent_reader)
 ):
+    if read.agent_id:
+        return await service.agent_channel_messages(read.auth.org_id, read.agent_id, room_id, after_seq, limit)
     if read.workspace_only and not hosted_mcp.workspace_wide(
         await service.get_room(read.auth, room_id), await hosted_mcp.workspace_people(read.auth.org_id)
     ):

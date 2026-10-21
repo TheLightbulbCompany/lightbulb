@@ -125,3 +125,21 @@ async def test_owner_wipe_deletes_lookup_rows_outside_the_partition(table):
     await agent_keys.delete_for_owner("org_a")
     assert await agent_keys.resolve(made["key"]) is None
     assert not [k for k in table.items if k[0].startswith("AGENTKEY#")]
+
+
+@pytest.mark.asyncio
+async def test_non_member_create_is_refused_and_writes_nothing(table, monkeypatch):
+    from fastapi import HTTPException
+
+    from core.auth import AuthContext
+    from routers import agent_keys as router
+
+    auth = AuthContext(user_id="user_gone", org_id="org_a")
+    body = router.CreateAgentKey(name="Grok Bot")
+    for orgs in ([{"id": "org_other"}], RuntimeError("clerk down")):  # removed, then fail closed
+        mock = AsyncMock(side_effect=orgs) if isinstance(orgs, Exception) else AsyncMock(return_value=orgs)
+        monkeypatch.setattr(router.clerk_admin, "list_user_organizations", mock)
+        with pytest.raises(HTTPException) as err:
+            await router.create_agent_key(body, auth)
+        assert err.value.status_code == 403
+        assert table.items == {}

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.services import agent_keys
+from core.services import agent_keys, clerk_admin
 
 router = APIRouter()
 
@@ -24,8 +24,18 @@ async def list_agent_keys(auth: AuthContext = Depends(get_current_user)):
 async def create_agent_key(body: CreateAgentKey, auth: AuthContext = Depends(get_current_user)):
     if body.expires_in_days is not None and not 1 <= body.expires_in_days <= 365:
         raise HTTPException(status_code=400, detail="Expiry must be 1-365 days, or none.")
+    owner_id = resolve_owner_id(auth)
+    # A session JWT can outlive removal: ask Clerk now, the same check the verifier makes. Fail closed.
     try:
-        return await agent_keys.create_key(resolve_owner_id(auth), auth.user_id, body.name, body.expires_in_days)
+        member = any(
+            o["id"] == owner_id for o in await clerk_admin.list_user_organizations(auth.user_id, limit=100, strict=True)
+        )
+    except Exception:
+        member = False
+    if not member:
+        raise HTTPException(status_code=403, detail="You are not a member of this workspace.")
+    try:
+        return await agent_keys.create_key(owner_id, auth.user_id, body.name, body.expires_in_days)
     except agent_keys.AgentKeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

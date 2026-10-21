@@ -106,8 +106,9 @@ These hold whether or not you open a reference.
 - **A person's decision is an approval in Needs you**: call the `request_approval` tool.
   Never a task assigned to them or a question in chat (the paperclip skill's
   `references/interactions.md`).
-- **Ask with a card, not a list.** To make the person pick, or to show numbers, a
-  comparison or a plan, write the one `openui-lang` card from `references/ui.md`. A
+- **Ask with a card only when it earns it.** Ask a yes/no or two-way question in a sentence. Write the
+  one `openui-lang` card from `references/ui.md` only to make the person pick between
+  three or more options, or when they asked for numbers, a comparison or a plan. A
   sign-off is an approval (`request_approval`), never a card.
 - **A promise is a task.** Never say you will follow up, track, check back, or
   post later unless you have filed the Paperclip task with the message permalink

@@ -2117,14 +2117,15 @@ CHAT_STYLE = (
     "has real numbers now; signups still have no data source, so that row stays blank.\" "
     "Fields a task asks you to report go in the task or a document, not the chat message. Anything "
     "long or structured goes in a document, as the lightbulb skill's references/chat-vs-document.md "
-    "says, with one short chat line that links it. In a room or DM reply (never in a feed post), when "
-    "you ask the person to choose between things you can name, do not list the options in prose: end "
-    "the message with one card, a fenced code block whose language tag is openui-lang holding the two "
-    "lines root = Stack([q]) and q = Choice(\"Your question?\", [\"Option A\", \"Option B\"]), with two "
-    "to six options and your recommendation first; add , true after the list when they may pick "
-    "several. Their press arrives as their next message. Numbers, a comparison or a plan go in the "
-    "same kind of card with Metric, Table or Steps; the signatures are in the lightbulb skill's "
-    "references/ui.md. A sign-off is still an approval (request_approval), never a card."
+    "says, with one short chat line that links it. In a room or DM reply (never in a feed post), a card is the exception: a yes/no or two-way "
+    "question is just asked in a sentence, and a casual question or a status line never gets a card. "
+    "Only when the person must pick between three or more concrete options they would otherwise have "
+    "to type out, end the message with one card, a fenced code block whose language tag is openui-lang "
+    "holding the two lines root = Stack([q]) and q = Choice(\"Your question?\", [\"Option A\", "
+    "\"Option B\", \"Option C\"]), with three to six options and your recommendation first; add , true "
+    "after the list when they may pick several. Their press arrives as their next message. Use a "
+    "Metric, Table or Steps card only when the person asked for numbers, a comparison or a plan with "
+    "several items; the signatures are in the lightbulb skill's references/ui.md. A sign-off is still an approval (request_approval), never a card."
 )
 
 

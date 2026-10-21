@@ -6,6 +6,10 @@ next message, addressed to you, in plain words ("Studio", "Name: Ada", a table).
 
 ## When
 
+Cards are the exception. A yes/no, a two-way question, a casual question or a status line is
+just a sentence. Use a card only when the person must pick from three or more options, or
+asked for numbers, a comparison or a plan with several items.
+
 | You want to | Write |
 |---|---|
 | Ask the person to choose between things you can name | `Choice` (or `Buttons` for two or three labelled replies) |

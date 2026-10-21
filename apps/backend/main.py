@@ -73,6 +73,7 @@ from routers import (
     runtime_rpc,
     sendblue_inbound,
     ses_inbound,
+    agent_keys as agent_keys_router,
     settings_keys,
     setup_requests,
     slack_app,
@@ -906,6 +907,7 @@ app.include_router(container_recover.router, prefix="/api/v1/container", tags=["
 # Config read/patch over the owner's roster profiles
 app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 
+app.include_router(agent_keys_router.router, prefix="/api/v1/settings/agent-keys", tags=["settings"])
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
 
 # Integrations (MCP servers, ClawHub)

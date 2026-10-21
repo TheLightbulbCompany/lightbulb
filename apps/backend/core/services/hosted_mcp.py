@@ -29,7 +29,15 @@ from core.auth import AuthContext
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import local_sessions_repo, messaging_repo
-from core.services import clerk_admin, local_sessions, messaging, native_session_tools, session_browser, task_board
+from core.services import (
+    agent_keys,
+    clerk_admin,
+    local_sessions,
+    messaging,
+    native_session_tools,
+    session_browser,
+    task_board,
+)
 from core.services.machine_auth import MachineIdentity, verify_upgrade
 
 logger = logging.getLogger(__name__)
@@ -119,6 +127,8 @@ class LightbulbVerifier(ClerkOAuthVerifier):
     paired Mac (its device JWT, whose signed ``source`` claim names the calling session)."""
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        if token.startswith(agent_keys.PREFIX):
+            return await self._verify_agent_key(token)
         if "." not in token:
             return await super().verify_token(token)
         device = await verify_upgrade(token, "openclaw-macos")
@@ -137,6 +147,33 @@ class LightbulbVerifier(ClerkOAuthVerifier):
             resource=RESOURCE,
             subject=device.user_id,
             claims={"org_id": device.org_id, "device": asdict(device), "source": claims.get("source")},
+        )
+
+    async def _verify_agent_key(self, token: str) -> AccessToken | None:
+        """A per-agent key acts as its person, only while they are still in the workspace."""
+        try:
+            row = await agent_keys.resolve(token)
+            if row is None:
+                return None
+            organizations = await clerk_admin.list_user_organizations(row["userId"], limit=100, strict=True)
+            if not any(org["id"] == row["ownerId"] for org in organizations):
+                return None
+        except (ClientError, RuntimeError, ValueError, KeyError):
+            logger.warning("Lightbulb MCP agent key verification failed")  # never the key text
+            return None
+        logger.info("agent key call keyId=%s owner=%s", row["keyId"], row["ownerId"])
+        return AccessToken(
+            token=token,
+            client_id=f"agentkey:{row['keyId']}",
+            scopes=[READ_SCOPE, WRITE_SCOPE, "user:org:read"],
+            expires_at=int(row["expiresAt"] or time.time() + 300),
+            resource=RESOURCE,
+            subject=row["userId"],
+            claims={
+                "org_id": row["ownerId"],
+                "iss": settings.CLERK_ISSUER,
+                "agentKey": {"keyId": row["keyId"], "name": row["name"]},
+            },
         )
 
 
@@ -451,6 +488,13 @@ def client_identity(client_id: str) -> tuple[str, str]:
     return host, host
 
 
+def _sender(token) -> tuple[str, str]:
+    """(slug, name) of what authors a send: the agent a key names, else the OAuth client."""
+    if agent := (getattr(token, "claims", None) or {}).get("agentKey"):
+        return f"agent-{agent['keyId']}", agent["name"]
+    return client_identity(token.client_id)
+
+
 def _sent_key(auth: AuthContext, request_id: uuid.UUID) -> tuple[str, str]:
     # Under the workspace's OWNER# partition, so both wipes' delete_owner_partition removes it.
     return messaging_repo.owner_pk(auth.org_id), f"MCPSEND#{auth.user_id}#{request_id}"
@@ -551,7 +595,7 @@ async def send_message(
         return await _from_session(
             device, "send", {"destination": f"{kind}:{target}", "text": text, "requestId": str(request_id)}
         )
-    slug, client = client_identity(get_access_token().client_id)
+    slug, client = _sender(get_access_token())
     if session_id is not None:
         if reply_to_message_id or mention_ids:
             raise messaging.ApiProblem("INVALID_REQUEST", "A session follow-up takes no thread or mentions.")

@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   handlers: new Set<(event: LiveEvent) => void>(),
   nativeNotify: vi.fn(), notifySuccess: vi.fn(), capture: vi.fn(),
   notificationPermission: vi.fn(), isDesktopApp: vi.fn(), notifyAttention: vi.fn(),
+  sessionClick: null as ((sessionId: string) => void) | null,
 }));
 const onEvent = (handler: (event: LiveEvent) => void) => { mocks.handlers.add(handler); return () => mocks.handlers.delete(handler); };
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "me" }) }));
@@ -14,6 +15,8 @@ vi.mock("@/lib/analytics", () => ({ capture: mocks.capture }));
 vi.mock("@/lib/desktopNotify", () => ({
   nativeNotify: mocks.nativeNotify, notificationPermission: mocks.notificationPermission, isDesktopApp: mocks.isDesktopApp,
   onDesktopToast: () => () => {},
+  desktopDeviceId: async () => null,
+  onSessionNoticeClick: (handler: (sessionId: string) => void) => { mocks.sessionClick = handler; return () => { mocks.sessionClick = null; }; },
 }));
 vi.mock("@/lib/notify", () => ({ notifySuccess: mocks.notifySuccess, notifyAttention: mocks.notifyAttention }));
 import { MessageNotifications } from "../MessageNotifications";
@@ -199,4 +202,11 @@ describe("shared session attention", () => {
     await act(async () => { emit(attention); });
     expect(mocks.nativeNotify).not.toHaveBeenCalled();
   });
+});
+
+it("a click on a Mac request notification opens the session it is about", () => {
+  const onOpenSession = vi.fn();
+  render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} onOpenSession={onOpenSession} />);
+  mocks.sessionClick?.("s-1");
+  expect(onOpenSession).toHaveBeenCalledWith("s-1");
 });

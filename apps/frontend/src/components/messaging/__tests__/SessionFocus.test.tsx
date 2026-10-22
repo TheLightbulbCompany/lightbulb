@@ -506,3 +506,14 @@ it("closes after a removal succeeded, never before, and for a displayed fork too
   expect(onRemove).toHaveBeenCalledTimes(2);
   expect(onClose).toHaveBeenCalledTimes(1);
 });
+
+it("names a prompt sent by one of your own sessions as that session, not a teammate", async () => {
+  const cursor: LocalSession = { ...session, sessionId: "cursor-1", provider: "cursor", title: "Cursor work" };
+  const claude: LocalSession = { ...session, terminal: undefined, terminalReason: "plain", humanUserId: "alice", latestEventSeq: 1 };
+  const events = [{ seq: 1, ts: "2026-10-22T10:00:00.000Z", kind: "text", role: "user", text: "ping from cursor", actor: { agentId: "cursor-1" } }];
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events, nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() } as unknown as SessionSource["client"];
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: claude, ownerName: "Alice", own: true }, { session: cursor, ownerName: "Alice", own: true }]} loading={false} hintRevision={0} client={client}
+    resolveSessionOwner={() => ({ ownerName: "Alice", own: true })} onAccessLost={vi.fn()} onClose={vi.fn()} />);
+  expect(await screen.findByText(/Your Cursor/)).toBeInTheDocument();
+  expect(screen.queryByText(/Teammate/)).toBeNull();
+});

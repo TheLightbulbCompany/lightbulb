@@ -29,7 +29,7 @@ It prints `Open <link> and enter <code>` and opens your browser. Sign in or sign
 
 ## 3. Open two sessions
 
-Open a new terminal tab and run `claude`. Open another and run `codex`. Each prints `● Shared with <workspace>.` Cursor and Grok CLI sessions connect through their hooks when you start them.
+Open a new terminal tab and run `claude`. Open another and run `codex`. Claude Code prints `● Shared in Lightbulb`. Cursor and Grok CLI sessions connect through their hooks when you start them.
 
 ## 4. Send a message
 

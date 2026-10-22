@@ -8,7 +8,7 @@ import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
   audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
-  conversationOnly, joinRequestView, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
+  CLI_ONLY, conversationOnly, joinRequestView, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -333,7 +333,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" /></>
       : <>
       {convoEmpty ? endedPanel : convo ? <>{session.status === "ended" && endedLine}{session.status === "offline" && offlinePanel}<p className="session-ended-line" role="note">{notice.title} {notice.body}</p>
-        {own && running && <OpenInTerminal sessionId={session.sessionId} onEvent={onEvent} />}</>
+        {own && running && !CLI_ONLY.has(session.provider) && <OpenInTerminal sessionId={session.sessionId} onEvent={onEvent} />}</>
         : session.status === "ended" ? (endedScreen || keptWatching ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : null}
       {conversation && !convo && !showBrowser && <>{hint}<div className="local-session-scroll">
         <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>

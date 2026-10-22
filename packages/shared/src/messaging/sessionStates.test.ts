@@ -30,3 +30,10 @@ it("says what an app session is, and gives nobody terminal steps for any other",
     expect(sessionScreenNotice(session, false, "Ada")).toEqual({ title: "Ada is working in this session, but its screen is not shared.", body: "You can still follow its status and what it changed." });
   }
 });
+
+it("says Cursor and Grok CLI sessions run in the person's own terminal", () => {
+  for (const provider of ["cursor", "grok"] as const) {
+    const notice = sessionScreenNotice({ ...base, provider, terminalReason: "unknown" }, true, "Ada");
+    expect(notice.title).toBe("This session runs in the person's own terminal, and its live terminal is not shared.");
+  }
+});

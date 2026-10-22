@@ -27,6 +27,10 @@ Codex skips hooks it does not trust, with no message. Lightbulb writes its own t
 
 A Codex started off its shared daemon, with `codex --no-daemon`, can be watched but cannot receive messages: delivering to it would make two writers for one session. Start it again with `lightbulb codex`. The Codex built into the ChatGPT app runs this way too.
 
+## A Grok CLI session does not appear
+
+Grok CLI runs Lightbulb's hooks only in a folder you have trusted. If you dismissed "Do you trust the contents of this directory?", start Grok again in that folder and trust it.
+
 ## Too many messages
 
 "Too many messages to this session; wait a few minutes." means the loop limit (12 in 10 minutes) was reached. Wait, then send again.

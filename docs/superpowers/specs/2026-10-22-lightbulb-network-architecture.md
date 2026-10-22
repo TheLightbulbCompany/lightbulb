@@ -156,9 +156,13 @@ depends on nothing of ours. The engine has exactly one Lightbulb-specific defaul
   message with `reply_to` (Codex review of #4295, round 3). The held message
   may itself come from that bridge's sessions — a held Friday message allowed from the phone is the main case
   (Codex review of #4295, 2026-10-22). The computer applies it and signs the decision record with its own
-  key. First answer wins; a second gets `not_open`. **Residual trust, stated**: a compromised backend can
-  send a message as the person's own cloud agent and allow it once, or allow a held third-party message
-  once; a phone-held person key (Secure Enclave) that co-signs decisions is Plan D hardening.
+  key. First answer wins; a second gets `not_open`. A relayed `person` decision is recorded with
+  `set_by: bridge`, the computer shows "Allowed <name> from your phone", and `lightbulb policy` lists and
+  revokes bridge-set entries. **Residual trust, stated** (Codex review of #4295, round 4): a compromised
+  backend can send a message as the person's own cloud agent and allow it once, allow a held third-party
+  message once, or — because phone Allow is a real per-person Allow (owner's product rule) — allow that
+  third party's agents until the person revokes it; a phone-held person key (Secure Enclave) that co-signs
+  decisions is Plan D hardening, and until then the visible record is the control.
 - **Notifier claim**: the app holds `ui.claim` (20 s lease, 7 s heartbeat) while open; the daemon shows the OS
   dialog only when no claim is live. Both resolve the same hold; a duplicate surface in the race is tolerated.
 
@@ -186,11 +190,14 @@ grant. "Anyone with the link" viewing is a bridge feature over such a grant.
   files?, notify?)` — the hosted MCP additionally accepts `room_id | person_id | agent_id` for workspace rooms
   and refuses `files`/`notify`; `message_receipt(request_id)`; `check_inbox(wait_secs ≤ 600)`. `read_messages`,
   `find_rooms` and the task tools stay hosted-only.
-- **Threads** (Codex review of #4295, round 2): every delivered frame shows its `requestId`. `reply_to` names
-  the `requestId` the agent is answering; the daemon sets the envelope's `thread` to that message's thread.
-  Without `reply_to`, the thread is the most recent inbound message from the target session (best effort),
-  else a new thread. The bridge routes replies by `thread`, so two Friday messages answered in turn each reach
-  their own run; the frame header tells the agent to pass `reply_to` when it answers a specific message.
+- **Threads and hops** (Codex review of #4295, rounds 2 and 4): every delivered frame shows its `requestId`.
+  `reply_to` names the `requestId` the agent is answering; the daemon sets the envelope's `thread` to that
+  message's thread and `hops` to its hops + 1. Without `reply_to`, the **trigger** is the newest message
+  delivered to the sender in the last 600 s from any session: `hops` = trigger.hops + 1 (so forwarding work to
+  a third session keeps the chain count and the 4-hop cap holds), and `thread` = the trigger's thread when
+  the target is the trigger's sender, else a new thread. With no trigger, hops is 0 and the thread is new.
+  The bridge routes replies by `thread`; the frame header tells the agent to pass `reply_to` when it answers
+  a specific message.
 - Session record (both MCPs): `{session_id, person, person_verified, computer, agent, cwd, repo, branch,
   status: busy|idle|gone, doing, tier, can_send, needs_owner_ok}`.
 - Plan A's schema is the final shape of its tables: `messages` carries `kind`, `thread`, `hops`, `origin`;

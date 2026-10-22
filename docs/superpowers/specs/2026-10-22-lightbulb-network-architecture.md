@@ -65,10 +65,10 @@ depends on nothing of ours. The engine has exactly one Lightbulb-specific defaul
   founder may `transfer`; a founder who leaves without transferring is succeeded by the oldest admin.
 - **Admission needs a person's yes.** A `join` with the team link reaches an online admin (or the inviting
   computer), which raises a hold-shaped prompt — "`<name>` wants to join your network" — and admits only on
-  Allow. A link minted `invite --open` admits without the prompt (the convenience mode; the CLI says what it
-  gives up). The team link expires after 7 days by default (`invite --new` renews it, `--once` mints a 24 h
+  Allow. A ticket minted `invite --open` admits without the prompt (the convenience mode; the CLI says what it
+  gives up); the reusable team link stays `ask`. The team link expires after 7 days by default (`invite --new` renews it, `--once` mints a 24 h
   single-use ticket) and is replaced on every removal.
-- **Ticket**: base64url of `{team_id, link_secret, inviter_key, relay_hint, up to 6 member keys}`.
+- **Ticket**: base64url of `{team_id, ticket_id, mode: ask | open, link_secret, inviter_key, relay_hint, up to 6 member keys}`, signed by the inviting member's key. The inviting computer keeps the per-ticket policy (`invites(ticket_id, mode, secret_hash, expires_at, used_at?)`), so `invite --open` makes THAT ticket open. A receiver verifies the signature against the roster before it honours `open`; an unsigned or unverifiable ticket is `ask`.
 - **Same-person admission**: a computer presenting a proof for a `person_id` already in the roster is admitted
   by one of that person's own computers **after a local confirmation on that computer** ("Your new Mac
   `<name>` wants to join. Allow?"). The bridge may admit a same-person computer only on the same terms: it
@@ -128,7 +128,7 @@ depends on nothing of ours. The engine has exactly one Lightbulb-specific defaul
   24 h) → `stored` (on the recipient's computer) → `delivered` (handed to the agent) → `read` (consumed by the
   agent's next turn); `held` (waiting for the person, at most 7 days) → `stored` on Allow; `refused` (reason:
   `loop`, `policy`, `declined`, `not_member`, `request_id_reused`, `unsupported`); `expired` (24 h with the
-  session gone, 7 days held, or 24 h in the outbox).
+  session gone, 7 days held, or 24 h in the outbox). The 24 h outbox limit applies to messages only; hold notices and `decision` frames are covered in §10.
 - **Limits**: 12 messages per 600 s per (sender principal, recipient session), where the principal is the
   sending **session** for cloud members (so one noisy hosted key starves only itself) and the `person_id`
   otherwise → the 13th is `refused: loop`; agent-to-agent chains without a human message cap at 4 hops in the
@@ -188,7 +188,7 @@ grant. "Anyone with the link" viewing is a bridge feature over such a grant.
 - MCP (engine and hosted, same names and argument names; each side refuses what it does not serve with
   `unsupported`): `find_sessions(query, limit=20)`, `send_message(request_id, text, session_id, reply_to?,
   files?, notify?)` — the hosted MCP additionally accepts `room_id | person_id | agent_id` for workspace rooms
-  and refuses `files`/`notify`; `message_receipt(request_id)`; `check_inbox(wait_secs ≤ 600)`. `read_messages`,
+  and refuses `files`/`notify`; `message_receipt(request_id)`; `check_inbox(wait_secs ≤ 600)`. Request idempotency and receipts are keyed by `(sender session, request_id)`, never globally: the IPC `receipt` op takes `{from, request_id}`, and `message_receipt(request_id)` resolves `from` from the calling session (the hosted MCP: from the calling principal). `read_messages`,
   `find_rooms` and the task tools stay hosted-only.
 - **Threads and hops** (Codex review of #4295, rounds 2 and 4): every delivered frame shows its `requestId`.
   `reply_to` names the `requestId` the agent is answering; the daemon sets the envelope's `thread` to that
@@ -211,6 +211,8 @@ grant. "Anyone with the link" viewing is a bridge feature over such a grant.
 - The backend reaches it over internal HTTP (`/bridge/send`, `/bridge/decide`, `/bridge/directory`); inbound
   mail for its sessions is posted to the backend (`/internal/bridge/inbound`), correlated by `thread`, which
   routes to a room turn, a hosted mailbox (kept 7 days, or 24 h after read) or a webhook.
+- The bridge outbox's 24 h limit applies to messages only. Hold notices and `decision` frames persist and retry
+  until the hold resolves or reaches its 7-day expiry.
 - What the bridge can read: mail addressed to its sessions, hold notices for its person, the directory, and
   streams explicitly granted to it. Nothing else, enforced by the encryption. It logs ids, sizes and states,
   never bodies.

@@ -126,7 +126,7 @@ Copied to your clipboard.
 
 The `https` form opens a static web page (A5b). The ticket is in the URL fragment, so it never reaches our servers
 or logs. The engine reads the same ticket from either form. `lightbulb invite --once` mints a single-use
-ticket valid 24 hours; `--open` mints a link whose joins need no Allow (the CLI says what that gives up). Ana
+ticket valid 24 hours; `--open` mints a ticket whose joins need no Allow (the ticket carries `ticket_id` and `mode`, signed by the inviting member's key; the reusable team link stays `ask`; the CLI says what that gives up). Ana
 sees who is on her network with `lightbulb who`.
 
 **A5a. Ben pastes the line to his agent** (Claude Code, Codex, Cursor, Grok CLI or any agent with a shell).
@@ -376,7 +376,7 @@ computer to the attacker's team, or a look-alike link that runs a different scri
 - The link page is on our domain only; the engine ignores join links from any other host.
 - Joining a team gives the team members the ability to *ask* to message Ben's sessions. Every first contact is
   held for Ben's Allow. A team member cannot read Ben's files, run commands or see his terminals.
-- Admission needs a person's Allow (the inviter's or an admin's) unless the link was minted `--open`, so a
+- Admission needs a person's Allow (the inviter's or an admin's) unless the ticket was minted `--open`, so a
   stranger holding a leaked link still waits for a yes.
 - `join` prints the team's founder name and member count before connecting, and asks `Join ana's team? [y/N]`
   when run by a person at a terminal (not when run with `--yes` by his agent; the agent still asks Ben before
@@ -536,7 +536,7 @@ Also available: `brew install thelightbulbcompany/tap/lightbulb`.
 Join the Lightbulb network: https://thelightbulb.company/j/#<ticket>
 ```
 
-Ticket: base64url of `{team_id, link_secret, inviter_key, relay_hint, up to 6 member keys}`, in the URL
+Ticket: base64url of `{team_id, ticket_id, mode: ask | open, link_secret, inviter_key, relay_hint, up to 6 member keys}`, signed by the inviting member's key (receivers verify it against the roster before honouring `open`), in the URL
 fragment. The same ticket is also `lightbulb://join/<ticket>` and `lightbulb join '<link>'`. The host is fixed;
 the engine refuses other hosts. The page behind it is static, the same for agents and browsers, shows the
 install line and `lightbulb join`, and knows nothing about the team. The agent skill `lightbulb-network-join` triggers on the exact prefix `Join the Lightbulb network:` and nothing
@@ -585,7 +585,7 @@ Rulings (architecture 2026-10-22), folded in from the earlier open questions:
 
 1. **No hosted MCP without a workspace.** A Lightbulb workspace is required (a free trial counts), and the copy says "a Lightbulb workspace", never "paid".
 2. **Retention numbers stand:** receipts 30 days, audit 30 days, OAuth clients unused 180 days, agent keys unused 90 days flagged; hosted mailbox 7 days or read plus 24 hours.
-3. **`join` asks at a terminal** (`Join ana's team? [y/N]`); with `--yes`, the agent's own shell approval is the gate. Admission also needs an Allow from the inviter or an admin unless the link is `--open`.
+3. **`join` asks at a terminal** (`Join ana's team? [y/N]`); with `--yes`, the agent's own shell approval is the gate. Admission also needs an Allow from the inviter or an admin unless the ticket is `--open`.
 4. **`check_inbox` is added to the hosted MCP** over the bridge's mailbox for the caller.
 5. **The `/j/` page is static and shows nothing about the team.** The ticket is in the fragment and never reaches us.
 6. **The install page mentions the workspace in the footer only.**

@@ -244,13 +244,26 @@ async fn running_conversations(home: PathBuf, provider: String) -> std::result::
     } else {
         claude::running_conversations(&home).await?
     };
-    let args = native_output(Path::new("/bin/ps"), &["-axo", "args="]).await?;
-    ids.extend(
-        args.lines()
-            .filter(|line| line.contains(provider.as_str()))
-            .flat_map(|line| line.split_whitespace().map(str::to_owned).collect::<Vec<_>>()),
-    );
+    let args = native_output(Path::new("/bin/ps"), &["-axo", "pid=,args="]).await?;
+    let holders: HashSet<u32> = tauri::async_runtime::spawn_blocking(|| crate::holder::manager::list().into_iter().map(|h| h.pid).collect())
+        .await
+        .map_err(|_| "holder list unavailable")?;
+    ids.extend(named_in(&args, &provider, &holders));
     Ok(ids)
+}
+
+/// Every word of each `ps -axo pid=,args=` line that mentions `provider`, except a holder's own
+/// line. A holder's arguments name the provider and `--resume <conversation>` it started, and a
+/// holder whose provider ended stays up to show its last picture until the app quits: read as a
+/// running conversation, it refused Resume with ALREADY_RUNNING on a session nobody could type
+/// into (prod 2026-10-22). A live holder is `prepare`'s to answer, and its provider child has a
+/// line of its own here.
+fn named_in(ps: &str, provider: &str, holders: &HashSet<u32>) -> Vec<String> {
+    ps.lines()
+        .filter_map(|line| line.trim_start().split_once(' '))
+        .filter(|(pid, args)| args.contains(provider) && !pid.parse().is_ok_and(|pid: u32| holders.contains(&pid)))
+        .flat_map(|(_, args)| args.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
+        .collect()
 }
 
 /// Ok when nothing runs `conversation`; ALREADY_RUNNING when something does; LAUNCH_FAILED when
@@ -428,6 +441,22 @@ mod tests {
         assert_eq!(free(Ok(vec!["other".into()]), CONV), Ok(()));
         assert_eq!(free(Err("native Claude listing unavailable".into()), CONV), Err("LAUNCH_FAILED"),
             "an unreadable listing proves nothing: refuse");
+    }
+
+    /// An ended holder stays up with `claude --resume <conv>` in its arguments to show the last
+    /// picture: that is not the conversation running (prod 2026-10-22, "Not resumed: it is already
+    /// running on your Mac" until the app was quit). A private `claude --resume` still is.
+    #[test]
+    fn resume_ps_scan_ignores_holder_processes_but_not_a_private_resume() {
+        let ps = format!(
+            "  7571 /Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop holder /tmp/h/52.sock -- /Users/a/.local/share/claude/versions/2.1.308 --resume {CONV} --permission-mode manual\n\
+             812 /usr/bin/vim notes.txt\n"
+        );
+        let holders = HashSet::from([7571]);
+        assert!(free(Ok(named_in(&ps, "claude", &holders)), CONV).is_ok(), "an ended holder runs nothing");
+        let private = format!("{ps} 9001 /Users/a/.local/share/claude/versions/2.1.308 --resume {CONV}\n");
+        assert_eq!(free(Ok(named_in(&private, "claude", &holders)), CONV), Err("ALREADY_RUNNING"));
+        assert_eq!(free(Ok(named_in(&ps, "claude", &HashSet::new())), CONV), Err("ALREADY_RUNNING"), "the old scan's refusal");
     }
 
     #[test]

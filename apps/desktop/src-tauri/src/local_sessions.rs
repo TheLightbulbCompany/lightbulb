@@ -867,6 +867,15 @@ impl Journal {
             if receipt.generation != generation {
                 return Err("receipt generation conflict".into());
             }
+            // A Cursor or Grok letter still unknown when its agent's process is gone was never
+            // handed over: the hook that takes it settles it first (`hooked::drain`).
+            let untaken = receipt.outcome == "unknown"
+                && receipt.ingress.as_ref().is_some_and(|i| {
+                    hooked::provider(&i.native.provider) && !process(i.native.process.pid).is_ok_and(|p| p == i.native.process)
+                });
+            if untaken {
+                return Self::finish_at(&path, None, false);
+            }
             return Ok(receipt);
         }
         // The supervisor serializes reconciliation and admission. Persisting this
@@ -932,13 +941,18 @@ impl Journal {
         id: Option<String>,
         held: bool,
     ) -> Result<Receipt> {
-        let path = self.path(session, request);
-        let mut receipt: Receipt = private_read(&path)?;
+        Self::finish_at(&self.path(session, request), id, held)
+    }
+
+    /// `finish` by the receipt's own path: a Cursor or Grok hook settles its letter's receipt
+    /// when it hands the letter over (`hooked::drain`), in its own process.
+    fn finish_at(path: &Path, id: Option<String>, held: bool) -> Result<Receipt> {
+        let mut receipt: Receipt = private_read(path)?;
         if receipt.outcome == "unknown" {
             receipt.outcome = if id.is_some() { "applied" } else { "rejected" }.into();
             receipt.provider_message_id = id;
             receipt.held = held;
-            private_write(&path, &receipt)?;
+            private_write(path, &receipt)?;
         }
         Ok(receipt)
     }
@@ -1561,6 +1575,14 @@ fn holder_of(pid: u32, holders: &[HolderInfo]) -> Option<&HolderInfo> {
         && crate::holder::identity::is_parent(pid, provider.birth_micros, h.pid))
 }
 
+/// A holder that runs Codex: its argv names a `codex` program (directly, through a linked start's
+/// `/bin/sh`, or an attach). Only one holds a Codex thread. A Codex SessionStart hook run from a
+/// shell inside a held Claude session bound that Claude's holder to the thread, and the plain
+/// Codex session then opened as that holder's terminal: a blank pane (prod e2e 2026-10-22).
+fn codex_holder(holder: &HolderInfo) -> bool {
+    holder.argv.iter().any(|a| Path::new(a).file_name().is_some_and(|name| name == "codex"))
+}
+
 /// Every session is tracked (rulings 2026-10-04). Names the holder a held one runs in: Claude as
 /// the holder's own child, Codex by the thread its holder's start hook bound (a Codex rollout may
 /// be written by a shared app server that is not the holder's child).
@@ -1569,7 +1591,7 @@ fn track(found: &mut Vec<NativeSession>, holders: &[HolderInfo]) {
     found.retain(|s| !holders.iter().any(|h| h.provider_pid == s.process.pid && crate::holder::manager::attach_job(h).is_some()));
     for session in found.iter_mut() {
         let holder = if session.provider == "codex" {
-            holders.iter().find(|h| crate::holder::manager::thread(h).as_deref() == Some(session.conversation.as_str()))
+            holders.iter().find(|h| codex_holder(h) && crate::holder::manager::thread(h).as_deref() == Some(session.conversation.as_str()))
         } else {
             holder_of(session.process.pid, holders).filter(|_| process(session.process.pid).ok().as_ref() == Some(&session.process))
         };
@@ -2378,7 +2400,7 @@ mod tests {
             socket: dir.path().join("ab12cd34.sock"),
             pid: 1,
             provider_pid: 2,
-            argv: vec![],
+            argv: vec!["/opt/homebrew/bin/codex".into(), "--no-daemon".into()],
             cwd: "/".into(),
             watch: false,
             type_input: false,
@@ -2393,6 +2415,15 @@ mod tests {
         let mut found = vec![codex];
         track(&mut found, std::slice::from_ref(&holder));
         assert_eq!(found[0].holder.as_deref(), Some("ab12cd34"));
+        // A Claude holder a stray Codex hook bound to the thread is not its terminal (prod e2e
+        // 2026-10-22: the plain Codex session opened as a blank pane).
+        let dir = tempfile::tempdir().unwrap();
+        let claude = HolderInfo { id: "83b23bf9".into(), socket: dir.path().join("83b23bf9.sock"),
+            argv: vec!["/Users/a/.local/share/claude/versions/2.1.306".into(), "--resume".into(), "x".into()], ..holder.clone() };
+        crate::holder::manager::bind_thread(&claude, thread);
+        let mut found = vec![native_at("codex", thread, std::process::id())];
+        track(&mut found, std::slice::from_ref(&claude));
+        assert_eq!(found[0].holder, None);
     }
     use std::{
         io::Write,

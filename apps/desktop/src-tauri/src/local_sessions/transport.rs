@@ -2497,12 +2497,12 @@ impl Host {
         }
         // From this point failure/cancellation is unknown, never a retry/rejection.
         *why = "";
-        // Cursor and Grok CLI: the letter waits for the session's next hook. Applied and held,
-        // as a Codex send sits in `codex queue`.
+        // Cursor and Grok CLI: the letter waits for the session's next hook, and its receipt
+        // stays unknown until that hook hands it over (`hooked::drain` settles it applied). An
+        // agent that stopped taking turns (a usage limit) never told anyone it had the message.
         if super::hooked::provider(&native.provider) {
-            if super::hooked::deliver(&super::hooked::dir(), &native, &cmd.request_id, &text).is_ok() {
-                return journal.finish(&cmd.session_id, &cmd.request_id, Some(cmd.request_id.clone()), true);
-            }
+            let receipt = journal.path(&cmd.session_id, &cmd.request_id);
+            let _ = super::hooked::deliver(&super::hooked::dir(), &native, &cmd.request_id, &text, Some(&receipt));
             return self.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation).await;
         }
         if let Some(socket) = &mut socket {

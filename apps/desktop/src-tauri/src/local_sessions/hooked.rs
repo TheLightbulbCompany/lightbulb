@@ -354,13 +354,9 @@ fn cursor_mcp(home: &Path, executable: &Path, enabled: bool, notes: &mut Vec<Str
     let current = doc["mcpServers"]["lightbulb"].clone();
     let args: Vec<&str> = current["args"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     let held = slot(!current.is_null(), current["command"].as_str(), &args, current["url"].as_str(), executable);
-    // As for Grok: the allow rule goes with our entry, never beside another tool's `lightbulb`.
-    let allow = match (enabled, &held) {
-        (true, Slot::Foreign) => None,
-        (true, _) => Some(true),
-        (false, Slot::Ours) => Some(false),
-        (false, _) => None,
-    };
+    // The allow rule goes with our entry only: never beside another tool's `lightbulb`, and taken
+    // back when one replaced ours (its tools would run unasked).
+    let allow = enabled && held != Slot::Foreign;
     match (enabled, held) {
         (true, Slot::Foreign) => notes.push(foreign_note("cursor")),
         (true, Slot::Ours) => {}
@@ -382,10 +378,7 @@ fn cursor_mcp(home: &Path, executable: &Path, enabled: bool, notes: &mut Vec<Str
         (false, _) => {}
     }
     write_if_changed(&path, &original, &doc)?;
-    match allow {
-        Some(add) => cursor_allow(home, add),
-        None => Ok(()),
-    }
+    cursor_allow(home, allow)
 }
 
 /// Cursor CLI's rule for every tool of the `lightbulb` server (its matcher takes `*` for the tool).
@@ -460,6 +453,10 @@ fn grok_mcp(home: &Path, executable: &Path, enabled: bool, notes: &mut Vec<Strin
         if let Some(servers) = doc.get_mut("mcp_servers").and_then(|t| t.as_table_like_mut()) {
             servers.remove("lightbulb");
         }
+    }
+    // Our rule goes when we are off, and when another tool's `lightbulb` replaced ours: its tools
+    // would otherwise run unasked.
+    if !enabled || held == Slot::Foreign {
         if let Some(permission) = doc.get_mut("permission").and_then(|p| p.as_table_like_mut()) {
             if let Some(allow) = permission.get_mut("allow").and_then(|a| a.as_array_mut()) {
                 allow.retain(|v| v.as_str() != Some(GROK_ALLOW));
@@ -684,6 +681,29 @@ mod tests {
         assert_eq!(serde_json::from_slice::<Value>(&fs::read(h.join(".cursor/cli-config.json.lightbulb-backup")).unwrap()).unwrap(), theirs);
         assert!(configure(h, exe, false).is_empty());
         assert_eq!(read(), theirs, "off: ours goes, theirs stays");
+    }
+
+    /// Another tool's `lightbulb` replacing ours takes our allow rule with it: its tools would
+    /// otherwise run with no prompt (Codex review on #4294).
+    #[test]
+    fn hooked_setup_takes_the_allow_rule_back_when_a_foreign_lightbulb_replaces_ours() {
+        let home = private_tmp();
+        let h = home.path();
+        let exe = Path::new(EXE);
+        fs::create_dir_all(h.join(".cursor")).unwrap();
+        fs::create_dir_all(h.join(".grok")).unwrap();
+        fs::write(h.join(".cursor/cli-config.json"), r#"{"permissions":{"allow":["Shell(ls)"],"deny":[]}}"#).unwrap();
+        assert!(configure(h, exe, true).is_empty());
+        assert!(fs::read_to_string(h.join(".cursor/cli-config.json")).unwrap().contains(CURSOR_ALLOW));
+        assert!(fs::read_to_string(h.join(".grok/config.toml")).unwrap().contains(GROK_ALLOW));
+        fs::write(h.join(".cursor/mcp.json"), r#"{"mcpServers":{"lightbulb":{"command":"/opt/other","args":["serve"]}}}"#).unwrap();
+        let grok = fs::read_to_string(h.join(".grok/config.toml")).unwrap().replace(EXE, "/opt/other");
+        fs::write(h.join(".grok/config.toml"), grok).unwrap();
+        assert_eq!(configure(h, exe, true), vec![foreign_note("cursor"), foreign_note("grok")]);
+        let cli: Value = serde_json::from_slice(&fs::read(h.join(".cursor/cli-config.json")).unwrap()).unwrap();
+        assert_eq!(cli["permissions"]["allow"], json!(["Shell(ls)"]));
+        let config = fs::read_to_string(h.join(".grok/config.toml")).unwrap();
+        assert!(!config.contains(GROK_ALLOW) && config.contains("/opt/other"), "{config}");
     }
 
     #[test]

@@ -31,6 +31,15 @@
 # (~/Library/pnpm/store), both on local disk. Every network step (tauri-action,
 # notarytool, stapler, gh release) gets three tries.
 
+# Disk budget (.github/scripts/mac-runner-disk.sh): this Mac hit 0 bytes mid-link twice
+# (ENOSPC in `ld`) with a 16 GB Rust cache plus ~6 GB of _work. Every Mac job (here and in
+# mobile-release.yml) starts with a pre-flight (under 10 GB free: prune; still under 6 GB: fail
+# with a clear message) and ends with an `if: always()` prune: the Rust target dirs lose
+# incremental/ and bundle/ and are wiped if still over budget (prod 6 GB, test 4 GB), and the
+# workspace's node_modules, vendored sidecars, .next/.expo and RUNNER_TEMP dmg/ipa leftovers go.
+# The pnpm store stays. It only touches ~/.cache/lightbulb-desktop, $GITHUB_WORKSPACE and
+# $RUNNER_TEMP.
+#
 name: desktop-build
 'on':
   pull_request:
@@ -68,13 +77,14 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: Disk pre-flight
+      run: bash .github/scripts/mac-runner-disk.sh preflight
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
     # Its own dir: pull-request code never writes into the signed builds' target dir.
     - name: Use the persistent Rust target dir
       run: |-
         DIR="$HOME/.cache/lightbulb-desktop/target-test"
-        if [ -d "$DIR" ] && [ "$(du -sg "$DIR" | cut -f1)" -gt 30 ]; then rm -rf "$DIR"; fi
         echo "CARGO_TARGET_DIR=$DIR" >> "$GITHUB_ENV"
     # TAURI_CONFIG stubs the sidecar bundle so tauri-build does not demand binaries
     # that only the signed build jobs vendor.
@@ -92,6 +102,9 @@ jobs:
     - name: Cargo test (probe example)
       run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path
         apps/desktop/src-tauri/Cargo.toml --example local_session_probe
+    - name: Prune runner disk
+      if: always()
+      run: bash .github/scripts/mac-runner-disk.sh prune
   build-desktop-prod:
     name: BuildDesktopProd
     if: github.event_name == 'workflow_dispatch'
@@ -102,6 +115,8 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: Disk pre-flight
+      run: bash .github/scripts/mac-runner-disk.sh preflight
     - name: Setup pnpm
       uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       with:
@@ -118,8 +133,6 @@ jobs:
     - name: Use the persistent Rust target dir
       run: |-
         DIR="$HOME/.cache/lightbulb-desktop/target"
-        # ponytail: a size cap, not an LRU; past 30 GB the next build starts cold.
-        if [ -d "$DIR" ] && [ "$(du -sg "$DIR" | cut -f1)" -gt 30 ]; then rm -rf "$DIR"; fi
         echo "CARGO_TARGET_DIR=$DIR" >> "$GITHUB_ENV"
     - name: Install dependencies
       run: pnpm install
@@ -388,3 +401,6 @@ jobs:
         rm -f "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
         rm -rf "$RUNNER_TEMP/homebrew-tap" "$RUNNER_TEMP/homebrew-tap-key" "$RUNNER_TEMP/homebrew-tap-known-hosts"
         security delete-keychain "$RUNNER_TEMP/lightbulb-build.keychain-db" || true
+    - name: Prune runner disk
+      if: always()
+      run: bash .github/scripts/mac-runner-disk.sh prune

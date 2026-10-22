@@ -10,6 +10,8 @@
 //! and nothing more.
 
 use super::manager::{self, HolderInfo};
+// What the panel shows lives in core, so the relay can read it.
+use super::shown::SHOWN;
 use super::protocol::{encode, read_frame, with_offset, DETACHED, EXIT, HELLO, INPUT, OUTPUT, RESIZE};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -283,13 +285,6 @@ pub fn loopback_page(url: &Url, port: u16) -> bool {
 
 /// The newest call wins: the page's calls run concurrently and may arrive out of order.
 static LAST_AT: Mutex<f64> = Mutex::new(0.0);
-/// What the panel shows and its holder, so a moving panel is not looked up again.
-static SHOWN: Mutex<Option<(String, HolderInfo)>> = Mutex::new(None);
-
-/// The holder the panel's terminal shows now, if any (the attach reaper never closes it).
-pub fn shown_holder() -> Option<String> {
-    SHOWN.lock().ok()?.as_ref().map(|(_, h)| h.id.clone())
-}
 
 fn newest(at: f64) -> bool {
     LAST_AT.lock().is_ok_and(|last| *last == at)

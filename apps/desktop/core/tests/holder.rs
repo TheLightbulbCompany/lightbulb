@@ -1,7 +1,8 @@
 //! The holder end to end with `/bin/cat` in place of a provider: the pty echoes input, so what a
 //! client sends comes back as OUTPUT.
-#![cfg(unix)]
-use lightbulb_desktop::holder::{manager, protocol::*, run};
+// macOS until the Linux port (plan PR 8): the sockets live under /private/tmp.
+#![cfg(target_os = "macos")]
+use lightbulb_core::holder::{manager, protocol::*, run};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -622,7 +623,7 @@ fn holder_runs_the_provider_in_the_environment_it_was_handed() {
     // the holder's own, minus another session's markers, never on its argv.
     let dir = temp_dir();
     let env = vec![("PATH".to_string(), "/usr/bin:/bin".to_string()), ("MARK".into(), "from-terminal".into()), ("CLAUDECODE".into(), "1".into())];
-    let info = manager::start_with_env(Path::new(env!("CARGO_BIN_EXE_lightbulb-desktop")), &dir, Path::new("/"),
+    let info = manager::start_with_env(Path::new(env!("CARGO_BIN_EXE_lightbulb")), &dir, Path::new("/"),
         &["/bin/sh".into(), "-c".into(), "echo \"mark=$MARK claudecode=${CLAUDECODE:-unset} inherit=${LIGHTBULB_HOLDER_INHERIT_ENV:-unset}\"; exec cat".into()], None, Some(env)).unwrap();
     let mut c = UnixStream::connect(&info.socket).unwrap();
     c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -646,7 +647,7 @@ fn holder_starts_claude_code_in_the_classic_renderer_and_codex_as_it_is() {
         // The person asked for fullscreen in their own shell: a shared session is classic all the same.
         let env = vec![("PATH".to_string(), "/usr/bin:/bin".to_string()), ("CLAUDE_CODE_NO_FLICKER".into(), "1".into())];
         let argv: Vec<String> = ["/bin/sh", "-c", r#"shift 2; exec "$@""#, "lightbulb-start", "start-1", "/scope", program.to_str().unwrap()].map(String::from).to_vec();
-        let info = manager::start_with_env(Path::new(env!("CARGO_BIN_EXE_lightbulb-desktop")), &dir, Path::new("/"), &argv, None, Some(env)).unwrap();
+        let info = manager::start_with_env(Path::new(env!("CARGO_BIN_EXE_lightbulb")), &dir, Path::new("/"), &argv, None, Some(env)).unwrap();
         let mut c = UnixStream::connect(&info.socket).unwrap();
         c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         c.write_all(&encode(HELLO, br#"{"role":"interactive","replayFrom":0}"#)).unwrap();

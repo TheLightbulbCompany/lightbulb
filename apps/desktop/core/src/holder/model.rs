@@ -857,8 +857,10 @@ pub fn is_probe_reply(input: &[u8]) -> bool {
 
 /// Claude Code 2.1.292, `tui: fullscreen`, in a 120x40 pty (captured 2026-10-07): its reads
 /// from Enter on `/exit` to the end, as they arrived. It exited 0.47 s after the first.
-#[cfg(test)]
-pub(crate) const CLAUDE_EXIT_READS: &[&[u8]] = &[
+/// Not `cfg(test)`: the app's `local_sessions::screen` tests read it, and a dependency is never
+/// compiled with `cfg(test)`.
+#[doc(hidden)]
+pub const CLAUDE_EXIT_READS: &[&[u8]] = &[
     b"\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l",
     b"\x1b[?25h",
     b"\x1b[?1004l\x1b[?1049l\x1b[>4m\x1b[>4m\x1b[?2031l\x1b[?2004l\x1b(B\x0f\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b7\x1b[r\x1b8",

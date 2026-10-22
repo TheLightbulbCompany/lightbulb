@@ -2,7 +2,10 @@ mod agent_cast;
 mod agent_chrome;
 pub mod bootstrap;
 pub mod claude_export;
+#[cfg(test)]
+mod core_boundary;
 pub mod file_access;
+// Core's held sessions plus the app's panel terminal.
 #[cfg(unix)]
 pub mod holder;
 #[cfg(unix)]

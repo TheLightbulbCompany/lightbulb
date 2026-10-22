@@ -40,7 +40,7 @@ pub fn socket_dir() -> PathBuf {
 
 /// Create (or accept) the socket directory and its parent: real directories owned by this user,
 /// never through a symlink another account planted at the predictable /tmp path.
-pub(crate) fn ensure_dir(dir: &Path) -> Result<(), String> {
+pub fn ensure_dir(dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let uid = unsafe { libc::getuid() };
     for d in [dir.parent().unwrap_or(dir), dir] {
@@ -175,7 +175,7 @@ pub fn stop_attach(info: &HolderInfo) {
 }
 
 fn birth(pid: libc::pid_t) -> Option<u64> {
-    (pid > 1).then(|| crate::local_sessions::process_birth(pid as u32)).flatten()
+    (pid > 1).then(|| crate::os::process_birth(pid as u32)).flatten()
 }
 
 /// SIGKILL each pid that is still the process it was when `was` was read; skip any that changed.

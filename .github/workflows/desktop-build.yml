@@ -84,7 +84,10 @@ jobs:
     # The holder and the `lightbulb` command end to end: real binary, real pty.
     - name: Cargo test (held sessions)
       run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path
-        apps/desktop/src-tauri/Cargo.toml --test holder --test cli
+        apps/desktop/src-tauri/Cargo.toml --test cli
+    # The holder lives in lightbulb-core; its macOS-only tests run here, not on Linux.
+    - name: Cargo test (lightbulb-core)
+      run: cargo test --manifest-path apps/desktop/Cargo.toml -p lightbulb-core
     # Run separately and unfiltered: a shared name filter matches none of the example's tests.
     - name: Cargo test (probe example)
       run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path

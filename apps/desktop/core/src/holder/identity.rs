@@ -1,19 +1,19 @@
 //! Kernel identities for holders whose executable may have been removed by an updater.
 //! Provider executable verification stays in local_sessions; these reads never need a path.
 
-use lightbulb_core::os;
+use crate::os;
 use std::os::unix::net::UnixStream;
 
-pub(crate) use lightbulb_core::os::Process as Identity;
+pub use crate::os::Process as Identity;
 
-pub(crate) fn read(pid: u32) -> Option<Identity> {
+pub fn read(pid: u32) -> Option<Identity> {
     os::process(pid).ok()
 }
 
 /// When this user's loginwindow started (µs since the epoch): the current macOS login session's
 /// start. A raw read: loginwindow's real uid is root, so `read` (own processes only) refuses it.
 /// Filtered by effective uid so fast user switching finds this user's loginwindow, not another's.
-pub(crate) fn login_session_start() -> Option<u64> {
+pub fn login_session_start() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
         let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
@@ -43,7 +43,7 @@ pub(crate) fn login_session_start() -> Option<u64> {
 }
 
 /// The socket's actual peer, not a PID asserted in HELLO.
-pub(crate) fn peer(socket: &UnixStream) -> Option<Identity> {
+pub fn peer(socket: &UnixStream) -> Option<Identity> {
     let (uid, pid) = os::peer(socket).ok()?;
     if uid != os::euid() {
         return None;
@@ -51,7 +51,7 @@ pub(crate) fn peer(socket: &UnixStream) -> Option<Identity> {
     read(pid)
 }
 
-pub(crate) fn is_parent(provider: u32, birth: u64, holder: u32) -> bool {
+pub fn is_parent(provider: u32, birth: u64, holder: u32) -> bool {
     checked_parent(provider, birth, holder, read)
 }
 

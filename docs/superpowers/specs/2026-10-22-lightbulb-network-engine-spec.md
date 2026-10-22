@@ -19,7 +19,7 @@ depends on neither.
 
 1. One line installs it. Another line joins a network. Two minutes from nothing to "my Codex messaged my Claude".
 2. Computers talk directly. Everything on the wire is end-to-end encrypted. A relay forwards ciphertext only.
-3. Membership is held and checked by every computer (signed log). No server decides who is in. A join needs a person's Allow (an admin's, or the inviter's) unless the link was minted `--open`.
+3. Membership is held and checked by every computer (signed log). No server decides who is in. A join needs a person's Allow (an admin's, or the inviter's) unless the ticket was minted `--open`.
    One network per computer.
 4. Any agent with MCP or hooks can send, receive and look up sessions. Senders are told how fast the message will be seen.
 5. Nothing is lost silently. Every message ends in a receipt, one of seven forward-only states: `queued`, `stored`, `delivered`, `read`, `held`, `refused`, `expired`.
@@ -94,7 +94,7 @@ Join, friend:
    (the static `/j/` page shows the same command and the install line, and knows nothing of the team; the ticket is in the URL fragment, so it never reaches our servers). Or the friend runs it in a terminal.
 2. The engine dials the inviting computer by key (any online member in the ticket works), proves it holds the link
    secret, and sends its public key and name.
-3. The inviting computer or an online admin raises a hold-shaped prompt ("aden wants to join your network") and signs an admission only on Allow; a link minted with `invite --open` skips the prompt. `join` prints `Waiting for an admin to allow this...` meanwhile. The new computer receives the full team log and checks every
+3. The inviting computer or an online admin raises a hold-shaped prompt ("aden wants to join your network") and signs an admission only on Allow; a ticket minted with `invite --open` skips the prompt. The ticket carries `ticket_id` and `mode: ask | open`, signed by the inviting member's key; the inviting computer keeps `invites(ticket_id, mode, secret_hash, expires_at, used_at?)`, so only THAT ticket is open and the reusable team link stays `ask`. The receiver verifies the signature against the roster before honouring `open`. `join` prints `Waiting for an admin to allow this...` meanwhile. The new computer receives the full team log and checks every
    signature itself.
 4. Prints: `Connected as aden (aden-mbp). Team "prasiddha": 2 computers online.`
 5. If the name is taken: `The name "aden" is already used in this network. Try: lightbulb-network join '<link>' --name aden-2`
@@ -105,7 +105,7 @@ Join, friend:
 ### 3. Invite
 
 1. Any member: `lightbulb-network invite` prints the invite line (the current link secret), which expires 7 days after it was minted.
-2. One-time form: `lightbulb-network invite --once` prints a link valid for one join and 24 hours. `invite --open` mints a link whose joins need no Allow (the CLI says: "Anyone with this link joins without asking. Use it only with people you trust.").
+2. One-time form: `lightbulb-network invite --once` prints a link valid for one join and 24 hours. `invite --open` mints a ticket whose joins need no Allow (per-ticket mode; the reusable link stays `ask`; the CLI says: "Anyone with this link joins without asking. Use it only with people you trust.").
 3. Prints for `--once`: `One-time invite, expires <time>: Join the Lightbulb network: https://thelightbulb.company/j/#<ticket>`
 4. Replace the reusable link: `lightbulb-network invite --new` prints `Old link stopped working. New link: ...`. The link is also replaced on every removal.
 5. Make an admin (founder only): `lightbulb-network admin aden`, prints `aden can now remove members.`
@@ -231,7 +231,7 @@ Folder `~/.lightbulb/network/` (mode 0700). Files 0600. Nothing here is synced t
 
 | Table | Holds | Lifetime |
 |---|---|---|
-| `team` | Team id, name, relay, `link_secret` (plaintext, so `invite` can reprint the link; the state folder is 0700 and `identity.key` sits beside it; `invite --new` replaces it), single-use `--once` ticket records (hash, expiry, used-by; deleted on use). | Until leave. |
+| `team` | Team id, name, relay, `link_secret` (plaintext, so `invite` can reprint the link; the state folder is 0700 and `identity.key` sits beside it; `invite --new` replaces it), per-ticket records `invites(ticket_id, mode, secret_hash, expires_at, used_at?)` (`--once` and `--open` tickets; `--once` records are deleted on use). | Until leave. |
 | `roster` | Hash-chained signed log: founder, admissions, roles (`member`/`admin`/`founder`, kind `computer`/`cloud`; the `bridge` role is a cloud member holding a `kind=bridge` proof), removals, departures. Per computer: key, person, computer name, current state. | Until leave. |
 | `attestations` | Sign-in proofs for members; each checked locally and dropped if invalid. | While the member is active. |
 | `sessions` | `key` (`<member_key_short>/<provider>:<conversation>`), provider, name, pid, birth time, cwd (local only), title, doing, status, tier, last seen. | Live: while running. Offline: name kept 24 h after last seen, then forgotten (not in the first 2 minutes after daemon start). |

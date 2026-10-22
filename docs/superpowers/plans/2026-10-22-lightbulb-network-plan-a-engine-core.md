@@ -21,7 +21,7 @@
 - Public repo `TheLightbulbCompany/lightbulb-network`; licence Apache-2.0; gitleaks, Codex review and CI on every PR; no secret, internal hostname, account id or customer datum in the repo, ever.
 - Clean-room: reading reason-network for clarification is allowed; copying, porting or transcribing it is not.
 - The engine knows nothing of workspaces, plans, rooms, Paperclip agents or billing.
-- `request_id` has one format on both MCPs and the IPC: an opaque string matching `[A-Za-z0-9._-]{1,128}` chosen by the sender (UUID or ULID both fit). Message ids stay ULIDs.
+- `request_id` has one format on both MCPs and the IPC: an opaque string matching `[A-Za-z0-9._-]{1,128}` chosen by the sender (UUID or ULID both fit). Message ids stay ULIDs. Request idempotency and receipts are keyed by `(sender session, request_id)`, never globally: the IPC `receipt` op takes `{from, request_id}`, and `message_receipt(request_id)` on the MCPs resolves `from` from the calling session (the hosted MCP: from the calling principal).
 - Binary and crate: `lightbulb-network`, canonical path `~/.lightbulb/network/bin/lightbulb-network`. State folder: `~/.lightbulb/network/` (0700); socket `~/.lightbulb/network/sock` (0600); database `state.db`.
 - Loop limit: a sender may deliver at most 12 messages to one session in any 600 s window; the 13th is refused with reason `loop`.
 - Receipt states, exactly seven: `queued`, `stored`, `delivered`, `read`, `held`, `refused`, `expired`.
@@ -77,7 +77,7 @@
 ```
 
 - [ ] **Step 2:** Run `cargo test` — expected: compile failures for missing modules.
-- [ ] **Step 3:** Implement `store.rs` with this schema: `sessions(key TEXT PK, provider, conversation, pid, birth_micros, cwd, title, status, seen_at)`; `messages(id TEXT PK, request_id TEXT UNIQUE, from_key, to_key, kind TEXT DEFAULT 'message', thread TEXT, hops INTEGER DEFAULT 0, origin TEXT, body, sent_at)` and `PRAGMA user_version = 1` (Plan B only adds tables); `receipts(request_id TEXT PK, state TEXT, reason TEXT, updated_at)`; `mailbox(id INTEGER PK, to_key, message_id, queued_at, expires_at)`. On its first start the daemon creates `identity.key` (Ed25519, 0600) AND the solo team record, named after the OS user (`team(id, name, founder_key, created_at)`, a stub row in Plan A), so session ids can carry the key's 12-character short form and `invite` works at once (the real network comes in Plan B). Implement `ipc.rs` (tokio `UnixListener`, one task per connection) and `daemon/mod.rs` (`run()`, lock, `ensure_running()`).
+- [ ] **Step 3:** Implement `store.rs` with this schema: `sessions(key TEXT PK, provider, conversation, pid, birth_micros, cwd, title, status, seen_at)`; `messages(id TEXT PK, request_id TEXT, from_key, to_key, kind TEXT DEFAULT 'message', thread TEXT, hops INTEGER DEFAULT 0, origin TEXT, body, sent_at, UNIQUE(from_key, request_id))` and `PRAGMA user_version = 1` (Plan B only adds tables); `receipts(from_key, request_id, state TEXT, reason TEXT, updated_at, PRIMARY KEY(from_key, request_id))`; `mailbox(id INTEGER PK, to_key, message_id, queued_at, expires_at)`. On its first start the daemon creates `identity.key` (Ed25519, 0600) AND the solo team record, named after the OS user (`team(id, name, founder_key, created_at)`, a stub row in Plan A), so session ids can carry the key's 12-character short form and `invite` works at once (the real network comes in Plan B). Implement `ipc.rs` (tokio `UnixListener`, one task per connection) and `daemon/mod.rs` (`run()`, lock, `ensure_running()`).
 - [ ] **Step 4:** `cargo test` — PASS.
 - [ ] **Step 5:** Commit: `feat: daemon, local socket, sqlite state`.
 
@@ -120,7 +120,7 @@
 - Produces: `mail::send(store, from: &Key, to: &Key, text: &str, request_id: &str, reply_to: Option<&str>, now) -> Result<Receipt>`; `mail::Receipt { request_id, state: Queued|Stored|Delivered|Read|Held|Refused|Expired, reason: Option<String>, where_: Option<String> }`; `mail::take(store, to: &Key, now) -> Vec<Message>` (marks `delivered`); `mail::mark_read(store, message_id)`; `mail::expire(store, now)`.
 - `mail::send` sets `thread` per the Threads rule: `reply_to` names the `requestId` being answered and the new message takes that message's thread; without it, the thread of the most recent inbound message from the target session, else a new thread.
 - Produces: constants `LOOP_LIMIT: u32 = 12`, `LOOP_WINDOW_S: u64 = 600`, `HOLD_S: u64 = 86_400` (offline mail and outbox), `HELD_S: u64 = 604_800` (a held message waits for the person).
-- Produces: idempotency: the same `request_id` with the same `to` and `text` returns the existing receipt; a different `to` or `text` is refused with reason `request_id_reused`.
+- Produces: idempotency, scoped to the sender: for one `from`, the same `request_id` with the same `to` and `text` returns the existing receipt; a different `to` or `text` is refused with reason `request_id_reused`; another sender's identical `request_id` is a different request. `receipts` and `messages.request_id` are keyed by `(from_key, request_id)`, and `mail::receipt(store, from, request_id)` is what the `receipt` op calls.
 
 - [ ] **Step 1: Write the failing tests**
 

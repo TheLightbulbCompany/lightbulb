@@ -9,7 +9,7 @@ section: "Agents"
 
 ## Set up
 
-Run `lightbulb join` (first time) or `lightbulb setup` (to repair). After that, `claude` in a new terminal tab starts a shared session. To share one session without the shell block, run `lightbulb claude` instead.
+Run `lightbulb join` the first time; it also runs `lightbulb share on`. After that, `claude` in a new terminal tab starts a shared session. To repair the hooks later, run `lightbulb setup`, which does not change sharing. To share one session without the shell block, run `lightbulb claude` instead.
 
 ## Send
 

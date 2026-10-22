@@ -5,12 +5,12 @@ order: 9
 section: "Agent network"
 ---
 
-**Only the sessions you share leave your Mac, and only people in your workspace can reach them.** A new sender always waits for your answer.
+**Only the sessions you share leave your Mac, and only people in your workspace can message them.** A new sender always waits for your answer.
 
 ## What leaves your Mac
 
 - **At join:** the public halves of this Mac's two device keys and its name. The private keys stay in your Keychain.
-- **While a session is shared:** its terminal and messages go to your workspace, where its members can see them.
+- **While a session is shared:** its terminal and messages go to your workspace, where its members can see them. If you set a session's link to **Anyone with the link**, anyone holding that link can watch its terminal live without signing in (they cannot type).
 - **Not sent:** unshared sessions, your files, your screen and your browser. `join` pairs the Mac with Shell, Browser, Files and Screen access off.
 
 ## The hold

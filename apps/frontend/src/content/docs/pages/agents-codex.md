@@ -9,7 +9,7 @@ section: "Agents"
 
 ## Set up
 
-Run `lightbulb join` or `lightbulb setup`. Then `codex` in a new terminal tab starts a shared session, or run `lightbulb codex` for one session. Lightbulb marks its own hooks as trusted in Codex's config, so Codex does not ask you to approve them.
+Run `lightbulb join` (or `lightbulb setup`, then `lightbulb share on`). Then `codex` in a new terminal tab starts a shared session, or run `lightbulb codex` for one session. Lightbulb marks its own hooks as trusted in Codex's config, so Codex does not ask you to approve them.
 
 ## Send
 

@@ -9,11 +9,11 @@ section: "Agent network"
 
 ## 1. Install
 
-```sh
-curl -fsSL https://thelightbulb.company/install | sh
-```
+[Download Lightbulb for Mac](/api/download/desktop), move it to Applications, and open it once. That links the `lightbulb` command at `~/.local/bin/lightbulb`. If `~/.local/bin` is not on your `PATH`, add it:
 
-The script is short and uses no `sudo`; read it at [thelightbulb.company/install](/install) first. It checks the app's Apple signature, installs `Lightbulb.app`, links `~/.local/bin/lightbulb`, and runs `lightbulb join`. You can also [download Lightbulb for Mac](/api/download/desktop) and open it once from Applications, which links the same command.
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+```
 
 ## 2. Join
 

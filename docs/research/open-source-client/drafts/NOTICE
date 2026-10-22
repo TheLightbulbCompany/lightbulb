@@ -1,0 +1,24 @@
+Lightbulb desktop client
+Copyright 2026 Isol8 Inc., doing business as Lightbulb AI
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE),
+except where a file or directory carries its own license:
+
+- packages/claude-plugin/          MIT (packages/claude-plugin/LICENSE); also published
+                                   as TheLightbulbCompany/lightbulb-plugin
+- apps/desktop/src-tauri/terminal/xterm.js, xterm.css
+                                   MIT, The xterm.js authors (LICENSE-xterm.txt)
+- apps/desktop/src-tauri/terminal/addon-fit.js
+                                   MIT, The xterm.js authors (LICENSE-xterm-addon-fit.txt)
+
+src-tauri/src/node_client.rs is ported from OpenClaw (MIT, https://github.com/openclaw/openclaw).
+
+"Lightbulb" and the Lightbulb logo are trademarks of Isol8 Inc. The Apache License
+does not grant permission to use them (Section 6). A fork must not be distributed
+under the Lightbulb name or icon.
+
+Binary distributions of the app also bundle, as separate programs downloaded at build
+time by apps/desktop/src-tauri/scripts/vendor-sidecars.sh: Node.js (MIT and bundled
+third-party licenses), openclaw and its npm dependencies (MIT; includes
+@img/sharp-libvips, LGPL-3.0-or-later), and chrome-devtools-mcp (Apache-2.0). None of
+them is part of this source tree.

@@ -1,0 +1,13 @@
+# .gitleaks.toml for the PUBLIC lightbulb-desktop repo (and the sync workflow's pre-push scan).
+# Same posture as the monorepo's: default rules, per-file allowlist for known false positives only.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "vendored bundle and redaction-test fixtures"
+paths = [
+  # Minified xterm.js: `t.FourKeyMap=` trips generic-api-key.
+  '''^apps/desktop/src-tauri/terminal/xterm\.js$''',
+]
+# The redaction test feeds a stub PEM header ("-----BEGIN RSA PRIVATE KEY-----\nMIIE") to `redact`.
+regexes = ['''-----BEGIN RSA PRIVATE KEY-----\\nMIIE''']

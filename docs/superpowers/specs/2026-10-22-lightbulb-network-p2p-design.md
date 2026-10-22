@@ -9,7 +9,7 @@ agents of people they invite, without a Lightbulb server reading anything. Today
 backend in plaintext. Reason Network shows the free, peer-to-peer version works and is what this audience trusts.
 
 Lightbulb's public face becomes this network: simple, free, open source, developed in the open. Friday and the
-cloud agents, chat, phone approval and the rest stay in the paid website and app, which join the network as a
+cloud agents, chat, phone approval and the rest stay in the website and app (a Lightbulb workspace; a trial counts), which join the network as a
 bridge.
 
 ## Goals
@@ -21,7 +21,7 @@ bridge.
 3. Feature parity with Reason Network's public feature set (list below), then improve on it.
 4. Onboarding in one line (`curl … | sh` or one line pasted to an agent), focused only on "your bots talking to each
    other, and to the bots of people you invite".
-5. The paid Lightbulb workspace connects in as a bridge: Friday and cloud agents, hosted MCP clients (Muse,
+5. The Lightbulb workspace connects in as a bridge: Friday and cloud agents, hosted MCP clients (Muse,
    ChatGPT, Claude apps, Grok Bot), webhook agents, agent keys, phone and web approval.
 6. When parity passes, everyone moves to the new engine automatically. There are no existing users to migrate.
 
@@ -49,7 +49,9 @@ From Reason Network's public README, network page and design notes:
 1. **Sign in and you have a network**; your other computers join by signing in with the same account; friends join
    from an invite line pasted to their agent or run in a terminal.
 2. **Team membership** that every computer holds and checks itself (signed entries); only members can connect;
-   any member can invite or remove; removal also replaces the invite link.
+   any member can invite; only the founder and founder-marked admins remove (architecture 2026-10-22); removal also
+   replaces the invite link. Joining needs an admin's (or the inviter's) Allow unless the link was minted
+   `invite --open`; links expire after 7 days (`--once` tickets after 24 h). One network per computer.
 3. **Live directory**: every session on every teammate's computer with person, computer, agent, repo, branch,
    busy or idle, and what it is doing (from the agent's own title and todo list, never self-reported).
 4. **Direct, encrypted transport**: same-network discovery, hole punching across the internet, relay fallback; a team
@@ -58,15 +60,17 @@ From Reason Network's public README, network page and design notes:
    plus a check-inbox tool that can wait). Senders are told which.
 6. **Offline**: the sender's computer keeps an outbox and retries; mail for a closed session waits on the recipient's
    computer for a day; the sender is told where it waits.
-7. **Receipts**: stored, delivered, held, refused; later delivered and read.
+7. **Receipts**: seven states, forward-only: `queued` (in the sender's outbox), `stored`, `delivered`, `read`,
+   `held`, `refused`, `expired` (architecture 2026-10-22).
 8. **Small text file attachments** from the agent's own folder only, saved inert on the receiver.
 9. **Approval**: per-computer inbound policy (accept, hold, refuse; per person); a pop-up on the person's own
-   computer for approve or deny, answered only there, signed by that computer.
-10. **Safety**: peer text framed as peer input, loop limit per sender and per thread, group sends only from a
-    person at a terminal.
+   computer for approve or deny, answered on the person's computer or relayed by their linked workspace (web and
+   phone Allow), and signed by that computer either way (architecture 2026-10-22).
+10. **Safety**: peer text framed as peer input, loop limit per sender (12 per 600 s) and a 4-hop cap on
+    agent-to-agent chains, group sends only from a person at a terminal.
 11. **Names that stay** with a conversation across resume; a menu-bar view of who is online.
 12. **Hosted assistants** reach the network through a member's computer (Reason: via its server). For us this is
-    the paid workspace's bridge (goal 5).
+    the workspace's bridge (goal 5; needs a Lightbulb workspace, a trial counts).
 13. **CLI**: who, send (with notify and files), listen, link, setup, leave, folder on/off.
 
 ### Pinned behaviour for the vague items
@@ -77,10 +81,12 @@ From Reason Network's public README, network page and design notes:
   message or at the deadline.
 - *One-day hold* (6): mail for a session that is not live waits on the recipient's computer; after 24 hours with
   that session never back, it is dropped and the sender's receipt reads `expired`. The person's own terminal
-  mailbox never expires.
-- *Receipts* (7): `stored` (on the recipient's computer), `delivered` (handed to the agent), `read` (the agent's
-  next turn consumed it), `held` (waiting for the person), `refused`, `expired`. A sender may ask for a receipt
-  at any time by request id.
+  mailbox never expires. A message to an unreachable computer waits in the sender's outbox (`queued`, retried
+  24 h). A message held for the person's yes waits at most 7 days.
+- *Receipts* (7): `queued` (sender's outbox), `stored` (on the recipient's computer), `delivered` (handed to the
+  agent), `read` (the agent's next turn consumed it), `held` (waiting for the person), `refused` (reason:
+  `loop`, `policy`, `declined`, `not_member`, `request_id_reused`, `unsupported`), `expired`. A sender may ask
+  for a receipt at any time by request id.
 
 ## Acceptance checklist (from the 2026-10-22 e2e on v0.4.905)
 
@@ -88,18 +94,20 @@ Run on real sessions on a Mac, with a second account as the teammate:
 
 1. Own ring: Claude → Codex → Cursor → Grok → Claude, each delivered and acted on, labelled "Your <agent>".
 2. Teammate's first message to a session: held, receipt `held`; a Mac notification names the sender; clicking
-   it opens the session with Allow and Decline.
+   it opens the session with Allow and Decline. Joining the network works the same way: an admin's Allow.
 3. Allow delivers it labelled "<Agent> via <Person>" (or "<Person>'s <Agent>"), withdraws the notification, and
    the same person's next message (from any of their agents) goes straight in.
 4. Decline: receipt `refused`, nothing delivered.
 5. A held message to a Cursor or Grok session arrives at its next step after Allow.
-6. Loop limit: the 13th message from one sender to one session inside 10 minutes is refused.
+6. Loop limit: the 13th message from one sender to one session inside 10 minutes is refused (12 per 600 s).
 7. A body that forges the owner header is neutralised.
-8. Friday (through the paid bridge) → a session: delivered with the agent label; held unless the person's
+8. Friday (through the bridge) → a session: delivered with the agent label; held unless the person's
    "agents send without asking" is on.
 9. Sender offline: a message queued while the recipient's Mac is asleep arrives after wake, receipt `stored` →
    `delivered`.
-10. `join` on a fresh Mac with no app installed ends with "Connected as <you>"; `leave` stops the service.
+10. `join` on a fresh Mac with no app installed (the line is `Join the Lightbulb network:
+    https://thelightbulb.company/j/#<ticket>`, a fragment ticket) ends with "Connected as <you>" once an admin
+    allows it; `leave` stops the service.
 
 ## Improvements we already know of
 
@@ -113,8 +121,9 @@ Run on real sessions on a Mac, with a second account as the teammate:
 - Delivery into each agent (Claude push, Codex queue, Cursor/Grok hooks, pull note), session discovery,
   `lightbulb setup`, the installer, Homebrew tap and CLI commands, the docs (rewritten for the new install).
 - Today's e2e checklist becomes the parity acceptance test, run on real sessions on a Mac.
-- Today's server-hub network stays live until parity, then the hub becomes the bridge only. The two open fix PRs
-  still ship.
+- Today's server-hub network stays live until the cutover release, then the hub becomes the bridge only. The two
+  open fix PRs still ship. Plan A is engine-only and changes nothing in the monorepo; there is no intermediate
+  build, and the parity checklist runs on the cutover build (architecture 2026-10-22).
 
 ## Decided
 
@@ -140,15 +149,18 @@ Run on real sessions on a Mac, with a second account as the teammate:
 - **No coexistence period** (owner, 2026-10-22: nobody is on the current hub; it was just built and tested). The
   hub's session-messaging path is replaced outright as the engine lands, with nothing kept for compatibility; the
   hub keeps only the bridge role. The first desktop release carrying the engine is the cutover. The hooks code
-  moves into the public repo as it is (parity needs it) and is rewritten there after parity. The monorepo pins the
-  public crates by release tag.
+  is written fresh in the public repo and never moved (architecture 2026-10-22: `hooked.rs` carries ported
+  formats; Plan A Task 6 ruling). The monorepo pins the public crates by release tag.
 
 - **Identity** (owner, 2026-10-22): **an account is optional.** A computer joins and sends with its own key and an
   unverified name. Signing in with Lightbulb issues a proof that verifies the name and links the person to their
-  paid workspace, which is what lets Friday reach their sessions. Our sign-in server is never required to join or
+  workspace (a trial counts), which is what lets Friday reach their sessions. `person_id` is sticky: assigned at
+  admission and changed only by a signed `merge` when a keyed computer later signs in; proof expiry changes the
+  verified badge only (architecture 2026-10-22). Our sign-in server is never required to join or
   send; proofs verify offline against keys compiled into the engine.
 - **Membership** (owner, 2026-10-22): any member can invite; **only the founder, and members the founder marks
-  admin, can remove.** Removal blocks new connections and future mail and replaces the invite link; mail already on
+  admin, can remove.** Joining needs an admin's Allow unless the link was minted `--open`; links expire after
+  7 days (architecture 2026-10-22). Removal blocks new connections and future mail and replaces the invite link; mail already on
   the removed computer stays there.
 
 ## Architecture: three parts, one direction of dependency
@@ -166,7 +178,7 @@ private  Lightbulb app (Tauri)     bridge (backend)                       app an
   no notion of a workspace, a plan, a room or a Paperclip agent.
 - The **bridge** is the only code that speaks both languages: it is a member of a person's network on the
   workspace's behalf and translates workspace events (a Friday run, a web Allow) into network messages, and back.
-- The **app** is UI over the engine: it starts or attaches to the daemon, shows sessions, and renders the
+- The **app** is UI over the engine: it installs the signed engine binary at its canonical path and attaches to the daemon as a socket client, shows sessions, and renders the
   approvals the daemon raises. It carries no transport or delivery logic of its own.
 - **The monorepo gets cleaner, not fatter.** As each piece moves into the engine, the hub-era code it replaces is
   deleted from `apps/backend` and `apps/desktop` in the same PR, with no dual paths left behind (owner: "our main
@@ -178,19 +190,19 @@ The rule: what a computer's agent needs goes in the engine; what a hosted or pho
 hosted MCP and the bridge; the app only renders and asks. The hosted MCP keeps the same tool names and arguments
 as the engine's MCP, so an agent's skill works on either.
 
-| Capability | Engine + CLI (free, public) | App (private, free UI) | Hosted MCP + bridge (paid workspace) |
+| Capability | Engine + CLI (free, public) | App (private, free UI) | Hosted MCP + bridge (Lightbulb workspace) |
 |---|---|---|---|
 | Identity, keys, name proofs | owns keys; verifies proofs offline | shows sign-in | issues proofs on Lightbulb sign-in |
 | Membership, invites, removal | the whole model; `link`, `invite`, `remove` | buttons over the same | — |
 | Transport, relays, encryption | owns it | — | the bridge is a member computer in the cloud |
 | Session discovery, presence, "doing" | owns it | sessions sidebar reads the engine | `find_sessions` through the bridge |
 | Delivery into local agents (push, hooks, pull) | owns it | — | hosted agents are pull-only: unread note + check-inbox |
-| Holds and approval | per-computer policy; OS dialog; `approve` in the CLI | notification, Allow / Decline / Always allow | Allow from web and phone |
+| Holds and approval | per-computer policy (`people`, `cloud_of`, `agents_send_without_asking`); OS dialog; `approve`/`decline` in the CLI; holds last 7 days | notification, Allow / Decline / Always allow | relays Allow from web and phone as a signed `decision` (`bridge` role only; never a policy switch; the computer applies and signs it) |
 | Receipts | owns them | shows them | `message_receipt` |
 | Small file attachments | owns it | — | later, if hosted agents need it |
 | Loop limit, peer framing, defang | owns it | — | bridge applies the same to hosted senders |
 | `setup` for installed agents, self-update | owns it | runs it on launch | — |
-| Share a live terminal, session browser, resume | — | owns it | — |
+| Share a live terminal, session browser, resume | carries the bytes (`stream`, only on a person-signed share grant) | owns the feature | reads a stream only by an explicit share grant |
 | Friday and cloud agents, rooms, chat, tasks | — | UI | owns it (`find_rooms`, `read_messages`, tasks) |
 | Agent keys, webhook agents, DCR clients | — | settings UI | owns it |
 | Group sends (`*`, `person/*`, `repo:`) | a person at the CLI only; the MCP tool refuses | — | refused |
@@ -205,6 +217,6 @@ as the engine's MCP, so an agent's skill works on either.
 
 - Transport library and wire format (Rust; QUIC with key-based dialing is the obvious fit), relay hosting.
 - How sign-in proofs are issued (Clerk-backed issuer is the default guess) and verified offline.
-- How the paid bridge joins: a workspace "member computer" in the cloud versus routing through a person's computer.
+- How the bridge joins: a workspace "member computer" in the cloud versus routing through a person's computer.
 - How much of `apps/desktop/core` moves into the new repo versus is rewritten.
 - Release and auto-update mechanics for the engine binary.

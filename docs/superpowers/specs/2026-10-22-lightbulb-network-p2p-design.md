@@ -14,8 +14,9 @@ bridge.
 
 ## Goals
 
-1. Free, open-source engine in a new public repo, **`TheLightbulbCompany/lightbulb-network`**, public from its first
-   commit. Every commit, PR, review and CI run is visible.
+1. Free, open-source engine in a new public repo, **`TheLightbulbCompany/lightbulb-network`**. It is created
+   private, and the owner makes it public after reviewing the first PR (charter, 2026-10-22); from then on every
+   commit, PR, review and CI run is visible, and the history before the flip stays visible too.
 2. Computers talk directly to each other, end-to-end encrypted. A relay is a fallback only and sees ciphertext only.
 3. Feature parity with Reason Network's public feature set (list below), then improve on it.
 4. Onboarding in one line (`curl … | sh` or one line pasted to an agent), focused only on "your bots talking to each
@@ -29,7 +30,8 @@ bridge.
 - Using Reason's code. Reading their open-source code for inspiration or clarification is allowed (owner,
   2026-10-22); copying, porting or transcribing it is not. Think through how each piece works and what it is for,
   then build our own. Our existing `apps/desktop/src-tauri/src/local_sessions/hooked.rs` says its hook formats were
-  ported from reason-network; it is rewritten from Cursor's and Grok's own documentation after parity.
+  ported from reason-network; it never enters the public repo. The engine's Cursor and Grok support is written
+  fresh from those agents' own docs and captured payloads (Plan A, Task 6 ruling, 2026-10-22).
 - Cloud agents, chat, tasks, Paperclip, billing or anything workspace-shaped in the public repo.
 - A Lightbulb server in the message path between people's computers.
 - Windows and Linux at first: macOS first, Linux next (core split step 8), Windows later.

@@ -14,7 +14,7 @@
 
 - **Plan B, the network:** per-computer keys, signed membership (any member invites; founder and admins remove), invite links, QUIC transport with relay fallback, presence and directory across computers, outbox retry, the 24-hour offline hold, inbound policy and the approval dialog, optional sign-in proofs. Acceptance: checklist 2, 3, 4, 9, 10 between two Macs and two accounts.
 - **Plan C, the bridge, the app and the cleanup:** the workspace as a member computer in the backend (Friday → session, web and phone Allow, the hosted MCP routed through it), the app attaching to the daemon (sessions sidebar, notifications, Allow/Decline/Always allow), `transport.rs` and `local_sessions.py`/`local_session_relay.py`/`local_session_grants.py` deleted, installer/tap/docs rewritten, the cutover release. Acceptance: checklist 8 and the whole list end to end.
-- **After parity:** rewrite the Cursor and Grok hook formats from those agents' own docs; Linux.
+- **After parity:** Linux. (The Cursor and Grok hook rewrite moved into Task 6; see its ruling.)
 
 ## Global Constraints
 
@@ -157,7 +157,8 @@
 ### Task 6: Hooks (Claude Code, Codex, Cursor, Grok) and caller identification
 
 **Files:**
-- Create: `src/hook.rs`, `src/agents/cursor_grok.rs` (moved as-is from the monorepo's `hooked.rs`: the hook formats, inbox drain, `normalize`, `output`, `takes_mail`; marked `// ported from the Lightbulb app; rewritten after parity`), `src/agents/caller.rs`
+- Create: `src/hook.rs`, `src/agents/cursor_grok.rs`, `src/agents/caller.rs`
+- **Ruling (2026-10-22, after Codex's review of #4293):** the monorepo's `hooked.rs` says its hook formats were ported from reason-network, so it is NOT moved. `cursor_grok.rs` is written fresh from Cursor's and Grok's own hook documentation and from the captured payload fixtures below; the implementer must not open `apps/desktop/src-tauri/src/local_sessions/hooked.rs` or reason-network's `hook.rs`/`setup.rs`. This moves the owner's "rewrite after parity" forward to now, because the repo becomes public long before parity and must not carry ported code. Cost if wrong: a day of work. Facts to reuse: Grok's payloads use `hookEventName` (snake_case values such as `post_tool_use`), `sessionId`, `cwd`, `workspaceRoot`, `transcriptPath`, a `subagentType` on subagent hooks, and a `reason` on `stop` (`end_turn` for the real end; `shutdown`/`channel_closed` after SessionEnd, to ignore); Cursor's use `conversation_id`, `workspace_roots`, and read `additional_context` / `followup_message` from hook output; Grok reads `decision: "block"` + `reason` from `stop` and `hookSpecificOutput.additionalContext` elsewhere, and drops what SessionStart prints.
 - Modify: `src/main.rs` (subcommand `hook <agent> <event>`), `src/daemon/mod.rs` (op `hook`)
 - Test: `src/agents/caller.rs`, `src/hook.rs`, `tests/fixtures/hooks/*.json` (real payloads: Claude `SessionStart`/`UserPromptSubmit`/`Stop`/`SessionEnd`, Codex the same, Cursor `postToolUse`/`stop`, Grok `post-tool-use`/`stop` — capture them from live agents, redacted)
 
@@ -224,7 +225,7 @@
 ### Task 9: `setup`: wiring the installed agents
 
 **Files:**
-- Create: `src/setup/mod.rs`, `src/setup/claude.rs`, `src/setup/codex.rs`, `src/setup/cursor.rs`, `src/setup/grok.rs` (the monorepo's `enrollment.rs` and the setup half of `hooked.rs`, moved: each file edited is backed up once as `<file>.lightbulb-backup`; only entries we wrote are removed on `--remove`)
+- Create: `src/setup/mod.rs`, `src/setup/claude.rs`, `src/setup/codex.rs` (the monorepo's `enrollment.rs`, moved), `src/setup/cursor.rs`, `src/setup/grok.rs` (written fresh from the vendors' config file formats — `~/.cursor/hooks.json`, `~/.cursor/mcp.json`, `~/.cursor/cli-config.json`, `~/.grok/hooks/lightbulb.json`, `~/.grok/config.toml` — not from `hooked.rs`, per the Task 6 ruling). Each file edited is backed up once as `<file>.lightbulb-backup`; only entries we wrote are removed on `--remove`.
 - Modify: `src/main.rs` (`setup [--remove]`)
 - Test: `src/setup/*.rs` with temp homes
 

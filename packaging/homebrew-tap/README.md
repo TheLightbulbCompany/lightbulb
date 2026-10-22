@@ -10,10 +10,11 @@ lightbulb join
 
 ## Set it up (once)
 
-1. Create the public repo `TheLightbulbCompany/homebrew-tap` and copy this folder's
-   contents into it (`Casks/lightbulb.rb`, this README).
-2. Make a fine-grained token with **Contents: read and write** on that repo only, and save it
-   as the `HOMEBREW_TAP_TOKEN` Actions secret on `TheLightbulbCompany/lightbulb`.
+Done on 2026-10-22: the public repo `TheLightbulbCompany/homebrew-tap` holds this folder's
+contents, and a deploy key with write access to that repo only is saved as the
+`HOMEBREW_TAP_DEPLOY_KEY` Actions secret on `TheLightbulbCompany/lightbulb`. To rotate it,
+generate a new ed25519 key, replace the deploy key on the tap repo and the secret, and delete
+the old key.
 
 After that, every `desktop-build.yml` release writes the new `version` and `sha256` into
 `Casks/lightbulb.rb` here (step "Bump the Homebrew tap"). Until the secret exists the step

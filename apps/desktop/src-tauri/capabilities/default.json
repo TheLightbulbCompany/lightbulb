@@ -1,13 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-utils/schema.json",
   "identifier": "default",
-  "description": "Default capabilities for Lightbulb desktop",
+  "description": "Prod: the only origin the prod app loads. Dev is capabilities/dev.json, enabled by tauri.dev.conf.json only.",
   "windows": [
     "main"
   ],
   "remote": {
     "urls": [
-      "https://dev.thelightbulb.company/*",
       "https://thelightbulb.company/*"
     ]
   },

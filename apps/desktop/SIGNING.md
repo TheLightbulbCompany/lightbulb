@@ -75,7 +75,8 @@ Merge reviewed desktop changes to `main` through normal CI (pull requests run
 the Rust tests). Then manually run **desktop-build** from GitHub Actions
 (`gh workflow run desktop-build.yml --ref main`). It builds, signs, notarizes
 and publishes the prod app only. There is no dev build: test on prod, or build
-and run the app locally against the dev API.
+and run the app locally against the dev API with `pnpm dev` / `pnpm build:dev`
+(an unflagged build is prod).
 
 ## What's in the secrets and why
 

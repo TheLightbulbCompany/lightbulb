@@ -42,11 +42,18 @@ use crate::pair_client::DesktopPermissions;
 /// macOS surfaces Keychain entries as belonging to this app.
 const KEYCHAIN_SERVICE: &str = "company.thelightbulb.desktop";
 
-/// HTTPS API base for the backend. Overridden at build time when a non-dev
-/// build is produced.
+/// HTTPS API base for the backend. A plain build from source talks to PROD;
+/// dev is opt-in (`pnpm dev` / `pnpm build:dev` set these at compile time),
+/// so nobody building the open-source app lands on our internal environment.
 const LIGHTBULB_API_BASE: &str = match option_env!("LIGHTBULB_API_BASE") {
     Some(v) => v,
-    None => "https://api-dev.thelightbulb.company",
+    None => "https://api.thelightbulb.company",
+};
+
+/// The machine gateway relay the Mac node client dials. Compile-time only, prod by default.
+const LIGHTBULB_WS_URL: &str = match option_env!("LIGHTBULB_WS_URL") {
+    Some(v) => v,
+    None => "wss://bv.thelightbulb.company/api/v1/gateway/ws",
 };
 
 /// Shared auth token state
@@ -272,7 +279,7 @@ fn send_auth_token(
         });
     }
 
-    let ws_url = option_env!("LIGHTBULB_WS_URL").unwrap_or("wss://bv-dev.thelightbulb.company/api/v1/gateway/ws");
+    let ws_url = LIGHTBULB_WS_URL;
     // Use an explicit "/" path before the query. tokio-tungstenite builds
     // the HTTP upgrade request line from the URL's path+query; if the URL
     // is `wss://host?token=…` (no slash), the resulting request line is
@@ -1064,7 +1071,7 @@ async fn start_from_persisted_state(
     // on this path ever depends on a webview JWT. Publishing also flips
     // send_auth_token into its rotate-only branch, so a later webview JWT
     // just refreshes the URL cell instead of re-bootstrapping.
-    let ws_url = option_env!("LIGHTBULB_WS_URL").unwrap_or("wss://bv-dev.thelightbulb.company/api/v1/gateway/ws");
+    let ws_url = LIGHTBULB_WS_URL;
     let shared_url = Arc::new(RwLock::new(format!(
         "{}/?clientId=openclaw-macos",
         ws_url
@@ -1555,7 +1562,7 @@ async fn serve_manifest_once(body: String) -> Result<String, String> {
 /// with the appropriate bypass param instead of hard-coding the secret.
 const DESKTOP_CALLBACK_URL: &str = match option_env!("LIGHTBULB_CALLBACK_URL") {
     Some(url) => url,
-    None => "https://dev.thelightbulb.company/auth/desktop-callback",
+    None => "https://thelightbulb.company/auth/desktop-callback",
 };
 
 fn is_oauth_url(url: &Url) -> bool {
@@ -1694,6 +1701,73 @@ fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
                     log("[deep-link] emitted auth:sign-in-ticket");
                 }
             }
+        }
+    }
+}
+
+/// The hosted page can call every local command its origin is granted, so a prod build
+/// must grant only the prod origin, and a plain build from source must BE prod.
+#[cfg(test)]
+mod flavor_origin_tests {
+    use serde_json::{json, Value};
+
+    fn parse(s: &str) -> Value {
+        serde_json::from_str(s).unwrap()
+    }
+
+    fn loaded_urls(conf: &Value) -> Vec<String> {
+        let mut out = vec![
+            conf["app"]["windows"][0]["url"].clone(),
+            conf["build"]["devUrl"].clone(),
+            conf["build"]["frontendDist"].clone(),
+        ];
+        out.extend(conf["plugins"]["updater"]["endpoints"].as_array().unwrap().iter().cloned());
+        out.iter().map(|u| u.as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn prod_build_grants_ipc_to_the_prod_origin_only() {
+        let conf = parse(include_str!("../tauri.conf.json"));
+        assert_eq!(conf["app"]["security"]["capabilities"], json!(["default"]));
+        for u in loaded_urls(&conf) {
+            assert!(u.starts_with("https://thelightbulb.company/"), "prod config loads {u}");
+        }
+        let cap = parse(include_str!("../capabilities/default.json"));
+        assert_eq!(cap["identifier"], "default");
+        assert_eq!(cap["remote"]["urls"], json!(["https://thelightbulb.company/*"]));
+    }
+
+    #[test]
+    fn dev_flavor_grants_ipc_to_the_dev_origin_only() {
+        let prod = parse(include_str!("../tauri.conf.json"));
+        let dev = parse(include_str!("../tauri.dev.conf.json"));
+        assert_eq!(dev["app"]["security"]["capabilities"], json!(["dev"]));
+        for u in loaded_urls(&dev) {
+            assert!(u.starts_with("https://dev.thelightbulb.company/"), "dev overlay loads {u}");
+        }
+        // The overlay replaces the windows array whole: it must stay the prod window with
+        // only the URL changed.
+        let mut window = dev["app"]["windows"][0].clone();
+        window["url"] = prod["app"]["windows"][0]["url"].clone();
+        assert_eq!(window, prod["app"]["windows"][0]);
+        let cap = parse(include_str!("../capabilities/dev.json"));
+        let default = parse(include_str!("../capabilities/default.json"));
+        assert_eq!(cap["identifier"], "dev");
+        assert_eq!(cap["remote"]["urls"], json!(["https://dev.thelightbulb.company/*"]));
+        assert_eq!(cap["permissions"], default["permissions"], "both flavors grant the same commands");
+        assert_eq!(cap["windows"], default["windows"]);
+    }
+
+    #[test]
+    fn unflagged_build_talks_to_prod() {
+        if option_env!("LIGHTBULB_API_BASE").is_none() {
+            assert_eq!(super::LIGHTBULB_API_BASE, "https://api.thelightbulb.company");
+        }
+        if option_env!("LIGHTBULB_WS_URL").is_none() {
+            assert_eq!(super::LIGHTBULB_WS_URL, "wss://bv.thelightbulb.company/api/v1/gateway/ws");
+        }
+        if option_env!("LIGHTBULB_CALLBACK_URL").is_none() {
+            assert_eq!(super::DESKTOP_CALLBACK_URL, "https://thelightbulb.company/auth/desktop-callback");
         }
     }
 }

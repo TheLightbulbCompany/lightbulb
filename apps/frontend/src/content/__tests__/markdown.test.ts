@@ -38,6 +38,6 @@ it("every post and doc on disk has the fields the pages render", () => {
     expect(p.content).not.toMatch(/^(?:\r?\n)* {0,3}#(?:[ \t]|$)/);
   }
   const docs = getAllDocs();
-  expect(docs.map((d) => d.order)).toEqual([1, 2, 3, 4, 5]);
+  expect(docs.map((d) => d.order)).toEqual([1, 2, 3, 4, 5, 6]);
   for (const d of docs) expect([d.title, d.description].every(nonEmptyString)).toBe(true);
 });

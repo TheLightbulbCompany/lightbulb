@@ -344,6 +344,35 @@ jobs:
         done
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # `brew install --cask thelightbulbcompany/tap/lightbulb`: write this release's version and
+    # the archive's sha256 (GitHub's own asset digest, so the bytes that were uploaded) into the
+    # tap. The cask's source is packaging/homebrew-tap/Casks/lightbulb.rb. Skipped until the
+    # tap repo exists and HOMEBREW_TAP_TOKEN (contents: write on it) is set.
+    - name: Bump the Homebrew tap
+      run: |-
+        set -euo pipefail
+        if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+          echo "::notice::HOMEBREW_TAP_TOKEN is not set; skipping the Homebrew tap bump."
+          exit 0
+        fi
+        VERSION="0.4.${{ github.run_number }}"
+        SHA=$(gh api "repos/TheLightbulbCompany/lightbulb/releases/tags/desktop-v${VERSION}" \
+          --jq '.assets[] | select(.name | endswith("_aarch64.app.tar.gz")) | .digest' | sed 's/^sha256://')
+        echo "$SHA" | grep -Eqx '[0-9a-f]{64}'
+        TAP="$RUNNER_TEMP/homebrew-tap"
+        rm -rf "$TAP"
+        git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/TheLightbulbCompany/homebrew-tap.git" "$TAP"
+        mkdir -p "$TAP/Casks"
+        sed -e "s/^  version \".*\"/  version \"${VERSION}\"/" -e "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" \
+          packaging/homebrew-tap/Casks/lightbulb.rb > "$TAP/Casks/lightbulb.rb"
+        cd "$TAP"
+        git add Casks/lightbulb.rb
+        git diff --cached --quiet && { echo "Tap already at $VERSION"; exit 0; }
+        git -c user.name="lightbulb-release" -c user.email="hello@thelightbulb.company" commit -m "lightbulb ${VERSION}"
+        for i in 1 2 3; do git push origin HEAD && exit 0; [ "$i" = 3 ] && exit 1; sleep $((i * 10)); done
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     # Persistent runner: never leave the Apple signing key on disk between runs.
     - name: Clean up signing keychain
       if: always()

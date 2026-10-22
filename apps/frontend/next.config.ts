@@ -197,6 +197,13 @@ const nextConfig: NextConfig = {
         source: "/.well-known/apple-app-site-association",
         headers: [{ key: "Content-Type", value: "application/json" }],
       },
+      // `curl -fsSL <site>/install | sh` (public/install.sh, via the rewrite
+      // below). Plain text so a browser shows the script for reading instead
+      // of downloading it.
+      ...["/install", "/install.sh"].map((source) => ({
+        source,
+        headers: [{ key: "Content-Type", value: "text/plain; charset=utf-8" }],
+      })),
     ];
   },
 
@@ -274,6 +281,7 @@ const nextConfig: NextConfig = {
       })),
       afterFiles: [
         ...localDevApiProxy,
+        { source: "/install", destination: "/install.sh" },
         // DCV 1.14 resolves its worker base relative to the /chat document,
         // even though BrowserLiveView supplies a leading slash. Keep decoder
         // requests on the copied SDK assets instead of returning the app 404.

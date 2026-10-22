@@ -77,7 +77,7 @@
 | `merge`, `proof` | the member itself, with a proof valid for it (Task 13) |
 | `remove` | founder or admin; also a member removing its own person's bridge member (`unlink`) |
 | `admin`, `transfer` | founder (architecture §4: "only the founder and founder-marked admins remove"; "the founder may transfer") |
-| `link` | any active **computer** member (the inviter; a cloud/bridge member's `link` is dropped — a bridge only relays decisions and same-person joins); a `link` is live only while it descends from EVERY applied `remove` (a removal ends every link minted before or concurrently with it, so a ticket the removed member already holds is dead even at an admin who never saw the link — Codex round 3), until its `expires_at`, and, when `once`, until its first applied `admit`; an `admit` via a link stands only if it was already an ancestor of every removal that ends the link |
+| `link` | any active **computer** member (the inviter; a cloud/bridge member's `link` is dropped — a bridge only relays decisions and same-person joins); a `link` is live only while it descends from EVERY applied `remove` (a removal ends every link minted before or concurrently with it, so a ticket the removed member already holds is dead even at an admin who never saw the link — Codex round 3), until its `expires_at`, until its signer applies a newer non-`once` `link` (so `invite --new` retires the old link; `once` links coexist), and, when `once`, until its first applied `admit`; an `admit` via a link stands only if it was already an ancestor of every removal that ends the link |
 | `meta` | founder or admin |
 | `leave` | the leaving member |
 

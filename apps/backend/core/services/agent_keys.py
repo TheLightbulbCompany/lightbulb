@@ -1,5 +1,7 @@
-"""Per-agent keys for the hosted MCP: a fallback for agents that cannot do OAuth (Clerk has no
-dynamic client registration). A key acts with its person's authority, in one workspace.
+"""Per-agent keys for the hosted MCP, for callers with no browser to approve an OAuth sign-in
+(scripts, CI, servers). Any MCP client that can do OAuth signs in with it instead: Clerk serves both
+client ID metadata documents and dynamic client registration (on since 2026-10-22). A key acts
+with its person's authority, in one workspace.
 
 Rows live in the messaging table (no new infra), two per key:
     AGENTKEY#<sha256>   META                    the lookup the verifier reads

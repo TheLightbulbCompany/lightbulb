@@ -791,3 +791,33 @@ async def revoke_organization_invitation(*, org_id: str, invitation_id: str, req
         if current.status_code < 400 and (current.json() or {}).get("status") != "pending":
             return
     raise _invitations_failed("revoke_organization_invitation", org_id, response)
+
+
+async def oauth_application_name(client_id: str) -> str | None:
+    """The name an OAuth client registered under (a dynamically registered MCP client names
+    itself, e.g. "Cursor"). None when Clerk is unreachable or the client is unknown."""
+    if not settings.CLERK_SECRET_KEY:
+        return None
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    offset = 0
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            # ponytail: a linear scan of the instance's OAuth apps, cached per client id by the caller;
+            # a by-client-id lookup when Clerk offers one.
+            while True:
+                response = await client.get(
+                    f"{_CLERK_API_BASE}/oauth_applications", headers=headers, params={"limit": 100, "offset": offset}
+                )
+                if response.status_code >= 400:
+                    return None
+                page = response.json().get("data") or []
+                for app in page:
+                    if app.get("client_id") == client_id:
+                        name = app.get("name")
+                        return name.strip()[:40] if isinstance(name, str) and name.strip() else None
+                if len(page) < 100:
+                    return None
+                offset += 100
+    except Exception as e:  # noqa: BLE001
+        logger.warning("clerk_admin.oauth_application_name error: %s", e)
+        return None

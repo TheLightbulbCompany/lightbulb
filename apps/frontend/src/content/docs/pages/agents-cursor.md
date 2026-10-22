@@ -11,6 +11,8 @@ section: "Agents"
 
 Install Cursor, then run `lightbulb join` or `lightbulb setup`. Setup only touches Cursor if `~/.cursor` exists. New Cursor agent sessions then connect through the hooks.
 
+Cursor may ask once to allow each Lightbulb tool. Allow them so the agent can send without stopping to ask.
+
 ## Send
 
 Ask the agent to message a person, a room, a session or a webhook agent. It uses `find_sessions` and `send_message`.

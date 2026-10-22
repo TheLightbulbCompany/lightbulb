@@ -474,3 +474,14 @@ it("keeps the Browser tab read-only while the owner has paused others' input, an
   view.rerender(<LocalSessionPanel {...props} session={browsing} />);
   expect(screen.queryByRole("region", { name: "Session browser" })).toBeNull();
 });
+
+it("offers Open in a terminal for an app session, never for a Cursor or Grok CLI session", () => {
+  const app = { ...session, terminal: undefined, terminalReason: "app" as const };
+  const props = { ownerName: "Alice", own: true, client: client as never, revision: 0, onAccessLost: () => {} };
+  const claude = render(<LocalSessionPanel {...props} session={app} />);
+  expect(screen.getByRole("button", { name: "Open in a terminal" })).toBeTruthy();
+  claude.unmount();
+  render(<LocalSessionPanel {...props} session={{ ...app, provider: "cursor", terminalReason: "unknown" }} />);
+  expect(screen.queryByRole("button", { name: "Open in a terminal" })).toBeNull();
+  expect(screen.getByText(/runs in the person's own terminal/)).toBeTruthy();
+});

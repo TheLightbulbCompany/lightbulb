@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, X } from "lucide-react";
-import { ApiError, sessionEndable, sessionTitle, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
+import { ApiError, sessionAgentName, sessionEndable, sessionTitle, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { LocalSessionPanel } from "./LocalSessionPanel";
 import { SessionChat } from "./SessionChat";
@@ -141,6 +141,11 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   const kept = lastListed && (lastListed.sessionId === focus.sessionId || lastListed.forkedFrom === focus.sessionId) ? lastListed : null;
   const session = entry?.session ?? resolvedFallback?.session ?? (resolvedFallback?.notFound ? null : kept);
   const owner = entry ?? (session ? resolveSessionOwner(session.humanUserId) : null);
+  // A message another session sent arrives with that session's id as its author: name it as the terminal does ("Your Cursor", "Aden's Codex").
+  const withSessions = useMemo(() => [...(participants ?? []), ...entries.map(({ session: s }) => {
+    const who = resolveSessionOwner(s.humanUserId);
+    return { kind: "agent" as const, id: s.sessionId, displayName: `${who.own ? "Your" : `${who.ownerName.split(" ")[0]}'s`} ${sessionAgentName(s.provider)}` };
+  })], [participants, entries, resolveSessionOwner]);
   const messageOwner = session && owner && !owner.own && onMessageOwner ? () => onMessageOwner(session.humanUserId, owner.ownerName) : undefined;
   // Chat beside the terminal (PR #3807). Unread is the server's count from
   // the session list, which refetches when a chat message arrives (useWorkspaceSessions); nothing is
@@ -204,7 +209,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
         <Button variant="ghost" onClick={retryFallback}>Try again</Button>
       </div>}
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
-        client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={participants} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} />
+        client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={withSessions} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} />
         : <div className="p-4 text-ui text-muted-foreground">
           <p role="status">{resolvedFallback?.notFound ? "This session is no longer shared." : resolvedFallback?.error ? "Could not load this session." : "Opening session…"}</p>
           {resolvedFallback?.error && <Button variant="ghost" onClick={retryFallback}>Try again</Button>}

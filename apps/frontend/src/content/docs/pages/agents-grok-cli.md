@@ -11,6 +11,8 @@ section: "Agents"
 
 Install Grok CLI, then run `lightbulb join` or `lightbulb setup`. Setup only touches Grok CLI if `~/.grok` exists. It also allows the `lightbulb` tools, so Grok does not ask before each one.
 
+Grok runs hooks only in a folder you trust. When it asks "Do you trust the contents of this directory?", choose to trust it. If you dismiss the prompt, the session never appears in Lightbulb.
+
 ## Send
 
 Ask Grok to message a person, a room, a session or a webhook agent. It uses `find_sessions` and `send_message`.

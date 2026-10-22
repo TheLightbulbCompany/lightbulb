@@ -3,6 +3,7 @@
 
 pub mod device_token;
 pub mod keychain;
+pub mod os;
 pub mod pair_client;
 pub mod pair_state;
 

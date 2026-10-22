@@ -1224,53 +1224,12 @@ pub(crate) fn process_birth(pid: u32) -> Option<u64> {
 }
 
 fn process(pid: u32) -> Result<Process> {
-    #[cfg(target_os = "macos")]
-    {
-        if pid == 0 || pid > i32::MAX as u32 {
-            return Err("invalid process".into());
-        }
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of_val(&info) as i32;
-        if unsafe {
-            libc::proc_pidinfo(
-                pid as i32,
-                libc::PROC_PIDTBSDINFO,
-                0,
-                &mut info as *mut _ as *mut _,
-                size,
-            )
-        } != size
-            || info.pbi_pid != pid
-            || info.pbi_uid != unsafe { libc::geteuid() }
-            || info.pbi_ruid != unsafe { libc::getuid() }
-        {
-            return Err("process unavailable".into());
-        }
-        let mut buffer = [0u8; 4096];
-        let n = unsafe {
-            libc::proc_pidpath(
-                pid as i32,
-                buffer.as_mut_ptr() as *mut _,
-                buffer.len() as u32,
-            )
-        };
-        if n <= 0 {
-            return Err("process executable unavailable".into());
-        }
-        let executable = std::str::from_utf8(&buffer[..n as usize])
-            .map_err(|_| "invalid executable path")?
-            .trim_end_matches('\0');
-        Ok(Process {
-            pid,
-            birth_micros: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
-            executable: executable.into(),
-        })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = pid;
-        Err("local sharing supports macOS only".into())
-    }
+    let me = lightbulb_core::os::process(pid)?;
+    Ok(Process {
+        pid,
+        birth_micros: me.birth_micros,
+        executable: lightbulb_core::os::executable(pid)?,
+    })
 }
 
 fn confined_path(root: &Path, path: &Path) -> Result<PathBuf> {

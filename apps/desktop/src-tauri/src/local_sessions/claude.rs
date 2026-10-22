@@ -643,24 +643,10 @@ pub(super) async fn connect(native: &NativeSession) -> Result<tokio::net::UnixSt
     .await
     .map_err(|_| "endpoint unavailable")?
     .map_err(|_| "endpoint unavailable")?;
-    #[cfg(target_os = "macos")]
-    {
-        let mut pid: libc::pid_t = 0;
-        let mut len = std::mem::size_of_val(&pid) as libc::socklen_t;
-        if unsafe {
-            libc::getsockopt(
-                socket.as_raw_fd(),
-                libc::SOL_LOCAL,
-                libc::LOCAL_PEERPID,
-                (&mut pid as *mut libc::pid_t).cast(),
-                &mut len,
-            )
-        } != 0
-            || pid != native.process.pid as libc::pid_t
-            || process(native.process.pid)? != native.process
-        {
-            return Err("endpoint generation mismatch".into());
-        }
+    // No peer read (any OS but macOS) refuses: the socket is not proven to be the session's.
+    let (_, pid) = lightbulb_core::os::peer(&socket).map_err(|_| "endpoint generation mismatch")?;
+    if pid != native.process.pid || process(native.process.pid)? != native.process {
+        return Err("endpoint generation mismatch".into());
     }
     Ok(socket)
 }

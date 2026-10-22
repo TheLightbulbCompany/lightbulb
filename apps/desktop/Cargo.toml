@@ -1,0 +1,11 @@
+[workspace]
+members = ["src-tauri", "core"]
+resolver = "2"
+
+# Profiles only take effect in the workspace root; cargo ignores (and warns about) a
+# member's. Losing these would quietly ship the app without panic=abort, LTO and strip.
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"

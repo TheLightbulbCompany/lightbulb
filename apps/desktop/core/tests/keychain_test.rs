@@ -1,4 +1,4 @@
-use lightbulb_desktop::keychain::{
+use lightbulb_core::keychain::{
     delete, generate_keypair, load_or_generate, KeychainSlot,
 };
 

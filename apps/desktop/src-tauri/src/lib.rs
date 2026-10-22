@@ -2,7 +2,6 @@ mod agent_cast;
 mod agent_chrome;
 pub mod bootstrap;
 pub mod claude_export;
-pub mod device_token;
 pub mod file_access;
 #[cfg(unix)]
 pub mod holder;
@@ -10,15 +9,12 @@ pub mod holder;
 pub mod headless;
 #[cfg(unix)]
 pub mod cli;
-pub mod keychain;
 pub mod local_mcp;
 pub mod local_sessions;
 pub mod process_owner;
 mod node_client;
 mod node_invoke;
 pub mod notify;
-pub mod pair_client;
-pub mod pair_state;
 pub mod proxy;
 pub mod screen;
 mod session_continue;
@@ -29,6 +25,9 @@ mod shell_integration;
 pub mod desktop_permissions;
 pub mod subprocess;
 mod tray;
+
+// Moved to `lightbulb-core`; re-exported so `crate::keychain::…` and friends keep resolving.
+pub use lightbulb_core::{device_token, keychain, pair_client, pair_state};
 
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::{Emitter, Manager, State, Url};
@@ -129,16 +128,12 @@ pub struct NodeState {
     pub status: Mutex<String>,
 }
 
-/// File-based logger for macOS GUI apps (stdout not visible). Tests print only: their lines
-/// ("relay unavailable or pairing revoked", fake session ids) sat in the installed app's own log.
+/// The logger lives in core. Core's `cfg(test)` is not this crate's, so the app's own unit
+/// tests keep their print-only twin and never write into the installed app's log.
+#[cfg(not(test))]
+pub use lightbulb_core::log;
+#[cfg(test)]
 pub fn log(msg: &str) {
-    #[cfg(not(test))]
-    {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/lightbulb-desktop.log") {
-            let _ = writeln!(f, "{}", msg);
-        }
-    }
     println!("{}", msg);
 }
 

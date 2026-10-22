@@ -50,7 +50,8 @@ main() {
   mkdir -p "$dir"
   [ -w "$dir" ] || die "cannot write to $dir. Drag Lightbulb.app there from the DMG, or move it to ~/Applications and run this again."
 
-  if [ -x "$exe" ] && up_to_date "$app"; then
+  # An existing copy counts as current only if it is the latest AND still passes every check.
+  if [ -x "$exe" ] && up_to_date "$app" && verified "$app"; then
     say "Lightbulb $(version_of "$app") is already the latest."
   else
     install_app "$dir" "$app"
@@ -75,6 +76,15 @@ up_to_date() {
   [ "$code" = 204 ]
 }
 
+# A valid, unmodified signature from Lightbulb's team, for this bundle id, accepted by Gatekeeper.
+verified() {
+  /usr/bin/codesign --verify --deep --strict "$1" 2>/dev/null || return 1
+  info=$(/usr/bin/codesign -dv "$1" 2>&1)
+  printf '%s\n' "$info" | grep -qx "TeamIdentifier=$TEAM_ID" || return 1
+  printf '%s\n' "$info" | grep -qx "Identifier=$BUNDLE_ID" || return 1
+  /usr/sbin/spctl --assess --type execute "$1" 2>/dev/null
+}
+
 install_app() {
   dir=$1 app=$2
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/lightbulb.XXXXXX")
@@ -91,11 +101,7 @@ install_app() {
   [ -d "$new" ] || die "the download did not contain Lightbulb.app."
 
   say "Verifying the signature..."
-  /usr/bin/codesign --verify --deep --strict "$new" || die "the code signature is not valid."
-  info=$(/usr/bin/codesign -dv "$new" 2>&1)
-  printf '%s\n' "$info" | grep -qx "TeamIdentifier=$TEAM_ID" || die "the app is not signed by Lightbulb (team $TEAM_ID)."
-  printf '%s\n' "$info" | grep -qx "Identifier=$BUNDLE_ID" || die "the app is not $BUNDLE_ID."
-  /usr/sbin/spctl --assess --type execute "$new" || die "Gatekeeper did not accept the app."
+  verified "$new" || die "the download failed the signature, team ($TEAM_ID) or Gatekeeper check."
 
   # Swap: the old copy moves aside, the new one takes its place, the old one is deleted.
   # A running `lightbulb serve` notices its binary changed and restarts on the new one.

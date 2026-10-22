@@ -9,7 +9,7 @@ cask "lightbulb" do
   url "https://thelightbulb.company/api/download/desktop?arch=aarch64&kind=bundle"
   name "Lightbulb"
   desc "Share Claude Code, Codex, Cursor and Grok CLI sessions with your Lightbulb workspace"
-  homepage "https://thelightbulb.company/docs/connect-agents-without-the-app"
+  homepage "https://thelightbulb.company/docs/agent-network-quickstart"
 
   # The app updates itself (Tauri updater); `brew upgrade` is not needed to stay current.
   auto_updates true

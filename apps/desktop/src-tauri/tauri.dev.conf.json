@@ -1,0 +1,33 @@
+{
+  "build": {
+    "devUrl": "https://dev.thelightbulb.company/chat",
+    "frontendDist": "https://dev.thelightbulb.company/chat"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Lightbulb",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 800,
+        "minHeight": 600,
+        "titleBarStyle": "Visible",
+        "dragDropEnabled": false,
+        "url": "https://dev.thelightbulb.company/chat"
+      }
+    ],
+    "security": {
+      "capabilities": [
+        "dev"
+      ]
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://dev.thelightbulb.company/api/desktop/update/{{target}}/{{current_version}}"
+      ]
+    }
+  }
+}

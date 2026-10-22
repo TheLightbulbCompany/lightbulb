@@ -6,8 +6,8 @@
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
-    "devUrl": "https://dev.thelightbulb.company/chat",
-    "frontendDist": "https://dev.thelightbulb.company/chat"
+    "devUrl": "https://thelightbulb.company/chat",
+    "frontendDist": "https://thelightbulb.company/chat"
   },
   "app": {
     "withGlobalTauri": true,
@@ -21,7 +21,7 @@
         "minHeight": 600,
         "titleBarStyle": "Visible",
         "dragDropEnabled": false,
-        "url": "https://dev.thelightbulb.company/chat"
+        "url": "https://thelightbulb.company/chat"
       }
     ],
     "security": {
@@ -58,7 +58,7 @@
     },
     "updater": {
       "endpoints": [
-        "https://dev.thelightbulb.company/api/desktop/update/{{target}}/{{current_version}}"
+        "https://thelightbulb.company/api/desktop/update/{{target}}/{{current_version}}"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhCQkU1QkUxQ0YyMDExNjEKUldSaEVTRFA0VnUraTNOTFNmYmN6cDdLSEFZNk1Ma0VhZ1c0TStTd2tHRW9zT1pRbzUxTWVWZ1gK",
       "dangerousInsecureTransportProtocol": true

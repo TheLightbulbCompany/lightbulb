@@ -120,27 +120,29 @@ jobs:
         echo "CARGO_TARGET_DIR=$DIR" >> "$GITHUB_ENV"
     - name: Install dependencies
       run: pnpm install
+    # tauri.conf.json and capabilities/default.json ARE the prod flavor (dev is the
+    # tauri.dev.conf.json overlay + capabilities/dev.json, opt-in), so only the version and
+    # targets are patched here.
     - name: Patch tauri.conf.json for prod
       run: |-
         TAURI_CFG=apps/desktop/src-tauri/tauri.conf.json
-        # ONE updater endpoint, on the live domain. isol8.co is being retired
-        # outright, so a fallback pointing at it would be dead weight -- and a
-        # dead first-choice endpoint only slows the update check down. Desktop
-        # apps installed before the cutover cannot self-update and need a
-        # manual reinstall; that is accepted (the install base is internal).
-        jq --arg url "https://thelightbulb.company/chat" \
-           --arg updateUrl "https://thelightbulb.company/api/desktop/update/{{target}}/{{current_version}}" \
-           --arg version "0.4.${{ github.run_number }}" '
+        jq --arg version "0.4.${{ github.run_number }}" '
           .version = $version |
-          .bundle.targets = ["app"] |
-          .build.devUrl = $url |
-          .build.frontendDist = $url |
-          .app.windows[0].url = $url |
-          .plugins.updater.endpoints = [$updateUrl]
+          .bundle.targets = ["app"]
         ' "$TAURI_CFG" > "$TAURI_CFG.new"
         mv "$TAURI_CFG.new" "$TAURI_CFG"
         echo "Patched tauri.conf.json:"
-        jq '{version, devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity: .bundle.macOS.signingIdentity, updaterEndpoints: .plugins.updater.endpoints}' "$TAURI_CFG"
+        jq '{version, devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity: .bundle.macOS.signingIdentity, updaterEndpoints: .plugins.updater.endpoints, capabilities: .app.security.capabilities}' "$TAURI_CFG"
+    # The hosted page can call every local command its origin is granted. Refuse to build
+    # a prod app that loads, or grants IPC to, anything but the prod origin.
+    - name: Check the prod build is prod-only
+      run: |-
+        set -euo pipefail
+        D=apps/desktop/src-tauri
+        jq -e '.app.security.capabilities == ["default"]' "$D/tauri.conf.json"
+        jq -e '.remote.urls == ["https://thelightbulb.company/*"]' "$D/capabilities/default.json"
+        jq -e '[.build.devUrl, .build.frontendDist, .app.windows[].url, .plugins.updater.endpoints[]]
+          | all(startswith("https://thelightbulb.company/"))' "$D/tauri.conf.json"
     - name: Vendor browser sidecar (aarch64-apple-darwin)
       run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh aarch64-apple-darwin
     - name: Set up signing keychain
@@ -247,10 +249,9 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         LIGHTBULB_CALLBACK_URL: https://thelightbulb.company/auth/desktop-callback
-        # Point the native node-host + pairing client at PROD. Without these
-        # the compile-time defaults in lib.rs fall back to dev, so the prod
-        # app's "computer access" half pairs against dev while the chat UI +
-        # Friday run on prod — they never connect.
+        # PROD, explicitly. These match lib.rs's compile-time defaults (prod since the
+        # open-source release); set here so a default change can never silently
+        # point the shipped app's pairing half somewhere else.
         LIGHTBULB_API_BASE: https://api.thelightbulb.company
         LIGHTBULB_WS_URL: wss://bv.thelightbulb.company/api/v1/gateway/ws
     - name: Build desktop app (aarch64-apple-darwin, try 2)
@@ -270,10 +271,9 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         LIGHTBULB_CALLBACK_URL: https://thelightbulb.company/auth/desktop-callback
-        # Point the native node-host + pairing client at PROD. Without these
-        # the compile-time defaults in lib.rs fall back to dev, so the prod
-        # app's "computer access" half pairs against dev while the chat UI +
-        # Friday run on prod — they never connect.
+        # PROD, explicitly. These match lib.rs's compile-time defaults (prod since the
+        # open-source release); set here so a default change can never silently
+        # point the shipped app's pairing half somewhere else.
         LIGHTBULB_API_BASE: https://api.thelightbulb.company
         LIGHTBULB_WS_URL: wss://bv.thelightbulb.company/api/v1/gateway/ws
     - name: Build desktop app (aarch64-apple-darwin, try 3)
@@ -291,10 +291,9 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         LIGHTBULB_CALLBACK_URL: https://thelightbulb.company/auth/desktop-callback
-        # Point the native node-host + pairing client at PROD. Without these
-        # the compile-time defaults in lib.rs fall back to dev, so the prod
-        # app's "computer access" half pairs against dev while the chat UI +
-        # Friday run on prod — they never connect.
+        # PROD, explicitly. These match lib.rs's compile-time defaults (prod since the
+        # open-source release); set here so a default change can never silently
+        # point the shipped app's pairing half somewhere else.
         LIGHTBULB_API_BASE: https://api.thelightbulb.company
         LIGHTBULB_WS_URL: wss://bv.thelightbulb.company/api/v1/gateway/ws
     - name: Build, sign + notarize DMG (headless)

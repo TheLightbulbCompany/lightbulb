@@ -68,19 +68,20 @@
 
 **Interfaces:**
 - Produces: `roster::Entry { v: u32, parents: Vec<String>, kind: Kind, body: Value, signer: String, at: i64, sig: String }`; `Entry::hash()` = hex sha256 of `canonical(entry without sig)`; `Entry::signed(id: &Identity, parents, kind, body, at) -> Entry`.
-- Bodies: `admit {member, name, computer, person_id, kind, role, ticket_id, proof?}` (genesis: `parents: []`, `role: "founder"`, plus `team_name`); `merge {member, person_id, proof}`; `proof {member, proof}`; `remove {member}`; `admin {member}`; `transfer {member}`; `leave {member}`; `link {ticket_id, secret, mode, expires_at}`; `meta {team_name?, relay?}`.
+- Bodies: `admit {member, name, computer, person_id, kind, role, ticket_id, proof?}` (genesis: `parents: []`, `role: "founder"`, plus `team_name`); `merge {member, person_id, proof}`; `proof {member, proof}`; `remove {member}`; `admin {member}`; `transfer {member}`; `leave {member}`; `link {ticket_id, secret, mode, once, expires_at}` (`once: true` → `secret` is the ticket secret's hex sha256); `meta {team_name?, relay?}`.
 - Who signs what (checked at the entry's point in replay):
 
 | Kind | Valid signer |
 |---|---|
-| `admit` | founder or admin (genesis: the founder itself; Task 13: a computer of the same `person_id`, body carrying a proof whose `sub` is that `person_id`) |
+| `admit` | founder or admin, or the active member who signed the live `link` entry named by the body's `ticket_id` — the inviter, so "any member invites" holds with no admin online (Codex, #4297) (genesis: the founder itself; Task 13: a computer of the same `person_id`, body carrying a proof whose `sub` is that `person_id`) |
 | `merge`, `proof` | the member itself, with a proof valid for it (Task 13) |
 | `remove` | founder or admin; also a member removing its own person's bridge member (`unlink`) |
 | `admin`, `transfer` | founder (architecture §4: "only the founder and founder-marked admins remove"; "the founder may transfer") |
-| `link`, `meta` | founder or admin |
+| `link` | any active member (the inviter); a `link` is live until its `expires_at` or until any `remove` entry descends from it, so a removal ends every link the removed member could have seen |
+| `meta` | founder or admin |
 | `leave` | the leaving member |
 
-- Produces: `roster::Roster { team_id, team_name, members: BTreeMap<String, Member>, heads: Vec<String>, link: Option<Link>, relay: Option<String> }`, `Member { key, short, name, computer, person_id, role: Role, kind: MemberKind, admitted_at, proof: Option<String> }`; `roster::replay(entries: &[Entry]) -> Roster`; `roster::accept(store, entry, now) -> Result<bool>` (verifies sig; refuses `at > now + 86_400`, unknown parents, and any second parentless entry); `Roster::by_short(short)`; `Roster::ancestors(hash) -> HashSet<String>`.
+- Produces: `roster::Roster { team_id, team_name, members: BTreeMap<String, Member>, heads: Vec<String>, links: BTreeMap<String, Link>, relay: Option<String> }` (`links` = the live `link` entries by `ticket_id`, each with its signer), `Member { key, short, name, computer, person_id, role: Role, kind: MemberKind, admitted_at, proof: Option<String> }`; `roster::replay(entries: &[Entry]) -> Roster`; `roster::accept(store, entry, now) -> Result<bool>` (verifies sig; refuses `at > now + 86_400`, unknown parents, and any second parentless entry); `Roster::by_short(short)`; `Roster::ancestors(hash) -> HashSet<String>`.
 - Replay rule: Kahn topological order (ready `remove` entries first, then lowest hash). An entry is applied only if its signer is active and authorised there AND no `remove` of its signer is concurrent with it (neither its ancestor nor its descendant); otherwise it is dropped, which drops everything only it admitted. An `admit` whose name or 12-char prefix equals an active member's is dropped. Founder `leave` without `transfer` promotes the oldest admin. Exactly one root; every entry descends from it.
 
 - [ ] **Step 1: Failing tests**
@@ -95,6 +96,7 @@
 #[test] fn second_root_and_far_future_are_refused() { assert!(accept(&s, other_genesis, now).is_err()); assert!(accept(&s, e_at(now + 86_401), now).is_err()); }
 #[test] fn founder_leave_promotes_oldest_admin() {}
 #[test] fn person_id_is_sticky_and_merge_rewrites_it_once() {}
+#[test] fn inviter_may_admit_through_its_own_link_only() { /* member X writes link L; X's admit {ticket_id: L} applied; X's admit {ticket_id: founder's link} dropped; after founder removes Y, L (an ancestor of the remove) is no longer live and a later admit via L is dropped */ }
 ```
 - [ ] **Step 2:** FAIL. **Step 3:** Implement (pure; no network). **Step 4:** PASS. **Step 5:** Commit `feat: hash-linked signed roster with removal-wins replay`.
 
@@ -103,8 +105,8 @@
 **Files:** Create `src/ticket.rs`. Modify `src/daemon/net_ops.rs`, `src/daemon/mod.rs` (`run()` writes a genesis only when the `roster` table is EMPTY; `TeamState` is built from the replayed roster and the Plan A `team` row rewritten from it), `src/cli.rs`, `src/main.rs`. Test: `src/ticket.rs`, `tests/team_cli.rs`.
 
 **Interfaces:**
-- Produces: `ticket::Ticket` (Global Constraints shape), `ticket::mint(id, roster, mode, once, now) -> (Ticket, Option<String>)` (members = founder and admins, ≤6), `ticket::encode`, `ticket::decode(s) -> Result<Ticket>` (bare ticket, `/j/#…` link, full join line, or `lightbulb://join/…`), `ticket::verify(&Ticket, roster) -> Result<()>`, `ticket::line(&Ticket) -> String`.
-- Ops: `team.get {}` → `{team_id, name, members: [Member], heads}`; `team.invite {mode: "reusable"|"new"|"once"|"open"}` → `{ticket, line, app_link, expires_at}`: any member reprints the reusable link (architecture: any member invites); `new`, `once` and `open` need founder or admin (`not_admin`), since only they can sign the `admit` those lead to; `new` writes a `link` entry; `team.admin {member, founder}` (`not_founder`); `team.remove {member}` → `{line}` (`remove` then a new `link`; `not_admin`); `team.leave {}` writes `leave`, deletes roster and `team_link`, writes a fresh genesis (the solo network again); `founder_must_transfer` when the founder has no admin. Telling peers about the `leave` lands in Task 8.
+- Produces: `ticket::Ticket` (Global Constraints shape), `ticket::mint(id, roster, mode, once, now) -> (Ticket, Option<String>)` (members = the inviter first, then founder and admins, ≤6), `ticket::encode`, `ticket::decode(s) -> Result<Ticket>` (bare ticket, `/j/#…` link, full join line, or `lightbulb://join/…`), `ticket::verify(&Ticket, roster) -> Result<()>`, `ticket::line(&Ticket) -> String`.
+- Ops: `team.get {}` → `{team_id, name, members: [Member], heads}`; `team.invite {mode: "reusable"|"new"|"once"|"open"}` → `{ticket, line, app_link, expires_at}`: `reusable` reprints this member's live link, minting one (`new`) when it has none; `new` and `once` are open to any member and each write a `link` entry this member signs (`once`: `secret` = the sha256, `once: true`), because the inviter may sign the `admit` it leads to (Task 2); `open` needs founder or admin (`not_admin`); `team.admin {member, founder}` (`not_founder`); `team.remove {member}` → `{line}` (`remove`, which ends every live `link`, then a new `link`; `not_admin`); `team.leave {}` writes `leave`, deletes roster and `team_link`, writes a fresh genesis (the solo network again); `founder_must_transfer` when the founder has no admin. Telling peers about the `leave` lands in Task 8.
 - CLI: `invite [--new|--once|--open]`, `team`, `admin <name> [--founder]`, `remove <name>`, `leave` (asks `Leave "<team>"? Your computer stops connecting. Mail already stored here stays. [y/N]`, ends `Left "<team>". This computer is on its own network again.`; the service keeps running, architecture §4, which overrides the design's row 10 and engine flow 7). Other texts exactly as engine spec flows 3 and 7.
 
 - [ ] **Step 1: Failing tests**
@@ -126,12 +128,13 @@
 - Produces `frames::Frame`, serde-tagged `t`, every field later tasks use (✍ = carries `sig`): `Hello {protocol, heads}`; `Roster {entries, more}` (✍ per entry); `Presence {member, seq, sessions: [Remote], known: [String], kept: [String]}`; `Envelope {id, request_id, kind, from, to, reply_to, thread, hops, body, files, sent_at}`; `Ack {id, state, reason}`; `Receipt {id, state, reason}`; `HoldNotice {hold_id, target_session, from, from_label_parts, preview, created_at}`; `Decision {hold_id, holding_member, verdict, scope, nonce, decided_at, sig}` ✍; `JoinRequest {ticket, secret_proof, candidate, name, computer, kind, proof, sig}` ✍; `JoinDecision {ticket_id, candidate, verdict, reason, sig}` ✍; `ShareGrant {grant_id, session, viewer, input, expires_at, granter, sig}` ✍; `Stream {grant_id, session, seq, bytes}` (bytes base64, ≤ 65 536 decoded). `Envelope.request_id` is the sender's id the receiving agent sees (§7). Transient frames carry no `sig`: the QUIC handshake authenticates the peer (ponytail: sign envelopes if they are ever forwarded).
 - Produces: `frames::write(send, &Frame)`, `frames::read(recv) -> Result<Frame>` (≤ 1 MiB); `net::ALPN`, `net::JOIN_ALPN`, `net::PROTOCOL: u32 = 1` (debug: `LIGHTBULB_NETWORK_DEBUG_PROTOCOL` overrides); `net::Net::start(daemon) -> Result<Net>` (endpoint secret = `identity.key` bytes, relays disabled, mDNS when `config.lan`); `Net::send(member, Frame)`; `Net::online() -> Vec<String>`. One connection per member pair (the lower key's dial wins); dial every active member on start, on roster change and every 30 s.
 - Gate: accept on `ALPN` only from an active member; after every applied roster entry, close connections to now-inactive keys. `frames::from_peer_ok(&Frame, peer: &Member, daemon) -> bool` is the one per-frame check (rules added by Tasks 7, 8, 14); a frame failing it is dropped and counted in the log. A `hello` with another `protocol` shows in `status` as `<computer> needs an update (protocol <theirs>, yours <ours>)` and no traffic follows.
-- Sync: `hello.heads`; each side sends in `roster` the entries that are not ancestors of the peer's heads (the full log when it knows none of them), 500 per frame with `more: true` until the last.
+- Sync: `hello.heads`; each side sends in `roster` the entries that are not ancestors of the peer's heads (the full log when it knows none of them), **in its own replay order (parents before children) across page boundaries**, 500 per frame with `more: true` until the last. The receiver applies in order; an entry whose parents are still unknown waits in a per-connection pending set, retried after every frame and discarded when the connection closes; heads advance only past applied entries, so a dropped page is re-requested on the next `hello` (Codex, #4297).
 
 - [ ] **Step 1: Failing tests**
 ```rust
 #[tokio::test] async fn two_members_connect_and_converge_rosters() { /* A writes a meta entry; B's heads equal A's within 2 s */ }
-#[tokio::test] async fn sync_sends_only_the_delta_in_pages() { /* B lags 1 200 entries -> 3 roster frames, last more=false; an up-to-date peer gets 0 entries */ }
+#[tokio::test] async fn sync_sends_only_the_delta_in_pages() { /* B lags 1 200 entries -> 3 roster frames, last more=false, every entry's parents earlier in the stream; an up-to-date peer gets 0 entries */ }
+#[tokio::test] async fn child_before_parent_in_one_frame_still_converges() { /* a frame hand-built with a child first: child pends, parent applies, child applies; heads equal */ }
 #[tokio::test] async fn non_member_is_refused_on_member_alpn() {}
 #[tokio::test] async fn removed_member_connection_is_closed_on_removal() { /* closes within 2 s; redial refused */ }
 #[tokio::test] async fn older_protocol_is_reported_not_served() { /* B started with DEBUG_PROTOCOL=0 */ }
@@ -160,7 +163,7 @@
 
 **Interfaces:**
 - Ops: `team.join {ticket, name, kind: "computer"}` → `{state: "admitted"|"waiting"|"refused", reason?, team, online}`: dials ticket members in order on `JOIN_ALPN`, sends a signed `JoinRequest` (`secret_proof` = hex sha256(secret ‖ candidate)), waits ≤ 600 s for `JoinDecision` then `Roster`, verifies every entry itself, replaces its roster and `TeamState`; `team.join_requests {}` → `{requests: [{id: "J<n>", candidate, name, computer, created_at}]}`; `team.admit {id, verdict}` (person-only; `not_open` on a second answer).
-- Admitting side, in order: `candidate` == the connection's peer key (else drop); request `sig`; ticket `sig` by an active member, `team_id`, not expired on this clock (`expired_ticket`); secret = current link or an unused `--once` hash here (`bad_ticket`); `kind: "cloud"` → refused `unsupported` until Task 13 (needs a `kind=bridge` proof); name and prefix free (`name_taken`, `key_collision`, the same checks replay enforces); this computer is founder or admin (`not_admin`, candidate tries the next member); at most 20 open requests per team, 5 per inviter, 1 per candidate. `mode: open` admits at once; `ask` queues `dialog::Queue::show` with `"<name> wants to join your network"`, buttons `Decline`, `Allow`. Admit writes `admit {person_id: candidate, kind, role: "member"}`; a used `--once` hash is deleted.
+- Admitting side, in order: `candidate` == the connection's peer key (else drop); request `sig`; ticket `sig` by an active member, `team_id`, not expired on this clock (`expired_ticket`); secret matches a live `link` entry (`roster.links[ticket_id]`: plaintext, or its sha256 when `once`, and then unused here) (`bad_ticket`); `kind: "cloud"` → refused `unsupported` until Task 13 (needs a `kind=bridge` proof); name and prefix free (`name_taken`, `key_collision`, the same checks replay enforces); this computer is founder, admin, or the signer of that `link` entry (`not_admin`, candidate tries the next member); at most 20 open requests per team, 5 per inviter, 1 per candidate. `mode: open` admits at once; `ask` queues `dialog::Queue::show` with `"<name> wants to join your network"`, buttons `Decline`, `Allow`. Admit writes `admit {person_id: candidate, kind, role: "member"}`; a used `--once` hash is deleted.
 - CLI: `join '<link>' [--name <n>]` (default `$USER`) prints `Waiting for an admin to allow this...` then `Connected as <name> (<computer>). Team "<team>": <n> computers online.`; name taken → `The name "<n>" is already used in this network. Try: lightbulb-network join '<link>' --name <n>-2`; nobody reachable → engine spec flow 2.6 text. `approve J<n>` / `decline J<n>`.
 
 - [ ] **Step 1: Failing tests**
@@ -174,6 +177,7 @@
 #[tokio::test] async fn sixth_open_request_for_one_inviter_is_refused() {}
 #[tokio::test] async fn link_replaced_on_removal_no_longer_joins() {}
 #[tokio::test] async fn cloud_candidate_without_bridge_proof_is_refused() {}
+#[tokio::test] async fn non_admin_inviter_admits_its_own_invitee_with_no_admin_online() { /* founder offline; member X mints `invite --new`; C joins via X's link; X's dialog -> Allow; C admitted; founder back online converges */ }
 ```
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat: admission with a person's allow`.
 
@@ -201,7 +205,7 @@
 **Files:** Create `src/outbox.rs`. Modify `src/mail.rs`, `src/daemon/ipc.rs` (`send`), `src/daemon/net_ops.rs` (`team.leave`), `src/net/mod.rs`. Test: `src/outbox.rs`, `tests/envelope.rs`.
 
 **Interfaces:**
-- Produces: `mail::prepare(store, from, to, text, request_id, reply_to, now) -> Result<Prepared, Receipt>` (request_id format, idempotency and `request_id_reused`, loop check, thread and hops with `MAX_HOPS = 4`); Plan A's `mail::send` keeps its signature and calls it; `outbox::enqueue(store, prepared: Prepared, to_member: &str) -> Result<Receipt>` (receipt `queued`, `where` = the member's computer). `send` IPC: a `to` whose prefix is not ours takes the outbox path; optional `kind` (`message` only; others `unsupported`).
+- Produces: `mail::prepare(store, from, to, text, request_id, reply_to, now) -> Result<Prepared, Receipt>` (request_id format, idempotency and `request_id_reused`, loop check, thread and hops with `MAX_HOPS = 4`). **Hops follow the trigger** (architecture §7; Codex, #4297): with `reply_to`, `hops = that message's hops + 1` and its `thread`; without it, the trigger is the newest message delivered to the sending session from any session within the last 600 s (by delivery time): `hops = trigger.hops + 1`, a new `thread`; no trigger → `hops = 0`, new `thread`. A `/terminal` sender (a person) is always `hops = 0`. The same rule for local and remote recipients, so a chain that hops across sessions without `reply_to` still stops at 4; Plan A's `mail::send` keeps its signature and calls it; `outbox::enqueue(store, prepared: Prepared, to_member: &str) -> Result<Receipt>` (receipt `queued`, `where` = the member's computer). `send` IPC: a `to` whose prefix is not ours takes the outbox path; optional `kind` (`message` only; others `unsupported`).
 - Produces: `outbox::due(store, now)`, `outbox::acked(store, member, envelope_id, state, reason)`, `outbox::expire(store, now)` (24 h → `expired` `unreachable`); flush on peer connect and on a tick (1 s doubling to 60 s). Debug `LIGHTBULB_NETWORK_DEBUG_DROP_ACKS=1` drops inbound acks.
 - Produces: `mail::receive(store, env, peer: &Member, roster, now) -> Result<(State, Option<String>)>`: `from` prefix == `peer.short` (else drop, no ack); `kind != "message"` → `refused unsupported`; group `to` → `refused policy`; recipient member not us → `refused not_member`; `(peer, id)` in `seen_ids` → re-ack the stored state, deliver nothing; `request_id` reused with other text → `refused request_id_reused`; `hops >= 4` or 12/600 per principal → `refused loop`; then policy (Task 9; until then `stored`) into the mailbox with `origin = "net:<short>"`. Replies `Ack`; later changes (`delivered`, `read`, `expired`, Task 9 outcomes) queue a `Receipt` in `receipt_out`, flushed on connect. `from_peer_ok`: `Ack`/`Receipt` only from the outbox row's `to_member`.
 - `team.leave` (completing Task 3) sends the `leave` entry to at least one online peer, or after 5 s leaves anyway and prints `Could not tell the team; they will see you gone when you are removed.`
@@ -214,7 +218,8 @@
 #[tokio::test] async fn outbox_expires_after_24h_unreachable() {}
 #[tokio::test] async fn envelope_from_another_members_prefix_is_dropped() {}
 #[tokio::test] async fn ack_from_a_third_member_is_ignored() {}
-#[tokio::test] async fn fourth_hop_and_thirteenth_send_are_refused_loop() {}
+#[tokio::test] async fn fourth_hop_and_thirteenth_send_are_refused_loop() { /* both with reply_to and as a forward chain without reply_to within 600 s */ }
+#[tokio::test] async fn a_person_at_the_terminal_resets_hops_to_zero() {}
 #[tokio::test] async fn input_kind_is_refused_unsupported() {}
 #[tokio::test] async fn leave_reaches_a_peer_or_warns_after_5s() {}
 ```
@@ -226,7 +231,7 @@
 
 **Interfaces:**
 - Produces: `policy::Policy { people, cloud_of, agents_send_without_asking, set_by }`, `policy::decide(p, me: &Member, from: &Member) -> Verdict { Accept, Hold, Refuse }`; ops `policy.get {}`, `policy.set {person_id, scope: "people"|"cloud_of", value}` or `{agents_send_without_asking}` (person-only).
-- Produces: `holds::Scope { Once, Person, OwnCloud, CloudOf }` (the one enum, reused by Task 14); `holds::hold(store, msg, now) -> Hold` (receipt `held`); `holds::answer(store, id, verdict, scope: Scope, by: "local"|"bridge", now) -> Result<()>`: `not_open` when already answered; `OwnCloud` only for the person's own cloud member, `CloudOf` only for another person's cloud member, else `bad_request`; Allow → mailbox, receipt `stored`, then the normal path; decline → `refused declined`; a signed `approvals` record keeps the text shown; `holds::expire` (7 days → `expired`). A held body is never delivered before Allow.
+- Produces: `holds::Scope { Once, Person, OwnCloud, CloudOf }` (the one enum, reused by Task 14); `holds::hold(store, msg, now) -> Hold` (receipt `held`); `holds::answer(store, id, verdict, scope: Scope, by: "local"|"bridge", now) -> Result<()>`: `not_open` when already answered; `OwnCloud` only for the person's own cloud member, `CloudOf` only for another person's cloud member, else `bad_request`; Allow → mailbox, receipt `stored`, then the normal path; decline → `refused declined`; a signed `approvals` record keeps the text shown; `holds::expire(store, now)`: a hold whose target session has been gone (ended or absent from `sessions`) for 24 h → `expired` reason `session_ended`, and 7 days is the absolute maximum (→ `expired`); either withdraws the dialog (Codex, #4297). A held body is never delivered before Allow.
 - Ops: `holds {}` → `{holds: [{id: "H<n>", target_session, from, label, preview, created_at}]}`; `hold.get {id}` (person-only, with body); `hold.answer {id, verdict, scope}` (person-only). Subscribers get `{event:"held"}` and `{event:"hold_closed", id, by}`; any answer withdraws the dialog.
 - Dialog (no live claim): title `Lightbulb Network`, text `<label> wants to message your <Agent> in <folder>.\n"<first 160 chars, defanged>"`, buttons `Decline`, `Allow`, plus `Always allow` when the sender is a cloud member.
 - CLI: `held`, `approve H<n> [--always]` (`--always` → `CloudOf` or `OwnCloud` by sender), `decline H<n>`, `policy [<person> accept|hold|refuse]` (no args lists, marking `set_by: bridge`).
@@ -238,6 +243,7 @@
 #[tokio::test] async fn decline_refuses_and_delivers_nothing() {}
 #[tokio::test] async fn second_answer_is_not_open() {}
 #[tokio::test] async fn hold_expires_after_7_days() {}
+#[tokio::test] async fn hold_expires_24h_after_its_target_session_ends() { /* end the target session; +24h: receipt expired/session_ended; a later approve -> not_open; nothing in the mailbox */ }
 #[tokio::test] async fn always_on_a_computer_sender_is_bad_request() {}
 #[tokio::test] async fn approve_from_agent_shell_is_refused() { /* CALLER_ENV names a claude ancestor -> hold.answer error not_a_person */ }
 ```
@@ -322,7 +328,7 @@
 
 **Interfaces:**
 - On every new hold, send `HoldNotice` to this person's bridge member only (found in the roster); `preview` (≤160 defanged chars) only if `config.preview_to_workspace`.
-- `decision::accept(store, roster, signer: &Member, d: &Decision, now) -> Result<()>` calls `holds::answer(…, by: "bridge")` only if: `sig` valid; the signer's ROSTER proof is `kind=bridge` with `sub` = the hold target's `person_id`; `hold_id` and `holding_member` (us) match; nonce unseen; scope is `Once`, `Person`, or `OwnCloud` only when the held message came from that bridge's own session; `CloudOf` is refused. A held message from the bridge's own session may be allowed by it (architecture §7 is binding over the engine spec's "no self-approval"). A relayed `Person` is stored `set_by: bridge`; the CLI shows `Allowed <name> from your phone`.
+- `decision::accept(store, roster, signer: &Member, d: &Decision, now) -> Result<()>` calls `holds::answer(…, by: "bridge")` only if: `sig` valid; the signer's ROSTER proof is `kind=bridge` with `sub` = the hold target's `person_id`; `hold_id` and `holding_member` (us) match; nonce unseen; scope `Once` or `Person` for a held message from ANY sender (the phone/web Allow of a teammate's message is the point of the flow); `OwnCloud` only when the held message came from that bridge's own session; `CloudOf` is refused (Codex, #4297). A held message from the bridge's own session may be allowed by it (architecture §7 is binding over the engine spec's "no self-approval"). A relayed `Person` is stored `set_by: bridge`; the CLI shows `Allowed <name> from your phone`.
 
 - [ ] **Step 1: Failing tests**
 ```rust

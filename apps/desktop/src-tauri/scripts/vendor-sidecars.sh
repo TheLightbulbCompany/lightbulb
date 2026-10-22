@@ -106,6 +106,58 @@ EOF
             --os=darwin
     )
     node "$SCRIPT_DIR/verify-browser-pin.mjs" "$HOST_DIR/node_modules/openclaw"
+
+    local BEFORE_KB
+    BEFORE_KB="$(du -sk "$HOST_DIR" | cut -f1)"
+    host_prune_list "$HOST_DIR" "$NPM_CPU" | while IFS= read -r p; do rm -rf "$p"; done
+    # Run the real host (node run + each command family Hermes uses), then make sure
+    # nothing it did brought a pruned path back.
+    # The smoke runs the vendored node, so it needs a host of the same arch.
+    if [ "$NPM_CPU" = "$(uname -m | sed 's/x86_64/x64/')" ]; then
+        "$BIN_DIR/node-${TRIPLE}" "$SCRIPT_DIR/smoke-node-host.mjs" "$BIN_DIR/node-${TRIPLE}" "$HOST_DIR"
+    else
+        echo "==> skipping the openclaw-host-${TRIPLE} smoke on a $(uname -m) host"
+    fi
+    if [ -n "$(host_prune_list "$HOST_DIR" "$NPM_CPU")" ]; then
+        echo "pruned openclaw-host paths are present:" >&2
+        host_prune_list "$HOST_DIR" "$NPM_CPU" | head -20 >&2
+        exit 1
+    fi
+    echo "==> openclaw-host-${TRIPLE}: ${BEFORE_KB} KB -> $(du -sk "$HOST_DIR" | cut -f1) KB"
+}
+
+# Paths in the openclaw install that the node host never loads. Printed one per line,
+# existing ones only; the vendor step deletes them and then fails if any are still here.
+# The PR that added this list carries the proof of non-use for each entry; re-prove
+# before widening it:
+#  - claude-agent-sdk-darwin-*: the bundled `claude` binary. Only the Agent SDK's query()
+#    spawns it, and only extensions/anthropic/agent-sdk.runtime.js imports the SDK, for
+#    agent turns (cli-backend, executionMode "agent"). A node host runs no agent turns.
+#  - cua-driver-darwin-*: loaded only by cua-computer's loadCuaDriverSdk() for computer
+#    actions. The node host declares no computer.* command and the backend grants none.
+#  - openclaw/docs: read only by docs-path (agent prompts, `openclaw docs`), which returns
+#    null when the dir is absent.
+#  - tree-sitter-bash native build (prebuilds, src, bindings, binding.gyp): openclaw loads
+#    only tree-sitter-bash.wasm through web-tree-sitter.
+#  - other platforms' native addons: fs-safe and pi-tui pick theirs by process.platform/arch.
+#  - source maps and type declarations: nothing enables source maps; Node never loads a
+#    .d.ts. TypeScript's own lib .d.ts files are kept (its compiler reads them).
+host_prune_list() {
+    local NM="$1/node_modules" CPU="$2" p
+    {
+        printf '%s\n' "$NM"/@anthropic-ai/claude-agent-sdk-darwin-* \
+            "$NM"/@trycua/cua-driver-darwin-* \
+            "$NM/openclaw/docs" \
+            "$NM"/tree-sitter-bash/{prebuilds,src,bindings,binding.gyp} \
+            "$NM/@earendil-works/pi-tui/native/win32"
+        for p in "$NM"/openclaw/dist/native/* "$NM"/@openclaw/fs-safe/dist/native/* \
+                 "$NM"/@earendil-works/pi-tui/native/darwin/prebuilds/*; do
+            [ "${p##*/}" = "darwin-${CPU}" ] || printf '%s\n' "$p"
+        done
+        find "$NM" -path "$NM/typescript" -prune -o -type f \
+            \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' \
+               -o \( -name '*.map' ! -name '*.wasm.map' \) \) -print
+    } | while IFS= read -r p; do if [ -e "$p" ]; then printf '%s\n' "$p"; fi; done
 }
 
 # Write a per-triple launcher shim. It is a resource like node +

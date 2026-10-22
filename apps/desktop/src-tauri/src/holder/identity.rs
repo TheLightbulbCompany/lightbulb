@@ -1,54 +1,13 @@
 //! Kernel identities for holders whose executable may have been removed by an updater.
 //! Provider executable verification stays in local_sessions; these reads never need a path.
 
-use std::os::fd::AsRawFd;
+use lightbulb_core::os;
 use std::os::unix::net::UnixStream;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Identity {
-    pub pid: u32,
-    pub parent: u32,
-    pub birth_micros: u64,
-}
+pub(crate) use lightbulb_core::os::Process as Identity;
 
 pub(crate) fn read(pid: u32) -> Option<Identity> {
-    #[cfg(target_os = "macos")]
-    {
-        if pid <= 1 || pid > i32::MAX as u32 {
-            return None;
-        }
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of_val(&info) as i32;
-        if unsafe {
-            libc::proc_pidinfo(
-                pid as i32,
-                libc::PROC_PIDTBSDINFO,
-                0,
-                &mut info as *mut _ as *mut _,
-                size,
-            )
-        } != size
-            || info.pbi_pid != pid
-            || info.pbi_uid != unsafe { libc::geteuid() }
-            || info.pbi_ruid != unsafe { libc::getuid() }
-        {
-            return None;
-        }
-        let birth_micros = info
-            .pbi_start_tvsec
-            .checked_mul(1_000_000)?
-            .checked_add(info.pbi_start_tvusec)?;
-        (birth_micros != 0).then_some(Identity {
-            pid,
-            parent: info.pbi_ppid,
-            birth_micros,
-        })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = pid;
-        None
-    }
+    os::process(pid).ok()
 }
 
 /// When this user's loginwindow started (µs since the epoch): the current macOS login session's
@@ -85,37 +44,11 @@ pub(crate) fn login_session_start() -> Option<u64> {
 
 /// The socket's actual peer, not a PID asserted in HELLO.
 pub(crate) fn peer(socket: &UnixStream) -> Option<Identity> {
-    #[cfg(target_os = "macos")]
-    {
-        let (mut uid, mut gid) = (0 as libc::uid_t, 0 as libc::gid_t);
-        if unsafe { libc::getpeereid(socket.as_raw_fd(), &mut uid, &mut gid) } != 0
-            || uid != unsafe { libc::geteuid() }
-        {
-            return None;
-        }
-        let mut pid = 0 as libc::pid_t;
-        let mut len = std::mem::size_of_val(&pid) as libc::socklen_t;
-        if unsafe {
-            libc::getsockopt(
-                socket.as_raw_fd(),
-                libc::SOL_LOCAL,
-                libc::LOCAL_PEERPID,
-                &mut pid as *mut _ as *mut _,
-                &mut len,
-            )
-        } != 0
-            || len as usize != std::mem::size_of_val(&pid)
-            || pid <= 1
-        {
-            return None;
-        }
-        read(pid as u32)
+    let (uid, pid) = os::peer(socket).ok()?;
+    if uid != os::euid() {
+        return None;
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = socket;
-        None
-    }
+    read(pid)
 }
 
 pub(crate) fn is_parent(provider: u32, birth: u64, holder: u32) -> bool {

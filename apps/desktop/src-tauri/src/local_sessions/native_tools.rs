@@ -43,49 +43,15 @@ pub(super) fn bind(name: &str) -> Result<(UnixListener, SocketGuard)> {
 }
 
 pub(super) fn peer_pid(socket: &UnixStream) -> Result<u32> {
-    let fd = socket.as_raw_fd();
-    let (mut uid, mut gid) = (0 as libc::uid_t, 0 as libc::gid_t);
-    if unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } != 0 || uid != unsafe { libc::geteuid() }
-    {
-        return Err("tool peer is not this Mac user".into());
+    match lightbulb_core::os::peer(socket) {
+        Ok((uid, pid)) if uid == lightbulb_core::os::euid() => Ok(pid),
+        Ok(_) => Err("tool peer is not this Mac user".into()),
+        Err(_) => Err("tool peer process unavailable".into()),
     }
-    let mut pid = 0 as libc::pid_t;
-    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
-    if unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_LOCAL,
-            libc::LOCAL_PEERPID,
-            &mut pid as *mut _ as *mut libc::c_void,
-            &mut len,
-        )
-    } != 0
-        || len as usize != std::mem::size_of::<libc::pid_t>()
-        || pid <= 0
-    {
-        return Err("tool peer process unavailable".into());
-    }
-    Ok(pid as u32)
 }
 
 pub(super) fn parent(pid: u32) -> Result<Process> {
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of_val(&info) as i32;
-    if unsafe {
-        libc::proc_pidinfo(
-            pid as i32,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            &mut info as *mut _ as *mut _,
-            size,
-        )
-    } != size
-        || info.pbi_pid != pid
-        || info.pbi_uid != unsafe { libc::geteuid() }
-    {
-        return Err("tool peer process changed".into());
-    }
-    process(info.pbi_ppid)
+    process(lightbulb_core::os::parent(pid).map_err(|_| "tool peer process changed")?)
 }
 
 #[derive(Clone)]

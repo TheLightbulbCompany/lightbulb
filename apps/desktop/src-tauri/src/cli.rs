@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -141,8 +140,7 @@ pub fn app_socket() -> PathBuf {
 
 /// The other end of a local socket is this Mac user.
 pub fn same_user(conn: &UnixStream) -> bool {
-    let (mut uid, mut gid) = (0, 0);
-    unsafe { libc::getpeereid(conn.as_raw_fd(), &mut uid, &mut gid) == 0 && uid == libc::geteuid() }
+    lightbulb_core::os::peer(conn).is_ok_and(|(uid, _)| uid == lightbulb_core::os::euid())
 }
 
 /// Serve the command's requests: one JSON line in, one out, from this Mac user's processes only.

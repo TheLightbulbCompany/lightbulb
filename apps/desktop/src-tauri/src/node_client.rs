@@ -8,12 +8,10 @@
 
 use base64::Engine as _;
 use ed25519_dalek::pkcs8::DecodePrivateKey;
-use ed25519_dalek::pkcs8::DecodePublicKey;
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{mpsc, Mutex, oneshot};
@@ -737,28 +735,10 @@ where
 // silently fail upstream's signature verifier — keep them locked to upstream.
 // ----------------------------------------------------------------------
 
-/// Extract the 32 raw Ed25519 public-key bytes from a PEM string. Matches
-/// upstream's `derivePublicKeyRaw` (src/infra/device-identity.ts), which
-/// strips the 12-byte SPKI prefix `302a300506032b6570032100` from a DER-
-/// encoded SPKI to recover the raw key. Going via `VerifyingKey::to_bytes`
-/// is equivalent — ed25519-dalek owns that decoding path.
-fn raw_public_key_from_pem(public_key_pem: &str) -> Result<[u8; 32], String> {
-    let verifying = VerifyingKey::from_public_key_pem(public_key_pem)
-        .map_err(|e| format!("parse public PEM: {e}"))?;
-    Ok(verifying.to_bytes())
-}
-
-/// `sha256(rawPub).hex()` — same formula upstream uses to mint
-/// `deviceId`. The signed connect's `device.id` MUST equal this so the
-/// upstream container can look up the paired entry by deviceId.
-/// `pub(crate)` because `pair_state::matches_identities` uses the same
-/// derivation to detect a Keychain/persisted-state mismatch.
-pub(crate) fn derive_device_id(public_key_pem: &str) -> Result<String, String> {
-    let raw = raw_public_key_from_pem(public_key_pem)?;
-    let mut hasher = Sha256::new();
-    hasher.update(raw);
-    Ok(hex::encode(hasher.finalize()))
-}
+// `derive_device_id` and `raw_public_key_from_pem` live in core's `device_token`;
+// `pair_state` and the session enrollment derive the same id.
+pub(crate) use lightbulb_core::device_token::derive_device_id;
+use lightbulb_core::device_token::raw_public_key_from_pem;
 
 /// base64url-no-pad of the raw 32-byte public key — what upstream sends as
 /// `device.publicKey` on the wire (`publicKeyRawBase64UrlFromPem`).
@@ -1003,7 +983,9 @@ fn mask_token(url: &str) -> String {
 #[cfg(test)]
 mod handshake_tests {
     use super::*;
-    use ed25519_dalek::Verifier;
+    use ed25519_dalek::pkcs8::DecodePublicKey;
+    use ed25519_dalek::{Verifier, VerifyingKey};
+    use sha2::{Digest, Sha256};
 
     /// V3 payload format MUST be exactly:
     ///   v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily

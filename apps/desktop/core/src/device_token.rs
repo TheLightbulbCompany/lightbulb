@@ -87,6 +87,31 @@ pub fn mint_session_token(
         .map_err(|e| format!("mint device token: {e}"))
 }
 
+/// Extract the 32 raw Ed25519 public-key bytes from a PEM string. Matches
+/// upstream's `derivePublicKeyRaw` (src/infra/device-identity.ts), which
+/// strips the 12-byte SPKI prefix `302a300506032b6570032100` from a DER-
+/// encoded SPKI to recover the raw key. Going via `VerifyingKey::to_bytes`
+/// is equivalent — ed25519-dalek owns that decoding path.
+pub fn raw_public_key_from_pem(public_key_pem: &str) -> Result<[u8; 32], String> {
+    use ed25519_dalek::pkcs8::DecodePublicKey;
+    let verifying = ed25519_dalek::VerifyingKey::from_public_key_pem(public_key_pem)
+        .map_err(|e| format!("parse public PEM: {e}"))?;
+    Ok(verifying.to_bytes())
+}
+
+/// `sha256(rawPub).hex()` — same formula upstream uses to mint
+/// `deviceId`. The signed connect's `device.id` MUST equal this so the
+/// upstream container can look up the paired entry by deviceId.
+/// `pair_state::matches_identities` uses the same derivation to detect a
+/// Keychain/persisted-state mismatch.
+pub fn derive_device_id(public_key_pem: &str) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let raw = raw_public_key_from_pem(public_key_pem)?;
+    let mut hasher = Sha256::new();
+    hasher.update(raw);
+    Ok(hex::encode(hasher.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

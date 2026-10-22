@@ -2310,6 +2310,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "lightbulb-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "hex",
+ "jsonwebtoken",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "lightbulb-desktop"
 version = "0.1.0"
 dependencies = [
@@ -2319,9 +2338,9 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
- "jsonwebtoken",
  "lazy_static",
  "libc",
+ "lightbulb-core",
  "objc2",
  "objc2-foundation",
  "objc2-user-notifications",
@@ -2330,7 +2349,6 @@ dependencies = [
  "rand 0.8.5",
  "regex",
  "reqwest 0.12.28",
- "security-framework",
  "serde",
  "serde_json",
  "sha2",

@@ -10,9 +10,30 @@ use ed25519_dalek::pkcs8::{
 };
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
-use security_framework::passwords::{
-    delete_generic_password, get_generic_password, set_generic_password,
-};
+use store::{delete_generic_password, get_generic_password, set_generic_password};
+
+#[cfg(target_os = "macos")]
+mod store {
+    pub use security_framework::passwords::{
+        delete_generic_password, get_generic_password, set_generic_password,
+    };
+}
+
+/// No Keychain off macOS yet: every store call fails, so nothing is minted or persisted.
+/// ponytail: a 0600 file backend lands with the Linux port (plan decision 4).
+#[cfg(not(target_os = "macos"))]
+mod store {
+    const UNSUPPORTED: &str = "device key storage is macOS only";
+    pub fn get_generic_password(_service: &str, _account: &str) -> Result<Vec<u8>, &'static str> {
+        Err(UNSUPPORTED)
+    }
+    pub fn set_generic_password(_service: &str, _account: &str, _password: &[u8]) -> Result<(), &'static str> {
+        Err(UNSUPPORTED)
+    }
+    pub fn delete_generic_password(_service: &str, _account: &str) -> Result<(), &'static str> {
+        Err(UNSUPPORTED)
+    }
+}
 
 const PUBLIC_SEPARATOR: &str = "---PUBLIC_SEPARATOR---\n";
 

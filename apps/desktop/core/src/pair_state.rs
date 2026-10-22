@@ -128,10 +128,10 @@ impl PairState {
     /// since we paired — the persisted state is stale and must be discarded.
     pub fn matches_identities(&self, mac_public_key_pem: &str, cli_public_key_pem: &str) -> bool {
         matches!(
-            crate::node_client::derive_device_id(mac_public_key_pem),
+            crate::device_token::derive_device_id(mac_public_key_pem),
             Ok(ref id) if *id == self.device_id_mac
         ) && matches!(
-            crate::node_client::derive_device_id(cli_public_key_pem),
+            crate::device_token::derive_device_id(cli_public_key_pem),
             Ok(ref id) if *id == self.device_id_cli
         )
     }
@@ -307,9 +307,9 @@ mod tests {
         let cli = crate::keychain::generate_keypair();
         let mut state = sample();
         state.device_id_mac =
-            crate::node_client::derive_device_id(&mac.public_key_pem).unwrap();
+            crate::device_token::derive_device_id(&mac.public_key_pem).unwrap();
         state.device_id_cli =
-            crate::node_client::derive_device_id(&cli.public_key_pem).unwrap();
+            crate::device_token::derive_device_id(&cli.public_key_pem).unwrap();
 
         assert!(state.matches_identities(&mac.public_key_pem, &cli.public_key_pem));
 

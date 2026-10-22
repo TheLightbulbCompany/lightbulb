@@ -1,4 +1,4 @@
-use lightbulb_desktop::pair_client::{pair, revoke, PairRequest, PairResponse};
+use lightbulb_core::pair_client::{pair, revoke, PairRequest, PairResponse};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

@@ -15,7 +15,7 @@ function runAs(os: string, args: string[] = []) {
   writeFileSync(join(bin, "uname"), `#!/bin/sh\necho ${os}\n`);
   chmodSync(join(bin, "uname"), 0o755);
   return spawnSync("/bin/sh", [SCRIPT, ...args], {
-    env: { PATH: `${bin}:/usr/bin:/bin`, HOME: bin },
+    env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, HOME: bin },
     encoding: "utf8",
   });
 }

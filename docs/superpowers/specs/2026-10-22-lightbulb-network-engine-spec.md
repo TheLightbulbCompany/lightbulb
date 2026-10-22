@@ -119,7 +119,7 @@ Join, friend:
 2. The agent sees one line per session: `k3f9a/codex:01a1  Your Codex  repo api  busy 2m  "fix token refresh"  tier push`.
 3. Agent calls `send_message(request_id: "<ulid>", text: "...", session_id: "k3f9a/codex:01a1")`.
 4. Tool result: `stored on this computer. It is reading now (push). Check with message_receipt("<ulid>").`
-   For a Cursor/Grok target: `stored. k3f9a/cursor:77f is idle and turn-only: it sees this at its next step.`
+   For a Cursor/Grok target: `stored. k3f9a/cursor:77f is idle and next-step-only: it sees this at its next step.`
 5. The receiving agent sees, as a user-role message:
    `[Lightbulb teammate contribution from Your Claude Code {"requestId":"<ulid>"}]` then the text.
 6. Teammate case: `send_message(session_id: "b81c2/codex:9c2", ...)`. Result: `stored on aden-mbp. It may be held for aden to approve; you will see the receipt change.`
@@ -232,7 +232,7 @@ Folder `~/.lightbulb/network/` (mode 0700). Files 0600. Nothing here is synced t
 | Table | Holds | Lifetime |
 |---|---|---|
 | `team` | Team id, name, relay, link secret (hash), invite records (hash, expiry, used-by). | Until leave. |
-| `roster` | Hash-chained signed log: founder, admissions, roles (`member`/`admin`/`founder`, kind `person`/`cloud`), removals, departures. Per computer: key, person, computer name, current state. | Until leave. |
+| `roster` | Hash-chained signed log: founder, admissions, roles (`member`/`admin`/`founder`, kind `computer`/`cloud`; the `bridge` role is a cloud member holding a `kind=bridge` proof), removals, departures. Per computer: key, person, computer name, current state. | Until leave. |
 | `attestations` | Sign-in proofs for members; each checked locally and dropped if invalid. | While the member is active. |
 | `sessions` | `key` (`<member_key_short>/<provider>:<conversation>`), provider, name, pid, birth time, cwd (local only), title, doing, status, tier, last seen. | Live: while running. Offline: name kept 24 h after last seen, then forgotten (not in the first 2 minutes after daemon start). |
 | `peers_sessions` | Last presence from each online computer (agent, repo, branch, status, doing, tier). Folder is the last path part unless `share_paths`. | Replaced on each presence; dropped when the peer is offline for 24 h. |
@@ -307,7 +307,7 @@ Bridge: a cloud computer is an engine instance that runs headless with `kind = c
 | Tool | Arguments | Notes |
 |---|---|---|
 | `find_sessions` | `query` (optional text), `limit` (default 20) | Matches person, agent, repo, branch, title. Returns `session_id`, label, repo, status, doing, tier, computer. |
-| `send_message` | `session_id`, `text`, `request_id`; optional `files` (paths), `notify` (bool) | Refuses `*`, `person/*`, `repo:` with `group_send_not_allowed`. `files` and `notify` are engine-only; the hosted MCP accepts but rejects with `unsupported`. |
+| `send_message` | `session_id`, `text`, `request_id`; optional `reply_to` (the `requestId` shown in the delivered frame; sets the envelope `thread`, else `thread` is the most recent inbound message from that session, else new), `files` (paths), `notify` (bool) | Refuses `*`, `person/*`, `repo:` with `group_send_not_allowed`. `files` and `notify` are engine-only; the hosted MCP accepts but rejects with `unsupported`. |
 | `message_receipt` | `request_id` | Returns state, reason, where it waits. |
 | `check_inbox` | `wait_secs` (optional, max 600) | Returns unread messages or waits for the first. |
 
@@ -337,7 +337,7 @@ Output shape is per agent (additional context, or a `block` decision at `stop`).
 |---|---|---|
 | Claude Code | push (wakes idle) | Session inbox socket. |
 | Codex | push | `codex queue --thread`, app-server turn start. |
-| Cursor, Grok CLI | turn | Hooks at next step or turn end. |
+| Cursor, Grok CLI | next_step | Hooks at next step or turn end. |
 | Any other MCP client | pull | Unread note + `check_inbox`. |
 
 ## Acceptance checklist

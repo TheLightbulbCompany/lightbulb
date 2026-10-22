@@ -76,9 +76,11 @@ feature would still work. If the engine were deleted, the bridge would have noth
    "Friday via <Person>"). If not, it is **held**. The receipt returns `held`.
 5. Friday is told the receipt state (`queued`, `stored`, `delivered`, `read`, `held`, `refused`, `expired`) and says so in the room.
    It asks once, never re-asks under a new request id, and treats `refused` as final for the run.
-6. When the session replies, the reply is addressed to Friday's session key on the bridge. The bridge decrypts it
-   and posts it to the backend at `/internal/bridge/inbound`, correlated by `thread` (the first message's id),
-   which routes it to the room turn as Friday's follow-up input.
+6. When the session replies it calls `send_message(..., reply_to=<requestId shown in the delivered frame>)`, addressed
+   to Friday's session key on the bridge. The daemon sets the envelope's `thread` from `reply_to` (fallback: the most
+   recent inbound message from that target session, else a new thread). The bridge decrypts it and posts it to the
+   backend at `/internal/bridge/inbound`; the backend routes it by `thread` to the run, hosted mailbox or webhook that
+   sent the original, so two Friday messages answered in turn each reach their own run.
 
 Rule: the bridge is the sender of record for Friday. The person is shown as the accountable human, as today.
 
@@ -304,7 +306,7 @@ Kept as is: `/mcp` (hosted MCP), agent key routes, webhook agent routes, device 
 
 ### Hosted MCP tools (same names and arguments as the engine's)
 
-`find_sessions(query, limit=20)`, `send_message(request_id, text, session_id, files?, notify?)`, `message_receipt(request_id)` and `check_inbox(wait_secs ≤ 600)` are the engine's names and arguments. `read_messages`, `find_rooms`, `find_tasks`, `read_task`, `update_task` and `use_browser` stay hosted-only,
+`find_sessions(query, limit=20)`, `send_message(request_id, text, session_id, reply_to?, files?, notify?)`, `message_receipt(request_id)` and `check_inbox(wait_secs ≤ 600)` are the engine's names and arguments. `read_messages`, `find_rooms`, `find_tasks`, `read_task`, `update_task` and `use_browser` stay hosted-only,
 because they are workspace-shaped. Changes:
 - `find_sessions` and `send_message(session_id=...)` now run through the bridge's network membership instead of
   the Mac socket. The arguments do not change.
@@ -360,7 +362,7 @@ Run on two real Macs with two accounts, A (Lightbulb workspace) and B (free, no 
 3. A taps Allow on the phone. Within 10 seconds the message appears in the session labelled "Your Friday" ("Friday via A" on a teammate's Mac), the
    Mac notification is withdrawn, and the phone item reads "Answered".
 4. A taps Decline on the web on a second message. Receipt `refused`; nothing delivered.
-5. Always allow on the phone for Friday. The next Friday message goes straight in.
+5. Always allow on the phone for Friday. The next Friday message goes straight in. Send two Friday messages to one session, then answer them in turn with `send_message(reply_to=<that message's requestId>)`: each reply reaches its own run, not the other.
 6. Answering the Mac dialog first, then tapping the stale phone item: the late decision is dropped.
 7. Muse (or Claude app) connected by OAuth sends to Mac 1's Codex session; label "Muse via A". The reply is read
    by `check_inbox` and `unread` appears on the next tool result. Receipts move `queued`/`stored`, `delivered`, `read`.

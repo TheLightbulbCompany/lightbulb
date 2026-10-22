@@ -497,7 +497,7 @@ Engine-identical tools (same names, same arguments, same errors; the hosted serv
 find_sessions(query: string = "", limit: int = 20)
     -> sessions[]: { session_id, person, person_verified, computer, agent, cwd, repo, branch,
                      status: busy|idle|gone, doing, tier, can_send, needs_owner_ok }
-send_message(request_id: uuid, text: string, session_id: string, files?: [], notify?: bool)
+send_message(request_id: uuid, text: string, session_id: string, reply_to?: string, files?: [], notify?: bool)
     -> { request_id, state, tier: push|next_step|pull, note }
 check_inbox(wait_secs: int = 0, max 600)
     -> messages[]: { id, from, label, text, sent_at } ; returns on first unread or at the deadline

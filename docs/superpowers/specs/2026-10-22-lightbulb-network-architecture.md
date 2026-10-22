@@ -177,10 +177,15 @@ grant. "Anyone with the link" viewing is a bridge feature over such a grant.
   `hold.answer`, `policy.get/set`, `ui.claim`, `share.grant`, `stream.*`, `reload`. **C** adds none; the bridge
   uses the engine as a crate.
 - MCP (engine and hosted, same names and argument names; each side refuses what it does not serve with
-  `unsupported`): `find_sessions(query, limit=20)`, `send_message(request_id, text, session_id, files?,
-  notify?)` — the hosted MCP additionally accepts `room_id | person_id | agent_id` for workspace rooms and
-  refuses `files`/`notify`; `message_receipt(request_id)`; `check_inbox(wait_secs ≤ 600)`. `read_messages`,
+  `unsupported`): `find_sessions(query, limit=20)`, `send_message(request_id, text, session_id, reply_to?,
+  files?, notify?)` — the hosted MCP additionally accepts `room_id | person_id | agent_id` for workspace rooms
+  and refuses `files`/`notify`; `message_receipt(request_id)`; `check_inbox(wait_secs ≤ 600)`. `read_messages`,
   `find_rooms` and the task tools stay hosted-only.
+- **Threads** (Codex review of #4295, round 2): every delivered frame shows its `requestId`. `reply_to` names
+  the `requestId` the agent is answering; the daemon sets the envelope's `thread` to that message's thread.
+  Without `reply_to`, the thread is the most recent inbound message from the target session (best effort),
+  else a new thread. The bridge routes replies by `thread`, so two Friday messages answered in turn each reach
+  their own run; the frame header tells the agent to pass `reply_to` when it answers a specific message.
 - Session record (both MCPs): `{session_id, person, person_verified, computer, agent, cwd, repo, branch,
   status: busy|idle|gone, doing, tier, can_send, needs_owner_ok}`.
 - Plan A's schema is the final shape of its tables: `messages` carries `kind`, `thread`, `hops`, `origin`;

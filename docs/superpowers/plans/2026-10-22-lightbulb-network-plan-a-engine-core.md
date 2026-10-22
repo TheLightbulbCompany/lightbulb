@@ -26,7 +26,7 @@
 - Receipt states, exactly seven: `queued`, `stored`, `delivered`, `read`, `held`, `refused`, `expired`.
 - Mail for a session that is not live waits 24 h, then becomes `expired`. A person's `listen` mailbox never expires.
 - Labels: a message from the same person's agent is framed `Your <Agent>`; a frame marker inside a body is neutralised (defanged) before framing.
-- Engine MCP tool names and arguments are the hosted MCP's: `find_sessions(query, limit=20)`, `send_message(request_id, text, session_id, files?, notify?)` (`files` and `notify` are accepted but refused `unsupported` in Plan A), `message_receipt(request_id)`, plus the new `check_inbox(wait_secs ≤ 600)`.
+- Engine MCP tool names and arguments are the hosted MCP's: `find_sessions(query, limit=20)`, `send_message(request_id, text, session_id, reply_to?, files?, notify?)` (`files` and `notify` are accepted but refused `unsupported` in Plan A), `message_receipt(request_id)`, plus the new `check_inbox(wait_secs ≤ 600)`.
 - Ponytail at every step; `/simplify` after every task before review.
 
 ## Review Focus
@@ -89,7 +89,7 @@
 
 **Interfaces:**
 - Consumes: `Store`.
-- Produces: `sessions::Key` (`"<member_key_short>/<provider>:<conversation>"`), `sessions::Session { key, provider, conversation, pid, birth_micros, cwd, title, doing, status: Live|Idle|Gone, tier: Push|Turn|Pull }`.
+- Produces: `sessions::Key` (`"<member_key_short>/<provider>:<conversation>"`), `sessions::Session { key, provider, conversation, pid, birth_micros, cwd, title, doing, status: Live|Idle|Gone, tier: Push|NextStep|Pull }`.
 - Produces: `sessions::scan_claude(home: &Path) -> Vec<Session>` reading `~/.claude/sessions/<pid>.json` (passive discovery, as the monorepo's `claude.rs` does today), `doing::title_and_todo(session) -> (Option<String>, Option<String>)` from the agent's own transcript title and current todo item.
 - Produces: IPC ops `register {session}`, `sessions {}` → `[Session]`, `end {key}`.
 
@@ -115,7 +115,8 @@
 
 **Interfaces:**
 - Consumes: `Store`, `sessions`.
-- Produces: `mail::send(store, from: &Key, to: &Key, text: &str, request_id: &str, now) -> Result<Receipt>`; `mail::Receipt { request_id, state: Queued|Stored|Delivered|Read|Held|Refused|Expired, reason: Option<String>, where_: Option<String> }`; `mail::take(store, to: &Key, now) -> Vec<Message>` (marks `delivered`); `mail::mark_read(store, message_id)`; `mail::expire(store, now)`.
+- Produces: `mail::send(store, from: &Key, to: &Key, text: &str, request_id: &str, reply_to: Option<&str>, now) -> Result<Receipt>`; `mail::Receipt { request_id, state: Queued|Stored|Delivered|Read|Held|Refused|Expired, reason: Option<String>, where_: Option<String> }`; `mail::take(store, to: &Key, now) -> Vec<Message>` (marks `delivered`); `mail::mark_read(store, message_id)`; `mail::expire(store, now)`.
+- `mail::send` sets `thread` per the Threads rule: `reply_to` names the `requestId` being answered and the new message takes that message's thread; without it, the thread of the most recent inbound message from the target session, else a new thread.
 - Produces: constants `LOOP_LIMIT: u32 = 12`, `LOOP_WINDOW_S: u64 = 600`, `HOLD_S: u64 = 86_400` (offline mail and outbox), `HELD_S: u64 = 604_800` (a held message waits for the person).
 - Produces: idempotency: the same `request_id` with the same `to` and `text` returns the existing receipt; a different `to` or `text` is refused with reason `request_id_reused`.
 
@@ -127,6 +128,7 @@
 #[test] fn mail_for_a_gone_session_expires_after_24h() { /* send to a key with no live session; expire(now+86_401) -> Expired */ }
 #[test] fn resumed_session_gets_the_mail_that_waited() { /* session Gone at send, Live again within 24h; take() returns it */ }
 #[test] fn same_request_id_returns_same_receipt_and_mismatch_is_refused() {}
+#[test] fn reply_sets_thread_from_the_message_it_answers() { /* reply_to=X sets thread to X's thread; no reply_to -> thread of the latest inbound from the target, else a new thread */ }
 ```
 
 - [ ] **Step 2:** `cargo test mail` — FAIL.
@@ -143,6 +145,7 @@
 **Interfaces:**
 - Consumes: nothing.
 - Produces: `frame::peer(from: &Session, same_person: bool, text: &str) -> String` producing, for the same person, `[Lightbulb teammate contribution from Your <Agent> {"requestId":…}]\n<text>` and otherwise `[Lightbulb teammate contribution from <Person>'s <Agent> {…}]\n<text>` (the exact header shapes the monorepo's `local_sessions.py` and the `lightbulb-session-sharing` skill already define; copy those strings from there, not from memory).
+- The frame header JSON carries `requestId`; one sentence follows the header: `Reply with send_message(reply_to="<requestId>") to answer this message.`
 - Produces: `frame::defang(text: &str) -> String`: any line that starts with `[Lightbulb ` or `[Sent from Lightbulb` has a zero-width space inserted after `[`; a line equal to the owner marker is handled the same way.
 
 - [ ] **Step 1: Write the failing tests**
@@ -188,7 +191,7 @@
 
 **Interfaces:**
 - Consumes: everything above.
-- Produces: an `rmcp` stdio server named `lightbulb` exposing `find_sessions`, `send_message`, `message_receipt`, `check_inbox(wait_secs ≤ 600)` with the hosted MCP's argument names (`send_message` targets `session_id` only; `files`/`notify` refused `unsupported`); every tool result ends with the unread note `N unread message(s) for this session; they arrive at your next step.` when N > 0 (pull tier) — for push-tier sessions the note is omitted.
+- Produces: an `rmcp` stdio server named `lightbulb` exposing `find_sessions`, `send_message(request_id, text, session_id, reply_to?, files?, notify?)`, `message_receipt`, `check_inbox(wait_secs ≤ 600)` with the hosted MCP's argument names (`send_message` targets `session_id` only; `files`/`notify` refused `unsupported`); every tool result ends with the unread note `N unread message(s) for this session; they arrive at your next step.` when N > 0 (pull tier) — for push-tier sessions the note is omitted.
 - Produces: `source::resolve(parent: &Process, meta: &Value) -> Result<Key>`: Claude/Cursor/Grok by the parent process's registered session; Codex by `meta.threadId` matching a registered thread under that app-server process; `Err(Ambiguous)` when more than one live session matches, `Err(Unidentified)` when none. A tool call with no resolvable source is refused (the model never names its own source).
 
 - [ ] **Step 1: Write the failing tests**
@@ -211,7 +214,7 @@
 
 **Interfaces:**
 - Consumes: `mail`, `frame`, `sessions`.
-- Produces: `agents::claude::push(session, framed_text) -> Result<()>`, `agents::codex::push(session, framed_text) -> Result<()>`; `Session.tier` is `Push` for both when their channel is reachable, else `Turn`.
+- Produces: `agents::claude::push(session, framed_text) -> Result<()>`, `agents::codex::push(session, framed_text) -> Result<()>`; `Session.tier` is `Push` for both when their channel is reachable, else `NextStep`.
 
 - [ ] **Step 1: Write the failing tests**
 

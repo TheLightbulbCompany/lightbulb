@@ -116,7 +116,7 @@ class ClerkOAuthVerifier(TokenVerifier):
                 expires_at=int(expiration),
                 resource=RESOURCE,
                 subject=subject,
-                claims={"org_id": org_id, "iss": settings.CLERK_ISSUER},
+                claims={"org_id": org_id, "iss": settings.CLERK_ISSUER, **await _registered_client(client_id)},
             )
         except (httpx.HTTPError, ValueError, KeyError, TypeError, RuntimeError):
             logger.warning("Lightbulb MCP OAuth verification failed")
@@ -488,10 +488,32 @@ _CLIENTS = {
 }
 
 
-def client_identity(client_id: str) -> tuple[str, str]:
-    """(slug, display name) for the OAuth client that holds the grant."""
+_REGISTERED_NAMES: dict[str, str] = {}
+
+
+async def _registered_client(client_id: str) -> dict:
+    """A dynamically registered client's own name ("Cursor"), as a token claim. Its client id is
+    an opaque string; a metadata-document client's id is its URL and needs no lookup."""
+    if client_id.startswith(("https://", "http://")):
+        return {}
+    if client_id not in _REGISTERED_NAMES:
+        name = await clerk_admin.oauth_application_name(client_id)
+        if name is None:
+            return {}  # not cached: Clerk may answer next time
+        _REGISTERED_NAMES[client_id] = name
+    return {"clientName": _REGISTERED_NAMES[client_id]}
+
+
+def client_identity(client_id: str, name: str | None = None) -> tuple[str, str]:
+    """(slug, display name) for the OAuth client that holds the grant. A registered client is
+    named by what it registered as; an opaque id is never shown."""
     if client_id in _CLIENTS:
         return _CLIENTS[client_id]
+    if name:
+        slug = "-".join("".join(c if c.isalnum() else " " for c in name.lower()).split()) or "app"
+        return slug, name
+    if not client_id.startswith(("https://", "http://")):
+        return "app", "An app"
     host = urlsplit(client_id).hostname or client_id
     return host, host
 
@@ -500,7 +522,7 @@ def _sender(token) -> tuple[str, str]:
     """(slug, name) of what authors a send: the agent a key names, else the OAuth client."""
     if agent := (getattr(token, "claims", None) or {}).get("agentKey"):
         return f"agent-{agent['keyId']}", agent["name"]
-    return client_identity(token.client_id)
+    return client_identity(token.client_id, (getattr(token, "claims", None) or {}).get("clientName"))
 
 
 def _sent_key(auth: AuthContext, request_id: uuid.UUID) -> tuple[str, str]:

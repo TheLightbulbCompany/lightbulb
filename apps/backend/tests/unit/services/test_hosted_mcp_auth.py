@@ -516,3 +516,25 @@ async def test_use_browser_moves_a_session_its_caller_may_control(monkeypatch):
     )
     with pytest.raises(ToolError, match="LOCAL_SESSION_FORBIDDEN"):
         await hosted_mcp.use_browser("cloud", sid)
+
+
+def test_a_dynamically_registered_client_is_named_by_its_registration_never_its_opaque_id():
+    # Prod e2e 2026-10-21: Cursor registered itself (client id "4BqxUPBmdW6cyWca") and the
+    # message read "4BqxUPBmdW6cyWca via Isol8 Admin".
+    assert hosted_mcp.client_identity("4BqxUPBmdW6cyWca", "Cursor") == ("cursor", "Cursor")
+    assert hosted_mcp.client_identity("4BqxUPBmdW6cyWca", "Grok Bot") == ("grok-bot", "Grok Bot")
+    assert hosted_mcp.client_identity("4BqxUPBmdW6cyWca") == ("app", "An app")
+    token = SimpleNamespace(client_id="4BqxUPBmdW6cyWca", claims={"clientName": "Cursor"})
+    assert hosted_mcp._sender(token) == ("cursor", "Cursor")
+
+
+@pytest.mark.asyncio
+async def test_a_registered_clients_name_is_looked_up_once_and_a_url_client_never(monkeypatch):
+    hosted_mcp._REGISTERED_NAMES.clear()
+    lookup = AsyncMock(side_effect=[None, "Cursor"])
+    monkeypatch.setattr(hosted_mcp.clerk_admin, "oauth_application_name", lookup)
+    assert await hosted_mcp._registered_client("https://claude.ai/oauth/claude-code-client-metadata") == {}
+    assert await hosted_mcp._registered_client("abc") == {}  # Clerk unreachable: not cached
+    assert await hosted_mcp._registered_client("abc") == {"clientName": "Cursor"}
+    assert await hosted_mcp._registered_client("abc") == {"clientName": "Cursor"}
+    assert lookup.await_count == 2

@@ -5,7 +5,7 @@ order: 18
 section: "Reference"
 ---
 
-**`lightbulb` is a link, `~/.local/bin/lightbulb`, to the binary inside the signed Lightbulb.app.** It runs on macOS only. The command has no flags of its own.
+**`lightbulb` is a link, `~/.local/bin/lightbulb`, to the binary inside the signed Lightbulb.app.** It runs on macOS only. The command has no flags of its own. To install it, see the [Quickstart](/docs/agent-network-quickstart).
 
 ## Commands
 

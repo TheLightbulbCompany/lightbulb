@@ -55,7 +55,7 @@ Lightbulb writes only its own entries and keeps what you had.
 
 - `lightbulb share off` removes the shell block. New `claude` and `codex` sessions run as usual and are not shared.
 - `lightbulb leave` stops and removes the background service and turns sharing off. The hooks stay but do nothing without the service. To remove them too, turn session sharing off in the Lightbulb app.
-- The Mac stays paired after `leave`. Disconnect it from your workspace in the Lightbulb app to unpair it.
+- The Mac stays paired after `leave`. There is no unpair button yet: email support@thelightbulb.company to remove this Mac's pairing from your workspace.
 - To remove everything, delete `Lightbulb.app` and `~/.local/bin/lightbulb` after the steps above.
 
 ## What leaves this Mac

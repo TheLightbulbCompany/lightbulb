@@ -361,7 +361,10 @@ jobs:
         echo "$SHA" | grep -Eqx '[0-9a-f]{64}'
         TAP="$RUNNER_TEMP/homebrew-tap"
         rm -rf "$TAP"
-        git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/TheLightbulbCompany/homebrew-tap.git" "$TAP"
+        # The token goes in a per-command header, never into .git/config: this Mac is persistent
+        # and runs pull-request code, which must not find a write token to the public tap.
+        AUTH="http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64)"
+        git -c "$AUTH" clone --depth 1 https://github.com/TheLightbulbCompany/homebrew-tap.git "$TAP"
         mkdir -p "$TAP/Casks"
         sed -e "s/^  version \".*\"/  version \"${VERSION}\"/" -e "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" \
           packaging/homebrew-tap/Casks/lightbulb.rb > "$TAP/Casks/lightbulb.rb"
@@ -369,7 +372,7 @@ jobs:
         git add Casks/lightbulb.rb
         git diff --cached --quiet && { echo "Tap already at $VERSION"; exit 0; }
         git -c user.name="lightbulb-release" -c user.email="hello@thelightbulb.company" commit -m "lightbulb ${VERSION}"
-        for i in 1 2 3; do git push origin HEAD && exit 0; [ "$i" = 3 ] && exit 1; sleep $((i * 10)); done
+        for i in 1 2 3; do git -c "$AUTH" push origin HEAD && exit 0; [ "$i" = 3 ] && exit 1; sleep $((i * 10)); done
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -378,4 +381,5 @@ jobs:
       if: always()
       run: |-
         rm -f "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+        rm -rf "$RUNNER_TEMP/homebrew-tap"
         security delete-keychain "$RUNNER_TEMP/lightbulb-build.keychain-db" || true

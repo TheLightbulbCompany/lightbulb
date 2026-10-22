@@ -538,8 +538,3 @@ async def test_a_registered_clients_name_is_looked_up_once_and_a_url_client_neve
     assert await hosted_mcp._registered_client("abc") == {"clientName": "Cursor"}
     assert await hosted_mcp._registered_client("abc") == {"clientName": "Cursor"}
     assert lookup.await_count == 2
-
-
-def test_a_registered_name_with_a_long_profile_name_stays_a_valid_author_label():
-    label = f"{'C' * 40} via {'P' * 220}"[:256]
-    assert len(label) == 256

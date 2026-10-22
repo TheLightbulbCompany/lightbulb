@@ -73,11 +73,11 @@
 
 | Kind | Valid signer |
 |---|---|
-| `admit` | founder or admin, or the active member who signed the live `link` entry named by the body's `ticket_id` — the inviter, so "any member invites" holds with no admin online (Codex, #4297) (genesis: the founder itself; Task 13: a computer of the same `person_id`, body carrying a proof whose `sub` is that `person_id`) |
+| `admit` | founder or admin, or the active **computer** member who signed the live `link` entry named by the body's `ticket_id` — the inviter, so "any member invites" holds with no admin online (Codex, #4297); a cloud/bridge member never admits through a link. A `link` with `once: true` admits exactly once: the first `admit` naming it in replay order is applied and ends the link; every later or concurrent `admit` naming it is dropped — consumption is replicated by the roster, never by a local table (Codex round 2) (genesis: the founder itself; Task 13: a computer of the same `person_id`, body carrying a proof whose `sub` is that `person_id`) |
 | `merge`, `proof` | the member itself, with a proof valid for it (Task 13) |
 | `remove` | founder or admin; also a member removing its own person's bridge member (`unlink`) |
 | `admin`, `transfer` | founder (architecture §4: "only the founder and founder-marked admins remove"; "the founder may transfer") |
-| `link` | any active member (the inviter); a `link` is live until its `expires_at` or until any `remove` entry descends from it, so a removal ends every link the removed member could have seen |
+| `link` | any active **computer** member (the inviter; a cloud/bridge member's `link` is dropped — a bridge only relays decisions and same-person joins); a `link` is live until its `expires_at`, until any `remove` entry descends from it (a removal ends every link the removed member could have seen), or, when `once`, until its first applied `admit` |
 | `meta` | founder or admin |
 | `leave` | the leaving member |
 
@@ -97,6 +97,8 @@
 #[test] fn founder_leave_promotes_oldest_admin() {}
 #[test] fn person_id_is_sticky_and_merge_rewrites_it_once() {}
 #[test] fn inviter_may_admit_through_its_own_link_only() { /* member X writes link L; X's admit {ticket_id: L} applied; X's admit {ticket_id: founder's link} dropped; after founder removes Y, L (an ancestor of the remove) is no longer live and a later admit via L is dropped */ }
+#[test] fn once_link_admits_exactly_one_even_on_a_fork() { /* once-link L; fork: X admits C via L | founder admits D via L -> exactly one of C, D present, the same one in every arrival order; L absent from links */ }
+#[test] fn bridge_member_cannot_link_or_admit() { /* a kind=cloud member's link entry dropped; its admit via a computer member's link dropped */ }
 ```
 - [ ] **Step 2:** FAIL. **Step 3:** Implement (pure; no network). **Step 4:** PASS. **Step 5:** Commit `feat: hash-linked signed roster with removal-wins replay`.
 
@@ -105,7 +107,7 @@
 **Files:** Create `src/ticket.rs`. Modify `src/daemon/net_ops.rs`, `src/daemon/mod.rs` (`run()` writes a genesis only when the `roster` table is EMPTY; `TeamState` is built from the replayed roster and the Plan A `team` row rewritten from it), `src/cli.rs`, `src/main.rs`. Test: `src/ticket.rs`, `tests/team_cli.rs`.
 
 **Interfaces:**
-- Produces: `ticket::Ticket` (Global Constraints shape), `ticket::mint(id, roster, mode, once, now) -> (Ticket, Option<String>)` (members = the inviter first, then founder and admins, ≤6), `ticket::encode`, `ticket::decode(s) -> Result<Ticket>` (bare ticket, `/j/#…` link, full join line, or `lightbulb://join/…`), `ticket::verify(&Ticket, roster) -> Result<()>`, `ticket::line(&Ticket) -> String`.
+- Produces: `ticket::Ticket` (Global Constraints shape), `ticket::mint(id, roster, mode, once, now) -> (Ticket, Option<String>)` (members = the inviter first, then founder and admins, ≤6), `ticket::encode`, `ticket::decode(s) -> Result<Ticket>` (bare ticket, `/j/#…` link, full join line, or `lightbulb://join/…`), `ticket::verify(&Ticket, roster) -> Result<()>` (sig by `inviter`; `team_id`; the link `roster.links[ticket_id]` exists and its `signer == inviter` and `mode == ticket.mode` — a member who learned another member's link secret cannot re-sign it as its own or as `open` (Codex round 2)), `ticket::line(&Ticket) -> String`.
 - Ops: `team.get {}` → `{team_id, name, members: [Member], heads}`; `team.invite {mode: "reusable"|"new"|"once"|"open"}` → `{ticket, line, app_link, expires_at}`: `reusable` reprints this member's live link, minting one (`new`) when it has none; `new` and `once` are open to any member and each write a `link` entry this member signs (`once`: `secret` = the sha256, `once: true`), because the inviter may sign the `admit` it leads to (Task 2); `open` needs founder or admin (`not_admin`); `team.admin {member, founder}` (`not_founder`); `team.remove {member}` → `{line}` (`remove`, which ends every live `link`, then a new `link`; `not_admin`); `team.leave {}` writes `leave`, deletes roster and `team_link`, writes a fresh genesis (the solo network again); `founder_must_transfer` when the founder has no admin. Telling peers about the `leave` lands in Task 8.
 - CLI: `invite [--new|--once|--open]`, `team`, `admin <name> [--founder]`, `remove <name>`, `leave` (asks `Leave "<team>"? Your computer stops connecting. Mail already stored here stays. [y/N]`, ends `Left "<team>". This computer is on its own network again.`; the service keeps running, architecture §4, which overrides the design's row 10 and engine flow 7). Other texts exactly as engine spec flows 3 and 7.
 
@@ -113,6 +115,7 @@
 ```rust
 #[test] fn ticket_round_trips_through_every_link_form() { for s in [bare, line, web, app] { assert_eq!(decode(s).unwrap(), t); } }
 #[test] fn ticket_mode_is_covered_by_the_signature() { /* mode edited to "open" -> verify Err */ }
+#[test] fn ticket_must_match_its_links_issuer_and_mode() { /* member Y validly signs a ticket reusing X's ticket_id+secret with mode open -> verify Err; same with inviter: Y -> Err */ }
 #[test] fn invite_reprints_the_same_link_until_new() { /* `invite --new` prints "Old link stopped working. New link: " */ }
 #[test] fn non_admin_remove_prints_exact_text() { /* "Only the founder and admins can remove computers. Ask <founder>." */ }
 #[test] fn restart_keeps_the_team_and_writes_no_second_genesis() { /* start, stop, start: team_id unchanged; roster has 1 entry */ }
@@ -163,7 +166,7 @@
 
 **Interfaces:**
 - Ops: `team.join {ticket, name, kind: "computer"}` → `{state: "admitted"|"waiting"|"refused", reason?, team, online}`: dials ticket members in order on `JOIN_ALPN`, sends a signed `JoinRequest` (`secret_proof` = hex sha256(secret ‖ candidate)), waits ≤ 600 s for `JoinDecision` then `Roster`, verifies every entry itself, replaces its roster and `TeamState`; `team.join_requests {}` → `{requests: [{id: "J<n>", candidate, name, computer, created_at}]}`; `team.admit {id, verdict}` (person-only; `not_open` on a second answer).
-- Admitting side, in order: `candidate` == the connection's peer key (else drop); request `sig`; ticket `sig` by an active member, `team_id`, not expired on this clock (`expired_ticket`); secret matches a live `link` entry (`roster.links[ticket_id]`: plaintext, or its sha256 when `once`, and then unused here) (`bad_ticket`); `kind: "cloud"` → refused `unsupported` until Task 13 (needs a `kind=bridge` proof); name and prefix free (`name_taken`, `key_collision`, the same checks replay enforces); this computer is founder, admin, or the signer of that `link` entry (`not_admin`, candidate tries the next member); at most 20 open requests per team, 5 per inviter, 1 per candidate. `mode: open` admits at once; `ask` queues `dialog::Queue::show` with `"<name> wants to join your network"`, buttons `Decline`, `Allow`. Admit writes `admit {person_id: candidate, kind, role: "member"}`; a used `--once` hash is deleted.
+- Admitting side, in order: `candidate` == the connection's peer key (else drop); request `sig`; `ticket::verify` (sig by `inviter`, `team_id`, link exists with `signer == inviter` and `mode == ticket.mode`), not expired on this clock (`expired_ticket`); secret matches that live `link` (plaintext, or its sha256 when `once`) (`bad_ticket`) — the roster is the truth for `once` consumption (Task 2 applies only the first `admit`; a losing concurrent admission is dropped on replay and that candidate must join again), the local `team_link.used_by` is only a hint to refuse early; `kind: "cloud"` → refused `unsupported` until Task 13 (needs a `kind=bridge` proof); name and prefix free (`name_taken`, `key_collision`, the same checks replay enforces); this computer is a computer member that is founder, admin, or the signer of that `link` entry (`not_admin`, candidate tries the next member; a bridge never admits); at most 20 open requests per team, 5 per inviter, 1 per candidate. `mode: open` admits at once; `ask` queues `dialog::Queue::show` with `"<name> wants to join your network"`, buttons `Decline`, `Allow`. Admit writes `admit {person_id: candidate, kind, role: "member"}`; a used `--once` hash is deleted.
 - CLI: `join '<link>' [--name <n>]` (default `$USER`) prints `Waiting for an admin to allow this...` then `Connected as <name> (<computer>). Team "<team>": <n> computers online.`; name taken → `The name "<n>" is already used in this network. Try: lightbulb-network join '<link>' --name <n>-2`; nobody reachable → engine spec flow 2.6 text. `approve J<n>` / `decline J<n>`.
 
 - [ ] **Step 1: Failing tests**
@@ -172,7 +175,8 @@
 #[tokio::test] async fn decline_refuses_and_writes_nothing() {}
 #[tokio::test] async fn open_ticket_admits_without_prompt() {}
 #[tokio::test] async fn forged_open_mode_is_refused() {}
-#[tokio::test] async fn once_ticket_admits_once() {}
+#[tokio::test] async fn once_ticket_admits_once() { /* second candidate with the same once ticket, at a DIFFERENT listed member while the inviter is offline -> refused once the roster converges */ }
+#[tokio::test] async fn forged_ticket_from_another_members_link_is_refused() { /* Y re-signs X's ticket_id+secret as open -> bad_ticket, nothing admitted */ }
 #[tokio::test] async fn candidate_field_must_be_the_peer_key() {}
 #[tokio::test] async fn sixth_open_request_for_one_inviter_is_refused() {}
 #[tokio::test] async fn link_replaced_on_removal_no_longer_joins() {}
@@ -308,7 +312,7 @@
 - `proof::Proof { iss, kid, iat, exp, sub, name, computer, kind: "computer"|"bridge", workspace: Option<String> }` (compact JWS, header `{alg:"EdDSA", kid}`, ≤ 4 KB, 24 h); `proof::verify(token, member_key, now) -> Result<Proof>` offline against `ISSUER_KEYS: [(&str, [u8; 32]); 2]` (the owner supplies them) plus, under `#[cfg(debug_assertions)]`, one compiled-in test issuer key; `computer` must equal `member_key`.
 - `signin` (these routes are the contract Plan C implements): `POST {issuer}/device/start {member_key, computer}` → `{device_code, user_code, verification_uri_complete, interval}`; `open <uri>`; poll `POST {issuer}/device/token {device_code}` → `{proof}`; then `identity.proof {proof}` writes `merge` (when `person_id` is still the own key) or `proof` (a renewal) to the roster. Proofs live only in the roster; expiry clears the verified badge, never `person_id`.
 - Same-person: a `join_request` whose proof `sub` is an existing `person_id` is forwarded to an online computer of that person, which asks `Your new Mac <name> wants to join. Allow?` and signs `admit {person_id: sub, proof}`; no such computer online → `JoinDecision {verdict: "decline", reason: "your_computer_offline"}`, candidate prints `Open your other computer, then run the same command again.`
-- Cloud: a `kind: "cloud"` candidate is admitted (founder or admin, on Allow) only with a valid `kind=bridge` proof, recorded in its `admit`.
+- Cloud: a `kind: "cloud"` candidate is admitted (founder or admin, on Allow) only with a valid `kind=bridge` proof, recorded in its `admit`. A cloud member never mints a link, never admits, and `team.invite` from one is refused `not_admin` (Task 2 drops such entries on replay anyway; Codex round 2).
 - Labels read the roster: verified names drop ` (not verified)` and show `✓ <proof name>`; a session of a bridge-role member whose proof `sub` = X's `person_id` renders `<App> via <X's name>` (`<App>` ∈ `Claude, ChatGPT, Muse, Grok Bot, Cursor, Codex, Friday`, else `App "<sanitised ≤32>"`). `team.unlink {}` (person-only) writes `remove` of this person's bridge member.
 
 - [ ] **Step 1: Failing tests**

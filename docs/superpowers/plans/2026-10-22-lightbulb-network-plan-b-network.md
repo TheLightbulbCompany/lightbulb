@@ -302,7 +302,7 @@
 ```
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat: unicast streams on share grants`.
 
-### Task 12 (deferrable: waits on the owner's relay spend): Relay fallback
+### Task 12: Relay fallback (owner ruling 2026-10-22: the relay is iroh's relay server run as one Fargate task on the EXISTING backend ECS cluster, at `relay.thelightbulb.company`; the engine side is this task, the CDK service is a Plan C item in the monorepo)
 
 **Files:** Create `src/relay.rs`. Modify `Cargo.toml` (`minisign-verify`), `src/net/mod.rs`, `src/cli.rs` (`relay [<url>]`), `src/ticket.rs` (fill `relay_hint`). Test: `tests/relay.rs` (iroh's own test relay server).
 

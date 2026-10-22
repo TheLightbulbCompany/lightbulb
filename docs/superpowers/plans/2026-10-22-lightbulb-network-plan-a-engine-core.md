@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A public `lightbulb-network` repo whose one binary runs a per-computer daemon, a session-bound MCP server, the agent hooks and the CLI, so that on one Mac every installed coding agent can find and message every other (checklist items 1, 5, 6, 7), with the monorepo's copies of the moved modules deleted.
+**Goal:** A public `lightbulb-network` repo whose one binary runs a per-computer daemon, a session-bound MCP server, the agent hooks and the CLI, so that on one Mac every installed coding agent can find and message every other (checklist items 1, 5, 6, 7). Plan A is engine-only: it changes nothing in the monorepo, and there is no intermediate app build (architecture 2026-10-22).
 
-**Architecture:** One Rust binary, `lightbulb-network`, with subcommands. The daemon owns state (SQLite) and a local Unix socket; `mcp`, `hook` and the CLI are thin clients of it. Delivery into agents is per provider: Claude Code push over its inbox socket, Codex over its app-server queue, Cursor and Grok at their next hook, anyone else by an unread note on every tool result plus `check_inbox`. No network layer yet (Plan B) and no bridge (Plan C): a session's address is `<agent>:<id>` on this computer.
+**Architecture:** One Rust binary, `lightbulb-network`, with subcommands. The daemon owns state (SQLite) and a local Unix socket; `mcp`, `hook` and the CLI are thin clients of it. Delivery into agents is per provider: Claude Code push over its inbox socket, Codex over its app-server queue, Cursor and Grok at their next hook, anyone else by an unread note on every tool result plus `check_inbox`. No network layer yet (Plan B) and no bridge (Plan C): a session's address is `<member_key_short>/<provider>:<conversation>`, where on one computer the member key is this computer's.
 
 **Tech Stack:** Rust 2021 (stable), `tokio`, `rusqlite` (bundled), `rmcp` (official Rust MCP SDK, stdio), `serde_json`, `clap`. macOS first; nothing macOS-only in state, wire or crypto.
 
@@ -21,12 +21,13 @@
 - Public repo `TheLightbulbCompany/lightbulb-network`; licence Apache-2.0; gitleaks, Codex review and CI on every PR; no secret, internal hostname, account id or customer datum in the repo, ever.
 - Clean-room: reading reason-network for clarification is allowed; copying, porting or transcribing it is not.
 - The engine knows nothing of workspaces, plans, rooms, Paperclip agents or billing.
-- Binary and crate: `lightbulb-network`. State folder: `~/.lightbulb/network/` (0700); socket `~/.lightbulb/network/sock` (0600); database `state.db`.
+- `request_id` has one format on both MCPs and the IPC: an opaque string matching `[A-Za-z0-9._-]{1,128}` chosen by the sender (UUID or ULID both fit). Message ids stay ULIDs.
+- Binary and crate: `lightbulb-network`, canonical path `~/.lightbulb/network/bin/lightbulb-network`. State folder: `~/.lightbulb/network/` (0700); socket `~/.lightbulb/network/sock` (0600); database `state.db`.
 - Loop limit: a sender may deliver at most 12 messages to one session in any 600 s window; the 13th is refused with reason `loop`.
-- Receipt states, exactly: `stored`, `delivered`, `read`, `held`, `refused`, `expired`.
+- Receipt states, exactly seven: `queued`, `stored`, `delivered`, `read`, `held`, `refused`, `expired`.
 - Mail for a session that is not live waits 24 h, then becomes `expired`. A person's `listen` mailbox never expires.
 - Labels: a message from the same person's agent is framed `Your <Agent>`; a frame marker inside a body is neutralised (defanged) before framing.
-- Engine MCP tool names and arguments are the hosted MCP's: `find_sessions(query, limit)`, `send_message(session_id, text, request_id)`, `message_receipt(request_id)`, plus the new `check_inbox(wait_secs)`.
+- Engine MCP tool names and arguments are the hosted MCP's: `find_sessions(query, limit=20)`, `send_message(request_id, text, session_id, reply_to?, files?, notify?)` (`files` and `notify` are accepted but refused `unsupported` in Plan A), `message_receipt(request_id)`, plus the new `check_inbox(wait_secs ≤ 600)`.
 - Ponytail at every step; `/simplify` after every task before review.
 
 ## Review Focus
@@ -49,7 +50,7 @@
 - Produces: a repo where `cargo build` yields `target/debug/lightbulb-network` printing its version, and CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and gitleaks on every PR.
 
 - [ ] **Step 1:** Create the repo with `gh repo create TheLightbulbCompany/lightbulb-network --private --description "Your coding agents, talking to each other and to the agents of people you invite. Peer to peer, end-to-end encrypted."` — **private first**; the owner flips it public after reviewing the first PR (history stays). Default branch `main`; squash merges; delete branches on merge.
-- [ ] **Step 2:** Write `Cargo.toml` (package `lightbulb-network`, edition 2021, `[[bin]] name = "lightbulb-network"`), `src/main.rs` with `clap` and one subcommand, `version`, and the drafts above adapted (README: the one-line pitch, install line `curl -fsSL https://thelightbulb.company/network/install | sh` marked "coming with Plan C", the three parts diagram from the spec).
+- [ ] **Step 2:** Write `Cargo.toml` (package `lightbulb-network`, edition 2021, `[[bin]] name = "lightbulb-network"`), `src/main.rs` with `clap` and one subcommand, `version`, and the drafts above adapted (README: the one-line pitch, install line `curl -fsSL https://thelightbulb.company/install | sh` marked "coming with the cutover release", the three parts diagram from the spec).
 - [ ] **Step 3:** `ci.yml`: ubuntu + macos matrix; steps as in Interfaces; gitleaks via `gitleaks/gitleaks-action@v2` with the config.
 - [ ] **Step 4:** Verify: `cargo build && ./target/debug/lightbulb-network version` prints `lightbulb-network 0.1.0`.
 - [ ] **Step 5:** Commit on branch `init`, open the PR, wait for CI green, merge. Branch protection on `main`: PRs only, CI required.
@@ -63,6 +64,7 @@
 **Interfaces:**
 - Produces: `paths::state_dir() -> PathBuf` (`~/.lightbulb/network`, created 0700), `paths::socket() -> PathBuf`.
 - Produces: `store::Store::open(path) -> Result<Store>` over SQLite with tables `sessions`, `messages`, `receipts`, `mailbox` (schema in Step 3).
+- Produces: IPC ops in Plan A (snake_case fields, closed error codes): `ping`, `status`, `subscribe` (the connection then also receives `{event, …}` frames), `register` (hook and MCP paths only), `sessions`, `end`, `send`, `receipt`, `inbox`, `hook`, `tool`, `shutdown`.
 - Produces: `ipc::Request { id: u64, op: String, #[serde(flatten)] body: Value }` and `ipc::Response { id: u64, ok: bool, #[serde(flatten)] body: Value }`, newline-delimited JSON over the socket; a connection may also receive pushed `{ "event": "deliver", … }` frames.
 - Produces: `daemon::ensure_running() -> Result<()>`: connects to the socket, else spawns `lightbulb-network daemon` detached and waits (≤5 s) for it. A lock file `daemon.lock` (flock) guarantees one daemon.
 
@@ -75,7 +77,7 @@
 ```
 
 - [ ] **Step 2:** Run `cargo test` — expected: compile failures for missing modules.
-- [ ] **Step 3:** Implement `store.rs` with this schema: `sessions(key TEXT PK, provider, conversation, pid, birth_micros, cwd, title, status, seen_at)`; `messages(id TEXT PK, request_id TEXT UNIQUE, from_key, to_key, body, sent_at)`; `receipts(request_id TEXT PK, state TEXT, reason TEXT, updated_at)`; `mailbox(id INTEGER PK, to_key, message_id, queued_at, expires_at)`. Implement `ipc.rs` (tokio `UnixListener`, one task per connection) and `daemon/mod.rs` (`run()`, lock, `ensure_running()`).
+- [ ] **Step 3:** Implement `store.rs` with this schema: `sessions(key TEXT PK, provider, conversation, pid, birth_micros, cwd, title, status, seen_at)`; `messages(id TEXT PK, request_id TEXT UNIQUE, from_key, to_key, kind TEXT DEFAULT 'message', thread TEXT, hops INTEGER DEFAULT 0, origin TEXT, body, sent_at)` and `PRAGMA user_version = 1` (Plan B only adds tables); `receipts(request_id TEXT PK, state TEXT, reason TEXT, updated_at)`; `mailbox(id INTEGER PK, to_key, message_id, queued_at, expires_at)`. On its first start the daemon creates `identity.key` (Ed25519, 0600) AND the solo team record, named after the OS user (`team(id, name, founder_key, created_at)`, a stub row in Plan A), so session ids can carry the key's 12-character short form and `invite` works at once (the real network comes in Plan B). Implement `ipc.rs` (tokio `UnixListener`, one task per connection) and `daemon/mod.rs` (`run()`, lock, `ensure_running()`).
 - [ ] **Step 4:** `cargo test` — PASS.
 - [ ] **Step 5:** Commit: `feat: daemon, local socket, sqlite state`.
 
@@ -88,7 +90,7 @@
 
 **Interfaces:**
 - Consumes: `Store`.
-- Produces: `sessions::Key` (`"<provider>:<conversation>"`), `sessions::Session { key, provider, conversation, pid, birth_micros, cwd, title, doing, status: Live|Idle|Gone, tier: Push|Turn|Pull }`.
+- Produces: `sessions::Key` (`"<member_key_short>/<provider>:<conversation>"`), `sessions::Session { key, provider, conversation, pid, birth_micros, cwd, title, doing, status: Live|Idle|Gone, tier: Push|NextStep|Pull }`.
 - Produces: `sessions::scan_claude(home: &Path) -> Vec<Session>` reading `~/.claude/sessions/<pid>.json` (passive discovery, as the monorepo's `claude.rs` does today), `doing::title_and_todo(session) -> (Option<String>, Option<String>)` from the agent's own transcript title and current todo item.
 - Produces: IPC ops `register {session}`, `sessions {}` → `[Session]`, `end {key}`.
 
@@ -96,7 +98,7 @@
 
 ```rust
 #[test] fn scan_claude_lists_live_sessions_with_cwd_and_status() { /* fixture dir with two <pid>.json (one live pid = our own, one dead pid) -> one Session, status from file, Gone for dead pid */ }
-#[test] fn key_is_provider_colon_conversation() { assert_eq!(Key::new("codex","01a1").0, "codex:01a1"); }
+#[test] fn key_is_member_slash_provider_colon_conversation() { assert_eq!(Key::new("k3f9ab7cd2ef","codex","01a1").0, "k3f9ab7cd2ef/codex:01a1"); } // Key::new takes the 12-character lowercase base32 member prefix
 #[test] fn doing_reads_title_and_current_todo() { /* fixture transcript with ai-title and a TodoWrite in_progress item */ }
 ```
 
@@ -114,8 +116,10 @@
 
 **Interfaces:**
 - Consumes: `Store`, `sessions`.
-- Produces: `mail::send(store, from: &Key, to: &Key, text: &str, request_id: &str, now) -> Result<Receipt>`; `mail::Receipt { request_id, state: Stored|Delivered|Read|Held|Refused|Expired, reason: Option<String>, where_: Option<String> }`; `mail::take(store, to: &Key, now) -> Vec<Message>` (marks `delivered`); `mail::mark_read(store, message_id)`; `mail::expire(store, now)`.
-- Produces: constants `LOOP_LIMIT: u32 = 12`, `LOOP_WINDOW_S: u64 = 600`, `HOLD_S: u64 = 86_400`.
+- Produces: the `inbox` reply lists each message as `{id, request_id, thread, from, text, sent_at}`.
+- Produces: `mail::send(store, from: &Key, to: &Key, text: &str, request_id: &str, reply_to: Option<&str>, now) -> Result<Receipt>`; `mail::Receipt { request_id, state: Queued|Stored|Delivered|Read|Held|Refused|Expired, reason: Option<String>, where_: Option<String> }`; `mail::take(store, to: &Key, now) -> Vec<Message>` (marks `delivered`); `mail::mark_read(store, message_id)`; `mail::expire(store, now)`.
+- `mail::send` sets `thread` per the Threads rule: `reply_to` names the `requestId` being answered and the new message takes that message's thread; without it, the thread of the most recent inbound message from the target session, else a new thread.
+- Produces: constants `LOOP_LIMIT: u32 = 12`, `LOOP_WINDOW_S: u64 = 600`, `HOLD_S: u64 = 86_400` (offline mail and outbox), `HELD_S: u64 = 604_800` (a held message waits for the person).
 - Produces: idempotency: the same `request_id` with the same `to` and `text` returns the existing receipt; a different `to` or `text` is refused with reason `request_id_reused`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -126,6 +130,7 @@
 #[test] fn mail_for_a_gone_session_expires_after_24h() { /* send to a key with no live session; expire(now+86_401) -> Expired */ }
 #[test] fn resumed_session_gets_the_mail_that_waited() { /* session Gone at send, Live again within 24h; take() returns it */ }
 #[test] fn same_request_id_returns_same_receipt_and_mismatch_is_refused() {}
+#[test] fn reply_sets_thread_from_the_message_it_answers() { /* reply_to=X sets thread to X's thread; no reply_to -> thread of the latest inbound from the target, else a new thread */ }
 ```
 
 - [ ] **Step 2:** `cargo test mail` — FAIL.
@@ -142,6 +147,7 @@
 **Interfaces:**
 - Consumes: nothing.
 - Produces: `frame::peer(from: &Session, same_person: bool, text: &str) -> String` producing, for the same person, `[Lightbulb teammate contribution from Your <Agent> {"requestId":…}]\n<text>` and otherwise `[Lightbulb teammate contribution from <Person>'s <Agent> {…}]\n<text>` (the exact header shapes the monorepo's `local_sessions.py` and the `lightbulb-session-sharing` skill already define; copy those strings from there, not from memory).
+- The frame header JSON carries `requestId`; one sentence follows the header: `Reply with send_message(reply_to="<requestId>") to answer this message.`
 - Produces: `frame::defang(text: &str) -> String`: any line that starts with `[Lightbulb ` or `[Sent from Lightbulb` has a zero-width space inserted after `[`; a line equal to the owner marker is handled the same way.
 
 - [ ] **Step 1: Write the failing tests**
@@ -165,7 +171,7 @@
 **Interfaces:**
 - Consumes: `sessions`, `mail`, `frame`.
 - Produces: `caller::identify(agent: &str) -> Result<Process>`: walks the hook process's ancestors and returns the nearest whose executable is the named agent (`claude`, `codex`/its app-server, Cursor's `cursor-agent/versions/<v>/node`, `grok`); any other ancestor → `Err(NotThatAgent)`. A hook run from a shell inside a different agent registers nothing.
-- Produces: `hook::run(agent, event, stdin) -> stdout`: registers/updates the session (SessionStart, prompt, tool, stop), ends it (SessionEnd), and for `takes_mail` events drains the session's mail and prints it in the agent's shape (Claude/Codex: `hookSpecificOutput.additionalContext` / Stop `decision:block`; Cursor and Grok as in the moved module).
+- Produces: `hook::run(agent, event, stdin) -> stdout`: registers/updates the session (SessionStart, prompt, tool, stop), ends it (SessionEnd), and for `takes_mail` events drains the session's mail and prints it in the agent's shape (Claude/Codex: `hookSpecificOutput.additionalContext` / Stop `decision:block`; Cursor and Grok as in the vendors' own documentation, per the ruling above).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -187,7 +193,7 @@
 
 **Interfaces:**
 - Consumes: everything above.
-- Produces: an `rmcp` stdio server named `lightbulb` exposing `find_sessions`, `send_message`, `message_receipt`, `check_inbox` with the hosted MCP's argument names; every tool result ends with the unread note `N unread message(s) for this session; they arrive at your next step.` when N > 0 (pull tier) — for push-tier sessions the note is omitted.
+- Produces: an `rmcp` stdio server named `lightbulb` exposing `find_sessions`, `send_message(request_id, text, session_id, reply_to?, files?, notify?)`, `message_receipt`, `check_inbox(wait_secs ≤ 600)` returning each message as `{id, request_id, thread, from, text, sent_at}`, with the hosted MCP's argument names (`send_message` targets `session_id` only; `files`/`notify` refused `unsupported`); every tool result ends with the unread note `N unread message(s) for this session; they arrive at your next step.` when N > 0 (pull tier) — for push-tier sessions the note is omitted.
 - Produces: `source::resolve(parent: &Process, meta: &Value) -> Result<Key>`: Claude/Cursor/Grok by the parent process's registered session; Codex by `meta.threadId` matching a registered thread under that app-server process; `Err(Ambiguous)` when more than one live session matches, `Err(Unidentified)` when none. A tool call with no resolvable source is refused (the model never names its own source).
 
 - [ ] **Step 1: Write the failing tests**
@@ -204,13 +210,13 @@
 ### Task 8: Push delivery: Claude Code and Codex
 
 **Files:**
-- Create: `src/agents/claude.rs`, `src/agents/codex.rs` (the delivery halves of the monorepo's `claude.rs` and `codex.rs`, moved: Claude's inbox socket post, Codex's `codex queue --thread` / app-server turn start; the hub-registration halves are not moved)
+- Create: `src/agents/claude.rs`, `src/agents/codex.rs` (the delivery halves of the monorepo's `claude.rs` and `codex.rs`, copied and adapted; the monorepo's copies stay until the cutover: Claude's inbox socket post, Codex's `codex queue --thread` / app-server turn start; the hub-registration halves are not moved)
 - Modify: `src/daemon/mod.rs` (a delivery loop: on `send` to a push-tier session, try push; on success mark `delivered`, on failure leave in mailbox for the next hook)
 - Test: `tests/push_claude.rs` (a fake inbox socket that records frames), `tests/push_codex.rs` (a fake `codex` on PATH that records argv)
 
 **Interfaces:**
 - Consumes: `mail`, `frame`, `sessions`.
-- Produces: `agents::claude::push(session, framed_text) -> Result<()>`, `agents::codex::push(session, framed_text) -> Result<()>`; `Session.tier` is `Push` for both when their channel is reachable, else `Turn`.
+- Produces: `agents::claude::push(session, framed_text) -> Result<()>`, `agents::codex::push(session, framed_text) -> Result<()>`; `Session.tier` is `Push` for both when their channel is reachable, else `NextStep`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -220,12 +226,12 @@
 #[tokio::test] async fn a_failed_push_leaves_the_mail_for_the_next_hook() {}
 ```
 
-- [ ] **Step 2:** FAIL. **Step 3:** Move and adapt. **Step 4:** PASS. **Step 5:** Commit: `feat: push delivery into claude code and codex`.
+- [ ] **Step 2:** FAIL. **Step 3:** Copy and adapt. **Step 4:** PASS. **Step 5:** Commit: `feat: push delivery into claude code and codex`.
 
 ### Task 9: `setup`: wiring the installed agents
 
 **Files:**
-- Create: `src/setup/mod.rs`, `src/setup/claude.rs`, `src/setup/codex.rs` (the monorepo's `enrollment.rs`, moved), `src/setup/cursor.rs`, `src/setup/grok.rs` (written fresh from the vendors' config file formats — `~/.cursor/hooks.json`, `~/.cursor/mcp.json`, `~/.cursor/cli-config.json`, `~/.grok/hooks/lightbulb.json`, `~/.grok/config.toml` — not from `hooked.rs`, per the Task 6 ruling). Each file edited is backed up once as `<file>.lightbulb-backup`; only entries we wrote are removed on `--remove`.
+- Create: `src/setup/mod.rs`, `src/setup/claude.rs`, `src/setup/codex.rs` (adapted from the monorepo's `enrollment.rs`, which stays until the cutover), `src/setup/cursor.rs`, `src/setup/grok.rs` (written fresh from the vendors' config file formats — `~/.cursor/hooks.json`, `~/.cursor/mcp.json`, `~/.cursor/cli-config.json`, `~/.grok/hooks/lightbulb.json`, `~/.grok/config.toml` — not from `hooked.rs`, per the Task 6 ruling). Each file edited is backed up once as `<file>.lightbulb-backup`; only entries we wrote are removed on `--remove`.
 - Modify: `src/main.rs` (`setup [--remove]`)
 - Test: `src/setup/*.rs` with temp homes
 
@@ -233,7 +239,7 @@
 - Produces: `setup::run(home: &Path, executable: &Path, remove: bool) -> Report` listing each agent found, what was written, and notes. Cursor's `~/.cursor/cli-config.json` gets `permissions.allow` entries for the four tools (the desktop fix landing in the monorepo today defines the exact strings; use the same). Grok's `~/.grok/config.toml` gets `[mcp_servers.lightbulb]` and `permission.allow = ["MCPTool(lightbulb__*)"]`.
 
 - [ ] **Step 1: Write the failing tests** — one per agent: `setup_writes_<agent>_hooks_and_mcp_and_backs_up_once`, `remove_takes_only_our_entries`.
-- [ ] **Step 2:** FAIL. **Step 3:** Move and adapt. **Step 4:** PASS. **Step 5:** Commit: `feat: setup for claude code, codex, cursor, grok`.
+- [ ] **Step 2:** FAIL. **Step 3:** Copy and adapt. **Step 4:** PASS. **Step 5:** Commit: `feat: setup for claude code, codex, cursor, grok`.
 
 ### Task 10: The CLI
 
@@ -242,7 +248,8 @@
 - Test: `tests/cli.rs` (spawns the binary against a temp state dir)
 
 **Interfaces:**
-- Produces: `who` (sessions on this computer: agent, folder, status, doing, tier), `send <key|name> <text> [--from <key>]` (from a person's terminal when no session identity is on the invocation; group targets `*` allowed only then), `listen --as <name>` (a person's mailbox; never expires), `receipt <request_id>`, `setup [--remove]`, `daemon`, `doctor` (daemon reachable? each agent wired?), `leave` (stop daemon, remove the launchd job; state kept).
+- Produces: `who` (sessions on this computer: agent, folder, status, doing, tier), `send <key|name> <text> [--from <key>]` (from a person's terminal when no session identity is on the invocation; group targets `*` allowed only then), `listen --as <name>` (a person's mailbox; never expires), `receipt <request_id>`, `setup [--remove]`, `daemon`, `doctor` (daemon reachable? each agent wired?), `leave` (leaves the network; in Plan A there is no network yet, so it prints `This computer is on no network yet.`), `daemon --uninstall` (the local stop: stop the daemon, remove the launchd job, keep state).
+- Produces: the `lightbulb` command alias: `daemon --install` and `setup` install `~/.local/bin/lightbulb` → the canonical path `~/.lightbulb/network/bin/lightbulb-network`; subcommands the engine does not own (`claude`, `codex`, `share`, `continue`) are forwarded to the Lightbulb app's binary if present, else print "needs the Lightbulb app: thelightbulb.company/download".
 - Produces: the launchd job `company.thelightbulb.network` installed by `daemon --install` (plist under `~/Library/LaunchAgents`), used by `setup`.
 
 - [ ] **Step 1:** Tests: `who_lists_a_registered_session`, `send_from_terminal_to_a_session_prints_stored`, `send_with_group_target_from_a_session_is_refused`, `listen_receives_a_message_addressed_to_the_name`.
@@ -261,19 +268,6 @@
 - [ ] **Step 6:** Review Focus 1: run `lightbulb-network hook grok session-start` by hand from a Claude session's shell; `who` shows no new Grok session.
 - [ ] **Step 7:** Record results in `docs/acceptance-plan-a.md`; tag `v0.1.0`; the release workflow attaches `lightbulb-network-macos-arm64.tar.gz`.
 - [ ] **Step 8:** Commit, PR, merge.
-
-### Task 12: The monorepo uses the engine and loses its copies
-
-**Files (monorepo, one PR):**
-- Modify: `apps/desktop/src-tauri/Cargo.toml` (dependency `lightbulb-network = { git = "https://github.com/TheLightbulbCompany/lightbulb-network", tag = "v0.1.0" }`)
-- Delete: `apps/desktop/src-tauri/src/local_sessions/{claude,codex,hooked,enrollment,lifecycle,native_mcp,native_tools,plugin}.rs` and their tests, replacing each use with the engine's `agents::*`, `hook`, `mcp`, `setup`, `sessions` modules. `transport.rs` keeps its hub role until Plan C but calls the engine for session discovery and delivery.
-- Modify: `apps/desktop/scripts/vendor-sidecars.sh` only if the app must ship the engine binary separately (it should not: the app links the crate and exposes `lightbulb-desktop session-mcp`/`local-session-hook` as thin calls into it, so existing hook and MCP entries keep working until Plan C's `setup` rewrites them).
-- Test: the existing desktop Rust tests for the moved modules are deleted with them; `cargo test` in `src-tauri` passes; a prod desktop build is dispatched and the e2e matrix of 2026-10-22 passes on it.
-
-- [ ] **Step 1:** Add the dependency; make `cargo build` pass by re-exporting the engine modules under the old paths (`pub use lightbulb_network::agents::claude as claude;` …).
-- [ ] **Step 2:** Delete each moved file and fix the callers; `cargo test` in `src-tauri` — PASS.
-- [ ] **Step 3:** `/simplify`, then PR to `main`; Codex review; merge; dispatch `desktop-build.yml`; run the 2026-10-22 e2e matrix on the new build (own ring, hold → Allow/Decline via the hub, labels).
-- [ ] **Step 4:** Commit message: `desktop: use lightbulb-network for local sessions; delete the moved modules`.
 
 ## Self-review notes
 

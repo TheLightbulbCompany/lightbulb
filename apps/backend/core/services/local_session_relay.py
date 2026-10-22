@@ -329,7 +329,7 @@ async def _sender_label(command: dict, owner: str | None, target_human: str | No
 
         name = await _name(member_id)
         via = command["viaClient"] if name == member_id else f"{command['viaClient']} via {name}"
-        return {"kind": "human", "handle": None, "displayName": via}
+        return {"kind": "human", "handle": None, "displayName": via[:256]}
     member = None
     if room_id := command.get("roomId"):
         room_members = await store.list_members(room_id)

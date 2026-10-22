@@ -714,7 +714,8 @@ async def send_message(
         author_override={
             "kind": "system",
             "id": f"mcp:{auth.user_id}:{slug}",
-            "displayName": f"{client} via {await messaging.human_display_name(auth.user_id)}",
+            # A message author name holds 256 characters; a long profile name must not refuse the send.
+            "displayName": f"{client} via {await messaging.human_display_name(auth.user_id)}"[:256],
         },
     )
     return {

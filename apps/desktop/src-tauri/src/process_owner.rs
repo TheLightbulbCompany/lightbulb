@@ -382,30 +382,24 @@ mod macos {
             let socket = dir.path().join("single.sock");
             let restart_path = dir.path().join("restart.lock");
             let listener = UnixListener::bind(&socket).unwrap();
-            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let updater = lock_file(&restart_path).unwrap();
+            // The callback is the only observer: it checks the lock while forward() is blocked
+            // on this stream, which is exactly when the code promises it is held. The old test
+            // hopped to the main thread first; when that hop starved past forward()'s callback
+            // wait (busy CI Mac), forward() gave up, dropped the lock, and the check saw it free.
             let server = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut payload = Vec::new();
                 stream.read_to_end(&mut payload).unwrap();
-                entered_tx.send(()).unwrap();
-                release_rx.recv_timeout(CALLBACK_WAIT).unwrap();
+                let held = !try_lock(&updater).unwrap();
+                (held, updater)
             });
-            let client_socket = socket.clone();
-            let client_lock = restart_path.clone();
-            let client = std::thread::spawn(move || {
-                let restart = lock_file(&client_lock).unwrap();
-                assert!(try_lock(&restart).unwrap());
-                let result = forward(&client_socket);
-                unlock(&restart).unwrap();
-                result
-            });
-            entered_rx.recv_timeout(CALLBACK_WAIT).unwrap();
-            let updater = lock_file(&restart_path).unwrap();
-            assert!(!try_lock(&updater).unwrap());
-            release_tx.send(()).unwrap();
-            client.join().unwrap().unwrap();
-            server.join().unwrap();
+            let restart = lock_file(&restart_path).unwrap();
+            assert!(try_lock(&restart).unwrap());
+            forward(&socket).unwrap();
+            unlock(&restart).unwrap();
+            let (held, updater) = server.join().unwrap();
+            assert!(held, "the restart lock was free while the callback was still running");
             assert!(try_lock(&updater).unwrap());
         }
 

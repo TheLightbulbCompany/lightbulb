@@ -76,7 +76,7 @@
 ```
 
 - [ ] **Step 2:** Run `cargo test` — expected: compile failures for missing modules.
-- [ ] **Step 3:** Implement `store.rs` with this schema: `sessions(key TEXT PK, provider, conversation, pid, birth_micros, cwd, title, status, seen_at)`; `messages(id TEXT PK, request_id TEXT UNIQUE, from_key, to_key, kind TEXT DEFAULT 'message', thread TEXT, hops INTEGER DEFAULT 0, origin TEXT, body, sent_at)` and `PRAGMA user_version = 1` (Plan B only adds tables); `receipts(request_id TEXT PK, state TEXT, reason TEXT, updated_at)`; `mailbox(id INTEGER PK, to_key, message_id, queued_at, expires_at)`. Generate this computer's Ed25519 key as `identity.key` (0600) on first run, so session ids can carry its short form (the network itself comes in Plan B). Implement `ipc.rs` (tokio `UnixListener`, one task per connection) and `daemon/mod.rs` (`run()`, lock, `ensure_running()`).
+- [ ] **Step 3:** Implement `store.rs` with this schema: `sessions(key TEXT PK, provider, conversation, pid, birth_micros, cwd, title, status, seen_at)`; `messages(id TEXT PK, request_id TEXT UNIQUE, from_key, to_key, kind TEXT DEFAULT 'message', thread TEXT, hops INTEGER DEFAULT 0, origin TEXT, body, sent_at)` and `PRAGMA user_version = 1` (Plan B only adds tables); `receipts(request_id TEXT PK, state TEXT, reason TEXT, updated_at)`; `mailbox(id INTEGER PK, to_key, message_id, queued_at, expires_at)`. On its first start the daemon creates `identity.key` (Ed25519, 0600) AND the solo team record, named after the OS user (`team(id, name, founder_key, created_at)`, a stub row in Plan A), so session ids can carry the key's 12-character short form and `invite` works at once (the real network comes in Plan B). Implement `ipc.rs` (tokio `UnixListener`, one task per connection) and `daemon/mod.rs` (`run()`, lock, `ensure_running()`).
 - [ ] **Step 4:** `cargo test` — PASS.
 - [ ] **Step 5:** Commit: `feat: daemon, local socket, sqlite state`.
 
@@ -97,7 +97,7 @@
 
 ```rust
 #[test] fn scan_claude_lists_live_sessions_with_cwd_and_status() { /* fixture dir with two <pid>.json (one live pid = our own, one dead pid) -> one Session, status from file, Gone for dead pid */ }
-#[test] fn key_is_member_slash_provider_colon_conversation() { assert_eq!(Key::new("k3f9a","codex","01a1").0, "k3f9a/codex:01a1"); }
+#[test] fn key_is_member_slash_provider_colon_conversation() { assert_eq!(Key::new("k3f9ab7cd2ef","codex","01a1").0, "k3f9ab7cd2ef/codex:01a1"); } // Key::new takes the 12-character lowercase base32 member prefix
 #[test] fn doing_reads_title_and_current_todo() { /* fixture transcript with ai-title and a TodoWrite in_progress item */ }
 ```
 
@@ -243,7 +243,7 @@
 - Test: `tests/cli.rs` (spawns the binary against a temp state dir)
 
 **Interfaces:**
-- Produces: `who` (sessions on this computer: agent, folder, status, doing, tier), `send <key|name> <text> [--from <key>]` (from a person's terminal when no session identity is on the invocation; group targets `*` allowed only then), `listen --as <name>` (a person's mailbox; never expires), `receipt <request_id>`, `setup [--remove]`, `daemon`, `doctor` (daemon reachable? each agent wired?), `leave` (stop daemon, remove the launchd job; state kept).
+- Produces: `who` (sessions on this computer: agent, folder, status, doing, tier), `send <key|name> <text> [--from <key>]` (from a person's terminal when no session identity is on the invocation; group targets `*` allowed only then), `listen --as <name>` (a person's mailbox; never expires), `receipt <request_id>`, `setup [--remove]`, `daemon`, `doctor` (daemon reachable? each agent wired?), `leave` (leaves the network; in Plan A there is no network yet, so it prints `This computer is on no network yet.`), `daemon --uninstall` (the local stop: stop the daemon, remove the launchd job, keep state).
 - Produces: the `lightbulb` command alias: `daemon --install` and `setup` install `~/.local/bin/lightbulb` → the canonical path `~/.lightbulb/network/bin/lightbulb-network`; subcommands the engine does not own (`claude`, `codex`, `share`, `continue`) are forwarded to the Lightbulb app's binary if present, else print "needs the Lightbulb app: thelightbulb.company/download".
 - Produces: the launchd job `company.thelightbulb.network` installed by `daemon --install` (plist under `~/Library/LaunchAgents`), used by `setup`.
 

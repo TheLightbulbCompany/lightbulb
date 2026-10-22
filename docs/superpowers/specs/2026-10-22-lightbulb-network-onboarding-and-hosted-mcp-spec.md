@@ -102,7 +102,8 @@ Your computer is "Anas-MacBook" and your name is "ana" (not verified).
 Next: lightbulb invite
 ```
 
-No browser opens. No sign-in. Ana has a network of one computer. Running the installer again upgrades and
+No browser opens. No sign-in. The first start of the background service already created Ana's solo network, named
+after her OS user, so `lightbulb invite` works at once; there is no `init` step. Running the installer again upgrades and
 changes nothing else. The installer never uses sudo.
 
 **A3. Ana opens two agents.** She starts `claude` and `codex` in two terminals. Claude Code prints
@@ -224,9 +225,9 @@ sign-in leaves them exactly as before. `person_id` is sticky: signing in later c
 Allow, labels or limits. Our sign-in server is never required to join or send; a proof verifies
 offline once issued (design, Identity).
 
-**A8. Leave.** `lightbulb leave` leaves the team; the install and the service stay, and the computer is a network
-of one. Output: `Left ana's team. Your network of one remains.` `lightbulb leave --everything` also stops the
-service, removes the agent wiring and wipes the state (backups are kept). `lightbulb unlink` removes a linked
+**A8. Leave.** `lightbulb leave` leaves the network and recreates the empty solo one; the install and the service
+stay. Output: `Left ana's team. Your network of one remains.` To stop or remove the background service, run
+`lightbulb daemon --uninstall` (stops the daemon, removes the launchd job, keeps state). `lightbulb leave --everything` also removes the agent wiring and wipes the state (backups are kept). `lightbulb unlink` removes a linked
 workspace.
 
 ### Flow B. Phone and cloud assistants (the hosted MCP)
@@ -351,7 +352,7 @@ watches and says nothing except "keep going". The clock runs from step 1 to step
 3. Tester starts `claude` in one tab and `codex` in another. Expected: Claude prints the "On the Lightbulb
    network" line.
 4. Tester asks Claude: "Find my Codex session and ask it to say hello." Expected: Codex acts on it.
-5. Tester runs `lightbulb invite`. Expected: the join line is on the clipboard.
+5. Tester runs `lightbulb invite` (no `init`; the solo network exists since the daemon's first start). Expected: the join line is on the clipboard.
 6. Tester sends the line to the teammate in any chat app (the moderator checks it is the exact line).
 7. Teammate pastes it into their Claude Code. Expected: the agent shows the two commands and asks; teammate
    approves; the tester's computer asks "ben wants to join your network" and the tester Allows; "Connected"
@@ -504,7 +505,7 @@ message_receipt(request_id: uuid)
     -> { request_id, state: queued|stored|delivered|read|held|refused|expired, reason?, updated_at }
 ```
 
-`session_id` is `<member_key_short>/<provider>:<conversation>`; cloud sessions are `<bridge_key_short>/<agent>`.
+`session_id` is `<member_key_short>/<provider>:<conversation>` (`member_key_short` is 12 lowercase base32 characters); cloud sessions are `<bridge_key_short>/<agent>`.
 The hosted MCP additionally accepts `room_id | person_id | agent_id` for workspace rooms (a hosted-room
 concept, never an engine target) and refuses `files` and `notify` with `unsupported`.
 
@@ -542,8 +543,8 @@ install line and `lightbulb join`, and knows nothing about the team. The agent s
 looser.
 
 **CLI** (engine): `join`, `invite [--new|--once|--open]`, `who`, `send`, `listen --as`, `receipt`, `approve`,
-`decline`, `policy`, `signin`, `setup`, `daemon`, `doctor`, `leave` (leaves the team; `--everything` also
-stops the service and wipes state), `unlink`. `signin` creates no org, trial or provisioning. Full list in the
+`decline`, `policy`, `signin`, `setup`, `daemon`, `doctor`, `leave` (leaves the network; `--everything` also
+wipes state), `daemon --uninstall` (stops the service), `unlink`. `signin` creates no org, trial or provisioning. Full list in the
 CLI reference.
 
 ## Acceptance checklist

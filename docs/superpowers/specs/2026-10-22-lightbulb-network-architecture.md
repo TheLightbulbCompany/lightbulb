@@ -79,10 +79,17 @@ depends on nothing of ours. The engine has exactly one Lightbulb-specific defaul
   removal is by that person (`lightbulb unlink`) or an admin.
 - **Networks per computer**: one. A computer is on one network at a time; the bridge joins the network the
   person's computers are on; proofs attach to the person, not the network.
+- **A fresh install has a network from the start** (Codex review of #4295): the daemon's first start with no
+  team creates one, founded by this computer and named after the OS user, so `invite` works at once. `join`
+  replaces that empty solo network with the one joined. `leave` leaves the network (and recreates the solo
+  one); stopping or removing the service is `daemon --uninstall`, a different command.
 
 ## 5. Addresses, sessions, labels
 
-- **Session id**: `<member_key_short>/<provider>:<conversation>` (keys are stable; names render). Cloud sessions
+- **Session id**: `<member_key_short>/<provider>:<conversation>` (keys are stable; names render).
+  `member_key_short` is the first 12 characters of the member key's lowercase base32 encoding (60 bits); the
+  engine resolves it by exact match, and admission refuses a key whose 12-character prefix equals an existing
+  member's, so a prefix is always unambiguous (Codex review of #4295). Cloud sessions
   are `<bridge_member_key_short>/<agent>` (`…/friday`, `…/muse-via-aden`, `…/grok-bot`), so two people's
   Fridays never collide. **Member** addresses (a key) are used only for decisions and streams; **name**
   addresses (`<member>/<name>`) are a person's `listen --as` mailboxes.
@@ -140,12 +147,13 @@ depends on nothing of ours. The engine has exactly one Lightbulb-specific defaul
 - **Answering a hold**: on the person's computer (app, CLI `approve`/`decline`, or the OS dialog) or by a
   `decision` frame from the person's `bridge`-role member (web and phone Allow; owner-approved improvement).
   The holding computer accepts a relayed decision only if all hold: the signer's roster entry carries a
-  `kind=bridge` proof whose `sub` is the hold target's `person_id`; the held message's sender is **not** one of
-  that bridge's own sessions (no self-approval); scope is `once` or `person` (policy switches are never
-  relayed); the nonce is fresh and `hold_id` + `holding_member` match. The computer applies it and signs the
-  decision record with its own key. First answer wins; a second gets `not_open`. **Residual trust, stated**: a
-  compromised backend can allow a held message from a third party into a linked person's session once;
-  a phone-held person key (Secure Enclave) that co-signs decisions is Plan D hardening.
+  `kind=bridge` proof whose `sub` is the hold target's `person_id`; scope is `once` or `person` (policy
+  switches are never relayed); the nonce is fresh and `hold_id` + `holding_member` match. The held message
+  may itself come from that bridge's sessions — a held Friday message allowed from the phone is the main case
+  (Codex review of #4295, 2026-10-22). The computer applies it and signs the decision record with its own
+  key. First answer wins; a second gets `not_open`. **Residual trust, stated**: a compromised backend can
+  send a message as the person's own cloud agent and allow it once, or allow a held third-party message
+  once; a phone-held person key (Secure Enclave) that co-signs decisions is Plan D hardening.
 - **Notifier claim**: the app holds `ui.claim` (20 s lease, 7 s heartbeat) while open; the daemon shows the OS
   dialog only when no claim is live. Both resolve the same hold; a duplicate surface in the race is tolerated.
 

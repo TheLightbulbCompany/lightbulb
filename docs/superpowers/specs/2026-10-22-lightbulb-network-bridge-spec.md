@@ -95,12 +95,12 @@ Rule: the bridge is the sender of record for Friday. The person is shown as the 
    frame: `{hold_id, holding_member, verdict, scope: once|person, nonce, decided_at}`.
 4. The bridge **sends that decision to the holding computer as an encrypted network frame**, addressed to
    that computer. The computer accepts it only if all hold: the bridge's roster entry carries a `kind=bridge`
-   proof whose `sub` is the hold target's `person_id`; the held message's sender is **not** one of that
-   bridge's own sessions (no self-approval); the scope is `once` or `person` (policy switches such as
+   proof whose `sub` is the hold target's `person_id`; the scope is `once` or `person` (policy switches such as
    `cloud_of` or `agents_send_without_asking` are never relayed); the nonce is fresh and `hold_id` +
    `holding_member` match. Then it applies it and signs the decision record with its own key, as if the person
-   had answered the local dialog. Residual trust, stated: a compromised backend can allow one held message
-   from a third party into a linked person's session; a phone-held person key that co-signs is Plan D.
+   had answered the local dialog. Residual trust, stated: the held message may come from the bridge's own sessions (a held Friday message allowed from the phone is the
+   main case), so a compromised backend can send as the person's own cloud agent and allow it once, or allow one
+   held third-party message once; a phone-held person key that co-signs is Plan D.
 5. First answer wins. If the local dialog was answered first, the bridge's late decision is dropped and the
    phone item resolves to "Answered on your Mac."
 
@@ -214,7 +214,7 @@ nothing else. A network member can remove it.
 - Stolen proof: a proof names one computer key and expires in 24 hours (refreshed in the background). A stolen
   proof without the key proves nothing.
 - Forged decision from the phone: the engine accepts a decision only under the acceptance rules in flow 2 (bridge
-  role and `sub` match, no self-approval, `once|person` scope only, fresh nonce, matching `hold_id` and
+  role and `sub` match, `once|person` scope only, fresh nonce, matching `hold_id` and
   `holding_member`), only once; first answer wins and a second gets `not_open`.
 - Loop between Friday and a session: the network caps agent-to-agent chains at 4 hops and 12 messages per 600 s
   per principal (the sending session, for cloud members); room turns keep their own cap of 2.

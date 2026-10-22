@@ -7,6 +7,8 @@ export interface DocPage {
   description: string;
   /** Sidebar position, 1-based. */
   order: number;
+  /** Optional sidebar group heading, printed where the group starts. */
+  section?: string;
   content: string;
 }
 

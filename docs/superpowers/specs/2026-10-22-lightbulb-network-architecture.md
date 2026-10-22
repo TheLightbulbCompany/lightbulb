@@ -114,7 +114,7 @@ depends on nothing of ours. The engine has exactly one Lightbulb-specific defaul
 | `envelope` | id (ulid), kind: `message|input|resume|pickup`, from (session), to (session or name), reply_to, thread (first id), hops, body, files[], sent_at | Plan A uses `message` only; `input|resume|pickup` are Plan D |
 | `ack` / `receipt` | id, state, reason | states in §7 |
 | `hold_notice` | hold_id, target_session, from (session), from_label_parts, preview?, created_at | computer → its person's bridge member only; `preview` (≤160 chars of the defanged body) only when `config.toml: preview_to_workspace = true` (owner question pending; default false) |
-| `decision` | hold_id, holding_member, verdict: `allow|decline`, scope: `once|person`, nonce, decided_at | signed by the sender; see §7 for who may send it |
+| `decision` | hold_id, holding_member, verdict: `allow|decline`, scope: `once|person|own_cloud`, nonce, decided_at | signed by the sender; see §7 for who may send it. `own_cloud` = "Always allow" for the person's own cloud member (sets `agents_send_without_asking`); it is accepted only when the held message came from the deciding bridge's own sessions (Codex review of #4295, round 3) |
 | `join_request` / `join_decision` | ticket_id, candidate key, name, proof?, verdict | admission (§4) |
 | `share_grant` | session, viewer member, input: bool, expires_at | person-signed; authorises `stream` for that viewer (§8) |
 | `stream` | grant_id, seq, bytes (≤64 KB) | QUIC flow control is the backpressure |
@@ -147,8 +147,13 @@ depends on nothing of ours. The engine has exactly one Lightbulb-specific defaul
 - **Answering a hold**: on the person's computer (app, CLI `approve`/`decline`, or the OS dialog) or by a
   `decision` frame from the person's `bridge`-role member (web and phone Allow; owner-approved improvement).
   The holding computer accepts a relayed decision only if all hold: the signer's roster entry carries a
-  `kind=bridge` proof whose `sub` is the hold target's `person_id`; scope is `once` or `person` (policy
-  switches are never relayed); the nonce is fresh and `hold_id` + `holding_member` match. The held message
+  `kind=bridge` proof whose `sub` is the hold target's `person_id`; scope is `once`, `person`, or `own_cloud`
+  (the last only for a hold whose sender is that bridge's own session: it writes
+  `agents_send_without_asking = true`; `cloud_of` entries for other people's agents are set only on the
+  computer); the nonce is fresh and `hold_id` + `holding_member` match.
+- **Every delivered or listed message carries its `request_id` and `thread`** — in the frame header, in
+  `check_inbox` results (engine and hosted) and in `inbox` IPC replies — so any caller can answer a specific
+  message with `reply_to` (Codex review of #4295, round 3). The held message
   may itself come from that bridge's sessions — a held Friday message allowed from the phone is the main case
   (Codex review of #4295, 2026-10-22). The computer applies it and signs the decision record with its own
   key. First answer wins; a second gets `not_open`. **Residual trust, stated**: a compromised backend can

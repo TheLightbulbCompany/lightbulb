@@ -269,12 +269,12 @@ passwords (the engine never sees one); any workspace, plan or billing data; anyt
 | `envelope` | id (ulid), kind: `message|input|resume|pickup`, from (session), to (session or name), reply_to, thread (first id), hops, body, files[], sent_at | Plan A uses `message` only |
 | `ack` / `receipt` | id, state, reason | the seven states |
 | `hold_notice` | hold_id, target_session, from (session), from_label_parts, preview?, created_at | computer to its person's bridge member only; `preview` (≤160 chars) only when `preview_to_workspace = true` |
-| `decision` | hold_id, holding_member, verdict: `allow|decline`, scope: `once|person`, nonce, decided_at | signed by the sender |
+| `decision` | hold_id, holding_member, verdict: `allow|decline`, scope: `once|person|own_cloud`, nonce, decided_at | signed by the sender |
 | `join_request` / `join_decision` | ticket_id, candidate key, name, proof?, verdict | admission |
 | `share_grant` | session, viewer member, input: bool, expires_at | person-signed; authorises `stream` for that viewer |
 | `stream` | grant_id, seq, bytes (≤64 KB) | QUIC flow control is the backpressure |
 
-- **Decision acceptance.** The holding computer accepts a relayed `decision` only if all hold: the signer's roster entry carries a `kind=bridge` proof whose `sub` is the hold target's `person_id`; the held message's sender is not one of that bridge's own sessions (no self-approval); scope is `once` or `person` (policy switches such as `cloud_of` or `agents_send_without_asking` are never relayed); the nonce is fresh and `hold_id` + `holding_member` match. The `bridge` role can relay decisions and same-person join requests and nothing else. Residual trust: a compromised backend can allow one held message from a third party into a linked person's session; a phone-held person key that co-signs is Plan D hardening.
+- **Decision acceptance.** The holding computer accepts a relayed `decision` only if all hold: the signer's roster entry carries a `kind=bridge` proof whose `sub` is the hold target's `person_id`; the held message's sender is not one of that bridge's own sessions (no self-approval); scope is `once`, `person` or `own_cloud` (`own_cloud` only when the held message's sender is that bridge's own session; `cloud_of` and other policy switches are never relayed); the nonce is fresh and `hold_id` + `holding_member` match. The `bridge` role can relay decisions and same-person join requests and nothing else. Residual trust: a compromised backend can allow one held message from a third party into a linked person's session; a phone-held person key that co-signs is Plan D hardening.
 - **Streams.** `stream.open` is accepted only from the same `person_id`, or from a member named in a person-signed `share_grant` for that session. The channel is unicast and end-to-end encrypted. The app owns the live-terminal feature; the engine carries the bytes; the bridge reads a stream only by an explicit share grant.
 - Limits: body 64 KB; at most 5 files, 128 KB each, 256 KB total, text only; sessions per presence 100.
 - Files: an agent may attach only files inside its own working folder (links resolved), never hidden files or
@@ -309,7 +309,7 @@ Bridge: a cloud computer is an engine instance that runs headless with `kind = c
 | `find_sessions` | `query` (optional text), `limit` (default 20) | Matches person, agent, repo, branch, title. Returns `session_id`, label, repo, status, doing, tier, computer. |
 | `send_message` | `session_id`, `text`, `request_id`; optional `reply_to` (the `requestId` shown in the delivered frame; sets the envelope `thread`, else `thread` is the most recent inbound message from that session, else new), `files` (paths), `notify` (bool) | Refuses `*`, `person/*`, `repo:` with `group_send_not_allowed`. `files` and `notify` are engine-only; the hosted MCP accepts but rejects with `unsupported`. |
 | `message_receipt` | `request_id` | Returns state, reason, where it waits. |
-| `check_inbox` | `wait_secs` (optional, max 600) | Returns unread messages or waits for the first. |
+| `check_inbox` | `wait_secs` (optional, max 600) | Returns unread messages or waits for the first. Each message is `{id, request_id, thread, from, text, sent_at}`; the `inbox` IPC reply carries the same fields. |
 
 Every result ends with the unread note when N > 0 and the session is not push tier: `N unread message(s) for this session; they arrive at your next step.`
 

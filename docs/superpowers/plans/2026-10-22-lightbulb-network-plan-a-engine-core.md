@@ -115,6 +115,7 @@
 
 **Interfaces:**
 - Consumes: `Store`, `sessions`.
+- Produces: the `inbox` reply lists each message as `{id, request_id, thread, from, text, sent_at}`.
 - Produces: `mail::send(store, from: &Key, to: &Key, text: &str, request_id: &str, reply_to: Option<&str>, now) -> Result<Receipt>`; `mail::Receipt { request_id, state: Queued|Stored|Delivered|Read|Held|Refused|Expired, reason: Option<String>, where_: Option<String> }`; `mail::take(store, to: &Key, now) -> Vec<Message>` (marks `delivered`); `mail::mark_read(store, message_id)`; `mail::expire(store, now)`.
 - `mail::send` sets `thread` per the Threads rule: `reply_to` names the `requestId` being answered and the new message takes that message's thread; without it, the thread of the most recent inbound message from the target session, else a new thread.
 - Produces: constants `LOOP_LIMIT: u32 = 12`, `LOOP_WINDOW_S: u64 = 600`, `HOLD_S: u64 = 86_400` (offline mail and outbox), `HELD_S: u64 = 604_800` (a held message waits for the person).
@@ -191,7 +192,7 @@
 
 **Interfaces:**
 - Consumes: everything above.
-- Produces: an `rmcp` stdio server named `lightbulb` exposing `find_sessions`, `send_message(request_id, text, session_id, reply_to?, files?, notify?)`, `message_receipt`, `check_inbox(wait_secs ≤ 600)` with the hosted MCP's argument names (`send_message` targets `session_id` only; `files`/`notify` refused `unsupported`); every tool result ends with the unread note `N unread message(s) for this session; they arrive at your next step.` when N > 0 (pull tier) — for push-tier sessions the note is omitted.
+- Produces: an `rmcp` stdio server named `lightbulb` exposing `find_sessions`, `send_message(request_id, text, session_id, reply_to?, files?, notify?)`, `message_receipt`, `check_inbox(wait_secs ≤ 600)` returning each message as `{id, request_id, thread, from, text, sent_at}`, with the hosted MCP's argument names (`send_message` targets `session_id` only; `files`/`notify` refused `unsupported`); every tool result ends with the unread note `N unread message(s) for this session; they arrive at your next step.` when N > 0 (pull tier) — for push-tier sessions the note is omitted.
 - Produces: `source::resolve(parent: &Process, meta: &Value) -> Result<Key>`: Claude/Cursor/Grok by the parent process's registered session; Codex by `meta.threadId` matching a registered thread under that app-server process; `Err(Ambiguous)` when more than one live session matches, `Err(Unidentified)` when none. A tool call with no resolvable source is refused (the model never names its own source).
 
 - [ ] **Step 1: Write the failing tests**

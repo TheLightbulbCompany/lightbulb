@@ -94,11 +94,10 @@ Rule: the bridge is the sender of record for Friday. The person is shown as the 
 2. The bridge writes an Activity item and sends a phone push: "Friday wants to message your Claude session."
 3. The person taps Allow, Decline or Always allow on the phone or web. The backend authenticates them with
    Clerk, checks that they own the holding computer's link, and calls `/bridge/decide` to build a `decision`
-   frame: `{hold_id, holding_member, verdict, scope: once|person, nonce, decided_at}`.
+   frame: `{hold_id, holding_member, verdict, scope: once|person|own_cloud, nonce, decided_at}`.
 4. The bridge **sends that decision to the holding computer as an encrypted network frame**, addressed to
    that computer. The computer accepts it only if all hold: the bridge's roster entry carries a `kind=bridge`
-   proof whose `sub` is the hold target's `person_id`; the scope is `once` or `person` (policy switches such as
-   `cloud_of` or `agents_send_without_asking` are never relayed); the nonce is fresh and `hold_id` +
+   proof whose `sub` is the hold target's `person_id`; the scope is `once`, `person` or `own_cloud` (`own_cloud`, the phone/web Always allow for the person's own cloud member, is accepted only when the held message's sender is that bridge's own session, and the holding computer applies it by setting `agents_send_without_asking = true`; `cloud_of` for other people's agents is never relayed); the nonce is fresh and `hold_id` +
    `holding_member` match. Then it applies it and signs the decision record with its own key, as if the person
    had answered the local dialog. Residual trust, stated: the held message may come from the bridge's own sessions (a held Friday message allowed from the phone is the
    main case), so a compromised backend can send as the person's own cloud agent and allow it once, or allow one
@@ -362,7 +361,7 @@ Run on two real Macs with two accounts, A (Lightbulb workspace) and B (free, no 
 3. A taps Allow on the phone. Within 10 seconds the message appears in the session labelled "Your Friday" ("Friday via A" on a teammate's Mac), the
    Mac notification is withdrawn, and the phone item reads "Answered".
 4. A taps Decline on the web on a second message. Receipt `refused`; nothing delivered.
-5. Always allow on the phone for Friday. The next Friday message goes straight in. Send two Friday messages to one session, then answer them in turn with `send_message(reply_to=<that message's requestId>)`: each reply reaches its own run, not the other.
+5. Always allow on the phone for Friday sends a `decision` with scope `own_cloud`; the holding computer sets `agents_send_without_asking = true`, and the next Friday message goes straight in. Send two Friday messages to one session, then answer them in turn with `send_message(reply_to=<that message's requestId>)`: each reply reaches its own run, not the other.
 6. Answering the Mac dialog first, then tapping the stale phone item: the late decision is dropped.
 7. Muse (or Claude app) connected by OAuth sends to Mac 1's Codex session; label "Muse via A". The reply is read
    by `check_inbox` and `unread` appears on the next tool result. Receipts move `queued`/`stored`, `delivered`, `read`.

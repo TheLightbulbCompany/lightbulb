@@ -500,7 +500,7 @@ find_sessions(query: string = "", limit: int = 20)
 send_message(request_id: uuid, text: string, session_id: string, reply_to?: string, files?: [], notify?: bool)
     -> { request_id, state, tier: push|next_step|pull, note }
 check_inbox(wait_secs: int = 0, max 600)
-    -> messages[]: { id, from, label, text, sent_at } ; returns on first unread or at the deadline
+    -> messages[]: { id, request_id, thread, from, label, text, sent_at }   (request_id is the reply token for send_message.reply_to) ; returns on first unread or at the deadline
 message_receipt(request_id: uuid)
     -> { request_id, state: queued|stored|delivered|read|held|refused|expired, reason?, updated_at }
 ```

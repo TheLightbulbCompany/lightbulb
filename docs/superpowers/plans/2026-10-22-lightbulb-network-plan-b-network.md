@@ -77,7 +77,7 @@
 | `merge`, `proof` | the member itself, with a proof valid for it (Task 13) |
 | `remove` | founder or admin; also a member removing its own person's bridge member (`unlink`) |
 | `admin`, `transfer` | founder (architecture §4: "only the founder and founder-marked admins remove"; "the founder may transfer") |
-| `link` | any active **computer** member (the inviter; a cloud/bridge member's `link` is dropped — a bridge only relays decisions and same-person joins); a `link` is live until its `expires_at`, until any `remove` entry descends from it (a removal ends every link the removed member could have seen), or, when `once`, until its first applied `admit` |
+| `link` | any active **computer** member (the inviter; a cloud/bridge member's `link` is dropped — a bridge only relays decisions and same-person joins); a `link` is live only while it descends from EVERY applied `remove` (a removal ends every link minted before or concurrently with it, so a ticket the removed member already holds is dead even at an admin who never saw the link — Codex round 3), until its `expires_at`, and, when `once`, until its first applied `admit`; an `admit` via a link stands only if it was already an ancestor of every removal that ends the link |
 | `meta` | founder or admin |
 | `leave` | the leaving member |
 
@@ -103,6 +103,7 @@
 #[test] fn stale_known_removal_stops_when_its_signers_admission_drops() { /* X (plain member, link t) admits Y; Y's remove of M concurrent with founder's remove of X: Y, X absent; M present whether the founder's remove is a direct child of the fork or sits behind two later-sorting meta entries */ }
 #[test] fn admit_cannot_claim_another_persons_id() { /* admit without proof with person_id = founder's -> dropped */ }
 #[test] fn duplicate_ticket_id_link_is_dropped() {}
+#[test] fn link_concurrent_with_a_removal_is_ended() { /* F mints L; admin A removes X without L in its ancestors: L absent from links; an admit via L not ancestral to the remove dropped; one ancestral to it stands */ }
 ```
 - [ ] **Step 2:** FAIL. **Step 3:** Implement (pure; no network). **Step 4:** PASS. **Step 5:** Commit `feat: hash-linked signed roster with removal-wins replay`.
 
@@ -213,9 +214,9 @@
 **Files:** Create `src/outbox.rs`. Modify `src/mail.rs`, `src/daemon/ipc.rs` (`send`), `src/daemon/net_ops.rs` (`team.leave`), `src/net/mod.rs`. Test: `src/outbox.rs`, `tests/envelope.rs`.
 
 **Interfaces:**
-- Produces: `mail::prepare(store, from, to, text, request_id, reply_to, now) -> Result<Prepared, Receipt>` (request_id format, idempotency and `request_id_reused`, loop check, thread and hops with `MAX_HOPS = 4`). **Hops follow the trigger** (architecture §7; Codex, #4297): with `reply_to`, `hops = that message's hops + 1` and its `thread`; without it, the trigger is the newest message delivered to the sending session from any session within the last 600 s (by delivery time): `hops = trigger.hops + 1`, a new `thread`; no trigger → `hops = 0`, new `thread`. A `/terminal` sender (a person) is always `hops = 0`. The same rule for local and remote recipients, so a chain that hops across sessions without `reply_to` still stops at 4; Plan A's `mail::send` keeps its signature and calls it; `outbox::enqueue(store, prepared: Prepared, to_member: &str) -> Result<Receipt>` (receipt `queued`, `where` = the member's computer). `send` IPC: a `to` whose prefix is not ours takes the outbox path; optional `kind` (`message` only; others `unsupported`).
+- Produces: `mail::prepare(store, from, to, text, request_id, reply_to, now) -> Result<Prepared, Receipt>` (request_id format, idempotency and `request_id_reused`, loop check, thread and hops with `MAX_HOPS = 4`). **Hops follow the trigger** (architecture §7; Codex, #4297): with `reply_to`, `hops = that message's hops + 1` and its `thread`; without it, the trigger is the newest message delivered to the sending session from any session within the last 600 s (by delivery time): `hops = trigger.hops + 1`, and the `thread` is the trigger's when the destination is the trigger's sender (an implicit reply), a new one otherwise (a forward); no trigger → `hops = 0`, new `thread`. A `/terminal` sender (a person) is always `hops = 0`. The same rule for local and remote recipients, so a chain that hops across sessions without `reply_to` still stops at 4; Plan A's `mail::send` keeps its signature and calls it; `outbox::enqueue(store, prepared: Prepared, to_member: &str) -> Result<Receipt>` (receipt `queued`, `where` = the member's computer). `send` IPC: a `to` whose prefix is not ours takes the outbox path; optional `kind` (`message` only; others `unsupported`).
 - Produces: `outbox::due(store, now)`, `outbox::acked(store, member, envelope_id, state, reason)`, `outbox::expire(store, now)` (24 h → `expired` `unreachable`); flush on peer connect and on a tick (1 s doubling to 60 s). Debug `LIGHTBULB_NETWORK_DEBUG_DROP_ACKS=1` drops inbound acks.
-- Produces: `mail::receive(store, env, peer: &Member, roster, now) -> Result<(State, Option<String>)>`: `from` prefix == `peer.short` (else drop, no ack); `kind != "message"` → `refused unsupported`; group `to` → `refused policy`; recipient member not us → `refused not_member`; `(peer, id)` in `seen_ids` → re-ack the stored state, deliver nothing; `request_id` reused with other text → `refused request_id_reused`; `hops >= 4` or 12/600 per principal → `refused loop`; then policy (Task 9; until then `stored`) into the mailbox with `origin = "net:<short>"`. Replies `Ack`; later changes (`delivered`, `read`, `expired`, Task 9 outcomes) queue a `Receipt` in `receipt_out`, flushed on connect. `from_peer_ok`: `Ack`/`Receipt` only from the outbox row's `to_member`.
+- Produces: `mail::receive(store, env, peer: &Member, roster, now) -> Result<(State, Option<String>)>`: `from` prefix == `peer.short` (else drop, no ack); `kind != "message"`, a non-empty `files`, or a body over 64 KB → `refused unsupported` (checked before dedupe, limits and policy; Codex round 3); group `to` → `refused policy`; recipient member not us → `refused not_member`; `(peer, id)` in `seen_ids` → re-ack the stored state, deliver nothing; `request_id` reused with other text → `refused request_id_reused`; `hops >= 4` or 12/600 per principal → `refused loop`; then policy (Task 9; until then `stored`) into the mailbox with `origin = "net:<short>"`. Replies `Ack`; later changes (`delivered`, `read`, `expired`, Task 9 outcomes) queue a `Receipt` in `receipt_out`, flushed on connect. `from_peer_ok`: `Ack`/`Receipt` only from the outbox row's `to_member`.
 - `team.leave` (completing Task 3) sends the `leave` entry to at least one online peer, or after 5 s leaves anyway and prints `Could not tell the team; they will see you gone when you are removed.`
 
 - [ ] **Step 1: Failing tests**
@@ -229,6 +230,8 @@
 #[tokio::test] async fn fourth_hop_and_thirteenth_send_are_refused_loop() { /* both with reply_to and as a forward chain without reply_to within 600 s */ }
 #[tokio::test] async fn a_person_at_the_terminal_resets_hops_to_zero() {}
 #[tokio::test] async fn input_kind_is_refused_unsupported() {}
+#[tokio::test] async fn files_or_oversize_body_are_refused_unsupported() { /* files: ["x"]; body of 65 537 bytes; both refused before any store/hold */ }
+#[tokio::test] async fn implicit_reply_keeps_the_trigger_thread() { /* B replies to A without reply_to within 600 s -> same thread, hops+1; B forwards to C -> new thread, hops+1 */ }
 #[tokio::test] async fn leave_reaches_a_peer_or_warns_after_5s() {}
 ```
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat: envelopes, outbox, remote receipts, leave to peers`.
@@ -335,7 +338,7 @@
 **Files:** Create `src/decision.rs`. Modify `src/holds.rs`, `src/net/mod.rs`. Test: `tests/decision.rs` (fixture: a third engine admitted with `join --kind cloud` and a test-issuer `kind=bridge` proof, Task 13).
 
 **Interfaces:**
-- On every new hold, send `HoldNotice` to this person's bridge member only (found in the roster); `preview` (≤160 defanged chars) only if `config.preview_to_workspace`.
+- On every new hold, send `HoldNotice` to this person's bridge member only (found in the roster), THROUGH THE OUTBOX (Task 8): it retries until the bridge acks it or the hold resolves or expires, so a bridge that is offline when the hold is created still learns of it on reconnect (Codex round 3); `preview` (≤160 defanged chars) only if `config.preview_to_workspace`.
 - `decision::accept(store, roster, signer: &Member, d: &Decision, now) -> Result<()>` calls `holds::answer(…, by: "bridge")` only if: `sig` valid; the signer's ROSTER proof is `kind=bridge` with `sub` = the hold target's `person_id`; `hold_id` and `holding_member` (us) match; nonce unseen; scope `Once` or `Person` for a held message from ANY sender (the phone/web Allow of a teammate's message is the point of the flow); `OwnCloud` only when the held message came from that bridge's own session; `CloudOf` is refused (Codex, #4297). A held message from the bridge's own session may be allowed by it (architecture §7 is binding over the engine spec's "no self-approval"). A relayed `Person` is stored `set_by: bridge`; the CLI shows `Allowed <name> from your phone`.
 
 - [ ] **Step 1: Failing tests**
@@ -346,6 +349,7 @@
 #[tokio::test] async fn replayed_nonce_is_refused() {}
 #[tokio::test] async fn own_cloud_scope_only_for_the_bridges_own_session() {}
 #[tokio::test] async fn preview_absent_unless_configured() {}
+#[tokio::test] async fn hold_notice_reaches_a_bridge_that_was_offline() { /* bridge down at hold time; comes up; notice delivered; a hold resolved meanwhile sends nothing */ }
 ```
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat: hold notices and relayed decisions`.
 

@@ -693,7 +693,8 @@ pub fn hook(provider: &str) {
         // Our hook command names the event (`… local-session-hook cursor stop`).
         let event = std::env::args().nth(3).unwrap_or_default();
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        return hooked_hook(provider, &event, json, answer, &hook_path(), &home);
+        let source = super::lifecycle::hook_process(provider);
+        return hooked_hook(provider, &event, json, answer, &hook_path(), &home, source.as_ref());
     }
     let holders = if provider == "codex" && json["hook_event_name"] == "SessionStart" {
         crate::holder::manager::list()
@@ -707,11 +708,11 @@ pub fn hook(provider: &str) {
 /// and, on a hook whose output reaches the model, hands over what waits for the session: its
 /// letters, then the one-line notice of a request waiting on its person (Task 7b), which
 /// nothing here answers.
-fn hooked_hook(provider: &str, event: &str, json: serde_json::Value, answer: std::os::unix::io::RawFd, wake: &Path, home: &Path) {
+fn hooked_hook(provider: &str, event: &str, json: serde_json::Value, answer: std::os::unix::io::RawFd, wake: &Path, home: &Path, source: Option<&super::lifecycle::HookProcess>) {
     let close = |fd: std::os::unix::io::RawFd| if fd >= 0 { unsafe { libc::close(fd) }; };
     let Some(json) = super::hooked::normalize(provider, event, json) else { return close(answer) };
     let dir = wake.with_file_name("hooked");
-    let _ = super::hooked::record(&dir, provider, &json, super::lifecycle::hook_process(provider).as_ref(), home);
+    let _ = super::hooked::record(&dir, provider, &json, source, home);
     // Before the datagram, which may start discovery of this session.
     send_hook_datagram(wake, provider, &json);
     let canonical = json["hook_event_name"].as_str().unwrap_or("");
@@ -778,14 +779,15 @@ fn hook_input(
     send_hook_datagram(wake, provider, &json);
 }
 
-/// The holder of the provider that ran this hook: the hook's parent, or the parent's parent
-/// when the provider ran it through a shell (`sh -c '<hook command>'`).
+/// The Codex holder of the provider that ran this hook: the hook's parent, or the parent's parent
+/// when the provider ran it through a shell (`sh -c '<hook command>'`). Never another provider's
+/// holder (`codex_holder`).
 fn hook_holder(parent: u32, holders: &[HolderInfo]) -> Option<&HolderInfo> {
     let shell = process(parent).ok()?.executable.file_name().is_some_and(|name| {
         matches!(name.to_str(), Some("sh" | "bash" | "zsh" | "dash"))
     });
     let provider = if shell { super::native_tools::parent(parent).ok()?.pid } else { parent };
-    holder_of(provider, holders)
+    holder_of(provider, holders).filter(|h| codex_holder(h))
 }
 
 /// Split out from [`hook`] so tests can point it at a temp socket instead of
@@ -1412,7 +1414,7 @@ mod tests {
             socket: dir.path().join("h.sock"),
             pid: std::process::id(),
             provider_pid: outer.id(),
-            argv: vec![],
+            argv: vec!["/opt/homebrew/bin/codex".into()],
             cwd: "/".into(),
             watch: false,
             type_input: false,
@@ -1420,12 +1422,16 @@ mod tests {
         let found = hook_holder(inner, std::slice::from_ref(&holder)).map(|h| h.id.clone());
         let other = HolderInfo { provider_pid: outer.id() + 1, ..holder.clone() };
         let none = hook_holder(inner, std::slice::from_ref(&other)).is_none();
+        // The same hook from a shell inside a held Claude never names that Claude's holder.
+        let claude = HolderInfo { argv: vec!["/Users/a/.local/share/claude/versions/2.1.306".into()], ..holder.clone() };
+        let not_codex = hook_holder(inner, std::slice::from_ref(&claude)).is_none();
         for pid in children(inner).into_iter().chain([inner]) {
             unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         }
         let _ = outer.kill();
         let _ = outer.wait();
         assert_eq!(found.as_deref(), Some("ab12cd34"));
+        assert!(not_codex, "a Claude holder is never bound to a Codex thread");
         assert!(none, "a holder whose provider is another process does not match");
     }
 
@@ -1484,7 +1490,10 @@ mod tests {
         let run = |provider: &str, event: &str, stdin: Value| -> String {
             let mut fds = [0; 2];
             assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-            hooked_hook(provider, event, stdin, fds[1], &wake, Path::new("/Users/a"));
+            // The agent stands in as this test process: its real ancestors are cargo's.
+            let me = super::super::process(std::process::id()).unwrap();
+            let source = super::super::lifecycle::HookProcess::of(&me);
+            hooked_hook(provider, event, stdin, fds[1], &wake, Path::new("/Users/a"), Some(&source));
             let mut out = String::new();
             unsafe { fs::File::from_raw_fd(fds[0]) }.read_to_string(&mut out).unwrap();
             out
@@ -1499,7 +1508,7 @@ mod tests {
         let sessions = super::super::hooked::discover(&hooked);
         assert_eq!(sessions.len(), 2, "each exists from its first hook");
         for s in &sessions {
-            super::super::hooked::deliver(&hooked, s, "r-1", "[Lightbulb teammate contribution] hi").unwrap();
+            super::super::hooked::deliver(&hooked, s, "r-1", "[Lightbulb teammate contribution] hi", None).unwrap();
         }
         // A prompt hook cannot add context: the letter stays for the next tool call.
         assert_eq!(run("cursor", "user-prompt-submit", json!({"conversation_id": "conv-1"})), "");
@@ -1540,7 +1549,7 @@ mod tests {
             socket: dir.path().join("ab12cd34.sock"),
             pid: std::process::id(),
             provider_pid: codex.id(),
-            argv: vec![],
+            argv: vec!["/opt/homebrew/bin/codex".into()],
             cwd: "/".into(),
             watch: false,
             type_input: false,

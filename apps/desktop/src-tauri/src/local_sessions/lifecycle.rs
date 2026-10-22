@@ -69,8 +69,6 @@ fn hook_ancestor(
     mut parent: impl FnMut(&super::Process) -> Option<super::Process>,
 ) -> Option<HookProcess> {
     if !matches!(provider, "claude" | "codex" | "cursor" | "grok") { return None; }
-    // Cursor's agent runs under more than one executable name (`cursor-agent`, the IDE's helper),
-    // Grok CLI under its runtime's: the agent is the first process above the hook's shells.
     let hooked = super::hooked::provider(provider);
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..8 {
@@ -79,14 +77,37 @@ fn hook_ancestor(
         }
         let path = &current.executable;
         let name = path.file_name()?.to_str()?;
-        let shell = matches!(name, "sh" | "bash" | "zsh" | "dash");
-        if (hooked && !shell) || name == provider || (provider == "claude" && crate::holder::run::is_claude_program(path)) {
+        if (hooked && hooked_agent(provider, path)) || name == provider || (provider == "claude" && crate::holder::run::is_claude_program(path)) {
             return Some(HookProcess::of(&current));
         }
         if !matches!(name, "sh" | "bash" | "zsh" | "dash") { return None; }
         current = parent(&current)?;
     }
     None
+}
+
+/// Whether `path` is the executable of the hooked agent `provider` (Cursor or Grok CLI). The
+/// nearest non-shell ancestor is not enough: `local-session-hook grok …` run from a shell inside a
+/// Claude session made that Claude a Grok session (prod e2e 2026-10-22), and its own local MCP
+/// then saw two sessions on one pid. Cursor's agent runs as `cursor-agent/versions/<v>/node` (CLI)
+/// or inside `Cursor.app` (the IDE's helper); Grok CLI as `grok` or `grok-native`. A Claude or
+/// Codex executable is never one, wherever it is installed.
+pub(super) fn hooked_agent(provider: &str, path: &std::path::Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if native_agent(path) {
+        return false;
+    }
+    let component = |c: &str| path.components().any(|p| p.as_os_str() == c);
+    match provider {
+        "cursor" => name == "cursor-agent" || component("cursor-agent") || component("Cursor.app"),
+        "grok" => matches!(name, "grok" | "grok-native"),
+        _ => false,
+    }
+}
+
+/// A Claude Code or Codex executable: a session of its own, never a Cursor or Grok record's.
+pub(super) fn native_agent(path: &std::path::Path) -> bool {
+    matches!(path.file_name().and_then(|n| n.to_str()), Some("claude" | "codex")) || crate::holder::run::is_claude_program(path)
 }
 
 /// Resolve a relationship, not just two live PIDs. A reparented child keeps
@@ -573,6 +594,30 @@ mod tests {
         let mut missing_birth = ancestor(42, "/opt/codex");
         missing_birth.birth_micros = 0;
         assert_eq!(hook_ancestor("codex", missing_birth, |_| None), None);
+    }
+
+    /// `local-session-hook grok session-start` typed in a shell inside a Claude session made that
+    /// Claude a Grok session (prod e2e 2026-10-22). The hooked agent must be its own executable.
+    #[test]
+    fn lifecycle_hooked_agent_is_its_own_executable_never_the_nearest_ancestor() {
+        for (provider, path) in [
+            ("grok", "/opt/homebrew/lib/node_modules/@xai-official/grok/bin/grok-native"),
+            ("grok", "/usr/local/bin/grok"),
+            ("cursor", "/Users/a/.local/share/cursor-agent/versions/2026.10.19-6bbf2c4/node"),
+            ("cursor", "/Users/a/.local/bin/cursor-agent"),
+        ] {
+            let native = ancestor(42, path);
+            let shell = ancestor(43, "/bin/zsh");
+            assert_eq!(hook_ancestor(provider, shell, |_| Some(native.clone())), Some(HookProcess::of(&native)), "{path}");
+        }
+        for provider in ["grok", "cursor"] {
+            for path in ["/Users/a/.local/share/claude/versions/2.1.306", "/opt/claude", "/Applications/Codex.app/Contents/Resources/codex",
+                "/usr/bin/node", "/usr/bin/python3", "/Users/a/.local/share/cursor-agent/versions/1/claude"] {
+                let shell = ancestor(43, "/bin/zsh");
+                assert_eq!(hook_ancestor(provider, shell, |_| Some(ancestor(42, path))), None, "{provider} {path}");
+            }
+        }
+        assert!(!hooked_agent("cursor", std::path::Path::new("/opt/grok")) && !hooked_agent("grok", std::path::Path::new("/x/cursor-agent")));
     }
 
     #[test]

@@ -35,6 +35,10 @@ struct Record {
 #[serde(deny_unknown_fields)]
 struct Letter {
     text: String,
+    /// The send's journal receipt and request id: the hook that hands the letter over settles it
+    /// `applied`. Until then the receipt stays `unknown` (the agent may never take it).
+    #[serde(default)]
+    receipt: Option<(PathBuf, String)>,
 }
 
 fn key(provider: &str, conversation: &str) -> String {
@@ -130,7 +134,9 @@ pub(super) fn discover(dir: &Path) -> Vec<NativeSession> {
             continue;
         }
         let Ok(record) = private_read::<Record>(&path) else { continue };
-        let live = process(record.pid).ok().filter(|p| p.birth_micros == record.birth_micros);
+        // A record naming a Claude or Codex process (written by a build that trusted the nearest
+        // ancestor) is not this agent's: dropped, never a second session on that pid.
+        let live = process(record.pid).ok().filter(|p| p.birth_micros == record.birth_micros && !lifecycle::native_agent(&p.executable));
         let (Some(live), true) = (live, provider(&record.provider)) else {
             let _ = fs::remove_file(&path);
             let _ = fs::remove_dir_all(inbox(dir, &record.provider, &record.conversation));
@@ -168,15 +174,16 @@ pub(super) fn verify(native: &NativeSession) -> Result<NativeSession> {
     }
 }
 
-/// Delivery: the framed text waits in the session's inbox for its next hook.
-// ponytail: the receipt reads applied once the letter is in the inbox, not once the agent read it;
-// a session that ends before its next hook loses it. A read-ack from the hook if that is ever seen.
-pub(super) fn deliver(dir: &Path, native: &NativeSession, request_id: &str, text: &str) -> Result<()> {
+/// Delivery: the framed text waits in the session's inbox for its next hook. Its receipt (at
+/// `receipt`) stays `unknown` until that hook hands it over and settles it `applied`; a session
+/// whose process ends first never took it (`transport` then rejects it).
+pub(super) fn deliver(dir: &Path, native: &NativeSession, request_id: &str, text: &str, receipt: Option<&Path>) -> Result<()> {
     let inbox = inbox(dir, &native.provider, &native.conversation);
     private_dir(dir)?;
     private_dir(&inbox)?;
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos();
-    private_write(&inbox.join(format!("{at:024}-{}.json", &fingerprint(request_id)[..16])), &Letter { text: text.into() })
+    let letter = Letter { text: text.into(), receipt: receipt.map(|p| (p.to_path_buf(), request_id.to_owned())) };
+    private_write(&inbox.join(format!("{at:024}-{}.json", &fingerprint(request_id)[..16])), &letter)
 }
 
 /// Hook process only: every letter waiting for this session, oldest first, each taken once. A
@@ -197,6 +204,9 @@ pub(super) fn drain(dir: &Path, provider: &str, conversation: &str) -> Vec<Strin
             continue; // another hook took it
         }
         if let Ok(letter) = private_read::<Letter>(&claimed) {
+            if let Some((receipt, request)) = letter.receipt {
+                let _ = Journal::finish_at(&receipt, Some(request), false);
+            }
             letters.push(letter.text);
         }
         let _ = fs::remove_file(&claimed);
@@ -344,6 +354,9 @@ fn cursor_mcp(home: &Path, executable: &Path, enabled: bool, notes: &mut Vec<Str
     let current = doc["mcpServers"]["lightbulb"].clone();
     let args: Vec<&str> = current["args"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     let held = slot(!current.is_null(), current["command"].as_str(), &args, current["url"].as_str(), executable);
+    // The allow rule goes with our entry only: never beside another tool's `lightbulb`, and taken
+    // back when one replaced ours (its tools would run unasked).
+    let allow = enabled && held != Slot::Foreign;
     match (enabled, held) {
         (true, Slot::Foreign) => notes.push(foreign_note("cursor")),
         (true, Slot::Ours) => {}
@@ -364,7 +377,31 @@ fn cursor_mcp(home: &Path, executable: &Path, enabled: bool, notes: &mut Vec<Str
         }
         (false, _) => {}
     }
-    write_if_changed(&path, &original, &doc)
+    write_if_changed(&path, &original, &doc)?;
+    cursor_allow(home, allow)
+}
+
+/// Cursor CLI's rule for every tool of the `lightbulb` server (its matcher takes `*` for the tool).
+const CURSOR_ALLOW: &str = "Mcp(lightbulb:*)";
+
+/// `~/.cursor/cli-config.json`'s `permissions.allow` rule without which Cursor CLI asks before every
+/// lightbulb call. Only a file Cursor CLI wrote: before its first run there is nothing to add to,
+/// and the next re-assert adds it. Off removes only our rule.
+fn cursor_allow(home: &Path, add: bool) -> Result<()> {
+    let path = home.join(".cursor/cli-config.json");
+    let Some(original) = read_doc(&path)? else { return Ok(()) };
+    let mut doc = original.clone();
+    if add {
+        let permissions = doc.as_object_mut().ok_or("invalid Cursor CLI config")?.entry("permissions").or_insert_with(|| json!({"allow": [], "deny": []}));
+        let allow = permissions.as_object_mut().ok_or("invalid Cursor CLI config")?.entry("allow").or_insert_with(|| json!([]));
+        let allow = allow.as_array_mut().ok_or("invalid Cursor CLI config")?;
+        if !allow.iter().any(|v| v == CURSOR_ALLOW) {
+            allow.push(json!(CURSOR_ALLOW));
+        }
+    } else if let Some(allow) = doc.pointer_mut("/permissions/allow").and_then(Value::as_array_mut) {
+        allow.retain(|v| v != CURSOR_ALLOW);
+    }
+    write_if_changed(&path, &Some(original), &doc)
 }
 
 const GROK_ALLOW: &str = "MCPTool(lightbulb__*)";
@@ -416,6 +453,10 @@ fn grok_mcp(home: &Path, executable: &Path, enabled: bool, notes: &mut Vec<Strin
         if let Some(servers) = doc.get_mut("mcp_servers").and_then(|t| t.as_table_like_mut()) {
             servers.remove("lightbulb");
         }
+    }
+    // Our rule goes when we are off, and when another tool's `lightbulb` replaced ours: its tools
+    // would otherwise run unasked.
+    if !enabled || held == Slot::Foreign {
         if let Some(permission) = doc.get_mut("permission").and_then(|p| p.as_table_like_mut()) {
             if let Some(allow) = permission.get_mut("allow").and_then(|a| a.as_array_mut()) {
                 allow.retain(|v| v.as_str() != Some(GROK_ALLOW));
@@ -524,7 +565,7 @@ mod tests {
         let hook = normalize("grok", "session-start", json!({"session_id": "g-1"})).unwrap();
         record(dir.path(), "grok", &hook, Some(&lifecycle::HookProcess { pid: p.pid, birth_micros: p.birth_micros }), Path::new("/h")).unwrap();
         let native = discover(dir.path()).remove(0);
-        deliver(dir.path(), &native, "r-1", "hello").unwrap();
+        deliver(dir.path(), &native, "r-1", "hello", None).unwrap();
         child.kill().unwrap();
         child.wait().unwrap();
         assert!(verify(&native).is_err());
@@ -539,11 +580,41 @@ mod tests {
         let hook = normalize("cursor", "session-start", json!({"session_id": "c-2"})).unwrap();
         record(dir.path(), "cursor", &hook, Some(&lifecycle::HookProcess { pid: me.pid, birth_micros: me.birth_micros }), Path::new("/h")).unwrap();
         let native = discover(dir.path()).remove(0);
-        deliver(dir.path(), &native, "r-1", "first").unwrap();
-        deliver(dir.path(), &native, "r-2", "second").unwrap();
+        deliver(dir.path(), &native, "r-1", "first", None).unwrap();
+        deliver(dir.path(), &native, "r-2", "second", None).unwrap();
         assert_eq!(drain(dir.path(), "cursor", "c-2"), vec!["first", "second"]);
         assert!(drain(dir.path(), "cursor", "c-2").is_empty(), "taken once");
         assert!(drain(dir.path(), "grok", "c-2").is_empty(), "another agent's inbox is its own");
+    }
+
+    /// A letter in the inbox is not a delivery (prod e2e 2026-10-22: Grok hit its usage limit and
+    /// the sender read `applied`). Unknown until a hook hands it over; rejected if the agent's
+    /// process ends first.
+    #[test]
+    fn hooked_receipt_is_applied_only_when_a_hook_hands_the_letter_over() {
+        let dir = private_tmp();
+        let journal = Journal { dir: dir.path().join("receipts") };
+        private_dir(&journal.dir).unwrap();
+        let me = process(std::process::id()).unwrap();
+        let hook = normalize("grok", "session-start", json!({"session_id": "g-3"})).unwrap();
+        record(dir.path(), "grok", &hook, Some(&lifecycle::HookProcess { pid: me.pid, birth_micros: me.birth_micros }), Path::new("/h")).unwrap();
+        let live = discover(dir.path()).remove(0);
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let gone = NativeSession { conversation: "g-4".into(), process: process(child.id()).unwrap(), ..live.clone() };
+        for (request, native) in [("r-1", &live), ("r-2", &gone)] {
+            private_write(&journal.path("s", request), &Receipt {
+                hash: None, generation: "g".into(), outcome: "unknown".into(), provider_message_id: None, held: false, settled: false,
+                ingress: Some(Ingress { native: native.clone(), cursor: Cursor::default(), text: "hi".into(), workspace_revision: None }),
+            }).unwrap();
+            deliver(dir.path(), native, request, "hi", Some(&journal.path("s", request))).unwrap();
+        }
+        assert_eq!(journal.reconcile("s", "r-1", "g").unwrap().outcome, "unknown", "waiting in the inbox");
+        assert_eq!(drain(dir.path(), "grok", "g-3"), vec!["hi"]);
+        let taken = journal.reconcile("s", "r-1", "g").unwrap();
+        assert_eq!((taken.outcome.as_str(), taken.provider_message_id.as_deref(), taken.held), ("applied", Some("r-1"), false));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(journal.reconcile("s", "r-2", "g").unwrap().outcome, "rejected", "its agent ended before taking it");
     }
 
     #[test]
@@ -588,6 +659,51 @@ mod tests {
         assert!(mcp["mcpServers"]["lightbulb"].is_null() && mcp["mcpServers"]["other"].is_object());
         let config = fs::read_to_string(h.join(".grok/config.toml")).unwrap();
         assert!(!config.contains("lightbulb") && config.contains("Bash(ls)"), "{config}");
+    }
+
+    /// Without the allow rule Cursor CLI asks before every lightbulb call (prod e2e 2026-10-22).
+    #[test]
+    fn hooked_setup_pre_allows_lightbulb_tools_in_cursor_cli_and_takes_only_ours_back() {
+        let home = private_tmp();
+        let h = home.path();
+        let exe = Path::new(EXE);
+        fs::create_dir_all(h.join(".cursor")).unwrap();
+        assert!(configure(h, exe, true).is_empty());
+        assert!(!h.join(".cursor/cli-config.json").exists(), "never a config Cursor CLI did not write");
+        let theirs = json!({"version": 1, "model": {"id": "x"}, "permissions": {"allow": ["Shell(ls)", "Mcp(lightbulb:find_sessions)"], "deny": ["Shell(rm)"]}});
+        fs::write(h.join(".cursor/cli-config.json"), theirs.to_string()).unwrap();
+        assert!(configure(h, exe, true).is_empty());
+        assert!(configure(h, exe, true).is_empty(), "a re-assert is a no-op");
+        let read = || serde_json::from_slice::<Value>(&fs::read(h.join(".cursor/cli-config.json")).unwrap()).unwrap();
+        let mut expected = theirs.clone();
+        expected["permissions"]["allow"].as_array_mut().unwrap().push(json!("Mcp(lightbulb:*)"));
+        assert_eq!(read(), expected);
+        assert_eq!(serde_json::from_slice::<Value>(&fs::read(h.join(".cursor/cli-config.json.lightbulb-backup")).unwrap()).unwrap(), theirs);
+        assert!(configure(h, exe, false).is_empty());
+        assert_eq!(read(), theirs, "off: ours goes, theirs stays");
+    }
+
+    /// Another tool's `lightbulb` replacing ours takes our allow rule with it: its tools would
+    /// otherwise run with no prompt (Codex review on #4294).
+    #[test]
+    fn hooked_setup_takes_the_allow_rule_back_when_a_foreign_lightbulb_replaces_ours() {
+        let home = private_tmp();
+        let h = home.path();
+        let exe = Path::new(EXE);
+        fs::create_dir_all(h.join(".cursor")).unwrap();
+        fs::create_dir_all(h.join(".grok")).unwrap();
+        fs::write(h.join(".cursor/cli-config.json"), r#"{"permissions":{"allow":["Shell(ls)"],"deny":[]}}"#).unwrap();
+        assert!(configure(h, exe, true).is_empty());
+        assert!(fs::read_to_string(h.join(".cursor/cli-config.json")).unwrap().contains(CURSOR_ALLOW));
+        assert!(fs::read_to_string(h.join(".grok/config.toml")).unwrap().contains(GROK_ALLOW));
+        fs::write(h.join(".cursor/mcp.json"), r#"{"mcpServers":{"lightbulb":{"command":"/opt/other","args":["serve"]}}}"#).unwrap();
+        let grok = fs::read_to_string(h.join(".grok/config.toml")).unwrap().replace(EXE, "/opt/other");
+        fs::write(h.join(".grok/config.toml"), grok).unwrap();
+        assert_eq!(configure(h, exe, true), vec![foreign_note("cursor"), foreign_note("grok")]);
+        let cli: Value = serde_json::from_slice(&fs::read(h.join(".cursor/cli-config.json")).unwrap()).unwrap();
+        assert_eq!(cli["permissions"]["allow"], json!(["Shell(ls)"]));
+        let config = fs::read_to_string(h.join(".grok/config.toml")).unwrap();
+        assert!(!config.contains(GROK_ALLOW) && config.contains("/opt/other"), "{config}");
     }
 
     #[test]

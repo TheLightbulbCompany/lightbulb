@@ -2,6 +2,9 @@
 //! The app (`lightbulb-desktop`) re-exports these modules, so its `crate::…` paths keep working.
 
 pub mod device_token;
+pub mod entry;
+#[cfg(unix)]
+pub mod holder;
 pub mod keychain;
 pub mod os;
 pub mod pair_client;

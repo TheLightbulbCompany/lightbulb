@@ -320,7 +320,7 @@ fn running_jobs(claude: Option<&BTreeSet<String>>, codex: BTreeSet<String>) -> O
 /// client; the session runs on under its provider's own daemon. Never `claude stop`.
 /// `running`: the Claude background jobs still listed.
 pub(super) fn reap_attach(holders: &[HolderInfo], running: Option<&BTreeSet<String>>) {
-    let shown = crate::holder::panel::shown_holder();
+    let shown = crate::holder::shown::shown_holder();
     let live = LIVE.lock().map(|l| l.clone()).unwrap_or_default();
     let codex = live.values().filter(|l| l.native.provider == "codex").filter_map(|l| l.native.job.as_deref());
     let running = running_jobs(running, codex_running(INDEXED.load(SeqCst), codex, holders));

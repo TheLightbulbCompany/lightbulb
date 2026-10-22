@@ -1,10 +1,5 @@
-//! Held sessions: a small process per session (`lightbulb-desktop holder …`) owns a pty running
-//! the unmodified Claude Code or Codex, outlives the app, and serves the app's panel terminal and live viewers over a unix socket.
-//! Spec: docs/superpowers/specs/2026-10-02-managed-session-sharing.md §5.1-5.2.
+//! Held sessions live in core (`lightbulb_core::holder`). The app adds only the panel terminal,
+//! a Tauri child webview, which writes `shown` for the relay to read.
 
-pub mod manager;
-pub(crate) mod identity;
-pub mod model;
-pub mod protocol;
-pub mod run;
+pub use lightbulb_core::holder::{identity, manager, model, protocol, run, shown};
 pub mod panel;

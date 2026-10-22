@@ -40,7 +40,7 @@ pub fn socket_dir() -> PathBuf {
 
 /// Create (or accept) the socket directory and its parent: real directories owned by this user,
 /// never through a symlink another account planted at the predictable /tmp path.
-pub(crate) fn ensure_dir(dir: &Path) -> Result<(), String> {
+pub fn ensure_dir(dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let uid = unsafe { libc::getuid() };
     for d in [dir.parent().unwrap_or(dir), dir] {
@@ -175,7 +175,7 @@ pub fn stop_attach(info: &HolderInfo) {
 }
 
 fn birth(pid: libc::pid_t) -> Option<u64> {
-    (pid > 1).then(|| crate::local_sessions::process_birth(pid as u32)).flatten()
+    (pid > 1).then(|| crate::os::process_birth(pid as u32)).flatten()
 }
 
 /// SIGKILL each pid that is still the process it was when `was` was read; skip any that changed.
@@ -646,6 +646,8 @@ mod tests {
         assert_eq!(attach_job(&typed(&["/c/codex", "resume", thread])), None, "`lightbulb codex resume` is a held session, not ours");
     }
 
+    // macOS until the Linux port (plan PR 8): stopping reads process births through `os`.
+    #[cfg(target_os = "macos")]
     #[test]
     fn holder_attach_stop_kills_a_holder_and_client_that_ignore_sigterm() {
         // A holder that ignores SIGTERM (ignored dispositions survive exec), leading its own group.
@@ -669,6 +671,8 @@ mod tests {
         assert!(holder.try_wait().unwrap().is_some() && client.try_wait().unwrap().is_some(), "both are gone after the fallback");
     }
 
+    // macOS until the Linux port (plan PR 8): stopping reads process births through `os`.
+    #[cfg(target_os = "macos")]
     #[test]
     fn holder_attach_stop_spares_a_pid_that_is_now_another_process() {
         let mut holder = std::process::Command::new("/bin/sh");

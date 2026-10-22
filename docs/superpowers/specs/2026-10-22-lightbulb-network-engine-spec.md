@@ -117,11 +117,11 @@ Join, friend:
 
 1. Person's Claude Code session (installed and restarted after setup) calls the MCP tool `find_sessions`.
 2. The agent sees one line per session: `k3f9a/codex:01a1  Your Codex  repo api  busy 2m  "fix token refresh"  tier push`.
-3. Agent calls `send_message(request_id: "<ulid>", text: "...", session_id: "k3f9a/codex:01a1")`.
-4. Tool result: `stored on this computer. It is reading now (push). Check with message_receipt("<ulid>").`
+3. Agent calls `send_message(request_id: "<id>", text: "...", session_id: "k3f9a/codex:01a1")`.
+4. Tool result: `stored on this computer. It is reading now (push). Check with message_receipt("<id>").`
    For a Cursor/Grok target: `stored. k3f9a/cursor:77f is idle and next-step-only: it sees this at its next step.`
 5. The receiving agent sees, as a user-role message:
-   `[Lightbulb teammate contribution from Your Claude Code {"requestId":"<ulid>"}]` then the text.
+   `[Lightbulb teammate contribution from Your Claude Code {"requestId":"<id>"}]` then the text.
 6. Teammate case: `send_message(session_id: "b81c2/codex:9c2", ...)`. Result: `stored on aden-mbp. It may be held for aden to approve; you will see the receipt change.`
 7. From a terminal: `lightbulb-network send aden/codex-api "Did the token format change?"` prints
    `01JB... stored on aden-mbp (tier push). Receipt: lightbulb-network receipt 01JB...`
@@ -231,7 +231,7 @@ Folder `~/.lightbulb/network/` (mode 0700). Files 0600. Nothing here is synced t
 
 | Table | Holds | Lifetime |
 |---|---|---|
-| `team` | Team id, name, relay, link secret (hash), invite records (hash, expiry, used-by). | Until leave. |
+| `team` | Team id, name, relay, `link_secret` (plaintext, so `invite` can reprint the link; the state folder is 0700 and `identity.key` sits beside it; `invite --new` replaces it), single-use `--once` ticket records (hash, expiry, used-by; deleted on use). | Until leave. |
 | `roster` | Hash-chained signed log: founder, admissions, roles (`member`/`admin`/`founder`, kind `computer`/`cloud`; the `bridge` role is a cloud member holding a `kind=bridge` proof), removals, departures. Per computer: key, person, computer name, current state. | Until leave. |
 | `attestations` | Sign-in proofs for members; each checked locally and dropped if invalid. | While the member is active. |
 | `sessions` | `key` (`<member_key_short>/<provider>:<conversation>`), provider, name, pid, birth time, cwd (local only), title, doing, status, tier, last seen. | Live: while running. Offline: name kept 24 h after last seen, then forgotten (not in the first 2 minutes after daemon start). |
@@ -307,7 +307,7 @@ Bridge: a cloud computer is an engine instance that runs headless with `kind = c
 | Tool | Arguments | Notes |
 |---|---|---|
 | `find_sessions` | `query` (optional text), `limit` (default 20) | Matches person, agent, repo, branch, title. Returns `session_id`, label, repo, status, doing, tier, computer. |
-| `send_message` | `session_id`, `text`, `request_id`; optional `reply_to` (the `requestId` shown in the delivered frame; sets the envelope `thread`, else `thread` is the most recent inbound message from that session, else new), `files` (paths), `notify` (bool) | Refuses `*`, `person/*`, `repo:` with `group_send_not_allowed`. `files` and `notify` are engine-only; the hosted MCP accepts but rejects with `unsupported`. |
+| `send_message` | `session_id`, `text`, `request_id` (an opaque string matching `[A-Za-z0-9._-]{1,128}`, chosen by the sender; a UUID or ULID both fit; the same format on the hosted MCP and the IPC); optional `reply_to` (the `requestId` shown in the delivered frame; sets the envelope `thread`, else `thread` is the most recent inbound message from that session, else new), `files` (paths), `notify` (bool) | Refuses `*`, `person/*`, `repo:` with `group_send_not_allowed`. `files` and `notify` are engine-only; the hosted MCP accepts but rejects with `unsupported`. |
 | `message_receipt` | `request_id` | Returns state, reason, where it waits. |
 | `check_inbox` | `wait_secs` (optional, max 600) | Returns unread messages or waits for the first. Each message is `{id, request_id, thread, from, text, sent_at}`; the `inbox` IPC reply carries the same fields. |
 

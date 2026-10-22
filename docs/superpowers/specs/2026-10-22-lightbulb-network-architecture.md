@@ -37,7 +37,7 @@ depends on nothing of ours. The engine has exactly one Lightbulb-specific defaul
 | The `lightbulb` command | Always the engine: `~/.local/bin/lightbulb` → the canonical path. Subcommands the engine does not own (`claude`, `codex`, `share`, `continue`: the app's session launchers) are forwarded to the installed app's binary; without the app they print "needs the Lightbulb app: thelightbulb.company/download". |
 | Install line | `curl -fsSL https://thelightbulb.company/install \| sh` (the existing URL; it installs the engine, not the app). The app is a separate download. |
 | Join line | `Join the Lightbulb network: https://thelightbulb.company/j/#<ticket>`. The ticket is in the URL **fragment**, so it never reaches our servers or logs; the `/j/` page is static text (the install line and `lightbulb join '<link>'`) and knows nothing about the team. `lightbulb://join/<ticket>` is the same ticket for the app. |
-| State | `~/.lightbulb/network/` (0700): `sock`, `state.db` (`PRAGMA user_version`, migrations forward only), `identity.key` (0600; moved into the keychain where one exists), `config.toml`, `relays.json`, `daemon.lock`, `inbox/<id>/` (files), `app-install.json` (present when the app manages the engine). |
+| State | `~/.lightbulb/network/` (0700): `sock`, `state.db` (`PRAGMA user_version`, migrations forward only), `identity.key` (0600; moved into the keychain where one exists), `config.toml`, `relays.json`, `daemon.lock`, `inbox/<id>/` (files), `app-install.json` (present when the app manages the engine). The current team link secret is stored in plaintext in `state.db` (`team.link_secret`), under the 0700 folder next to `identity.key`, so `invite` can reprint the link; single-use `--once` tickets are stored hashed and deleted on use. |
 | Updates | The engine self-updates from the public repo's signed releases (minisign; two public keys compiled in; the private key lives only in the owner's 600 file and the public repo's secrets). When `app-install.json` exists, self-update is off and the app ships and updates the engine. The relay list is signed with the same key. |
 | Release signing | Developer ID + notarization in the public repo's release workflow on a GitHub-hosted macOS runner, from repo secrets the owner provides (action item). Until then releases are unsigned and used only from source on our Macs. |
 
@@ -59,7 +59,7 @@ depends on nothing of ours. The engine has exactly one Lightbulb-specific defaul
 ## 4. Membership
 
 - **Roster**: a hash-chained signed log replicated to every member: `admit`, `merge`, `remove`, `admin`,
-  `transfer`, `leave`, `link` (the team link secret), `meta`. On a fork, removal wins. Entries stamped more than
+  `transfer`, `leave`, `link` (the team link secret, carried to members; locally it lives in `team.link_secret`), `meta`. On a fork, removal wins. Entries stamped more than
   a day ahead are refused.
 - **Who may do what** (owner): any member invites; only the founder and founder-marked admins remove. The
   founder may `transfer`; a founder who leaves without transferring is succeeded by the oldest admin.

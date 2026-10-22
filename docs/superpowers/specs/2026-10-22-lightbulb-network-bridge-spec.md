@@ -230,7 +230,7 @@ nothing else. A network member can remove it.
 | Two workspaces for one person | The link names one workspace. | A computer links to one person and one workspace at a time. Linking again to a different workspace replaces the old link after a confirm. The old workspace's bridge leaves the network. |
 | Bridge outbox backlog (computer asleep) | Sender's receipt reads `queued` (waiting in the bridge's outbox); `stored` only once the computer has it | Encrypted messages wait up to 24 hours, then the receipt reads `expired`. The bridge cannot read them; they were addressed to the computer. |
 | Hold notice to a bridge that is not linked | Nothing on the phone. The OS dialog still works. | Computers send hold notices only if the person has linked and turned on phone approval. |
-| Duplicate bridge request (retry) | Nothing. | `request_id` is the dedupe key everywhere. |
+| Duplicate bridge request (retry) | Nothing. | `request_id` is the dedupe key everywhere (an opaque string matching `[A-Za-z0-9._-]{1,128}`, chosen by the sender). |
 | Key rotation of the bridge | None. | A new bridge key is added by the founder-or-admin step, then the old is removed. Procedure in the architecture doc. |
 | Clock skew | Proofs look expired or not yet valid. | Proof checks allow 5 minutes of skew; the engine shows "check your clock" instead of "unverified". |
 

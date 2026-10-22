@@ -21,6 +21,7 @@
 - Public repo `TheLightbulbCompany/lightbulb-network`; licence Apache-2.0; gitleaks, Codex review and CI on every PR; no secret, internal hostname, account id or customer datum in the repo, ever.
 - Clean-room: reading reason-network for clarification is allowed; copying, porting or transcribing it is not.
 - The engine knows nothing of workspaces, plans, rooms, Paperclip agents or billing.
+- `request_id` has one format on both MCPs and the IPC: an opaque string matching `[A-Za-z0-9._-]{1,128}` chosen by the sender (UUID or ULID both fit). Message ids stay ULIDs.
 - Binary and crate: `lightbulb-network`, canonical path `~/.lightbulb/network/bin/lightbulb-network`. State folder: `~/.lightbulb/network/` (0700); socket `~/.lightbulb/network/sock` (0600); database `state.db`.
 - Loop limit: a sender may deliver at most 12 messages to one session in any 600 s window; the 13th is refused with reason `loop`.
 - Receipt states, exactly seven: `queued`, `stored`, `delivered`, `read`, `held`, `refused`, `expired`.

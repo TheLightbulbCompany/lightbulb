@@ -278,7 +278,7 @@ to undo (remove the connector; revoke the key; leaving the workspace cuts access
 calls `find_sessions`, then `send_message`. It returns:
 
 ```text
-Sent to ben's Claude Code "checkout-api". Receipt: held (waiting for ben to allow). request_id: <uuid>
+Sent to ben's Claude Code "checkout-api". Receipt: held (waiting for ben to allow). request_id: <id>
 ```
 
 ### Flow C. Adding a workspace to a free network
@@ -497,11 +497,11 @@ Engine-identical tools (same names, same arguments, same errors; the hosted serv
 find_sessions(query: string = "", limit: int = 20)
     -> sessions[]: { session_id, person, person_verified, computer, agent, cwd, repo, branch,
                      status: busy|idle|gone, doing, tier, can_send, needs_owner_ok }
-send_message(request_id: uuid, text: string, session_id: string, reply_to?: string, files?: [], notify?: bool)
+send_message(request_id: string, text: string, session_id: string, reply_to?: string, files?: [], notify?: bool)
     -> { request_id, state, tier: push|next_step|pull, note }
 check_inbox(wait_secs: int = 0, max 600)
     -> messages[]: { id, request_id, thread, from, label, text, sent_at }   (request_id is the reply token for send_message.reply_to) ; returns on first unread or at the deadline
-message_receipt(request_id: uuid)
+message_receipt(request_id: string)   (request_id: opaque string, [A-Za-z0-9._-]{1,128}, chosen by the sender; the hosted MCP stops requiring a UUID, a Plan C change)
     -> { request_id, state: queued|stored|delivered|read|held|refused|expired, reason?, updated_at }
 ```
 

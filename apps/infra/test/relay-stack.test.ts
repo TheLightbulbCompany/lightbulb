@@ -48,10 +48,8 @@ function build(environment: "dev" | "prod"): Template {
 const dev = build("dev");
 
 test("relay_has_no_nlb_and_no_udp", () => {
-  // No load balancer or listener of its own (NLB or otherwise): TLS ends at the
-  // existing ALB, and nothing (9090 included) gets a listener here.
+  // No load balancer of its own (NLB or otherwise): TLS ends at the existing ALB.
   dev.resourceCountIs("AWS::ElasticLoadBalancingV2::LoadBalancer", 0);
-  dev.resourceCountIs("AWS::ElasticLoadBalancingV2::Listener", 0);
   const json = JSON.stringify(dev.toJSON());
   expect(json).not.toMatch(/"udp"|"UDP"|7842/);
   dev.hasResourceProperties("AWS::ECS::TaskDefinition", {
@@ -77,17 +75,11 @@ test("relay_rule_is_host_header_on_the_existing_alb", () => {
       OriginProtocolPolicy: "https-only",
     }),
   });
-  dev.hasResourceProperties("AWS::CloudFront::Distribution", {
-    DistributionConfig: Match.objectLike({
-      DefaultCacheBehavior: Match.objectLike({
-        // CachingDisabled + AllViewer: the Host header (the ALB rule, the origin
-        // cert check) and the WebSocket upgrade reach the ALB verbatim.
-        CachePolicyId: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
-        OriginRequestPolicyId: "216adef6-5c7f-47e4-b989-5492eafa07d3",
-        ViewerProtocolPolicy: "https-only",
-      }),
-    }),
-  });
+  // Step 1 of the two-step first deploy: the VpcOrigin alone, no distribution yet.
+  dev.resourceCountIs("AWS::CloudFront::VpcOrigin", 1);
+  dev.resourceCountIs("AWS::CloudFront::Distribution", 0);
+  dev.resourceCountIs("AWS::Route53::RecordSet", 0);
+  dev.resourceCountIs("AWS::CloudWatch::Alarm", 0);
 });
 
 test("relay_deploy_stops_before_it_starts", () => {
@@ -101,23 +93,29 @@ test("relay_deploy_stops_before_it_starts", () => {
 });
 
 test("relay_metrics_are_not_routed", () => {
-  // The one target group serves the relay port; 9090 is never routed.
+  // The only routed port is 8080; 9090 has no target group, rule or listener.
   dev.resourceCountIs("AWS::ElasticLoadBalancingV2::TargetGroup", 1);
   dev.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", {
     Port: 8080,
     HealthCheckPath: "/generate_204",
     Matcher: { HttpCode: "204" },
   });
-  // The task SG's only inline rule: 9090 from the VPC CIDR.
-  dev.hasResourceProperties("AWS::EC2::SecurityGroup", {
-    SecurityGroupIngress: [Match.objectLike({ FromPort: 9090, CidrIp: Match.anyValue() })],
-  });
-  // The only other ingress: 8080 from the ALB's security group.
-  dev.resourceCountIs("AWS::EC2::SecurityGroupIngress", 1);
-  dev.hasResourceProperties("AWS::EC2::SecurityGroupIngress", {
-    FromPort: 8080,
-    SourceSecurityGroupId: Match.anyValue(),
-  });
+  dev.resourceCountIs("AWS::ElasticLoadBalancingV2::Listener", 0);
+  // 9090 is VPC-only: the one ingress rule on it is from the VPC CIDR.
+  const ingress = Object.values(dev.findResources("AWS::EC2::SecurityGroupIngress")).concat(
+    Object.values(dev.findResources("AWS::EC2::SecurityGroup")).flatMap((sg) =>
+      ((sg as { Properties?: { SecurityGroupIngress?: unknown[] } }).Properties
+        ?.SecurityGroupIngress ?? []).map((p) => ({ Properties: p })),
+    ),
+  ) as { Properties: Record<string, unknown> }[];
+  const metrics = ingress.filter((r) => r.Properties.FromPort === 9090);
+  expect(metrics).toHaveLength(1);
+  expect(metrics[0].Properties.CidrIp).toBeDefined();
+  expect(metrics[0].Properties.SourceSecurityGroupId).toBeUndefined();
+  // Port 8080 admits the ALB's security group only.
+  const relay = ingress.filter((r) => r.Properties.FromPort === 8080);
+  expect(relay).toHaveLength(1);
+  expect(relay[0].Properties.SourceSecurityGroupId).toBeDefined();
 });
 
 test("relay_host_is_relay_dev_in_dev", () => {
@@ -125,38 +123,33 @@ test("relay_host_is_relay_dev_in_dev", () => {
     [dev, "relay-dev.thelightbulb.company"],
     [build("prod"), "relay.thelightbulb.company"],
   ] as const) {
-    template.hasResourceProperties("AWS::CloudFront::Distribution", {
-      DistributionConfig: Match.objectLike({ Aliases: [host] }),
+    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::ListenerRule", {
+      Conditions: [{ Field: "host-header", HostHeaderConfig: { Values: [host] } }],
     });
-    for (const Type of ["A", "AAAA"]) {
-      template.hasResourceProperties("AWS::Route53::RecordSet", { Name: `${host}.`, Type });
-    }
   }
 });
 
-test("relay_alarms_watch_bytes_and_5xx", () => {
-  dev.resourceCountIs("AWS::CloudWatch::Alarm", 2);
-  dev.hasResourceProperties("AWS::CloudWatch::Alarm", {
-    Metrics: Match.arrayWith([
-      Match.objectLike({ Label: "BytesTransferred", ReturnData: true }),
-    ]),
-  });
-  dev.hasResourceProperties("AWS::CloudWatch::Alarm", {
-    MetricName: "5xxErrorRate",
-    Namespace: "AWS/CloudFront",
-  });
-});
-
-test("relay_image_loads_its_config_as_nonroot", () => {
-  const read = (f: string) => fs.readFileSync(path.join(__dirname, "..", "relay", f), "utf8");
-  // TLS ends at the ALB: a [tls] table would make the relay serve HTTPS.
-  expect(read("config.toml")).not.toMatch(/^\[tls\]/m);
+test("relay_config_matches_the_brief", () => {
+  const config = fs.readFileSync(path.join(__dirname, "..", "relay", "config.toml"), "utf8");
+  for (const line of [
+    "enable_relay = true",
+    'http_bind_addr = "[::]:8080"',
+    "enable_quic_addr_discovery = false",
+    "enable_metrics = true",
+    'access = "everyone"',
+    "accept_conn_limit = 10.0",
+    "accept_conn_burst = 50",
+    "bytes_per_second = 1048576",
+    "max_burst_bytes = 4194304",
+  ]) {
+    expect(config).toContain(line);
+  }
+  expect(config).not.toMatch(/^\[tls\]/m);
   // A missing config file is silently Config::default(), so the image must put it
-  // exactly where the entrypoint reads it.
-  const dockerfile = read("Dockerfile");
-  const configPath = /"--config-path", "([^"]+)"/.exec(dockerfile)?.[1];
-  expect(configPath).toBeDefined();
-  expect(dockerfile).toContain(`COPY config.toml ${configPath}`);
+  // exactly where the entrypoint reads it, and run as nonroot.
+  const dockerfile = fs.readFileSync(path.join(__dirname, "..", "relay", "Dockerfile"), "utf8");
+  expect(dockerfile).toContain("COPY config.toml /etc/iroh-relay/config.toml");
+  expect(dockerfile).toContain('"--config-path", "/etc/iroh-relay/config.toml"');
   expect(dockerfile).toMatch(/^FROM gcr\.io\/distroless\/static-debian12:nonroot@sha256:/m);
   expect(dockerfile).toMatch(/sha256sum -c/);
 });

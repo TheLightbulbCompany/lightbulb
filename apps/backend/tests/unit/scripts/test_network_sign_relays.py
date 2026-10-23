@@ -81,3 +81,9 @@ def test_sign_writes_a_list_that_verifies_with_key_1(tmp_path: Path, env, url):
         verify(publics[1], body, minisig)
     with pytest.raises(InvalidSignature):
         verify(publics[0], body + b" ", minisig)
+
+
+def test_committed_lists_are_the_signed_shape():
+    for env, url in nsr.RELAYS.items():
+        body = json.loads((nsr.OUT_DIR / env / "relays.json").read_text())
+        assert body["v"] == 1 and body["relays"] == [url] and isinstance(body["expires_at"], int)

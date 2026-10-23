@@ -1,0 +1,20 @@
+# iroh-relay for Lightbulb Connect (relay-stack.ts). TLS ends at the ALB, so there
+# is no [tls] table and the relay serves plain HTTP on :8080 (it runs as nonroot,
+# so no port below 1024). QUIC address discovery is off: no UDP, no ACME.
+# Metrics listen on :9090 (the default for this bind address), VPC only.
+enable_relay = true
+http_bind_addr = "[::]:8080"
+enable_quic_addr_discovery = false
+enable_metrics = true
+
+# Our servers cannot know who the free members are, so there is no allowlist.
+# Abuse is bounded by the limits below.
+access = "everyone"
+
+[limits]
+accept_conn_limit = 10.0
+accept_conn_burst = 50
+
+[limits.client.rx]
+bytes_per_second = 1048576
+max_burst_bytes = 4194304

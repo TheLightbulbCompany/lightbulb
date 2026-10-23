@@ -185,7 +185,7 @@ function NetworkSignIn() {
       <div className="text-center flex flex-col items-center max-w-sm">
         {state !== "done" && (
           <p className="text-sm text-muted-foreground mb-4">
-            Sign in to verify your name on the Lightbulb network. This does not create a workspace or start a plan.
+            Sign in to verify your name on the Lightbulb network. It confirms who you are and nothing more.
           </p>
         )}
         {body}

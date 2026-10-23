@@ -41,6 +41,17 @@ MAX_TOKEN = 4096
 KEY_TTL_S = 300
 MAX_AGENTS = 6
 
+# The public halves by kid, mirroring the engine's `ISSUER_KEYS` (lightbulb-connect
+# `src/proof.rs`): a refresh verifies the old proof with ITS kid's key, so a p1 -> p2 rotation
+# keeps old proofs refreshable; `mint` signs with the active `NETWORK_ISSUER_KID`.
+# Today these are the engine's placeholder bytes (no private half exists). Replaced at the key
+# ceremony: `scripts/network_keys.py` prints the values for both this table and the engine's.
+ISSUER_PUBLIC_KEYS: dict[str, bytes] = {
+    "p1": bytes.fromhex("3ab7efc15f6987eeccf9ae020e646e37a4d967db7449adb64d7288dcd494208b"),
+    "p2": bytes.fromhex("fe78b068865a2dda3784d03d1cd9abcceeaf2f303df66d3c0030ac2c82368361"),
+    "dev": bytes.fromhex("398974e26a8401d624b3fe219bc9bf44e7d1b403b4aa23a4714019f668017830"),
+}
+
 _key: tuple[float, Ed25519PrivateKey] | None = None
 
 
@@ -167,19 +178,20 @@ _REFUSED = HTTPException(status_code=401, detail="Proof refresh refused.")
 
 
 async def _claims(token: str) -> dict:
-    """The claims of a proof this issuer signed with its current key (any age)."""
+    """The claims of a proof an issuer key in ``ISSUER_PUBLIC_KEYS`` signed (any age)."""
     try:
         h, p, s = token.split(".")
         header = json.loads(_unb64(h))
-        if header != {"alg": "EdDSA", "kid": settings.NETWORK_ISSUER_KID}:
-            raise ValueError("another key")
-        # ponytail: verifies against the current key only, so a kid rotation (p1 -> p2) makes
-        # old proofs unrefreshable and their people sign in again. Keep the previous public
-        # half here if rotations become routine.
-        (await _signing_key()).public_key().verify(_unb64(s), f"{h}.{p}".encode())
+        public = ISSUER_PUBLIC_KEYS.get(header.get("kid")) if header.get("alg") == "EdDSA" else None
+        if public is None:
+            raise ValueError("unknown issuer key")
+        Ed25519PublicKey.from_public_bytes(public).verify(_unb64(s), f"{h}.{p}".encode())
         return json.loads(_unb64(p))
-    except (ValueError, TypeError, binascii.Error, InvalidSignature) as exc:
+    except (ValueError, TypeError, AttributeError, binascii.Error, InvalidSignature) as exc:
         raise _REFUSED from exc
+
+
+_UNREACHABLE = "Could not check this person. Try again."
 
 
 async def refresh(proof: str, at: int, sig: str, now: int) -> str:
@@ -197,15 +209,18 @@ async def refresh(proof: str, at: int, sig: str, now: int) -> str:
     sub, computer, workspace = claims["sub"], claims["computer"], claims.get("workspace") or {}
     if claims["kind"] == "workspace":
         # ponytail: carries the agents forward; the bridge re-mints with fresh ones on connect.
-        org = await clerk_admin.get_organization(workspace["id"])
-        if not org:
+        try:
+            org = await clerk_admin.get_organization(workspace["id"], strict=True)
+        except clerk_admin.ClerkLookupError as exc:
+            raise HTTPException(status_code=503, detail=_UNREACHABLE) from exc
+        if not org:  # the workspace is gone
             raise _REFUSED
         ws = {"id": workspace["id"], "name": org.get("name") or workspace["name"]}
         return await mint(sub, ws["name"], computer, "workspace", ws, claims.get("agents"), now)
     try:
         user = await clerk_admin.get_user_strict(sub)
     except clerk_admin.ClerkLookupError as exc:
-        raise HTTPException(status_code=503, detail="Could not check this person. Try again.") from exc
-    if user is None:
+        raise HTTPException(status_code=503, detail=_UNREACHABLE) from exc
+    if user is None or user.get("banned") or user.get("locked"):
         raise _REFUSED
     return await computer_proof(sub, workspace.get("id"), computer, now)

@@ -28,14 +28,18 @@ def test_keys_script_never_prints_or_stores_a_seed_outside_secrets_manager(sm, t
         seed = base64.b64decode(seed_b64)
         public = Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes_raw()
         assert bytes(int(n) for n in numbers.split(", ")) == public and base64.b64decode(b64) == public
+        assert f'"{kid}": bytes.fromhex("{public.hex()}")' in out.out  # the backend's table
         for spelling in (seed_b64, seed.hex(), ", ".join(map(str, seed)), base64.urlsafe_b64encode(seed).decode()):
             assert spelling not in out.out + out.err
     assert list(tmp_path.iterdir()) == []  # nothing written to disk
 
 
-def test_keys_script_refuses_when_any_key_exists(sm, capsys):
+def test_keys_script_skips_an_existing_key_and_creates_the_missing_ones(sm, capsys):
     sm.create_secret(Name="lightbulb/dev/network/issuer_key_dev", SecretString="kept")
-    assert script.main(sm) == 1
+    assert script.main(sm) == 0
+    out = capsys.readouterr()
     assert sm.get_secret_value(SecretId="lightbulb/dev/network/issuer_key_dev")["SecretString"] == "kept"
-    assert len(sm.list_secrets()["SecretList"]) == 1  # nothing else written
-    assert "ISSUER_KEYS" not in capsys.readouterr().out
+    assert len(sm.list_secrets()["SecretList"]) == 3
+    assert "issuer_key_dev already exists; skipped" in out.err
+    assert re.findall(r'\("(\w+)", \[', out.out) == ["p1", "p2"]
+    assert script.main(sm) == 0 and "ISSUER_KEYS" not in capsys.readouterr().out  # a rerun creates nothing

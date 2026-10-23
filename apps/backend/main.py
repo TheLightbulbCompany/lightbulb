@@ -615,6 +615,8 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
             "/api/v1/session-links",
             # webhook agents: a rejected body carries the webhook's key.
             "/api/v1/settings/webhook-agents",
+            # network: a rejected body carries a proof or a device code.
+            "/api/v1/network",
         )
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")

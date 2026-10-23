@@ -45,6 +45,7 @@ def issuer(monkeypatch):
 
     monkeypatch.setattr(network_issuer, "_read_seed", read_seed)
     monkeypatch.setattr(network_issuer, "_key", None)
+    monkeypatch.setattr(network_issuer, "ISSUER_PUBLIC_KEYS", {"dev": PUBLIC.public_bytes_raw()})
     monkeypatch.setattr(settings, "NETWORK_ISSUER_KEY_SECRET", "lightbulb/dev/network/issuer_key_dev")
     monkeypatch.setattr(settings, "NETWORK_ISSUER_KID", "dev")
     monkeypatch.setattr(settings, "NETWORK_ISSUER_URL", "https://dev.example/connect")

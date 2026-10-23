@@ -68,7 +68,7 @@ describe("connect this Mac", () => {
 });
 
 describe("sign in a Lightbulb Connect computer (mode=network)", () => {
-  const COPY = "Sign in to verify your name on the Lightbulb network. This does not create a workspace or start a plan.";
+  const COPY = "Sign in to verify your name on the Lightbulb network. It confirms who you are and nothing more.";
 
   it("signed out shows Clerk sign-in that returns to network mode", () => {
     Object.assign(s, { signedIn: false, query: "mode=network" });
@@ -83,18 +83,24 @@ describe("sign in a Lightbulb Connect computer (mode=network)", () => {
     s.post.mockImplementation(async (url: string) =>
       url === "/network/device/describe" ? { computer_name: "Ada's MacBook", key_short: "abcdefghijkl" } : { status: "approved" },
     );
-    render(<ConnectMachinePage />);
+    const { container } = render(<ConnectMachinePage />);
+    const seen: string[] = [];
+    const look = () => seen.push(container.textContent ?? "");
     expect(screen.getByText(COPY)).toBeInTheDocument();
+    look();
     const box = screen.getByLabelText("Enter the code your computer shows") as HTMLInputElement;
     expect(box.value).toBe(""); // nothing in the URL fills it in
     fireEvent.change(box, { target: { value: " WXYZ-2345 " } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(await screen.findByText("Sign in Ada's MacBook?")).toBeInTheDocument();
     expect(screen.getByText("abcdefghijkl")).toBeInTheDocument();
+    look();
     expect(s.post).toHaveBeenCalledWith("/network/device/describe", { user_code: "WXYZ-2345" });
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByText("Done. You can close this tab.")).toBeInTheDocument();
     expect(s.post).toHaveBeenCalledWith("/network/device/approve", { user_code: "WXYZ-2345" });
+    look();
+    expect(seen.join(" ")).not.toMatch(/workspace|plan|trial|upgrade|price|\$/i); // the free path
   });
 
   it("a wrong or expired code reads plainly", async () => {

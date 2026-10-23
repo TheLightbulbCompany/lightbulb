@@ -35,6 +35,8 @@ def env(issuer, audit, monkeypatch):
     clerk = {"orgs": [{"id": ORG_A, "name": "Acme", "slug": "acme", "role": "org:member"}], "user": {"id": "user_ada"}}
     monkeypatch.setattr(clerk_admin, "list_user_organizations", AsyncMock(side_effect=lambda *a, **k: clerk["orgs"]))
     monkeypatch.setattr(clerk_admin, "get_user_strict", AsyncMock(side_effect=lambda *a, **k: clerk["user"]))
+    clerk["org"] = {"id": ORG_A, "name": "Acme"}
+    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(side_effect=lambda *a, **k: clerk["org"]))
 
     app = FastAPI()
     app.include_router(network.router, prefix="/api/v1/network")
@@ -178,6 +180,62 @@ async def test_refresh_refuses_after_7_days_of_grace(env):
     assert client.post("/api/v1/network/proof/refresh", json=_signed(past, now)).status_code == 401
     clerk["user"] = None  # the Clerk user is gone
     assert client.post("/api/v1/network/proof/refresh", json=_signed(within, now)).status_code == 401
+    for flag in ("banned", "locked"):
+        clerk["user"] = {"id": "user_ada", flag: True}
+        assert client.post("/api/v1/network/proof/refresh", json=_signed(within, now)).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_refresh_accepts_a_proof_from_the_previous_kid(env, monkeypatch):
+    client, *_ = env
+    old_seed, new_seed = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+    monkeypatch.setattr(
+        network_issuer,
+        "ISSUER_PUBLIC_KEYS",
+        {"p1": old_seed.public_key().public_bytes_raw(), "p2": new_seed.public_key().public_bytes_raw()},
+    )
+    now = int(time.time())
+    monkeypatch.setattr(settings, "NETWORK_ISSUER_KID", "p1")
+    monkeypatch.setattr(network_issuer, "_key", (time.monotonic(), old_seed))
+    old = await network_issuer.mint("user_ada", "Ada", KEY, "computer", None, None, now - 3600)
+    monkeypatch.setattr(settings, "NETWORK_ISSUER_KID", "p2")  # rotated: p2 is now active
+    monkeypatch.setattr(network_issuer, "_key", (time.monotonic(), new_seed))
+    r = client.post("/api/v1/network/proof/refresh", json=_signed(old, now))
+    assert r.status_code == 200, r.text
+    header, _ = open_proof(r.json()["proof"], new_seed.public_key())
+    assert header["kid"] == "p2"
+    monkeypatch.setattr(network_issuer, "ISSUER_PUBLIC_KEYS", {"p2": new_seed.public_key().public_bytes_raw()})
+    assert client.post("/api/v1/network/proof/refresh", json=_signed(old, now)).status_code == 401  # unknown kid
+
+
+@pytest.mark.asyncio
+async def test_refresh_of_a_workspace_proof_keeps_its_agents_and_rereads_the_name(env):
+    client, _, clerk = env
+    now = int(time.time())
+    ws = {"id": ORG_A, "name": "Acme"}
+    proof = await network_issuer.mint(f"ws:{ORG_A}", "Acme", KEY, "workspace", ws, ["Friday", "Atlas"], now)
+    clerk["org"] = {"id": ORG_A, "name": "Acme Renamed"}
+    r = client.post("/api/v1/network/proof/refresh", json=_signed(proof, now))
+    assert r.status_code == 200, r.text
+    _, claims = open_proof(r.json()["proof"])
+    assert (claims["sub"], claims["kind"], claims["name"]) == (f"ws:{ORG_A}", "workspace", "Acme Renamed")
+    assert claims["workspace"] == {"id": ORG_A, "name": "Acme Renamed"} and claims["agents"] == ["Friday", "Atlas"]
+    clerk["org"] = None  # the workspace is gone (a strict 404)
+    assert client.post("/api/v1/network/proof/refresh", json=_signed(proof, now)).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_refresh_answers_503_when_clerk_is_unreachable(env, monkeypatch):
+    client, *_ = env
+    now = int(time.time())
+    person = await network_issuer.mint("user_ada", "Ada", KEY, "computer", None, None, now)
+    ws = {"id": ORG_A, "name": "Acme"}
+    workspace = await network_issuer.mint(f"ws:{ORG_A}", "Acme", KEY, "workspace", ws, ["Friday"], now)
+    blip = AsyncMock(side_effect=clerk_admin.ClerkLookupError("network"))
+    monkeypatch.setattr(clerk_admin, "get_user_strict", blip)
+    monkeypatch.setattr(clerk_admin, "get_organization", blip)
+    for proof in (person, workspace):
+        assert client.post("/api/v1/network/proof/refresh", json=_signed(proof, now)).status_code == 503
 
 
 def test_refresh_drops_workspace_after_leaving(env):
@@ -200,3 +258,11 @@ def test_routes_log_no_proof(env, caplog):
     # botocore's own DEBUG wire dump (never on in a deployed task) is the AWS SDK's, not ours.
     ours = [r.getMessage() for r in caplog.records if not r.name.startswith(("botocore", "boto3"))]
     assert ours and "eyJ" not in "\n".join(ours)
+
+
+def test_a_rejected_network_body_is_not_echoed():
+    from main import app
+
+    proof = "eyJ" + "x" * 5000  # too long: refused, and never echoed back
+    r = TestClient(app).post("/api/v1/network/proof/refresh", json={"proof": proof, "at": 0, "sig": "s"})
+    assert r.status_code == 400 and "eyJ" not in r.text

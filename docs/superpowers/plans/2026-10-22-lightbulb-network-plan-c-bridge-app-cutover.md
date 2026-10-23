@@ -12,10 +12,10 @@ The relay is `iroh-relay` behind the existing internal ALB, published through a 
 
 The backend keeps the workspace's session model, renamed `workspace_sessions`. Only its writer changes: the bridge writes it from each Mac's control stream, in place of the hub socket.
 
-Rollout:
-- **Phase 1** (Tasks 1–12) is additive. It merges behind `NETWORK_ENABLED=false`.
-- **Phase 2** (Tasks 13–21) is ONE PR, with one reviewed commit per task. Task 22 is the ordered release train that ships it.
-- **Task 23** retires the WebSocket door last, in a separate PR, after a week of soak.
+Rollout (owner ruling 2026-10-23: "we don't care about cutover or deploying dark; ship it and fix forward"):
+- There are no feature flags and no release train. Every task is its own PR to `main`, merged when its review passes; dev deploys on merge and prod is promoted by dispatch once a lane's dev smoke passes. Bugs are fixed forward.
+- **Phase 1** (Tasks 1–12) is additive: backend, infra and bridge. **Phase 2** (Tasks 13–21) switches each surface; the hub piece a task replaces is deleted in the same PR or the next (Task 21, per area). Task 22 is a short ship order. Task 23 retires the WebSocket door right after 21b, with no soak week.
+- Plan B is complete (engine `main` @ eb1d39d, v0.2.0 in release). The bridge lane's Task 5 checks each "still needed" item below against the pinned engine and files any gap as an engine PR.
 
 **Tech Stack:** Python 3 / FastAPI / DynamoDB / PyJWT `EdDSA` (backend, existing); Rust 2021, `tokio`, `axum`, `aws-sdk-{secretsmanager,s3,dynamodb}` and the `lightbulb-connect` crate (bridge); Tauri 2 (desktop); Next.js 16 and React 19 (frontend); Expo (mobile); AWS CDK (`apps/infra`); `iroh-relay` (version = Plan B's `iroh` pin).
 
@@ -82,9 +82,9 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
   - Relay task: TCP 80 only, plain HTTP behind the ALB. QUIC discovery is off, so there is no UDP 7842 and no ACME. Metrics on 9090, VPC only.
   - Bridge: TCP 8080, in private subnets, ingress from the backend SG only.
   - Backend internal door: a new ALB listener on 8082, ingress from the bridge SG only.
-- **Flags.** `NETWORK_ENABLED` (backend, set in the CDK env; default `false` in both envs) and `NEXT_PUBLIC_NETWORK_ENABLED` (frontend). While they are off: every `/api/v1/network/*` route answers 404, `/device` and `/j/` are not served, and `/install` serves today's app installer. Task 22 turns both on.
+- **No flags.** `NETWORK_ENABLED`, `NEXT_PUBLIC_NETWORK_ENABLED` and `EXPO_PUBLIC_NETWORK_ENABLED` do not exist (owner ruling 2026-10-23). `/api/v1/network/*`, `/j/`, `/device` and `/install` (the engine installer) are live as soon as they deploy.
 - **New env vars (all set by CDK).**
-  - Backend: `NETWORK_ENABLED`, `BRIDGE_URL=http://bridge.lightbulb-{env}.local:8080`, `BRIDGE_INTERNAL_TOKEN` (secret), `NETWORK_ISSUER_KID` (`p1` in prod, `dev` in dev), `NETWORK_ISSUER_KEY_SECRET` (a secret NAME, read at call time, never an env value), `NETWORK_ISSUER_URL`, `NETWORK_AUDIT_TABLE`.
+  - Backend: `BRIDGE_URL=http://bridge.lightbulb-{env}.local:8080`, `BRIDGE_INTERNAL_TOKEN` (secret), `NETWORK_ISSUER_KID` (`p1` in prod, `dev` in dev), `NETWORK_ISSUER_KEY_SECRET` (a secret NAME, read at call time, never an env value), `NETWORK_ISSUER_URL`, `NETWORK_AUDIT_TABLE`.
   - Bridge: `BACKEND_INTERNAL_URL=http://<ALB DNS>:8082`, `BRIDGE_INTERNAL_TOKEN` (secret), `OWNER_STATE_BUCKET`, `CONTAINERS_TABLE`, `LIGHTBULB_ENV`, `NETWORK_RELAY_URL`, `NETWORK_ISSUER_URL`.
 - **Secrets and keys.**
   - Issuer keys: `lightbulb/{env}/network/issuer_key_<kid>` (Ed25519 seed, base64). Prod has `p1` (active) and `p2` (standby); dev has `dev`. All three public halves are compiled into the engine, so a release engine also verifies dev proofs (accepted risk, recorded). Only the backend task role reads them.
@@ -128,7 +128,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
   - A change under `apps/infra/lib/` runs `cd apps/infra && npx cdk synth` and commits the regenerated `deploy.yml` in the same PR.
   - A Hermes change needs a pin-flip PR, then `scripts/roll_hermes_runtimes.py` and `scripts/reapply_hermes_skills_dirs.py`.
   - The desktop app ships on a `desktop-build.yml` dispatch.
-  - Mobile OTA ships on merge, so the Phase 2 PR keeps its mobile commits behind `EXPO_PUBLIC_NETWORK_ENABLED`. Task 22 flips it after the prod dispatch.
+  - Mobile OTA ships on merge: land the mobile PR (Task 20) after the backend routes it calls are in prod.
 - Ponytail at every step. Run `/simplify` after every task, before review.
 
 ## Review Focus
@@ -141,18 +141,18 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 
 ## Owner items still open
 
-- **O3 (Tasks 3, 4).** Generate the issuer keypairs `p1`, `p2` and `dev`, and sign `relays.json` with the owner's minisign key, through the owner's 600 file. The public halves go to the engine repo's `ISSUER_KEYS`.
-- **O4 (Tasks 1, 12).** Make the engine repo public, or store a read token as `NETWORK_REPO_TOKEN` in the monorepo's Actions secrets.
+- **O3 (Tasks 3, 4).** The owner runs the key ceremony from their own terminal (`!` prefix): Task 3 ships `apps/backend/scripts/network_keys.py` (generates the issuer seeds `p1`, `p2`, `dev` straight into Secrets Manager and prints only the public halves) and Task 4 ships `apps/backend/scripts/network_sign_relays.py` (generates the two minisign keys the same way, and signs `relays.json`). An agent session may not write the secret store (classifier). The public halves then go to the engine repo's `ISSUER_KEYS` and `relay::KEYS` (a v0.2.x engine release).
+- **O4 — done 2026-10-22.** The engine repo is public; no `NETWORK_REPO_TOKEN`.
 
 ---
 
-## Phase 1 — additive, behind `NETWORK_ENABLED=false`
+## Phase 1 — additive (backend, infra, bridge)
 
 ### Task 1: Pin the engine
 
 **Files:**
 - Create `network-version.json`, `scripts/check_network_pin.py` and `scripts/tests/test_check_network_pin.py`.
-- Modify `apps/desktop/src-tauri/scripts/vendor-sidecars.sh`: fetch the pinned `lightbulb-connect-aarch64-apple-darwin`, check its sha256, and place it at `src-tauri/bin/lightbulb-connect`.
+- Modify `apps/desktop/src-tauri/scripts/vendor-sidecars.sh`: fetch the pinned release asset `lightbulb-connect-macos-arm64.tar.gz` (the engine's `release.yml` publishes that name, its `.sha256`, and `install.sh`), check its sha256 against the pin, extract, and place the binary at `src-tauri/bin/lightbulb-connect`.
 - Modify `apps/desktop/src-tauri/tauri.conf.json`: add `bin/lightbulb-connect` to `resources`.
 - Modify `.github/workflows/desktop-build.yml`: codesign the resource as nested code.
 - Modify `.github/workflows/frontend-ci.yml` and `desktop-core.yml`: run the pin check.
@@ -166,32 +166,32 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - [ ] **Step 4:** PASS. `bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh aarch64-apple-darwin` places the binary and refuses a wrong sha.
 - [ ] **Step 5:** Commit `chore(network): pin the engine by release tag`.
 
-### Task 2: Installer, `/j/`, `/device`, issuer rewrites (dark)
+### Task 2: Installer, `/j/`, `/device`, issuer rewrites
 
 **Files:**
-- Create `apps/frontend/public/network/install.sh` (the new installer; `/install` keeps pointing at today's script until Task 22) and `apps/frontend/scripts/network-install.test.sh`.
+- Create `apps/frontend/public/network/install.sh` (the new installer; `/install` and `/install.sh` point at it, replacing today's `public/install.sh`) and `apps/frontend/scripts/network-install.test.sh`.
 - Create `apps/frontend/src/app/j/layout.tsx`, a bare root with no `PostHogProvider`, no `VercelAnalytics` and no Clerk.
 - Create `apps/frontend/src/app/j/page.tsx`, `apps/frontend/src/app/j/__tests__/page.test.tsx` and `apps/frontend/src/__tests__/networkRoutes.test.ts`.
 - Modify `apps/frontend/next.config.ts`.
-- Modify `apps/frontend/src/middleware.ts`: `/j/`, `/device` and `/network/*` answer 404 while `NEXT_PUBLIC_NETWORK_ENABLED` is off; `/j/` bypasses Clerk.
+- Modify `apps/frontend/src/middleware.ts`: `/j/`, `/device` and `/network/*` bypass Clerk.
 
 **Interfaces:**
 - `install.sh` carries `VERSION=<tag>` and `SHA256=<hex>`, and works in this order:
-  1. Download `https://github.com/TheLightbulbCompany/lightbulb-connect/releases/download/$VERSION/lightbulb-connect-aarch64-apple-darwin` with `curl`, which adds no quarantine flag.
-  2. Check `shasum -a 256`.
+  1. Download `https://github.com/TheLightbulbCompany/lightbulb-connect/releases/download/$VERSION/lightbulb-connect-macos-arm64.tar.gz` with `curl`, which adds no quarantine flag. (The engine repo's own `install.sh` fetches `latest`; this one pins `$VERSION` and `$SHA256` from `network-version.json`.)
+  2. Check `shasum -a 256` against `$SHA256`, then extract.
   3. Install to `~/.lightbulb/connect/bin/lightbulb-connect` (0755) and link `~/.local/bin/lightbulb`.
   4. Run `lightbulb-connect setup`, then `lightbulb-connect daemon --install`.
 
   Flags are `--no-join` and `--join '<link>'`. It never uses sudo, and a re-run upgrades. Texts follow onboarding A2 and its "Failure modes", except that `Verifying the signature...` reads `Verifying the download...` until releases are signed.
 - `/j/` is static. It reads `location.hash` only to echo the full link into the two commands. Copy per onboarding A5a/A5b. The test renders the ROUTE with its layout, and asserts no fetch and no `<script>` from posthog, vercel or clerk.
-- Rewrites (afterFiles; they work only when the flag is on):
+- Rewrites (afterFiles):
   - `/network/device/:path*` and `/network/proof/:path*` → `https://api[-dev].thelightbulb.company/api/v1/network/…`.
   - `/network/relays.json(.minisig)` → `/network-relays/<env>/relays.json(.minisig)`.
 - Redirect `/device` → `/auth/connect-machine?mode=network`. The person TYPES the code there; nothing in the query fills it in.
 
-- [ ] **Step 1: Failing tests** — `j_route_loads_no_analytics_or_clerk`, `j_page_echoes_the_full_link_into_both_commands`, `network_routes_404_while_flag_off`, `device_redirect_carries_no_code`, `install_sh_refuses_a_wrong_sha_and_writes_nothing`, `install_sh_refuses_intel_with_the_exact_text`, `install_sh_output_has_no_plan_trial_workspace_or_price`.
+- [ ] **Step 1: Failing tests** — `j_route_loads_no_analytics_or_clerk`, `j_page_echoes_the_full_link_into_both_commands`, `device_redirect_carries_no_code`, `install_sh_refuses_a_wrong_sha_and_writes_nothing`, `install_sh_refuses_intel_with_the_exact_text`, `install_sh_output_has_no_plan_trial_workspace_or_price`.
 - [ ] **Step 2:** `pnpm --filter @lightbulb/frontend test`; `sh apps/frontend/scripts/network-install.test.sh` — FAIL. **Step 3:** Implement. **Step 4:** PASS.
-- [ ] **Step 5:** Commit `feat(network): engine installer, bare join page, device and issuer routes behind a flag`.
+- [ ] **Step 5:** Commit `feat(network): engine installer, bare join page, device and issuer routes`.
 
 ### Task 3: Issuer — device flow, proofs, refresh, audit
 
@@ -199,7 +199,8 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - Create `apps/backend/core/services/network_issuer.py`, `apps/backend/routers/network.py` and `apps/backend/core/repositories/network_audit_repo.py`.
 - Create the tests `apps/backend/tests/unit/services/test_network_issuer.py` and `apps/backend/tests/unit/routers/test_network_device.py`.
 - Modify `apps/backend/core/services/device_login.py`: rows with `purpose: "network"` carry `member_key` and `computer_name`.
-- Modify `apps/backend/core/config.py`, and `apps/backend/main.py` (mount the router when `NETWORK_ENABLED`).
+- Modify `apps/backend/core/config.py`, and `apps/backend/main.py` (mount the router).
+- Create `apps/backend/scripts/network_keys.py` (O3): generates the three issuer seeds with `cryptography`, writes each to Secrets Manager `lightbulb/{env}/network/issuer_key_{kid}` (refusing to overwrite), and prints ONLY the public halves as the `ISSUER_KEYS` byte arrays. Test it with a fake Secrets Manager client.
 - Modify `apps/frontend/src/app/auth/connect-machine/page.tsx` for `mode=network`:
   - The person types the code into a box. The page then shows the computer name and the key short (the first 12 characters of `member_key`).
   - Copy: `Sign in to verify your name on the Lightbulb network. This does not create a workspace or start a plan.`
@@ -219,7 +220,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
   - `POST /device/token {device_code}` (no auth) → `200 {"pending": true}`, then `200 {"proof"}` exactly once, or `410`.
   - `POST /proof/refresh {proof, at, sig}` (no auth) → `{proof}`. It refuses unless all hold: `sig` verifies against `proof.computer`; `|now - at| ≤ 300`; the old proof's `exp` is at most 7 days past (grace); the Clerk user still exists. It reads the workspace name again and drops it if the person has left.
 
-- [ ] **Step 1: Failing tests** — `proof_verifies_with_the_public_half_and_lasts_24h`, `proof_names_the_key_not_the_hostname`, `start_uri_carries_no_code`, `approve_without_a_workspace_mints_a_proof`, `computer_proof_carries_the_active_workspace`, `workspace_proof_sub_is_ws_of_the_owner`, `describe_shows_name_and_key_short`, `token_is_pending_then_proof_once_then_410`, `device_code_stored_only_as_sha256`, `refresh_requires_the_computer_signature`, `refresh_refuses_after_7_days_of_grace`, `refresh_drops_workspace_after_leaving`, `every_mint_writes_an_audit_row`, `routes_log_no_proof` (caplog has no `eyJ`), `network_routes_404_when_disabled`.
+- [ ] **Step 1: Failing tests** — `proof_verifies_with_the_public_half_and_lasts_24h`, `proof_names_the_key_not_the_hostname`, `start_uri_carries_no_code`, `approve_without_a_workspace_mints_a_proof`, `computer_proof_carries_the_active_workspace`, `workspace_proof_sub_is_ws_of_the_owner`, `describe_shows_name_and_key_short`, `token_is_pending_then_proof_once_then_410`, `device_code_stored_only_as_sha256`, `refresh_requires_the_computer_signature`, `refresh_refuses_after_7_days_of_grace`, `refresh_drops_workspace_after_leaving`, `every_mint_writes_an_audit_row`, `routes_log_no_proof` (caplog has no `eyJ`), `keys_script_never_prints_or_stores_a_seed_outside_secrets_manager`.
 - [ ] **Step 2:** `cd apps/backend && uv run pytest tests/unit/services/test_network_issuer.py tests/unit/routers/test_network_device.py -v` — FAIL. **Step 3:** Implement (keys come from the owner, O3). **Step 4:** PASS.
 - [ ] **Step 5:** Commit `feat(network): sign-in issuer — typed device code, proofs, refresh, audit`.
 
@@ -244,7 +245,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
   - Its target group sits on the EXISTING internal ALB's HTTPS listener, with a host-header rule `relay[-dev].thelightbulb.company` (ACM wildcard cert).
   - The ALB is internal, so the public door is a CloudFront distribution with a VPC origin to that ALB, forwarding WebSockets (the `bv-` pattern). Route53 gets an alias for the env's relay host.
   - Alarms: relay `BytesTransferred` on CloudFront, and 5xx.
-- `relays.json`, one per env: `{"v":1,"relays":["https://relay[-dev].thelightbulb.company"],"expires_at":<now+90 d>}`. The owner signs it (O3); the runbook carries a calendar item to re-sign it every 90 days.
+- `relays.json`, one per env: `{"v":1,"relays":["https://relay[-dev].thelightbulb.company"],"expires_at":<now+90 d>}`. The owner signs it with `apps/backend/scripts/network_sign_relays.py` (O3): `--generate` makes two minisign keypairs straight into Secrets Manager `lightbulb/prod/network/relays_signing_key_{1,2}` and prints only the public strings for `relay::KEYS`; `--sign <env>` reads key 1 from Secrets Manager and writes `relays.json` + `relays.json.minisig` (pure-Python minisign format, verified by the engine's `minisign-verify` in a fixture test). The runbook carries a calendar item to re-sign every 90 days.
 
 - [ ] **Step 1: Failing tests** — `relay_has_no_nlb_and_no_udp`, `relay_rule_is_host_header_on_the_existing_alb`, `relay_deploy_stops_before_it_starts`, `relay_metrics_are_not_routed`, `relay_host_is_relay_dev_in_dev`; backend `test_relay_slugs_are_reserved`. Before adding the slugs, check the company-slugs table for `relay` and `relay-dev`. If either is taken, stop and ask the owner.
 - [ ] **Step 2:** `cd apps/infra && npx jest test/relay-stack.test.ts` — FAIL. **Step 3:** Implement; `npx cdk synth`; commit `deploy.yml`.
@@ -424,14 +425,14 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
 - [ ] **Step 5:** Commit `feat(network): hold notices to Needs-you, phone/web decisions, permission prompts`.
 
-### Task 12: Bridge, audit table and flags in CDK
+### Task 12: Bridge, audit table and network env in CDK
 
 **Files:**
 - Create `apps/infra/lib/stacks/bridge-stack.ts` and `apps/infra/test/bridge-stack.test.ts`.
 - Modify `apps/infra/lib/lightbulb-stage.ts`.
 - Modify `apps/infra/lib/stacks/database-stack.ts`: add `lightbulb-{env}-network-audit`, with TTL attribute `expiresAt`.
 - Modify `apps/infra/lib/stacks/service-stack.ts`:
-  - Backend env, with `NETWORK_ENABLED=false`.
+  - Backend env: `BRIDGE_URL`, `BRIDGE_INTERNAL_TOKEN`, `NETWORK_ISSUER_KID`, `NETWORK_ISSUER_KEY_SECRET`, `NETWORK_ISSUER_URL`, `NETWORK_AUDIT_TABLE`.
   - IAM: create, read and delete `lightbulb/{env}/network/bridge/*`; read `lightbulb/{env}/network/issuer_key_*`; delete in S3 on `bridge-state/*`; write to the audit table.
 - Modify `apps/infra/lib/stacks/auth-stack.ts`: add `bridge_internal_token`.
 - Regenerate `.github/workflows/deploy.yml`.
@@ -444,13 +445,13 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - SG: ingress 8080 from the backend SG. Egress 443 and 8082 to the ALB; 443 and UDP to the internet (relays, peers).
 - A deploy is a short outage (stop before start; outboxes retry). The runbook says so.
 
-- [ ] **Step 1: Failing tests** — `bridge_service_stops_before_it_starts`, `bridge_has_no_public_listener`, `bridge_role_reads_only_bridge_secrets`, `issuer_keys_readable_only_by_the_backend_role`, `network_enabled_is_false_in_both_envs`, `audit_table_has_ttl`.
+- [ ] **Step 1: Failing tests** — `bridge_service_stops_before_it_starts`, `bridge_has_no_public_listener`, `bridge_role_reads_only_bridge_secrets`, `issuer_keys_readable_only_by_the_backend_role`, `audit_table_has_ttl`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement; `npx cdk synth`; commit `deploy.yml`. **Step 4:** PASS. After the dev deploy, the bridge's `GET /health` answers the backend task.
-- [ ] **Step 5:** Commit `feat(infra): bridge service, network audit table, network flags`.
+- [ ] **Step 5:** Commit `feat(infra): bridge service, network audit table, network env`.
 
 ---
 
-## Phase 2 — the switch (ONE PR, branch `feat/network-cutover` off `origin/main`, one commit per task)
+## Phase 2 — the switch (one PR per task, each off `origin/main`; the hub piece a task replaces goes in the same PR or the next)
 
 ### Task 13: The hosted MCP gains the network tools
 
@@ -653,7 +654,6 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 **Files:**
 - Create `apps/mobile/src/components/network/HoldCard.tsx` and `apps/frontend/src/components/network/HoldItem.tsx`, each with a test.
 - Modify the Needs-you renderers on web and mobile. A tap on the mobile push opens the card.
-- The mobile surfaces sit behind `EXPO_PUBLIC_NETWORK_ENABLED`; Task 22 flips it.
 
 **Interfaces:**
 - Copy as in Task 11.
@@ -662,7 +662,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - A permission hold offers Allow once and Decline.
 - Results read `Allowed.`, `Declined.` or `Answered on your Mac.` No message text appears anywhere.
 
-- [ ] **Step 1: Failing tests** — `card_shows_no_message_text`, `three_answers_for_a_message_hold`, `always_allow_only_for_own_workspace_agents`, `approvals_switch_writes_the_link`, `permission_hold_offers_once_and_decline`, `hidden_while_flag_off`.
+- [ ] **Step 1: Failing tests** — `card_shows_no_message_text`, `three_answers_for_a_message_hold`, `always_allow_only_for_own_workspace_agents`, `approvals_switch_writes_the_link`, `permission_hold_offers_once_and_decline`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
 - [ ] **Step 5:** Commit `feat(network): answer holds from the phone and the web`.
 
@@ -697,26 +697,22 @@ The audit table goes in the PR description, with path, keep/delete and reason fo
 
   Commit `docs: CLAUDE.md after the network cutover`.
 
-### Task 22: The release train (ordered; each step has a check and a rollback)
+### Task 22: Ship order (no train, no flags, no rollback table)
 
-**Files:** Create `docs/runbooks/network-cutover.md`, containing this table; run ids are filled in during the train.
+**Files:** Create `docs/runbooks/network-ship-order.md` with this list; fill in run ids as they happen.
 
-| # | Step | Check | Rollback |
-|---|---|---|---|
-| 0 | Before the merge: tag `main` as `hub-final`. Preconditions: Phase 1 is in prod; the engine tag carries every "still needed" item and Plan B's acceptance passed; O3 and O4 are done. | the tag exists; `/network/relays.json` is served | none needed |
-| 1 | Merge `feat/network-cutover` (Codex reviewed, all four surfaces). Dev deploys with `NETWORK_ENABLED` still off, so backend and web stay dark. | `gh run watch <id> --repo TheLightbulbCompany/lightbulb --exit-status --interval 60`; `/api/v1/network/*` answers 404 | revert the merge |
-| 2 | A PR flips `NETWORK_ENABLED` and `NEXT_PUBLIC_NETWORK_ENABLED` on, and points `/install` at `network/install.sh`. Dev deploys; then run the dev acceptance smoke on a debug engine: connect, Friday send, a hosted send through the Mac, phone Allow. | the smoke rows are recorded | flip the flags off |
-| 3 | Prod: when `gh run list … --json status` shows 0 runs in flight, run `gh workflow run deploy.yml --ref main`. | the ECS task-definition image is the merge sha; `/network/device/start` answers | flip the flags off and re-dispatch. If the code itself is bad: revert to `hub-final` and re-dispatch (the ws door still exists until Task 23) |
-| 4 | Desktop: `gh workflow run desktop-build.yml --ref main`; auto-update | the DMG's bundled engine sha matches the pin; the first run cleans up (Task 17) | re-publish the previous `desktop-v0.4.*` release as latest |
-| 5 | Mobile: flip `EXPO_PUBLIC_NETWORK_ENABLED` in `mobile-ota.yml`; the merge ships the OTA | the phone shows the hold card | flip it back (another OTA) |
-| 6 | Hermes, in order: a pin-flip PR for `dev.tag`; dev deploy; on dev, `roll_hermes_runtimes.py` and `reapply_hermes_skills_dirs.py`; a pin-flip PR for `prod.tag`; prod dispatch; on prod, roll and reapply again. | `get-agent-runtime` shows `containerUri` = the new tag; Friday's tool is `lightbulb_sessions` | flip the tags back and roll |
-| 7 | The owner (workspace admin, network founder) connects: sign in on the Mac, Connect workspace, Allow in the dialog on that Mac; then turns on `Answer Allow requests here` on the phone | `GET /api/v1/network/workspace` shows `state: joined`, `approvals_linked: true` | Disconnect workspace |
+1. Backend, infra and bridge PRs (Tasks 3–12) merge as they pass review; dev deploys on each merge. When a lane's dev smoke passes (issuer: `/network/device/start` answers; relay: Plan B's `messages_flow_via_relay_when_direct_is_blocked` against `relay-dev`; bridge: `GET /health` from the backend task), promote: `gh run list … --json status` shows 0 in flight, then `gh workflow run deploy.yml --ref main`.
+2. The owner runs the key ceremony (O3) and the public halves ship in an engine release; `network-version.json` is bumped to it (Task 1).
+3. Hermes (Task 14): a pin-flip PR for `dev.tag`; dev deploy; `roll_hermes_runtimes.py` and `reapply_hermes_skills_dirs.py` on dev; then the same for prod. Between the backend promote and the roll, Friday's old session tool fails with a plain error; the runbook says so.
+4. Desktop (Tasks 15–18, 21a): `gh workflow run desktop-build.yml --ref main`; the auto-update's first run cleans the hub up (Task 17).
+5. Mobile (Task 20) merges after the routes it calls are in prod; the OTA ships on merge.
+6. The owner (workspace admin, network founder) connects the workspace from their Mac and turns on `Answer Allow requests here` on the phone.
 
-Between steps 3 and 6, the old runtimes call routes that no longer exist, so Friday's session tool fails with a plain error until the roll finishes. The runbook says so.
+A bad deploy is fixed forward in the next PR; nothing is flipped off.
 
-- [ ] **Step 1:** Write the runbook. **Step 2:** Run the train, recording each check. **Step 3:** Commit `docs(runbooks): network cutover train`.
+- [ ] **Step 1:** Write the runbook. **Step 2:** Follow it, recording each run id. **Step 3:** Commit `docs(runbooks): network ship order`.
 
-### Task 23: Retire the WebSocket door (a separate PR, after a week of soak)
+### Task 23: Retire the WebSocket door (a separate PR, right after 21b)
 
 **Files:**
 - Modify `apps/infra/lib/stacks/api-stack.ts`: remove the WebSocket API, the `ws-connect`, `ws-disconnect` and `ws-message` integrations, `websocket-authorizer`, and the `ws[-env]` record. Mark `ws-connections` `RemovalPolicy.RETAIN` and detach it.
@@ -736,7 +732,7 @@ Between steps 3 and 6, the old runtimes call routes that no longer exist, so Fri
 **Files:** Create `docs/superpowers/plans/2026-10-22-lightbulb-network-plan-c-acceptance.md`, recording per row: the command or tap, the observed text, the receipt JSON, PASS or FAIL, the build sha and the date.
 
 - [ ] **Step 1: Setup.**
-  - The owner's Mac runs the cutover DMG.
+  - The owner's Mac runs the shipped DMG.
   - A second Mac (or a second macOS user) has only the free install line and no account.
   - The owner's phone runs the prod app.
   - The workspace account is **Isol8 Admin**, signed in through a Clerk sign-in ticket (the CLAUDE.md recipe; no password, no OTP).
@@ -768,12 +764,12 @@ Between steps 3 and 6, the old runtimes call routes that no longer exist, so Fri
   - The workspace-member ruling (2026-10-22): Global Constraints, Tasks 3, 5, 7–11, 13–16, 18–20, 22, 24.
   - B: every guess is decided, in Global Constraints or in its task.
   - C: requester binding (the ledger's agent session, never a person) in Task 14; the cloud inbound policy in Task 8; sheets and the mod-socket guard in Task 15c; the bare `/j/` in Task 2; the typed code in Task 3; the VPC door in Task 6; the membership-deleted unlink in Task 7; the admission copy in still-needed item 7; audit rows (with `decided_by`) in Tasks 3 and 11.
-  - D: the ordered train with rollback in Task 22; the importers table in Task 19; the Mac cleanup in Task 17; Phase 1 behind flags.
+  - D: the ship order in Task 22; the importers table in Task 19; the Mac cleanup in Task 17; no flags (owner, 2026-10-23).
   - E: the relay behind the ALB with QUIC off in Task 4; the lease in the containers table in Task 5; daily proof renewal in Task 7; the 25 s cap; the slug check.
   - G: Task 14 split into 15a, 15b and 15c; Task 21 split per area; Task 10 has Interfaces; no `COMPUTER#` rows; no boot resend.
 - **Type consistency with Plan B.** These names are used exactly as in the consumed-names table: `hold.answer {id, verdict, scope}`, `held`/`hold_closed`, `ui.claim {}`, `stream.open {session}`, `stream.send {stream_id, data_b64}`, `team.invite {mode}`, `team.join {ticket, name, kind, proof}`, `cloud.sessions.set`, `inbox {session}`, `decision.send {…, decided_by}`, `hold_notice {…, for_person}`, `decision_result`, `receipt_changed`, `member_removed`, `app.send`/`app.inbox`/`app.receipt` over `app_send`/`app_receipt`/`app_inbox`/`app_inbox_result`/`app_receipt_query`, `Member.workspace`, proof kinds `computer | workspace`, `person_id = ws:<owner>`. Names Plan B does not state yet are the items under "Still needed". On our side the scope enum is `once|person|own_cloud`.
 - **Review Focus.** Each of the five items is pinned to named tests in Tasks 5, 6, 8, 11, 12, 14 and 15b/c, and to acceptance rows.
-- **Proportion.** 24 tasks; Tasks 15 and 21 have sub-commits. Phase 1 is 12 additive tasks behind flags. Phase 2 is one PR of 9 tasks (13–21), plus the train. Retiring the door is a separate PR. There are no function bodies.
+- **Proportion.** 24 tasks; Tasks 15 and 21 have sub-commits. Phase 1 is 12 additive tasks. Phase 2 is 9 tasks (13–21), one PR each, plus the ship order. Retiring the door is a separate PR. There are no function bodies.
 - **Ponytail cuts stated.**
   - One control stream per Mac: head-of-line blocking across that Mac's sessions; split it per session if that shows.
   - Relay access is open but rate-limited, because we cannot know who the free members are.

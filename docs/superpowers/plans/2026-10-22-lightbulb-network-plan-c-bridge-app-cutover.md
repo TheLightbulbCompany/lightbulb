@@ -1,10 +1,10 @@
-# lightbulb-network, Plan C: the bridge, the app, and the cutover (monorepo)
+# lightbulb-connect, Plan C: the bridge, the app, and the cutover (monorepo)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The monorepo stops being a hub, and the shared-sessions product keeps working the same (owner, O1). A Lightbulb workspace joins each linked person's network as one cloud member: the bridge. Friday, cloud agents, hosted MCP callers and webhook agents send and receive through it. A web or phone Allow becomes a signed `decision`; this covers Claude permission prompts too (O2). The desktop app attaches to the engine and carries its shared sessions to the bridge over one engine stream per Mac. The hub's transport is deleted in the same PR as the switch, and the release train is ordered and has a rollback. Acceptance: the design checklist (1–10), the bridge checklist (1–17) and the app checklist (1–23), run on the cutover build on the owner's Mac and phone (Task 24).
 
-**Architecture:** The engine is the public repo `lightbulb-network`. It is pinned by tag in `network-version.json`, and that one file feeds four places: the desktop bundle (the binary as a resource), the installer (version and sha256), `apps/bridge/` (a git-tag crate dependency) and the app's protocol check.
+**Architecture:** The engine is the public repo `lightbulb-connect`. It is pinned by tag in `network-version.json`, and that one file feeds four places: the desktop bundle (the binary as a resource), the installer (version and sha256), `apps/bridge/` (a git-tag crate dependency) and the app's protocol check.
 
 The bridge is a Rust ECS task on the platform cluster. It runs one embedded engine instance (Plan B Task 11b) per (workspace, person) link. Keys are in Secrets Manager, state is snapshotted to S3, and only the VPC can reach it.
 
@@ -17,7 +17,7 @@ Rollout:
 - **Phase 2** (Tasks 13–21) is ONE PR, with one reviewed commit per task. Task 22 is the ordered release train that ships it.
 - **Task 23** retires the WebSocket door last, in a separate PR, after a week of soak.
 
-**Tech Stack:** Python 3 / FastAPI / DynamoDB / PyJWT `EdDSA` (backend, existing); Rust 2021, `tokio`, `axum`, `aws-sdk-{secretsmanager,s3,dynamodb}` and the `lightbulb-network` crate (bridge); Tauri 2 (desktop); Next.js 16 and React 19 (frontend); Expo (mobile); AWS CDK (`apps/infra`); `iroh-relay` (version = Plan B's `iroh` pin).
+**Tech Stack:** Python 3 / FastAPI / DynamoDB / PyJWT `EdDSA` (backend, existing); Rust 2021, `tokio`, `axum`, `aws-sdk-{secretsmanager,s3,dynamodb}` and the `lightbulb-connect` crate (bridge); Tauri 2 (desktop); Next.js 16 and React 19 (frontend); Expo (mobile); AWS CDK (`apps/infra`); `iroh-relay` (version = Plan B's `iroh` pin).
 
 **Specs, in binding order:**
 1. `docs/superpowers/specs/2026-10-22-lightbulb-network-architecture.md`.
@@ -32,7 +32,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 
 1. **A control channel with input.** Every O1 feature that goes from the backend to the Mac needs a bridge→Mac path: teammate typing, the presence band, pick-up and resume requests, and watch on/off. Plan C uses ONE stream per Mac, on the reserved name `<short>/app`. The app sends `share.grant {session: "<own short>/app", viewer: <own bridge key>, input: true, expires_at}`, and the engine delivers viewer→owner `Stream` frames to the owner as `stream` events. Plan B today refuses `input: true` (`unsupported`, Plan D) and drops viewer→owner frames.
 2. **Presence before the first envelope.** After `cloud.sessions.set`, a `send` from the new name must not be refused `policy` because the peer has not yet seen the presence. The engine should either flush presence first or carry it with the envelope.
-3. **An exported framing call.** `lightbulb_network::frame::framed(label: &str, request_id: &str, body: &str) -> String` (defang included), as public crate API. The bridge frames webhook-bound text with it.
+3. **An exported framing call.** `lightbulb_connect::frame::framed(label: &str, request_id: &str, body: &str) -> String` (defang included), as public crate API. The bridge frames webhook-bound text with it.
 4. **The permission-hold op.** Plan C assumes `hold.file {kind: "permission", target_session, title, text}` → `{id}` (app-only, person-only). The answer arrives as `hold_closed {id, by, verdict}`, and the bridge sees `hold_notice.kind = "permission"`.
 5. **`status.claim_live: bool`**, which the app reads (ruling A on `ui.claim`).
 6. **The proof-refresh client.** At 20 h of a proof's 24 h life, the engine calls `POST {issuer}/proof/refresh {proof, at, sig}`, where `sig` is the computer key over `canonical({proof, at})`. It stores the returned `{proof}` with `identity.proof`.
@@ -72,10 +72,10 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - **Clean-room.** Do not open anything named reason-network or reasonmachines. Do not open the contents of `apps/desktop/src-tauri/src/local_sessions/hooked.rs`: Task 21a deletes it by path, and Task 17 finds its hooks by the command string `local-session-hook`, which comes from `main.rs`.
 - **Hosts (exact).**
   - Product: `thelightbulb.company` (dev `dev.thelightbulb.company`).
-  - Issuer: `https://thelightbulb.company/network` (dev `https://dev.thelightbulb.company/network`).
+  - Issuer: `https://thelightbulb.company/connect` (dev `https://dev.thelightbulb.company/connect`).
   - Relay: `relay.thelightbulb.company` (dev `relay-dev.thelightbulb.company`).
   - Install: `https://thelightbulb.company/install`. Device page: `https://thelightbulb.company/device`. Hosted MCP: `https://api.thelightbulb.company/mcp`.
-  - Join line: `Join the Lightbulb network: https://thelightbulb.company/j/#<ticket>`.
+  - Join line: `Join Lightbulb Connect: https://thelightbulb.company/j/#<ticket>`.
   - Before a new host's DNS exists, check that no company holds its slug, then add the slug to `RESERVED_SLUGS`.
 - **Ports.**
   - Relay task: TCP 80 only, plain HTTP behind the ALB. QUIC discovery is off, so there is no UDP 7842 and no ACME. Metrics on 9090, VPC only.
@@ -118,7 +118,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - **Internal doors are VPC-only.** `/api/v1/internal/bridge/*` is served only on the backend's 8082 listener (an ALB rule plus the SG). The backend also refuses those paths unless the ALB-set `X-Forwarded-Port` is `8082`. The bridge listens only in private subnets.
 - **Free path.** No copy on the free path says plan, trial, workspace, upgrade or a price. The free path is the CLI, the installer, `/j/`, `/device` and the OS dialogs. Workspace copy says "a Lightbulb workspace" (a trial counts), never "paid".
 - **Logging.** Log ids, sizes, states and timings only. Never log a body, key, proof, ticket, webhook URL, bearer key or stream byte.
-- **Public repo.** Plan C writes nothing into `lightbulb-network` except the three issuer PUBLIC keys (owner, O3).
+- **Public repo.** Plan C writes nothing into `lightbulb-connect` except the three issuer PUBLIC keys (owner, O3).
 - **Unsigned engine releases (owner).** `install.sh` checks the sha256 it pins. The desktop build signs the bundled copy as a nested binary with the app's Developer ID.
 - **Deploy model.**
   - Dev deploys on merge. Prod deploys on `gh workflow run deploy.yml --ref main`.
@@ -149,13 +149,13 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 
 **Files:**
 - Create `network-version.json`, `scripts/check_network_pin.py` and `scripts/tests/test_check_network_pin.py`.
-- Modify `apps/desktop/src-tauri/scripts/vendor-sidecars.sh`: fetch the pinned `lightbulb-network-aarch64-apple-darwin`, check its sha256, and place it at `src-tauri/bin/lightbulb-network`.
-- Modify `apps/desktop/src-tauri/tauri.conf.json`: add `bin/lightbulb-network` to `resources`.
+- Modify `apps/desktop/src-tauri/scripts/vendor-sidecars.sh`: fetch the pinned `lightbulb-connect-aarch64-apple-darwin`, check its sha256, and place it at `src-tauri/bin/lightbulb-connect`.
+- Modify `apps/desktop/src-tauri/tauri.conf.json`: add `bin/lightbulb-connect` to `resources`.
 - Modify `.github/workflows/desktop-build.yml`: codesign the resource as nested code.
 - Modify `.github/workflows/frontend-ci.yml` and `desktop-core.yml`: run the pin check.
 
 **Interfaces:**
-- `network-version.json` = `{"tag":"v<x.y.z>","macos_arm64_sha256":"<hex>","protocol":<int>,"min_protocol":<int>,"notes":"Pin of TheLightbulbCompany/lightbulb-network. Bump tag and sha together; network/install.sh, the desktop bundle, apps/bridge/Cargo.toml and the app's protocol range read it."}`.
+- `network-version.json` = `{"tag":"v<x.y.z>","macos_arm64_sha256":"<hex>","protocol":<int>,"min_protocol":<int>,"notes":"Pin of TheLightbulbCompany/lightbulb-connect. Bump tag and sha together; network/install.sh, the desktop bundle, apps/bridge/Cargo.toml and the app's protocol range read it."}`.
 - `check_network_pin.py` exits 1 unless the pin agrees with `apps/frontend/public/network/install.sh` (`VERSION`, `SHA256`) and with `apps/bridge/Cargo.toml` (`tag`, once that file exists).
 
 - [ ] **Step 1: Failing tests** — `test_pin_and_installer_must_agree`, `test_bridge_manifest_tag_must_match`, `test_missing_bridge_manifest_is_skipped`.
@@ -174,10 +174,10 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 
 **Interfaces:**
 - `install.sh` carries `VERSION=<tag>` and `SHA256=<hex>`, and works in this order:
-  1. Download `https://github.com/TheLightbulbCompany/lightbulb-network/releases/download/$VERSION/lightbulb-network-aarch64-apple-darwin` with `curl`, which adds no quarantine flag.
+  1. Download `https://github.com/TheLightbulbCompany/lightbulb-connect/releases/download/$VERSION/lightbulb-connect-aarch64-apple-darwin` with `curl`, which adds no quarantine flag.
   2. Check `shasum -a 256`.
-  3. Install to `~/.lightbulb/network/bin/lightbulb-network` (0755) and link `~/.local/bin/lightbulb`.
-  4. Run `lightbulb-network setup`, then `lightbulb-network daemon --install`.
+  3. Install to `~/.lightbulb/connect/bin/lightbulb-connect` (0755) and link `~/.local/bin/lightbulb`.
+  4. Run `lightbulb-connect setup`, then `lightbulb-connect daemon --install`.
 
   Flags are `--no-join` and `--join '<link>'`. It never uses sudo, and a re-run upgrades. Texts follow onboarding A2 and its "Failure modes", except that `Verifying the signature...` reads `Verifying the download...` until releases are signed.
 - `/j/` is static. It reads `location.hash` only to echo the full link into the two commands. Copy per onboarding A5a/A5b. The test renders the ROUTE with its layout, and asserts no fetch and no `<script>` from posthog, vercel or clerk.
@@ -251,7 +251,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 ### Task 5: Bridge skeleton — instances, keys, snapshots, lease
 
 **Files:**
-- Create in `apps/bridge/`: `Cargo.toml` (with `lightbulb-network = { git = "https://github.com/TheLightbulbCompany/lightbulb-network", tag = "<pin>" }`), `Cargo.lock`, `Dockerfile`, `src/main.rs`, `src/instances.rs`, `src/store.rs`, `src/lease.rs`, `src/http.rs` and `tests/instances.rs`.
+- Create in `apps/bridge/`: `Cargo.toml` (with `lightbulb-connect = { git = "https://github.com/TheLightbulbCompany/lightbulb-connect", tag = "<pin>" }`), `Cargo.lock`, `Dockerfile`, `src/main.rs`, `src/instances.rs`, `src/store.rs`, `src/lease.rs`, `src/http.rs` and `tests/instances.rs`.
 - Create `.github/workflows/bridge.yml`: runs `cargo test` on PRs touching `apps/bridge/**`, on `vars.CI_RUNNER`.
 
 **Interfaces:**
@@ -332,7 +332,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - Bridge `GET /bridge/receipt?owner&person&session_name&request_id` → the receipt. Receipt changes reach the backend on `receipt_changed`, through `POST /internal/bridge/receipt`.
 - Bridge inbound, on each `message` event:
   1. Read `inbox {session}`.
-  2. Frame each record with `lightbulb_network::frame::framed` (still-needed item 3).
+  2. Frame each record with `lightbulb_connect::frame::framed` (still-needed item 3).
   3. `POST /internal/bridge/inbound {owner, person, session_name, from, label, request_id, thread, reply_to?, sent_at, text}`.
   4. Mark the record read only after a 2xx.
 
@@ -483,9 +483,9 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
   - It checks the `ping` protocol against the `network-version.json` range `[min_protocol, protocol]`: `ok`, `engine_too_old`, `engine_too_new` or `down`.
   - While `ok`, it sends `ui.claim {}` every 7 s; a second app instance renews the same lease. It reads `status.claim_live` (still-needed item 5).
 - `install::ensure()`:
-  - When the bundled engine's version is ≥ the installed one, the bundled engine wins. The app then copies `Contents/Resources/bin/lightbulb-network` to the canonical path, writes `app-install.json {path, version, installed_at}`, and runs `lightbulb-network setup` and `daemon --install`.
+  - When the bundled engine's version is ≥ the installed one, the bundled engine wins. The app then copies `Contents/Resources/bin/lightbulb-connect` to the canonical path, writes `app-install.json {path, version, installed_at}`, and runs `lightbulb-connect setup` and `daemon --install`.
   - Otherwise it leaves the curl-installed binary in place, and Settings shows `A newer Lightbulb engine (<v>) is installed; this app was built for <v>.`
-  - When the engine is down: `launchctl kickstart gui/<uid>/<engine's launchd label>`, with the label read from `lightbulb-network daemon --status`. When no launchd job exists: `daemon --install`.
+  - When the engine is down: `launchctl kickstart gui/<uid>/<engine's launchd label>`, with the label read from `lightbulb-connect daemon --status`. When no launchd job exists: `daemon --install`.
 
 - [ ] **Step 1: Failing tests** — `attach_to_a_running_daemon_starts_no_second`, `bundled_wins_only_when_not_older`, `newer_protocol_takes_no_claim`, `claim_heartbeats_every_7s`, `install_writes_app_install_json_and_runs_engine_setup`.
 - [ ] **Step 2:** `cd apps/desktop && cargo test -p lightbulb-desktop network::` — FAIL. **Step 3:** Implement. **Step 4:** PASS.
@@ -516,7 +516,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 **Files:**
 - Create `apps/desktop/src-tauri/src/network/commands.rs` and `apps/desktop/src-tauri/src/network/sheet.rs`.
 - Modify `apps/desktop/src-tauri/capabilities/`: bind the network commands to the main window and the app's own origins.
-- Modify `apps/desktop/src-tauri/src/local_sessions/mod_socket.rs`: `/v1/share` refuses a caller with an agent ancestor. It uses the same `caller` classification as the engine, either through `lightbulb-network caller --pid <pid>` or through a shared copy of the rule.
+- Modify `apps/desktop/src-tauri/src/local_sessions/mod_socket.rs`: `/v1/share` refuses a caller with an agent ancestor. It uses the same `caller` classification as the engine, either through `lightbulb-connect caller --pid <pid>` or through a shared copy of the rule.
 - Test: `apps/desktop/src-tauri/tests/network_commands.rs`.
 
 **Interfaces:**

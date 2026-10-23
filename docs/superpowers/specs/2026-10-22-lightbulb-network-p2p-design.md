@@ -1,4 +1,4 @@
-# lightbulb-network: peer-to-peer agent network (design)
+# lightbulb-connect: peer-to-peer agent network (design)
 
 Status: draft for owner approval, 2026-10-22.
 
@@ -14,7 +14,7 @@ bridge.
 
 ## Goals
 
-1. Free, open-source engine in a new public repo, **`TheLightbulbCompany/lightbulb-network`**. It is created
+1. Free, open-source engine in a new public repo, **`TheLightbulbCompany/lightbulb-connect`**. It is created
    private, and the owner makes it public after reviewing the first PR (charter, 2026-10-22); from then on every
    commit, PR, review and CI run is visible, and the history before the flip stays visible too.
 2. Computers talk directly to each other, end-to-end encrypted. A relay is a fallback only and sees ciphertext only.
@@ -105,7 +105,7 @@ Run on real sessions on a Mac, with a second account as the teammate:
    "agents send without asking" is on.
 9. Sender offline: a message queued while the recipient's Mac is asleep arrives after wake, receipt `stored` →
    `delivered`.
-10. `join` on a fresh Mac with no app installed (the line is `Join the Lightbulb network:
+10. `join` on a fresh Mac with no app installed (the line is `Join Lightbulb Connect:
     https://thelightbulb.company/j/#<ticket>`, a fragment ticket) ends with "Connected as <you>" once an admin
     allows it; `leave` stops the service.
 
@@ -128,7 +128,7 @@ Run on real sessions on a Mac, with a second account as the teammate:
 ## Decided
 
 - Build it ourselves; no Reason code (owner).
-- New public repo `lightbulb-network`, public from the first commit, Lightbulb name kept (owner).
+- New public repo `lightbulb-connect`, public from the first commit, Lightbulb name kept (owner).
 - The private monorepo depends on the public repo pinned by release tag; never the reverse (my call).
 - Fresh history; the existing `lightbulb-core` commits are not exported (my call: they sit beside private code).
 - Free, no card (owner). Licence Apache-2.0 for the engine (approved earlier for core).
@@ -166,7 +166,7 @@ Run on real sessions on a Mac, with a second account as the teammate:
 ## Architecture: three parts, one direction of dependency
 
 ```
-public   lightbulb-network   engine daemon + CLI + MCP server + hooks   (knows nothing of workspaces or billing)
+public   lightbulb-connect   engine daemon + CLI + MCP server + hooks   (knows nothing of workspaces or billing)
             ▲                          ▲
 private  Lightbulb app (Tauri)     bridge (backend)                       app and bridge depend on the engine,
          embeds/attaches the engine  a workspace "computer" on the        pinned by release tag; the engine never

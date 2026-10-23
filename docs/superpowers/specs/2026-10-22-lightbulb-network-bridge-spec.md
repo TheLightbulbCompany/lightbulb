@@ -1,4 +1,4 @@
-# lightbulb-network: the bridge (spec)
+# lightbulb-connect: the bridge (spec)
 
 Status: draft for owner review, 2026-10-22. Part of the design in
 `2026-10-22-lightbulb-network-p2p-design.md`; its "Where each thing lives" table binds this spec, and `2026-10-22-lightbulb-network-architecture.md` is binding over both where they differ.

@@ -1,4 +1,4 @@
-# lightbulb-network: the app (spec)
+# lightbulb-connect: the app (spec)
 
 Status: draft for owner review, 2026-10-22. Part of `2026-10-22-lightbulb-network-p2p-design.md`; read its "Where
 each thing lives" table first. `2026-10-22-lightbulb-network-architecture.md` is binding over this spec where
@@ -60,7 +60,7 @@ talks to one thing: the engine daemon on the same computer, as a socket client. 
 
 ### First launch, engine already installed
 
-1. App starts. It calls `ping` on `~/.lightbulb/network/sock`.
+1. App starts. It calls `ping` on `~/.lightbulb/connect/sock`.
 2. Daemon answers with `version` and `protocol`. If the protocol is in the app's supported range, the app
    attaches: `subscribe`, `ui.claim`, then `sessions` and `holds` for the first paint.
 3. The sidebar appears within one second. No dialog. The app does not rerun `setup`; it runs the engine's
@@ -74,9 +74,9 @@ talks to one thing: the engine daemon on the same computer, as a socket client. 
    the agents it found (Claude Code, Codex, Cursor, Grok) and the files it will edit, each with a backup note.
    One button: Connect. Consent is given once here, as with Desktop pairing.
 2. Connect copies the bundled, signed engine binary to the canonical path
-   `~/.lightbulb/network/bin/lightbulb-network`, writes `app-install.json` (self-update is then off and the app
-   ships and updates the engine), runs `lightbulb-network setup`, then `lightbulb-network daemon --install` (the
-   launchd job `company.thelightbulb.network`; it also links `~/.local/bin/lightbulb` to the binary). The app
+   `~/.lightbulb/connect/bin/lightbulb-connect`, writes `app-install.json` (self-update is then off and the app
+   ships and updates the engine), runs `lightbulb-connect setup`, then `lightbulb-connect daemon --install` (the
+   launchd job `company.thelightbulb.connect`; it also links `~/.local/bin/lightbulb` to the binary). The app
    runs the engine's own commands. It writes none of the agent files itself.
 3. App waits up to 5 s for `ping`, then attaches as above. Failure: see "Daemon not running".
 4. The app asks nothing else. Sign-in is a menu item ("Sign in to verify your name"), never a gate.
@@ -228,7 +228,7 @@ What the app stores that the engine does not. Everything else is read from the e
 | Notification permission state and "asked once" flag | existing `notify.rs` state | OS permission is per app. |
 | Session browser index (ended sessions that can resume) | existing `session_browser.rs` cache, rebuilt from the agents' own transcripts | Not a network concern. |
 | Workspace sign-in (Clerk) and desktop pairing | existing keychain entries | Optional; the engine never needs it. |
-| Engine install record (path, version installed by the app) | `~/.lightbulb/network/app-install.json` | Lets the app tell its own copy from a Homebrew one. |
+| Engine install record (path, version installed by the app) | `~/.lightbulb/connect/app-install.json` | Lets the app tell its own copy from a Homebrew one. |
 
 The app never writes keys, membership, policy, receipts, messages or outbox. It never reads another
 computer's message text except what `send` returns to it as a receipt.
@@ -402,7 +402,7 @@ Each line is run and its output recorded.
 1. **Bare Mac.** Fresh user, no `~/.lightbulb`, app installed. Launch. One consent screen. Press Connect. The
    sidebar shows within 10 s; `lightbulb doctor` is green for each installed agent, and `which lightbulb` resolves to the canonical path.
 2. **Engine present.** Install the engine first with the public line, then launch the app. The app attaches;
-   `pgrep -f "lightbulb-network daemon"` shows one process before and after.
+   `pgrep -f "lightbulb-connect daemon"` shows one process before and after.
 3. **No app needed.** Quit the app. A teammate's first message produces the OS dialog. Allow in the dialog.
    Delivered, receipt `delivered`.
 4. **Hold with app open and focused.** Banner with Allow and Decline; no Mac notification; the dialog does not

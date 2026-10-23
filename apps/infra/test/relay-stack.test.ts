@@ -75,11 +75,17 @@ test("relay_rule_is_host_header_on_the_existing_alb", () => {
       OriginProtocolPolicy: "https-only",
     }),
   });
-  // Step 1 of the two-step first deploy: the VpcOrigin alone, no distribution yet.
-  dev.resourceCountIs("AWS::CloudFront::VpcOrigin", 1);
-  dev.resourceCountIs("AWS::CloudFront::Distribution", 0);
-  dev.resourceCountIs("AWS::Route53::RecordSet", 0);
-  dev.resourceCountIs("AWS::CloudWatch::Alarm", 0);
+  dev.hasResourceProperties("AWS::CloudFront::Distribution", {
+    DistributionConfig: Match.objectLike({
+      DefaultCacheBehavior: Match.objectLike({
+        // CachingDisabled + AllViewer: the Host header (the ALB rule, the origin
+        // cert check) and the WebSocket upgrade reach the ALB verbatim.
+        CachePolicyId: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+        OriginRequestPolicyId: "216adef6-5c7f-47e4-b989-5492eafa07d3",
+        ViewerProtocolPolicy: "https-only",
+      }),
+    }),
+  });
 });
 
 test("relay_deploy_stops_before_it_starts", () => {
@@ -123,10 +129,26 @@ test("relay_host_is_relay_dev_in_dev", () => {
     [dev, "relay-dev.thelightbulb.company"],
     [build("prod"), "relay.thelightbulb.company"],
   ] as const) {
-    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::ListenerRule", {
-      Conditions: [{ Field: "host-header", HostHeaderConfig: { Values: [host] } }],
+    template.hasResourceProperties("AWS::CloudFront::Distribution", {
+      DistributionConfig: Match.objectLike({ Aliases: [host] }),
     });
+    for (const Type of ["A", "AAAA"]) {
+      template.hasResourceProperties("AWS::Route53::RecordSet", { Name: `${host}.`, Type });
+    }
   }
+});
+
+test("relay_alarms_watch_bytes_and_5xx", () => {
+  dev.resourceCountIs("AWS::CloudWatch::Alarm", 2);
+  dev.hasResourceProperties("AWS::CloudWatch::Alarm", {
+    Metrics: Match.arrayWith([
+      Match.objectLike({ Label: "BytesTransferred", ReturnData: true }),
+    ]),
+  });
+  dev.hasResourceProperties("AWS::CloudWatch::Alarm", {
+    MetricName: "5xxErrorRate",
+    Namespace: "AWS/CloudFront",
+  });
 });
 
 test("relay_config_matches_the_brief", () => {

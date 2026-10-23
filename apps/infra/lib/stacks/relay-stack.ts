@@ -2,15 +2,20 @@ import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
+import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import { Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
+import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
+import * as sns from "aws-cdk-lib/aws-sns";
 import { Construct } from "constructs";
 import { ROOT_DOMAIN } from "../domains";
-import { logGroupPath, resourcePrefix } from "../table-names";
+import { alertTopicArn, logGroupPath, resourcePrefix } from "../table-names";
 
 export interface RelayStackProps extends cdk.StackProps {
   environment: string;
@@ -122,16 +127,66 @@ export class RelayStack extends cdk.Stack {
       targetGroups: [targetGroup],
     });
 
-    // CloudFront → VPC origin → ALB :443. Step 1 of a two-step first deploy:
-    // a freshly created VpcOrigin can still be "Deploying" when a distribution
-    // points at it (api-stack.ts; it broke a prod first create), so the
-    // distribution, its aliases and alarms land in the next deploy.
-    new cloudfront.VpcOrigin(this, "RelayVpcOrigin", {
+    // CloudFront → VPC origin → ALB :443. The viewer Host header is forwarded
+    // (AllViewer), so the ALB rule matches and CloudFront checks the ALB's
+    // wildcard certificate against relay[-dev].<root>.
+    const vpcOrigin = new cloudfront.VpcOrigin(this, "RelayVpcOrigin", {
       endpoint: cloudfront.VpcOriginEndpoint.applicationLoadBalancer(props.alb),
       vpcOriginName: `${resourcePrefix(env)}relay`,
       httpsPort: 443,
       protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
     });
+    const distribution = new cloudfront.Distribution(this, "RelayDistribution", {
+      comment: `lightbulb ${env} Connect relay`,
+      domainNames: [host],
+      certificate: props.certificate,
+      defaultBehavior: {
+        // iroh-relay pings every client at least every ~20 s, well inside
+        // CloudFront's 60 s read timeout and the ALB's 300 s idle timeout.
+        origin: origins.VpcOrigin.withVpcOrigin(vpcOrigin, {
+          readTimeout: cdk.Duration.seconds(60),
+        }),
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+      },
+    });
+    // A and AAAA: CloudFront serves IPv6 by default.
+    const alias = route53.RecordTarget.fromAlias(new route53Targets.CloudFrontTarget(distribution));
+    new route53.ARecord(this, "RelayDnsRecord", { zone: props.hostedZone, recordName: host, target: alias });
+    new route53.AaaaRecord(this, "RelayDnsRecordV6", { zone: props.hostedZone, recordName: host, target: alias });
+
+    const warn = new cloudwatchActions.SnsAction(
+      sns.Topic.fromTopicArn(this, "WarnTopic", alertTopicArn(this.region, this.account, env, "warn")),
+    );
+    const hour = { period: cdk.Duration.hours(1) };
+    // ponytail: 20 GiB/h (~$1.70/h of CloudFront egress) is a starting guess;
+    // tune it once real traffic is known.
+    new cloudwatch.Alarm(this, "RelayBytesAlarm", {
+      alarmName: `${resourcePrefix(env)}relay-bytes-transferred`,
+      alarmDescription: "Connect relay moved more than 20 GiB in an hour (abuse or a stuck pair).",
+      metric: new cloudwatch.MathExpression({
+        expression: "down + up",
+        label: "BytesTransferred",
+        usingMetrics: {
+          down: distribution.metricBytesDownloaded(hour),
+          up: distribution.metricBytesUploaded(hour),
+        },
+        period: hour.period,
+      }),
+      threshold: 20 * 1024 ** 3,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(warn);
+    new cloudwatch.Alarm(this, "Relay5xxAlarm", {
+      alarmName: `${resourcePrefix(env)}relay-5xx`,
+      alarmDescription: "Connect relay: CloudFront 5xx rate above 5% for 15 minutes.",
+      metric: distribution.metric5xxErrorRate({ period: cdk.Duration.minutes(5) }),
+      threshold: 5,
+      evaluationPeriods: 3,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(warn);
 
     new cdk.CfnOutput(this, "RelayUrlOutput", { value: `https://${host}` });
   }

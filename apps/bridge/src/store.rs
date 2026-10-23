@@ -20,6 +20,16 @@ pub trait Blobs: Send + Sync {
     fn put(&self, key: &str, bytes: Vec<u8>) -> Fut<'_, ()>;
 }
 
+/// Every Secrets Manager and S3 call's time limit.
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `f`, or an error once `CALL_TIMEOUT` has passed.
+pub async fn within<T>(f: Fut<'_, T>) -> Result<T> {
+    tokio::time::timeout(CALL_TIMEOUT, f)
+        .await
+        .map_err(|_| "timed out")?
+}
+
 /// Where `owner`'s snapshot lives: never under `<owner>/*`, which the runtime can write.
 pub fn key(owner: &str) -> String {
     format!("bridge-state/{owner}/state.db")
@@ -46,7 +56,7 @@ pub async fn upload(blobs: &dyn Blobs, owner: &str, path: &Path) -> Result<()> {
     let t0 = Instant::now();
     let bytes = std::fs::read(path)?;
     let n = bytes.len();
-    blobs.put(&key(owner), bytes).await?;
+    within(blobs.put(&key(owner), bytes)).await?;
     log!(
         "snapshot owner={owner} bytes={n} {}ms",
         t0.elapsed().as_millis()

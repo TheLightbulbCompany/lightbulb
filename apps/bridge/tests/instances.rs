@@ -19,10 +19,14 @@ const ENV: &str = "test";
 const ISSUER: &str = "http://127.0.0.1:9/connect";
 const TOKEN: &str = "t0ken-for-tests";
 
+/// The secrets by name, and the names whose read never answers.
 #[derive(Default)]
-struct FakeSecrets(Mutex<HashMap<String, String>>);
+struct FakeSecrets(Mutex<HashMap<String, String>>, Mutex<Vec<String>>);
 impl Secrets for FakeSecrets {
     fn get(&self, name: &str) -> Fut<'_, String> {
+        if self.1.lock().unwrap().iter().any(|n| n == name) {
+            return Box::pin(std::future::pending());
+        }
         let v = self.0.lock().unwrap().get(name).cloned();
         Box::pin(async move { v.ok_or_else(|| "no such secret".into()) })
     }
@@ -242,8 +246,8 @@ async fn boot_restores_each_workspace_from_its_snapshot() {
     let w = world(&["org_a", "org_b"]).await;
     let team_a = left_behind(&w, "org_a").await;
     let team_b = left_behind(&w, "org_b").await;
-    let instances = Instances::new(cfg(&w, "b1"));
-    instances.boot().await.unwrap();
+    let (instances, term, run) = bridge(cfg(&w, "b1"));
+    running(&instances, 2).await;
     assert_eq!(instances.owners().await, ["org_a", "org_b"]);
     for (owner, team) in [("org_a", team_a), ("org_b", team_b)] {
         let s = status(&instances, owner).await;
@@ -252,19 +256,23 @@ async fn boot_restores_each_workspace_from_its_snapshot() {
         assert_eq!(s["team"]["id"], team.as_str());
         assert_eq!(s["team"]["name"], "before");
     }
-    instances.stop_all(false).await;
+    term.send(()).unwrap();
+    run.await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_snapshot_starts_an_empty_instance() {
     let w = world(&["org_new"]).await;
-    let instances = Instances::new(cfg(&w, "b1"));
-    instances.boot().await.unwrap();
+    let (instances, term, run) = bridge(cfg(&w, "b1"));
+    running(&instances, 1).await;
     let s = status(&instances, "org_new").await;
     assert_eq!(s["member_key_short"], short_of("org_new").as_str());
-    // A fresh solo network, named for the workspace.
+    // A fresh solo network, named for the workspace, saved at once (its genesis).
     assert_eq!(s["team"]["name"], "org_new");
-    instances.stop_all(false).await;
+    let first = w.blobs.objects.lock().unwrap()[&store::key("org_new")].clone();
+    assert!(first.starts_with(b"SQLite format 3\0"));
+    term.send(()).unwrap();
+    run.await.unwrap();
     // A workspace whose key cannot be read starts nothing, and boot goes on without it.
     let w = world(&["org_ok", "org_nokey"]).await;
     w.secrets
@@ -272,10 +280,26 @@ async fn missing_snapshot_starts_an_empty_instance() {
         .lock()
         .unwrap()
         .remove(&format!("lightbulb/{ENV}/network/bridge/org_nokey"));
-    let instances = Instances::new(cfg(&w, "b1"));
-    instances.boot().await.unwrap();
+    let (instances, term, run) = bridge(cfg(&w, "b1"));
+    running(&instances, 1).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(instances.owners().await, ["org_ok"]);
-    instances.stop_all(false).await;
+    term.send(()).unwrap();
+    run.await.unwrap();
+    // An empty object is no snapshot: the workspace stays down, and its object untouched.
+    let w = world(&["org_empty"]).await;
+    let key = store::key("org_empty");
+    w.blobs.objects.lock().unwrap().insert(key.clone(), vec![]);
+    let (instances, term, run) = bridge(cfg(&w, "b1"));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(instances.owners().await.is_empty());
+    term.send(()).unwrap();
+    run.await.unwrap();
+    assert!(w.blobs.objects.lock().unwrap()[&key].is_empty());
+    // And `add` refuses on a task without the lease.
+    let none = Instances::new(cfg(&w, "b9"));
+    let ws = serde_json::from_value(json!({"owner": "org_ok"})).unwrap();
+    assert!(none.add(ws).await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -309,9 +333,15 @@ async fn snapshot_is_debounced_and_flushed_on_sigterm() {
     let w = world(&["org_a"]).await;
     let (instances, term, run) = bridge(cfg(&w, "b1"));
     running(&instances, 1).await;
-    assert_eq!(w.blobs.puts.load(Ordering::SeqCst), 0, "idle: no snapshot");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        w.blobs.puts.load(Ordering::SeqCst),
+        1,
+        "idle: the genesis only"
+    );
     term.send(()).unwrap();
     run.await.unwrap();
+    assert_eq!(w.blobs.puts.load(Ordering::SeqCst), 2, "and the final one");
     let db = w.blobs.objects.lock().unwrap()[&store::key("org_a")].clone();
     assert!(db.starts_with(b"SQLite format 3\0"));
     assert!(w.lease.row.lock().unwrap().is_none(), "lease released");
@@ -337,15 +367,52 @@ async fn second_bridge_waits_without_the_lease() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn hung_secret_read_blocks_nothing() {
+    let w = world(&["org_a", "org_hang"]).await;
+    w.secrets
+        .1
+        .lock()
+        .unwrap()
+        .push(format!("lightbulb/{ENV}/network/bridge/org_hang"));
+    let (one, term1, run1) = bridge(cfg(&w, "b1"));
+    // The others boot, and `get` answers while one start hangs.
+    running(&one, 1).await;
+    let s = tokio::time::timeout(Duration::from_secs(2), status(&one, "org_a")).await;
+    assert!(s.is_ok(), "get waited on a hung add");
+    // Renewals go on, so a second bridge cannot take the lease meanwhile.
+    let before = w.lease.attempts("b1");
+    let (two, term2, run2) = bridge(cfg(&w, "b2"));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(w.lease.attempts("b1") >= before + 4, "renewals stalled");
+    assert!(two.owners().await.is_empty());
+    assert_eq!(w.lease.row.lock().unwrap().as_ref().unwrap().0, "b1");
+    // SIGTERM is not held up by the hung start either.
+    term1.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), run1)
+        .await
+        .expect("SIGTERM waited on boot")
+        .unwrap();
+    term2.send(()).unwrap();
+    run2.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn lost_lease_stops_every_instance() {
     let w = world(&["org_a", "org_b"]).await;
     let (instances, term, run) = bridge(cfg(&w, "b1"));
     running(&instances, 2).await;
+    let puts = w.blobs.puts.load(Ordering::SeqCst);
     *w.lease.row.lock().unwrap() = Some(("b2".into(), i64::MAX));
     running(&instances, 0).await;
     // And it waits: nothing starts while another holds the lease.
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert!(instances.owners().await.is_empty());
+    // Another holder is live: our copies are stale and must not overwrite its snapshots.
+    assert_eq!(
+        w.blobs.puts.load(Ordering::SeqCst),
+        puts,
+        "no upload after a refusal"
+    );
     term.send(()).unwrap();
     run.await.unwrap();
     assert_eq!(w.lease.row.lock().unwrap().as_ref().unwrap().0, "b2");
@@ -430,9 +497,10 @@ async fn bridge_logs_carry_no_bodies() {
     .unwrap();
     // A boot and a snapshot log the owner, never the key it read.
     let w = world(&["org_logs"]).await;
-    let instances = Instances::new(cfg(&w, "b1"));
-    instances.boot().await.unwrap();
-    instances.stop_all(true).await;
+    let (instances, term, run) = bridge(cfg(&w, "b1"));
+    running(&instances, 1).await;
+    term.send(()).unwrap();
+    run.await.unwrap();
     let logs = lightbulb_bridge::logs();
     assert!(
         logs.iter().any(|l| l.contains("/bridge/connect")),
@@ -466,11 +534,12 @@ async fn idle_rss() {
     };
     tokio::time::sleep(Duration::from_secs(5)).await;
     println!("rss_kib before={}", rss());
-    let instances = Instances::new(cfg(&w, "b1"));
+    let (instances, term, run) = bridge(cfg(&w, "b1"));
     let t = std::time::Instant::now();
-    instances.boot().await.unwrap();
+    running(&instances, n).await;
     println!("boot of {n}: {:?}", t.elapsed());
     tokio::time::sleep(Duration::from_secs(30)).await;
     println!("rss_kib with {n} idle={}", rss());
-    instances.stop_all(false).await;
+    term.send(()).unwrap();
+    run.await.unwrap();
 }

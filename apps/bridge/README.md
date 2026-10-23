@@ -9,10 +9,16 @@ instance per connected workspace: that workspace's single `kind: cloud` member.
   (`lightbulb/{env}/network/bridge/{owner}`, a base64 Ed25519 seed) into a fresh home's
   `identity.key`, restores `s3://$OWNER_STATE_BUCKET/bridge-state/<owner>/state.db` when it
   exists, and starts the instance.
-- **Snapshots.** 1 s after a burst of state-writing events, and once more on SIGTERM.
-- **Lease.** Only the holder of the containers-table row `__bridge__#lease` runs instances. It
-  renews every 10 s (30 s life); a failed renewal stops every instance. A deploy is a short
-  outage: the old task releases the lease on SIGTERM, then the new one boots.
+- **Snapshots.** Right after a new network starts (its genesis), 1 s after a burst of
+  state-writing events, and once more on SIGTERM. An object that is not a SQLite database is
+  refused: the workspace stays down with one log line.
+- **Lease.** Only the holder of the containers-table row `__bridge__#lease` runs instances. A
+  separate task renews it every 10 s (30 s life), whatever boot is doing; boot starts up to 8
+  workspaces at once, and every backend, Secrets Manager and S3 call has a 10 s limit. A
+  renewal that does not take stops every instance at once (20 s at most). It uploads no final
+  snapshot when another holder has the row, and after an error only while the last good put
+  is under 20 s old. A deploy is a short outage: the old task stops its instances, uploads
+  their snapshots and releases the lease on SIGTERM, then the new one boots.
 - **HTTP.** `GET /health` is open; every other route needs `x-lightbulb-bridge-internal`.
 - **Logs.** Ids, sizes, states and timings only: never a body, key, proof or token.
 

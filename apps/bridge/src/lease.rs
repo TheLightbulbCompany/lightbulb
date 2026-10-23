@@ -5,8 +5,9 @@ use crate::instances::Instances;
 use crate::{log, Cfg, Fut};
 use aws_sdk_dynamodb::types::AttributeValue;
 use std::future::Future;
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::time::Instant;
 
 pub const ROW: &str = "__bridge__#lease";
 /// How long a put holds the lease.
@@ -20,54 +21,98 @@ pub trait Table: Send + Sync {
     fn delete(&self, holder: &str) -> Fut<'_, ()>;
 }
 
-/// Waits for the lease (every `tick`), boots the instances, renews every `tick`; a renewal
-/// that fails stops them all and goes back to waiting. `stop` (SIGTERM) flushes every final
-/// snapshot, then frees the lease.
+/// A put's outcome: refused means another holder has a live lease (never flush then).
+enum Put {
+    Taken,
+    Refused,
+    Failed,
+}
+
+async fn put(cfg: &Cfg) -> Put {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let put = cfg.lease.put(&cfg.holder, now, now + TTL_S);
+    match tokio::time::timeout(cfg.tick, put).await {
+        Ok(Ok(true)) => Put::Taken,
+        Ok(Ok(false)) => Put::Refused,
+        Ok(Err(_)) | Err(_) => Put::Failed,
+    }
+}
+
+/// Renews every `tick` on its own, whatever boot and the routes are doing; returns the first
+/// put that did not take. `last_ok` is when the last good put was sent.
+async fn renew(cfg: Arc<Cfg>, last_ok: Arc<Mutex<Instant>>) -> Put {
+    let mut tick = tokio::time::interval_at(Instant::now() + cfg.tick, cfg.tick);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let sent = Instant::now();
+        match put(&cfg).await {
+            Put::Taken => *last_ok.lock().unwrap() = sent,
+            p => return p,
+        }
+    }
+}
+
+/// Boots, and again every `tick` while the workspaces list cannot be read.
+async fn boot(instances: Arc<Instances>, tick: Duration) {
+    while let Err(e) = instances.boot().await {
+        log!("boot failed: {e}");
+        tokio::time::sleep(tick).await;
+    }
+}
+
+/// Waits for the lease (a put every `tick`), then boots while a separate task renews it
+/// every `tick`. A renewal that does not take stops every instance and goes back to waiting.
+/// `stop` (SIGTERM) stops every instance with its final snapshot, then frees the lease.
 pub async fn run(cfg: Arc<Cfg>, instances: Arc<Instances>, stop: impl Future<Output = ()>) {
     tokio::pin!(stop);
     let mut tick = tokio::time::interval(cfg.tick);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // When the last put succeeded, while we hold the lease.
-    let mut held: Option<Instant> = None;
     loop {
         tokio::select! {
-            _ = &mut stop => break,
+            biased;
+            _ = &mut stop => return,
             _ = tick.tick() => {}
         }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        let put = cfg.lease.put(&cfg.holder, now, now + TTL_S);
-        let ok = matches!(tokio::time::timeout(cfg.tick, put).await, Ok(Ok(true)));
-        match (ok, held) {
-            (true, None) => {
-                log!("lease taken holder={}", cfg.holder);
-                match instances.boot().await {
-                    Ok(()) => held = Some(Instant::now()),
-                    Err(e) => {
-                        log!("boot failed: {e}");
-                        instances.stop_all(true).await;
-                    }
+        let sent = Instant::now();
+        if !matches!(put(&cfg).await, Put::Taken) {
+            continue;
+        }
+        log!("lease taken holder={}", cfg.holder);
+        let last_ok = Arc::new(Mutex::new(sent));
+        instances.set_active(true);
+        let mut renewer = tokio::spawn(renew(cfg.clone(), last_ok.clone()));
+        let booter = tokio::spawn(boot(instances.clone(), cfg.tick));
+        tokio::select! {
+            biased;
+            _ = &mut stop => {
+                instances.set_active(false);
+                booter.abort();
+                // Still renewing while the final snapshots go up.
+                instances.stop_all(true).await;
+                renewer.abort();
+                if let Err(e) = crate::store::within(cfg.lease.delete(&cfg.holder)).await {
+                    log!("lease release failed: {e}");
                 }
+                log!("lease released holder={}", cfg.holder);
+                return;
             }
-            (true, Some(_)) => held = Some(Instant::now()),
-            (false, Some(last)) => {
-                // Our copies are still the newest only while our last put has time to run.
-                let flush = last.elapsed() < Duration::from_secs(TTL_S as u64) - cfg.tick;
+            lost = &mut renewer => {
+                instances.set_active(false);
+                booter.abort();
+                // Refused: another holder is live, so our copies are stale. Failed: they are
+                // the newest only while our last good put has time to run.
+                let left = Duration::from_secs(TTL_S as u64).saturating_sub(cfg.tick);
+                let flush = matches!(lost, Ok(Put::Failed))
+                    && last_ok.lock().unwrap().elapsed() < left;
                 log!("lease lost holder={} flush={flush}", cfg.holder);
                 instances.stop_all(flush).await;
-                held = None;
+                tick.reset();
             }
-            (false, None) => {}
         }
-    }
-    if held.is_some() {
-        instances.stop_all(true).await;
-        if let Err(e) = cfg.lease.delete(&cfg.holder).await {
-            log!("lease release failed: {e}");
-        }
-        log!("lease released holder={}", cfg.holder);
     }
 }
 

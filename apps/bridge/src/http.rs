@@ -7,6 +7,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
 use subtle::ConstantTimeEq;
@@ -34,7 +35,7 @@ async fn guard(State(token): State<Arc<str>>, req: Request, next: Next) -> Respo
         || req
             .headers()
             .get(HEADER)
-            .is_some_and(|v| !token.is_empty() && bool::from(v.as_bytes().ct_eq(token.as_bytes())));
+            .is_some_and(|v| !token.is_empty() && same(v.as_bytes(), token.as_bytes()));
     let res = if allowed {
         next.run(req).await
     } else {
@@ -46,4 +47,9 @@ async fn guard(State(token): State<Arc<str>>, req: Request, next: Next) -> Respo
         t0.elapsed().as_millis()
     );
     res
+}
+
+/// Whether `a` is `b`, in time that tells nothing of either, their lengths included.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    Sha256::digest(a).ct_eq(&Sha256::digest(b)).into()
 }

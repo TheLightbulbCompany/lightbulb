@@ -1852,6 +1852,7 @@ jobs:
       - Assets-DockerAsset1
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-dns-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
@@ -2685,6 +2686,7 @@ jobs:
       - Assets-DockerAsset1
       - prod-lightbulb-prod-network-Deploy
       - prod-lightbulb-prod-container-Deploy
+      - prod-lightbulb-prod-dns-Deploy
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy

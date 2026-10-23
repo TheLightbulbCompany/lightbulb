@@ -11,22 +11,11 @@ caller retries.
 
 from __future__ import annotations
 
-import functools
 import time
-
-import boto3
-
-from core.config import settings
 
 # Total worst-case wait across retries is ~5s (0.5+1+1.5+2); the final attempt
 # does not sleep before surfacing the error.
 _RETRY_BACKOFFS = (0.5, 1.0, 1.5, 2.0)
-
-
-@functools.cache
-def client():
-    """The process's one Secrets Manager client (boto3 clients are thread-safe)."""
-    return boto3.client("secretsmanager", region_name=settings.AWS_REGION)
 
 
 def create_or_update_secret(sm, name: str, value: str, *, create_only: bool = False) -> str:

@@ -1544,11 +1544,8 @@ async def _resolve_human_display_name(user_id: str) -> str:
     from core.services.clerk_admin import get_user
 
     user = await get_user(user_id)
-    return user_display_name(user, user_id) if user else user_id
-
-
-def user_display_name(user: dict, user_id: str) -> str:
-    """A Clerk user object's display name; ``user_id`` when it carries none."""
+    if not user:
+        return user_id
     name = " ".join(
         part.strip() for part in (user.get("first_name") or "", user.get("last_name") or "") if part.strip()
     )

@@ -71,9 +71,9 @@ Each run writes `relays.json` (`expires_at` = now + 90 days) and `relays.json.mi
 and merge. An engine refuses a list older than the newest one it has seen, so never
 commit an older file over a newer one.
 
-**Calendar:** re-sign every 90 days, at least two weeks before `expires_at` in the
-committed `relays.json`. Current: `expires_at` = 1800554950 (2027-01-21 UTC); re-sign by
-2027-01-07.
+**Calendar:** re-sign every 90 days, at least two weeks before the `expires_at` in the
+committed `apps/frontend/public/network-relays/prod/relays.json` (a Unix time:
+`date -u -r <expires_at>`).
 
 ## Checks after a deploy
 

@@ -32,13 +32,7 @@ export interface RelayStackProps extends cdk.StackProps {
   hostedZone: route53.IHostedZone;
 }
 
-/**
- * The Lightbulb Connect relay: one iroh-relay task behind the existing internal
- * ALB, reached from the internet through CloudFront → VPC origin (the bv- door
- * pattern in api-stack.ts). TLS ends at the ALB; the task serves plain HTTP on
- * :8080 as a nonroot user. No NLB and no UDP: QUIC address discovery is off.
- * A relay forwards end-to-end QUIC ciphertext only.
- */
+/** The Lightbulb Connect iroh relay: one task behind the existing ALB, public via CloudFront (see relay/config.toml). */
 export class RelayStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: RelayStackProps) {
     super(scope, id, props);
@@ -66,7 +60,6 @@ export class RelayStack extends cdk.Stack {
           retention: logs.RetentionDays.ONE_MONTH,
         }),
       }),
-      // 9090 (metrics) is deliberately not mapped or routed: VPC only.
       portMappings: [{ containerPort: 8080, protocol: ecs.Protocol.TCP }],
     });
 
@@ -108,8 +101,6 @@ export class RelayStack extends cdk.Stack {
     });
 
     // One host-header rule on the EXISTING HTTPS listener (network-stack.ts).
-    // Registering the target group against it also opens :8080 on the task SG
-    // to the ALB's SG, and nothing else.
     new elbv2.ApplicationListenerRule(this, "RelayHostRule", {
       listener: elbv2.ApplicationListener.fromApplicationListenerAttributes(this, "HttpsListener", {
         listenerArn: props.albHttpsListenerArn,
@@ -136,6 +127,8 @@ export class RelayStack extends cdk.Stack {
       httpsPort: 443,
       protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
     });
+    // Mirrors api-stack's bv- door on purpose; a shared helper would change that
+    // live distribution's logical ids and replace it.
     const distribution = new cloudfront.Distribution(this, "RelayDistribution", {
       comment: `lightbulb ${env} Connect relay`,
       domainNames: [host],
@@ -160,7 +153,7 @@ export class RelayStack extends cdk.Stack {
     const warn = new cloudwatchActions.SnsAction(
       sns.Topic.fromTopicArn(this, "WarnTopic", alertTopicArn(this.region, this.account, env, "warn")),
     );
-    const hour = { period: cdk.Duration.hours(1) };
+    const hour = cdk.Duration.hours(1);
     // ponytail: 20 GiB/h (~$1.70/h of CloudFront egress) is a starting guess;
     // tune it once real traffic is known.
     new cloudwatch.Alarm(this, "RelayBytesAlarm", {
@@ -170,10 +163,10 @@ export class RelayStack extends cdk.Stack {
         expression: "down + up",
         label: "BytesTransferred",
         usingMetrics: {
-          down: distribution.metricBytesDownloaded(hour),
-          up: distribution.metricBytesUploaded(hour),
+          down: distribution.metricBytesDownloaded({ period: hour }),
+          up: distribution.metricBytesUploaded({ period: hour }),
         },
-        period: hour.period,
+        period: hour,
       }),
       threshold: 20 * 1024 ** 3,
       evaluationPeriods: 1,

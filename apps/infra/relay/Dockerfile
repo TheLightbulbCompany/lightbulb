@@ -11,7 +11,6 @@ ARG RELAY_SHA256=3fc0c2d67c1cd66250bf82f3e2f17a985b7081a3d272186bad9d63e3f2347b3
 ADD ${RELAY_URL} /relay.tgz
 RUN echo "${RELAY_SHA256}  /relay.tgz" | sha256sum -c - && tar -xzf /relay.tgz -C / ./iroh-relay
 
-# :nonroot is uid 65532; the relay listens on 8080, so it needs no root.
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=fetch /iroh-relay /usr/local/bin/iroh-relay
 COPY config.toml /etc/iroh-relay/config.toml

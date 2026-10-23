@@ -282,3 +282,8 @@ def test_product_hosts_on_the_mail_domain_are_reserved(host):
     # The product now lives on the agent-mail domain: a tenant slug equal to a
     # product host would lose inbound mail when that host's record is created.
     assert host in company_identity.RESERVED_SLUGS
+
+
+def test_relay_slugs_are_reserved():
+    # relay[-dev].thelightbulb.company is the Lightbulb Connect relay (relay-stack.ts).
+    assert {"relay", "relay-dev"} <= company_identity.RESERVED_SLUGS

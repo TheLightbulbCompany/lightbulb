@@ -111,11 +111,13 @@ function networkErrorText(err: unknown): string {
   return "Could not sign in this computer. Try again.";
 }
 
+type NetworkComputer = { computer_name: string; key_short: string };
+
 function NetworkSignIn() {
   const { isLoaded, isSignedIn } = useAuth();
   const api = useApi();
   const [code, setCode] = useState("");
-  const [computer, setComputer] = useState<{ computer_name: string; key_short: string } | null>(null);
+  const [computer, setComputer] = useState<NetworkComputer | null>(null);
   const [state, setState] = useState<"idle" | "busy" | "done">("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -127,15 +129,28 @@ function NetworkSignIn() {
     );
   }
 
-  async function call(path: string, then: (r: unknown) => void) {
+  async function post(path: string): Promise<unknown> {
     setState("busy");
     setError(null);
     try {
-      then(await api.post(path, { user_code: code.trim() }));
+      return await api.post(path, { user_code: code.trim() });
     } catch (err) {
       setError(networkErrorText(err));
       setState("idle");
+      return null;
     }
+  }
+
+  async function describe() {
+    const r = await post("/network/device/describe");
+    if (r) {
+      setComputer(r as NetworkComputer);
+      setState("idle");
+    }
+  }
+
+  async function approve() {
+    if (await post("/network/device/approve")) setState("done");
   }
 
   let body: React.ReactNode;
@@ -147,10 +162,7 @@ function NetworkSignIn() {
         className="flex flex-col items-center"
         onSubmit={(e) => {
           e.preventDefault();
-          void call("/network/device/describe", (r) => {
-            setComputer(r as { computer_name: string; key_short: string });
-            setState("idle");
-          });
+          void describe();
         }}
       >
         <label htmlFor="network-code" className="text-xl font-semibold mb-3">
@@ -173,7 +185,7 @@ function NetworkSignIn() {
       <>
         <h1 className="text-xl font-semibold mb-2">Sign in {computer.computer_name || "this computer"}?</h1>
         <p className="font-mono text-sm text-muted-foreground mb-4">{computer.key_short}</p>
-        <Button onClick={() => void call("/network/device/approve", () => setState("done"))} disabled={state === "busy"}>
+        <Button onClick={() => void approve()} disabled={state === "busy"}>
           Sign in
         </Button>
       </>

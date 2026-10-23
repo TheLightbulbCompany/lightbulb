@@ -72,7 +72,7 @@ KEY = member_key(Ed25519PrivateKey.generate())
 
 @pytest.mark.asyncio
 async def test_proof_verifies_with_the_public_half_and_lasts_24h(issuer, audit):
-    token = await network_issuer.mint("user_ada", "Ada", KEY, "computer", None, None, NOW)
+    token = await network_issuer.mint("user_ada", "Ada", KEY, None, None, NOW)
     header, claims = open_proof(token)
     assert header == {"alg": "EdDSA", "kid": "dev"}
     assert claims["exp"] - claims["iat"] == 86_400 and claims["iat"] == NOW
@@ -82,7 +82,7 @@ async def test_proof_verifies_with_the_public_half_and_lasts_24h(issuer, audit):
     assert "workspace" not in claims and "agents" not in claims
     assert len(token) <= 4096
     # Read once, then cached for 5 minutes.
-    await network_issuer.mint("user_ada", "Ada", KEY, "computer", None, None, NOW)
+    await network_issuer.mint("user_ada", "Ada", KEY, None, None, NOW)
     assert issuer == ["lightbulb/dev/network/issuer_key_dev"]
 
 
@@ -90,20 +90,20 @@ async def test_proof_verifies_with_the_public_half_and_lasts_24h(issuer, audit):
 async def test_workspace_proof_sub_is_ws_of_the_owner(issuer, audit):
     ws = {"id": "org_a", "name": "The Lightbulb Company"}
     agents = ["Friday", "Engineering", "Finance", "Growth", "Analytics", "Customer Operations", "Extra"]
-    token = await network_issuer.mint("ws:org_a", "The Lightbulb Company", KEY, "workspace", ws, agents, NOW)
+    token = await network_issuer.mint("ws:org_a", "The Lightbulb Company", KEY, ws, agents, NOW)
     _, claims = open_proof(token)
     assert claims["sub"] == "ws:org_a" and claims["workspace"] == ws
     assert claims["agents"] == agents[:6]  # proof.rs: at most 6, each 1..=32 characters
     with pytest.raises(ValueError):
-        await network_issuer.mint("ws:org_b", "X", KEY, "workspace", ws, ["Friday"], NOW)
+        await network_issuer.mint("ws:org_b", "X", KEY, ws, ["Friday"], NOW)
     with pytest.raises(ValueError):
-        await network_issuer.mint("ws:org_a", "Ada", KEY, "computer", None, None, NOW)  # a person is never ws:
+        await network_issuer.mint("ws:org_a", "Ada", KEY, None, None, NOW)  # a ws: sub needs its workspace
 
 
 @pytest.mark.asyncio
 async def test_every_mint_writes_an_audit_row(issuer, audit):
-    await network_issuer.mint("user_ada", "Ada", KEY, "computer", None, None, NOW)
-    await network_issuer.mint("ws:org_a", "Acme", KEY, "workspace", {"id": "org_a", "name": "Acme"}, [], NOW + 1)
+    await network_issuer.mint("user_ada", "Ada", KEY, None, None, NOW)
+    await network_issuer.mint("ws:org_a", "Acme", KEY, {"id": "org_a", "name": "Acme"}, [], NOW + 1)
     rows = sorted(audit.scan()["Items"], key=lambda r: r["sk"])
     assert [(r["pk"], r["kind"], r["sub"], r["proof_kind"]) for r in rows] == [
         ("ISSUER", "proof", "user_ada", "computer"),
@@ -134,7 +134,7 @@ async def test_a_seed_that_does_not_match_the_public_table_refuses_to_mint(issue
     other = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
     monkeypatch.setattr(network_issuer, "ISSUER_PUBLIC_KEYS", {"dev": other})  # stale after a ceremony
     with pytest.raises(HTTPException) as refused:
-        await network_issuer.mint("user_ada", "Ada", KEY, "computer", None, None, NOW)
+        await network_issuer.mint("user_ada", "Ada", KEY, None, None, NOW)
     assert refused.value.status_code == 503
     assert "does not match ISSUER_PUBLIC_KEYS[dev]" in caplog.text
     assert base64.b64encode(SEED).decode() not in caplog.text and SEED.hex() not in caplog.text

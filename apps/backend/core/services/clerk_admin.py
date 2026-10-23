@@ -250,20 +250,14 @@ async def get_primary_email(user_id: str) -> str:
     raise RuntimeError(f"clerk user {user_id} has no email address")
 
 
-async def get_organization(org_id: str, *, include_members_count: bool = False, strict: bool = False) -> dict | None:
-    """Single Clerk organization by org_id. Returns None on 404 / no key.
+async def get_organization_strict(org_id: str, *, include_members_count: bool = False) -> dict | None:
+    """Single Clerk organization by org_id. Returns None ONLY on a 404.
 
-    Mirrors get_user's defensive posture: catches network errors, logs,
-    returns None. Callers should handle None as "no metadata available"
-    rather than as failure.
-
-    ``strict=True`` returns None ONLY on a 404 and raises ``ClerkLookupError``
-    otherwise (no key, network, non-404 HTTP), like ``get_user_strict``.
+    Raises ``ClerkLookupError`` when CLERK_SECRET_KEY is unset, on network errors,
+    or on non-404 HTTP errors, like ``get_user_strict``.
     """
     if not settings.CLERK_SECRET_KEY:
-        if strict:
-            raise ClerkLookupError("CLERK_SECRET_KEY is unset")
-        return None
+        raise ClerkLookupError("CLERK_SECRET_KEY is unset")
 
     headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
     try:
@@ -274,19 +268,29 @@ async def get_organization(org_id: str, *, include_members_count: bool = False, 
                 params={"include_members_count": "true"} if include_members_count else None,
             )
     except Exception as e:  # noqa: BLE001
-        if strict:
-            raise ClerkLookupError(f"clerk_admin.get_organization network error: {e}") from e
-        logger.warning("clerk_admin.get_organization network error: %s", e)
-        return None
+        raise ClerkLookupError(f"network error: {e}") from e
 
     if response.status_code == 404:
         return None
     if response.status_code >= 400:
-        if strict:
-            raise ClerkLookupError(f"clerk_admin.get_organization HTTP {response.status_code}")
-        logger.warning("clerk_admin.get_organization HTTP %s", response.status_code)
-        return None
+        raise ClerkLookupError(f"HTTP {response.status_code}")
     return response.json()
+
+
+async def get_organization(org_id: str, *, include_members_count: bool = False) -> dict | None:
+    """Single Clerk organization by org_id. Returns None on 404 / no key.
+
+    Mirrors get_user's defensive posture: catches network errors, logs,
+    returns None. Callers should handle None as "no metadata available"
+    rather than as failure.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return None
+    try:
+        return await get_organization_strict(org_id, include_members_count=include_members_count)
+    except ClerkLookupError as e:
+        logger.warning("clerk_admin.get_organization %s", e)
+        return None
 
 
 async def list_user_organizations(user_id: str, *, limit: int = 25, strict: bool = False) -> list[dict]:

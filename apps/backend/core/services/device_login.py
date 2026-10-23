@@ -52,9 +52,14 @@ def _live(row: dict | None) -> bool:
     return bool(row) and int(row.get("expiresAt", 0)) > time.time()
 
 
+def printable(text: str | None, limit: int) -> str:
+    """``text`` as a person will read it: printable characters only, trimmed, at most ``limit``."""
+    return "".join(ch for ch in (text or "") if ch.isprintable()).strip()[:limit]
+
+
 def clean_machine_name(name: str | None) -> str:
-    """The Mac's hostname as the approver will read it: printable characters only, trimmed."""
-    return "".join(ch for ch in (name or "") if ch.isprintable()).strip()[:MACHINE_NAME_MAX]
+    """The Mac's hostname as the approver will read it."""
+    return printable(name, MACHINE_NAME_MAX)
 
 
 async def _create(fields: dict) -> tuple[str, str]:
@@ -134,13 +139,17 @@ async def _live_row(user_code: str, purpose: str | None = None) -> dict:
     return row
 
 
-async def describe(user_code: str, purpose: str | None = None) -> dict:
-    """What the approve page shows before the click: the name the Mac reported (a network
-    sign-in also shows the key's first 12 characters, what `lightbulb` prints)."""
-    row = await _live_row(user_code, purpose)
-    if purpose == NETWORK:
-        return {"computer_name": row.get("computer_name") or "", "key_short": row["member_key"][:12]}
+async def describe(user_code: str) -> dict:
+    """What the approve page shows before the click: the name the Mac reported."""
+    row = await _live_row(user_code)
     return {"machineName": row.get("machineName") or ""}
+
+
+async def describe_network(user_code: str) -> dict:
+    """A network sign-in's page: the computer's name and its key's first 12 characters
+    (what `lightbulb` prints)."""
+    row = await _live_row(user_code, NETWORK)
+    return {"computer_name": row.get("computer_name") or "", "key_short": row["member_key"][:12]}
 
 
 async def finish(row: dict, user_id: str, result: dict) -> None:

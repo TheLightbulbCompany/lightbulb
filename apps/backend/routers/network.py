@@ -55,7 +55,7 @@ async def device_start(body: StartRequest):
 
 @router.post("/device/describe")
 async def device_describe(body: UserCodeRequest, ctx: AuthContext = Depends(get_current_user)):
-    return await device_login.describe(body.user_code, device_login.NETWORK)
+    return await device_login.describe_network(body.user_code)
 
 
 @router.post("/device/approve")
@@ -84,7 +84,5 @@ async def device_token(body: TokenRequest):
 async def proof_refresh(body: RefreshRequest):
     try:
         return {"proof": await network_issuer.refresh(body.proof, body.at, body.sig, int(time.time()))}
-    except HTTPException:
-        raise
     except ValueError as exc:  # the claims no longer fit (e.g. the name is gone)
         raise HTTPException(status_code=401, detail="Proof refresh refused.") from exc

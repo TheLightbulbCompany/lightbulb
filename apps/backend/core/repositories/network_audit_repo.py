@@ -15,7 +15,7 @@ from core.dynamodb import _get_resource, run_in_thread
 RETAIN_S = 30 * 86_400
 
 
-async def put(pk: str, kind: str, fields: dict, *, at: int, item_expires_at: int) -> None:
+async def put(kind: str, fields: dict, *, at: int, item_expires_at: int, pk: str = "ISSUER") -> None:
     if not settings.NETWORK_AUDIT_TABLE:
         raise RuntimeError("NETWORK_AUDIT_TABLE is not configured")
     item = {

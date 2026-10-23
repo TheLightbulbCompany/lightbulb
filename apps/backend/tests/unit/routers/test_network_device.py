@@ -32,11 +32,14 @@ def env(issuer, audit, monkeypatch):
 
     monkeypatch.setattr(settings, "FRONTEND_URL", "https://dev.example")
     monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Ada Lovelace"))
-    clerk = {"orgs": [{"id": ORG_A, "name": "Acme", "slug": "acme", "role": "org:member"}], "user": {"id": "user_ada"}}
+    clerk = {
+        "orgs": [{"id": ORG_A, "name": "Acme", "slug": "acme", "role": "org:member"}],
+        "user": {"id": "user_ada", "first_name": "Ada", "last_name": "Lovelace"},
+    }
     monkeypatch.setattr(clerk_admin, "list_user_organizations", AsyncMock(side_effect=lambda *a, **k: clerk["orgs"]))
     monkeypatch.setattr(clerk_admin, "get_user_strict", AsyncMock(side_effect=lambda *a, **k: clerk["user"]))
     clerk["org"] = {"id": ORG_A, "name": "Acme"}
-    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(side_effect=lambda *a, **k: clerk["org"]))
+    monkeypatch.setattr(clerk_admin, "get_organization_strict", AsyncMock(side_effect=lambda *a, **k: clerk["org"]))
 
     app = FastAPI()
     app.include_router(network.router, prefix="/api/v1/network")
@@ -174,8 +177,8 @@ async def test_refresh_refuses_after_7_days_of_grace(env):
     client, _, clerk = env
     now = int(time.time())
     day = 86_400
-    within = await network_issuer.mint("user_ada", "Ada", KEY, "computer", None, None, now - 7 * day)
-    past = await network_issuer.mint("user_ada", "Ada", KEY, "computer", None, None, now - 8 * day - 1)
+    within = await network_issuer.mint("user_ada", "Ada", KEY, None, None, now - 7 * day)
+    past = await network_issuer.mint("user_ada", "Ada", KEY, None, None, now - 8 * day - 1)
     assert client.post("/api/v1/network/proof/refresh", json=_signed(within, now)).status_code == 200
     assert client.post("/api/v1/network/proof/refresh", json=_signed(past, now)).status_code == 401
     clerk["user"] = None  # the Clerk user is gone
@@ -197,7 +200,7 @@ async def test_refresh_accepts_a_proof_from_the_previous_kid(env, monkeypatch):
     now = int(time.time())
     monkeypatch.setattr(settings, "NETWORK_ISSUER_KID", "p1")
     monkeypatch.setattr(network_issuer, "_key", (time.monotonic(), old_seed))
-    old = await network_issuer.mint("user_ada", "Ada", KEY, "computer", None, None, now - 3600)
+    old = await network_issuer.mint("user_ada", "Ada", KEY, None, None, now - 3600)
     monkeypatch.setattr(settings, "NETWORK_ISSUER_KID", "p2")  # rotated: p2 is now active
     monkeypatch.setattr(network_issuer, "_key", (time.monotonic(), new_seed))
     r = client.post("/api/v1/network/proof/refresh", json=_signed(old, now))
@@ -213,7 +216,7 @@ async def test_refresh_of_a_workspace_proof_keeps_its_agents_and_rereads_the_nam
     client, _, clerk = env
     now = int(time.time())
     ws = {"id": ORG_A, "name": "Acme"}
-    proof = await network_issuer.mint(f"ws:{ORG_A}", "Acme", KEY, "workspace", ws, ["Friday", "Atlas"], now)
+    proof = await network_issuer.mint(f"ws:{ORG_A}", "Acme", KEY, ws, ["Friday", "Atlas"], now)
     clerk["org"] = {"id": ORG_A, "name": "Acme Renamed"}
     r = client.post("/api/v1/network/proof/refresh", json=_signed(proof, now))
     assert r.status_code == 200, r.text
@@ -228,12 +231,12 @@ async def test_refresh_of_a_workspace_proof_keeps_its_agents_and_rereads_the_nam
 async def test_refresh_answers_503_when_clerk_is_unreachable(env, monkeypatch):
     client, *_ = env
     now = int(time.time())
-    person = await network_issuer.mint("user_ada", "Ada", KEY, "computer", None, None, now)
+    person = await network_issuer.mint("user_ada", "Ada", KEY, None, None, now)
     ws = {"id": ORG_A, "name": "Acme"}
-    workspace = await network_issuer.mint(f"ws:{ORG_A}", "Acme", KEY, "workspace", ws, ["Friday"], now)
+    workspace = await network_issuer.mint(f"ws:{ORG_A}", "Acme", KEY, ws, ["Friday"], now)
     blip = AsyncMock(side_effect=clerk_admin.ClerkLookupError("network"))
     monkeypatch.setattr(clerk_admin, "get_user_strict", blip)
-    monkeypatch.setattr(clerk_admin, "get_organization", blip)
+    monkeypatch.setattr(clerk_admin, "get_organization_strict", blip)
     for proof in (person, workspace):
         assert client.post("/api/v1/network/proof/refresh", json=_signed(proof, now)).status_code == 503
 

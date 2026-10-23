@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The monorepo stops being a hub, and the shared-sessions product keeps working the same (owner, O1). A Lightbulb workspace joins each linked person's network as one cloud member: the bridge. Friday, cloud agents, hosted MCP callers and webhook agents send and receive through it. A web or phone Allow becomes a signed `decision`; this covers Claude permission prompts too (O2). The desktop app attaches to the engine and carries its shared sessions to the bridge over one engine stream per Mac. The hub's transport is deleted in the same PR as the switch, and the release train is ordered and has a rollback. Acceptance: the design checklist (1–10), the bridge checklist (1–17) and the app checklist (1–23), run on the cutover build on the owner's Mac and phone (Task 24).
+**Goal:** The monorepo stops being a hub, and the shared-sessions product keeps working the same (owner, O1). A Lightbulb workspace joins its network as ONE cloud member, the workspace member, which the bridge runs. Friday, the workspace's agents and webhook agents send and receive as its sessions; a hosted MCP caller (Claude.ai, ChatGPT, Muse) acts through the person's own online computer, carried by that member. A web or phone Allow becomes a signed `decision`; this covers Claude permission prompts too (O2). The desktop app attaches to the engine and carries its shared sessions to the bridge over one engine stream per Mac. The hub's transport is deleted in the same PR as the switch, and the release train is ordered and has a rollback. Acceptance: the design checklist (1–10), the bridge checklist (1–17) and the app checklist (1–23), run on the cutover build on the owner's Mac and phone (Task 24).
 
 **Architecture:** The engine is the public repo `lightbulb-connect`. It is pinned by tag in `network-version.json`, and that one file feeds four places: the desktop bundle (the binary as a resource), the installer (version and sha256), `apps/bridge/` (a git-tag crate dependency) and the app's protocol check.
 
-The bridge is a Rust ECS task on the platform cluster. It runs one embedded engine instance (Plan B Task 11b) per (workspace, person) link. Keys are in Secrets Manager, state is snapshotted to S3, and only the VPC can reach it.
+The bridge is a Rust ECS task on the platform cluster. It runs one embedded engine instance (Plan B Task 11b) per connected workspace, keyed by owner. Keys are in Secrets Manager, state is snapshotted to S3, and only the VPC can reach it.
 
 The relay is `iroh-relay` behind the existing internal ALB, published through a CloudFront VPC origin (the `bv-` pattern), with QUIC address discovery off.
 
@@ -30,19 +30,19 @@ The coordinator's rulings in `.superpowers/sdd/2026-10-22-lightbulb-network-plan
 
 Plan C uses the names below as written here. Each one is a guess until Plan B states it.
 
-1. **A control channel with input.** Every O1 feature that goes from the backend to the Mac needs a bridge→Mac path: teammate typing, the presence band, pick-up and resume requests, and watch on/off. Plan C uses ONE stream per Mac, on the reserved name `<short>/app`. The app sends `share.grant {session: "<own short>/app", viewer: <own bridge key>, input: true, expires_at}`, and the engine delivers viewer→owner `Stream` frames to the owner as `stream` events. Plan B today refuses `input: true` (`unsupported`, Plan D) and drops viewer→owner frames.
+1. **A control channel with input.** Every O1 feature that goes from the backend to the Mac needs a bridge→Mac path: teammate typing, the presence band, pick-up and resume requests, and watch on/off. Plan C uses ONE stream per Mac, on the reserved name `<short>/app`. The app sends `share.grant {session: "<own short>/app", viewer: <own workspace member's key>, input: true, expires_at}`, and the engine delivers viewer→owner frames as `stream_input` events. Provided by Plan B Task 11, for the own workspace's member only.
 2. **Presence before the first envelope.** After `cloud.sessions.set`, a `send` from the new name must not be refused `policy` because the peer has not yet seen the presence. The engine should either flush presence first or carry it with the envelope.
 3. **An exported framing call.** `lightbulb_connect::frame::framed(label: &str, request_id: &str, body: &str) -> String` (defang included), as public crate API. The bridge frames webhook-bound text with it.
 4. **The permission-hold op.** Plan C assumes `hold.file {kind: "permission", target_session, title, text}` → `{id}` (app-only, person-only). The answer arrives as `hold_closed {id, by, verdict}`, and the bridge sees `hold_notice.kind = "permission"`.
 5. **`status.claim_live: bool`**, which the app reads (ruling A on `ui.claim`).
 6. **The proof-refresh client.** At 20 h of a proof's 24 h life, the engine calls `POST {issuer}/proof/refresh {proof, at, sig}`, where `sig` is the computer key over `canonical({proof, at})`. It stores the returned `{proof}` with `identity.proof`.
-7. **The admission prompt for a cloud candidate**, rendered from the issuer-signed proof: `"<proof.workspace>" (a Lightbulb workspace) wants to join your network. It will see this network's directory: who is on it, their sessions, folders and what they are doing.` Buttons: `Decline`, `Allow`.
+7. **The admission prompt for a cloud candidate**, rendered from the issuer-signed `kind=workspace` proof (Plan B Task 13): `Lightbulb workspace "<name>" wants to join as a member. Its agents (Friday, …) will appear in your directory, and it will see this network's directory.` Buttons: `Decline`, `Allow`.
 8. **Payload shapes to confirm:**
    - `receipt_changed {request_id, from, state, reason?}`.
    - `member_removed {member}`, also fired on the instance when its own key is removed.
    - `snapshot {to: <path>}` → `{ok}`.
    - `person_id` in the directory record.
-9. **A question about the binding cloud inbound policy.** The rule is "own person accept, every other sender refused". It also refuses a teammate's reply to a message Friday sent them. Plan C applies the rule as written. A narrow exemption would restore replies: a `reply_to` that names an envelope this instance sent within 7 days. Decide in Plan B Task 11b.
+9. **Resolved (Plan B Task 11b, ruling §4):** a cloud instance accepts computers of its own workspace, and replies to its own outbound within 24 h; every other sender is refused `policy`.
 
 ## Engine names Plan C consumes (provided by Plan B)
 
@@ -51,20 +51,21 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 | Embedding | `embed::start(home, EmbedOpts{kind: Cloud, relay, issuer}) -> Instance`; `Instance::call`, `::events`, `::shutdown` | 11b |
 | Cloud sessions | `cloud.sessions.set {sessions:[{name, agent, title}]}`; `send {from:"<short>/<name>", …}` → `{request_id, state, thread, tier}` | 11b |
 | Inbound on a cloud instance | event `message {to_session, id}`; `inbox {session}` (marks read) | 11b |
-| Bridge join and leave in process | `team.join {ticket, name, kind:"cloud", proof}`, `team.leave {}`, `team.unlink {}` admitted on a cloud instance; the admit sets `person_id = proof.sub` | 11b, 13 (coordinator addendum) |
-| Cloud inbound policy | own `person_id` computer members accept; others refused `policy` | 11b (addendum) |
+| Workspace member join and leave in process | `team.join {ticket, name, kind:"cloud", proof}` (proof `kind=workspace`) and `team.leave {}` admitted on a cloud instance; `team.unlink` is retired (`unsupported`); the admit sets `person_id = proof.sub` (`ws:<owner>`) and `Member.workspace` | 11b, 13 |
+| Cloud inbound policy | computers whose `Member.workspace` is the instance's accept; replies to its own outbound within 24 h accept; others refused `policy` | 11b |
 | Snapshot | `snapshot {}` op (`VACUUM INTO`), final snapshot on `shutdown` | 11b (addendum) |
-| Holds on the bridge | event `hold_notice {hold_id, holding_member, holding_computer, target_session, from, label, kind, created_at}`; op `decision.send {hold_id, holding_member, verdict, scope}`; event `decision_result {hold_id, result: "applied"\|"not_open"}` | 14 (+ addendum) |
+| Holds on the bridge | event `hold_notice {hold_id, holding_member, holding_computer, for_person, target_session, from, label, kind, created_at}`; op `decision.send {hold_id, holding_member, verdict, scope, decided_by}`; event `decision_result {hold_id, result: "applied"\|"not_open"}` | 14 |
+| Hosted apps through the person's computer | ops `app.send {for_person, app, to, text, request_id, reply_to?}` → `{request_id, state, reason, thread, tier, computer}`, `app.inbox {for_person, app}` → `{records}`, `app.receipt {for_person, app, request_id}`; error `no_computer_online` (`none of your computers is online right now`); envelope kinds `app_send`, `app_receipt`, `app_inbox`, `app_inbox_result`, `app_receipt_query` | 14b |
 | Receipts and removal | events `receipt_changed`, `member_removed` | 8, 2 (addendum) |
 | Directory | `directory {query?}` record, plus `person_id` | 7 (addendum) |
-| Streams | `share.grant {session, viewer, input, expires_at}` → `{grant_id}`; `stream.open {session}` → `{stream_id}`; `stream.send {stream_id, data_b64}`; `stream.close`; events `stream_opened`, `stream`, `stream_closed`; a cloud viewer always needs a grant | 11 |
+| Streams | `share.grant {session, viewer, input, expires_at}` → `{grant_id}`; `stream.open {session}` → `{stream_id}`; `stream.send {stream_id, data_b64}`; `stream.close`; events `stream_opened`, `stream`, `stream_closed`; a cloud viewer always needs a grant; `input: true` only to the own workspace's member, delivered as `stream_input` | 11 |
 | Holds on the Mac | `holds {}` → `{holds:[{id:"H<n>", …}]}`; `hold.get {id}` (plus `target_birth_micros`); `hold.answer {id, verdict, scope}`; events `held`, `hold_closed {id, by}` | 9 |
 | Claim | `ui.claim {}` → `{lease_s: 20}`, heartbeat every 7 s | 5 |
 | Team | `team.invite {mode: "reusable"\|"new"\|"once"\|"open"}` → `{ticket, line, app_link, expires_at}`; `team.join_requests`, `team.admit {request, verdict}`, `team.get`, `team.remove` | 3, 6 |
 | Policy | `policy.get`, `policy.set {person_id, scope, value}` / `{agents_send_without_asking}` | 9 |
-| Proofs | `Proof {iss, kid, iat, exp, sub, name, computer, kind, workspace?}`; `ISSUER_KEYS: [(&str,[u8;32]); 3]` (`p1`, `p2`, `dev`); `identity.proof {proof}` | 13 (+ addendum) |
+| Proofs | `Proof {iss, kid, iat, exp, sub, name, computer, kind: "computer"\|"workspace", workspace?: {id, name}, agents}`; `ISSUER_KEYS: [(&str,[u8;32]); 3]` (`p1`, `p2`, `dev`); `identity.proof {proof}` | 13 (+ addendum) |
 | Device routes | `POST {issuer}/device/start {member_key, computer}` → `{device_code, user_code, verification_uri_complete, interval}`; `POST {issuer}/device/token {device_code}` → `200 {"pending":true}`, then `200 {"proof"}` once, or `410` | 13 |
-| Labels | `<App>` = the declared `agent`, sanitised (printable, ≤ 32 chars) | 13 (+ addendum) |
+| Labels | workspace sessions `<Agent> · <workspace name>` (`<Agent>` = the declared `agent`, sanitised, ≤ 32 chars); a hosted app `<person>'s <App>` | 13, 14b |
 | Relay list | `{issuer}/relays.json` and `{issuer}/relays.json.minisig` | 12 |
 
 ## Global Constraints
@@ -87,32 +88,34 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
   - Bridge: `BACKEND_INTERNAL_URL=http://<ALB DNS>:8082`, `BRIDGE_INTERNAL_TOKEN` (secret), `OWNER_STATE_BUCKET`, `CONTAINERS_TABLE`, `LIGHTBULB_ENV`, `NETWORK_RELAY_URL`, `NETWORK_ISSUER_URL`.
 - **Secrets and keys.**
   - Issuer keys: `lightbulb/{env}/network/issuer_key_<kid>` (Ed25519 seed, base64). Prod has `p1` (active) and `p2` (standby); dev has `dev`. All three public halves are compiled into the engine, so a release engine also verifies dev proofs (accepted risk, recorded). Only the backend task role reads them.
-  - Each link's key: `lightbulb/{env}/network/bridge/{owner}/{person}`.
+  - Each workspace's key: `lightbulb/{env}/network/bridge/{owner}`. People have no keys on the bridge.
   - Internal token: `lightbulb/{env}/bridge_internal_token`.
-  - Bridge state: `s3://$OWNER_STATE_BUCKET/bridge-state/<owner>/<person>/state.db`, never under `<owner>/*`.
+  - Bridge state: `s3://$OWNER_STATE_BUCKET/bridge-state/<owner>/state.db`, never under `<owner>/*`.
 - **Row keys.** The messaging table (`pk`/`sk`) holds:
 
   | pk / sk | Holds | Expiry |
   |---|---|---|
-  | `OWNER#<owner>` / `NETLINK#<person>` | `{bridge_key, team_id?, state: waiting\|joined\|refused\|removed, linked_at}` | none |
-  | `OWNER#<owner>` / `NETTHREAD#<thread>` | `{origin: run\|mailbox\|webhook, ref, session_name}` | TTL 7 d |
-  | `NETMAIL#<owner>#<session_name>` / `MSG#<sent_at>#<request_id>` | one mailbox item | TTL 7 d, or read + 24 h |
+  | `OWNER#<owner>` / `NETWORKSPACE` | `{bridge_key, team_id?, state: waiting\|joined\|refused\|removed, connected_by, connected_at}` | none |
+  | `OWNER#<owner>` / `NETLINK#<person>` | `{linked_at}` — this Clerk user answers their holds on the phone and web; no key | none |
+  | `OWNER#<owner>` / `NETTHREAD#<thread>` | `{origin: run\|webhook, ref, session_name}` | TTL 7 d |
   | `NETHOLD#<owner>#<person>` / `HOLD#<holding_member>#<hold_id>` | one open hold | TTL 7 d |
 
-  There are no `COMPUTER#` rows. The lease lives in the CONTAINERS table as `owner_id = "__bridge__#lease"` `{holder, expires_at}`, so its renewals fire no messaging stream. Audit rows go to a new table, `lightbulb-{env}-network-audit` (`pk = OWNER#<owner>|ISSUER`, `sk = <ts>#<kind>#<id>`, TTL 30 d past the item's expiry). It gets one row per minted proof and one per relayed decision.
-- **Who the bridge is.**
-  - A `kind: cloud` member with a `kind=bridge` proof and `person_id = proof.sub`.
-  - A person has one link at a time. Relinking replaces the old link after a confirm.
+  There are no `COMPUTER#` rows and no hosted mailbox rows (a hosted caller's replies live on the person's computer). The lease lives in the CONTAINERS table as `owner_id = "__bridge__#lease"` `{holder, expires_at}`, so its renewals fire no messaging stream. Audit rows go to a new table, `lightbulb-{env}-network-audit` (`pk = OWNER#<owner>|ISSUER`, `sk = <ts>#<kind>#<id>`, TTL 30 d past the item's expiry). It gets one row per minted proof and one per relayed decision.
+- **Who the bridge is** (owner ruling 2026-10-22, `.superpowers/sdd/2026-10-22-lightbulb-network-plan-b-network/workspace-member-ruling.md`).
+  - One bridge instance per connected workspace, keyed by owner: Plan B's workspace member — a `kind: cloud` member with a `kind=workspace` proof, `person_id = ws:<owner>`, display name = the workspace's name.
+  - A workspace admin connects the workspace once, from a Mac that is the network's founder or an admin; the admission dialog appears on that Mac. A workspace is in one network at a time; reconnecting elsewhere replaces it after a confirm.
+  - Per person there is no key and no instance. A `NETLINK#<person>` row only binds that Clerk user to phone/web approvals.
   - The bridge never mints links, never admits, never removes and never governs.
-  - It relays `decision` with scope `once | person | own_cloud` only, never `cloud_of`.
-  - It reads only these: mail addressed to its sessions, hold notices for its person, the directory, and streams granted to it.
+  - It relays `decision` with scope `once | person | own_cloud` only, never `cloud_of`, always with `decided_by` = the Clerk-verified person who tapped.
+  - It sends only from its declared agent sessions, never as a person. A hosted app acting as a person sends from that person's ONLINE computer (`app.send` → `app_send` → `app_receipt`), never with the bridge's authority; with no computer online the tool answers `none of your computers is online right now`.
+  - It reads only these: mail addressed to its sessions, hold notices for its workspace's people, the directory, streams granted to it, and the `app_*` answers to its own requests.
 - **Session names on a bridge.**
-  - One namespace per bridge, `[a-z0-9-]{1,32}`; the first to register a name keeps it.
-  - Workspace agents use `<agent-slug>`. Hosted callers use `<client-slug>-via-<person-name-slug>`, where the client is the registered OAuth/DCR client name or the agent key's name. Webhook agents use `<webhook-slug>`.
-  - `agent` is what renders as `<App>`: the agent's display name, the client's registered name, or the webhook's name.
+  - One namespace per workspace member, `[a-z0-9-]{1,32}`; the first to register a name keeps it.
+  - Workspace agents use `<agent-slug>`. Webhook agents use `<webhook-slug>`. Hosted callers have no session on the bridge: they appear as the person's own `<mac short>/<app>-app` session.
+  - `agent` is the agent's or the webhook's display name. Peers see `<Agent> · <workspace name>` (e.g. `Friday · The Lightbulb Company`); a hosted app shows as `<person>'s <App>` (e.g. `Prasiddha's Claude`). The `<App> via <person>` form is retired.
   - A rename makes a new session id and a new thread. This is documented and accepted.
   - One principal per session; two principals never share a name. Request-id dedupe is per session.
-- **Requester binding.** Friday sends through the link of the person who wrote the run's `triggerMessageId`, read from the run ledger, never from the runtime payload. A run with no human trigger (nightly CEO, heartbeats, ambient `room_event`) sends through the link of the TARGET session's person, as that bridge's `<agent-slug>` session. No link means no send.
+- **Requester binding.** Friday sends only as the workspace member's `<agent-slug>` session of the run's own agent, read from the run ledger (`OWNER#<owner>/RUN#<runId>` → its agent), never from the runtime payload; the member sends only from a declared agent session and never as a person. A run with no human trigger (nightly CEO, heartbeats, ambient `room_event`) sends the same way. No connected workspace means no send.
 - **No phone text preview (owner).** A hold notice that reaches the workspace carries only the sender, the target, the computer and ids. The backend drops any `preview` key. Phone and web copy: `<label> wants to message your <Agent> session on <computer>.`
 - **Person-only ops in the app.** These ops run only after a native AppKit sheet press, or from a notification action handled in Rust; the webview alone never reaches one: hold answer, join admit, policy set, invite, remove, send as the person, connect and disconnect workspace, sign-in, share grant. The mod socket's `/v1/share` refuses any caller with an agent ancestor.
 - **Internal doors are VPC-only.** `/api/v1/internal/bridge/*` is served only on the backend's 8082 listener (an ALB rule plus the SG). The backend also refuses those paths unless the ALB-set `X-Forwarded-Port` is `8082`. The bridge listens only in private subnets.
@@ -130,11 +133,11 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 
 ## Review Focus
 
-1. **A send or a decision for someone it is not.** Friday's requester comes from the ledger. A phone Allow needs the signed-in user to own the link that received the hold. The bridge never signs `cloud_of`. Tests: Task 14 `requester_comes_from_the_ledger_not_the_payload`; Task 11 `decision_route_refuses_another_persons_hold` and `bridge_refuses_cloud_of_scope`.
-2. **A stranger waking a cloud agent, or a forged internal call.** A sender to `…/friday` who is not its person is refused. Nothing reaches `/internal/bridge/*` from the public edge. Tests: Task 8 `stranger_to_friday_is_refused_and_wakes_nothing`; Task 6 `internal_bridge_paths_refuse_the_public_listener`.
+1. **A send or a decision for someone it is not.** Friday's sending session comes from the ledger, and the member never sends as a person; a hosted app's send leaves from the person's own computer. A phone Allow carries `decided_by` = the signed-in user and needs that user's `NETHOLD` row. The bridge never signs `cloud_of`. Tests: Task 14 `sender_session_comes_from_the_ledger_not_the_payload`; Task 9 `bridge_never_sends_from_its_own_session_for_a_person`; Task 11 `decision_route_refuses_another_persons_hold`, `decision_carries_decided_by_the_signed_in_user` and `bridge_refuses_cloud_of_scope`.
+2. **A stranger waking a cloud agent, or a forged internal call.** A sender to `…/friday` that is not a computer of this workspace, and is not replying within 24 h, is refused. Nothing reaches `/internal/bridge/*` from the public edge. Tests: Task 8 `stranger_to_friday_is_refused_and_wakes_nothing`; Task 6 `internal_bridge_paths_refuse_the_public_listener`.
 3. **Person power laundered through the app.** Three things must change nothing: a webview call without a sheet press, a stale notification click, and an agent calling `lightbulb share`. Tests: Task 15c `every_person_only_command_needs_a_sheet_press`; Task 15b `stale_click_answers_nothing`; Task 15c `mod_socket_share_from_an_agent_shell_is_refused`.
 4. **Two bridges with one key.** A rolling deploy or a stray task must never run two live instances. Tests: Task 12 `bridge_service_stops_before_it_starts`; Task 5 `second_bridge_waits_without_the_lease`.
-5. **A reply reaching the wrong place.** Two Friday messages answered in turn each reach their own run. A late reply lands in its trigger's room thread. An unknown thread never lands in another person's mailbox or DM. Tests: Task 8 `two_threads_route_to_their_own_runs`, `late_reply_posts_to_the_trigger_thread`, `unknown_thread_goes_to_the_persons_dm_only`.
+5. **A reply reaching the wrong place.** Two Friday messages answered in turn each reach their own run. A late reply lands in its trigger's room thread. An unknown thread never lands in another person's DM. Tests: Task 8 `two_threads_route_to_their_own_runs`, `late_reply_posts_to_the_trigger_thread`, `unknown_thread_goes_to_the_senders_dm_only`.
 
 ## Owner items still open
 
@@ -203,10 +206,10 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
   - A workspace is optional.
 
 **Interfaces:**
-- `network_issuer.mint(sub: str, name: str, computer: str, kind: Literal["computer","bridge"], workspace: str | None, now: int) -> str`:
-  - Returns a compact JWS, ≤ 4 KB, with header `{"alg":"EdDSA","kid":NETWORK_ISSUER_KID}` and payload `{iss, kid, iat, exp: iat+86400, sub, name, computer, kind, workspace?}`.
+- `network_issuer.mint(sub: str, name: str, computer: str, kind: Literal["computer","workspace"], workspace: dict | None, agents: list[str] | None, now: int) -> str`:
+  - Returns a compact JWS, ≤ 4 KB, with header `{"alg":"EdDSA","kid":NETWORK_ISSUER_KID}` and payload `{iss, kid, iat, exp: iat+86400, sub, name, computer, kind, workspace?: {id, name}, agents?}`.
   - `computer` is the 52-char lowercase base32 member key. The hostname is display only.
-  - `workspace` is the workspace's display name, ≤ 64 chars and sanitised. The engine renders it in the admission prompt.
+  - `workspace` is `{id: <org id>, name: <display name, ≤ 64 chars, sanitised>}`. A `computer` proof carries the approver's active workspace when they are a member of one (absent for a free user). A `workspace` proof has `sub = "ws:<owner>"`, `name` = the workspace name and `agents` = ≤ 6 agent display names, which the engine renders in the admission prompt.
   - Each mint writes one audit row `{kind: "proof", sub, computer, proof_kind, exp}`.
   - The key is read from `NETWORK_ISSUER_KEY_SECRET` and cached for 5 minutes.
 - Routes under `/api/v1/network`:
@@ -216,7 +219,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
   - `POST /device/token {device_code}` (no auth) → `200 {"pending": true}`, then `200 {"proof"}` exactly once, or `410`.
   - `POST /proof/refresh {proof, at, sig}` (no auth) → `{proof}`. It refuses unless all hold: `sig` verifies against `proof.computer`; `|now - at| ≤ 300`; the old proof's `exp` is at most 7 days past (grace); the Clerk user still exists. It reads the workspace name again and drops it if the person has left.
 
-- [ ] **Step 1: Failing tests** — `proof_verifies_with_the_public_half_and_lasts_24h`, `proof_names_the_key_not_the_hostname`, `start_uri_carries_no_code`, `approve_without_a_workspace_mints_a_proof`, `describe_shows_name_and_key_short`, `token_is_pending_then_proof_once_then_410`, `device_code_stored_only_as_sha256`, `refresh_requires_the_computer_signature`, `refresh_refuses_after_7_days_of_grace`, `refresh_drops_workspace_after_leaving`, `every_mint_writes_an_audit_row`, `routes_log_no_proof` (caplog has no `eyJ`), `network_routes_404_when_disabled`.
+- [ ] **Step 1: Failing tests** — `proof_verifies_with_the_public_half_and_lasts_24h`, `proof_names_the_key_not_the_hostname`, `start_uri_carries_no_code`, `approve_without_a_workspace_mints_a_proof`, `computer_proof_carries_the_active_workspace`, `workspace_proof_sub_is_ws_of_the_owner`, `describe_shows_name_and_key_short`, `token_is_pending_then_proof_once_then_410`, `device_code_stored_only_as_sha256`, `refresh_requires_the_computer_signature`, `refresh_refuses_after_7_days_of_grace`, `refresh_drops_workspace_after_leaving`, `every_mint_writes_an_audit_row`, `routes_log_no_proof` (caplog has no `eyJ`), `network_routes_404_when_disabled`.
 - [ ] **Step 2:** `cd apps/backend && uv run pytest tests/unit/services/test_network_issuer.py tests/unit/routers/test_network_device.py -v` — FAIL. **Step 3:** Implement (keys come from the owner, O3). **Step 4:** PASS.
 - [ ] **Step 5:** Commit `feat(network): sign-in issuer — typed device code, proofs, refresh, audit`.
 
@@ -255,22 +258,22 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - Create `.github/workflows/bridge.yml`: runs `cargo test` on PRs touching `apps/bridge/**`, on `vars.CI_RUNNER`.
 
 **Interfaces:**
-- `Link { owner: String, person: String }`.
+- `Workspace { owner: String }` — one instance per connected workspace.
 - `Instances::boot(cfg) -> Result<Instances>`:
-  1. `GET {BACKEND_INTERNAL_URL}/api/v1/internal/bridge/links` → `[Link]`.
-  2. For each link: read the seed from Secrets Manager and write it as `identity.key` in a fresh temp home.
+  1. `GET {BACKEND_INTERNAL_URL}/api/v1/internal/bridge/workspaces` → `[Workspace]`.
+  2. For each workspace: read the seed from Secrets Manager and write it as `identity.key` in a fresh temp home.
   3. Restore `state.db` from S3 when a snapshot exists.
   4. `embed::start(home, EmbedOpts { kind: Cloud, relay: NETWORK_RELAY_URL, issuer: NETWORK_ISSUER_URL })`.
 - `Instances::get`, `::add`, `::remove`.
-- `store::snapshot(link)` calls `snapshot {to: <tmp>}`, then `PutObject` to `bridge-state/<owner>/<person>/state.db`. It runs after every instance event that writes state, debounced to 1 s, and once more on SIGTERM.
+- `store::snapshot(owner)` calls `snapshot {to: <tmp>}`, then `PutObject` to `bridge-state/<owner>/state.db`. It runs after every instance event that writes state, debounced to 1 s, and once more on SIGTERM.
 - `lease.rs`:
   - Takes the lease with a conditional put on the containers-table row `__bridge__#lease` (`attribute_not_exists(owner_id) OR expires_at < :now`, `{holder: <task id>, expires_at: now+30}`).
   - Renews it every 10 s and deletes it on SIGTERM.
   - Without the lease, the task starts no instance and retries every 10 s. If a renewal fails, it stops all instances and goes back to waiting.
 - `http::router()` serves `GET /health`. Every other route needs the `x-lightbulb-bridge-internal` header (constant-time compare). Tasks 7, 8, 11 and 18 add routes.
-- Memory ceiling: in Step 4, measure one idle instance's RSS. Write `links per 1 GiB = floor(800 MiB / RSS)` in `apps/bridge/README.md`.
+- Memory ceiling: in Step 4, measure one idle instance's RSS. Write `workspaces per 1 GiB = floor(800 MiB / RSS)` in `apps/bridge/README.md`.
 
-- [ ] **Step 1: Failing tests** — `boot_restores_each_link_from_its_snapshot`, `missing_snapshot_starts_an_empty_instance`, `snapshot_is_debounced_and_flushed_on_sigterm`, `second_bridge_waits_without_the_lease`, `lost_lease_stops_every_instance`, `internal_routes_refuse_without_the_token`, `bridge_logs_carry_no_bodies` (send a marker; no log line contains it).
+- [ ] **Step 1: Failing tests** — `boot_restores_each_workspace_from_its_snapshot`, `missing_snapshot_starts_an_empty_instance`, `snapshot_is_debounced_and_flushed_on_sigterm`, `second_bridge_waits_without_the_lease`, `lost_lease_stops_every_instance`, `internal_routes_refuse_without_the_token`, `bridge_logs_carry_no_bodies` (send a marker; no log line contains it).
 - [ ] **Step 2:** `cd apps/bridge && cargo test` — FAIL. **Step 3:** Implement. **Step 4:** PASS; record the RSS.
 - [ ] **Step 5:** Commit `feat(bridge): embedded engine instances with keys, snapshots and a lease`.
 
@@ -285,41 +288,42 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - [ ] **Step 2:** FAIL. **Step 3:** Implement; `npx cdk synth`; commit `deploy.yml`. **Step 4:** PASS.
 - [ ] **Step 5:** Commit `feat(infra): a VPC-only door for bridge-to-backend calls`.
 
-### Task 7: Linking a workspace
+### Task 7: Connecting a workspace; per-person approval links
 
 **Files:**
-- Create `apps/backend/core/services/network_links.py`, `apps/backend/tests/unit/services/test_network_links.py`, `apps/bridge/src/link.rs` and `apps/bridge/tests/link.rs`.
+- Create `apps/backend/core/services/network_links.py`, `apps/backend/tests/unit/services/test_network_links.py`, `apps/bridge/src/connect.rs` and `apps/bridge/tests/connect.rs`.
 - Modify `apps/backend/routers/network.py`.
-- Modify `apps/backend/routers/webhooks.py`: `organizationMembership.deleted` unlinks that person's link.
+- Modify `apps/backend/routers/webhooks.py`: `organizationMembership.deleted` drops that person's approval link and holds.
 - Modify `apps/backend/core/services/workspace_wipe.py` and `account_wipe.py`.
 
 **Interfaces:**
-- `POST /api/v1/network/workspace {join_line, replace?: bool}` (Clerk; org required, else `workspace_required`):
+- `POST /api/v1/network/workspace {join_line, replace?: bool}` (Clerk; org required, else `workspace_required`; org admin required, else 403 `admin_required`). The desktop app's `network_connect_workspace` (Task 15c) calls it with a `team.invite {mode:"once"}` line minted on a Mac that is the network's founder or an admin:
   1. Refuse a line whose host is not `thelightbulb.company` (400 `bad_join_line`).
-  2. If the person already has a link in another workspace and `replace` is not true, answer 409 `already_linked {workspace}`. The app then confirms `Your network is connected to <old>. Connect it to <new> instead?` and the old link is unlinked first.
-  3. Create the key secret.
-  4. Mint a `kind=bridge` proof: `sub` = the user, `name` = `Lightbulb (<Workspace>)`, `computer` = the bridge key, `workspace` = the workspace name.
-  5. Call bridge `POST /bridge/link {owner, person, ticket, proof}`.
-  6. Write `NETLINK#<person>` with `state: waiting` and answer `{state}`.
+  2. If the workspace is already connected (`NETWORKSPACE` `waiting` or `joined`) and `replace` is not true, answer 409 `already_connected`. The app then confirms `This workspace is connected to another network. Connect it to this one instead?` and the old connection is disconnected first.
+  3. Create the workspace's key secret `lightbulb/{env}/network/bridge/{owner}` (a fresh key on every connect).
+  4. Mint a `kind=workspace` proof: `sub` = `ws:<owner>`, `name` = the workspace name, `computer` = the bridge key, `workspace` = `{id: <owner>, name}`, `agents` = the first 6 roster display names.
+  5. Call bridge `POST /bridge/connect {owner, ticket, proof}`.
+  6. Write `NETWORKSPACE` with `state: waiting`, `connected_by: <user>`, and answer `{state}`.
 
-  Copy while it waits: `Waiting for your network's founder or an admin to allow "Lightbulb (<Workspace>)".`
-- `DELETE /api/v1/network/workspace` (Clerk) and the membership-deleted webhook both unlink:
-  1. They call bridge `POST /bridge/unlink {owner, person}`.
-  2. The instance runs `team.unlink`, then `team.leave`, takes a final snapshot and shuts down.
-  3. The backend deletes the secret, the snapshot, and that person's `NETLINK`, `NETMAIL`, `NETTHREAD` and `NETHOLD` rows.
-- `GET /api/v1/network/bridge` (Clerk) → `{bridge_key, team_id, state}`.
-- Internal routes (port 8082): `GET /internal/bridge/links`; `POST /internal/bridge/link-state {owner, person, state, team_id?}`; `POST /internal/bridge/proof {owner, person}` → `{proof}`.
-- Bridge `link.rs`:
-  - `link(owner, person, ticket, proof)` = `Instances::add`, then `team.join {ticket, name: "Lightbulb (<Workspace>)", kind: "cloud", proof}`.
-  - It posts link-state with the outcome. On a `member_removed` that names its own key (the CLI `unlink`, or an admin), it posts `removed`.
-  - It renews its proof daily, at 20 h, through `/internal/bridge/proof` and `identity.proof`. Roster growth is about 1.5 MB a year per bridge; compaction is Plan D.
-- Wipes: the workspace wipe unlinks every link of the owner; the account wipe unlinks that person's link.
+  Copy while it waits: `Click Allow in the dialog on your Mac to let "<Workspace>" join your network.`
+- `DELETE /api/v1/network/workspace` (Clerk; org admin) and the workspace wipe both disconnect:
+  1. They call bridge `POST /bridge/disconnect {owner}`.
+  2. The instance runs `team.leave`, takes a final snapshot and shuts down.
+  3. The backend deletes the secret, the snapshot, and the owner's `NETWORKSPACE`, `NETLINK`, `NETTHREAD` and `NETHOLD` rows.
+- Approval links (per person, no key, no instance): `POST /api/v1/network/approvals` (Clerk; any member of the workspace) writes `NETLINK#<user>`; `DELETE /api/v1/network/approvals` removes it and that person's `NETHOLD` rows. The membership-deleted webhook and the account wipe do the same for that person. (Their computers' `Member.workspace` lapses when the next proof refresh drops the workspace, Task 3.)
+- `GET /api/v1/network/workspace` (Clerk) → `{bridge_key, team_id, state, approvals_linked}`.
+- Internal routes (port 8082): `GET /internal/bridge/workspaces`; `POST /internal/bridge/workspace-state {owner, state, team_id?}`; `POST /internal/bridge/proof {owner}` → `{proof}` (re-minted with the current name and agents).
+- Bridge `connect.rs`:
+  - `connect(owner, ticket, proof)` = `Instances::add`, then `team.join {ticket, name: <workspace slug>, kind: "cloud", proof}`, then `cloud.sessions.set` with the workspace's agents.
+  - It posts workspace-state with the outcome. On a `member_removed` that names its own key (an admin's `team.remove`), it posts `removed`.
+  - It renews its proof daily, at 20 h, through `/internal/bridge/proof` and `identity.proof`. Roster growth is about 1.5 MB a year per workspace; compaction is Plan D.
+- Wipes: the workspace wipe disconnects the owner's workspace; the account wipe drops that person's approval link and holds.
 
-- [ ] **Step 1: Failing tests** — `connect_refuses_a_join_line_from_another_host`, `connect_mints_a_bridge_proof_with_the_workspace_name`, `second_workspace_needs_replace_and_unlinks_the_old`, `membership_deleted_unlinks_the_person`, `member_removed_marks_the_link_removed`, `unlink_deletes_secret_snapshot_and_rows`, `workspace_wipe_removes_every_network_row`; bridge `join_is_kind_cloud_with_the_proof`, `proof_is_renewed_daily`.
+- [ ] **Step 1: Failing tests** — `connect_refuses_a_join_line_from_another_host`, `connect_requires_a_workspace_admin`, `connect_mints_a_workspace_proof_with_ws_owner_and_agents`, `second_network_needs_replace_and_disconnects_the_old`, `approvals_link_writes_netlink_without_a_key`, `membership_deleted_drops_the_persons_link_and_holds`, `member_removed_marks_the_workspace_removed`, `disconnect_deletes_secret_snapshot_and_rows`, `workspace_wipe_removes_every_network_row`; bridge `join_is_kind_cloud_with_the_workspace_proof`, `proof_is_renewed_daily`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
-- [ ] **Step 5:** Commit `feat(network): link one workspace per person through the bridge`.
+- [ ] **Step 5:** Commit `feat(network): connect a workspace once; per-person approval links`.
 
-### Task 8: Bridge send, inbound, routing, mailbox
+### Task 8: Bridge send, inbound, routing
 
 **Files:**
 - Create `apps/bridge/src/mail.rs`, `apps/bridge/tests/mail.rs`, `apps/backend/core/services/network_mail.py` and `apps/backend/tests/unit/services/test_network_mail.py`.
@@ -327,66 +331,66 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - Modify `apps/infra/lambda/messaging-projector/index.py`: skip `NET*` items before any processing. Test: `apps/infra/lambda/messaging-projector/test_index.py`.
 
 **Interfaces:**
-- Bridge `POST /bridge/send {owner, person, session_name, agent, to, text, request_id, reply_to?}` → `{request_id, state, thread, tier}`. A new name is declared first with `cloud.sessions.set`; the first principal to register a name keeps it, and a name owned by another principal answers 409 `name_taken`. Then it calls `send`.
-- Bridge `GET /bridge/directory?owner&person` → `{sessions:[record]}`.
-- Bridge `GET /bridge/receipt?owner&person&session_name&request_id` → the receipt. Receipt changes reach the backend on `receipt_changed`, through `POST /internal/bridge/receipt`.
+- Bridge `POST /bridge/send {owner, session_name, agent, to, text, request_id, reply_to?}` → `{request_id, state, thread, tier}`. Only a workspace agent's or webhook agent's name (Global Constraints). A new name is declared first with `cloud.sessions.set`; the first principal to register a name keeps it, and a name owned by another principal answers 409 `name_taken`. Then it calls `send`.
+- Bridge `GET /bridge/directory?owner` → `{sessions:[record]}`.
+- Bridge `GET /bridge/receipt?owner&session_name&request_id` → the receipt. Receipt changes reach the backend on `receipt_changed`, through `POST /internal/bridge/receipt`.
 - Bridge inbound, on each `message` event:
   1. Read `inbox {session}`.
   2. Frame each record with `lightbulb_connect::frame::framed` (still-needed item 3).
-  3. `POST /internal/bridge/inbound {owner, person, session_name, from, label, request_id, thread, reply_to?, sent_at, text}`.
+  3. `POST /internal/bridge/inbound {owner, session_name, from, from_person_id, label, request_id, thread, reply_to?, sent_at, text}`.
   4. Mark the record read only after a 2xx.
 
-  A stranger's message never reaches this point, because the engine's cloud inbound policy refuses it.
-- `network_mail.record_send(owner, thread, origin, ref, session_name)`.
+  A message from outside the workspace never reaches this point unless it replies to one the member sent within 24 h, because the engine's cloud inbound policy refuses it.
+- `network_mail.record_send(owner, thread, origin, ref, session_name)`, `origin: run | webhook`.
 - `network_mail.route_inbound(body)`:
 
   | Inbound | Goes to |
   |---|---|
   | known thread, `origin: run` | the run's room thread (the ledger's `triggerMessageId`), posted as the agent; it wakes a turn only if the room's listen mode would. If the run has ended, the same rule applies; there is no special path. |
-  | known thread, `origin: mailbox` | that session's mailbox |
   | known thread, `origin: webhook` | Task 10 |
-  | unknown thread, to an agent session | that agent's DM with `person` |
-  | unknown thread, to a hosted-caller session | that session's mailbox |
+  | unknown thread, to an agent session | that agent's DM with the sender's person (`from_person_id`, a workspace member by the engine's policy) |
+  | unknown thread, from someone who is not a member of this workspace | dropped and counted (the engine refuses it first; this is the backstop) |
 
-  An inbound message never goes to anyone else's mailbox or DM.
-- `network_mail.check_inbox(owner, session_name, wait_secs ≤ 25)` returns on the first unread message or at the deadline. `unread_count(owner, session_name)`.
+  An inbound message never goes to anyone else's DM. Hosted callers have no mailbox here: their replies land on the person's own computer (Task 9).
 
-- [ ] **Step 1: Failing tests** — bridge `send_declares_then_sends`, `name_of_another_principal_is_taken`, `inbound_is_marked_read_only_after_2xx`, `stranger_to_friday_is_refused_and_wakes_nothing` (engine fixture: a computer that is not the person's sends → `refused policy`, and there is no inbound post); backend `two_threads_route_to_their_own_runs`, `late_reply_posts_to_the_trigger_thread`, `unknown_thread_goes_to_the_persons_dm_only`, `mailbox_expires_seven_days_or_a_day_after_read`, `check_inbox_caps_wait_at_25`; projector `net_rows_are_skipped`.
+- [ ] **Step 1: Failing tests** — bridge `send_declares_then_sends`, `name_of_another_principal_is_taken`, `inbound_is_marked_read_only_after_2xx`, `stranger_to_friday_is_refused_and_wakes_nothing` (engine fixture: a computer of another workspace sends → `refused policy`, and there is no inbound post); backend `two_threads_route_to_their_own_runs`, `late_reply_posts_to_the_trigger_thread`, `unknown_thread_goes_to_the_senders_dm_only`, `unknown_thread_from_a_non_member_is_dropped`; projector `net_rows_are_skipped`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
-- [ ] **Step 5:** Commit `feat(bridge): cloud-session sends, inbound routing by thread, hosted mailbox`.
+- [ ] **Step 5:** Commit `feat(bridge): workspace-agent sends, inbound routing by thread`.
 
 ### Task 9: Hosted MCP network tools (module, not yet wired)
 
-**Files:** Create `apps/backend/core/services/hosted_network.py` and `apps/backend/tests/unit/services/test_hosted_network.py`.
+**Files:** Create `apps/backend/core/services/hosted_network.py`, `apps/backend/tests/unit/services/test_hosted_network.py`, `apps/bridge/src/app.rs` and `apps/bridge/tests/app.rs`.
 
-**Interfaces** — the network subset, identical to the engine's:
-- `find_sessions(ctx, query="", limit=20)` returns the caller person's link directory. With no joined link it answers `Connect your Mac first: Lightbulb app, Settings, Network, Connect my workspace.`
+**Interfaces** — the network subset, identical to the engine's. Every tool acts as the calling person (the Clerk user of the verified OAuth/DCR token) through that person's ONLINE computer, carried by the workspace member (Plan B Task 14b); none sends with the bridge's own authority. The one exception is a webhook agent's `lbk_` key, which sends as that agent's own declared session (Task 10).
+- Bridge routes: `POST /bridge/app-send {owner, for_person, app, to, text, request_id, reply_to?}` → `app.send`; `POST /bridge/app-inbox {owner, for_person, app}` → `app.inbox`; `POST /bridge/app-receipt {owner, for_person, app, request_id}` → `app.receipt`. `for_person` is always `ctx.user_id`, never from the body.
+- `app` = the verified client's slug: Claude.ai → `claude`, ChatGPT → `chatgpt`, Muse → `muse`, any other registered client → its name as `[a-z0-9-]{1,24}`. Peers see the send from `<mac short>/<app>-app`, labelled `<person>'s <App>` (e.g. `Prasiddha's Claude`).
+- An engine `no_computer_online` answers, in every tool: `none of your computers is online right now`.
+- `find_sessions(ctx, query="", limit=20)` returns the workspace member's directory (`/bridge/directory`). With no connected workspace it answers `Ask a workspace admin to connect this workspace to your network: Lightbulb app, Settings, Network, Connect workspace.`
 - `send_network(ctx, request_id, text, session_id, reply_to=None, files=None, notify=None) -> {request_id, state, tier, note}`:
   - `request_id` must match `[A-Za-z0-9._-]{1,128}`.
   - `files` and `notify` → `unsupported`.
   - `*`, `person/*` and `repo:` → `group_send_refused`.
-  - The session name comes from the verified OAuth client or key (see Global Constraints).
-  - It records the thread with `origin: mailbox`.
-- `message_receipt(ctx, request_id)` is keyed by (the calling principal's session, request_id). Another principal's id → not found.
-- `check_inbox(ctx, wait_secs=0)`: the wait is capped at 25 s. Records are `{id, request_id, thread, from, label, text, sent_at}`.
+  - → `/bridge/app-send`. The backend records no thread: the reply lands in the computer's `<app>-app` mailbox.
+- `message_receipt(ctx, request_id)` → `/bridge/app-receipt`; another app's request id → not found.
+- `check_inbox(ctx, wait_secs=0)`: `/bridge/app-inbox`, polled every 3 s; the wait is capped at 25 s. Records are `{id, request_id, thread, from, label, text, sent_at}`.
 
-- [ ] **Step 1: Failing tests** — `network_subset_matches_the_engine` (signatures against a fixture of Plan B Task 10's MCP schema), `body_claiming_a_session_is_sent_from_the_callers_own_session`, `group_targets_are_refused`, `files_and_notify_are_unsupported`, `request_id_accepts_non_uuid`, `receipt_of_another_principal_is_not_found`, `no_link_says_connect_your_mac`, `wait_over_25_is_capped`.
+- [ ] **Step 1: Failing tests** — `network_subset_matches_the_engine` (signatures against a fixture of Plan B Task 10's MCP schema), `send_goes_through_the_persons_computer_as_its_app_session`, `bridge_never_sends_from_its_own_session_for_a_person`, `for_person_is_the_caller_not_the_body`, `no_computer_online_answers_the_exact_text`, `group_targets_are_refused`, `files_and_notify_are_unsupported`, `request_id_accepts_non_uuid`, `receipt_of_another_app_is_not_found`, `no_connected_workspace_says_ask_an_admin`, `wait_over_25_is_capped`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
-- [ ] **Step 5:** Commit `feat(network): hosted MCP network tools over the bridge`.
+- [ ] **Step 5:** Commit `feat(network): hosted MCP network tools through the person's computer`.
 
 ### Task 10: Webhook agents through the bridge
 
 **Files:** Modify `apps/backend/core/services/webhook_agents.py` and `apps/bridge/src/mail.rs`. Test: `apps/backend/tests/unit/services/test_webhook_agents.py`.
 
 **Interfaces:**
-- Webhook agents are per workspace. Each one is declared on the link of the member who registered it (the `user_id` of `webhook_agents.register`), as `<webhook-slug>`, with `agent` set to its name. If that member has no link, Settings shows `Not reachable from the network until you connect your Mac.`
+- Webhook agents are per workspace. Each one is declared on the workspace member as `<webhook-slug>`, with `agent` set to its name. With no connected workspace, Settings shows `Not reachable from the network until a workspace admin connects the workspace.`
 - `webhook_agents.deliver_from_network(owner: str, agent_id: str, inbound: dict) -> tuple[bool, str]` makes ONE POST per admitted message, with today's retries. The `text` arrives already framed by the bridge, so Python does not defang it.
-- Replies come through hosted `send_network`, with the agent's `lbk_` key, from the same link.
+- Replies come through hosted `send_network` with the agent's `lbk_` key, sent by `/bridge/send` from `<webhook-slug>` — an agent session of the member, never a person.
 - Task 21b deletes `webhook_agents.defang`.
 
-- [ ] **Step 1: Failing tests** — `one_post_per_admitted_message`, `text_arrives_framed_by_the_bridge`, `url_and_key_never_in_logs_or_responses`, `reply_uses_the_registering_members_link`, `unlinked_registrant_reads_not_reachable`.
+- [ ] **Step 1: Failing tests** — `one_post_per_admitted_message`, `text_arrives_framed_by_the_bridge`, `url_and_key_never_in_logs_or_responses`, `lbk_reply_sends_from_the_webhook_session`, `unconnected_workspace_reads_not_reachable`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
-- [ ] **Step 5:** Commit `feat(network): webhook agents as sessions of the bridge`.
+- [ ] **Step 5:** Commit `feat(network): webhook agents as sessions of the workspace member`.
 
 ### Task 11: Holds — notices, Needs-you, decisions, permission prompts
 
@@ -397,25 +401,26 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 
 **Interfaces:**
 - Bridge:
-  - On `hold_notice` → `POST /internal/bridge/hold {owner, person, hold_id, holding_member, holding_computer, target_session, from, label, kind, created_at}`.
-  - `POST /bridge/decide {owner, person, hold_id, holding_member, verdict, scope}` → `decision.send`. Any scope other than `once|person|own_cloud` → 400 `bad_scope`.
+  - On `hold_notice` (the engine accepts notices only from this workspace's computers) → `POST /internal/bridge/hold {owner, for_person, hold_id, holding_member, holding_computer, target_session, from, label, kind, created_at}`.
+  - `POST /bridge/decide {owner, hold_id, holding_member, verdict, scope, decided_by}` → `decision.send`. Any scope other than `once|person|own_cloud` → 400 `bad_scope`.
   - On `decision_result` → `POST /internal/bridge/hold-result {hold_id, result}`.
   - There is no resend on boot: the engine's outbox and the snapshot carry decisions.
 - `network_holds.on_notice(body)`:
-  - Writes the `NETHOLD` row, dropping any `preview`.
+  - Drops the notice unless `NETLINK#<for_person>` exists under the owner (that person linked phone/web approvals).
+  - Writes the `NETHOLD#<owner>#<for_person>` row, dropping any `preview`.
   - Writes one `activity.py` item.
-  - Sends one push: `send_push_to_user(person, title=<copy>, body="Open Lightbulb to answer.", data={kind:"network_hold", holdId})`.
+  - Sends one push: `send_push_to_user(for_person, title=<copy>, body="Open Lightbulb to answer.", data={kind:"network_hold", holdId})`.
   - Copy for `kind: message`: `<label> wants to message your <Agent> session on <computer>.` Copy for `kind: permission`: `<Agent> on <computer> asks permission: <title>.` The title is the prompt's tool name, at most 60 chars, never the command text.
 - `GET /api/v1/network/holds` (Clerk) → the person's open holds.
 - `POST /api/v1/network/holds/{hold_id}/decision {holding_member, verdict, scope}` (Clerk):
   - 404 unless the row is under `NETHOLD#<owner>#<ctx.user_id>`.
-  - `own_cloud` is accepted only when `from` is a session of this link's bridge.
+  - `own_cloud` is accepted only when `from` is a session of this workspace's member.
   - A permission hold takes `once` only.
-  - Writes an audit row, then calls `/bridge/decide`.
+  - Writes an audit row (with `decided_by`), then calls `/bridge/decide` with `decided_by = ctx.user_id` — never from the body. The holding computer applies it only when `decided_by` is its own person.
 - Closing items: result `not_open` → `Answered on your Mac.` A message hold also closes when `receipt_changed` for that request leaves `held`.
 - Known limit: when a third party's hold is answered on the Mac, it stays open on the phone until it is tapped or until its 7-day expiry.
 
-- [ ] **Step 1: Failing tests** — `decision_route_refuses_another_persons_hold`, `bridge_refuses_cloud_of_scope`, `own_cloud_only_for_this_bridges_session`, `permission_hold_takes_once_only`, `hold_notice_preview_is_dropped`, `push_names_sender_agent_computer_and_no_body`, `not_open_reads_answered_on_your_mac`, `receipt_leaving_held_closes_the_item`, `every_decision_writes_an_audit_row`.
+- [ ] **Step 1: Failing tests** — `decision_route_refuses_another_persons_hold`, `decision_carries_decided_by_the_signed_in_user`, `bridge_refuses_cloud_of_scope`, `own_cloud_only_for_this_workspaces_sessions`, `notice_without_an_approvals_link_is_dropped`, `permission_hold_takes_once_only`, `hold_notice_preview_is_dropped`, `push_names_sender_agent_computer_and_no_body`, `not_open_reads_answered_on_your_mac`, `receipt_leaving_held_closes_the_item`, `every_decision_writes_an_audit_row`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
 - [ ] **Step 5:** Commit `feat(network): hold notices to Needs-you, phone/web decisions, permission prompts`.
 
@@ -457,8 +462,9 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
   - `_person_room` uses `messaging.person_dm` directly, not `native_session_tools`.
 - Tests: `test_hosted_mcp_session_caller.py`, `test_hosted_mcp_unread.py`, `test_hosted_mcp_auth.py`.
 
-- [ ] **Step 1: Failing tests** — `session_send_goes_to_the_bridge`, `room_send_stays_in_chat`, `check_inbox_is_listed`, `unread_note_counts_mailbox_items`, `person_room_needs_no_native_session_tools`.
-- [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat(mcp): hosted session tools ride the bridge`.
+  - The unread note counts chat items only; network replies are read with `check_inbox` on the person's computer (there is no hosted mailbox).
+- [ ] **Step 1: Failing tests** — `session_send_goes_through_the_persons_computer`, `room_send_stays_in_chat`, `check_inbox_is_listed`, `unread_note_counts_chat_items_only`, `person_room_needs_no_native_session_tools`.
+- [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat(mcp): hosted session tools act through the person's computer`.
 
 ### Task 14: Friday's tool on the network
 
@@ -466,12 +472,12 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - Modify `apps/infra/hermes/plugins/lightbulb/__init__.py` and `plugin.yaml`: rename `lightbulb_local_sessions` to `lightbulb_sessions`. The actions (`resources`, `read`, `send`, `receipt`) and the ask-once rules stay. It authenticates with the hook token alone.
 - Modify `apps/infra/hermes/bridge/server.py` and `turn.py`: drop `X-Lightbulb-Local-Session-Token` and `localSessionToken`; pass `runId` only.
 - Modify `apps/infra/hermes/skills-src/lightbulb/references/` and `MAINTENANCE.md`.
-- Modify `apps/backend/routers/network.py`: add `/api/v1/internal/network/{owner}/sessions|send|receipt` with hook-token auth. The requester comes from the run ledger (`OWNER#<owner>/RUN#<runId>` → `triggerMessageId` → that message's author). A run with no human trigger follows the rule in Global Constraints.
+- Modify `apps/backend/routers/network.py`: add `/api/v1/internal/network/{owner}/sessions|send|receipt` with hook-token auth. The sending session comes from the run ledger (`OWNER#<owner>/RUN#<runId>` → the run's agent → its `<agent-slug>` on the workspace member); no route takes a session or a person from the payload, and none sends as a person (Global Constraints, requester binding).
 - Modify `apps/backend/core/services/openclaw_work.py`: stop minting grants.
 - Tests: `apps/infra/hermes/tests/test_plugin_sessions.py`, `apps/backend/tests/unit/services/test_hermes_skill_tool_names.py`, `apps/backend/tests/unit/routers/test_internal_network.py`.
 
-- [ ] **Step 1: Failing tests** — `requester_comes_from_the_ledger_not_the_payload` (a body that names another member is ignored), `no_human_run_sends_through_the_targets_link`, `requester_without_a_link_gets_connect_your_mac`, `friday_session_is_the_agent_slug`, `refused_is_final_for_the_run`, `tool_names_match_the_skill`.
-- [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat(hermes): Friday reaches sessions through the bridge`.
+- [ ] **Step 1: Failing tests** — `sender_session_comes_from_the_ledger_not_the_payload` (a body that names another agent or a person is ignored), `no_human_run_sends_as_its_own_agent`, `unconnected_workspace_gets_ask_an_admin`, `no_route_sends_as_a_person`, `friday_session_is_the_agent_slug`, `refused_is_final_for_the_run`, `tool_names_match_the_skill`.
+- [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat(hermes): Friday reaches sessions as the workspace member`.
 
 ### Task 15a: App — engine client, install, attach
 
@@ -501,7 +507,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 
 **Interfaces:**
 - On `held`, the app posts a local notification: `<label> wants to message your <Agent>…` plus the first 140 chars.
-  - Actions: **Allow once** (`once`), **Allow <name> always** (`person`), **Decline**. A cloud sender also gets **Always allow** (`own_cloud` or `cloud_of`).
+  - Actions: **Allow once** (`once`), **Allow <name> always** (`person`), **Decline**. A cloud sender also gets **Always allow**: `own_cloud` for this Mac's own workspace's member, `cloud_of` for another workspace's.
   - The Dock badge counts open holds. The ids of the last 200 notified holds are kept in `notified.json`.
   - On `hold_closed`, the notification is withdrawn.
 - An action is answered in Rust. The app first calls `hold.get`, which must show the hold still open, with the same `session_id` and `target_birth_micros`; only then does it call `hold.answer {id, verdict, scope}`. Otherwise it shows `That request is no longer open.`
@@ -524,7 +530,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - Person-only commands. Each runs only after `sheet::confirm(title, text) -> bool`, an AppKit sheet whose text comes from the engine or from a fixed string, never from the page:
   - `network_send`, `network_hold_request`, `network_policy_set`, `network_team_invite`, `network_team_remove`, `network_join_answer`.
   - `network_connect_agents`, `network_install_engine`, `network_replace_engine`, `network_signin`, `share_set`.
-  - `network_connect_workspace` (mints `team.invite {mode:"once"}` and posts its line to `/api/v1/network/workspace`) and `network_disconnect_workspace`.
+  - `network_connect_workspace` (only on a Mac that is the network's founder or an admin, for a Clerk workspace admin: mints `team.invite {mode:"once"}` and posts its line to `/api/v1/network/workspace`; the engine's admission dialog then appears on this Mac) and `network_disconnect_workspace`.
 
 - [ ] **Step 1: Failing tests** — `every_person_only_command_needs_a_sheet_press` (with the sheet mocked to cancel, no command makes an engine write), `sheet_text_is_not_page_supplied`, `mod_socket_share_from_an_agent_shell_is_refused`, `commands_unavailable_off_origin`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
@@ -548,16 +554,16 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
   - The banner (focused window only) answers through `network_hold_request`.
   - The message box sends through `network_send`, and the receipt line walks the seven states.
 - `NetworkSettings`:
-  - The "agents send without asking" switch. Without a link it is disabled and reads `Applies to agents from your Lightbulb workspace`.
+  - The "agents send without asking" switch ("my workspace's member may message my sessions without a hold"). With no own workspace's member in the roster it is disabled and reads `Applies to agents from your Lightbulb workspace`.
   - The `people` and `cloud_of` entries, each removable. Entries set by the bridge are marked `from your phone`.
   - `folders_off` and `share_paths`.
   - **Your computers**: the reusable join line (`team.invite {mode:"reusable"}`) with a Copy button, and the text `On your other Mac, sign in, then paste this into a terminal or an agent.`
   - Join requests, with Allow and Decline.
   - "Sign in to verify your name".
-  - For members: Connect workspace and Disconnect workspace.
+  - For a workspace admin on a founder or admin Mac: Connect workspace and Disconnect workspace. Anyone else in a workspace reads `Ask your network's founder or an admin to connect the workspace from their Mac.`
   - For free people: `Add a Lightbulb workspace to bring Friday and cloud agents in`, with no button that starts checkout.
 
-- [ ] **Step 1: Failing tests** — `free_surface_has_no_friday_rooms_or_checkout`, `down_shows_start_not_an_empty_list`, `your_computers_shows_the_reusable_join_line`, `switch_disabled_without_a_link`, `receipt_line_renders_all_seven_states`; tray `tray_lists_online_people`.
+- [ ] **Step 1: Failing tests** — `free_surface_has_no_friday_rooms_or_checkout`, `down_shows_start_not_an_empty_list`, `your_computers_shows_the_reusable_join_line`, `switch_disabled_without_a_workspace_member`, `connect_offered_only_to_an_admin_on_an_admin_mac`, `receipt_line_renders_all_seven_states`; tray `tray_lists_online_people`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS; `node apps/desktop/network-ui/build.mjs` writes `network-dist/index.html`.
 - [ ] **Step 5:** Commit `feat(desktop): network sessions, settings, your computers, tray online view`.
 
@@ -587,7 +593,7 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 - Modify `mod_socket.rs` (the sharing flags) and the holder's input path (typing that arrives on the channel).
 
 **Interfaces:**
-- The grant: the app sends its own bridge `share.grant {session: "<own short>/app", viewer: <bridge key>, input: true, expires_at: now+7 d}`. It re-mints the grant every 6 days while any session is shared (still-needed item 1). The bridge opens `stream.open {session: "<short>/app"}` after the grant.
+- The grant: the app sends `share.grant {session: "<own short>/app", viewer: <own workspace member's key>, input: true, expires_at: now+7 d}` — the engine allows `input: true` only to that member. It re-mints the grant every 6 days while any session is shared. The bridge opens `stream.open {session: "<short>/app"}` on each Mac that grants it; a frame for a session goes only on the stream of the Mac that owns that session.
 - Frames are JSON lines inside `data_b64`:
 
   | Direction | Frames |
@@ -596,9 +602,9 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
   | bridge → app | `{k:"watch", session, on}`, `{k:"input", session, bytes_b64, by}`, `{k:"band", session, viewers, typing, requests}`, `{k:"pickup_want", session}`, `{k:"resume_want", conversation}` |
 
   Only sessions the person shares are sent, through "Share every new session" or the per-session Share.
-- Bridge routes: `POST /bridge/channel {owner, person, frame}` (backend → Mac) and `POST /internal/bridge/channel {owner, person, frame}` (Mac → backend).
+- Bridge routes: `POST /bridge/channel {owner, member, frame}` (backend → Mac) and `POST /internal/bridge/channel {owner, member, person_id, frame}` (Mac → backend). The backend sends `input`, `band`, `pickup_want` and `resume_want` only for viewers whose Clerk identity `session_chat.authorize_session` admits for that session (O1, unchanged).
 
-- [ ] **Step 1: Failing tests** — `only_shared_sessions_cross`, `screen_stops_within_1s_of_share_off`, `watch_toggles_screen_frames`, `input_reaches_the_holder_only_for_a_controllable_session`, `resume_want_runs_only_for_an_ended_session`, `grant_is_reminted_before_7_days`, `bridge_without_grant_gets_no_grant`, `codex_pane_shows_a_notice_not_blank`.
+- [ ] **Step 1: Failing tests** — `only_shared_sessions_cross`, `screen_stops_within_1s_of_share_off`, `watch_toggles_screen_frames`, `input_reaches_the_holder_only_for_a_controllable_session`, `input_only_from_viewers_the_backend_authorized`, `resume_want_runs_only_for_an_ended_session`, `grant_is_reminted_before_7_days`, `bridge_without_grant_gets_no_grant`, `codex_pane_shows_a_notice_not_blank`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
 - [ ] **Step 5:** Commit `feat(sessions): shared sessions ride one engine stream per Mac`.
 
@@ -615,8 +621,8 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 
   The engine's holds and policy own delivery now.
 - Create `apps/backend/core/services/network_channel.py`:
-  - `on_frame(owner, person, frame)`: `sessions` → upsert or end rows; `events` → the `EVENT#` mirror; `screen` → `session_screen.forward` on `/ws/<workspaceId>/frames/<roomId>/<deliveryKey>`; `pickup_part` → `session_pickup`.
-  - `send_to_mac(owner, person, frame)` → `/bridge/channel`.
+  - `on_frame(owner, member, frame)`: `sessions` → upsert or end rows; `events` → the `EVENT#` mirror; `screen` → `session_screen.forward` on `/ws/<workspaceId>/frames/<roomId>/<deliveryKey>`; `pickup_part` → `session_pickup`.
+  - `send_to_mac(owner, member, frame)` → `/bridge/channel`.
 - Tests: `apps/backend/tests/unit/services/test_network_channel.py`, plus the renamed suites.
 
 **Importers and the decision for each.** Each keeps working: per O1 the data source changes, the behaviour does not.
@@ -651,11 +657,12 @@ Plan C uses the names below as written here. Each one is a guess until Plan B st
 
 **Interfaces:**
 - Copy as in Task 11.
-- A message hold offers **Allow once** (`once`), **Allow <name> always** (`person`) and **Decline**. **Always allow** (`own_cloud`) appears only for this person's own cloud session.
+- A message hold offers **Allow once** (`once`), **Allow <name> always** (`person`) and **Decline**. **Always allow** (`own_cloud`) appears only when the sender is one of this workspace's agents.
+- Settings on web and phone: an `Answer Allow requests here` switch → `POST`/`DELETE /api/v1/network/approvals` (Task 7). Without it no hold reaches this person's phone or web.
 - A permission hold offers Allow once and Decline.
 - Results read `Allowed.`, `Declined.` or `Answered on your Mac.` No message text appears anywhere.
 
-- [ ] **Step 1: Failing tests** — `card_shows_no_message_text`, `three_answers_for_a_message_hold`, `always_allow_only_for_own_cloud`, `permission_hold_offers_once_and_decline`, `hidden_while_flag_off`.
+- [ ] **Step 1: Failing tests** — `card_shows_no_message_text`, `three_answers_for_a_message_hold`, `always_allow_only_for_own_workspace_agents`, `approvals_switch_writes_the_link`, `permission_hold_offers_once_and_decline`, `hidden_while_flag_off`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS.
 - [ ] **Step 5:** Commit `feat(network): answer holds from the phone and the web`.
 
@@ -698,12 +705,12 @@ The audit table goes in the PR description, with path, keep/delete and reason fo
 |---|---|---|---|
 | 0 | Before the merge: tag `main` as `hub-final`. Preconditions: Phase 1 is in prod; the engine tag carries every "still needed" item and Plan B's acceptance passed; O3 and O4 are done. | the tag exists; `/network/relays.json` is served | none needed |
 | 1 | Merge `feat/network-cutover` (Codex reviewed, all four surfaces). Dev deploys with `NETWORK_ENABLED` still off, so backend and web stay dark. | `gh run watch <id> --repo TheLightbulbCompany/lightbulb --exit-status --interval 60`; `/api/v1/network/*` answers 404 | revert the merge |
-| 2 | A PR flips `NETWORK_ENABLED` and `NEXT_PUBLIC_NETWORK_ENABLED` on, and points `/install` at `network/install.sh`. Dev deploys; then run the dev acceptance smoke on a debug engine: link, Friday send, phone Allow. | the smoke rows are recorded | flip the flags off |
+| 2 | A PR flips `NETWORK_ENABLED` and `NEXT_PUBLIC_NETWORK_ENABLED` on, and points `/install` at `network/install.sh`. Dev deploys; then run the dev acceptance smoke on a debug engine: connect, Friday send, a hosted send through the Mac, phone Allow. | the smoke rows are recorded | flip the flags off |
 | 3 | Prod: when `gh run list … --json status` shows 0 runs in flight, run `gh workflow run deploy.yml --ref main`. | the ECS task-definition image is the merge sha; `/network/device/start` answers | flip the flags off and re-dispatch. If the code itself is bad: revert to `hub-final` and re-dispatch (the ws door still exists until Task 23) |
 | 4 | Desktop: `gh workflow run desktop-build.yml --ref main`; auto-update | the DMG's bundled engine sha matches the pin; the first run cleans up (Task 17) | re-publish the previous `desktop-v0.4.*` release as latest |
 | 5 | Mobile: flip `EXPO_PUBLIC_NETWORK_ENABLED` in `mobile-ota.yml`; the merge ships the OTA | the phone shows the hold card | flip it back (another OTA) |
 | 6 | Hermes, in order: a pin-flip PR for `dev.tag`; dev deploy; on dev, `roll_hermes_runtimes.py` and `reapply_hermes_skills_dirs.py`; a pin-flip PR for `prod.tag`; prod dispatch; on prod, roll and reapply again. | `get-agent-runtime` shows `containerUri` = the new tag; Friday's tool is `lightbulb_sessions` | flip the tags back and roll |
-| 7 | The owner links: sign in, Connect my workspace, the founder's Allow | `GET /api/v1/network/bridge` shows `state: joined` | Disconnect workspace |
+| 7 | The owner (workspace admin, network founder) connects: sign in on the Mac, Connect workspace, Allow in the dialog on that Mac; then turns on `Answer Allow requests here` on the phone | `GET /api/v1/network/workspace` shows `state: joined`, `approvals_linked: true` | Disconnect workspace |
 
 Between steps 3 and 6, the old runtimes call routes that no longer exist, so Friday's session tool fails with a plain error until the roll finishes. The runbook says so.
 
@@ -736,12 +743,12 @@ Between steps 3 and 6, the old runtimes call routes that no longer exist, so Fri
 - [ ] **Step 2: Design rows 1–10.** Show parity item 1 as "sign in, then paste the join line from Your computers". Record parity item 8 (files) as a Plan D gap. Show item 11 with the tray online view.
 - [ ] **Step 3: Bridge rows 1–17.**
   - Rows 2–3: the phone shows only the sender, the agent and the computer.
-  - Row 15: grep the backend, bridge and relay logs and the messaging table for the unique markers. They appear only in mailbox rows, the Friday room, and the session mirror of sessions the person shared.
-  - Add: a stranger's message to `…/friday` is refused. A teammate's reply to Friday follows the answer to still-needed item 9.
+  - Row 15: grep the backend, bridge and relay logs and the messaging table for the unique markers. They appear only on the Macs (including the `<app>-app` mailbox), the Friday room, and the session mirror of sessions the person shared.
+  - Add: a message to `…/friday` from a computer outside the workspace is refused; a free user's reply to a message Friday sent them within 24 h is accepted; Friday renders `Friday · <workspace name>` in a teammate's directory.
 - [ ] **Step 4: App rows 1–23.** Row 22: from devtools on `https://thelightbulb.company/chat`, call every person-only `network_*` command. Each opens a sheet, and Cancel changes nothing.
 - [ ] **Step 5: O1 continuity**, on web and phone: a shared session's live terminal, its transcript history, a public link, session chat, a pick-up, teammate typing, the presence band, and a resume from the phone. **O2:** answer a Claude permission prompt from the phone.
 - [ ] **Step 6: Hosted rows that need no new account.**
-  - Claude.ai web; Grok Bot (key and webhook); a DCR script.
+  - Claude.ai web: a send arrives from the owner's Mac labelled `<owner>'s Claude`; with every Mac of the owner offline the tool answers `none of your computers is online right now`. Grok Bot (key and webhook); a DCR script.
   - A "no workspace" sign-in; a revoked key; leaving the workspace.
   - The upgrade path: a free network of two connects the workspace, then disconnects, and the network stays intact.
   - Record the direct-connection rate across all rows (QUIC discovery is off).
@@ -750,20 +757,21 @@ Between steps 3 and 6, the old runtimes call routes that no longer exist, so Fri
 ## Self-review
 
 - **Coverage of the specs.**
-  - Architecture: §1–§2 in Tasks 1, 2 and 15a; §3 in Tasks 3 and 7; §4 (one link per person; a cloud member admitted by the founder or an admin) in Task 7; §5 names and labels in Global Constraints and Tasks 8, 9 and 14; §7 scopes, claim and holds in Tasks 11, 15a, 15b and 20; §8 grants in Task 18; §9 (the MCP subset, `check_inbox` ≤ 25 s) in Tasks 9 and 13; §10, the bridge, in Tasks 5–8 and 12; §11 cutover in Tasks 21–23.
-  - Bridge spec: the data rows, the wipes and the membership-deleted unlink in Task 7; `/proof/refresh` in Task 3; the threat-model tests in Tasks 8 and 11.
+  - Architecture: §1–§2 in Tasks 1, 2 and 15a; §3 in Tasks 3 and 7; §4 (one member per workspace, admitted by the founder or an admin; per-person approval links) in Task 7; §5 names and labels in Global Constraints and Tasks 8, 9 and 14; §7 scopes, claim and holds in Tasks 11, 15a, 15b and 20; §8 grants in Task 18; §9 (the MCP subset, `check_inbox` ≤ 25 s) in Tasks 9 and 13; §10, the bridge, in Tasks 5–8 and 12; §11 cutover in Tasks 21–23.
+  - Bridge spec: the data rows, the wipes and the membership-deleted approval-link drop in Task 7; `/proof/refresh` in Task 3; the threat-model tests in Tasks 8 and 11.
   - App spec: commands, failure modes and acceptance in Tasks 15a–16 and 24.
   - Onboarding spec: the installer, `/j/` and the typed device code in Tasks 2 and 3.
   - Parity: item 1 through Your computers; item 11 through the tray; item 8 stays in Plan D.
 - **Coverage of the rulings.**
   - O1: Tasks 18, 19 and 24. O2: Tasks 11, 15b and 20.
-  - A: cloud join, leave and unlink consumed in Task 7; the MCP subset rule in Tasks 9 and 13; framing done in the bridge in Tasks 8 and 10; three issuer keys and the dev kid; one link per person; `<App>` = the sanitised `agent`; `ui.claim {}` with no two-app fields.
+  - A: cloud join and leave consumed in Task 7 (`team.unlink` retired); the MCP subset rule in Tasks 9 and 13; framing done in the bridge in Tasks 8 and 10; three issuer keys and the dev kid; one member per workspace; `<Agent> · <workspace name>` labels; `ui.claim {}` with no two-app fields.
+  - The workspace-member ruling (2026-10-22): Global Constraints, Tasks 3, 5, 7–11, 13–16, 18–20, 22, 24.
   - B: every guess is decided, in Global Constraints or in its task.
-  - C: the ledger requester in Task 14; the cloud inbound policy in Task 8; sheets and the mod-socket guard in Task 15c; the bare `/j/` in Task 2; the typed code in Task 3; the VPC door in Task 6; the membership-deleted unlink in Task 7; the admission copy in still-needed item 7; audit rows in Tasks 3 and 11.
+  - C: requester binding (the ledger's agent session, never a person) in Task 14; the cloud inbound policy in Task 8; sheets and the mod-socket guard in Task 15c; the bare `/j/` in Task 2; the typed code in Task 3; the VPC door in Task 6; the membership-deleted unlink in Task 7; the admission copy in still-needed item 7; audit rows (with `decided_by`) in Tasks 3 and 11.
   - D: the ordered train with rollback in Task 22; the importers table in Task 19; the Mac cleanup in Task 17; Phase 1 behind flags.
   - E: the relay behind the ALB with QUIC off in Task 4; the lease in the containers table in Task 5; daily proof renewal in Task 7; the 25 s cap; the slug check.
   - G: Task 14 split into 15a, 15b and 15c; Task 21 split per area; Task 10 has Interfaces; no `COMPUTER#` rows; no boot resend.
-- **Type consistency with Plan B.** These names are used exactly as in the consumed-names table: `hold.answer {id, verdict, scope}`, `held`/`hold_closed`, `ui.claim {}`, `stream.open {session}`, `stream.send {stream_id, data_b64}`, `team.invite {mode}`, `team.join {ticket, name, kind, proof}`, `cloud.sessions.set`, `inbox {session}`, `decision.send`, `hold_notice`, `decision_result`, `receipt_changed`, `member_removed`. Names Plan B does not state yet are the items under "Still needed". On our side the scope enum is `once|person|own_cloud`.
+- **Type consistency with Plan B.** These names are used exactly as in the consumed-names table: `hold.answer {id, verdict, scope}`, `held`/`hold_closed`, `ui.claim {}`, `stream.open {session}`, `stream.send {stream_id, data_b64}`, `team.invite {mode}`, `team.join {ticket, name, kind, proof}`, `cloud.sessions.set`, `inbox {session}`, `decision.send {…, decided_by}`, `hold_notice {…, for_person}`, `decision_result`, `receipt_changed`, `member_removed`, `app.send`/`app.inbox`/`app.receipt` over `app_send`/`app_receipt`/`app_inbox`/`app_inbox_result`/`app_receipt_query`, `Member.workspace`, proof kinds `computer | workspace`, `person_id = ws:<owner>`. Names Plan B does not state yet are the items under "Still needed". On our side the scope enum is `once|person|own_cloud`.
 - **Review Focus.** Each of the five items is pinned to named tests in Tasks 5, 6, 8, 11, 12, 14 and 15b/c, and to acceptance rows.
 - **Proportion.** 24 tasks; Tasks 15 and 21 have sub-commits. Phase 1 is 12 additive tasks behind flags. Phase 2 is one PR of 9 tasks (13–21), plus the train. Retiring the door is a separate PR. There are no function bodies.
 - **Ponytail cuts stated.**
@@ -772,5 +780,4 @@ Between steps 3 and 6, the old runtimes call routes that no longer exist, so Fri
   - A single bridge task: a deploy is a short outage.
 - **Rulings that could not be applied fully.**
   - "TLS at the existing ALB": that ALB is internal, so the public door is a CloudFront VPC origin in front of it (the `bv-` pattern). There is still no NLB.
-  - O1: the features that go from the backend to the Mac depend on still-needed item 1.
-  - The binding cloud inbound policy refuses teammates' replies to Friday (still-needed item 9).
+  - O1: the features that go from the backend to the Mac depend on Plan B Task 11's `input: true` grant to the own workspace's member (still-needed item 1).

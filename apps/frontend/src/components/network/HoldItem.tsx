@@ -69,7 +69,7 @@ export function ApprovalsSwitch() {
       <div>
         <div className="settings-card-title">{APPROVALS_LABEL}</div>
         <div className="settings-card-desc">{APPROVALS_DESCRIPTION}</div>
-        {error && <div role="alert" className="settings-card-desc">{error}</div>}
+        {error && <div role="alert" className="settings-card-desc" style={{ color: "var(--alert)" }}>{error}</div>}
       </div>
       <input type="checkbox" aria-label={APPROVALS_LABEL} checked={linked} disabled={busy}
         onChange={(event) => change(event.target.checked)} />

@@ -110,7 +110,11 @@ export async function setApprovalsLinked(api: Pick<ApiMethods, "post" | "del">, 
  * `linked` is null until loaded, and stays null without a connected workspace.
  */
 export function useApprovalsLink(api: Pick<ApiMethods, "get" | "post" | "del">) {
-  const { data, mutate } = useSWR("/network/workspace#approvals", () => approvalsLinked(api), { revalidateOnFocus: false });
+  const { data, mutate } = useSWR("/network/workspace#approvals", () => approvalsLinked(api), {
+    revalidateOnFocus: false,
+    // A failed read (no connected workspace) is an answer: no switch, no retry loop.
+    shouldRetryOnError: false,
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [epoch, setEpoch] = useState(0);

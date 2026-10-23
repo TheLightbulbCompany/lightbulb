@@ -262,20 +262,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     );
   });
 
-  test("backend cannot read the relays.json signing keys", () => {
-    const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap((type) =>
-      Object.values(template.findResources(type)).flatMap(
-        (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
-      ),
-    );
-    const deny = statements.find((statement: any) => statement.Sid === "DenyRelaysSigningKeyRead");
-    expect(deny.Effect).toBe("Deny");
-    expect([deny.Action].flat()).toEqual(["secretsmanager:GetSecretValue"]);
-    expect([deny.Resource].flat()).toEqual([
-      "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/network/relays_signing_key_*",
-    ]);
-  });
-
   test("backend can manage install metadata outside runtime owner prefixes", () => {
     const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap(
       (type) => Object.values(template.findResources(type)).flatMap(

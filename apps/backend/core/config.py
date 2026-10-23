@@ -462,12 +462,6 @@ class Settings(BaseSettings):
     # listed price. 15 = launch decision 2026-08-13.
     MARKETPLACE_PLATFORM_FEE_PERCENT: int = 15
 
-    # --- Lightbulb Connect sign-in issuer (core/services/network_issuer.py; set by CDK).
-    NETWORK_ISSUER_KID: str = "dev"  # "p1" in prod; the engine's ISSUER_KEYS name it
-    NETWORK_ISSUER_KEY_SECRET: str = ""  # a Secrets Manager NAME, read at call time
-    NETWORK_ISSUER_URL: str = ""  # the proof's `iss`
-    NETWORK_AUDIT_TABLE: str = ""  # lightbulb-{env}-network-audit
-
     # --- Native multiplayer messaging (set by CDK ServiceStack; spec
     # docs/superpowers/specs/2026-09-09-native-multiplayer-messaging-architecture.md).
     # The env names are the frozen cross-packet contract — do not rename.

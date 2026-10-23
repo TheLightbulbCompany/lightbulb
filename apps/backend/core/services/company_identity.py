@@ -114,9 +114,6 @@ RESERVED_SLUGS = frozenset(
         "accounts",
         "clkmail",
         "about",
-        # Lightbulb Connect relay (relay-stack.ts); both checked free 2026-10-22.
-        "relay",
-        "relay-dev",
     }
 )
 

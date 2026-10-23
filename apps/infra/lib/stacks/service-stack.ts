@@ -769,19 +769,6 @@ export class ServiceStack extends cdk.Stack {
         resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/hook_grant_signing_key-*`],
       }),
     );
-    // The Lightbulb Connect relays.json signing keys decide which relays every
-    // engine trusts. No backend path reads them (the owner signs offline with
-    // scripts/network_sign_relays.py), so the broad grant above must not cover them.
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "DenyRelaysSigningKeyRead",
-        effect: iam.Effect.DENY,
-        actions: ["secretsmanager:GetSecretValue"],
-        resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/network/relays_signing_key_*`,
-        ],
-      }),
-    );
 
     // Bootstrap admin credentials write (Paperclip service account):
     // apps/backend/scripts/bootstrap_paperclip_admin.py is invoked via

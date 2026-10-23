@@ -17,7 +17,6 @@ import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
 import { PaperclipStack } from "./stacks/paperclip-stack";
-import { RelayStack } from "./stacks/relay-stack";
 import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
 import { resourcePrefix, tableName } from "./table-names";
@@ -322,24 +321,6 @@ export class LightbulbStage extends cdk.Stage {
     paperclip.addDependency(auth);
     paperclip.addDependency(container);
     paperclip.addDependency(network);
-
-    // RelayStack — the Lightbulb Connect iroh relay (relay[-dev].<root>): one
-    // task behind the existing ALB's HTTPS listener, public via CloudFront.
-    // The HTTPS listener exists whenever NetworkStack gets a certificate, which
-    // it always does here; fail the synth rather than drop the relay silently.
-    if (!network.albHttpsListenerArnV2) throw new Error("relay needs the ALB HTTPS listener");
-    new RelayStack(this, `lightbulb-${env}-relay`, {
-      stackName: `lightbulb-${env}-relay`,
-      environment: env,
-      rootDomain,
-      vpc: network.vpc,
-      cluster: container.cluster,
-      alb: network.albV2,
-      albSecurityGroup: network.albSecurityGroup,
-      albHttpsListenerArn: network.albHttpsListenerArnV2,
-      certificate: dns.certificate,
-      hostedZone: dns.hostedZone,
-    });
 
     // ObservabilityStack — alarms, dashboard, canaries, account hardening
     const observability = new ObservabilityStack(

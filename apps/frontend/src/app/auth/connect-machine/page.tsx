@@ -102,10 +102,107 @@ function ConnectMachine() {
   );
 }
 
+// `mode=network` (the `/device` page): a Lightbulb Connect computer asks the signed-in person
+// to vouch for their name. The person TYPES the code their terminal shows; nothing in the
+// URL fills it in, so a phished link cannot carry one. No workspace is needed.
+function networkErrorText(err: unknown): string {
+  if (err instanceof ApiError && err.status === 410) return "This code is wrong or expired. Start again on your computer.";
+  if (err instanceof ApiError && err.status === 409) return "Someone else already approved this code.";
+  return "Could not sign in this computer. Try again.";
+}
+
+function NetworkSignIn() {
+  const { isLoaded, isSignedIn } = useAuth();
+  const api = useApi();
+  const [code, setCode] = useState("");
+  const [computer, setComputer] = useState<{ computer_name: string; key_short: string } | null>(null);
+  const [state, setState] = useState<"idle" | "busy" | "done">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  if (isLoaded && !isSignedIn) {
+    return (
+      <div className="flex justify-center items-center h-screen">
+        <SignIn forceRedirectUrl="/auth/connect-machine?mode=network" appearance={{ elements: { rootBox: "mx-auto" } }} />
+      </div>
+    );
+  }
+
+  async function call(path: string, then: (r: unknown) => void) {
+    setState("busy");
+    setError(null);
+    try {
+      then(await api.post(path, { user_code: code.trim() }));
+    } catch (err) {
+      setError(networkErrorText(err));
+      setState("idle");
+    }
+  }
+
+  let body: React.ReactNode;
+  if (state === "done") {
+    body = <h1 className="text-xl font-semibold">Done. You can close this tab.</h1>;
+  } else if (!computer) {
+    body = (
+      <form
+        className="flex flex-col items-center"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void call("/network/device/describe", (r) => {
+            setComputer(r as { computer_name: string; key_short: string });
+            setState("idle");
+          });
+        }}
+      >
+        <label htmlFor="network-code" className="text-xl font-semibold mb-3">
+          Enter the code your computer shows
+        </label>
+        <input
+          id="network-code"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          autoComplete="off"
+          className="font-mono text-2xl tracking-widest text-center border rounded px-3 py-2 mb-4 bg-transparent"
+        />
+        <Button type="submit" disabled={state === "busy" || !code.trim()}>
+          Continue
+        </Button>
+      </form>
+    );
+  } else {
+    body = (
+      <>
+        <h1 className="text-xl font-semibold mb-2">Sign in {computer.computer_name || "this computer"}?</h1>
+        <p className="font-mono text-sm text-muted-foreground mb-4">{computer.key_short}</p>
+        <Button onClick={() => void call("/network/device/approve", () => setState("done"))} disabled={state === "busy"}>
+          Sign in
+        </Button>
+      </>
+    );
+  }
+
+  return (
+    <div className="flex justify-center items-center h-screen">
+      <div className="text-center flex flex-col items-center max-w-sm">
+        {state !== "done" && (
+          <p className="text-sm text-muted-foreground mb-4">
+            Sign in to verify your name on the Lightbulb network. This does not create a workspace or start a plan.
+          </p>
+        )}
+        {body}
+        {error && <p className="text-sm text-destructive mt-3">{error}</p>}
+      </div>
+    </div>
+  );
+}
+
+function Page() {
+  return useSearchParams().get("mode") === "network" ? <NetworkSignIn /> : <ConnectMachine />;
+}
+
 export default function ConnectMachinePage() {
   return (
     <Suspense>
-      <ConnectMachine />
+      <Page />
     </Suspense>
   );
 }

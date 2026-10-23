@@ -29,6 +29,7 @@ import {
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { LogoMark } from "../../../components/LogoMark";
+import { HoldCard, useNetworkApi, useNetworkHolds } from "../../../components/network/HoldCard";
 import { Avatar } from "../../../components/room/Avatar";
 import { PickerSheet, type PickerOption } from "../../../components/teams/PickerSheet";
 import { ReasonSheet } from "../../../components/teams/ReasonSheet";
@@ -306,6 +307,8 @@ function Skeleton({ palette }: { palette: ChatPalette }) {
 function latestPerSession(items: readonly ActivityItem[]): ActivityItem[] {
   const seen = new Set<string>();
   return items.filter((item) => {
+    // A Lightbulb Connect hold is answered on its HoldCard, from `/network/holds`.
+    if (item.kind === "network_hold") return false;
     if (item.kind !== "session" || item.subtype === "waiting" || item.subtype === "join_request" || item.subtype === "agent_ask") return true;
     const id = item.summary.links.find((link) => link.kind === "session")?.id ?? item.id;
     if (seen.has(id)) return false;
@@ -331,7 +334,10 @@ export default function Activity() {
     () => groupActivity(filterActivity(latestPerSession(items), filter)).map((section) => ({ ...section, data: section.items })),
     [items, filter],
   );
-  const needsYou = useMemo(() => items.filter(isNeedsYou).length, [items]);
+  const api = useNetworkApi();
+  const allHolds = useNetworkHolds(api, focused);
+  const holds = filter === "all" || filter === "needs-you" ? allHolds : [];
+  const needsYou = useMemo(() => items.filter(isNeedsYou).length + allHolds.length, [items, allHolds]);
   const listRef = useRef<SectionList<ActivityItem>>(null);
   useEffect(() => {
     if (!focusedFor) return;
@@ -458,6 +464,9 @@ export default function Activity() {
         ListHeaderComponent={
           <>
             <Chips value={filter} needsYou={needsYou} palette={palette} onChange={setFilter} />
+            {holds.map((hold) => (
+              <HoldCard key={hold.hold_id} hold={hold} api={api} highlighted={focus === `network_hold:${hold.hold_id}`} />
+            ))}
             {activity.error && items.length > 0 ? (
               <Text accessibilityRole="alert" style={[styles.headerError, { color: palette.alert }]}>
                 Couldn’t refresh activity: {activity.error.message}
@@ -466,7 +475,7 @@ export default function Activity() {
           </>
         }
         ListEmptyComponent={
-          activity.loading && items.length === 0 ? (
+          holds.length > 0 ? null : activity.loading && items.length === 0 ? (
             <Skeleton palette={palette} />
           ) : activity.error && items.length === 0 ? (
             <View style={[styles.errorCard, { backgroundColor: palette.raised, borderColor: palette.edge }]}>

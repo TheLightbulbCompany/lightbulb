@@ -15,6 +15,7 @@ vi.mock("@/components/teams/inbox/AttentionDesk", () => ({
     <div data-testid="attention-desk" data-hide-failed-runs={String(props.hideFailedRuns)} data-user={props.currentUserId ?? ""}
       data-others-shown={String(props.othersShown)}>Attention desk</div>,
 }));
+vi.mock("@/components/network/HoldItem", () => ({ useNetworkHolds: () => [], HoldItem: () => null }));
 vi.mock("@/components/teams/inbox/DecisionResolver", () => ({
   DecisionResolver: ({ decisionId }: { decisionId: string }) => <div>Decision card {decisionId}</div>,
 }));

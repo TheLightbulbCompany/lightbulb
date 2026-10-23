@@ -20,6 +20,11 @@ const mockMarkSeen = jest.fn(async () => {});
 const mockLoadMore = jest.fn();
 const mockRefresh = jest.fn(async () => {});
 let mockState: Record<string, unknown> = {};
+jest.mock("../../../../components/network/HoldCard", () => ({
+  HoldCard: () => null,
+  useNetworkApi: () => ({}),
+  useNetworkHolds: () => [],
+}));
 jest.mock("../../../../lib/activity", () => ({
   ...jest.requireActual("../../../../lib/activity"),
   useMobileActivity: () => ({

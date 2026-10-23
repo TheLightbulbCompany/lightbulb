@@ -9,7 +9,7 @@ import { shouldSuppressBanner, type NotificationData } from "../../lib/notificat
 
 type TapData = NotificationData & {
   url?: string; source?: string; eventType?: string; issueId?: string; runId?: string;
-  approvalId?: string; interactionId?: string; sessionId?: string;
+  approvalId?: string; interactionId?: string; sessionId?: string; kind?: string; holdId?: string;
 };
 
 /**
@@ -29,6 +29,10 @@ export function notificationHrefs(data: TapData | undefined): Href[] | null {
   // So does an agent's question (a thread interaction), answered inline there.
   if (data?.source === "teams" && data.interactionId && data.issueId) {
     return [{ pathname: "/(app)/(tabs)/activity", params: { focus: interactionActivityId(data.issueId, data.interactionId) } }];
+  }
+  // A Lightbulb Connect hold opens Activity on its card, answered there.
+  if (data?.kind === "network_hold" && data.holdId) {
+    return [{ pathname: "/(app)/(tabs)/activity", params: { focus: `network_hold:${data.holdId}` } }];
   }
   // One of your shared sessions is waiting for you or finished.
   if (data?.source === "session" && data.sessionId) {

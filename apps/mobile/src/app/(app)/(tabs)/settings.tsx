@@ -15,6 +15,7 @@ import { Alert, Linking, Platform, useColorScheme } from "react-native";
 import { deepLinkToSubscriptions } from "expo-iap";
 import { ApiError, createApiClient } from "@lightbulb/shared";
 
+import { ApprovalsToggle } from "../../../components/network/HoldCard";
 import { GroupedList, NavigationRow } from "../../../components/ui/GroupedList";
 import { WEB_ORIGIN } from "../../../config/domain";
 import { chatPalette, spacing } from "../../../config/theme";
@@ -619,6 +620,11 @@ export default function Settings() {
       </Section>
 
       {billingSections}
+
+      {/* Lightbulb Connect: answer this person's Allow requests on the phone too. */}
+      <Section>
+        <ApprovalsToggle api={api} />
+      </Section>
 
       {/* Legal links — App Store 5.1.1(i) requires the privacy policy to be
           reachable inside the app. */}

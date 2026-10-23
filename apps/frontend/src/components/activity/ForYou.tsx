@@ -10,6 +10,7 @@ import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRun
 import type { AttentionItem, CompanyAgent } from "@/components/teams/shared/types";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { agentTint } from "@/lib/agentTint";
+import { HoldItem, useNetworkHolds } from "@/components/network/HoldItem";
 import { FOR_YOU_FILTERS, filterForYou, forYouEntries, type ForYouFilter, type ForYouEntry } from "./activityPage";
 
 export interface ActivityTarget { kind: ActivityLinkKind; id: string; roomId: string | null }
@@ -79,6 +80,9 @@ export function ForYou(props: ForYouProps) {
     .map((entry) => (entry.unread && opened.has(entry.id) ? { ...entry, unread: false } : entry)),
   [activityItems, attentionItems, failedRuns, agents, opened]);
   const entries = useMemo(() => filterForYou(all, filter, unreadOnly), [all, filter, unreadOnly]);
+  // Lightbulb Connect holds lead the needs-you rows (Allow / Decline here, not in the item's detail).
+  const allHolds = useNetworkHolds();
+  const holds = filter === "all" || filter === "needs-you" ? allHolds : [];
   const agentMap = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
   const listRef = useRef<HTMLUListElement>(null);
   const focusShown = Boolean(focusId && entries.some((entry) => entry.id === focusId));
@@ -120,13 +124,16 @@ export function ForYou(props: ForYouProps) {
     {/* Needs you: decisions lead; the desk carries its own loading, and claims the
         all-clear only when no other row is listed and every source answered. */}
     {filter === "needs-you" && <AttentionDesk agents={agents} currentUserId={props.currentUserId ?? null} hideFailedRuns
-      othersShown={entries.length > 0 || Boolean(incomplete)} />}
+      othersShown={entries.length > 0 || holds.length > 0 || Boolean(incomplete)} />}
+    {holds.length > 0 && <ul className="for-you__list" aria-label="Allow requests">
+      {holds.map((hold) => <HoldItem key={hold.hold_id} hold={hold} />)}
+    </ul>}
     {entries.length > 0 && <ul ref={listRef} className="for-you__list">
       {entries.map((entry) => <EntryRow key={entry.id} entry={entry} highlighted={entry.id === focusId} agentMap={agentMap}
         onRunAction={props.onRunAction} people={props.people} onDismissRuns={props.onDismissRuns}
         onNavigate={(target) => open(entry.id, target)} />)}
     </ul>}
-    {entries.length === 0 && filter !== "needs-you" && (loading
+    {entries.length === 0 && holds.length === 0 && filter !== "needs-you" && (loading
       ? <p role="status" className="for-you__empty">Loading…</p>
       // The all-clear only when every source answered and nothing older is left to load.
       : !incomplete && !hasMore && <p className="for-you__empty">{unreadOnly ? "Nothing unread." : "You're all caught up."}</p>)}

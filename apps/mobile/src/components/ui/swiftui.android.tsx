@@ -1,5 +1,5 @@
 import { Children, isValidElement, type ReactElement, type ReactNode, useState } from "react";
-import { Pressable, Text as RNText, View, type TextStyle, type ViewStyle } from "react-native";
+import { Pressable, Switch, Text as RNText, View, type TextStyle, type ViewStyle } from "react-native";
 
 import { fonts } from "../../config/theme";
 import { NavigationRow, useGroupedPalette } from "./GroupedList";
@@ -106,7 +106,7 @@ export function Section({
 
 /** A bare Text (or anything that is not itself a row) gets the row's padding. */
 function RowFrame({ row }: { row: ReactNode }) {
-  const pressable = isValidElement(row) && (row.type === Button || row.type === Picker || row.type === NavigationRow);
+  const pressable = isValidElement(row) && (row.type === Button || row.type === Picker || row.type === Toggle || row.type === NavigationRow);
   return pressable ? <>{row}</> : <View style={ROW}>{row}</View>;
 }
 
@@ -138,6 +138,17 @@ export function LabeledContent({ label, children }: { label: ReactNode; children
     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
       <View style={{ flexShrink: 1 }}>{label}</View>
       <View style={{ flexShrink: 1, alignItems: "flex-end" }}>{children}</View>
+    </View>
+  );
+}
+
+/** A labelled on/off row (SwiftUI's Toggle). */
+export function Toggle({ label, isOn, onIsOnChange }: WithModifiers & { label?: string; isOn?: boolean; onIsOnChange?: (on: boolean) => void }) {
+  const p = useGroupedPalette();
+  return (
+    <View style={[ROW, { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }]}>
+      <RNText style={{ flexShrink: 1, fontFamily: fonts.sans, fontSize: 17, color: p.fg }}>{label}</RNText>
+      <Switch accessibilityLabel={label} value={!!isOn} onValueChange={onIsOnChange} />
     </View>
   );
 }

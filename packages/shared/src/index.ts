@@ -347,3 +347,4 @@ export type { CardName } from "./ui/library";
 export { cardReplyRequest, choiceReply, formReply, tableReply } from "./ui/reply";
 export type { CardReply } from "./ui/reply";
 export { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./ui/answer";
+export * from "./network/holds";

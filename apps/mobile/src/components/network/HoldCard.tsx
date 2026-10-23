@@ -1,27 +1,23 @@
 import {
   APPROVALS_LABEL,
+  HOLD_FAILED,
   answerHold,
-  approvalsLinked,
   holdAnswers,
   holdText,
   listHolds,
-  setApprovalsLinked,
+  useApprovalsLink,
   type ApiMethods,
   type HoldAnswer,
   type NetworkHold,
 } from "@lightbulb/shared";
 import { disabled } from "@expo/ui/swift-ui/modifiers";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { Section, Text as UIText, Toggle } from "../ui/swiftui";
 import { fonts, spacing, useChatPalette } from "../../config/theme";
-import { useDesktopSessionApi } from "../../lib/desktopSessions";
 
 type Api = Pick<ApiMethods, "get" | "post" | "del">;
-
-/** The phone's stable Clerk-authenticated client (the same one sessions use). */
-export const useNetworkApi: () => Api = useDesktopSessionApi;
 
 /**
  * This person's open Lightbulb Connect holds, read while the screen is visible. A new
@@ -57,7 +53,7 @@ export function HoldCard({ hold, api, highlighted }: { hold: NetworkHold; api: A
         setResult(line);
         AccessibilityInfo.announceForAccessibility(line);
       })
-      .catch(() => setFailure("That didn’t go through. Try again."))
+      .catch(() => setFailure(HOLD_FAILED))
       .finally(() => setBusy(false));
   };
   return (
@@ -88,39 +84,13 @@ export function HoldCard({ hold, api, highlighted }: { hold: NetworkHold; api: A
 }
 
 /**
- * Settings: route this person's holds to the phone and the web (on writes the link, off
- * removes it), as its own section. One write at a time; a failed write puts the toggle
- * back (remounted, since SwiftUI's Toggle keeps its own state) and says so.
+ * Settings: route this person's holds to the phone and the web, as its own section. A failed
+ * write remounts the Toggle (`epoch`), since SwiftUI's Toggle keeps its own state.
  */
 export function ApprovalsToggle({ api }: { api: Api }) {
-  const [linked, setLinked] = useState<boolean | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [epoch, setEpoch] = useState(0);
-  const inFlight = useRef(false);
-  useEffect(() => {
-    let live = true;
-    // No connected workspace (or no answer): no section.
-    approvalsLinked(api).then((value) => { if (live) setLinked(value); }).catch(() => {});
-    return () => { live = false; };
-  }, [api]);
+  const { linked, busy, error, epoch, change } = useApprovalsLink(api);
+  // No connected workspace (or no answer): no section.
   if (linked === null) return null;
-  const change = (next: boolean) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setBusy(true);
-    setError(null);
-    setApprovalsLinked(api, next)
-      .then(() => setLinked(next))
-      .catch(() => {
-        setError("Couldn’t save this setting. Try again.");
-        setEpoch((value) => value + 1);
-      })
-      .finally(() => {
-        inFlight.current = false;
-        setBusy(false);
-      });
-  };
   return (
     <Section footer={error ? <UIText>{error}</UIText> : undefined}>
       <Toggle key={epoch} label={APPROVALS_LABEL} isOn={linked} onIsOnChange={change} modifiers={[disabled(busy)]} />

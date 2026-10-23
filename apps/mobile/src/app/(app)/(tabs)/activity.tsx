@@ -12,6 +12,9 @@ import {
   type ActivityActionInput,
   type ActivityFilter,
   type ActivityItem,
+  holdFocusId,
+  isHoldFeedItem,
+  isHoldFocus,
 } from "@lightbulb/shared";
 import { router, useIsFocused, useLocalSearchParams } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -29,7 +32,7 @@ import {
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { LogoMark } from "../../../components/LogoMark";
-import { HoldCard, useNetworkApi, useNetworkHolds } from "../../../components/network/HoldCard";
+import { HoldCard, useNetworkHolds } from "../../../components/network/HoldCard";
 import { Avatar } from "../../../components/room/Avatar";
 import { PickerSheet, type PickerOption } from "../../../components/teams/PickerSheet";
 import { ReasonSheet } from "../../../components/teams/ReasonSheet";
@@ -38,6 +41,7 @@ import { InsetSectionHeader, insetRowStyle } from "../../../components/ui/InsetG
 import { ListRow } from "../../../components/ui/ListRow";
 import { fonts, spacing, useChatPalette, type ChatPalette } from "../../../config/theme";
 import { activityHrefs, itemTarget, useMobileActivity } from "../../../lib/activity";
+import { useDesktopSessionApi } from "../../../lib/desktopSessions";
 import { purchaseSafeMessage } from "../../../lib/purchaseCta";
 import { relativeTime } from "../../../lib/relativeTime";
 import { useWorkspaceRoster } from "../../../lib/workspaceRoster";
@@ -307,8 +311,6 @@ function Skeleton({ palette }: { palette: ChatPalette }) {
 function latestPerSession(items: readonly ActivityItem[]): ActivityItem[] {
   const seen = new Set<string>();
   return items.filter((item) => {
-    // A Lightbulb Connect hold is answered on its HoldCard, from `/network/holds`.
-    if (item.kind === "network_hold") return false;
     if (item.kind !== "session" || item.subtype === "waiting" || item.subtype === "join_request" || item.subtype === "agent_ask") return true;
     const id = item.summary.links.find((link) => link.kind === "session")?.id ?? item.id;
     if (seen.has(id)) return false;
@@ -326,22 +328,23 @@ export default function Activity() {
   const { focus } = useLocalSearchParams<{ focus?: string }>();
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [focusedFor, setFocusedFor] = useState<string | null>(null);
-  if (focus && focus !== focusedFor && items.some((entry) => entry.id === focus)) {
+  // A hold push names a hold card (from `/network/holds`, shown under All and Needs you only).
+  const holdFocus = isHoldFocus(focus) ? focus : undefined;
+  if (focus && focus !== focusedFor && (holdFocus || items.some((entry) => entry.id === focus))) {
     setFocusedFor(focus);
-    if (!filterActivity(items, filter).some((entry) => entry.id === focus)) setFilter("all");
+    const hidden = holdFocus
+      ? filter !== "all" && filter !== "needs-you"
+      : !filterActivity(items, filter).some((entry) => entry.id === focus);
+    if (hidden) setFilter("all");
   }
-  // Holds show under All and Needs you only: a hold push on another chip goes back to All.
-  if (focus?.startsWith("network_hold:") && focus !== focusedFor) {
-    setFocusedFor(focus);
-    if (filter !== "all" && filter !== "needs-you") setFilter("all");
-  }
+  // A hold's feed item is answered on its HoldCard instead (the web drops it the same way).
   const sections = useMemo(
-    () => groupActivity(filterActivity(latestPerSession(items), filter)).map((section) => ({ ...section, data: section.items })),
+    () => groupActivity(filterActivity(latestPerSession(items.filter((item) => !isHoldFeedItem(item))), filter))
+      .map((section) => ({ ...section, data: section.items })),
     [items, filter],
   );
-  const api = useNetworkApi();
-  // A hold push names its card: read the holds again even if this tab was already up.
-  const holdFocus = focus?.startsWith("network_hold:") ? focus : undefined;
+  const api = useDesktopSessionApi();
+  // Reading the holds again on a new hold push, even if this tab was already up.
   const allHolds = useNetworkHolds(api, focused, holdFocus);
   const holds = filter === "all" || filter === "needs-you" ? allHolds : [];
   const needsYou = useMemo(() => items.filter(isNeedsYou).length + allHolds.length, [items, allHolds]);
@@ -433,6 +436,24 @@ export default function Activity() {
   };
 
   const input = pending?.action.input;
+  const emptyState =
+    activity.loading && items.length === 0 ? (
+      <Skeleton palette={palette} />
+    ) : activity.error && items.length === 0 ? (
+      <View style={[styles.errorCard, { backgroundColor: palette.raised, borderColor: palette.edge }]}>
+        <Text selectable style={[styles.errorText, { color: palette.alert }]}>
+          Couldn’t load activity: {activity.error.message}
+        </Text>
+        <Pressable onPress={() => void activity.refresh().catch(() => {})} accessibilityRole="button" accessibilityLabel="Retry">
+          <Text style={[styles.retryText, { color: palette.alert }]}>Retry</Text>
+        </Pressable>
+      </View>
+    ) : (
+      <View style={styles.empty}>
+        <LogoMark size={48} />
+        <Text style={[styles.dim, { color: palette.fgMute }]}>{ACTIVITY_EMPTY_COPY[filter]}</Text>
+      </View>
+    );
   return (
     <View style={[styles.page, { backgroundColor: palette.ground }]}>
       <SectionList
@@ -472,7 +493,7 @@ export default function Activity() {
           <>
             <Chips value={filter} needsYou={needsYou} palette={palette} onChange={setFilter} />
             {holds.map((hold) => (
-              <HoldCard key={hold.hold_id} hold={hold} api={api} highlighted={focus === `network_hold:${hold.hold_id}`} />
+              <HoldCard key={hold.hold_id} hold={hold} api={api} highlighted={focus === holdFocusId(hold.hold_id)} />
             ))}
             {activity.error && items.length > 0 ? (
               <Text accessibilityRole="alert" style={[styles.headerError, { color: palette.alert }]}>
@@ -481,25 +502,7 @@ export default function Activity() {
             ) : null}
           </>
         }
-        ListEmptyComponent={
-          holds.length > 0 ? null : activity.loading && items.length === 0 ? (
-            <Skeleton palette={palette} />
-          ) : activity.error && items.length === 0 ? (
-            <View style={[styles.errorCard, { backgroundColor: palette.raised, borderColor: palette.edge }]}>
-              <Text selectable style={[styles.errorText, { color: palette.alert }]}>
-                Couldn’t load activity: {activity.error.message}
-              </Text>
-              <Pressable onPress={() => void activity.refresh().catch(() => {})} accessibilityRole="button" accessibilityLabel="Retry">
-                <Text style={[styles.retryText, { color: palette.alert }]}>Retry</Text>
-              </Pressable>
-            </View>
-          ) : (
-            <View style={styles.empty}>
-              <LogoMark size={48} />
-              <Text style={[styles.dim, { color: palette.fgMute }]}>{ACTIVITY_EMPTY_COPY[filter]}</Text>
-            </View>
-          )
-        }
+        ListEmptyComponent={holds.length > 0 ? null : emptyState}
         ListFooterComponent={
           <>
             {activity.loadingMore ? <ActivityIndicator style={styles.more} color={palette.fgMute} /> : null}

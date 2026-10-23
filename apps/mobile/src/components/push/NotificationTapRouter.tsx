@@ -1,4 +1,4 @@
-import { approvalActivityId, interactionActivityId } from "@lightbulb/shared";
+import { HOLD_KIND, approvalActivityId, holdFocusId, interactionActivityId } from "@lightbulb/shared";
 import * as Notifications from "expo-notifications";
 import { router, type Href } from "expo-router";
 import { useEffect } from "react";
@@ -31,8 +31,8 @@ export function notificationHrefs(data: TapData | undefined): Href[] | null {
     return [{ pathname: "/(app)/(tabs)/activity", params: { focus: interactionActivityId(data.issueId, data.interactionId) } }];
   }
   // A Lightbulb Connect hold opens Activity on its card, answered there.
-  if (data?.kind === "network_hold" && data.holdId) {
-    return [{ pathname: "/(app)/(tabs)/activity", params: { focus: `network_hold:${data.holdId}` } }];
+  if (data?.kind === HOLD_KIND && data.holdId) {
+    return [{ pathname: "/(app)/(tabs)/activity", params: { focus: holdFocusId(data.holdId) } }];
   }
   // One of your shared sessions is waiting for you or finished.
   if (data?.source === "session" && data.sessionId) {

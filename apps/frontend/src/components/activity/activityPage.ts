@@ -3,7 +3,7 @@
  * (one row per item, newest first, Slack's Activity tab) and the team feed's
  * dividers (new since you looked, then days).
  */
-import { activityRowParts, approvalActivityId, interactionActivityId, isNeedsYou, type ActivityItem, type CanonicalRoomMessage } from "@lightbulb/shared";
+import { activityRowParts, approvalActivityId, interactionActivityId, isHoldFeedItem, isNeedsYou, type ActivityItem, type CanonicalRoomMessage } from "@lightbulb/shared";
 import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { AttentionItem } from "@/components/teams/shared/types";
 
@@ -44,7 +44,8 @@ const MESSAGE_KINDS: readonly string[] = ["mention", "dm", "thread_reply"];
  * run, a decided approval, a mention marked done) is not for you: null.
  */
 export function activityVerb(item: ActivityItem): ForYouVerb | null {
-  if (item.state !== "open") return null;
+  // A hold is answered on its HoldItem, from `/network/holds`, never as a feed row.
+  if (item.state !== "open" || isHoldFeedItem(item)) return null;
   if (MESSAGE_KINDS.includes(item.kind)) return "reply";
   if (item.kind === "paperclip" && item.subtype === "assigned_issue") return "do";
   // Failed runs come from the Inbox's own list (every failure, with Retry and Dismiss), not this one.

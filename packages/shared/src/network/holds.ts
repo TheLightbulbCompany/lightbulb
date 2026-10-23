@@ -3,8 +3,11 @@
  * first message (or an agent's permission prompt) that a Mac is keeping until its person
  * answers. A hold carries the sender, the target and the computer, never message text.
  */
+import { useCallback, useRef, useState } from "react";
+import useSWR from "swr";
 import type { ApiMethods } from "../api/client";
 import { ApiError } from "../api/error";
+import type { ActivityItem } from "../messaging/types";
 
 export type HoldScope = "once" | "person" | "own_cloud";
 export type HoldVerdict = "accept" | "refuse";
@@ -32,6 +35,18 @@ export interface HoldAnswer { id: string; label: string; verdict: HoldVerdict; s
 export const HOLDS_PATH = "/network/holds";
 export const APPROVALS_PATH = "/network/approvals";
 export const APPROVALS_LABEL = "Answer Allow requests here";
+export const APPROVALS_DESCRIPTION =
+  "When a teammate's agent first messages one of your sessions, your Mac asks you. Turn this on to answer here and on your phone too.";
+export const APPROVALS_SAVE_FAILED = "Couldn’t save this setting. Try again.";
+export const HOLD_FAILED = "That didn’t go through. Try again.";
+
+/** The push `kind`, the activity item kind and the focus prefix of a hold. */
+export const HOLD_KIND = "network_hold";
+/** The id a hold's row / card carries, and the `focus` a hold push lands with. */
+export const holdFocusId = (holdId: string): string => `${HOLD_KIND}:${holdId}`;
+export const isHoldFocus = (focus: string | null | undefined): focus is string => Boolean(focus?.startsWith(`${HOLD_KIND}:`));
+/** A hold's feed item: both clients drop it and answer the hold from `/network/holds` instead. */
+export const isHoldFeedItem = (item: Pick<ActivityItem, "kind">): boolean => item.kind === HOLD_KIND;
 
 /** The hold's one line (Task 11's push and Needs-you copy). */
 export function holdText(hold: NetworkHold): string {
@@ -86,4 +101,35 @@ export async function approvalsLinked(api: Pick<ApiMethods, "get">): Promise<boo
 export async function setApprovalsLinked(api: Pick<ApiMethods, "post" | "del">, on: boolean): Promise<void> {
   if (on) await api.post(APPROVALS_PATH, {});
   else await api.del(APPROVALS_PATH);
+}
+
+/**
+ * The approvals switch, for both clients: loads once, one write at a time (later taps are
+ * ignored until it settles), and a failed write leaves `linked` at the server's value, sets
+ * `error`, and bumps `epoch` so a toggle that keeps its own state (SwiftUI) can remount.
+ * `linked` is null until loaded, and stays null without a connected workspace.
+ */
+export function useApprovalsLink(api: Pick<ApiMethods, "get" | "post" | "del">) {
+  const { data, mutate } = useSWR("/network/workspace#approvals", () => approvalsLinked(api), { revalidateOnFocus: false });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [epoch, setEpoch] = useState(0);
+  const inFlight = useRef(false);
+  const change = useCallback((next: boolean) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    setError(null);
+    setApprovalsLinked(api, next)
+      .then(() => mutate(next, { revalidate: false }))
+      .catch(() => {
+        setError(APPROVALS_SAVE_FAILED);
+        setEpoch((value) => value + 1);
+      })
+      .finally(() => {
+        inFlight.current = false;
+        setBusy(false);
+      });
+  }, [api, mutate]);
+  return { linked: data ?? null, busy, error, epoch, change };
 }

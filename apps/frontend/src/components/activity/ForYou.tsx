@@ -81,6 +81,7 @@ export function ForYou(props: ForYouProps) {
   [activityItems, attentionItems, failedRuns, agents, opened]);
   const entries = useMemo(() => filterForYou(all, filter, unreadOnly), [all, filter, unreadOnly]);
   // Lightbulb Connect holds lead the needs-you rows (Allow / Decline here, not in the item's detail).
+  // They render as HoldItem, not EntryRow: reusing EntryRow would mean mapping a hold into a ForYouEntry.
   const allHolds = useNetworkHolds();
   const holds = filter === "all" || filter === "needs-you" ? allHolds : [];
   const agentMap = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);

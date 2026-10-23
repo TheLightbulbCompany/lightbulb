@@ -62,6 +62,7 @@ from routers import (
     messaging,
     meta_webhook,
     metronome_webhook,
+    network,
     oauth,
     ops,
     orgs,
@@ -614,6 +615,8 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
             "/api/v1/session-links",
             # webhook agents: a rejected body carries the webhook's key.
             "/api/v1/settings/webhook-agents",
+            # network: a rejected body carries a proof or a device code.
+            "/api/v1/network",
         )
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
@@ -937,6 +940,9 @@ app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["co
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
 
 app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
+
+# Lightbulb Connect sign-in issuer: typed device code, proofs, refresh (routers/network.py).
+app.include_router(network.router, prefix="/api/v1/network", tags=["network"])
 
 # Desktop two-node pair / revoke (two-node architecture). Pair is idempotent;
 # revoke force-closes the live WS session keyed by deviceId.

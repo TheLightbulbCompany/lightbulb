@@ -1,5 +1,5 @@
 use lightbulb_bridge::instances::Instances;
-use lightbulb_bridge::{http, lease, store, Cfg, Result};
+use lightbulb_bridge::{http, lease, store, Cfg, Result, Timed};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal::unix::{signal, SignalKind};
@@ -24,12 +24,12 @@ async fn main() -> Result<()> {
         holder: ulid::Ulid::generate().to_string(),
         scratch: std::env::temp_dir().join("lightbulb-bridge"),
         tick: Duration::from_secs(10),
-        secrets: aws.clone(),
-        blobs: aws,
-        lease: Arc::new(lease::Dynamo {
+        secrets: Arc::new(Timed(aws.clone())),
+        blobs: Arc::new(Timed(aws)),
+        lease: Arc::new(Timed(Arc::new(lease::Dynamo {
             client: aws_sdk_dynamodb::Client::new(&aws_cfg),
             table: var("CONTAINERS_TABLE")?,
-        }),
+        }))),
     });
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
     let router = http::router(cfg.token.clone());

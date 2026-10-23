@@ -3,9 +3,10 @@
 
 use crate::instances::Instances;
 use crate::{log, Cfg, Fut};
+use aws_sdk_dynamodb::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_dynamodb::types::AttributeValue;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
 
@@ -41,16 +42,22 @@ async fn put(cfg: &Cfg) -> Put {
     }
 }
 
-/// Renews every `tick` on its own, whatever boot and the routes are doing; returns the first
-/// put that did not take. `last_ok` is when the last good put was sent.
-async fn renew(cfg: Arc<Cfg>, last_ok: Arc<Mutex<Instant>>) -> Put {
+/// Until when an upload is safe after a good put sent at `sent`: our put holds the lease for
+/// `TTL_S`, less one `tick` of margin for the clocks.
+fn valid_until(cfg: &Cfg, sent: Instant) -> Instant {
+    sent + Duration::from_secs(TTL_S as u64).saturating_sub(cfg.tick)
+}
+
+/// Renews every `tick` on its own, whatever boot and the routes are doing, moving the
+/// instances' upload deadline with each good put; returns the first put that did not take.
+async fn renew(cfg: Arc<Cfg>, instances: Arc<Instances>) -> Put {
     let mut tick = tokio::time::interval_at(Instant::now() + cfg.tick, cfg.tick);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
         let sent = Instant::now();
         match put(&cfg).await {
-            Put::Taken => *last_ok.lock().unwrap() = sent,
+            Put::Taken => instances.set_until(valid_until(&cfg, sent)),
             p => return p,
         }
     }
@@ -66,7 +73,8 @@ async fn boot(instances: Arc<Instances>, tick: Duration) {
 
 /// Waits for the lease (a put every `tick`), then boots while a separate task renews it
 /// every `tick`. A renewal that does not take stops every instance and goes back to waiting.
-/// `stop` (SIGTERM) stops every instance with its final snapshot, then frees the lease.
+/// `stop` (SIGTERM) stops every instance with its final snapshot, then frees the lease. Every
+/// upload checks the deadline the last good put set, so none lands once the lease may be gone.
 pub async fn run(cfg: Arc<Cfg>, instances: Arc<Instances>, stop: impl Future<Output = ()>) {
     tokio::pin!(stop);
     let mut tick = tokio::time::interval(cfg.tick);
@@ -82,19 +90,19 @@ pub async fn run(cfg: Arc<Cfg>, instances: Arc<Instances>, stop: impl Future<Out
             continue;
         }
         log!("lease taken holder={}", cfg.holder);
-        let last_ok = Arc::new(Mutex::new(sent));
+        instances.set_until(valid_until(&cfg, sent));
         instances.set_active(true);
-        let mut renewer = tokio::spawn(renew(cfg.clone(), last_ok.clone()));
+        let mut renewer = tokio::spawn(renew(cfg.clone(), instances.clone()));
         let booter = tokio::spawn(boot(instances.clone(), cfg.tick));
         tokio::select! {
             biased;
             _ = &mut stop => {
                 instances.set_active(false);
                 booter.abort();
-                // Still renewing while the final snapshots go up.
-                instances.stop_all(true).await;
+                // Still renewing (and moving the deadline) while the final snapshots go up.
+                instances.stop_all().await;
                 renewer.abort();
-                if let Err(e) = crate::store::within(cfg.lease.delete(&cfg.holder)).await {
+                if let Err(e) = cfg.lease.delete(&cfg.holder).await {
                     log!("lease release failed: {e}");
                 }
                 log!("lease released holder={}", cfg.holder);
@@ -103,17 +111,24 @@ pub async fn run(cfg: Arc<Cfg>, instances: Arc<Instances>, stop: impl Future<Out
             lost = &mut renewer => {
                 instances.set_active(false);
                 booter.abort();
-                // Refused: another holder is live, so our copies are stale. Failed: they are
-                // the newest only while our last good put has time to run.
-                let left = Duration::from_secs(TTL_S as u64).saturating_sub(cfg.tick);
-                let flush = matches!(lost, Ok(Put::Failed))
-                    && last_ok.lock().unwrap().elapsed() < left;
-                log!("lease lost holder={} flush={flush}", cfg.holder);
-                instances.stop_all(flush).await;
+                // Refused: another holder is live, so our copies are stale: no upload at all.
+                // Failed: uploads go on until the last good put's deadline.
+                let refused = !matches!(lost, Ok(Put::Failed));
+                if refused {
+                    instances.set_until(Instant::now());
+                }
+                log!("lease lost holder={} refused={refused}", cfg.holder);
+                instances.stop_all().await;
                 tick.reset();
             }
         }
     }
+}
+
+/// Whether `e` is DynamoDB's "the condition did not hold".
+fn cond_failed<E: ProvideErrorMetadata, R>(e: &SdkError<E, R>) -> bool {
+    e.as_service_error().and_then(ProvideErrorMetadata::code)
+        == Some("ConditionalCheckFailedException")
 }
 
 /// The lease row in the containers table.
@@ -144,12 +159,7 @@ impl Table for Dynamo {
         Box::pin(async move {
             match req.send().await {
                 Ok(_) => Ok(true),
-                Err(e)
-                    if e.as_service_error()
-                        .is_some_and(|e| e.is_conditional_check_failed_exception()) =>
-                {
-                    Ok(false)
-                }
+                Err(e) if cond_failed(&e) => Ok(false),
                 Err(e) => Err(e.into()),
             }
         })
@@ -165,14 +175,8 @@ impl Table for Dynamo {
             .expression_attribute_values(":me", AttributeValue::S(holder.into()));
         Box::pin(async move {
             match req.send().await {
-                Ok(_) => Ok(()),
-                Err(e)
-                    if e.as_service_error()
-                        .is_some_and(|e| e.is_conditional_check_failed_exception()) =>
-                {
-                    Ok(())
-                }
-                Err(e) => Err(e.into()),
+                Err(e) if !cond_failed(&e) => Err(e.into()),
+                _ => Ok(()),
             }
         })
     }

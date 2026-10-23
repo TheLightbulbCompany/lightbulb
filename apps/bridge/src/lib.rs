@@ -38,6 +38,51 @@ pub struct Cfg {
     pub lease: Arc<dyn lease::Table>,
 }
 
+/// Every Secrets Manager, S3 and DynamoDB call's time limit.
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// An AWS seam whose every call ends within `CALL_TIMEOUT`: `Cfg`'s three are always one.
+pub struct Timed<T: ?Sized>(pub Arc<T>);
+
+fn timed<'a, T: Send + 'a>(f: Fut<'a, T>) -> Fut<'a, T> {
+    Box::pin(async move {
+        tokio::time::timeout(CALL_TIMEOUT, f)
+            .await
+            .map_err(|_| "timed out")?
+    })
+}
+
+impl<T: store::Secrets + ?Sized> store::Secrets for Timed<T> {
+    fn get(&self, name: &str) -> Fut<'_, String> {
+        timed(self.0.get(name))
+    }
+}
+
+impl<T: store::Blobs + ?Sized> store::Blobs for Timed<T> {
+    fn get(&self, key: &str) -> Fut<'_, Option<Vec<u8>>> {
+        timed(self.0.get(key))
+    }
+    fn put(&self, key: &str, bytes: Vec<u8>) -> Fut<'_, ()> {
+        timed(self.0.put(key, bytes))
+    }
+}
+
+impl<T: lease::Table + ?Sized> lease::Table for Timed<T> {
+    fn put(&self, holder: &str, now: i64, expires_at: i64) -> Fut<'_, bool> {
+        timed(self.0.put(holder, now, expires_at))
+    }
+    fn delete(&self, holder: &str) -> Fut<'_, ()> {
+        timed(self.0.delete(holder))
+    }
+}
+
+/// `f` (file work) off the runtime's threads, so the lease renewer never waits on a disk.
+pub async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(f).await?
+}
+
 static CAPTURE: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
 /// One log line: ids, sizes, states and timings only, never a body, key, proof or token.

@@ -1,19 +1,23 @@
 //! One embedded engine instance per connected workspace: its key from Secrets Manager, its
 //! `state.db` from S3, a fresh home on this task's disk. Instances run only while this task
-//! holds the lease (`set_active`).
+//! holds the lease (`set_active`), and upload only while it is surely valid (`set_until`).
 
-use crate::{log, store, Cfg, Result};
+use crate::store::{self, Snap};
+use crate::{blocking, log, Cfg, Result};
 use lightbulb_connect::embed::{self, EmbedOpts, Instance};
 use lightbulb_connect::roster::MemberKind;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::sync::Notify;
 use tokio::task::{JoinHandle, JoinSet};
+use tokio::time::Instant;
 
 /// Workspaces starting at once during a boot.
 const BOOT_CONCURRENCY: usize = 8;
@@ -41,13 +45,32 @@ pub struct Instances {
     starting: Mutex<BTreeSet<String>>,
     /// Whether this task holds the lease: set and cleared by `lease::run`.
     active: AtomicBool,
+    /// Until when an upload cannot overwrite a newer holder's: kept by `lease::run`.
+    until: Arc<Mutex<Instant>>,
 }
 
 struct Live {
     instance: Arc<Instance>,
-    /// `home/` (the engine's) and `state.db` (its snapshots) beside it.
-    dir: PathBuf,
+    /// Rung each time a `Lent` is given back.
+    returned: Arc<Notify>,
+    snap: Arc<Snap>,
     snapper: JoinHandle<()>,
+}
+
+/// An instance lent to a caller (a route) for one call.
+pub struct Lent(Arc<Instance>, Arc<Notify>);
+
+impl std::ops::Deref for Lent {
+    type Target = Instance;
+    fn deref(&self) -> &Instance {
+        &self.0
+    }
+}
+
+impl Drop for Lent {
+    fn drop(&mut self) {
+        self.1.notify_one();
+    }
 }
 
 /// An owner's place in `starting`, given back however the start ends (an abort included).
@@ -65,6 +88,7 @@ impl Instances {
             live: Default::default(),
             starting: Default::default(),
             active: AtomicBool::new(false),
+            until: Arc::new(Mutex::new(Instant::now())),
         })
     }
 
@@ -72,9 +96,12 @@ impl Instances {
         self.active.store(on, Ordering::SeqCst);
     }
 
+    pub(crate) fn set_until(&self, t: Instant) {
+        *self.until.lock().unwrap() = t;
+    }
+
     /// Starts every connected workspace's instance, up to `BOOT_CONCURRENCY` at once. `Err`
-    /// only when the list cannot be read; a workspace that fails to start is logged and left
-    /// out.
+    /// only when the list cannot be read; a workspace that fails to start is left out.
     pub async fn boot(self: &Arc<Self>) -> Result<()> {
         let list = workspaces(&self.cfg).await?;
         let gate = Arc::new(tokio::sync::Semaphore::new(BOOT_CONCURRENCY));
@@ -83,27 +110,19 @@ impl Instances {
             let (me, gate) = (self.clone(), gate.clone());
             starts.spawn(async move {
                 let _permit = gate.acquire_owned().await;
-                let owner = if valid_owner(&w.owner) {
-                    w.owner.clone()
-                } else {
-                    format!("<invalid, {} bytes>", w.owner.len())
-                };
-                if let Err(e) = me.add(w).await {
-                    let n = START_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
-                    log!("instance owner={owner} start failed start_failures={n}: {e}");
-                }
+                let _ = me.add(w).await;
             });
         }
         starts.join_all().await;
         Ok(())
     }
 
-    pub async fn get(&self, owner: &str) -> Option<Arc<Instance>> {
+    pub async fn get(&self, owner: &str) -> Option<Lent> {
         self.live
             .lock()
             .await
             .get(owner)
-            .map(|l| l.instance.clone())
+            .map(|l| Lent(l.instance.clone(), l.returned.clone()))
     }
 
     pub async fn owners(&self) -> Vec<String> {
@@ -111,10 +130,22 @@ impl Instances {
     }
 
     /// Starts `w`'s instance (a no-op while it runs or starts). Refused without the lease.
+    /// A failure is logged here, by a label that quotes no invalid owner.
     pub async fn add(&self, w: Workspace) -> Result<()> {
-        if !valid_owner(&w.owner) {
-            return Err("not an owner id".into());
+        let (label, r) = if valid_owner(&w.owner) {
+            (w.owner.clone(), self.try_add(w).await)
+        } else {
+            let label = format!("<invalid, {} bytes>", w.owner.len());
+            (label, Err("not an owner id".into()))
+        };
+        if let Err(e) = &r {
+            let n = START_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+            log!("instance owner={label} start failed start_failures={n}: {e}");
         }
+        r
+    }
+
+    async fn try_add(&self, w: Workspace) -> Result<()> {
         let _claim = {
             let live = self.live.lock().await;
             let mut starting = self.starting.lock().unwrap();
@@ -126,15 +157,47 @@ impl Instances {
         if !self.active.load(Ordering::SeqCst) {
             return Err("this task does not hold the lease".into());
         }
-        let l = start(&self.cfg, &w).await?;
+        let (instance, restored) = start(&self.cfg, &w).await?;
         let mut live = self.live.lock().await;
-        // The lease may have gone while it started: then it never runs.
+        // The lease may have gone while it started: then it never runs, and uploads nothing.
         if !self.active.load(Ordering::SeqCst) {
             drop(live);
-            stop(self.cfg.clone(), w.owner, l, false).await;
+            instance.shutdown().await;
+            let d = dir(&self.cfg, &w.owner);
+            let _ = blocking(move || Ok(std::fs::remove_dir_all(d)?)).await;
             return Err("the lease was lost during the start".into());
         }
-        live.insert(w.owner, l);
+        let instance = Arc::new(instance);
+        let snap = Arc::new(Snap {
+            blobs: self.cfg.blobs.clone(),
+            owner: w.owner.clone(),
+            path: dir(&self.cfg, &w.owner).join("state.db"),
+            until: self.until.clone(),
+            sent: Mutex::new(restored),
+        });
+        // A new network's genesis goes up at once: only now, with the lease re-checked. The
+        // snapper holds the instance weakly: `stop` must be able to take it back.
+        let (weak, s) = (Arc::downgrade(&instance), snap.clone());
+        let first = restored.is_none();
+        let snapper = tokio::spawn(store::debounce(instance.events(), first, move || {
+            let (weak, s) = (weak.clone(), s.clone());
+            async move {
+                let Some(i) = weak.upgrade() else { return };
+                if let Err(e) = s.take(&i).await {
+                    log!("snapshot owner={} failed: {e}", s.owner);
+                }
+            }
+        }));
+        let returned = Default::default();
+        live.insert(
+            w.owner,
+            Live {
+                instance,
+                returned,
+                snap,
+                snapper,
+            },
+        );
         Ok(())
     }
 
@@ -143,7 +206,7 @@ impl Instances {
         let l = self.live.lock().await.remove(owner);
         match l {
             Some(l) => {
-                stop(self.cfg.clone(), owner.to_string(), l, true).await;
+                stop(self.cfg.clone(), owner.to_string(), l).await;
                 true
             }
             None => false,
@@ -151,10 +214,9 @@ impl Instances {
     }
 
     /// Stops every instance at once, within `STOP_DEADLINE` (one past it is dropped: its
-    /// endpoint closes, with no final snapshot). `flush` puts each one's final snapshot, only
-    /// while this task surely holds the lease: a stale copy must never overwrite the next
-    /// holder's.
-    pub async fn stop_all(&self, flush: bool) {
+    /// endpoint closes, with no final snapshot). Each final snapshot goes up only while the
+    /// lease is still surely ours (`set_until`).
+    pub async fn stop_all(&self) {
         let all = std::mem::take(&mut *self.live.lock().await);
         // No debounced snapshot from here on, for any of them.
         for l in all.values() {
@@ -162,7 +224,7 @@ impl Instances {
         }
         let mut stops = JoinSet::new();
         for (owner, l) in all {
-            stops.spawn(stop(self.cfg.clone(), owner, l, flush));
+            stops.spawn(stop(self.cfg.clone(), owner, l));
         }
         if tokio::time::timeout(STOP_DEADLINE, stops.join_all())
             .await
@@ -181,7 +243,7 @@ impl Instances {
 async fn workspaces(cfg: &Cfg) -> Result<Vec<Workspace>> {
     let url = format!("{}/api/v1/internal/bridge/workspaces", cfg.backend_url);
     let token = cfg.token.clone();
-    let body = tokio::task::spawn_blocking(move || -> Result<String> {
+    let body = blocking(move || {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(LIST_TIMEOUT))
             .build()
@@ -193,7 +255,7 @@ async fn workspaces(cfg: &Cfg) -> Result<Vec<Workspace>> {
             .body_mut()
             .read_to_string()?)
     })
-    .await??;
+    .await?;
     serde_json::from_str(&body).map_err(|e| {
         format!(
             "bad workspaces list ({:?} at {}:{})",
@@ -212,6 +274,11 @@ fn valid_owner(o: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// `owner`'s dir on this task: `home/` (the engine's) and `state.db` (its snapshots).
+fn dir(cfg: &Cfg, owner: &str) -> PathBuf {
+    cfg.scratch.join(owner)
+}
+
 fn write_0600(path: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::OpenOptions::new()
         .write(true)
@@ -222,99 +289,84 @@ fn write_0600(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-async fn start(cfg: &Arc<Cfg>, w: &Workspace) -> Result<Live> {
+/// Starts `w`'s instance in a fresh home, with the SHA-256 of the snapshot it restored.
+async fn start(cfg: &Cfg, w: &Workspace) -> Result<(Instance, Option<[u8; 32]>)> {
     let t0 = Instant::now();
     let owner = &w.owner;
-    let dir = cfg.scratch.join(owner);
+    let dir = dir(cfg, owner);
     let home = dir.join("home");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&home)?;
     let name = format!("lightbulb/{}/network/bridge/{owner}", cfg.env);
-    let secret = store::within(cfg.secrets.get(&name)).await?;
+    let (secret, db) = tokio::join!(cfg.secrets.get(&name), cfg.blobs.get(&store::key(owner)));
     let seed = data_encoding::BASE64
-        .decode(secret.trim().as_bytes())
+        .decode(secret?.trim().as_bytes())
         .ok()
         .filter(|s| s.len() == 32)
         .ok_or("the workspace key is not a base64 32-byte seed")?;
-    write_0600(&home.join("identity.key"), &seed)?;
-    let restored = match store::within(cfg.blobs.get(&store::key(owner))).await? {
-        // An empty or foreign object is no snapshot: a fresh network would fork it off its own.
-        Some(db) if !db.starts_with(b"SQLite format 3\0") => {
-            return Err(format!("the snapshot is not a database ({} bytes)", db.len()).into())
+    let db = db?;
+    // An empty or foreign object is no snapshot: a fresh network would fork it off its own.
+    if let Some(db) = db.as_ref().filter(|d| !d.starts_with(b"SQLite format 3\0")) {
+        return Err(format!("the snapshot is not a database ({} bytes)", db.len()).into());
+    }
+    let restored: Option<(usize, [u8; 32])> =
+        db.as_ref().map(|d| (d.len(), Sha256::digest(d).into()));
+    let (d, h) = (dir.clone(), home.clone());
+    blocking(move || {
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&h)?;
+        write_0600(&h.join("identity.key"), &seed)?;
+        if let Some(db) = db {
+            write_0600(&h.join("state.db"), &db)?;
         }
-        Some(db) => {
-            write_0600(&home.join("state.db"), &db)?;
-            Some(db.len())
-        }
-        None => None,
-    };
-    let snap = dir.join("state.db");
+        Ok(())
+    })
+    .await?;
     let opts = EmbedOpts {
         kind: MemberKind::Cloud,
         relay: cfg.relay.as_deref().map(str::parse).transpose()?,
         issuer: cfg.issuer.clone(),
-        snapshot: Some(snap.clone()),
+        snapshot: Some(dir.join("state.db")),
         name: w.name.clone().unwrap_or_else(|| owner.clone()),
     };
-    let instance = Arc::new(embed::start(&home, opts).await?);
-    // A new network's genesis is saved at once, not at its first event.
-    if restored.is_none() {
-        if let Err(e) = store::snapshot(&*cfg.blobs, owner, &instance, &snap).await {
-            log!("snapshot owner={owner} first failed: {e}");
-        }
-    }
-    // The snapper holds the instance weakly: `stop` must be able to take it back.
-    let weak = Arc::downgrade(&instance);
-    let (cfg2, owner2) = (cfg.clone(), owner.clone());
-    let snapper = tokio::spawn(store::debounce(instance.events(), move || {
-        let (weak, cfg, owner, snap) = (weak.clone(), cfg2.clone(), owner2.clone(), snap.clone());
-        async move {
-            let Some(i) = weak.upgrade() else { return };
-            if let Err(e) = store::snapshot(&*cfg.blobs, &owner, &i, &snap).await {
-                log!("snapshot owner={owner} failed: {e}");
-            }
-        }
-    }));
+    let instance = embed::start(&home, opts).await?;
     log!(
         "instance owner={owner} started restored_bytes={} {}ms",
-        restored.map_or("none".into(), |n| n.to_string()),
+        restored.map_or("none".into(), |(n, _)| n.to_string()),
         t0.elapsed().as_millis()
     );
-    Ok(Live {
-        instance,
-        dir,
-        snapper,
-    })
+    Ok((instance, restored.map(|(_, sum)| sum)))
 }
 
-async fn stop(cfg: Arc<Cfg>, owner: String, l: Live, flush: bool) {
+async fn stop(cfg: Arc<Cfg>, owner: String, l: Live) {
     l.snapper.abort();
     let _ = l.snapper.await;
-    // A route mid-call holds a clone for that call; wait it out, up to 5 s.
+    // A route mid-call holds a `Lent` for that call; wait for it, up to 5 s.
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut a = l.instance;
     let instance = loop {
         match Arc::try_unwrap(a) {
             Ok(i) => break Some(i),
-            Err(b) if Instant::now() < deadline => {
+            Err(b) => {
                 a = b;
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                if tokio::time::timeout_at(deadline, l.returned.notified())
+                    .await
+                    .is_err()
+                {
+                    break Arc::try_unwrap(a).ok();
+                }
             }
-            Err(_) => break None,
         }
     };
     match instance {
-        // `shutdown` leaves the final snapshot at `dir/state.db`.
+        // `shutdown` leaves the final snapshot at `snap.path`.
         Some(i) => {
             i.shutdown().await;
-            if flush {
-                if let Err(e) = store::upload(&*cfg.blobs, &owner, &l.dir.join("state.db")).await {
-                    log!("snapshot owner={owner} final failed: {e}");
-                }
+            if let Err(e) = l.snap.upload().await {
+                log!("snapshot owner={owner} final failed: {e}");
             }
         }
         None => log!("instance owner={owner} busy at stop: dropped, no final snapshot"),
     }
-    let _ = std::fs::remove_dir_all(&l.dir);
-    log!("instance owner={owner} stopped flush={flush}");
+    let d = dir(&cfg, &owner);
+    let _ = blocking(move || Ok(std::fs::remove_dir_all(d)?)).await;
+    log!("instance owner={owner} stopped");
 }

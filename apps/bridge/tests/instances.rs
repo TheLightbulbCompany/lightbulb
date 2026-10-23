@@ -4,7 +4,7 @@
 
 use lightbulb_bridge::instances::Instances;
 use lightbulb_bridge::store::{self, Blobs, Secrets};
-use lightbulb_bridge::{http, lease, Cfg, Fut};
+use lightbulb_bridge::{http, lease, Cfg, Fut, Timed};
 use lightbulb_connect::embed::{self, EmbedOpts, Instance};
 use lightbulb_connect::identity::Identity;
 use lightbulb_connect::roster::MemberKind;
@@ -112,9 +112,17 @@ fn seed_b64(owner: &str) -> String {
 
 /// The member key's short form for `owner`'s seed, by the engine's own loader.
 fn short_of(owner: &str) -> String {
+    let (_d, home) = home_with_key(owner);
+    Identity::load_or_create(&home).unwrap().short
+}
+
+/// A temp dir holding `home/`, whose `identity.key` is `owner`'s seed.
+fn home_with_key(owner: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let d = tempfile::tempdir().unwrap();
-    std::fs::write(d.path().join("identity.key"), seed(owner)).unwrap();
-    Identity::load_or_create(d.path()).unwrap().short
+    let home = d.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("identity.key"), seed(owner)).unwrap();
+    (d, home)
 }
 
 async fn world(owners: &[&str]) -> World {
@@ -160,9 +168,10 @@ fn cfg(w: &World, holder: &str) -> Arc<Cfg> {
         holder: holder.into(),
         scratch: w.scratch.path().join(holder),
         tick: Duration::from_millis(100),
-        secrets: w.secrets.clone(),
-        blobs: w.blobs.clone(),
-        lease: w.lease.clone(),
+        // Through the same time limit as in production.
+        secrets: Arc::new(Timed(w.secrets.clone())),
+        blobs: Arc::new(Timed(w.blobs.clone())),
+        lease: Arc::new(Timed(w.lease.clone())),
     })
 }
 
@@ -195,13 +204,32 @@ async fn running(instances: &Instances, n: usize) {
     panic!("never {n} instances: {:?}", instances.owners().await);
 }
 
+/// Waits (up to 10 s) until `w`'s S3 has taken `n` puts.
+async fn uploaded(w: &World, n: usize) {
+    for _ in 0..1000 {
+        if w.blobs.puts.load(Ordering::SeqCst) >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("never {n} uploads");
+}
+
+/// A write to the live `state.db` of `holder`'s instance for `owner`, behind the engine's
+/// back: no event, so no debounced snapshot carries it; only a final one would.
+fn write_behind(w: &World, holder: &str, owner: &str) {
+    let db = w
+        .scratch
+        .path()
+        .join(format!("{holder}/{owner}/home/state.db"));
+    let live = lightbulb_connect::store::Store::open(&db).unwrap();
+    lightbulb_connect::policy::set_switch(&live, true, "test", 1).unwrap();
+}
+
 /// A state.db for `owner` as a previous bridge left it: an instance named "before" (its solo
 /// network's name), snapshotted. Returns its team id.
 async fn left_behind(w: &World, owner: &str) -> String {
-    let d = tempfile::tempdir().unwrap();
-    let home = d.path().join("home");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(home.join("identity.key"), seed(owner)).unwrap();
+    let (d, home) = home_with_key(owner);
     let opts = EmbedOpts {
         kind: MemberKind::Cloud,
         relay: None,
@@ -269,6 +297,7 @@ async fn missing_snapshot_starts_an_empty_instance() {
     assert_eq!(s["member_key_short"], short_of("org_new").as_str());
     // A fresh solo network, named for the workspace, saved at once (its genesis).
     assert_eq!(s["team"]["name"], "org_new");
+    uploaded(&w, 1).await;
     let first = w.blobs.objects.lock().unwrap()[&store::key("org_new")].clone();
     assert!(first.starts_with(b"SQLite format 3\0"));
     term.send(()).unwrap();
@@ -308,7 +337,7 @@ async fn snapshot_is_debounced_and_flushed_on_sigterm() {
     let (tx, rx) = tokio::sync::broadcast::channel(64);
     let n = Arc::new(AtomicUsize::new(0));
     let n2 = n.clone();
-    tokio::spawn(store::debounce(rx, move || {
+    tokio::spawn(store::debounce(rx, false, move || {
         let n = n2.clone();
         async move {
             n.fetch_add(1, Ordering::SeqCst);
@@ -329,6 +358,31 @@ async fn snapshot_is_debounced_and_flushed_on_sigterm() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(n.load(Ordering::SeqCst), 1, "stream bytes write no state");
 
+    // Unchanged bytes are not put again; nothing is put once the lease's deadline passed.
+    let blobs = Arc::new(FakeBlobs::default());
+    let d = tempfile::tempdir().unwrap();
+    let snap = store::Snap {
+        blobs: blobs.clone(),
+        owner: "org_u".into(),
+        path: d.path().join("state.db"),
+        until: Arc::new(Mutex::new(
+            tokio::time::Instant::now() + Duration::from_secs(60),
+        )),
+        sent: Mutex::new(None),
+    };
+    std::fs::write(&snap.path, b"one").unwrap();
+    snap.upload().await.unwrap();
+    snap.upload().await.unwrap();
+    assert_eq!(blobs.puts.load(Ordering::SeqCst), 1);
+    std::fs::write(&snap.path, b"two").unwrap();
+    *snap.until.lock().unwrap() = tokio::time::Instant::now();
+    snap.upload().await.unwrap();
+    assert_eq!(
+        blobs.puts.load(Ordering::SeqCst),
+        1,
+        "past the lease's deadline"
+    );
+
     // SIGTERM leaves each instance's final state.db in S3, then frees the lease.
     let w = world(&["org_a"]).await;
     let (instances, term, run) = bridge(cfg(&w, "b1"));
@@ -339,6 +393,8 @@ async fn snapshot_is_debounced_and_flushed_on_sigterm() {
         1,
         "idle: the genesis only"
     );
+    // A write the debounce has not caught yet: SIGTERM's final snapshot carries it.
+    write_behind(&w, "b1", "org_a");
     term.send(()).unwrap();
     run.await.unwrap();
     assert_eq!(w.blobs.puts.load(Ordering::SeqCst), 2, "and the final one");
@@ -401,6 +457,11 @@ async fn lost_lease_stops_every_instance() {
     let w = world(&["org_a", "org_b"]).await;
     let (instances, term, run) = bridge(cfg(&w, "b1"));
     running(&instances, 2).await;
+    uploaded(&w, 2).await;
+    // Both have writes their S3 copies lack, so a final upload would carry them.
+    for o in ["org_a", "org_b"] {
+        write_behind(&w, "b1", o);
+    }
     let puts = w.blobs.puts.load(Ordering::SeqCst);
     *w.lease.row.lock().unwrap() = Some(("b2".into(), i64::MAX));
     running(&instances, 0).await;
@@ -431,17 +492,15 @@ fn hit(method: &str, url: &str, headers: &[(&str, &str)], body: &str) -> u16 {
         .http_status_as_error(false)
         .build()
         .into();
-    let r = match method {
-        "GET" => headers
-            .iter()
-            .fold(agent.get(url), |r, (k, v)| r.header(*k, *v))
-            .call(),
-        _ => headers
-            .iter()
-            .fold(agent.post(url), |r, (k, v)| r.header(*k, *v))
-            .send(body),
-    };
-    r.unwrap().status().as_u16()
+    let req = headers
+        .iter()
+        .fold(
+            ureq::http::Request::builder().method(method).uri(url),
+            |r, (k, v)| r.header(*k, *v),
+        )
+        .body(body.to_string())
+        .unwrap();
+    agent.run(req).unwrap().status().as_u16()
 }
 
 #[tokio::test(flavor = "multi_thread")]

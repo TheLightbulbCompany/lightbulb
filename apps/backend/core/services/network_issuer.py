@@ -98,8 +98,14 @@ async def _signing_key() -> Ed25519PrivateKey:
     if _key is None or time.monotonic() - _key[0] > KEY_TTL_S:
         if not settings.NETWORK_ISSUER_KEY_SECRET:
             raise RuntimeError("NETWORK_ISSUER_KEY_SECRET is not configured")
-        seed = base64.b64decode(await run_in_thread(_read_seed))
-        _key = (time.monotonic(), Ed25519PrivateKey.from_private_bytes(seed))
+        private = Ed25519PrivateKey.from_private_bytes(base64.b64decode(await run_in_thread(_read_seed)))
+        kid = settings.NETWORK_ISSUER_KID
+        # A stale table (the key ceremony ran, ISSUER_PUBLIC_KEYS was not updated) must fail
+        # loudly here, never mint proofs that every refresh then refuses.
+        if private.public_key().public_bytes_raw() != ISSUER_PUBLIC_KEYS.get(kid):
+            logger.error("network: issuer seed does not match ISSUER_PUBLIC_KEYS[%s]; refusing to mint", kid)
+            raise HTTPException(status_code=503, detail="Sign-in is unavailable. Try again later.")
+        _key = (time.monotonic(), private)
     return _key[1]
 
 

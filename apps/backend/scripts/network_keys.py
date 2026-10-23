@@ -4,8 +4,9 @@ Generates the three Ed25519 issuer seeds, writes each ONLY to Secrets Manager
 (``lightbulb/{env}/network/issuer_key_{kid}``, base64), and prints only the public halves:
 the Rust lines for the engine's ``ISSUER_KEYS`` (``src/proof.rs``), each with its base64, and
 the hex lines for the backend's ``network_issuer.ISSUER_PUBLIC_KEYS``. It never overwrites a
-key: a kid whose secret already exists (an earlier, partial run) is skipped and reported, and
-only the missing ones are created; that kid's public half is the one the earlier run printed.
+key: a kid whose secret already exists (an earlier, partial run) is reported and kept, its
+seed read back (read-only) only to print its public half; the missing ones are created. So a
+rerun always prints all three kids, in both formats.
 
     AWS_PROFILE=isol8-admin uv run python -m scripts.network_keys
 """
@@ -31,22 +32,20 @@ def main(sm=None) -> int:
     for env, kid in KEYS:
         name = secret_name(env, kid)
         try:
-            sm.describe_secret(SecretId=name)
-            print(f"{name} already exists; skipped (never overwritten).", file=sys.stderr)
-            continue
+            seed = sm.get_secret_value(SecretId=name)["SecretString"]
+            print(f"{name} already exists; kept (never overwritten).", file=sys.stderr)
+            private = Ed25519PrivateKey.from_private_bytes(base64.b64decode(seed))
         except sm.exceptions.ResourceNotFoundException:
-            pass
-        private = Ed25519PrivateKey.generate()
-        # create_secret itself refuses an existing name (ResourceExistsException).
-        sm.create_secret(Name=name, SecretString=base64.b64encode(private.private_bytes_raw()).decode())
+            private = Ed25519PrivateKey.generate()
+            # create_secret itself refuses an existing name (ResourceExistsException).
+            sm.create_secret(Name=name, SecretString=base64.b64encode(private.private_bytes_raw()).decode())
         public = private.public_key().public_bytes_raw()
         rust.append(f'    ("{kid}", [{", ".join(map(str, public))}]), // {base64.b64encode(public).decode()}')
         hexes.append(f'    "{kid}": bytes.fromhex("{public.hex()}"),')
-    if rust:
-        print("// lightbulb-connect src/proof.rs ISSUER_KEYS")
-        print("\n".join(rust))
-        print("# apps/backend/core/services/network_issuer.py ISSUER_PUBLIC_KEYS")
-        print("\n".join(hexes))
+    print("// lightbulb-connect src/proof.rs ISSUER_KEYS")
+    print("\n".join(rust))
+    print("# apps/backend/core/services/network_issuer.py ISSUER_PUBLIC_KEYS")
+    print("\n".join(hexes))
     return 0
 
 

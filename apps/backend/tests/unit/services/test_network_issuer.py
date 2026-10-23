@@ -125,3 +125,17 @@ def test_member_key_is_52_lowercase_base32():
     assert not network_issuer.member_key_ok(KEY.upper())
     assert not network_issuer.member_key_ok(KEY[:-1])
     assert not network_issuer.member_key_ok("a" * 51 + "1")
+
+
+@pytest.mark.asyncio
+async def test_a_seed_that_does_not_match_the_public_table_refuses_to_mint(issuer, audit, monkeypatch, caplog):
+    from fastapi import HTTPException
+
+    other = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+    monkeypatch.setattr(network_issuer, "ISSUER_PUBLIC_KEYS", {"dev": other})  # stale after a ceremony
+    with pytest.raises(HTTPException) as refused:
+        await network_issuer.mint("user_ada", "Ada", KEY, "computer", None, None, NOW)
+    assert refused.value.status_code == 503
+    assert "does not match ISSUER_PUBLIC_KEYS[dev]" in caplog.text
+    assert base64.b64encode(SEED).decode() not in caplog.text and SEED.hex() not in caplog.text
+    assert audit.scan()["Items"] == []  # nothing minted

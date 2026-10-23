@@ -34,12 +34,21 @@ def test_keys_script_never_prints_or_stores_a_seed_outside_secrets_manager(sm, t
     assert list(tmp_path.iterdir()) == []  # nothing written to disk
 
 
-def test_keys_script_skips_an_existing_key_and_creates_the_missing_ones(sm, capsys):
-    sm.create_secret(Name="lightbulb/dev/network/issuer_key_dev", SecretString="kept")
+def test_keys_script_keeps_an_existing_key_and_still_prints_all_three(sm, capsys):
+    existing = Ed25519PrivateKey.generate()
+    kept = base64.b64encode(existing.private_bytes_raw()).decode()
+    sm.create_secret(Name="lightbulb/dev/network/issuer_key_dev", SecretString=kept)
     assert script.main(sm) == 0
-    out = capsys.readouterr()
-    assert sm.get_secret_value(SecretId="lightbulb/dev/network/issuer_key_dev")["SecretString"] == "kept"
+    first = capsys.readouterr()
+    assert sm.get_secret_value(SecretId="lightbulb/dev/network/issuer_key_dev")["SecretString"] == kept
     assert len(sm.list_secrets()["SecretList"]) == 3
-    assert "issuer_key_dev already exists; skipped" in out.err
-    assert re.findall(r'\("(\w+)", \[', out.out) == ["p1", "p2"]
-    assert script.main(sm) == 0 and "ISSUER_KEYS" not in capsys.readouterr().out  # a rerun creates nothing
+    assert "issuer_key_dev already exists; kept" in first.err
+    assert re.findall(r'\("(\w+)", \[', first.out) == ["p1", "p2", "dev"]
+    dev_public = existing.public_key().public_bytes_raw()
+    assert f'"dev": bytes.fromhex("{dev_public.hex()}")' in first.out
+    assert f"// {base64.b64encode(dev_public).decode()}" in first.out
+    assert kept not in first.out + first.err
+    # A rerun creates nothing and prints the same three public halves.
+    assert script.main(sm) == 0
+    again = capsys.readouterr()
+    assert len(sm.list_secrets()["SecretList"]) == 3 and again.out == first.out

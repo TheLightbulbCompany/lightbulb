@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@lightbulb/shared";
 import type { NetworkHold } from "@lightbulb/shared";
 import { ApprovalsSwitch, HoldItem } from "../HoldItem";
 
@@ -62,6 +63,20 @@ describe("HoldItem", () => {
     render(<HoldItem hold={message} />);
     await userEvent.click(screen.getByRole("button", { name: "Allow once" }));
     expect(await screen.findByText("Answered on your Mac.")).toBeInTheDocument();
+  });
+});
+
+describe("hold edge cases", () => {
+  it("a hold that is gone reads Answered on your Mac", async () => {
+    api.post.mockRejectedValueOnce(new ApiError(404, { detail: "not_found" }));
+    render(<HoldItem hold={message} />);
+    await userEvent.click(screen.getByRole("button", { name: "Allow once" }));
+    expect(await screen.findByText("Answered on your Mac.")).toBeInTheDocument();
+  });
+
+  it("a permission hold with no title still reads as a sentence", () => {
+    render(<HoldItem hold={{ ...permission, title: undefined }} />);
+    expect(screen.getByText("Claude on Studio asks permission.")).toBeInTheDocument();
   });
 });
 

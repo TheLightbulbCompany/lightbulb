@@ -4,6 +4,7 @@
  * answers. A hold carries the sender, the target and the computer, never message text.
  */
 import type { ApiMethods } from "../api/client";
+import { ApiError } from "../api/error";
 
 export type HoldScope = "once" | "person" | "own_cloud";
 export type HoldVerdict = "accept" | "refuse";
@@ -35,8 +36,9 @@ export const APPROVALS_LABEL = "Answer Allow requests here";
 /** The hold's one line (Task 11's push and Needs-you copy). */
 export function holdText(hold: NetworkHold): string {
   const agent = hold.agent || hold.target_session;
+  const title = (hold.title ?? "").slice(0, 60);
   return hold.kind === "permission"
-    ? `${agent} on ${hold.holding_computer} asks permission: ${(hold.title ?? "").slice(0, 60)}.`
+    ? `${agent} on ${hold.holding_computer} asks permission${title ? `: ${title}` : ""}.`
     : `${hold.label} wants to message your ${agent} session on ${hold.holding_computer}.`;
 }
 
@@ -55,9 +57,16 @@ export function holdAnswers(hold: NetworkHold): HoldAnswer[] {
 
 /** Posts the answer and returns the result line: `Allowed.`, `Declined.` or `Answered on your Mac.` */
 export async function answerHold(api: Pick<ApiMethods, "post">, hold: NetworkHold, answer: HoldAnswer): Promise<string> {
-  const body = (await api.post(`${HOLDS_PATH}/${encodeURIComponent(hold.hold_id)}/decision`, {
-    holding_member: hold.holding_member, verdict: answer.verdict, scope: answer.scope,
-  })) as { result?: string } | null;
+  let body: { result?: string } | null;
+  try {
+    body = (await api.post(`${HOLDS_PATH}/${encodeURIComponent(hold.hold_id)}/decision`, {
+      holding_member: hold.holding_member, verdict: answer.verdict, scope: answer.scope,
+    })) as { result?: string } | null;
+  } catch (err) {
+    // The hold is no longer open here (answered elsewhere, or expired): a retry can never land.
+    if (err instanceof ApiError && err.status === 404) return "Answered on your Mac.";
+    throw err;
+  }
   if (body?.result === "not_open") return "Answered on your Mac.";
   return answer.verdict === "accept" ? "Allowed." : "Declined.";
 }

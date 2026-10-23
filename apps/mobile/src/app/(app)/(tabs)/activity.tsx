@@ -330,12 +330,19 @@ export default function Activity() {
     setFocusedFor(focus);
     if (!filterActivity(items, filter).some((entry) => entry.id === focus)) setFilter("all");
   }
+  // Holds show under All and Needs you only: a hold push on another chip goes back to All.
+  if (focus?.startsWith("network_hold:") && focus !== focusedFor) {
+    setFocusedFor(focus);
+    if (filter !== "all" && filter !== "needs-you") setFilter("all");
+  }
   const sections = useMemo(
     () => groupActivity(filterActivity(latestPerSession(items), filter)).map((section) => ({ ...section, data: section.items })),
     [items, filter],
   );
   const api = useNetworkApi();
-  const allHolds = useNetworkHolds(api, focused);
+  // A hold push names its card: read the holds again even if this tab was already up.
+  const holdFocus = focus?.startsWith("network_hold:") ? focus : undefined;
+  const allHolds = useNetworkHolds(api, focused, holdFocus);
   const holds = filter === "all" || filter === "needs-you" ? allHolds : [];
   const needsYou = useMemo(() => items.filter(isNeedsYou).length + allHolds.length, [items, allHolds]);
   const listRef = useRef<SectionList<ActivityItem>>(null);

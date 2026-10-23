@@ -2,9 +2,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import type { NetworkHold } from "@lightbulb/shared";
 
 import { notificationHrefs } from "../push/NotificationTapRouter";
-import { ApprovalsToggle, HoldCard } from "./HoldCard";
+import { ApprovalsToggle, HoldCard, useNetworkHolds } from "./HoldCard";
 
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ getToken: async () => "tok" }) }));
 
 const api = { get: jest.fn(), post: jest.fn(), del: jest.fn() };
 const message: NetworkHold = {
@@ -58,7 +59,45 @@ describe("HoldCard", () => {
   });
 });
 
+describe("useNetworkHolds", () => {
+  it("reads the holds again when a hold push names a new card", async () => {
+    api.get.mockResolvedValue([message]);
+    function Probe({ reloadKey }: { reloadKey?: string }) {
+      useNetworkHolds(api, true, reloadKey);
+      return null;
+    }
+    const view = await render(<Probe />);
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1));
+    await view.rerender(<Probe reloadKey="network_hold:h9" />);
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2));
+    expect(api.get).toHaveBeenLastCalledWith("/network/holds");
+    await view.unmount();
+  });
+});
+
 describe("ApprovalsToggle", () => {
+  it("is hidden without a connected workspace", async () => {
+    api.get.mockRejectedValue(new Error("404"));
+    await render(<ApprovalsToggle api={api} />);
+    await waitFor(() => expect(api.get).toHaveBeenCalled());
+    expect(screen.queryByRole("switch")).toBeNull();
+  });
+
+  it("puts the toggle back and says so when the save fails", async () => {
+    api.get.mockResolvedValue({ approvals_linked: false });
+    let reject: (e: Error) => void = () => {};
+    api.post.mockReturnValue(new Promise((_, no) => { reject = no; }));
+    await render(<ApprovalsToggle api={api} />);
+    const toggle = await screen.findByRole("switch", { name: "Answer Allow requests here" });
+    await fireEvent.press(toggle);
+    await fireEvent.press(screen.getByRole("switch"));
+    expect(api.post).toHaveBeenCalledTimes(1);
+    expect(api.del).not.toHaveBeenCalled();
+    reject(new Error("500"));
+    expect(await screen.findByText("Couldn’t save this setting. Try again.")).toBeTruthy();
+    expect(screen.getByRole("switch").props.accessibilityState).toEqual({ checked: false });
+  });
+
   it("approvalsSwitchWritesTheLink", async () => {
     api.get.mockResolvedValue({ approvals_linked: false });
     api.post.mockResolvedValue({});

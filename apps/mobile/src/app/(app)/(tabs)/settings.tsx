@@ -622,9 +622,7 @@ export default function Settings() {
       {billingSections}
 
       {/* Lightbulb Connect: answer this person's Allow requests on the phone too. */}
-      <Section>
-        <ApprovalsToggle api={api} />
-      </Section>
+      <ApprovalsToggle api={api} />
 
       {/* Legal links — App Store 5.1.1(i) requires the privacy policy to be
           reachable inside the app. */}

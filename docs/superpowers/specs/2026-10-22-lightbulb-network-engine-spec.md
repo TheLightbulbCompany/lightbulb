@@ -1,4 +1,4 @@
-# lightbulb-network engine: product and engineering spec
+# lightbulb-connect engine: product and engineering spec
 
 Status: draft for owner review, 2026-10-22. Part 1 of 4 (engine; bridge, app and hosted MCP have their own specs).
 Binding over this spec where they differ: `2026-10-22-lightbulb-network-architecture.md`. Binding inputs: the approved design (`2026-10-22-lightbulb-network-p2p-design.md`, esp. "Where each thing lives"),
@@ -51,65 +51,65 @@ depends on neither.
 
 ## User flows
 
-Binary: the file `lightbulb-network`, at the one canonical path `~/.lightbulb/network/bin/lightbulb-network`. The command people type is `lightbulb`, a symlink `~/.local/bin/lightbulb` to that path; the examples below keep the long name. Subcommands the engine does not own (`claude`, `codex`, `share`, `continue`, the app's session launchers) are forwarded to the installed app's binary; without the app they print "needs the Lightbulb app: thelightbulb.company/download".
+Binary: the file `lightbulb-connect`, at the one canonical path `~/.lightbulb/connect/bin/lightbulb-connect`. The command people type is `lightbulb`, a symlink `~/.local/bin/lightbulb` to that path; the examples below keep the long name. Subcommands the engine does not own (`claude`, `codex`, `share`, `continue`, the app's session launchers) are forwarded to the installed app's binary; without the app they print "needs the Lightbulb app: thelightbulb.company/download".
 Names in angle brackets are filled in. Text in quotes is exactly what is printed.
 
 ### 1. Install
 
 1. Person runs: `curl -fsSL https://thelightbulb.company/install | sh`
 2. The script downloads the signed macOS archive for the person's CPU, checks its signature and hash, puts the binary
-   at the canonical path, links `~/.local/bin/lightbulb` to it (adding that folder to the shell path file if needed), and runs `lightbulb-network setup`.
+   at the canonical path, links `~/.local/bin/lightbulb` to it (adding that folder to the shell path file if needed), and runs `lightbulb-connect setup`.
 3. `setup` finds installed agents and wires each (hooks, MCP entry, permission allow-list), backing up every file it
-   edits once as `<file>.lightbulb-backup`. It installs and starts the launchd job `company.thelightbulb.network`.
+   edits once as `<file>.lightbulb-backup`. It installs and starts the launchd job `company.thelightbulb.connect`.
 4. Person sees:
    ```
    Lightbulb Network 0.1.0 installed.
    Wired:  Claude Code, Codex, Cursor, Grok CLI      (not found: none)
    Backups: 6 files saved as *.lightbulb-backup
    Running in the background. Restart open agent sessions to load the tools.
-   Next:   lightbulb-network init --name <your-name>     create a network
-           lightbulb-network join '<link>'                join a friend's
+   Next:   lightbulb-connect init --name <your-name>     create a network
+           lightbulb-connect join '<link>'                join a friend's
    ```
-5. With no agent installed it says `Wired: nothing yet. Install an agent, then run: lightbulb-network setup`.
+5. With no agent installed it says `Wired: nothing yet. Install an agent, then run: lightbulb-connect setup`.
 6. The installer prints nothing about accounts and never opens a browser.
 
 ### 2. Join (create, or join a friend's)
 
 Create, first person:
-1. `lightbulb-network init --name prasiddha`
+1. `lightbulb-connect init --name prasiddha`
 2. Creates this computer's key if none, writes the team log (founder entry, self-signed), starts connecting.
 3. Prints:
    ```
    Network "prasiddha" created. You are the founder.
-   This computer: prasiddha-mbp   (name not verified; run `lightbulb-network signin` to verify it)
+   This computer: prasiddha-mbp   (name not verified; run `lightbulb-connect signin` to verify it)
    Invite line (paste to a friend's coding agent, or send as text):
-     Join the Lightbulb network: https://thelightbulb.company/j/#<ticket>
-   Show it again any time: lightbulb-network invite
+     Join Lightbulb Connect: https://thelightbulb.company/j/#<ticket>
+   Show it again any time: lightbulb-connect invite
    The link works for 7 days; `invite --new` renews it.
    ```
 4. Team name defaults to the person name. `--team <name>` overrides.
 
 Join, friend:
-1. Friend pastes the invite line to their agent. The agent runs `lightbulb-network join '<link>' --name <name>`
+1. Friend pastes the invite line to their agent. The agent runs `lightbulb-connect join '<link>' --name <name>`
    (the static `/j/` page shows the same command and the install line, and knows nothing of the team; the ticket is in the URL fragment, so it never reaches our servers). Or the friend runs it in a terminal.
 2. The engine dials the inviting computer by key (any online member in the ticket works), proves it holds the link
    secret, and sends its public key and name.
 3. The inviting computer or an online admin raises a hold-shaped prompt ("aden wants to join your network") and signs an admission only on Allow; a ticket minted with `invite --open` skips the prompt. The ticket carries `ticket_id` and `mode: ask | open`, signed by the inviting member's key; the inviting computer keeps `invites(ticket_id, mode, secret_hash, expires_at, used_at?)`, so only THAT ticket is open and the reusable team link stays `ask`. The receiver verifies the signature against the roster before honouring `open`. `join` prints `Waiting for an admin to allow this...` meanwhile. The new computer receives the full team log and checks every
    signature itself.
 4. Prints: `Connected as aden (aden-mbp). Team "prasiddha": 2 computers online.`
-5. If the name is taken: `The name "aden" is already used in this network. Try: lightbulb-network join '<link>' --name aden-2`
+5. If the name is taken: `The name "aden" is already used in this network. Try: lightbulb-connect join '<link>' --name aden-2`
 6. If no member is reachable: `No one from this network is online right now. Ask them to open their laptop, then run the same command again. Your key is ready; nothing was lost.`
-7. A second computer of the same person: `lightbulb-network signin` first on both, then `join`. The computer is admitted by one of the person's own computers after a local confirmation ("Your new Mac wants to join. Allow?"). **Ruling (architecture 2026-10-22):** names are roster-unique, so the second computer is `aden-2`; it is labelled "aden's" only when both carry a proof for the same account. An unverified second computer cannot share a name or a `person_id`.
+7. A second computer of the same person: `lightbulb-connect signin` first on both, then `join`. The computer is admitted by one of the person's own computers after a local confirmation ("Your new Mac wants to join. Allow?"). **Ruling (architecture 2026-10-22):** names are roster-unique, so the second computer is `aden-2`; it is labelled "aden's" only when both carry a proof for the same account. An unverified second computer cannot share a name or a `person_id`.
 8. `person_id` is sticky: assigned at admission (the Clerk id when the computer joined with a proof, else its own key); a later proof writes a signed `merge` entry; proof expiry changes only the verified badge.
 
 ### 3. Invite
 
-1. Any member: `lightbulb-network invite` prints the invite line (the current link secret), which expires 7 days after it was minted.
-2. One-time form: `lightbulb-network invite --once` prints a link valid for one join and 24 hours. `invite --open` mints a ticket whose joins need no Allow (per-ticket mode; the reusable link stays `ask`; the CLI says: "Anyone with this link joins without asking. Use it only with people you trust.").
-3. Prints for `--once`: `One-time invite, expires <time>: Join the Lightbulb network: https://thelightbulb.company/j/#<ticket>`
-4. Replace the reusable link: `lightbulb-network invite --new` prints `Old link stopped working. New link: ...`. The link is also replaced on every removal.
-5. Make an admin (founder only): `lightbulb-network admin aden`, prints `aden can now remove members.`
-6. Remove (founder or admin): `lightbulb-network remove aden-mbp`, prints
+1. Any member: `lightbulb-connect invite` prints the invite line (the current link secret), which expires 7 days after it was minted.
+2. One-time form: `lightbulb-connect invite --once` prints a link valid for one join and 24 hours. `invite --open` mints a ticket whose joins need no Allow (per-ticket mode; the reusable link stays `ask`; the CLI says: "Anyone with this link joins without asking. Use it only with people you trust.").
+3. Prints for `--once`: `One-time invite, expires <time>: Join Lightbulb Connect: https://thelightbulb.company/j/#<ticket>`
+4. Replace the reusable link: `lightbulb-connect invite --new` prints `Old link stopped working. New link: ...`. The link is also replaced on every removal.
+5. Make an admin (founder only): `lightbulb-connect admin aden`, prints `aden can now remove members.`
+6. Remove (founder or admin): `lightbulb-connect remove aden-mbp`, prints
    `Removed aden-mbp. New connections and new mail from it are blocked. The invite link was replaced: <new line>`
 7. A non-admin runs `remove`: `Only the founder and admins can remove computers. Ask prasiddha.`
 
@@ -123,8 +123,8 @@ Join, friend:
 5. The receiving agent sees, as a user-role message:
    `[Lightbulb teammate contribution from Your Claude Code {"requestId":"<id>"}]` then the text.
 6. Teammate case: `send_message(session_id: "b81c2/codex:9c2", ...)`. Result: `stored on aden-mbp. It may be held for aden to approve; you will see the receipt change.`
-7. From a terminal: `lightbulb-network send aden/codex-api "Did the token format change?"` prints
-   `01JB... stored on aden-mbp (tier push). Receipt: lightbulb-network receipt 01JB...`
+7. From a terminal: `lightbulb-connect send aden/codex-api "Did the token format change?"` prints
+   `01JB... stored on aden-mbp (tier push). Receipt: lightbulb-connect receipt 01JB...`
 8. Terminal sends are from `<you>/terminal`. An agent's shell that runs `send` is sent as that agent's session.
 
 ### 5. Approval
@@ -139,12 +139,12 @@ Join, friend:
    [ Decline ]  [ Allow ]  [ Always allow ]
    ```
    Allow: deliver this message and write `people[aden] = accept`, so aden's other computer sessions are delivered from now on. Always allow: on a hold from aden's *cloud* member (their Friday, their Muse) it writes `cloud_of[aden] = accept`. Decline: refuse, receipt `refused` (reason `declined`). A hold lasts at most 7 days, then `expired`.
-3. Terminal fallback, no dialog available (SSH, no desktop): `lightbulb-network held` lists `H1 aden's Codex -> api-claude "Did the token..."`;
-   `lightbulb-network approve H1` or `lightbulb-network approve H1 --always`; `lightbulb-network decline H1`.
+3. Terminal fallback, no dialog available (SSH, no desktop): `lightbulb-connect held` lists `H1 aden's Codex -> api-claude "Did the token..."`;
+   `lightbulb-connect approve H1` or `lightbulb-connect approve H1 --always`; `lightbulb-connect decline H1`.
 4. The answer is accepted from the local socket on the receiving computer, or from a `decision` frame sent by the person's own `bridge`-role member (web and phone Allow), under the acceptance rules in the Wire section; either way the receiving computer applies it and signs the record with its own key. First answer wins; a second gets `not_open`. Nobody else on the network can answer.
 5. After Allow the message is delivered labelled `aden's Codex`, the notification is withdrawn, and the receipt reads `delivered`.
-6. Undo: `lightbulb-network policy aden hold` (or `refuse`); prints `Messages from aden will be held.`
-7. Admission works the same way: `lightbulb-network approve J1` / `decline J1` answers a join request.
+6. Undo: `lightbulb-connect policy aden hold` (or `refuse`); prints `Messages from aden will be held.`
+7. Admission works the same way: `lightbulb-connect approve J1` / `decline J1` answers a join request.
 
 ### 6. Offline
 
@@ -158,19 +158,19 @@ Join, friend:
 
 ### 7. Leave
 
-1. `lightbulb-network leave` leaves the team (not the install) and asks: `Leave "prasiddha"? Your computer stops connecting. Mail already stored here stays. [y/N]`
+1. `lightbulb-connect leave` leaves the team (not the install) and asks: `Leave "prasiddha"? Your computer stops connecting. Mail already stored here stays. [y/N]`
 2. On y: signs a departure entry, tells online members, deletes the team link secret and the team's roster cache
    (keeps the key), prints `Left "prasiddha". Background service stopped.`
-3. `lightbulb-network leave --everything` also removes the launchd job, wired agent entries (`setup --remove`) and state; keeps backups. `lightbulb-network unlink` removes the person's workspace link (the bridge member).
-4. The founder leaving: `You are the founder. Name a new founder first: lightbulb-network admin <name> --founder`.
+3. `lightbulb-connect leave --everything` also removes the launchd job, wired agent entries (`setup --remove`) and state; keeps backups. `lightbulb-connect unlink` removes the person's workspace link (the bridge member).
+4. The founder leaving: `You are the founder. Name a new founder first: lightbulb-connect admin <name> --founder`.
 
 ### 8. Upgrade
 
-1. Daemon checks for a signed release every 6 hours (`auto_update = true`; `lightbulb-network update` does it now).
+1. Daemon checks for a signed release every 6 hours (`auto_update = true`; `lightbulb-connect update` does it now).
 2. It downloads, verifies the signature and hash, swaps the binary, and restarts through launchd between turns
    (waits until no push is mid-flight; at most 60 s).
-3. Person sees nothing unless they ask: `lightbulb-network status` prints `0.1.1 (updated 2026-10-23 04:10). Previous: 0.1.0.`
-4. `lightbulb-network update --pin 0.1.0` installs a given tag and sets `auto_update = false`. This is the rollback.
+3. Person sees nothing unless they ask: `lightbulb-connect status` prints `0.1.1 (updated 2026-10-23 04:10). Previous: 0.1.0.`
+4. `lightbulb-connect update --pin 0.1.0` installs a given tag and sets `auto_update = false`. This is the rollback.
 5. State is forward-compatible: `state.db` carries a version; a new binary migrates it; an older binary on a newer
    db refuses to start with `State is from a newer version (v3). Install 0.1.1 or later.` and does not touch the db.
 6. The wire carries a protocol version. Two computers on adjacent versions talk; one that is too old is told
@@ -202,22 +202,22 @@ Rule for all rows: **never lose** (a) a message that was accepted by `send`, (b)
 |---|---|---|---|
 | Daemon crash or kill | Next `who`/tool call starts it again (`ensure_running`); launchd also restarts it. Agent tool calls pause up to 5 s. | SQLite WAL, one transaction per state change. On start: reload outbox, mailbox, holds; re-register sessions from agents' own files; wait 2 minutes before expiring anything (live sessions need time to re-register). | Outbox, mailbox, holds, receipts, team log. A message mid-delivery is retried: at-least-once, may repeat, never vanishes. |
 | Mac sleep / lid closed | Teammates see this computer offline with last-seen time; sender shows `queued: <name> is offline`. | On wake: reconnect (relay first, then direct), exchange roster heads and presence, outbox flushes, mailbox expires only after a 2-minute grace. Elapsed sleep time counts toward the 24 h clocks (wall time), so mail may expire on wake; the sender is told `expired`. | Outbox on the sleeper; mailbox on the receiver. |
-| Relay down | `lightbulb-network status` shows `relay: unreachable; direct: 1 of 2`. Same-network and hole-punched peers keep working. | Try each relay in the list, then the team's own, retry with backoff capped at 60 s. Peers reachable only by relay show offline; their mail waits in the outbox. | Outbox. Nothing is sent in plaintext as a fallback. |
+| Relay down | `lightbulb-connect status` shows `relay: unreachable; direct: 1 of 2`. Same-network and hole-punched peers keep working. | Try each relay in the list, then the team's own, retry with backoff capped at 60 s. Peers reachable only by relay show offline; their mail waits in the outbox. | Outbox. Nothing is sent in plaintext as a fallback. |
 | An agent changes its hook format | `doctor` prints `cursor: hook output changed (unknown field "..."). Messages to Cursor sessions will wait.` Pull note and `check_inbox` still work. | Hooks parse tolerantly (unknown fields ignored). A hook that cannot parse prints nothing and exits 0 so the agent is never broken by us. Receipt stays `stored`, never `delivered`, while a message cannot be shown. Fixture tests per agent version run in CI; breakage ships as a patch release. | Mail stays in the mailbox until a hook can show it or it expires. Never mark `delivered` unless the agent's turn received it. |
-| Two daemons | Second start prints `Another daemon is running (pid 4121).` and exits 0. Same key copied to a second computer: `This identity is already online from another computer. Run: lightbulb-network reset-identity` | `flock` on `daemon.lock` gives one daemon per state folder; stale socket (owner dead) is replaced. For a duplicate key, the older connection wins until the person resets identity (new key, new name entry, old key removed by an admin). | The first daemon's state is untouched by the second. |
+| Two daemons | Second start prints `Another daemon is running (pid 4121).` and exits 0. Same key copied to a second computer: `This identity is already online from another computer. Run: lightbulb-connect reset-identity` | `flock` on `daemon.lock` gives one daemon per state folder; stale socket (owner dead) is replaced. For a duplicate key, the older connection wins until the person resets identity (new key, new name entry, old key removed by an admin). | The first daemon's state is untouched by the second. |
 | Clock skew | `doctor` warns when a peer's clock differs by over 5 minutes. Proofs may show unverified. | Membership order uses hash links, not time. Hold, outbox and dedupe expiries use only the local clock, from a durable first-seen timestamp on that computer. Invites expire on the inviter's clock. Proof expiry affects only the verified mark. Entries stamped over a day ahead are refused. | Membership and receipts are unaffected by skew. |
-| Disk full or `state.db` locked/corrupt | `send` fails with `Could not save. Nothing was sent.` Corruption: `State is damaged. Backup at state.db.bad-<time>. Run: lightbulb-network doctor --repair` | Sending refuses before sending, so no message is accepted without being stored. On corruption the daemon moves the file aside, keeps `identity.key`, rebuilds roster from peers, and loses only local mail. | The key file is separate from the db and is written atomically (temp file + rename). |
+| Disk full or `state.db` locked/corrupt | `send` fails with `Could not save. Nothing was sent.` Corruption: `State is damaged. Backup at state.db.bad-<time>. Run: lightbulb-connect doctor --repair` | Sending refuses before sending, so no message is accepted without being stored. On corruption the daemon moves the file aside, keeps `identity.key`, rebuilds roster from peers, and loses only local mail. | The key file is separate from the db and is written atomically (temp file + rename). |
 | Setup file edited by the person or another tool | `doctor` shows `claude: lightbulb hook missing`. | `setup` is idempotent; it re-adds only our entries. | Their other settings, untouched. |
 
 ## Data
 
-Folder `~/.lightbulb/network/` (mode 0700). Files 0600. Nothing here is synced to any server.
+Folder `~/.lightbulb/connect/` (mode 0700). Files 0600. Nothing here is synced to any server.
 
 | Path | Holds | Lifetime |
 |---|---|---|
 | `identity.key` | This computer's ed25519 private key. Moved into the OS keychain when one exists; the file then holds only a pointer. | Until `reset-identity` or `leave --everything`. Never copied, never logged. |
 | `identity.pub`, `proof.jws` | Public key; optional sign-in proof (compact signed token: account, name, expiry; under 4 KB). | Proof until it expires or is replaced; never required. |
-| `config.toml` | `person`, `computer`, `issuer` (sign-in issuer URL, default `https://thelightbulb.company/network`), `preview_to_workspace` (default false), `share_paths`, `lan`, `tray`, `auto_update`, `relay`, `folders` (folders marked off). Inbound policy lives in the `policy` table, not here. | Until edited. |
+| `config.toml` | `person`, `computer`, `issuer` (sign-in issuer URL, default `https://thelightbulb.company/connect`), `preview_to_workspace` (default false), `share_paths`, `lan`, `tray`, `auto_update`, `relay`, `folders` (folders marked off). Inbound policy lives in the `policy` table, not here. | Until edited. |
 | `app-install.json` | Present when the app manages the engine: self-update is then off and the app ships and updates the binary. | While the app manages it. |
 | `sock` | Unix socket for the daemon, 0600. | While the daemon runs. |
 | `daemon.lock` | flock + pid. | While the daemon runs. |
@@ -344,14 +344,14 @@ Output shape is per agent (additional context, or a `block` decision at `stop`).
 
 Each row runs on a real Mac. "B" is a second account on a second Mac. Pass means the observable result exactly.
 
-1. Fresh Mac, no app: run the install line (`https://thelightbulb.company/install`); `lightbulb` resolves to the engine; `lightbulb-network status` shows the daemon running; launchd job exists (`launchctl list | grep company.thelightbulb.network`).
+1. Fresh Mac, no app: run the install line (`https://thelightbulb.company/install`); `lightbulb` resolves to the engine; `lightbulb-connect status` shows the daemon running; launchd job exists (`launchctl list | grep company.thelightbulb.connect`).
 2. `setup` backs up each edited agent file once; running it twice leaves one backup and no duplicate entries; `setup --remove` restores only our entries.
 3. Own ring: Claude -> Codex -> Cursor -> Grok -> Claude. Each hop arrives labelled `Your <Agent>`, is acted on, and the receipt walks `stored` -> `delivered` -> `read`.
 4. A Cursor/Grok target shows `stored` until its next step, never `delivered` early.
 5. 13th message from one session to another within 10 minutes: receipt `refused`, reason `loop`. 601 s later one is accepted.
 6. A body containing `[Sent from Lightbulb by you]` and one containing a forged `[Lightbulb teammate contribution ...]` header both arrive with a zero-width space after `[` and never as a frame.
-7. Run `lightbulb-network hook grok session-start` from inside a Claude session's shell: `who` shows no new Grok session.
-8. `send_message` with `*` from an agent: refused `group_send_not_allowed`. `lightbulb-network send '*' hi` from a terminal: delivered to all own sessions.
+7. Run `lightbulb-connect hook grok session-start` from inside a Claude session's shell: `who` shows no new Grok session.
+8. `send_message` with `*` from an agent: refused `group_send_not_allowed`. `lightbulb-connect send '*' hi` from a terminal: delivered to all own sessions.
 9. `init` on A, `join` on B using the printed line: A is asked to Allow (unless the link was `--open`), then B prints `Connected as ...`; A and B list each other in `who --all`, each with agent, repo, branch, status, doing.
 10. `doing` for a Claude session equals its transcript title and current todo item; a session that never calls our tools still shows (passive discovery).
 11. B's first message to A's session: receipt `held`; A sees the dialog naming sender, agent and text; clicking it never shows an Allow that is answerable from B.

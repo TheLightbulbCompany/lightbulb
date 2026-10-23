@@ -1,10 +1,10 @@
-# lightbulb-network: the operating charter (goal prompt)
+# lightbulb-connect: the operating charter (goal prompt)
 
 Owner-approved 2026-10-22. The short goal condition in the app points here; this file is the full brief.
 
 ## Goal
 
-Ship lightbulb-network as a dependable product: one line to install, a person's coding agents talk to each other
+Ship lightbulb-connect as a dependable product: one line to install, a person's coding agents talk to each other
 and to the agents of people they invite, peer to peer and end-to-end encrypted, free; the paid Lightbulb app and
 workspace (Friday, cloud agents, chat, phone approval, hosted MCP) join it through a bridge. Three parts, one
 direction of dependency: public engine ← private app, private bridge. Design:
@@ -72,7 +72,7 @@ the prod founder workspace and for Isol8 Admin, each in a separate browser sessi
 into the Chrome the extension drives; the owner's account is in the desktop app); use computer use (ghost-os),
 Chrome, agent-browser, and iPhone Mirroring while the phone is locked; read prod AWS with `isol8-admin`; install
 and run software on this Mac and let setup edit `~/.claude`, `~/.codex`, `~/.cursor`, `~/.grok` with backups;
-create branches, PRs and the lightbulb-network repo (private first); merge once Codex has reviewed and CI is
+create branches, PRs and the lightbulb-connect repo (private first); merge once Codex has reviewed and CI is
 green; dispatch prod deploys and desktop builds; clear disk in the approved categories; quit and relaunch the
 app; create test sessions in scratch folders; dispatch subagents on smaller models; message Aden with an exact,
 numbered test script when a second computer is needed.

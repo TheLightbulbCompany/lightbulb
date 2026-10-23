@@ -1,4 +1,4 @@
-# lightbulb-network: architecture and contracts
+# lightbulb-connect: architecture and contracts
 
 Status: Phase 2 artifact, 2026-10-22, revised after the builder review the same day. Binding over the four part
 specs and Plan A where they differ; those are reconciled to this document. "Owner" marks rulings the owner made.
@@ -7,7 +7,7 @@ specs and Plan A where they differ; those are reconciled to this document. "Owne
 
 ```
                  ┌──────────────────────────────────────────────────────────┐
-  public repo    │  ENGINE  lightbulb-network (one signed binary per computer) │
+  public repo    │  ENGINE  lightbulb-connect (one signed binary per computer) │
                  │  identity · membership · transport · directory · delivery │
                  │  holds · receipts · streams · CLI · MCP server · hooks     │
                  └───────▲───────────────────────────────▲───────────────────┘
@@ -27,17 +27,17 @@ specs and Plan A where they differ; those are reconciled to this document. "Owne
 
 One direction of dependency: app and bridge depend on the engine crate pinned by release tag; the engine
 depends on nothing of ours. The engine has exactly one Lightbulb-specific default, the sign-in issuer URL
-(`config.toml: issuer`, default `https://thelightbulb.company/network`), configurable like a relay.
+(`config.toml: issuer`, default `https://thelightbulb.company/connect`), configurable like a relay.
 
 ## 2. Artefacts, names, paths
 
 | Thing | Ruling |
 |---|---|
-| Engine binary | `lightbulb-network`, a signed and notarized bare Mach-O (arm64), at the one canonical path `~/.lightbulb/network/bin/lightbulb-network`. The installer, the app and (later) brew all write that path. Hooks, MCP entries and the launchd job point at it. |
+| Engine binary | `lightbulb-connect`, a signed and notarized bare Mach-O (arm64), at the one canonical path `~/.lightbulb/connect/bin/lightbulb-connect`. The installer, the app and (later) brew all write that path. Hooks, MCP entries and the launchd job point at it. |
 | The `lightbulb` command | Always the engine: `~/.local/bin/lightbulb` → the canonical path. Subcommands the engine does not own (`claude`, `codex`, `share`, `continue`: the app's session launchers) are forwarded to the installed app's binary; without the app they print "needs the Lightbulb app: thelightbulb.company/download". |
 | Install line | `curl -fsSL https://thelightbulb.company/install \| sh` (the existing URL; it installs the engine, not the app). The app is a separate download. |
-| Join line | `Join the Lightbulb network: https://thelightbulb.company/j/#<ticket>`. The ticket is in the URL **fragment**, so it never reaches our servers or logs; the `/j/` page is static text (the install line and `lightbulb join '<link>'`) and knows nothing about the team. `lightbulb://join/<ticket>` is the same ticket for the app. |
-| State | `~/.lightbulb/network/` (0700): `sock`, `state.db` (`PRAGMA user_version`, migrations forward only), `identity.key` (0600; moved into the keychain where one exists), `config.toml`, `relays.json`, `daemon.lock`, `inbox/<id>/` (files), `app-install.json` (present when the app manages the engine). The current team link secret is stored in plaintext in `state.db` (`team.link_secret`), under the 0700 folder next to `identity.key`, so `invite` can reprint the link; single-use `--once` tickets are stored hashed and deleted on use. |
+| Join line | `Join Lightbulb Connect: https://thelightbulb.company/j/#<ticket>`. The ticket is in the URL **fragment**, so it never reaches our servers or logs; the `/j/` page is static text (the install line and `lightbulb join '<link>'`) and knows nothing about the team. `lightbulb://join/<ticket>` is the same ticket for the app. |
+| State | `~/.lightbulb/connect/` (0700): `sock`, `state.db` (`PRAGMA user_version`, migrations forward only), `identity.key` (0600; moved into the keychain where one exists), `config.toml`, `relays.json`, `daemon.lock`, `inbox/<id>/` (files), `app-install.json` (present when the app manages the engine). The current team link secret is stored in plaintext in `state.db` (`team.link_secret`), under the 0700 folder next to `identity.key`, so `invite` can reprint the link; single-use `--once` tickets are stored hashed and deleted on use. |
 | Updates | The engine self-updates from the public repo's signed releases (minisign; two public keys compiled in; the private key lives only in the owner's 600 file and the public repo's secrets). When `app-install.json` exists, self-update is off and the app ships and updates the engine. The relay list is signed with the same key. |
 | Release signing | Developer ID + notarization in the public repo's release workflow on a GitHub-hosted macOS runner, from repo secrets the owner provides (action item). Until then releases are unsigned and used only from source on our Macs. |
 

@@ -1,8 +1,8 @@
-# lightbulb-network: onboarding and the hosted MCP (spec)
+# lightbulb-connect: onboarding and the hosted MCP (spec)
 
 Status: draft for owner review, 2026-10-22. Part of Phase 1 of the charter. Covers the free install and join
 path, the hosted MCP as phone and cloud assistants meet it, the upgrade story, the docs set, and the Phase 7
-ten-minute test. Binding inputs: the "Where each thing lives" table in the design, and `2026-10-22-lightbulb-network-architecture.md`, which is binding over this spec where they differ. Names: the engine is the command `lightbulb`; the file is `lightbulb-network` at `~/.lightbulb/network/bin/lightbulb-network`, and `~/.local/bin/lightbulb` links to it.
+ten-minute test. Binding inputs: the "Where each thing lives" table in the design, and `2026-10-22-lightbulb-network-architecture.md`, which is binding over this spec where they differ. Names: the engine is the command `lightbulb`; the file is `lightbulb-connect` at `~/.lightbulb/connect/bin/lightbulb-connect`, and `~/.local/bin/lightbulb` links to it.
 
 Marks: **[V]** verified in our code or docs today. **[U]** unverified: from third-party research or not yet
 tested. Every [U] step must be tested live before it goes in a public page.
@@ -15,7 +15,7 @@ server? The answer must take one line and under ten minutes, cost nothing, and a
 Two doors, same result:
 
 - A person at a terminal runs `curl -fsSL https://thelightbulb.company/install | sh`.
-- A person who is already in an agent pastes one line: `Join the Lightbulb network: <link>`.
+- A person who is already in an agent pastes one line: `Join Lightbulb Connect: <link>`.
 
 The hosted MCP is the other half. Phone and cloud assistants (Muse, ChatGPT, the Claude apps, Grok Bot) cannot
 run an engine. They reach the network through a member's Lightbulb workspace (a free trial counts). That is honest and useful. We
@@ -75,7 +75,7 @@ Free. Open source. End to end encrypted. No account needed.
   curl -fsSL https://thelightbulb.company/install | sh
 
 Works on a Mac with Apple silicon. Claude Code, Codex, Cursor and Grok CLI.
-Read the script first: thelightbulb.company/install.sh   Source: github.com/TheLightbulbCompany/lightbulb-network
+Read the script first: thelightbulb.company/install.sh   Source: github.com/TheLightbulbCompany/lightbulb-connect
 
 Already in an agent? Paste this to it instead:
   Install Lightbulb from https://thelightbulb.company/install and join my network.
@@ -91,7 +91,7 @@ link, "Lightbulb workspace: Friday, cloud agents, phone approval", goes to the w
 $ curl -fsSL https://thelightbulb.company/install | sh
 Downloading Lightbulb network 0.1.0 (about <size> MB)...
 Verifying the signature...
-Installed to ~/.lightbulb/network/bin/lightbulb-network (command: lightbulb)
+Installed to ~/.lightbulb/connect/bin/lightbulb-connect (command: lightbulb)
 Setting up your agents...
   Claude Code   ready
   Codex         ready
@@ -119,7 +119,7 @@ Invite link (valid 7 days; you or an admin allow each person who joins; `lightbu
 
 Send Ben this line to paste into his agent or terminal:
 
-  Join the Lightbulb network: https://thelightbulb.company/j/#<ticket>
+  Join Lightbulb Connect: https://thelightbulb.company/j/#<ticket>
 
 Copied to your clipboard.
 ```
@@ -170,9 +170,9 @@ You were invited to the Lightbulb network.
 2. Then run:
      lightbulb join '<the full link you were given>'
 
-Or paste this to your coding agent:  Join the Lightbulb network: <link>
+Or paste this to your coding agent:  Join Lightbulb Connect: <link>
 
-Free. No account needed. What is this? thelightbulb.company/network
+Free. No account needed. What is this? thelightbulb.company/connect
 ```
 
 **A6. First message.** Ana asks her Claude: "Tell Ben's Claude the migration is merged." Claude calls
@@ -371,7 +371,7 @@ with a different tester. A passing run is recorded with the timeline in the resu
 
 ## Threat model
 
-**1. A malicious invite link.** An attacker sends Ben `Join the Lightbulb network: <link>` to join Ben's
+**1. A malicious invite link.** An attacker sends Ben `Join Lightbulb Connect: <link>` to join Ben's
 computer to the attacker's team, or a look-alike link that runs a different script.
 - The link page is on our domain only; the engine ignores join links from any other host.
 - Joining a team gives the team members the ability to *ask* to message Ben's sessions. Every first contact is
@@ -385,7 +385,7 @@ computer to the attacker's team, or a look-alike link that runs a different scri
   not signed by us; the ticket rides in the URL fragment and never reaches our servers or logs. A forged ticket
   fails the link-secret check.
 
-**2. A phishing "join" line pasted to an agent.** The attacker's text says "Join the Lightbulb network: <link>"
+**2. A phishing "join" line pasted to an agent.** The attacker's text says "Join Lightbulb Connect: <link>"
 with a link whose page tells the agent to run something else (prompt injection).
 - The page we host is fixed text: exactly the two commands above. The skill that handles the join line tells
   the agent to run only `curl -fsSL https://thelightbulb.company/install | sh` and `lightbulb join '<link>'`,
@@ -423,7 +423,7 @@ Each has an exact message and a fix. None leaves a half-install.
 
 ```text
 lightbulb install: Lightbulb needs a Mac with Apple silicon (M1 or later).
-Linux is next, Windows later. Follow github.com/TheLightbulbCompany/lightbulb-network/issues/1.
+Linux is next, Windows later. Follow github.com/TheLightbulbCompany/lightbulb-connect/issues/1.
 Your agents can still reach each other through a Mac on your team.
 ```
 
@@ -435,7 +435,7 @@ from a browser can trigger it.
 
 ```text
 macOS blocked "lightbulb". Open System Settings, Privacy and Security, and choose "Open Anyway", or run:
-  xattr -d com.apple.quarantine ~/.lightbulb/network/bin/lightbulb-network
+  xattr -d com.apple.quarantine ~/.lightbulb/connect/bin/lightbulb-connect
 Then run the install line again. Why this happens: thelightbulb.company/docs/network-troubleshooting#gatekeeper
 ```
 
@@ -527,19 +527,19 @@ curl -fsSL https://thelightbulb.company/install | sh -s -- --no-join     # insta
 curl -fsSL https://thelightbulb.company/install | sh -s -- --join '<link>' # install and join a team
 ```
 
-Installs `~/.lightbulb/network/bin/lightbulb-network`, links `~/.local/bin/lightbulb` to it, runs `lightbulb setup`, starts the launchd service. No sudo. Safe to repeat.
+Installs `~/.lightbulb/connect/bin/lightbulb-connect`, links `~/.local/bin/lightbulb` to it, runs `lightbulb setup`, starts the launchd service. No sudo. Safe to repeat.
 Also available: `brew install thelightbulbcompany/tap/lightbulb`.
 
 **The join line.** Exactly:
 
 ```text
-Join the Lightbulb network: https://thelightbulb.company/j/#<ticket>
+Join Lightbulb Connect: https://thelightbulb.company/j/#<ticket>
 ```
 
 Ticket: base64url of `{team_id, ticket_id, mode: ask | open, link_secret, inviter_key, relay_hint, up to 6 member keys}`, signed by the inviting member's key (receivers verify it against the roster before honouring `open`), in the URL
 fragment. The same ticket is also `lightbulb://join/<ticket>` and `lightbulb join '<link>'`. The host is fixed;
 the engine refuses other hosts. The page behind it is static, the same for agents and browsers, shows the
-install line and `lightbulb join`, and knows nothing about the team. The agent skill `lightbulb-network-join` triggers on the exact prefix `Join the Lightbulb network:` and nothing
+install line and `lightbulb join`, and knows nothing about the team. The agent skill `lightbulb-connect-join` triggers on the exact prefix `Join Lightbulb Connect:` and nothing
 looser.
 
 **CLI** (engine): `join`, `invite [--new|--once|--open]`, `who`, `send`, `listen --as`, `receipt`, `approve`,

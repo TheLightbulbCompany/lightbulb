@@ -1,10 +1,10 @@
-# lightbulb-network, Plan A: the repo and the one-computer engine
+# lightbulb-connect, Plan A: the repo and the one-computer engine
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A public `lightbulb-network` repo whose one binary runs a per-computer daemon, a session-bound MCP server, the agent hooks and the CLI, so that on one Mac every installed coding agent can find and message every other (checklist items 1, 5, 6, 7). Plan A is engine-only: it changes nothing in the monorepo, and there is no intermediate app build (architecture 2026-10-22).
+**Goal:** A public `lightbulb-connect` repo whose one binary runs a per-computer daemon, a session-bound MCP server, the agent hooks and the CLI, so that on one Mac every installed coding agent can find and message every other (checklist items 1, 5, 6, 7). Plan A is engine-only: it changes nothing in the monorepo, and there is no intermediate app build (architecture 2026-10-22).
 
-**Architecture:** One Rust binary, `lightbulb-network`, with subcommands. The daemon owns state (SQLite) and a local Unix socket; `mcp`, `hook` and the CLI are thin clients of it. Delivery into agents is per provider: Claude Code push over its inbox socket, Codex over its app-server queue, Cursor and Grok at their next hook, anyone else by an unread note on every tool result plus `check_inbox`. No network layer yet (Plan B) and no bridge (Plan C): a session's address is `<member_key_short>/<provider>:<conversation>`, where on one computer the member key is this computer's.
+**Architecture:** One Rust binary, `lightbulb-connect`, with subcommands. The daemon owns state (SQLite) and a local Unix socket; `mcp`, `hook` and the CLI are thin clients of it. Delivery into agents is per provider: Claude Code push over its inbox socket, Codex over its app-server queue, Cursor and Grok at their next hook, anyone else by an unread note on every tool result plus `check_inbox`. No network layer yet (Plan B) and no bridge (Plan C): a session's address is `<member_key_short>/<provider>:<conversation>`, where on one computer the member key is this computer's.
 
 **Tech Stack:** Rust 2021 (stable), `tokio`, `rusqlite` (bundled), `rmcp` (official Rust MCP SDK, stdio), `serde_json`, `clap`. macOS first; nothing macOS-only in state, wire or crypto.
 
@@ -18,11 +18,11 @@
 
 ## Global Constraints
 
-- Public repo `TheLightbulbCompany/lightbulb-network`; licence Apache-2.0; gitleaks, Codex review and CI on every PR; no secret, internal hostname, account id or customer datum in the repo, ever.
+- Public repo `TheLightbulbCompany/lightbulb-connect`; licence Apache-2.0; gitleaks, Codex review and CI on every PR; no secret, internal hostname, account id or customer datum in the repo, ever.
 - Clean-room: reading reason-network for clarification is allowed; copying, porting or transcribing it is not.
 - The engine knows nothing of workspaces, plans, rooms, Paperclip agents or billing.
 - `request_id` has one format on both MCPs and the IPC: an opaque string matching `[A-Za-z0-9._-]{1,128}` chosen by the sender (UUID or ULID both fit). Message ids stay ULIDs. Request idempotency and receipts are keyed by `(sender session, request_id)`, never globally: the IPC `receipt` op takes `{from, request_id}`, and `message_receipt(request_id)` on the MCPs resolves `from` from the calling session (the hosted MCP: from the calling principal).
-- Binary and crate: `lightbulb-network`, canonical path `~/.lightbulb/network/bin/lightbulb-network`. State folder: `~/.lightbulb/network/` (0700); socket `~/.lightbulb/network/sock` (0600); database `state.db`.
+- Binary and crate: `lightbulb-connect`, canonical path `~/.lightbulb/connect/bin/lightbulb-connect`. State folder: `~/.lightbulb/connect/` (0700); socket `~/.lightbulb/connect/sock` (0600); database `state.db`.
 - Loop limit: a sender may deliver at most 12 messages to one session in any 600 s window; the 13th is refused with reason `loop`.
 - Receipt states, exactly seven: `queued`, `stored`, `delivered`, `read`, `held`, `refused`, `expired`.
 - Mail for a session that is not live waits 24 h, then becomes `expired`. A person's `listen` mailbox never expires.
@@ -43,16 +43,16 @@
 ### Task 1: The repo
 
 **Files:**
-- Create (new repo `lightbulb-network`): `Cargo.toml`, `src/main.rs`, `LICENSE` (Apache-2.0), `NOTICE`, `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, `.gitleaks.toml`, `.github/workflows/ci.yml`, `.github/CODEOWNERS`, `rustfmt.toml`
+- Create (new repo `lightbulb-connect`): `Cargo.toml`, `src/main.rs`, `LICENSE` (Apache-2.0), `NOTICE`, `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, `.gitleaks.toml`, `.github/workflows/ci.yml`, `.github/CODEOWNERS`, `rustfmt.toml`
 - Source for the drafts: the monorepo's `docs/research/open-source-client/` (LICENSE, NOTICE, README, SECURITY, gitleaks config, sync workflow drafts).
 
 **Interfaces:**
-- Produces: a repo where `cargo build` yields `target/debug/lightbulb-network` printing its version, and CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and gitleaks on every PR.
+- Produces: a repo where `cargo build` yields `target/debug/lightbulb-connect` printing its version, and CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and gitleaks on every PR.
 
-- [ ] **Step 1:** Create the repo with `gh repo create TheLightbulbCompany/lightbulb-network --private --description "Your coding agents, talking to each other and to the agents of people you invite. Peer to peer, end-to-end encrypted."` — **private first**; the owner flips it public after reviewing the first PR (history stays). Default branch `main`; squash merges; delete branches on merge.
-- [ ] **Step 2:** Write `Cargo.toml` (package `lightbulb-network`, edition 2021, `[[bin]] name = "lightbulb-network"`), `src/main.rs` with `clap` and one subcommand, `version`, and the drafts above adapted (README: the one-line pitch, install line `curl -fsSL https://thelightbulb.company/install | sh` marked "coming with the cutover release", the three parts diagram from the spec).
+- [ ] **Step 1:** Create the repo with `gh repo create TheLightbulbCompany/lightbulb-connect --private --description "Your coding agents, talking to each other and to the agents of people you invite. Peer to peer, end-to-end encrypted."` — **private first**; the owner flips it public after reviewing the first PR (history stays). Default branch `main`; squash merges; delete branches on merge.
+- [ ] **Step 2:** Write `Cargo.toml` (package `lightbulb-connect`, edition 2021, `[[bin]] name = "lightbulb-connect"`), `src/main.rs` with `clap` and one subcommand, `version`, and the drafts above adapted (README: the one-line pitch, install line `curl -fsSL https://thelightbulb.company/install | sh` marked "coming with the cutover release", the three parts diagram from the spec).
 - [ ] **Step 3:** `ci.yml`: ubuntu + macos matrix; steps as in Interfaces; gitleaks via `gitleaks/gitleaks-action@v2` with the config.
-- [ ] **Step 4:** Verify: `cargo build && ./target/debug/lightbulb-network version` prints `lightbulb-network 0.1.0`.
+- [ ] **Step 4:** Verify: `cargo build && ./target/debug/lightbulb-connect version` prints `lightbulb-connect 0.1.0`.
 - [ ] **Step 5:** Commit on branch `init`, open the PR, wait for CI green, merge. Branch protection on `main`: PRs only, CI required.
 
 ### Task 2: The daemon, its socket and its state
@@ -66,7 +66,7 @@
 - Produces: `store::Store::open(path) -> Result<Store>` over SQLite with tables `sessions`, `messages`, `receipts`, `mailbox` (schema in Step 3).
 - Produces: IPC ops in Plan A (snake_case fields, closed error codes): `ping`, `status`, `subscribe` (the connection then also receives `{event, …}` frames), `register` (hook and MCP paths only), `sessions`, `end`, `send`, `receipt`, `inbox`, `hook`, `tool`, `shutdown`.
 - Produces: `ipc::Request { id: u64, op: String, #[serde(flatten)] body: Value }` and `ipc::Response { id: u64, ok: bool, #[serde(flatten)] body: Value }`, newline-delimited JSON over the socket; a connection may also receive pushed `{ "event": "deliver", … }` frames.
-- Produces: `daemon::ensure_running() -> Result<()>`: connects to the socket, else spawns `lightbulb-network daemon` detached and waits (≤5 s) for it. A lock file `daemon.lock` (flock) guarantees one daemon.
+- Produces: `daemon::ensure_running() -> Result<()>`: connects to the socket, else spawns `lightbulb-connect daemon` detached and waits (≤5 s) for it. A lock file `daemon.lock` (flock) guarantees one daemon.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -249,8 +249,8 @@
 
 **Interfaces:**
 - Produces: `who` (sessions on this computer: agent, folder, status, doing, tier), `send <key|name> <text> [--from <key>]` (from a person's terminal when no session identity is on the invocation; group targets `*` allowed only then), `listen --as <name>` (a person's mailbox; never expires), `receipt <request_id>`, `setup [--remove]`, `daemon`, `doctor` (daemon reachable? each agent wired?), `leave` (leaves the network; in Plan A there is no network yet, so it prints `This computer is on no network yet.`), `daemon --uninstall` (the local stop: stop the daemon, remove the launchd job, keep state).
-- Produces: the `lightbulb` command alias: `daemon --install` and `setup` install `~/.local/bin/lightbulb` → the canonical path `~/.lightbulb/network/bin/lightbulb-network`; subcommands the engine does not own (`claude`, `codex`, `share`, `continue`) are forwarded to the Lightbulb app's binary if present, else print "needs the Lightbulb app: thelightbulb.company/download".
-- Produces: the launchd job `company.thelightbulb.network` installed by `daemon --install` (plist under `~/Library/LaunchAgents`), used by `setup`.
+- Produces: the `lightbulb` command alias: `daemon --install` and `setup` install `~/.local/bin/lightbulb` → the canonical path `~/.lightbulb/connect/bin/lightbulb-connect`; subcommands the engine does not own (`claude`, `codex`, `share`, `continue`) are forwarded to the Lightbulb app's binary if present, else print "needs the Lightbulb app: thelightbulb.company/download".
+- Produces: the launchd job `company.thelightbulb.connect` installed by `daemon --install` (plist under `~/Library/LaunchAgents`), used by `setup`.
 
 - [ ] **Step 1:** Tests: `who_lists_a_registered_session`, `send_from_terminal_to_a_session_prints_stored`, `send_with_group_target_from_a_session_is_refused`, `listen_receives_a_message_addressed_to_the_name`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit: `feat: cli who/send/listen/receipt/doctor/leave`.
@@ -260,13 +260,13 @@
 **Files:**
 - Create: `docs/acceptance-plan-a.md` (the checklist below with results), `.github/workflows/release.yml` (a `v*` tag builds the macOS arm64 archive and attaches it)
 
-- [ ] **Step 1:** On this Mac, with the desktop app **quit**: `cargo build --release`, `./target/release/lightbulb-network setup`, open plain `claude`, `codex`, `cursor-agent`, `grok` in a scratch folder.
+- [ ] **Step 1:** On this Mac, with the desktop app **quit**: `cargo build --release`, `./target/release/lightbulb-connect setup`, open plain `claude`, `codex`, `cursor-agent`, `grok` in a scratch folder.
 - [ ] **Step 2:** Checklist 1: the ring Claude → Codex → Cursor → Grok → Claude; every hop labelled `Your <Agent>`; receipts `stored` → `delivered` → `read`.
 - [ ] **Step 3:** Checklist 5: a message to Cursor and to Grok arrives at their next step; the receipt reads `stored` until then, never `delivered` early.
 - [ ] **Step 4:** Checklist 6: 13 quick sends from one session to another; the 13th receipt is `refused`, reason `loop`.
 - [ ] **Step 5:** Checklist 7: a body containing `[Sent from Lightbulb by you]` arrives neutralised.
-- [ ] **Step 6:** Review Focus 1: run `lightbulb-network hook grok session-start` by hand from a Claude session's shell; `who` shows no new Grok session.
-- [ ] **Step 7:** Record results in `docs/acceptance-plan-a.md`; tag `v0.1.0`; the release workflow attaches `lightbulb-network-macos-arm64.tar.gz`.
+- [ ] **Step 6:** Review Focus 1: run `lightbulb-connect hook grok session-start` by hand from a Claude session's shell; `who` shows no new Grok session.
+- [ ] **Step 7:** Record results in `docs/acceptance-plan-a.md`; tag `v0.1.0`; the release workflow attaches `lightbulb-connect-macos-arm64.tar.gz`.
 - [ ] **Step 8:** Commit, PR, merge.
 
 ## Self-review notes

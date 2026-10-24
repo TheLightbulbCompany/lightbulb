@@ -87,9 +87,9 @@ RUN set -eux; \
 
 # ---- network engine (the `lightbulb member` sidecar, bridge/network.py) ----------------------
 # The engine (TheLightbulbCompany/cli): its static musl release asset, pinned by tag and checksum.
-# The checksum is v0.3.1's lightbulb-linux-arm64.tar.gz.sha256 asset; bump the tag and the checksum together.
-RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.3.1/lightbulb-linux-arm64.tar.gz \
- && echo "d33f33619d81c71d68520e1a417e069a18ed8f0155624b4a5479ced0bc251e69  /tmp/lb.tgz" | sha256sum -c - \
+# The checksum is v0.3.2's lightbulb-linux-arm64.tar.gz.sha256 asset; bump the tag and the checksum together.
+RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.3.2/lightbulb-linux-arm64.tar.gz \
+ && echo "306366d31749d838be576fbba857f7aa694814d59294035fcf42ebf65e309e99  /tmp/lb.tgz" | sha256sum -c - \
  && tar -xzf /tmp/lb.tgz -C /usr/local/bin lightbulb && rm /tmp/lb.tgz && lightbulb version
 
 # ---- CLI connector binaries ------------------------------------------------------------------

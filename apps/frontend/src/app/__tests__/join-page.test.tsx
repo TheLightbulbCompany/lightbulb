@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
 vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
 
-import JoinPage from "../j/page";
+import JoinPage, { metadata } from "../j/page";
 
 afterEach(() => {
   window.location.hash = "";
@@ -23,5 +23,9 @@ describe("/j", () => {
   it("shows a friendly empty state with no hash", async () => {
     render(<JoinPage />);
     expect(await screen.findByText(/no invite in it/i)).toBeTruthy();
+  });
+
+  it("is noindex", () => {
+    expect(metadata.robots).toEqual({ index: false, follow: false });
   });
 });

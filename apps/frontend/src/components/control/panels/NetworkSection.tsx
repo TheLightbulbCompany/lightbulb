@@ -12,11 +12,11 @@ const INSTALL = "curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/
 const RETRY_MS = 10_000;
 const MAX_TRIES = 12;
 
-/** The workspace is still starting: a 504, or the server's RUNTIME_UNAVAILABLE code. */
+/** The workspace is still starting: API Gateway's 503 (its 30 s integration timeout on a cold microVM) or 504, or the server's RUNTIME_UNAVAILABLE code. */
 function isStarting(e: unknown): boolean {
   if (!(e instanceof ApiError)) return false;
   const b = e.body as { code?: string; detail?: { code?: string } } | null;
-  return e.status === 504 || b?.code === "RUNTIME_UNAVAILABLE" || b?.detail?.code === "RUNTIME_UNAVAILABLE";
+  return e.status === 503 || e.status === 504 || b?.code === "RUNTIME_UNAVAILABLE" || b?.detail?.code === "RUNTIME_UNAVAILABLE";
 }
 
 /**

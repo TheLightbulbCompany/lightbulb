@@ -31,7 +31,19 @@ Nothing here is claimed without its evidence line.
 
 ## Step 1 — dev pin flip and roll
 
-- [ ] `hermes-version.json` `dev.tag` → candidate; deploy run id; `roll_hermes_runtimes --all` exit code; `get-agent-runtime` `containerUri` ends with the tag.
+- [x] `hermes-version.json` `dev.tag` AND `prod.tag` → `h-2026.10.24-9566ac3` (#4329, owner: "just get prod out"). Deploy trains: 40073668276 (all CDK jobs green; its two Vercel prod jobs hung on the deploy runners and were cancelled) and 40075082206 (success end to end, carrying the `*/network/*` task-role grant #4330 that the first dev roll exposed as AccessDenied on sessions.json).
+- [x] Rolls (one-off Fargate tasks from the backend task definitions): dev 7301360c… (3 owners updated) and 7f3c26a5… (4 owners current, sessions.json written); prod d62d8a1c… (12 owners updated); prod's second roll for sessions.json is pending (AWS SSO expired overnight).
+- [x] Verified by the roll logs (`roll_runtime_image: … h-2026.10.19-255e3da -> …:h-2026.10.24-9566ac3 (drifted=True restart=True)` per owner) rather than `get-agent-runtime` (the SSO role is denied it).
+
+## Dev member — first real run (2026-10-25 ~20:35Z, workspace "Network Phase One", org_3L8FQUPIdpUFHcptlCH3a4iScaO, Isol8 Admin's dev account)
+
+| what | evidence |
+|---|---|
+| `GET /api/v1/settings/network` → 200 `{"connected": true}` after dev roll #2 (was `false` before sessions.json existed) | ledger 20:35Z |
+| `POST /api/v1/settings/network/invite` → 200 in 3.9 s with a person invite (`lightbulb join 'eyJ…' --name 'admin@thelightbulb.company'`, 827 chars, expiresAt +24 h) — the engine sidecar minted it inside the AgentCore microVM on the first RPC | ledger 20:35Z |
+| sessions.json: workspace "Network Phase One", six starter agents, `wake.url` = `https://api-dev.thelightbulb.company/api/v1/network/wake` + bearer token (never in the URL) | S3 head/body (names only) |
+| Settings → Connections → "Connect your computer": "Your workspace is connected." + install line + Get my line + Reconnect workspace | `win/dev-settings-connect-your-computer.jpg` |
+| Two-mac CI run 40076202039 (GitHub macOS runner): joined the workspace team through the person invite with NO Allow (`Team "Network Phase One" — 2 computers: You (ci-mac) · member; Network Phase One · founder`); its first message to `um6sfp7huaka/ceo` was `held` (600 s) → engine fix cli #34 (a computer admitted by a person link is that person; v0.3.1); no Activity item appeared for the hold → open item (bridge → backend hold notice chain; needs CloudWatch in the morning) | run log; ledger 21:35Z–22:30Z |
 
 ## Step 2 — the demo on dev
 

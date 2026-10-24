@@ -769,7 +769,8 @@ async def _render_reconnect_rows(owner_id: str, rows: list[dict], seen: str | No
                 newest[row["provider"]] = row
     items = []
     for provider, row in newest.items():
-        integration = await integrations_repo.get(owner_id, provider)
+        # consistent: the item is filed right after the flip, and a stale "connected" would hide it
+        integration = await integrations_repo.get(owner_id, provider, consistent=True)
         if not integration or integration.get("status") != "reconnect_required":
             continue
         try:

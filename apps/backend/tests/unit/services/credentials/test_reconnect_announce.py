@@ -36,6 +36,20 @@ async def test_the_transition_reconciles_profiles_and_files_one_item_per_member(
 
 
 @pytest.mark.asyncio
+async def test_one_members_failed_write_does_not_stop_the_rest_or_the_invalidation(monkeypatch, wired):
+    puts, _ = wired
+    puts.side_effect = [RuntimeError("throttled"), None]
+    publish = AsyncMock()
+    monkeypatch.setattr("core.services.live_events.publish_owner_users", publish)
+    monkeypatch.setattr(access_token.integrations_repo, "get", AsyncMock(return_value={"status": "connected"}))
+
+    await access_token._mark_reconnect("org_a", "microsoft365")
+
+    assert puts.await_count == 2
+    publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_a_repeat_while_already_reconnect_required_files_nothing(monkeypatch, wired):
     puts, reconcile = wired
     monkeypatch.setattr(access_token.integrations_repo, "get", AsyncMock(return_value={"status": "reconnect_required"}))
@@ -57,6 +71,7 @@ async def test_the_item_is_open_until_the_integration_reconnects(monkeypatch):
 
     items = await activity._render_reconnect_rows("org_a", rows, None)
 
+    assert get.await_args.kwargs == {"consistent": True}  # a stale read would hide the fresh item
     assert len(items) == 1  # two failures, one item
     assert items[0].state == "open" and activity.needs_you(items[0])
     assert items[0].summary.title.startswith("Reconnect ")

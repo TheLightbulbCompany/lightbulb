@@ -47,16 +47,19 @@ async def _announce_reconnect(owner_id: str, provider_key: str) -> None:
     try:
         created = utc_now_iso()
         for user_id in await website_logins._humans_to_ask(owner_id, None):
-            await messaging_repo.put_activity_row(
-                {
-                    "pk": messaging_repo.activity_pk(owner_id, user_id),
-                    "sk": messaging_repo.activity_sk(created, reconnect_item_id(provider_key)),
-                    "kind": "reconnect",
-                    "provider": provider_key,
-                    "createdAt": created,
-                    "expiresAt": int(time.time()) + website_logins.ACTIVITY_TTL_S,
-                }
-            )
+            try:  # one member's failed write must not cost the others their item
+                await messaging_repo.put_activity_row(
+                    {
+                        "pk": messaging_repo.activity_pk(owner_id, user_id),
+                        "sk": messaging_repo.activity_sk(created, reconnect_item_id(provider_key)),
+                        "kind": "reconnect",
+                        "provider": provider_key,
+                        "createdAt": created,
+                        "expiresAt": int(time.time()) + website_logins.ACTIVITY_TTL_S,
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("reconnect item write failed owner=%s user=%s", owner_id, user_id)
         await publish_owner_users(owner_id, make_live_event("runtime.resource.invalidated", {"resource": "activity"}))
     except Exception:  # noqa: BLE001
         logger.warning("reconnect needs-you item failed owner=%s provider=%s", owner_id, provider_key)

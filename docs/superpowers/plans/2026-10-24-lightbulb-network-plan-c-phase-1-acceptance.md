@@ -18,7 +18,13 @@ Nothing here is claimed without its evidence line.
 | computer | state | evidence |
 |---|---|---|
 | owner's Mac (Apple silicon) | `lightbulb 0.3.0`, Developer ID `WZX4U3C22Y` verified, launchd `company.thelightbulb.connect` running (pid 30548), doctor: relay `https://use1-1.relay.n0.iroh.link/` | 2026-10-25 ~11:35Z, `lightbulb update` 0.2.6 → 0.3.0 in place |
-| WSL on the owner's Windows server (`glenhardiewindows`, Tailscale 100.98.127.110) | Ubuntu 26.04 LTS, x86_64, curl/tar/tmux/systemctl present, user systemd running, 577 GB free; **engine not yet installed** | probe 2026-10-25 ~03:00Z through the Windows App; install pending (`curl … install.sh \| sh`) |
+| WSL on the owner's Windows server (`glenhardiewindows`, Tailscale 100.100.x over the owner's tailnet) | Ubuntu 26.04 LTS, x86_64, curl/tar/tmux/systemctl present, user systemd running, 577 GB free; `lightbulb 0.3.0` installed by the public `curl … install.sh \| sh` line (INSTALL_EXIT=0, Claude Code connected (hooks + tools)); daemon running in tmux session `lb`; doctor All good (relay default) | 2026-10-25 ~14:15Z–14:35Z through the Windows App remote session (screenshots inst2.png, d4.png in the session scratchpad) |
+
+## Step 0 — the two computers on one team (before the member exists)
+
+| when (UTC) | what | evidence |
+|---|---|---|
+| 2026-10-25 ~14:45Z | WSL `lightbulb join '<ticket>' --name 'WSL'` with the Mac's `ask`-mode invite (minted on the Mac via `lightbulb invite` in tmux, person-only) → WSL printed "Asking whoever sent the link… (this waits up to 10 minutes)"; the Mac's engine dialog: 'WSL (computer "GlenhardieWindows") wants to join your team using your invite link… Or run: lightbulb approve J8'; the owner clicked Allow (`lightbulb approve J8` then answered "J8 was already answered in the dialog") | j3.png; `lightbulb team` on the Mac: Team "prasiddhaparthsarthy" — 2 computers: You · PPs-MacBook-Pro · founder; WSL · GlenhardieWindows · member |
 
 ## Step 1 — dev pin flip and roll
 

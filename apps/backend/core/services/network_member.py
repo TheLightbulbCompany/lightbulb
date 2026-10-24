@@ -69,7 +69,7 @@ async def write_sessions(owner_id: str, *, apps: list[dict] | None = None) -> di
     return await _write(owner_id, _app_entries(prior) if apps is None else apps, prior)
 
 
-async def _write(owner_id: str, apps: list[dict], prior: dict) -> dict:
+async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> dict:
     from core.services import clerk_admin
     from core.services.company_identity import slugify
     from core.services.hermes_profiles import put_owner_object
@@ -95,7 +95,8 @@ async def _write(owner_id: str, apps: list[dict], prior: dict) -> dict:
         used.add(name)
         sessions.append({"name": name, "agent": "hermes", "title": agent["name"], "agentId": agent["id"]})
 
-    wake = await _wake(owner_id, prior)
+    # The wake token survives every writer: with no prior in hand, read the current file.
+    wake = await _wake(owner_id, prior if prior is not None else (await _read_sessions(owner_id) or {}))
     doc = {"workspace": (org or {}).get("name") or owner_id, "sessions": sessions + apps, "wake": wake}
     await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
     return doc
@@ -409,7 +410,16 @@ async def _wake(owner_id: str, prior: dict) -> dict:
         UpdateExpression="SET tokenHash = :h",
         ExpressionAttributeValues={":h": _token_hash(token)},
     )
-    return {"url": f"{settings.PUBLIC_API_BASE.rstrip('/')}/api/v1/network/wake/{token}", "token": token}
+    # The token rides an Authorization header, never the path: paths land in access logs.
+    return {"url": f"{settings.PUBLIC_API_BASE.rstrip('/')}/api/v1/network/wake", "token": token}
+
+
+def _refused() -> bool:
+    """A flood of bad rings shows as a metric; nothing about the caller is logged."""
+    from core.observability.metrics import put_metric
+
+    put_metric("network.wake.refused", 1)
+    return False
 
 
 async def ring(token: str) -> bool:
@@ -422,12 +432,12 @@ async def ring(token: str) -> bool:
 
     owner_id, dot, _ = token.partition(".")
     if not dot or not _WAKE_OWNER_RE.match(owner_id):
-        return False
+        return _refused()
     key = _netwake_key(owner_id)
     row = await messaging_repo._get(key["pk"], key["sk"])
     digest = _token_hash(token)
     if not row or not hmac.compare_digest(str(row.get("tokenHash") or ""), digest):
-        return False
+        return _refused()
     now = int(time.time())
     ulid = f"{now * 1000:012x}{uuid.uuid4().hex[:20]}"
     table_name = messaging_repo._table().name
@@ -440,6 +450,8 @@ async def ring(token: str) -> bool:
                         "Key": key,
                         "UpdateExpression": "SET lastWakeAt = :now",
                         # tokenHash too: a reconnect that deleted the row in between must not see it recreated.
+                        # lastWakeAt is each backend task's own clock, so skew can admit a second wake
+                        # inside the window; that costs one extra no-op network.wake RPC.
                         "ConditionExpression": "tokenHash = :h AND (attribute_not_exists(lastWakeAt) OR lastWakeAt < :cutoff)",
                         "ExpressionAttributeValues": {":now": now, ":h": digest, ":cutoff": now - WAKE_WINDOW_S},
                     }

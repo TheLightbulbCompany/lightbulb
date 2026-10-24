@@ -52,7 +52,7 @@ async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
             {"name": "ops-lead", "agent": "hermes", "title": "Ops Lead", "agentId": A2},
             app,
         ],
-        "wake": {"url": f"http://localhost:8000/api/v1/network/wake/{token}", "token": token},
+        "wake": {"url": "http://localhost:8000/api/v1/network/wake", "token": token},
     }
     assert network_member.app_person("user_1") == network_member.app_person("user_1")
     assert len(network_member.app_person("user_1")) == 8
@@ -257,3 +257,15 @@ async def test_connect_clears_a_stale_state_db_before_joining(monkeypatch):
     monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"line": "l", "expires_at": "t"}))
     await network_member.connect("org_a", "user_1", "Sam")
     assert order == [("delete", ["org_a/network/state.db"]), "prepare"]
+
+
+@pytest.mark.asyncio
+async def test_a_write_with_no_prior_keeps_the_wake_token_and_hash(store, table):
+    await network_member.write_sessions("org_a", apps=[])
+    token = _doc(store)["wake"]["token"]
+    key = {"pk": "OWNER#org_a", "sk": "NETWAKE"}
+    hashed = table.get_item(Key=key)["Item"]["tokenHash"]
+
+    await network_member._write("org_a", [])  # a writer with no prior in hand
+    assert _doc(store)["wake"]["token"] == token
+    assert table.get_item(Key=key)["Item"]["tokenHash"] == hashed

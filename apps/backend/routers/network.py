@@ -66,7 +66,10 @@ async def network_hold_notice(owner_id: str, body: HoldNotice, request: Request)
     return Response(status_code=204)
 
 
-@wake_router.post("/wake/{token}", include_in_schema=False)
-async def network_wake(token: str):
-    """The doorbell: unauthenticated by design, the token is the credential. No body either way."""
-    return Response(status_code=202 if await network_member.ring(token) else 404)
+@wake_router.post("/wake", include_in_schema=False)
+async def network_wake(request: Request):
+    """The doorbell: no Clerk auth, ``Authorization: Bearer <owner>.<secret>`` is the credential
+    (a header, never the path, which access logs record). No body either way."""
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    ok = await network_member.ring(token.strip() if scheme.lower() == "bearer" else "")
+    return Response(status_code=202 if ok else 404)

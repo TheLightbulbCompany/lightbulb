@@ -42,6 +42,19 @@ Smallest change that gets there, in `cli` (engine v0.3.3, together with the PATH
 
 Skipped: per-network admins, quorum, removal audit log, multi-network per computer. Add when a workspace asks for admins inside the network itself, or when the security pass (prompt injection, approvals) lands.
 
-## Open, designed next
+## Hybrid rulings (owner, 2026-10-24, later the same day)
 
-Hybrid networks: a workspace adopting a whole free network, paid members and free people together. That decision changes rule 2 above (a workspace network may then contain non-members), so it comes before any build that hardens rule 2 further.
+These replace rule 2 above and the "members only network" part of the implementation:
+
+1. **A workspace joins an existing free network** as one more member (its cloud member joins, rather than founding a new network). A workspace with no free network still founds its own.
+2. **Every network is flat, like Reason**, whoever founded it: any member can invite, remove (not themselves), rename. No admins in the engine.
+3. **The workspace's agents answer workspace members only.** Free people on the same network talk to each other's sessions as normal; a message from a non-member to Friday or another workspace agent is refused, not held. Members' first messages behave as today.
+
+Ponytail consequences:
+- The engine's role logic goes entirely: one `elevated = true` for every member (and cloud members still never admit). Delete Admin/Transfer and founder promotion.
+- Membership for agent access lives on the cloud member: the backend writes the workspace's member person ids (Clerk user ids) into `sessions.json`, the bridge passes them to the member, and the member refuses messages to its sessions from any other person. One list, one check, no new roles.
+- Person lines stay how a member's computer proves it is that member.
+- A cloud member joining someone else's network: the engine already supports `team.join` as a cloud member with a proof; the backend needs a "Connect this workspace to an existing network" door (paste a line from any member of that network). That door is new work.
+## Open
+
+None from this session. The security pass (prompt injection, agent approvals) and optional sign-in come later by ruling.

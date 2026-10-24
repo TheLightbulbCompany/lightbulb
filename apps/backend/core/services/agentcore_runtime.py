@@ -157,7 +157,6 @@ async def write_boot_secret(
     hook_token: str,
     gateway_token: str,
     bedrock_bearer: str,
-    drop_network_key: bool = False,
 ) -> bool:
     """Converge the owner's boot secret (named ``boot_secret_name(owner_id)``, the value a
     runtime's ``BOOT_SECRET_ENV_VAR`` carries). Plaintext lives in exactly one place: this secret.
@@ -173,8 +172,8 @@ async def write_boot_secret(
     ``networkKey`` is the workspace's member key on the ``lightbulb`` network (read by the
     network sidecar, and by no backend module but this one). It is carried over from the prior
     secret and minted only when absent, so a reconcile never rotates it; a mint is a boot change.
-    ``drop_network_key=True`` (Settings -> Reconnect) writes the secret without it, so the next
-    write mints a new key, which makes a new team."""
+    ``drop_network_key`` (Settings -> Reconnect) removes it, so the next write mints a new key,
+    which makes a new team."""
     import boto3
 
     from core.secrets_manager import create_or_update_secret
@@ -192,10 +191,9 @@ async def write_boot_secret(
             prior = json.loads(sm.get_secret_value(SecretId=name)["SecretString"])
         except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
             prior = None  # absent, or scheduled for deletion (create_or_update_secret retries that)
-        if not drop_network_key:
-            # ponytail: two concurrent FIRST mints race and the last write wins; both report a
-            # boot change, so the restarted session reads the winner. A CAS needs a version check.
-            payload["networkKey"] = (prior or {}).get("networkKey") or base64.b64encode(os.urandom(32)).decode()
+        # ponytail: two concurrent FIRST mints race and the last write wins; both report a
+        # boot change, so the restarted session reads the winner. A CAS needs a version check.
+        payload["networkKey"] = (prior or {}).get("networkKey") or base64.b64encode(os.urandom(32)).decode()
         if prior == payload:
             return False
         create_or_update_secret(sm, name, json.dumps(payload))
@@ -203,3 +201,25 @@ async def write_boot_secret(
         return {k: (prior or {}).get(k) for k in payload} != payload
 
     return await run_in_thread(_converge)
+
+
+async def drop_network_key(owner_id: str) -> None:
+    """Rewrite the boot secret without its ``networkKey`` (Settings -> Reconnect), everything
+    else verbatim. A no-op when the secret or the key is absent. Not a boot change on its own:
+    the caller stops the session."""
+    import boto3
+
+    from core.secrets_manager import create_or_update_secret
+
+    name = boot_secret_name(owner_id)
+    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+
+    def _drop() -> None:
+        try:
+            prior = json.loads(sm.get_secret_value(SecretId=name)["SecretString"])
+        except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
+            return
+        if prior.pop("networkKey", None) is not None:
+            create_or_update_secret(sm, name, json.dumps(prior))
+
+    await run_in_thread(_drop)

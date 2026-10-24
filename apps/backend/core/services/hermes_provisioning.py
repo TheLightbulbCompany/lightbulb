@@ -1250,6 +1250,7 @@ async def write_profile_for_agent(
     *,
     soul_md_override: str | None = None,
     inputs: ProfileInputs | None = None,
+    publish: bool = True,
 ) -> None:
     """The per-agent Hermes profile write (M6-R23): owner-level inputs (``resolve_profile_inputs``)
     plus this one agent's own Paperclip API key -> ``write_agent_profile`` -> ``upload_profile``.
@@ -1331,6 +1332,10 @@ async def write_profile_for_agent(
         files.soul_md = soul_md_override
     await upload_profile(owner_id, agent_id, files)
     await _stage_owner_facts(owner_id, [agent_id], inputs, refresh_roster=lone_agent)
+    if publish:  # ``write_profiles`` publishes once, after its whole fan-out
+        from core.services import network_member
+
+        await network_member.publish_sessions(owner_id)  # never raises
 
 
 async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None) -> None:
@@ -1399,6 +1404,9 @@ async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None
     from core.services.owner_facts import write_owner_facts
 
     await write_owner_facts(owner_id)  # best-effort, never raises
+    from core.services import network_member
+
+    await network_member.publish_sessions(owner_id)  # the agent's network address follows the name
 
 
 async def write_profiles(owner_id: str) -> None:
@@ -1447,7 +1455,7 @@ async def write_profiles(owner_id: str) -> None:
             else None
         )
         keep = current if current and not hermes_profiles.is_generated_soul(current) else None
-        await write_profile_for_agent(owner_id, agent, soul_md_override=keep, inputs=inputs)
+        await write_profile_for_agent(owner_id, agent, soul_md_override=keep, inputs=inputs, publish=False)
 
     from core.services import network_member
 

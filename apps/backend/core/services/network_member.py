@@ -65,6 +65,9 @@ async def write_sessions(owner_id: str, *, apps: list[dict] | None = None) -> di
     if len(roster) + len(apps) > MAX_SESSIONS:
         raise ApiProblem("INVALID_REQUEST", f"This workspace has reached {MAX_SESSIONS} network addresses.")
 
+    # ponytail: names are claimed in order (apps, then agents by id), so a new duplicate-named
+    # agent with a lower id, or an app named like an agent, can move an existing agent's address,
+    # and the -<id[:4]> suffix is not re-checked. Stable addresses need a stored name per agent.
     used = {s.get("name") for s in apps}
     sessions = []
     for agent in roster:
@@ -89,9 +92,26 @@ async def publish_sessions(owner_id: str) -> None:
         if not await sessions_exist(owner_id):
             return
         await write_sessions(owner_id)
-        await container_rpc.call(owner_id, "network.sessions", {}, timeout_s=10)
+        # Only a warm sidecar is pinged: a parked one reads sessions.json at its next start,
+        # and an invoke here would cold-start the workspace (~55 s) from an agent edit.
+        if await _session_is_warm(owner_id):
+            await container_rpc.call(owner_id, "network.sessions", {})
     except Exception:  # noqa: BLE001
         logger.warning("network sessions publish failed for owner=%s", owner_id, exc_info=True)
+
+
+async def _session_is_warm(owner_id: str) -> bool:
+    """The ``__session__#<owner>`` estimate ``runtime_transport`` keeps, for THIS runtime.
+    False with no runtime yet (a fresh provision writes profiles before CreateAgentRuntime)."""
+    import time
+
+    from core.repositories import container_repo
+
+    arn = await _runtime_arn(owner_id)
+    if not arn:
+        return False
+    row = await run_in_thread(container_repo.get_session_sync, owner_id)
+    return int(row.get("warm_until") or 0) > int(time.time()) and row.get("arn") == arn
 
 
 async def _runtime_arn(owner_id: str) -> str | None:
@@ -106,23 +126,16 @@ async def connect(owner_id: str, user_id: str, name: str) -> dict:
     from core.services.hermes_provisioning import prepare_hermes_workspace, stop_runtime_session
 
     if not await sessions_exist(owner_id):
+        from core.services.hermes_provisioning import _delete_prefixes
+
+        # A SIGTERM save from the session reconnect stopped can land after reconnect's delete;
+        # a stale state.db under the new key is a KEY_MISMATCH, so clear it once more first.
+        await run_in_thread(_delete_prefixes, [f"{network_prefix(owner_id)}state.db"])
         if await prepare_hermes_workspace(owner_id):
             arn = await _runtime_arn(owner_id)
             if arn:
                 await stop_runtime_session(owner_id, arn)
     return await container_rpc.call(owner_id, "network.invite", {"for": user_id, "name": name})
-
-
-def _read_boot_credentials(owner_id: str) -> dict | None:
-    import boto3
-
-    from core.services.agentcore_runtime import boot_secret_name
-
-    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-    try:
-        return json.loads(sm.get_secret_value(SecretId=boot_secret_name(owner_id))["SecretString"])
-    except sm.exceptions.ResourceNotFoundException:
-        return None
 
 
 async def reconnect(owner_id: str) -> None:
@@ -131,18 +144,10 @@ async def reconnect(owner_id: str) -> None:
 
     Order matters: the key goes first so a cold start in between cannot read it; the stop comes
     before the delete so a warm session cannot save network state back after it."""
-    from core.services.agentcore_runtime import write_boot_secret
+    from core.services.agentcore_runtime import drop_network_key
     from core.services.hermes_provisioning import _delete_prefixes, stop_runtime_session
 
-    creds = await run_in_thread(_read_boot_credentials, owner_id)
-    if creds:
-        await write_boot_secret(
-            owner_id,
-            hook_token=creds["hookToken"],
-            gateway_token=creds["gatewayToken"],
-            bedrock_bearer=creds["bedrockBearer"],
-            drop_network_key=True,
-        )
+    await drop_network_key(owner_id)
     arn = await _runtime_arn(owner_id)
     if arn:
         await stop_runtime_session(owner_id, arn)

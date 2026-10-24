@@ -63,41 +63,169 @@ async def test_a_101st_session_is_refused_with_a_clear_error(store):
     assert len(_doc(store)["sessions"]) == 100  # nothing written
 
 
-@pytest.mark.asyncio
-async def test_agents_create_republishes_sessions(store, monkeypatch):
-    from core.services import runtime_rpc
+def _session(monkeypatch, *, arn="arn:r", warm_for=600, session_arn="arn:r"):
+    """The containers row's runtime ARN and the ``__session__#<owner>`` warm estimate."""
+    import time
 
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"agentcore_runtime_arn": arn} if arn else {}),
+    )
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_session_sync",
+        lambda owner_id: {"warm_until": int(time.time()) + warm_for, "arn": session_arn},
+    )
+
+
+@pytest.fixture
+def rpc(monkeypatch):
     calls = []
 
     async def _rpc(owner_id, method, params=None, **kwargs):
-        calls.append((method, params, kwargs.get("timeout_s")))
+        calls.append((method, params, kwargs))
         return {"count": 2}
 
     monkeypatch.setattr(network_member.container_rpc, "call", _rpc)
-    monkeypatch.setattr(runtime_rpc, "publish_owner_users", AsyncMock())
+    return calls
 
-    # Not a member yet: nothing is written and the sidecar is not called.
-    await runtime_rpc._invalidate("org_a", "agents.create")
-    assert store == {} and calls == []
 
+@pytest.mark.asyncio
+async def test_a_warm_runtime_gets_the_sessions_rpc(store, monkeypatch, rpc):
+    _session(monkeypatch)
+    await network_member.publish_sessions("org_a")  # not a member yet: nothing at all
+    assert store == {} and rpc == []
+
+    await network_member.write_sessions("org_a")
+    await network_member.publish_sessions("org_a")
+    assert rpc == [("network.sessions", {}, {})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session",
+    [
+        {"warm_for": -1},  # parked
+        {"session_arn": "arn:old"},  # warm, but on a runtime that was re-created
+        {"arn": None},  # fresh provision: profiles are written before CreateAgentRuntime
+    ],
+)
+async def test_a_parked_runtime_gets_sessions_json_rewritten_and_no_rpc(store, monkeypatch, rpc, session, caplog):
+    _session(monkeypatch, **session)
     await network_member.write_sessions("org_a")
     monkeypatch.setattr(
         "core.services.messaging.load_agent_roster",
-        AsyncMock(
-            return_value=[{"id": A1, "name": "Friday"}, {"id": A2, "name": "Ops Lead"}, {"id": "3" * 8, "name": "Nova"}]
-        ),
+        AsyncMock(return_value=[{"id": A1, "name": "Friday"}, {"id": "3" * 8, "name": "Nova"}]),
     )
-    await runtime_rpc._invalidate("org_a", "agents.create")
-    assert [s["title"] for s in _doc(store)["sessions"]] == ["Friday", "Ops Lead", "Nova"]
-    assert calls == [("network.sessions", {}, 10)]
-
-    # config.patch is not an agents.* method.
-    await runtime_rpc._invalidate("org_a", "config.patch")
-    assert len(calls) == 1
+    await network_member.publish_sessions("org_a")
+    assert [s["title"] for s in _doc(store)["sessions"]] == ["Friday", "Nova"]
+    assert rpc == []
+    assert not caplog.records  # no warning traceback on a normal provision
 
 
 @pytest.mark.asyncio
 async def test_publish_sessions_never_raises(store, monkeypatch):
+    _session(monkeypatch)
     await network_member.write_sessions("org_a")
-    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(side_effect=RuntimeError("parked")))
+    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(side_effect=RuntimeError("down")))
     await network_member.publish_sessions("org_a")
+
+
+# --- every agent create / rename / delete door republishes through a shared seam -------------
+
+
+@pytest.fixture
+def published(monkeypatch):
+    calls = []
+    monkeypatch.setattr(network_member, "publish_sessions", AsyncMock(side_effect=calls.append))
+    return calls
+
+
+def _profile_write_stubs(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.services import hermes_provisioning as hp
+
+    inputs = SimpleNamespace(
+        provider_choice="openrouter_managed",
+        integrations={},
+        env_vars={},
+        byo_provider=None,
+        byo_api_key=None,
+        front_desk_number_for=lambda agent_id: None,
+    )
+    monkeypatch.setattr(hp, "resolve_profile_inputs", AsyncMock(return_value=inputs))
+    monkeypatch.setattr(hp, "_stage_owner_facts", AsyncMock())
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp"))
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", AsyncMock())
+    monkeypatch.setattr("core.services.hermes_profiles.read_soul_md", lambda o, a: None)
+    return hp
+
+
+@pytest.mark.asyncio
+async def test_agents_create_republishes_sessions(monkeypatch, published):
+    """``write_profile_for_agent`` is the seam behind agents.create, Teams create, marketplace
+    and company deploys."""
+    hp = _profile_write_stubs(monkeypatch)
+    await hp.write_profile_for_agent("org_a", {"id": A1, "name": "Friday"})
+    assert published == ["org_a"]
+
+
+@pytest.mark.asyncio
+async def test_write_profiles_publishes_once_after_the_fan_out(monkeypatch, published):
+    hp = _profile_write_stubs(monkeypatch)
+    await hp.write_profiles("org_a")  # the two-agent roster from the store fixture's default
+    assert published == ["org_a"]
+
+
+@pytest.fixture(autouse=True)
+def _roster(monkeypatch):
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster",
+        AsyncMock(return_value=[{"id": A1, "name": "Friday"}, {"id": A2, "name": "Ops Lead"}]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_rename_republishes_sessions(monkeypatch, published):
+    """``refresh_agent_soul`` is the seam behind agents.update, the Teams PATCH, voice and text."""
+    from core.services import hermes_provisioning as hp
+
+    monkeypatch.setattr("core.services.hermes_profiles.read_soul_md", lambda o, a: "owner text")
+    monkeypatch.setattr("core.services.hermes_profiles.read_voice_notes", lambda o, a: None)
+    monkeypatch.setattr("core.services.hermes_profiles.upload_voice_notes", lambda *a: None)
+    monkeypatch.setattr("core.services.messaging.refresh_agent_member_names", AsyncMock(return_value={}))
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
+
+    await hp.refresh_agent_soul("org_a", A1)
+    assert published == ["org_a"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_delete_republishes_sessions(monkeypatch, published):
+    from core.services import paperclip_agent_lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "prepare_paperclip_agent_delete", AsyncMock(return_value={}))
+    monkeypatch.setattr(lifecycle, "delete_paperclip_for_chat", AsyncMock())
+    monkeypatch.setattr(lifecycle, "_refresh_facts", AsyncMock())
+    monkeypatch.setattr("core.services.hermes_profiles.delete_profile", lambda o, a: None)
+
+    await lifecycle.delete_agent_everywhere(owner_id="org_a", agent_id=A1)
+    assert published == ["org_a"]
+
+
+@pytest.mark.asyncio
+async def test_connect_clears_a_stale_state_db_before_joining(monkeypatch):
+    order = []
+    monkeypatch.setattr(network_member, "sessions_exist", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        "core.services.hermes_provisioning._delete_prefixes", lambda prefixes: order.append(("delete", prefixes))
+    )
+    monkeypatch.setattr(
+        "core.services.hermes_provisioning.prepare_hermes_workspace",
+        AsyncMock(side_effect=lambda o: order.append("prepare") or False),
+    )
+    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"line": "l", "expires_at": "t"}))
+    await network_member.connect("org_a", "user_1", "Sam")
+    assert order == [("delete", ["org_a/network/state.db"]), "prepare"]

@@ -80,17 +80,11 @@ async def test_reconnect_is_admin_only_and_drops_key_and_state(
     from core.auth import get_current_user
 
     calls = []
-    monkeypatch.setattr(
-        network_member,
-        "_read_boot_credentials",
-        lambda o: {"hookToken": "h", "gatewayToken": "g", "bedrockBearer": "b", "other": "x"},
-    )
 
-    async def _write(owner_id, **kw):
-        calls.append(("write", owner_id, kw))
-        return False
+    async def _drop(owner_id):
+        calls.append(("drop", owner_id))
 
-    monkeypatch.setattr("core.services.agentcore_runtime.write_boot_secret", _write)
+    monkeypatch.setattr("core.services.agentcore_runtime.drop_network_key", _drop)
     monkeypatch.setattr(
         "core.services.hermes_provisioning.stop_runtime_session",
         AsyncMock(side_effect=lambda o, arn: calls.append(("stop", arn)) or True),
@@ -107,11 +101,7 @@ async def test_reconnect_is_admin_only_and_drops_key_and_state(
     admin = await async_client_org_member.post("/api/v1/settings/network/reconnect")
     assert admin.status_code == 200 and admin.json() == {}
     assert calls == [
-        (
-            "write",
-            "org_test_456",
-            {"hook_token": "h", "gateway_token": "g", "bedrock_bearer": "b", "drop_network_key": True},
-        ),
+        ("drop", "org_test_456"),
         ("stop", "arn:r"),
         ("delete", ["org_test_456/network/"]),
     ]

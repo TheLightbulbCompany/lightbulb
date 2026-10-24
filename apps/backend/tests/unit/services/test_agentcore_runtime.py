@@ -142,8 +142,9 @@ async def test_write_boot_secret_mints_once_and_reports_a_boot_change():
         assert _boot(sm, "org_m")["networkKey"] == key
 
         # Reconnect drops it (not a boot change); the next write mints a different one.
-        assert await ar.write_boot_secret("org_m", **_CREDS, drop_network_key=True) is False
-        assert "networkKey" not in _boot(sm, "org_m")
+        await ar.drop_network_key("org_m")
+        assert _boot(sm, "org_m") == {"hookToken": "h", "gatewayToken": "g", "bedrockBearer": "b"}
+        await ar.drop_network_key("org_absent")  # no secret: a no-op
         assert await ar.write_boot_secret("org_m", **_CREDS) is True
         assert _boot(sm, "org_m")["networkKey"] != key
 

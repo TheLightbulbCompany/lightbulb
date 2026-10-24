@@ -532,11 +532,11 @@ def _sent_key(auth: AuthContext, request_id: uuid.UUID) -> tuple[str, str]:
     return messaging_repo.owner_pk(auth.org_id), f"MCPSEND#{auth.user_id}#{request_id}"
 
 
-async def _pin_destination(auth: AuthContext, request_id: uuid.UUID, destination: str) -> dict:
+async def _pin_destination(auth: AuthContext, request_id: uuid.UUID, destination: str, **extra) -> dict:
     """Remember where a request_id went, so message_receipt needs only the id and a reuse elsewhere fails."""
     pk, sk = _sent_key(auth, request_id)
     # No TTL: this is the receipt index and the cross-destination guard, like the room IDEMP row.
-    item = {"pk": pk, "sk": sk, "destination": destination}
+    item = {"pk": pk, "sk": sk, "destination": destination, **extra}
     try:
         await run_in_thread(messaging_repo._table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
         return item
@@ -596,9 +596,10 @@ async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str,
 _STARTING = "RUNTIME_UNAVAILABLE: the workspace is starting; retry with the same request_id"
 
 
-async def _through_member(auth: AuthContext, op: str, **fields):
-    """A ``network.app`` call as this client via the signed-in person, its refusals as ToolErrors."""
-    slug, client = _sender(get_access_token())
+async def _through_member(auth: AuthContext, op: str, *, sender: tuple[str, str] | None = None, **fields):
+    """A ``network.app`` call as this client (or ``sender``) via the signed-in person, its refusals
+    as ToolErrors."""
+    slug, client = sender or _sender(get_access_token())
     try:
         return await network_member.app_call(auth, slug, client, op, **fields)
     except asyncio.TimeoutError as exc:
@@ -612,10 +613,18 @@ async def _through_member(auth: AuthContext, op: str, **fields):
             error = json.loads(str(exc))
         except ValueError:
             error = {}
+        error = error if isinstance(error, dict) else {}
         code = error.get("code") or "UNAVAILABLE"
-        if code == "RUNTIME_UNAVAILABLE":
+        # The bridge answers UNAVAILABLE while its network sidecar is off or starting.
+        if code in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
             raise ToolError(_STARTING) from exc
         raise ToolError(f"{code}: {error.get('message') or 'the network refused the call'}") from exc
+
+
+def _record(result) -> dict:
+    if not isinstance(result, dict):
+        raise ToolError("UNAVAILABLE: the network answered in an unexpected shape.")
+    return result
 
 
 async def _posted(auth: AuthContext, room_id: str, request_id: uuid.UUID) -> bool:
@@ -666,13 +675,18 @@ async def send_message(
             raise messaging.ApiProblem("INVALID_REQUEST", "A network send takes no thread or mentions.")
         if not network_to.strip() or len(network_to) > 256:
             raise messaging.ApiProblem("INVALID_REQUEST", "Invalid network_to.")
+        slug, client = _sender(get_access_token())
         try:
-            await _pin_destination(auth, request_id, f"network:{network_to}")
+            pinned = await _pin_destination(auth, request_id, f"network:{network_to}", app=slug, client=client)
+            if pinned.get("app") != slug:  # another app session would send it a second time
+                raise messaging.ApiProblem("IDEMPOTENCY_CONFLICT", "request_id was used by another client.")
         except messaging.ApiProblem as exc:
             raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
         # The engine dedupes app.send on request_id per app session, so a retry sends once.
-        result = await _through_member(auth, "send", to=network_to, text=text, request_id=str(request_id))
-        return {"destination": f"network:{network_to}", "requestId": str(request_id), **result}
+        result = await _through_member(
+            auth, "send", sender=(slug, client), to=network_to, text=text, request_id=str(request_id)
+        )
+        return {**_record(result), "destination": f"network:{network_to}", "requestId": str(request_id)}
     slug, client = _sender(get_access_token())
     if agent_id is not None:
         if reply_to_message_id or mention_ids:
@@ -794,8 +808,10 @@ async def message_receipt(request_id: uuid.UUID) -> dict:
             "state": "unknown"
         }
     if kind == "network":
-        result = await _through_member(auth, "receipt", request_id=str(request_id))
-        return {"destination": pinned["destination"], "requestId": str(request_id), **result}
+        # Read from the app session that sent it, whichever client asks.
+        sender = (pinned["app"], pinned["client"])
+        result = await _through_member(auth, "receipt", sender=sender, request_id=str(request_id))
+        return {**_record(result), "destination": pinned["destination"], "requestId": str(request_id)}
     try:
         command = await local_sessions.get_command(auth, None, target, str(request_id))
     except messaging.ApiProblem as exc:
@@ -813,13 +829,15 @@ async def message_receipt(request_id: uuid.UUID) -> dict:
 
 @mcp.tool(annotations=READ)
 async def network(action: Literal["inbox", "directory"], query: str = "") -> list:
-    """The team's lightbulb network, through this workspace. "inbox": messages sent to you here (as this client via you). "directory": the addresses you can send to with send_message network_to; query narrows it."""
+    """The team's lightbulb network, through this workspace. "inbox": messages sent to you here (as this client via you). "directory": the addresses you can send to with send_message network_to; query narrows it. Keeps no record of the call; the first call from this client adds its address ("<client> via <you>") to the workspace."""
     auth = _caller()
     if _mac():  # a shared session's own computer is on the network itself
         raise ToolError("INVALID_REQUEST: a shared session uses its own computer's network.")
     if action == "inbox":
         return await _through_member(auth, "inbox")
-    return await _through_member(auth, "directory", query=query)
+    if action == "directory":
+        return await _through_member(auth, "directory", query=query)
+    raise ToolError("INVALID_REQUEST: action is inbox or directory.")
 
 
 # API Gateway rewrites Host to the private ALB DNS name. The public OAuth URL is

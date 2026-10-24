@@ -28,10 +28,13 @@ class Engine:
         self.calls: list[dict] = []
         self.sent: dict[str, str] = {}
         self.lose_next_answer = False
+        self.refuse_next: list[Exception] = []
 
     async def __call__(self, owner, method, params):
         assert (owner, method) == (OWNER, "network.app")
         self.calls.append(params)
+        if self.refuse_next:
+            raise self.refuse_next.pop(0)
         op = params["op"]
         if op == "send":
             self.sent.setdefault(params["request_id"], params["text"])
@@ -61,11 +64,14 @@ def member(table, monkeypatch):
     engine = Engine()
 
     async def rpc(owner, method, params):
+        if method == "network.sessions":  # the warm sidecar is told sessions.json changed
+            events.append("publish")
+            return {}
         events.append(params["op"])
         return await engine(owner, method, params)
 
     monkeypatch.setattr(network_member.container_rpc, "call", rpc)
-    monkeypatch.setattr(network_member, "publish_sessions", AsyncMock(side_effect=lambda _o: events.append("publish")))
+    monkeypatch.setattr(network_member, "_session_is_warm", AsyncMock(return_value=True))
     token = SimpleNamespace(
         client_id="https://claude.ai/oauth/claude-code-client-metadata",
         scopes=[hosted_mcp.READ_SCOPE, hosted_mcp.WRITE_SCOPE],
@@ -73,7 +79,7 @@ def member(table, monkeypatch):
         claims={"org_id": OWNER},
     )
     monkeypatch.setattr(hosted_mcp, "get_access_token", lambda: token)
-    return SimpleNamespace(engine=engine, events=events, objects=objects, table=table)
+    return SimpleNamespace(engine=engine, events=events, objects=objects, table=table, token=token)
 
 
 def _app_entries(objects):
@@ -161,3 +167,51 @@ async def test_inbox_and_directory_return_engine_records_and_store_nothing(membe
         {"op": "directory", "app": "claude-code", "person": PERSON, "query": "aden"},
     ]
     assert _pins(member.table) == []
+
+
+@pytest.mark.asyncio
+async def test_the_bridges_unavailable_answer_is_the_starting_error(member):
+    off = {"code": "UNAVAILABLE", "message": "network.app is not available on the Hermes runtime"}
+    member.engine.refuse_next = [RuntimeError(json.dumps(off)), ApiProblem("RUNTIME_UNAVAILABLE", "starting")]
+    for _ in range(2):
+        with pytest.raises(ToolError) as err:
+            await hosted_mcp.send_message(text="hi", request_id=uuid.uuid4(), network_to="aden-mac")
+        assert str(err.value) == STARTING
+
+
+@pytest.mark.asyncio
+async def test_a_sidecar_that_never_learned_the_entry_is_told_again(member):
+    await hosted_mcp.network("inbox")  # the entry is in sessions.json now
+    member.events.clear()
+    refused = {"code": "refused", "message": "no such app session", "reason": "not_declared"}
+    member.engine.refuse_next = [RuntimeError(json.dumps(refused))]
+    out = await hosted_mcp.send_message(text="hi", request_id=uuid.uuid4(), network_to="aden-mac")
+    assert out["state"] == "delivered"
+    assert member.events == ["send", "publish", "send"]
+    assert len(_app_entries(member.objects)) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_name_is_never_published_and_heals_on_redeclare(member, monkeypatch):
+    lookup = AsyncMock(return_value=USER)  # what the lookup answers when Clerk cannot say
+    monkeypatch.setattr("core.services.messaging.human_display_name", lookup)
+    await hosted_mcp.network("inbox")
+    [entry] = _app_entries(member.objects)
+    assert entry["title"] == "Claude Code via a teammate" and USER not in json.dumps(entry)
+
+    lookup.return_value = "Ann Lee"
+    member.engine.refuse_next = [RuntimeError(json.dumps({"code": "refused", "reason": "not_declared"}))]
+    await hosted_mcp.network("inbox")
+    assert [e["title"] for e in _app_entries(member.objects)] == ["Claude Code via Ann"]
+
+
+@pytest.mark.asyncio
+async def test_the_receipt_reads_the_app_session_that_sent_it(member):
+    rid = uuid.uuid4()
+    await hosted_mcp.send_message(text="hi", request_id=rid, network_to="aden-mac")
+    member.token.client_id = "https://chatgpt.com/oauth/codex/client.json"
+    with pytest.raises(ToolError, match="IDEMPOTENCY_CONFLICT"):
+        await hosted_mcp.send_message(text="hi", request_id=rid, network_to="aden-mac")
+    receipt = await hosted_mcp.message_receipt(rid)
+    assert member.engine.calls[-1]["app"] == "claude-code" and receipt["state"] == "delivered"
+    assert list(member.engine.sent) == [str(rid)]

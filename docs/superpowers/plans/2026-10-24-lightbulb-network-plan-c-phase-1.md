@@ -333,7 +333,7 @@ Skipped: a "Reconnect workspace" prompt driven by `KEY_MISMATCH`. The panel show
 ### Task 9: Backend, member holds as Needs-you items (web unchanged)
 
 **Files:**
-- Modify: `apps/backend/routers/network.py` (internal route `POST /api/v1/internal/network/holds/{owner_id}`, hook token through `routers/messaging._require_hook_token`; mounted on a second router with the internal prefix)
+- Modify: `apps/backend/routers/network.py` (internal route `POST /api/v1/internal/messaging/network/holds/{owner_id}`, hook token through `routers/messaging._require_hook_token`; mounted on a second router with the internal prefix)
 - Modify: `apps/backend/core/services/network_member.py` (`async def hold_notice(owner_id, notice: dict) -> None`, `async def decide_hold(auth, hold_id, action_id) -> None`)
 - Modify: `apps/backend/core/services/activity.py` (`render_network_hold(row, *, seen)` next to `render_webhook_agent_ask`, reusing `kind="session"`, `subtype="join_request"`, `WEBHOOK_ASK_REASON`, and the actions Send / Decline / Always allow with `preview=None`; `_render_network_hold_rows` in the gather at :853; `run_action` branch `parts[0] == "nethold" and len(parts) == 2`)
 - Test: `apps/backend/tests/unit/services/test_network_holds.py`, `apps/frontend/src/components/activity/__tests__/ForYou.test.tsx` (append one case)

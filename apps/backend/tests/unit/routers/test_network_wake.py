@@ -36,7 +36,14 @@ async def test_a_bad_token_is_404_and_writes_nothing(wake, unauthenticated_async
     assert entry["url"] == "https://api-dev.thelightbulb.company/api/v1/network/wake"
     good = entry["token"]
     headers = [{}, {"Authorization": f"Basic {good}"}]
-    for bad in ("nodot", "user_1.abc", f"org_other.{good.split('.', 1)[1]}", f"{OWNER}.wrong", "org_bad!.y"):
+    for bad in (
+        "nodot",
+        "user_1.abc",
+        f"org_other.{good.split('.', 1)[1]}",
+        f"{OWNER}.wrong",
+        "org_bad!.y",
+        f"{OWNER}.{'x' * 200}",  # over-long: refused before any read
+    ):
         headers.append(_bearer(bad))
     for h in headers:
         resp = await unauthenticated_async_client.post("/api/v1/network/wake", headers=h)

@@ -431,7 +431,8 @@ async def ring(token: str) -> bool:
     from core.repositories import messaging_repo
 
     owner_id, dot, _ = token.partition(".")
-    if not dot or not _WAKE_OWNER_RE.match(owner_id):
+    # 128 covers org_<64> + "." + a 43-char urlsafe secret; anything longer is refused before any read.
+    if len(token) > 128 or not dot or not _WAKE_OWNER_RE.match(owner_id):
         return _refused()
     key = _netwake_key(owner_id)
     row = await messaging_repo._get(key["pk"], key["sk"])

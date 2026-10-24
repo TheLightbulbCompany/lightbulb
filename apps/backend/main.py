@@ -918,7 +918,7 @@ app.include_router(webhook_agents_router.router, prefix="/api/v1/settings/webhoo
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
 app.include_router(network_router.router, prefix="/api/v1/settings/network", tags=["settings"])
 app.include_router(network_router.internal_router, prefix="/api/v1/internal/network", tags=["settings"])
-# The network doorbell: no Clerk auth, the token in the path is the credential.
+# The network doorbell: no Clerk auth, the bearer token is the credential (never in the path).
 app.include_router(network_router.wake_router, prefix="/api/v1/network", tags=["settings"])
 
 # Integrations (MCP servers, ClawHub)

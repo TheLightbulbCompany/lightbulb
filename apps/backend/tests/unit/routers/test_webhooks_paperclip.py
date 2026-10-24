@@ -1052,3 +1052,22 @@ async def test_membership_delete_revokes_before_clearing_macs_and_never_waits_on
     loop = asyncio.get_running_loop()
     for task in [t for t in mac_browser._clears if t.get_loop() is loop]:
         task.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", ["organizationMembership.created", "organizationMembership.deleted"])
+async def test_membership_events_republish_the_network_member_list(lifecycle_io, monkeypatch, event):
+    from routers import webhooks
+
+    _bypass_svix(monkeypatch)
+    publish = AsyncMock()
+    monkeypatch.setattr(webhooks.network_member, "publish_sessions", publish)
+    monkeypatch.setattr(webhooks, "_sync_seats", AsyncMock())
+    monkeypatch.setattr(webhooks, "_handle_organization_membership_created", AsyncMock())
+    monkeypatch.setattr(webhooks, "_handle_organization_membership_deleted", AsyncMock())
+    data = {"organization": {"id": "org_acme"}, "user_id": "member", "public_user_data": {"user_id": "member"}}
+    request = SimpleNamespace(
+        headers=_svix_headers(), body=AsyncMock(return_value=json.dumps({"type": event, "data": data}).encode())
+    )
+    assert await webhooks.handle_clerk_webhook(request) == {"status": "ok"}
+    publish.assert_awaited_once_with("org_acme")

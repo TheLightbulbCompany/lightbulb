@@ -74,8 +74,11 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
     from core.services.company_identity import slugify
     from core.services.hermes_profiles import put_owner_object
     from core.services.messaging import load_agent_roster
+    from core.services.website_logins import _humans_to_ask
 
-    roster, org = await asyncio.gather(load_agent_roster(owner_id), clerk_admin.get_organization(owner_id))
+    roster, org, members = await asyncio.gather(
+        load_agent_roster(owner_id), clerk_admin.get_organization(owner_id), _humans_to_ask(owner_id, None)
+    )
     if len(roster) + len(apps) > MAX_SESSIONS:
         raise ApiProblem("INVALID_REQUEST", f"This workspace has reached {MAX_SESSIONS} network addresses.")
 
@@ -97,7 +100,12 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
 
     # The wake token survives every writer: with no prior in hand, read the current file.
     wake = await _wake(owner_id, prior if prior is not None else (await _read_sessions(owner_id) or {}))
-    doc = {"workspace": (org or {}).get("name") or owner_id, "sessions": sessions + apps, "wake": wake}
+    doc = {
+        "workspace": (org or {}).get("name") or owner_id,
+        "sessions": sessions + apps,
+        "wake": wake,
+        "members": members,
+    }
     await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
     return doc
 

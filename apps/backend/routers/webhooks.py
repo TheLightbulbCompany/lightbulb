@@ -49,6 +49,7 @@ from fastapi import APIRouter, HTTPException, Request
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, channel_link_repo, update_repo
+from core.services import network_member
 from core.services.paperclip_provisioning import (
     build_paperclip_provisioning,
     close_paperclip_provisioning,
@@ -957,6 +958,7 @@ async def handle_clerk_webhook(request: Request):
             raise HTTPException(status_code=400, detail="Clerk membership creation target unavailable")
         await _handle_organization_membership_created(data, lifecycle_claim_id=membership_claim)
         await _sync_seats(org_id)
+        await network_member.publish_sessions(org_id)  # the network's member list follows (never raises)
 
     elif event_type == "organizationMembership.deleted":
         await _handle_organization_membership_deleted(
@@ -965,6 +967,7 @@ async def handle_clerk_webhook(request: Request):
             lifecycle_event_id=lifecycle_id if membership_claim is not None else None,
         )
         await _sync_seats(membership_owner_id)
+        await network_member.publish_sessions(membership_owner_id)
 
     elif event_type == "organization.deleted":
         await _handle_organization_deleted(data)

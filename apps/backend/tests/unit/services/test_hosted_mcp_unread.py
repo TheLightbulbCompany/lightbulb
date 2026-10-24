@@ -68,4 +68,4 @@ async def test_the_decorator_keeps_every_tool_schema():
     assert set(tools["send_message"].input_schema["required"]) == {"text", "request_id"}
     assert "session_id" in tools["send_message"].input_schema["properties"]
     assert tools["read_messages"].input_schema["required"] == ["room_id"]
-    assert len(tools) == 9 and all(t.description for t in tools.values())
+    assert len(tools) == 10 and all(t.description for t in tools.values())

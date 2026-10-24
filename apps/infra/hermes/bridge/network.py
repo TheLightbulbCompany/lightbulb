@@ -17,7 +17,6 @@ another writer: the sidecar stops and the network stays off for this process. ``
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import logging
 import os
@@ -86,6 +85,10 @@ def _code(exc: Exception) -> str:
     return str((getattr(exc, "response", None) or {}).get("Error", {}).get("Code", ""))
 
 
+def _spawn(target, name: str, *args) -> None:
+    threading.Thread(target=target, args=args, name=name, daemon=True).start()
+
+
 def _running() -> bool:
     proc = _proc  # one read: a concurrent _kill() may clear it
     return proc is not None and proc.poll() is None and not _stopping
@@ -105,7 +108,7 @@ def ensure_started(*, background: bool) -> bool:
     if _running():
         return True
     if background:
-        threading.Thread(target=_ensure, name="network-start", daemon=True).start()
+        _spawn(_ensure, "network-start")
         return False
     return _ensure()
 
@@ -128,7 +131,7 @@ def _ensure() -> bool:
         if not started:
             _next_try = time.monotonic() + RETRY_S
         else:
-            threading.Thread(target=sweep, name="network-sweep", daemon=True).start()
+            _spawn(sweep, "network-sweep")
         return started
 
 
@@ -136,18 +139,25 @@ def _get(key: str) -> dict | None:
     try:
         return sync._s3().get_object(Bucket=bridge.S3_BUCKET, Key=key)
     except Exception as exc:  # noqa: BLE001
-        if _code(exc) in ("NoSuchKey", "404"):
+        if sync._is_absent(exc):
             return None
         raise
 
 
-def _start() -> bool:
-    global _proc, _token, _etag, _sha, _sessions, _stopping
+def _fetch_sessions() -> tuple[bytes, dict] | None:
     got = _get(_key("sessions.json"))
     if got is None:
+        return None
+    raw = got["Body"].read()
+    return raw, json.loads(raw)
+
+
+def _start() -> bool:
+    global _proc, _token, _etag, _sha, _sessions, _stopping
+    fetched = _fetch_sessions()
+    if fetched is None:
         return False  # not connected yet (no log: the normal state of most workspaces)
-    raw_sessions = got["Body"].read()
-    _sessions = json.loads(raw_sessions)
+    raw_sessions, _sessions = fetched
     for path in (NET_HOME, SNAPSHOT.parent, SESSIONS_FILE.parent):
         path.mkdir(parents=True, exist_ok=True)
     SESSIONS_FILE.write_bytes(raw_sessions)
@@ -162,7 +172,7 @@ def _start() -> bool:
     else:
         body = state["Body"].read()
         (NET_HOME / "state.db").write_bytes(body)
-        _etag, _sha = state["ETag"], hashlib.sha256(body).hexdigest()
+        _etag, _sha = state["ETag"], sync._sha(body)
 
     key_path = NET_HOME / "identity.key"
     fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -191,7 +201,7 @@ def _start() -> bool:
         time.sleep(0.05)
     sub = _connect(None)
     sub.sendall(_line("subscribe", None))
-    threading.Thread(target=_subscriber, args=(sub,), name="network-events", daemon=True).start()
+    _spawn(_subscriber, "network-events", sub)
     log.info("network: member started (%d sessions)", len(_sessions.get("sessions") or []))
     return True
 
@@ -262,11 +272,10 @@ def reload_sessions() -> int:
     """Re-read ``sessions.json`` from S3 and declare it to the running sidecar (the backend's
     ``network.sessions`` RPC, after it rewrote the file). Returns the session count."""
     global _sessions
-    got = _get(_key("sessions.json"))
-    if got is None:
+    fetched = _fetch_sessions()
+    if fetched is None:
         raise NetworkOff("sessions.json is gone")
-    raw = got["Body"].read()
-    data = json.loads(raw)
+    raw, data = fetched
     ask("cloud.sessions.set", {"sessions": data.get("sessions") or []})
     _sessions = data
     SESSIONS_FILE.write_bytes(raw)
@@ -299,7 +308,8 @@ def _subscriber(sock: socket.socket) -> None:
 
 
 def _handle_event(event: dict) -> None:
-    if event.get("event") == "superseded":
+    kind = event.get("event")
+    if kind == "superseded":
         now = time.monotonic()
         _superseded.append(now)
         while _superseded and now - _superseded[0] > CONTESTED_WINDOW_S:
@@ -310,11 +320,10 @@ def _handle_event(event: dict) -> None:
                         CONTESTED_COUNT, CONTESTED_WINDOW_S)
             sync.emit_metrics({"network.member_key_contested": (1, "Count")})
     _schedule_save()
-    kind = event.get("event")
     if kind in ("message", "lag"):  # off the reader thread: a peek must not stall the stream
-        threading.Thread(target=sweep, name="network-sweep", daemon=True).start()
+        _spawn(sweep, "network-sweep")
     elif kind in ("held", "hold_closed"):
-        threading.Thread(target=_hold_notice, args=(event,), name="network-hold", daemon=True).start()
+        _spawn(_hold_notice, "network-hold", event)
     for fn in list(on_event):
         try:
             fn(event)
@@ -345,8 +354,11 @@ def sweep() -> None:
             if not turn.register_run(key):
                 turn.release_turn()  # already run in this process
                 continue
-            threading.Thread(target=_run_record, args=(session, agent_id, record, key),
-                             name=f"network-turn-{record['id']}", daemon=True).start()
+            _spawn(_run_record, f"network-turn-{record['id']}", session, agent_id, record, key)
+
+
+def _ack(session: str, record: dict, stage: str) -> None:
+    ask("inbox.ack", {"session": session, "record": record["id"], "stage": stage})
 
 
 def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
@@ -355,7 +367,7 @@ def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
     keeps its text and the next process runs it again."""
     from bridge import turn
     try:
-        ask("inbox.ack", {"session": session, "record": record["id"], "stage": "delivered"})
+        _ack(session, record, "delivered")
     except Exception:  # noqa: BLE001 -- not taken: let a later sweep try it again
         log.warning("network: delivered ack failed for %s", record["id"], exc_info=True)
         turn.discard_run(key)
@@ -373,7 +385,7 @@ def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
     finally:
         if outcome == "completed":
             try:
-                ask("inbox.ack", {"session": session, "record": record["id"], "stage": "read"})
+                _ack(session, record, "read")
             except Exception:  # noqa: BLE001
                 log.warning("network: read ack failed for %s", record["id"], exc_info=True)
         else:
@@ -426,7 +438,7 @@ def _sessions_file_exists() -> bool:
         sync._s3().head_object(Bucket=bridge.S3_BUCKET, Key=_key("sessions.json"))
         return True
     except Exception as exc:  # noqa: BLE001
-        if _code(exc) in ("NoSuchKey", "404", "NotFound"):
+        if sync._is_absent(exc):
             return False
         raise
 
@@ -438,7 +450,7 @@ def _put_snapshot() -> None:
         if _off:
             return
         data = SNAPSHOT.read_bytes()
-        digest = hashlib.sha256(data).hexdigest()
+        digest = sync._sha(data)
         if digest == _sha:
             return
         if not _sessions_file_exists():
@@ -460,7 +472,7 @@ def _put_snapshot() -> None:
         else:
             _etag, _sha = resp["ETag"], digest
             return
-    threading.Thread(target=_halt, name="network-conflict-stop", daemon=True).start()
+    _spawn(_halt, "network-conflict-stop")
 
 
 # ---- stop --------------------------------------------------------------------------------------

@@ -504,9 +504,7 @@ def _network_sessions(params: dict, **_kwargs) -> dict:
 
 def _network_wake(params: dict, **_kwargs) -> dict:
     """A peer rang the doorbell: start the member, nothing else (spec job 3)."""
-    if not network.ensure_started(background=False):
-        return _unavailable("network.wake")
-    return {"ok": True, "payload": {}}
+    return _net("network.wake", "", run=dict)
 
 
 RPC_METHODS.update({"network.invite": _network_invite, "network.sessions": _network_sessions,

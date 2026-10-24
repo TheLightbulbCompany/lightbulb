@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -609,11 +608,7 @@ async def _through_member(auth: AuthContext, op: str, *, sender: tuple[str, str]
             raise ToolError(_STARTING) from exc
         raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
     except RuntimeError as exc:  # the member answered with an error: {"code", "message"}
-        try:
-            error = json.loads(str(exc))
-        except ValueError:
-            error = {}
-        error = error if isinstance(error, dict) else {}
+        error = network_member.rpc_error(exc)
         code = error.get("code") or "UNAVAILABLE"
         # The bridge answers UNAVAILABLE while its network sidecar is off or starting.
         if code in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
@@ -621,10 +616,10 @@ async def _through_member(auth: AuthContext, op: str, *, sender: tuple[str, str]
         raise ToolError(f"{code}: {error.get('message') or 'the network refused the call'}") from exc
 
 
-def _record(result) -> dict:
+def _record(result, destination: str, request_id: uuid.UUID) -> dict:
     if not isinstance(result, dict):
         raise ToolError("UNAVAILABLE: the network answered in an unexpected shape.")
-    return result
+    return {**result, "destination": destination, "requestId": str(request_id)}
 
 
 async def _posted(auth: AuthContext, room_id: str, request_id: uuid.UUID) -> bool:
@@ -670,12 +665,12 @@ async def send_message(
         return await _from_session(
             device, "send", {"destination": f"{kind}:{target}", "text": text, "requestId": str(request_id)}
         )
+    slug, client = _sender(get_access_token())
     if network_to is not None:
         if reply_to_message_id or mention_ids:
             raise messaging.ApiProblem("INVALID_REQUEST", "A network send takes no thread or mentions.")
         if not network_to.strip() or len(network_to) > 256:
             raise messaging.ApiProblem("INVALID_REQUEST", "Invalid network_to.")
-        slug, client = _sender(get_access_token())
         try:
             pinned = await _pin_destination(auth, request_id, f"network:{network_to}", app=slug, client=client)
             if pinned.get("app") != slug:  # another app session would send it a second time
@@ -686,8 +681,7 @@ async def send_message(
         result = await _through_member(
             auth, "send", sender=(slug, client), to=network_to, text=text, request_id=str(request_id)
         )
-        return {**_record(result), "destination": f"network:{network_to}", "requestId": str(request_id)}
-    slug, client = _sender(get_access_token())
+        return _record(result, f"network:{network_to}", request_id)
     if agent_id is not None:
         if reply_to_message_id or mention_ids:
             raise messaging.ApiProblem("INVALID_REQUEST", "An agent send takes no thread or mentions.")
@@ -811,7 +805,7 @@ async def message_receipt(request_id: uuid.UUID) -> dict:
         # Read from the app session that sent it, whichever client asks.
         sender = (pinned["app"], pinned["client"])
         result = await _through_member(auth, "receipt", sender=sender, request_id=str(request_id))
-        return {**_record(result), "destination": pinned["destination"], "requestId": str(request_id)}
+        return _record(result, pinned["destination"], request_id)
     try:
         command = await local_sessions.get_command(auth, None, target, str(request_id))
     except messaging.ApiProblem as exc:

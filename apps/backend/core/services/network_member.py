@@ -134,12 +134,13 @@ async def _declare(owner_id: str, user_id: str, slug: str, client: str, doc: dic
     await _write_and_ping(owner_id, [*apps, entry])
 
 
-def _not_declared(exc: RuntimeError) -> bool:
+def rpc_error(exc: RuntimeError) -> dict:
+    """The ``{"code", "message", ...}`` a ``container_rpc`` RuntimeError carries; ``{}`` if none."""
     try:
         error = json.loads(str(exc))
     except ValueError:
-        return False
-    return isinstance(error, dict) and error.get("reason") == "not_declared"
+        return {}
+    return error if isinstance(error, dict) else {}
 
 
 async def app_call(auth, slug: str, client: str, op: str, **fields) -> Any:
@@ -159,7 +160,7 @@ async def app_call(auth, slug: str, client: str, op: str, **fields) -> Any:
         return await container_rpc.call(owner_id, "network.app", params)
     except RuntimeError as exc:
         # The sidecar never learned the entry (a lost ping, a stale warm estimate): declare once more.
-        if not _not_declared(exc):
+        if rpc_error(exc).get("reason") != "not_declared":
             raise
     await _declare(owner_id, auth.user_id, slug, client, await _read_sessions(owner_id) or doc)
     return await container_rpc.call(owner_id, "network.app", params)

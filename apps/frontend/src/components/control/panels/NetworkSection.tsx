@@ -75,18 +75,18 @@ export function NetworkSection() {
 
   return (
     <section id="network" aria-labelledby="network-heading"
-      className="overflow-hidden rounded-md border border-[var(--edge)] bg-cream">
-      <header className="border-b border-[var(--edge)] px-5 py-4">
-        <h3 id="network-heading" className="font-editorial-serif text-base font-semibold text-[var(--midnight)]">Connect your computer</h3>
-        {data?.connected && <p className="mt-1 text-sm text-[var(--midnight-muted)]">Your workspace is connected.</p>}
+      className="overflow-hidden rounded-md border border-[var(--plane-edge)] bg-[var(--plane-pane)]">
+      <header className="border-b border-[var(--plane-edge)] px-5 py-4">
+        <h3 id="network-heading" className="font-editorial-serif text-base font-semibold text-[var(--fg)]">Connect your computer</h3>
+        {data?.connected && <p className="mt-1 text-sm text-[var(--fg-mute)]">Your workspace is connected.</p>}
       </header>
-      <div className="space-y-3 px-5 py-4 text-sm text-[var(--midnight)]">
+      <div className="space-y-3 px-5 py-4 text-sm text-[var(--fg)]">
         <p>Install Lightbulb on your Mac or Linux computer:</p>
-        <code className="block break-all rounded-md border border-[var(--edge)] p-2 font-mono text-xs">{INSTALL}</code>
+        <code className="block break-all rounded-md border border-[var(--plane-edge)] p-2 font-mono text-xs">{INSTALL}</code>
         {fresh ? (
           <div role="status" className="space-y-2">
             <p>Paste this in Terminal. It works once, for 24 hours.</p>
-            <code className="block break-all rounded-md border border-[var(--edge)] p-2 font-mono text-xs">{fresh.line}</code>
+            <code className="block break-all rounded-md border border-[var(--plane-edge)] p-2 font-mono text-xs">{fresh.line}</code>
             <Button size="sm" variant="outline" onClick={() => {
               void navigator.clipboard?.writeText(fresh.line);
               setCopied(true);
@@ -95,7 +95,7 @@ export function NetworkSection() {
         ) : (
           <Button size="sm" disabled={busy} onClick={() => void getLine()}>Get my line</Button>
         )}
-        {starting && <p role="status" className="text-[var(--midnight-muted)]">Starting your workspace… this can take a minute.</p>}
+        {starting && <p role="status" className="text-[var(--fg-mute)]">Starting your workspace… this can take a minute.</p>}
         {failure && <p role="alert" className="text-[var(--err)]">{failure}</p>}
         {isAdmin && (
           <button type="button" className="text-xs text-[var(--link)] underline" onClick={() => void reconnect()}>

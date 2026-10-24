@@ -52,7 +52,8 @@ jobs:
       run: |-
         set -euo pipefail
         mkdir -p work/bin && cd work
-        gh release download "$TAG" -R TheLightbulbCompany/cli -p "$ASSET" -p "$ASSET.sha256"
+        rm -rf bin "$ASSET" "$ASSET.sha256" lightbulb.zip # the self-hosted runner keeps the last run's files
+        gh release download "$TAG" -R TheLightbulbCompany/cli -p "$ASSET" -p "$ASSET.sha256" --clobber
         shasum -a 256 -c "$ASSET.sha256"
         OLD_SHA="$(cut -d' ' -f1 "$ASSET.sha256")"
         echo "old_sha=$OLD_SHA" >> "$GITHUB_OUTPUT"

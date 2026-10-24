@@ -105,6 +105,7 @@ class FakeS3:
     def __init__(self):
         self.objects: dict[str, tuple[bytes, str]] = {}
         self.puts: list[dict] = []
+        self.deletes: list[str] = []
         self.conflict = False
         self._n = 0
 
@@ -134,6 +135,11 @@ class FakeS3:
             raise _Err("PreconditionFailed")
         self.seed(Key, Body)
         return {"ETag": self.objects[Key][1]}
+
+    def delete_object(self, Bucket, Key):
+        self.deletes.append(Key)
+        self.objects.pop(Key, None)
+        return {}
 
 
 @pytest.fixture
@@ -393,4 +399,25 @@ def test_a_save_after_reconnect_deleted_the_prefix_puts_nothing(net, caplog):
     time.sleep(0.3)
     network.stop()                                          # the SIGTERM save too
     assert _state_puts(net) == []
+    assert caplog.text.count("network.save_skipped_reconnect") == 1
+
+
+def test_a_save_that_a_reconnect_overtakes_mid_put_is_taken_back(net, caplog):
+    """The prefix vanishes between the save's check and its put: the put lands, the re-check
+    sees the reconnect, and the write is deleted again (Codex P2 on #4325)."""
+    assert network.ensure_started(background=False)
+    real_put = net.s3.put_object
+
+    def put_then_reconnect(Bucket, Key, Body, **cond):
+        resp = real_put(Bucket, Key, Body, **cond)
+        if Key.endswith("/state.db"):
+            net.s3.objects.pop("org_test/network/sessions.json", None)  # reconnect lands "during" the put
+        return resp
+    net.s3.put_object = put_then_reconnect
+    net.state(b"old-key-state")
+    network.call("send", {"from": "friday", "to": "mac", "text": "hi", "request_id": "r"})
+    assert _until(lambda: "org_test/network/state.db" in net.s3.deletes)
+    assert len(_state_puts(net)) == 1
+    assert "org_test/network/state.db" not in net.s3.objects
+    assert _until(lambda: not network.running())
     assert caplog.text.count("network.save_skipped_reconnect") == 1

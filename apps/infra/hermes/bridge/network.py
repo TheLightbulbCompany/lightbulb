@@ -470,8 +470,14 @@ def _put_snapshot() -> None:
             log.warning("network: state.db changed under us (412); the network is off for this process")
             sync.emit_metrics({"network.state_conflict": (1, "Count")})
         else:
-            _etag, _sha = resp["ETag"], digest
-            return
+            if _sessions_file_exists():
+                _etag, _sha = resp["ETag"], digest
+                return
+            # Reconnect deleted the prefix between the check above and the put: take the write
+            # back, so the old key's state.db is never restored under the new connection.
+            sync._s3().delete_object(Bucket=bridge.S3_BUCKET, Key=_key("state.db"))
+            _off = True
+            log.warning("network.save_skipped_reconnect")
     _spawn(_halt, "network-conflict-stop")
 
 

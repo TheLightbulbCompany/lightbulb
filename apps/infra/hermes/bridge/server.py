@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bridge
 from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
-from bridge import sync, turn, browser_control, followups, mcp_compat, recycle, subagents
+from bridge import sync, turn, browser_control, followups, mcp_compat, network, recycle, subagents
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
 log = logging.getLogger("bridge")
@@ -233,6 +233,9 @@ def _handle_call_run(path: str, method: str, headers: dict, body) -> tuple[int, 
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
+    # A real, authorized invoke: this microVM is claimed, so the network member may start here
+    # (never on a warm-pool instance). No-op without a member key or sessions.json.
+    network.ensure_started(background=True)
     # The website-login vault token rides every backend invoke (runtime_transport._vault_header);
     # memory only. See bridge/__init__.py's VAULT_TOKEN.
     vault = _header(headers, "X-Lightbulb-Vault")
@@ -797,9 +800,14 @@ def _save_on_sigterm(signum, _frame) -> None:
             log.warning("sigterm: save_root_auth failed", exc_info=True)
 
     log.info("sigterm: saving %d profile(s)", len(turn.RESTORED))
+    deadline = time.monotonic() + SIGTERM_SAVE_S
     worker = threading.Thread(target=_save, name="sigterm-save", daemon=True)
+    # Beside the profile saves, never after them: a slow save must not eat the network's stop.
+    net = threading.Thread(target=network.stop, name="sigterm-network", daemon=True)
     worker.start()
+    net.start()
     worker.join(SIGTERM_SAVE_S)
+    net.join(max(0.0, deadline - time.monotonic()))
     os._exit(128 + signum)
 
 

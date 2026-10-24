@@ -100,6 +100,10 @@ ROOT_DIR: dict[str, str] = dict.fromkeys(("aws_cli", "gh_cli", "gog_cli", "qbo_d
 #: are then registered with Hermes's per-session env passthrough by `turn._allow_child_env_names`).
 CLI_ENV_FILE = "cli-env.json"
 
+#: ``cli-env.json`` keys bound to ONE agent (``set_profile_cli_env``), which a new profile must not
+#: inherit from a sibling.
+PER_AGENT_ENV_KEYS = frozenset({"GOG_ACCOUNT"})
+
 
 def _shell_env(materializer: str, provider_key: str, credential: dict[str, Any]) -> dict[str, str]:
     if materializer == "gog_cli" and settings.GOG_KEYRING_PASSWORD:
@@ -195,9 +199,14 @@ def _run_and_sync(
     root_dir = ROOT_DIR.get(materializer, "")
     with _owner_lock(owner_id), tempfile.TemporaryDirectory(prefix="hermes-cli-") as tmp:
         root = Path(tmp)
-        # Seed from the first profile: the backend writes every profile identically, and the
-        # materializer needs the CURRENT file to preserve the entries it does not own.
-        hermes_profiles.fetch_profile_subtree(owner_id, agent_ids[0], owned, root)
+        # Seed from the first profile that actually holds this provider's state: the backend writes
+        # every profile identically, but a profile created after an earlier connect may not, and
+        # seeding from an empty one would upload a keyring/.xurl without the earlier entries.
+        # (None hold it: the scratch stays empty, a first connect.)
+        for donor in agent_ids:
+            hermes_profiles.fetch_profile_subtree(owner_id, donor, owned, root)
+            if _snapshot(root, materializer):
+                break
         before = set(_snapshot(root, materializer))
         with base.materialize_into(root / root_dir if root_dir else root):
             result = fn(owner_id, provider_key, credential)  # type: ignore[operator]
@@ -237,6 +246,68 @@ def _merge_cli_env(owner_id: str, agent_id: str, updates: dict[str, str | None])
             hermes_profiles.write_profile_subtree(owner_id, agent_id, {CLI_ENV_FILE: json.dumps(env).encode()}, ())
         else:  # the last key went (a full disconnect): no empty file left behind
             hermes_profiles.write_profile_subtree(owner_id, agent_id, {}, (CLI_ENV_FILE,))
+
+
+def _seed_new_profile(owner_id: str, agent_id: str, donors: list[str]) -> None:
+    """Sync twin of ``seed_new_profile``. Per materializer, copy the first donor's owned subtree
+    that actually holds files; ``cli-env.json`` is copied minus its per-agent keys."""
+    from core.services import hermes_profiles
+
+    with _owner_lock(owner_id), tempfile.TemporaryDirectory(prefix="hermes-cli-seed-") as tmp:
+        root = Path(tmp)
+        files: dict[str, bytes] = {}
+        # A re-install onto an EXISTING agent must not clobber what it already holds: keep its own
+        # materializer subtrees and its cli-env.json keys (GOG_ACCOUNT is bound per agent).
+        own = root / "own"
+        own.mkdir()
+        hermes_profiles.fetch_profile_subtree(
+            owner_id, agent_id, (CLI_ENV_FILE, *(p for m in OWNED_PATHS for p in profile_paths(m))), own
+        )
+        try:
+            own_env = json.loads((own / CLI_ENV_FILE).read_text())
+        except (OSError, ValueError):
+            own_env = {}
+        if not isinstance(own_env, dict):
+            own_env = {}
+        for materializer in OWNED_PATHS:
+            if _snapshot(own, materializer):
+                continue
+            for donor in donors:
+                hermes_profiles.fetch_profile_subtree(owner_id, donor, profile_paths(materializer), root)
+                found = _snapshot(root, materializer)
+                if found:
+                    files.update(found)
+                    break
+        for donor in donors:
+            hermes_profiles.fetch_profile_subtree(owner_id, donor, (CLI_ENV_FILE,), root)
+            try:
+                env = json.loads((root / CLI_ENV_FILE).read_text())
+            except (OSError, ValueError):
+                continue
+            if isinstance(env, dict):
+                env = {k: v for k, v in env.items() if k not in PER_AGENT_ENV_KEYS}
+                env = {**env, **own_env}
+                if env != own_env:
+                    files[CLI_ENV_FILE] = json.dumps(env).encode()
+                break
+        if files:
+            hermes_profiles.write_profile_subtree(owner_id, agent_id, files, ())
+
+
+async def seed_new_profile(owner_id: str, agent_id: str) -> None:
+    """Give a profile created AFTER a connect the owner's connected CLI credentials. ``project``
+    fans out over the roster as it was at connect time, so a hired / marketplace-deployed / created
+    agent would otherwise read "connected" in the integrations row with no credential on disk.
+    Copies from a sibling profile (credentials are identical across profiles by design -- see the
+    module docstring). Best-effort: the profile already landed, so a failure is logged, not raised."""
+    try:
+        donors = [a for a in await _roster(owner_id) if a != agent_id]
+        if donors:
+            await run_in_thread(_seed_new_profile, owner_id, agent_id, donors)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "agentcore: seeding CLI credentials into new profile failed owner=%s agent=%s", owner_id, agent_id
+        )
 
 
 async def set_profile_cli_env(owner_id: str, agent_id: str, updates: dict[str, str | None]) -> None:

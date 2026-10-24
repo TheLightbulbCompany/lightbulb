@@ -71,6 +71,7 @@ _sha: str | None = None
 _next_try = 0.0
 _off = False                    # a 412: off for the life of this process
 _stopping = False
+_ready = False                  # the socket is open and subscribed: callers may connect
 _sessions: dict = {}
 _save_timer: threading.Timer | None = None
 _superseded: deque[float] = deque()
@@ -91,7 +92,9 @@ def _spawn(target, name: str, *args) -> None:
 
 def _running() -> bool:
     proc = _proc  # one read: a concurrent _kill() may clear it
-    return proc is not None and proc.poll() is None and not _stopping
+    # Not before its socket opens: a background start spawns the process first, and an RPC that
+    # slipped in then got FileNotFoundError from connect (dev, 2026-10-24 13:26Z).
+    return _ready and proc is not None and proc.poll() is None and not _stopping
 
 
 def running() -> bool:
@@ -153,7 +156,7 @@ def _fetch_sessions() -> tuple[bytes, dict] | None:
 
 
 def _start() -> bool:
-    global _proc, _token, _etag, _sha, _sessions, _stopping
+    global _proc, _token, _etag, _sha, _sessions, _stopping, _ready
     fetched = _fetch_sessions()
     if fetched is None:
         return False  # not connected yet (no log: the normal state of most workspaces)
@@ -183,6 +186,7 @@ def _start() -> bool:
     SOCKET.unlink(missing_ok=True)
     _token = secrets.token_urlsafe(32)
     _stopping = False
+    _ready = False
     _proc = subprocess.Popen(
         [LIGHTBULB, "member", "--home", str(NET_HOME), "--snapshot", str(SNAPSHOT),
          "--socket", str(SOCKET), "--name", str(_sessions.get("workspace") or ""),
@@ -202,6 +206,7 @@ def _start() -> bool:
     sub = _connect(None)
     sub.sendall(_line("subscribe", None))
     _spawn(_subscriber, "network-events", sub)
+    _ready = True
     log.info("network: member started (%d sessions)", len(_sessions.get("sessions") or []))
     return True
 
@@ -217,7 +222,8 @@ def _connectable() -> bool:
 
 
 def _kill() -> None:
-    global _proc
+    global _proc, _ready
+    _ready = False
     if _proc is not None and _proc.poll() is None:
         _proc.kill()
         _proc.wait()

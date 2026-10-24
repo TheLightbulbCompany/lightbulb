@@ -13,7 +13,7 @@ order: 4
 Rows come in three kinds:
 
 - **Connect** — one click; you authorize in the browser.
-- **Bring your own app** — Google Workspace and X need your own OAuth app. The row walks you through creating one and pasting the client ID and secret.
+- **Bring your own app** — X needs your own OAuth app. The row walks you through creating one and pasting the client ID and secret.
 - **Request access** — not generally available yet. The button emails a human.
 
 Once connected, an agent uses the service as tools (Stripe, Notion, Linear, …), as an authenticated CLI in its shell (`gh`, `aws`, `gog`), or through a bundled skill (web search, Vercel). No restart needed.

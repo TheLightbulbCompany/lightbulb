@@ -38,17 +38,20 @@ import tempfile
 import httpx
 
 from core.config import settings
+from core.services.credentials import platform_oauth_app_store
 from core.services.credentials.materializers.base import (
     NODE_GID,
     NODE_UID,
     materializer_root,
+    run_sync,
 )
 
 logger = logging.getLogger(__name__)
 
 # gog has no field for the account email in the OAuth token response, so we fetch it
-# from the Gmail profile endpoint. The gmail.modify scope already grants this read.
-_GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
+# from the OIDC userinfo endpoint (openid + email scopes). The Gmail profile endpoint
+# is NOT usable: it needs a read-capable Gmail scope and we only hold gmail.send.
+_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 
 # Google's OAuth2 revocation endpoint. POSTing the refresh token here invalidates
 # the grant at Google so a disconnected account's token can never be reused; gog
@@ -63,11 +66,11 @@ _GOG_TIMEOUT_S = 30
 
 def _fetch_account_email(access_token: str) -> str:
     resp = httpx.get(
-        _GMAIL_PROFILE_URL,
+        _USERINFO_URL,
         headers={"Authorization": f"Bearer {access_token}"},
     )
     resp.raise_for_status()
-    return resp.json()["emailAddress"]
+    return resp.json()["email"]
 
 
 def _chown_tree_to_node(path) -> None:
@@ -195,15 +198,26 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
 
     The email is the natural identity of a Google account and is derived here
     anyway; returning it lets the connect path record the account in the
-    per-owner inventory without a redundant Gmail profile fetch."""
+    per-owner inventory without a redundant userinfo fetch."""
     email = _fetch_account_email(credential["access_token"])
+
+    # Google is a platform app: oauth_dance.exchange blanks the app's secret out of the
+    # per-owner credential. gog refreshes its own tokens (refresh_owner: actor), so its
+    # client config needs the secret; read it from the platform store here (the same
+    # exception qbo_dotenv makes). An owner with their own legacy app still carries theirs.
+    client_id, client_secret = credential["client_id"], credential.get("client_secret") or ""
+    if not client_secret:
+        app = run_sync(platform_oauth_app_store.get("google"))
+        if not app or not app.get("client_secret"):
+            raise ValueError("google: platform OAuth app 'google' is unseeded — run scripts/set_platform_oauth_app.py")
+        client_id, client_secret = app["client_id"], app["client_secret"]
 
     # gog rejects a flat client object — the OAuth client must be wrapped under "web".
     client_json = json.dumps(
         {
             "web": {
-                "client_id": credential["client_id"],
-                "client_secret": credential["client_secret"],
+                "client_id": client_id,
+                "client_secret": client_secret,
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
             }

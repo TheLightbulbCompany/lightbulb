@@ -206,8 +206,6 @@ def test_google_inbound_is_auto_registering_via_watch():
     assert {e.id for e in p.inbound.events} == {
         "calendar.changed",
         "drive.changed",
-        "gmail.poll",
-        "gmail.message",
     }
     # No provider_events: the watch call itself picks the surface — there is
     # no provider-side event array to subscribe.
@@ -220,23 +218,16 @@ def test_google_inbound_is_auto_registering_via_watch():
     assert "ada@example.com" in rendered
 
 
-def test_gmail_events_carry_per_event_registration():
-    """The gmail events override the google block's registration per-event —
-    the seed and the connections DTO both dispatch on the effective value, so
-    these exact strings are load-bearing. The watch events must stay None
-    (inherit auto_google_watch)."""
+def test_gmail_events_are_gone_until_the_restricted_scopes_land():
+    """gmail.poll / gmail.message need a restricted read scope (phase 3 of
+    docs/superpowers/plans/2026-10-23-google-verification.md). Offering them
+    would seed automations that 403 on every run."""
     from core.services.credentials.registry import get_provider
 
     events = {e.id: e for e in get_provider("google").inbound.events}
-    assert events["calendar.changed"].registration is None
-    assert events["drive.changed"].registration is None
-    assert events["gmail.poll"].registration == "poll"
-    assert events["gmail.message"].registration == "owner_setup"
-    # Both gmail events override the push-notification template with their
-    # own starter prompt, which must interpolate the account cleanly.
-    for event_id in ("gmail.poll", "gmail.message"):
-        rendered = events[event_id].starter_prompt.format(event_label="L", account="ada@example.com")
-        assert "ada@example.com" in rendered
+    assert set(events) == {"calendar.changed", "drive.changed"}
+    for e in events.values():
+        assert e.registration is None  # inherit auto_google_watch
 
 
 # ── Tier 2: the backend-readable REST keys ────────────────────────────────

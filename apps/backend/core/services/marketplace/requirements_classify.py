@@ -6,7 +6,7 @@ classified against the platform's integration rail:
   - bundled image tool/skill, or keyless          -> INCLUDED
   - registry provider (providers.yaml) connectable -> CONNECT
   - channel tool (slack/discord/...)               -> CONNECT (via Channels)
-  - byo-required provider (Google)                 -> BYO (your own OAuth app)
+  - byo-required provider (X)                      -> BYO (your own OAuth app)
   - registry provider gated off this environment   -> UNAVAILABLE (request access)
   - referenced tool/skill with no implementation   -> UNAVAILABLE (phantom)
   - registry provider but wiring mismatch          -> BYO + reason
@@ -41,7 +41,7 @@ _SUPPRESS_TOOLS = frozenset({"state", "llm-task", "lobster", "fast-io"})
 # tell a buyer to "connect" a channel the backend never provisions.
 CHANNELS = frozenset(CHANNEL_PROVIDER_IDS)
 
-_BYO_APP_REASON = "requires your own Google OAuth app"
+_BYO_APP_REASON = "requires your own OAuth app"
 _GATED_REASON = "not available on this environment yet — request access in the Integrations tab"
 
 

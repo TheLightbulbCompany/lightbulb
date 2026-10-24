@@ -15,7 +15,7 @@ export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
   sentry: { delivers: "issue search & triage tools for your projects" },
   linear: { delivers: "Linear issue & project tools" },
   github: { delivers: "repo, issue & PR tools scoped to your account" },
-  google: { delivers: "Gmail, Calendar & Drive access" },
+  google: { delivers: "sending mail, Calendar events & Drive files it creates or you pick" },
   microsoft365: { delivers: "read-only Outlook mail, calendar & OneDrive/SharePoint files for your work, school or personal Microsoft account" },
   vercel_cli: { delivers: "deploy, logs, project & env tools for your Vercel account" },
   aws: { delivers: "read-only AWS access — describe & list your account's resources" },

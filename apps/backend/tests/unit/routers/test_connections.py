@@ -426,7 +426,7 @@ class TestListConnections:
         response = await async_client.get("/api/v1/connections")
         by_key = {c["provider"]: c for c in response.json()["connections"]}
         assert "google" in by_key
-        assert by_key["google"]["byo_required"] is True
+        assert by_key["google"]["byo_required"] is False
         assert "requires_bedrock" not in by_key["google"]
 
     @pytest.mark.asyncio
@@ -449,8 +449,6 @@ class TestListConnections:
         assert by_key["google"]["can_trigger"] == [
             "Calendar changed",
             "Drive file changed",
-            "New email (checked on a schedule)",
-            "New email (real-time push)",
         ]
         assert by_key["notion"]["can_trigger"] == []
 
@@ -488,21 +486,17 @@ class TestListConnections:
         # pre-fill an EDITABLE draft of the same title/instructions.
         assert by_key["stripe"]["inbound"]["template"]["title"] == "Stripe: {event_label}"
         assert "{event_label}" in by_key["stripe"]["inbound"]["template"]["starter_prompt"]
-        # google is auto-registering (auto_google_watch) with the gmail
-        # events overriding per-event; notion still declares no `inbound`.
+        # google is auto-registering (auto_google_watch); notion still declares no `inbound`.
         google = by_key["google"]["inbound"]
         assert google["webhook_registration"] == "auto_google_watch"
         assert [{k: e[k] for k in ("id", "label", "registration")} for e in google["events"]] == [
             {"id": "calendar.changed", "label": "Calendar changed", "registration": None},
             {"id": "drive.changed", "label": "Drive file changed", "registration": None},
-            {"id": "gmail.poll", "label": "New email (checked on a schedule)", "registration": "poll"},
-            {"id": "gmail.message", "label": "New email (real-time push)", "registration": "owner_setup"},
         ]
         # Per-event starter_prompt overrides ride along — the draft has to
         # apply the same precedence the seed does (event wins over template).
         by_event = {e["id"]: e["starter_prompt"] for e in google["events"]}
         assert by_event["calendar.changed"] is None
-        assert by_event["gmail.poll"].startswith("Scheduled inbox check")
         assert by_key["notion"]["inbound"] is None
 
 
@@ -671,7 +665,7 @@ class TestEnvGatedProvider:
 
 
 class TestByoRequiredGate:
-    """A `byo_required` provider (google) has no managed app, so its connect
+    """A `byo_required` provider (x) has no managed app, so its connect
     path requires the owner to have stored their own OAuth app first. The
     catalog lists it for everyone; authorize 400s until a BYO app is
     configured."""
@@ -679,7 +673,7 @@ class TestByoRequiredGate:
     @pytest.mark.asyncio
     async def test_authorize_400_when_byo_app_not_configured(self, async_client, monkeypatch):
         monkeypatch.setattr(connections, "_byo_active", AsyncMock(return_value=False))
-        response = await async_client.get("/api/v1/connections/google/authorize")
+        response = await async_client.get("/api/v1/connections/x/authorize")
         assert response.status_code == 400
 
     @pytest.mark.asyncio
@@ -687,7 +681,7 @@ class TestByoRequiredGate:
     async def test_authorize_succeeds_when_byo_app_configured(self, mock_dance, async_client, monkeypatch):
         monkeypatch.setattr(connections, "_byo_active", AsyncMock(return_value=True))
         mock_dance.start = AsyncMock(return_value="https://accounts.google.com/o/oauth2/v2/auth?x=1")
-        response = await async_client.get("/api/v1/connections/google/authorize")
+        response = await async_client.get("/api/v1/connections/x/authorize")
         assert response.status_code == 200
         assert response.json()["authorize_url"].startswith("https://accounts.google.com")
 
@@ -701,7 +695,7 @@ class TestByoRequiredGate:
         req = httpx.Request("POST", "https://example.com/oauth/register")
         resp = httpx.Response(400, request=req)
         mock_dance.start = AsyncMock(side_effect=httpx.HTTPStatusError("400 Bad Request", request=req, response=resp))
-        response = await async_client.get("/api/v1/connections/google/authorize")
+        response = await async_client.get("/api/v1/connections/x/authorize")
         assert response.status_code == 502
 
     @pytest.mark.asyncio
@@ -713,7 +707,7 @@ class TestByoRequiredGate:
         resp = httpx.Response(400, request=req, text='{"error":"invalid_redirect_uri"}')
         mock_dance.start = AsyncMock(side_effect=httpx.HTTPStatusError("400", request=req, response=resp))
         with caplog.at_level("WARNING", logger="routers.connections"):
-            response = await async_client.get("/api/v1/connections/google/authorize")
+            response = await async_client.get("/api/v1/connections/x/authorize")
         assert response.status_code == 502
         assert "mcp.intercom.com/register" in caplog.text
         assert "status=400" in caplog.text
@@ -1410,13 +1404,13 @@ class TestAuthorize:
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")
     async def test_authorize_returns_consent_url(self, mock_dance, async_client, monkeypatch):
-        # google is byo_required; an active BYO app lets authorize reach the
+        # x is byo_required; an active BYO app lets authorize reach the
         # OAuth dance instead of the byo-required 400.
         monkeypatch.setattr(connections, "_byo_active", AsyncMock(return_value=True))
         consent_url = "https://accounts.google.com/o/oauth2/v2/auth?x=1"
         mock_dance.start = AsyncMock(return_value=consent_url)
 
-        response = await async_client.get("/api/v1/connections/google/authorize")
+        response = await async_client.get("/api/v1/connections/x/authorize")
         assert response.status_code == 200
         assert response.json()["authorize_url"].startswith(consent_url)
 
@@ -1424,8 +1418,8 @@ class TestAuthorize:
         mock_dance.start.assert_awaited_once()
         call = mock_dance.start.await_args
         assert call.args[0] == "org_test_456"
-        assert call.args[1] == "google"
-        assert call.kwargs["redirect_uri"].endswith("/api/v1/oauth/google/callback")
+        assert call.args[1] == "x"
+        assert call.kwargs["redirect_uri"].endswith("/api/v1/oauth/x/callback")
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")
@@ -1434,11 +1428,11 @@ class TestAuthorize:
         monkeypatch.setattr(connections, "_byo_active", AsyncMock(return_value=True))
         mock_dance.start = AsyncMock(return_value="https://example.test/auth")
 
-        await async_client.get("/api/v1/connections/google/authorize?return_to=app")
+        await async_client.get("/api/v1/connections/x/authorize?return_to=app")
         assert mock_dance.start.await_args.kwargs["origin"] == "app"
-        await async_client.get("/api/v1/connections/google/authorize?return_to=ios")
+        await async_client.get("/api/v1/connections/x/authorize?return_to=ios")
         assert mock_dance.start.await_args.kwargs["origin"] == "ios"
-        await async_client.get("/api/v1/connections/google/authorize")
+        await async_client.get("/api/v1/connections/x/authorize")
         assert mock_dance.start.await_args.kwargs["origin"] is None
 
     @pytest.mark.asyncio
@@ -1981,7 +1975,7 @@ async def test_byo_active_true_when_app_stored(mock_get):
     from routers import connections
 
     mock_get.return_value = {"client_id": "x", "client_secret": "y"}
-    assert await connections._byo_active("user_1", "google") is True
+    assert await connections._byo_active("user_1", "x") is True
 
 
 @pytest.mark.asyncio
@@ -1990,7 +1984,7 @@ async def test_byo_active_false_without_app(mock_get):
     from routers import connections
 
     mock_get.return_value = None
-    assert await connections._byo_active("user_1", "google") is False
+    assert await connections._byo_active("user_1", "x") is False
 
 
 @pytest.mark.asyncio
@@ -2001,7 +1995,7 @@ async def test_byo_active_false_when_app_incomplete(mock_get):
     # A half-populated row (missing the secret) is NOT active — the predicate
     # requires both halves of the client credential.
     mock_get.return_value = {"client_id": "x"}
-    assert await connections._byo_active("user_1", "google") is False
+    assert await connections._byo_active("user_1", "x") is False
 
 
 @pytest.mark.asyncio
@@ -2023,9 +2017,9 @@ class TestByoApp:
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_app_store.put", new_callable=AsyncMock)
     async def test_put_byo_app_stores_credentials(self, mock_put, async_client):
-        # google byo_required=True: a PUT stores the owner's app credentials.
+        # x byo_required=True: a PUT stores the owner's app credentials.
         ok = await async_client.put(
-            "/api/v1/connections/google/byo-app",
+            "/api/v1/connections/x/byo-app",
             json={"client_id": "cid", "client_secret": "csec"},
         )
         assert ok.status_code == 200
@@ -2033,7 +2027,7 @@ class TestByoApp:
         # Stored under (owner, provider) with the submitted client credentials.
         put_call = mock_put.await_args
         assert put_call.args[0] == "org_test_456"
-        assert put_call.args[1] == "google"
+        assert put_call.args[1] == "x"
         assert put_call.kwargs["client_id"] == "cid"
         assert put_call.kwargs["client_secret"] == "csec"
         assert "acknowledged_at" not in put_call.kwargs
@@ -2045,7 +2039,7 @@ class TestByoApp:
         # The form shows a stored secret as bullets; pasting that back stored "••••••…" as the
         # founder's X client_secret and every token refresh failed.
         body = {"client_id": "cid", "client_secret": "csec", field: "••••••abcd"}
-        resp = await async_client.put("/api/v1/connections/google/byo-app", json=body)
+        resp = await async_client.put("/api/v1/connections/x/byo-app", json=body)
         assert resp.status_code == 400
         assert (
             resp.json()["detail"]
@@ -2079,9 +2073,9 @@ class TestByoApp:
     async def test_delete_byo_app_clears_stored_app(self, mock_delete, async_client):
         # DELETE clears the stored BYO app for (owner, provider). It does NOT
         # disconnect a live connection — only the app credentials are removed.
-        resp = await async_client.delete("/api/v1/connections/google/byo-app")
+        resp = await async_client.delete("/api/v1/connections/x/byo-app")
         assert resp.status_code == 200
-        mock_delete.assert_awaited_once_with("org_test_456", "google")
+        mock_delete.assert_awaited_once_with("org_test_456", "x")
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_app_store.delete", new_callable=AsyncMock)
@@ -2109,7 +2103,7 @@ class TestListByoExposure:
     @patch("routers.connections._byo_active", new_callable=AsyncMock)
     @patch("routers.connections.integrations_repo")
     async def test_list_exposes_byo_fields(self, mock_repo, mock_byo, async_client):
-        # google is visible to every owner; assert the three BYO fields are
+        # x is visible to every owner; assert the three BYO fields are
         # present and reflect the static flag + the live _byo_active result.
         mock_repo.list_for_owner = AsyncMock(return_value=[])
         mock_byo.return_value = True
@@ -2118,10 +2112,10 @@ class TestListByoExposure:
         assert response.status_code == 200
         by_key = {c["provider"]: c for c in response.json()["connections"]}
 
-        # google is byo_required and configured (mocked _byo_active True).
-        assert by_key["google"]["byo_required"] is True
-        assert by_key["google"]["byo_configured"] is True
-        assert by_key["google"]["byo_setup_url"] == "https://console.cloud.google.com/apis/credentials"
+        # x is byo_required and configured (mocked _byo_active True).
+        assert by_key["x"]["byo_required"] is True
+        assert by_key["x"]["byo_configured"] is True
+        assert by_key["x"]["byo_setup_url"] == "https://developer.x.com/en/portal/dashboard"
 
         # stripe is not byo_required; no setup URL.
         assert by_key["stripe"]["byo_required"] is False
@@ -2138,8 +2132,8 @@ class TestListByoExposure:
         response = await async_client.get("/api/v1/connections")
         assert response.status_code == 200
         by_key = {c["provider"]: c for c in response.json()["connections"]}
-        assert by_key["google"]["byo_required"] is True
-        assert by_key["google"]["byo_configured"] is False
+        assert by_key["x"]["byo_required"] is True
+        assert by_key["x"]["byo_configured"] is False
 
 
 class TestAwsSetup:

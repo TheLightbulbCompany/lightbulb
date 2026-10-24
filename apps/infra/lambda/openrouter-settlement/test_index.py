@@ -281,6 +281,20 @@ class SettlementTests(unittest.TestCase):
         store.commit(self.row, worker.event_for(self.row, self.generation), 12345678, 1_700_000_001)
         self.assertEqual(updates, [])
 
+    def test_accrual_failure_emits_metric_and_still_settles(self):
+        class Ddb:
+            def transact_write_items(self, **kwargs): pass
+            def update_item(self, **kwargs): raise RuntimeError("boom")
+        store = worker.Store(Ddb(), requests_table="requests", fast_table="fast", billing_table="billing")
+        row = {**self.row, "project_id": "__default__"}
+        out = io.StringIO()
+        with patch.dict(os.environ, {"GATE_ENV": "dev"}), patch("sys.stdout", out):
+            self.assertEqual(store.commit(row, worker.event_for(row, self.generation), 12345678, 1_700_000_001), "settled")
+        line = json.loads(out.getvalue().splitlines()[0])
+        self.assertEqual(line["openrouter.settlement.budget_accrual_failed"], 1)
+        self.assertEqual((line["env"], line["service"], line["error"]), ("dev", "openrouter-settlement", "RuntimeError"))
+        self.assertEqual(line["_aws"]["CloudWatchMetrics"][0]["Namespace"], "LightbulbAI")
+
     def test_overshoot_keeps_real_debit_and_emits_metric(self):
         calls = []
         class Ddb:

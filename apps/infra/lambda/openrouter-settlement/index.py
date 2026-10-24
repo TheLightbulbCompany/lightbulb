@@ -182,7 +182,13 @@ class Store:
                         if getattr(exc, "response", {}).get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                             raise
         except Exception as exc:
-            print(json.dumps({"service": "openrouter-settlement", "budget_accrual_failed": row.get("request_id"), "error": exc.__class__.__name__}))
+            # EMF line -> LightbulbAI metric (same shape as the overshoot line in commit): an under-counted budget is silent money drift.
+            print(json.dumps({"_aws": {"Timestamp": now * 1000, "CloudWatchMetrics": [{
+                "Namespace": "LightbulbAI", "Dimensions": [["env", "service"]],
+                "Metrics": [{"Name": "openrouter.settlement.budget_accrual_failed", "Unit": "Count"}]}]},
+                "env": os.environ.get("GATE_ENV", ""), "service": "openrouter-settlement", "owner_id": row.get("owner_id"),
+                "request_id": row.get("request_id"), "error": exc.__class__.__name__,
+                "openrouter.settlement.budget_accrual_failed": 1}))
 
     def pending(self, page_size=25, max_pages=100):
         rows, cursor = [], None

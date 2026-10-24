@@ -316,7 +316,8 @@ async def get_spend(auth: AuthContext = Depends(get_current_user)):
 
 
 class BudgetUpdate(BaseModel):
-    project_id: str = Field(default=billing_repo.DEFAULT_BUDGET_PROJECT, min_length=1, max_length=128)
+    # pattern == the gate's core.mjs projectIdOf keyspace; anything else would be silently charged __default__.
+    project_id: str = Field(default=billing_repo.DEFAULT_BUDGET_PROJECT, pattern=r"^[\w.:-]{1,128}$")
     ceiling_microcents: StrictInt = Field(ge=0)
 
 

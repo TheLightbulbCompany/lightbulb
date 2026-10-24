@@ -294,6 +294,11 @@ class TestBudgets:
         r = await async_client.put("/api/v1/billing/budgets", json={"ceiling_microcents": bad})
         assert r.status_code == 422
 
+    @pytest.mark.asyncio
+    async def test_project_id_outside_gate_keyspace_422(self, async_client):
+        r = await async_client.put("/api/v1/billing/budgets", json={"project_id": "a.b-c d", "ceiling_microcents": 5})
+        assert r.status_code == 422
+
 
 class TestStripeWebhook:
     @pytest.fixture(autouse=True)

@@ -64,6 +64,8 @@ export type AnalyticsEvent =
   | "join_link_copied"
   | "session_opened"
   | "share_link_full_viewed"
+  | "join_link_viewed"
+  | "join_command_copied"
   | "share_link_cta_clicked"
   // Agent lifecycle
   | "agent_create_chooser"
@@ -312,6 +314,8 @@ const SECRET_PARAMS = ["__clerk_ticket", "__clerk_status", "inviter", "workspace
 export function withoutChatQuery(value: string): string {
   try {
     const url = new URL(value, "https://thelightbulb.company");
+    // /j carries a join ticket in its fragment: keep the route and query, drop the fragment.
+    if (url.pathname === "/j") return value.split("#", 1)[0];
     if (isPrivateRoute(url.pathname) || JOIN_ROUTE.test(url.pathname)) return value.split(/[?#]/, 1)[0];
     if (!SECRET_PARAMS.some((key) => url.searchParams.has(key))) return value;
     for (const key of SECRET_PARAMS) url.searchParams.delete(key);

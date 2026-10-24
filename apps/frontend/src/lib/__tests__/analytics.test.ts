@@ -93,6 +93,9 @@ describe("analytics.capture", () => {
     // Invitation credentials and names never reach analytics.
     expect(withoutChatQuery("https://x.co/join/invite?workspace=Acme&inviter=Sam&__clerk_ticket=t")).toBe("https://x.co/join/invite");
     expect(withoutChatQuery("/join/org_1#secret")).toBe("/join/org_1");
+    // /j is tracked, but its fragment (the ticket) is dropped; the query stays.
+    expect(withoutChatQuery("https://x.co/j#ticket")).toBe("https://x.co/j");
+    expect(withoutChatQuery("/j?utm_source=hn#ticket")).toBe("/j?utm_source=hn");
     expect(withoutChatQuery("https://x.co/sign-up?__clerk_ticket=t&__clerk_status=sign_up&utm_source=hn"))
       .toBe("https://x.co/sign-up?utm_source=hn");
     expect(withoutChatQuery("/sign-in?__clerk_ticket=t")).toBe("/sign-in");

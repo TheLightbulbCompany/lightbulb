@@ -73,6 +73,26 @@ async def test_project_budgets_set_get_list_no_clobber(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_set_project_budget_two_projects_both_survive(dynamodb_table):
+    """Per-entry writes: setting B never rewrites A (the old whole-map write dropped one)."""
+    import asyncio
+
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_c", "cus_c")
+    await asyncio.gather(
+        billing_repo.set_project_budget("user_c", "A", 100),
+        billing_repo.set_project_budget("user_c", "B", 200),
+    )
+    got = await billing_repo.list_project_budgets("user_c")
+    assert got["A"]["ceiling_microcents"] == 100
+    assert got["B"]["ceiling_microcents"] == 200
+    # an untrusted id with path/reserved characters is a plain key
+    await billing_repo.set_project_budget("user_c", "a.b-c d", 5)
+    assert (await billing_repo.get_project_budget("user_c", "a.b-c d"))["ceiling_microcents"] == 5
+
+
+@pytest.mark.asyncio
 async def test_set_project_budget_no_row(dynamodb_table):
     from core.repositories import billing_repo
 

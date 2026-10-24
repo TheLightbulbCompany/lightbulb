@@ -14,10 +14,11 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 
 from core.config import settings
-from core.dynamodb import run_in_thread
+from core.dynamodb import run_in_thread, utc_now_iso
 from core.services import container_rpc
 from core.services.messaging import ApiProblem
 
@@ -77,13 +78,17 @@ async def _write(owner_id: str, apps: list[dict]) -> dict:
 
     # ponytail: names are claimed in order (apps, then agents by id), so a new duplicate-named
     # agent with a lower id, or an app named like an agent, can move an existing agent's address,
-    # and the -<id[:4]> suffix is not re-checked. Stable addresses need a stored name per agent.
+    # A taken name's suffix grows (id[:4], id[:8], the full id) until unique.
+    # Stable addresses need a stored name per agent.
     used = {s.get("name") for s in apps}
     sessions = []
     for agent in roster:
-        name = slugify(agent["name"]) or agent["id"][:8]
-        if name in used:
-            name = f"{name}-{agent['id'][:4]}"
+        base = slugify(agent["name"]) or agent["id"][:8]
+        name = base
+        for n in (4, 8, None):
+            if name not in used:
+                break
+            name = f"{base}-{agent['id'][:n]}"
         used.add(name)
         sessions.append({"name": name, "agent": "hermes", "title": agent["name"], "agentId": agent["id"]})
 
@@ -157,3 +162,134 @@ async def reconnect(owner_id: str) -> None:
     if arn:
         await stop_runtime_session(owner_id, arn)
     await run_in_thread(_delete_prefixes, [network_prefix(owner_id)])
+
+
+# ---------------------------------------------------------------------------
+# holds: a stranger's first message waits for a person's Allow (Activity Needs-you)
+# ---------------------------------------------------------------------------
+
+HOLD_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_APP_PERSON_RE = re.compile(r"^(?P<app>.+)-(?P<person>[0-9a-f]{8})$")
+HOLD_TTL_S = 7 * 24 * 3600  # the engine keeps a hold at most 7 days
+_VERDICTS = {
+    "send": {"verdict": "allow"},
+    "decline": {"verdict": "decline"},
+    "allow": {"verdict": "allow", "scope": "always"},
+}
+
+
+def hold_item_id(hold_id: str) -> str:
+    return f"nethold:{hold_id}"
+
+
+def _hold_key(owner_id: str, hold_id: str) -> dict:
+    from core.repositories import messaging_repo
+
+    return {"pk": messaging_repo.owner_pk(owner_id), "sk": f"NETHOLD#{hold_id}"}
+
+
+def app_target(target: str) -> tuple[str, str] | None:
+    """``(app, person)`` for an app session's address (``{app}-{app_person}``), else None."""
+    m = _APP_PERSON_RE.match(target)
+    return (m["app"], m["person"]) if m else None
+
+
+async def get_hold(owner_id: str, hold_id: str) -> dict | None:
+    from core.repositories import messaging_repo
+
+    if not HOLD_ID_RE.match(hold_id or ""):
+        return None
+    key = _hold_key(owner_id, hold_id)
+    return await messaging_repo._get(key["pk"], key["sk"])
+
+
+async def _asked(owner_id: str, target: str) -> list[str]:
+    from core.services.website_logins import _humans_to_ask
+
+    humans = await _humans_to_ask(owner_id, None)
+    app = app_target(target)
+    # An address that only looks app-shaped (an agent named "x-deadbeef") asks everyone.
+    mine = [h for h in humans if app and app_person(h) == app[1]]
+    return mine or humans
+
+
+async def hold_notice(owner_id: str, notice: dict) -> None:
+    """The bridge's content-free notice ``{holdId, state, label, target}``: ``open`` files one
+    Needs-you item per person asked (once per hold), ``closed`` resolves it for all of them."""
+    from botocore.exceptions import ClientError
+
+    from core.repositories import messaging_repo
+    from core.services.webhook_agents import _invalidate_activity
+
+    hold_id = notice["holdId"]
+    key = _hold_key(owner_id, hold_id)
+    if notice["state"] == "closed":
+        try:
+            response = await run_in_thread(
+                messaging_repo._table().update_item,
+                Key=key,
+                UpdateExpression="SET #s = :closed, resolvedAt = if_not_exists(resolvedAt, :now)",
+                ConditionExpression="attribute_exists(pk)",
+                ExpressionAttributeNames={"#s": "state"},
+                ExpressionAttributeValues={":closed": "closed", ":now": utc_now_iso()},
+                ReturnValues="ALL_NEW",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return  # never opened here (or expired): nothing to resolve
+            raise
+        asked = response["Attributes"].get("askedUserIds") or []
+        await asyncio.gather(*(_invalidate_activity(owner_id, u) for u in asked))
+        return
+
+    created = utc_now_iso()
+    expires = int(time.time()) + HOLD_TTL_S
+    asked = await _asked(owner_id, notice["target"])
+    row = {
+        **key,
+        "holdId": hold_id,
+        "label": notice["label"],
+        "target": notice["target"],
+        "state": "open",
+        "askedUserIds": asked,
+        "createdAt": created,
+        "expiresAt": expires,
+    }
+    try:
+        await run_in_thread(messaging_repo._table().put_item, Item=row, ConditionExpression="attribute_not_exists(pk)")
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return  # a repeated notice: already filed
+        raise
+    sk = messaging_repo.activity_sk(created, hold_item_id(hold_id))
+    await asyncio.gather(
+        *(
+            messaging_repo.put_activity_row(
+                {
+                    "pk": messaging_repo.activity_pk(owner_id, user_id),
+                    "sk": sk,
+                    "kind": "network_hold",
+                    "holdId": hold_id,
+                    "label": notice["label"],
+                    "target": notice["target"],
+                    "createdAt": created,
+                    "expiresAt": expires,
+                }
+            )
+            for user_id in asked
+        ),
+        return_exceptions=True,
+    )
+    await asyncio.gather(*(_invalidate_activity(owner_id, u) for u in asked))
+
+
+async def decide_hold(auth, hold_id: str, action_id: str) -> None:
+    """Answer the hold through the runtime, then resolve the item for everyone asked. The caller
+    (``activity``) has checked the viewer was asked and the hold is open."""
+    from core.auth import resolve_owner_id
+
+    owner_id = resolve_owner_id(auth)
+    await container_rpc.call(
+        owner_id, "network.hold", {"hold": hold_id, **_VERDICTS[action_id], "decided_by": auth.user_id}
+    )
+    await hold_notice(owner_id, {"holdId": hold_id, "state": "closed"})

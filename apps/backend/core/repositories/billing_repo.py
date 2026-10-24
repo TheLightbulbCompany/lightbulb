@@ -1530,3 +1530,49 @@ async def set_capability_policy(owner_id: str, updates: dict[str, bool]) -> dict
             return None
         raise
     return _fill_capability_policy(merged)
+
+
+# --- Per-project budgets -----------------------------------------------------
+# A ``budgets`` map on the billing item, keyed by project_id. ``__default__`` is
+# the workspace bucket. The window is implicitly monthly: ``month`` stamps the
+# window a ``spent_microcents`` figure belongs to. This module only sets the
+# ceiling; the settlement path owns ``spent_microcents``.
+
+DEFAULT_BUDGET_PROJECT = "__default__"
+
+
+async def list_project_budgets(owner_id: str) -> dict[str, dict]:
+    row = await get_by_owner_id(owner_id) or {}
+    return dict(row.get("budgets") or {})
+
+
+async def get_project_budget(owner_id: str, project_id: str) -> dict | None:
+    return (await list_project_budgets(owner_id)).get(project_id)
+
+
+async def set_project_budget(owner_id: str, project_id: str, ceiling_microcents: int) -> dict | None:
+    """Set one project's ceiling, keeping any spend already recorded. ``None`` = no billing row."""
+    row = await get_by_owner_id(owner_id, consistent_read=True)
+    if row is None:
+        return None
+    budgets = dict(row.get("budgets") or {})
+    prior = budgets.get(project_id) or {}
+    entry = {
+        "ceiling_microcents": int(ceiling_microcents),
+        "spent_microcents": int(prior.get("spent_microcents", 0)),
+        "month": prior.get("month") or datetime.utcnow().strftime("%Y-%m"),
+    }
+    budgets[project_id] = entry
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET budgets = :b",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":b": budgets},
+        )
+    except ClientError as e:
+        if _is_condition_failure(e):
+            return None
+        raise
+    return entry

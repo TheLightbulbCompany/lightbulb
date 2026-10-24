@@ -87,9 +87,9 @@ RUN set -eux; \
 
 # ---- network engine (the `lightbulb member` sidecar, bridge/network.py) ----------------------
 # The engine (TheLightbulbCompany/cli): its static musl release asset, pinned by tag and checksum.
-# REPLACE_WITH_V030_SHA256 is filled with the v0.3.0 .sha256 asset's value once that release exists.
+# c478311c4a6cb04f8bff4cbd2a74bfaafdf874adf4ec3b995805c6ae2dc437a9 is filled with the v0.3.0 .sha256 asset's value once that release exists.
 RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.3.0/lightbulb-linux-arm64.tar.gz \
- && echo "REPLACE_WITH_V030_SHA256  /tmp/lb.tgz" | sha256sum -c - \
+ && echo "c478311c4a6cb04f8bff4cbd2a74bfaafdf874adf4ec3b995805c6ae2dc437a9  /tmp/lb.tgz" | sha256sum -c - \
  && tar -xzf /tmp/lb.tgz -C /usr/local/bin lightbulb && rm /tmp/lb.tgz && lightbulb version
 
 # ---- CLI connector binaries ------------------------------------------------------------------

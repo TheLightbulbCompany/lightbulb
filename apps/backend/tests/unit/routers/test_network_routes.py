@@ -48,6 +48,24 @@ async def test_invite_route_returns_the_line_once_and_stores_nothing(
 
 
 @pytest.mark.asyncio
+async def test_invite_answers_a_retryable_503_while_the_sidecar_is_starting(
+    async_client_org_member, monkeypatch, no_aws
+):
+    """The bridge's UNAVAILABLE (its network sidecar off or starting) is the Settings page's
+    "Starting your workspace…" retry, not a bare 500 (seen on dev 2026-10-24 13:26Z)."""
+    import json
+
+    monkeypatch.setattr(network_member, "sessions_exist", AsyncMock(return_value=True))
+    error = {"code": "UNAVAILABLE", "message": "network.invite is not available on the Hermes runtime"}
+    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(side_effect=RuntimeError(json.dumps(error))))
+
+    resp = await async_client_org_member.post("/api/v1/settings/network/invite", json={"name": "Sam"})
+
+    assert resp.status_code == 503
+    assert resp.json()["code"] == "RUNTIME_UNAVAILABLE" and resp.json()["retryable"] is True
+
+
+@pytest.mark.asyncio
 async def test_invite_on_a_workspace_not_yet_a_member_prepares_and_restarts_first(async_client_org_member, monkeypatch):
     monkeypatch.setattr(network_member, "sessions_exist", AsyncMock(return_value=False))
     order = []

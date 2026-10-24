@@ -200,7 +200,14 @@ async def connect(owner_id: str, user_id: str, name: str) -> dict:
             arn = await _runtime_arn(owner_id)
             if arn:
                 await stop_runtime_session(owner_id, arn)
-    return await container_rpc.call(owner_id, "network.invite", {"for": user_id, "name": name})
+    try:
+        return await container_rpc.call(owner_id, "network.invite", {"for": user_id, "name": name})
+    except RuntimeError as exc:
+        # The bridge answers UNAVAILABLE while its network sidecar is off or starting (a fresh
+        # microVM): a retryable 503 the Settings page waits on, not a bare 500 (dev, 2026-10-24).
+        if rpc_error(exc).get("code") in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
+            raise container_rpc._unavailable() from exc
+        raise
 
 
 async def reconnect(owner_id: str) -> None:

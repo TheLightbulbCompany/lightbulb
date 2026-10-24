@@ -903,6 +903,27 @@ class TestConnectPaste:
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_a_successful_connect_invalidates_the_activity_view(
+        self, mock_validate, mock_repo, mock_store, mock_apply, async_client, monkeypatch
+    ):
+        mock_validate.return_value = True
+        mock_store.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        publish = AsyncMock()
+        monkeypatch.setattr("core.services.live_events.publish_owner_users", publish)
+
+        response = await async_client.post("/api/v1/connections/vercel_cli", json={"token": "vc_test_abc123"})
+        assert response.status_code == 200
+        publish.assert_awaited_once()
+        assert publish.await_args.args[0] == "org_test_456"
+        assert publish.await_args.args[1]["payload"]["resource"] == "activity"
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
     async def test_a_failed_resume_never_fails_the_connect(
         self, mock_validate, mock_repo, mock_store, mock_apply, async_client, ideas_nudge
     ):

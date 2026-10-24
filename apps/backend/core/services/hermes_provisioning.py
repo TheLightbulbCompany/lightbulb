@@ -1253,6 +1253,7 @@ async def write_profile_for_agent(
     soul_md_override: str | None = None,
     inputs: ProfileInputs | None = None,
     publish: bool = True,
+    roster_fan_out: bool = False,
 ) -> None:
     """The per-agent Hermes profile write (M6-R23): owner-level inputs (``resolve_profile_inputs``)
     plus this one agent's own Paperclip API key -> ``write_agent_profile`` -> ``upload_profile``.
@@ -1333,7 +1334,7 @@ async def write_profile_for_agent(
     if soul_md_override is not None:
         files.soul_md = soul_md_override
     await upload_profile(owner_id, agent_id, files)
-    if lone_agent:  # a roster fan-out runs at provision, before any connect; a lone agent comes later
+    if not roster_fan_out:  # ``write_profiles`` runs at provision, before any connect; every other writer comes later
         from core.services.credentials import hermes_cli
 
         await hermes_cli.seed_new_profile(owner_id, agent_id)  # never raises
@@ -1461,7 +1462,9 @@ async def write_profiles(owner_id: str) -> None:
             else None
         )
         keep = current if current and not hermes_profiles.is_generated_soul(current) else None
-        await write_profile_for_agent(owner_id, agent, soul_md_override=keep, inputs=inputs, publish=False)
+        await write_profile_for_agent(
+            owner_id, agent, soul_md_override=keep, inputs=inputs, publish=False, roster_fan_out=True
+        )
 
     from core.services import network_member
 

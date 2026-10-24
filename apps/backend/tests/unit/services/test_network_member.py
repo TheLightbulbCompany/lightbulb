@@ -203,6 +203,21 @@ async def test_agents_create_republishes_sessions(monkeypatch, published):
 
 
 @pytest.mark.asyncio
+async def test_cli_credentials_seed_every_writer_but_the_roster_fan_out(monkeypatch, published):
+    """A company-deploy agent arrives with ``inputs`` yet is created AFTER connects, so it is seeded;
+    only ``write_profiles`` (provision, before any connect) skips it."""
+    hp = _profile_write_stubs(monkeypatch)
+    seed = AsyncMock()
+    monkeypatch.setattr("core.services.credentials.hermes_cli.seed_new_profile", seed)
+    inputs = await hp.resolve_profile_inputs("org_a")
+    await hp.write_profile_for_agent("org_a", {"id": A1, "name": "Friday"}, inputs=inputs, publish=False)
+    seed.assert_awaited_once_with("org_a", A1)
+    seed.reset_mock()
+    await hp.write_profiles("org_a")
+    seed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_write_profiles_publishes_once_after_the_fan_out(monkeypatch, published):
     hp = _profile_write_stubs(monkeypatch)
     await hp.write_profiles("org_a")  # the two-agent roster from the store fixture's default

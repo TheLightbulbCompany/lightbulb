@@ -14,6 +14,7 @@ from core.services import network_member
 
 router = APIRouter()
 internal_router = APIRouter()
+wake_router = APIRouter()
 
 
 class InviteRequest(BaseModel):
@@ -63,3 +64,12 @@ async def network_hold_notice(owner_id: str, body: HoldNotice, request: Request)
     await _require_hook_token(owner_id, request)
     await network_member.hold_notice(owner_id, body.model_dump())
     return Response(status_code=204)
+
+
+@wake_router.post("/wake", include_in_schema=False)
+async def network_wake(request: Request):
+    """The doorbell: no Clerk auth, ``Authorization: Bearer <owner>.<secret>`` is the credential
+    (a header, never the path, which access logs record). No body either way."""
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    ok = await network_member.ring(token.strip() if scheme.lower() == "bearer" else "")
+    return Response(status_code=202 if ok else 404)

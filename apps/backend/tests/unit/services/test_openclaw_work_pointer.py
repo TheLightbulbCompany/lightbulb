@@ -52,3 +52,28 @@ def test_bare_attribute_map_is_no_longer_a_valid_body():
 def test_java_map_text_is_rejected_not_crashed():
     with pytest.raises(ValueError, match="invalid DynamoDB AttributeValue pointer"):
         deserialize_pointer("{kind={S=room_dispatch}}")
+
+
+def test_network_wake_pointer_is_exact():
+    pointer = {"kind": {"S": "network_wake"}, "ownerId": {"S": "org_1"}}
+    assert deserialize_pointer(_record(pointer)) == {"kind": "network_wake", "ownerId": "org_1"}
+    with pytest.raises(ValueError, match="invalid network_wake pointer"):
+        deserialize_pointer(_record({**pointer, "token": {"S": "org_1.secret"}}))
+    with pytest.raises(ValueError, match="invalid ownerId"):
+        deserialize_pointer(_record({**pointer, "ownerId": {"S": ""}}))
+
+
+async def test_a_network_wake_invokes_network_wake_rpc(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from core.services import openclaw_work as work
+
+    rpc = AsyncMock(return_value={})
+    monkeypatch.setattr("core.services.container_rpc.call", rpc)
+    sqs = MagicMock()
+    worker = work.OpenClawWorkWorker(sqs_client=sqs)
+    body = _record({"kind": {"S": "network_wake"}, "ownerId": {"S": "org_1"}})
+
+    assert await worker._process_message({"Body": body, "ReceiptHandle": "rh"}) is True
+    rpc.assert_awaited_once_with("org_1", "network.wake", {})
+    sqs.delete_message.assert_called_once()

@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import re
+import secrets
 import time
+import uuid
 from typing import Any
 
 from core.config import settings
@@ -62,12 +65,11 @@ def _app_entries(doc: dict) -> list[dict]:
 async def write_sessions(owner_id: str, *, apps: list[dict] | None = None) -> dict:
     """Write ``sessions.json``: every roster agent, then the app entries. ``apps=None`` keeps
     the earlier app entries."""
-    if apps is None:
-        apps = _app_entries(await _read_sessions(owner_id) or {})
-    return await _write(owner_id, apps)
+    prior = await _read_sessions(owner_id) or {}
+    return await _write(owner_id, _app_entries(prior) if apps is None else apps, prior)
 
 
-async def _write(owner_id: str, apps: list[dict]) -> dict:
+async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> dict:
     from core.services import clerk_admin
     from core.services.company_identity import slugify
     from core.services.hermes_profiles import put_owner_object
@@ -93,7 +95,9 @@ async def _write(owner_id: str, apps: list[dict]) -> dict:
         used.add(name)
         sessions.append({"name": name, "agent": "hermes", "title": agent["name"], "agentId": agent["id"]})
 
-    doc = {"workspace": (org or {}).get("name") or owner_id, "sessions": sessions + apps}
+    # The wake token survives every writer: with no prior in hand, read the current file.
+    wake = await _wake(owner_id, prior if prior is not None else (await _read_sessions(owner_id) or {}))
+    doc = {"workspace": (org or {}).get("name") or owner_id, "sessions": sessions + apps, "wake": wake}
     await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
     return doc
 
@@ -205,6 +209,7 @@ async def reconnect(owner_id: str) -> None:
 
     Order matters: the key goes first so a cold start in between cannot read it; the stop comes
     before the delete so a warm session cannot save network state back after it."""
+    from core.repositories import messaging_repo
     from core.services.agentcore_runtime import drop_network_key
     from core.services.hermes_provisioning import _delete_prefixes, stop_runtime_session
 
@@ -213,6 +218,7 @@ async def reconnect(owner_id: str) -> None:
     if arn:
         await stop_runtime_session(owner_id, arn)
     await run_in_thread(_delete_prefixes, [network_prefix(owner_id)])
+    await run_in_thread(messaging_repo._table().delete_item, Key=_netwake_key(owner_id))  # a new token next time
 
 
 # ---------------------------------------------------------------------------
@@ -370,3 +376,106 @@ async def decide_hold(auth, hold_id: str, action_id: str) -> None:
         await hold_notice(owner_id, {"holdId": hold_id, "state": "closed"})
         raise ApiProblem("HOLD_GONE", "This request was already answered or has expired.") from exc
     await hold_notice(owner_id, {"holdId": hold_id, "state": "closed"})
+
+
+# ---------------------------------------------------------------------------
+# the doorbell: a teammate's Mac that cannot dial this parked workspace wakes it
+# ---------------------------------------------------------------------------
+
+WAKE_WINDOW_S = 10
+_WAKE_OWNER_RE = re.compile(r"^org_[A-Za-z0-9_]{1,64}$")
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _netwake_key(owner_id: str) -> dict:
+    from core.repositories import messaging_repo
+
+    return {"pk": messaging_repo.owner_pk(owner_id), "sk": messaging_repo.netwake_sk()}
+
+
+async def _wake(owner_id: str, prior: dict) -> dict:
+    """sessions.json's ``wake`` entry. The token is minted once and kept in sessions.json (only
+    the backend and this workspace's runtime read it); the ``NETWAKE`` row holds only its hash."""
+    from core.repositories import messaging_repo
+
+    token = (prior.get("wake") or {}).get("token") or f"{owner_id}.{secrets.token_urlsafe(32)}"
+    # ponytail: the hash and sessions.json are two writes, so two concurrent FIRST writes can leave
+    # them on different tokens; every write re-sets the hash from the doc, so the next one heals it.
+    await run_in_thread(
+        messaging_repo._table().update_item,
+        Key=_netwake_key(owner_id),
+        UpdateExpression="SET tokenHash = :h",
+        ExpressionAttributeValues={":h": _token_hash(token)},
+    )
+    # The token rides an Authorization header, never the path: paths land in access logs.
+    return {"url": f"{settings.PUBLIC_API_BASE.rstrip('/')}/api/v1/network/wake", "token": token}
+
+
+def _refused() -> bool:
+    """A flood of bad rings shows as a metric; nothing about the caller is logged."""
+    from core.observability.metrics import put_metric
+
+    put_metric("network.wake.refused", 1)
+    return False
+
+
+async def ring(token: str) -> bool:
+    """False when the token is not a workspace's doorbell (the route answers 404, nothing written).
+    True otherwise; at most one wake per workspace per ``WAKE_WINDOW_S`` reaches the work queue.
+    The token is a credential: never logged."""
+    from botocore.exceptions import ClientError
+
+    from core.repositories import messaging_repo
+
+    owner_id, dot, _ = token.partition(".")
+    # 128 covers org_<64> + "." + a 43-char urlsafe secret; anything longer is refused before any read.
+    if len(token) > 128 or not dot or not _WAKE_OWNER_RE.match(owner_id):
+        return _refused()
+    key = _netwake_key(owner_id)
+    row = await messaging_repo._get(key["pk"], key["sk"])
+    digest = _token_hash(token)
+    if not row or not hmac.compare_digest(str(row.get("tokenHash") or ""), digest):
+        return _refused()
+    now = int(time.time())
+    ulid = f"{now * 1000:012x}{uuid.uuid4().hex[:20]}"
+    table_name = messaging_repo._table().name
+    try:
+        await messaging_repo._transact(
+            [
+                {
+                    "Update": {
+                        "TableName": table_name,
+                        "Key": key,
+                        "UpdateExpression": "SET lastWakeAt = :now",
+                        # tokenHash too: a reconnect that deleted the row in between must not see it recreated.
+                        # lastWakeAt is each backend task's own clock, so skew can admit a second wake
+                        # inside the window; that costs one extra no-op network.wake RPC.
+                        "ConditionExpression": "tokenHash = :h AND (attribute_not_exists(lastWakeAt) OR lastWakeAt < :cutoff)",
+                        "ExpressionAttributeValues": {":now": now, ":h": digest, ":cutoff": now - WAKE_WINDOW_S},
+                    }
+                },
+                {
+                    "Put": {
+                        "TableName": table_name,
+                        "Item": {
+                            "pk": key["pk"],
+                            "sk": messaging_repo.work_netwake_sk(ulid),
+                            "payload": {"kind": "network_wake", "ownerId": owner_id},
+                            "messageGroupId": f"netwake#{owner_id}",
+                            "messageDeduplicationId": ulid,
+                            "expiresAt": now + messaging_repo.OUTBOX_TTL_S,
+                        },
+                    }
+                },
+            ]
+        )
+    except ClientError as exc:
+        if not messaging_repo.is_cancelled(exc):
+            raise
+        logger.info("network wake skipped (within %ss) owner=%s", WAKE_WINDOW_S, owner_id)
+        return True
+    logger.info("network wake queued owner=%s", owner_id)
+    return True

@@ -29,6 +29,7 @@ def store(monkeypatch, table):
     monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value={"name": "Acme Builders"}))
     roster = [{"id": A1, "name": "Friday"}, {"id": A2, "name": "Ops Lead"}]
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=["user_1", "user_2"]))
     return objects
 
 
@@ -53,6 +54,7 @@ async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
             app,
         ],
         "wake": {"url": "http://localhost:8000/api/v1/network/wake", "token": token},
+        "members": ["user_1", "user_2"],
     }
     assert network_member.app_person("user_1") == network_member.app_person("user_1")
     assert len(network_member.app_person("user_1")) == 8
@@ -269,3 +271,19 @@ async def test_a_write_with_no_prior_keeps_the_wake_token_and_hash(store, table)
     await network_member._write("org_a", [])  # a writer with no prior in hand
     assert _doc(store)["wake"]["token"] == token
     assert table.get_item(Key=key)["Item"]["tokenHash"] == hashed
+
+
+@pytest.mark.asyncio
+async def test_members_follow_the_workspace_on_join_and_leave(store, monkeypatch):
+    humans = AsyncMock(return_value=["user_1"])
+    monkeypatch.setattr("core.services.website_logins._humans_to_ask", humans)
+    await network_member.write_sessions("org_a")  # what connect() leaves behind
+    assert _doc(store)["members"] == ["user_1"]
+
+    humans.return_value = ["user_1", "user_3"]  # a join
+    await network_member.publish_sessions("org_a")
+    assert _doc(store)["members"] == ["user_1", "user_3"]
+
+    humans.return_value = ["user_3"]  # a leave
+    await network_member.publish_sessions("org_a")
+    assert _doc(store)["members"] == ["user_3"]

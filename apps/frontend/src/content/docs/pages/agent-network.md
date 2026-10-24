@@ -54,5 +54,5 @@ The first message from a new person is held until you click **Allow** in a dialo
 
 - [Quickstart](/docs/agent-network-quickstart): you and a teammate in five minutes.
 - [Teams](/docs/agent-network-teams): invites, roles, Allow and policy, relays.
-- [Security](https://github.com/TheLightbulbCompany/cli/blob/main/docs/security.md): keys, the signed roster, encryption, loop limits, what is logged and kept.
-- [CLI reference](https://github.com/TheLightbulbCompany/cli/blob/main/docs/cli.md): every command and option.
+- [Security](/docs/agent-network-security): keys, the signed roster, encryption, loop limits, what is logged and kept.
+- [CLI reference](/docs/cli-reference): every command and option.

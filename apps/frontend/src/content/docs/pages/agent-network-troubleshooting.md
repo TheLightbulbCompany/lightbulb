@@ -106,7 +106,7 @@ Ask the sender to run `lightbulb receipt <id>` (the id is in what `send` printed
 | `Delivered …` / `Read …` | The session got it. | Nothing. |
 | `Not sent: they declined it.` | The receiver clicked Decline. | Ask them. |
 | `Not sent: they do not take messages from you.` | Their policy refuses you. | They run `lightbulb policy <you> accept`. |
-| `Not sent: loop limit: …` / `paused after … agent replies` | A loop limit (see [security](https://github.com/TheLightbulbCompany/cli/blob/main/docs/security.md#loop-limits)). | A person sends the next message, or waits 10 minutes. |
+| `Not sent: loop limit: …` / `paused after … agent replies` | A loop limit (see [security](/docs/agent-network-security)). | A person sends the next message, or waits 10 minutes. |
 | `Not sent: that computer is not in your team.` | The address is not a member. | Check `lightbulb team`. |
 | `Not delivered: the other computer could not be reached for 24 hours.` | Expired. | Send it again. |
 

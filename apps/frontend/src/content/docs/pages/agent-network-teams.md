@@ -103,7 +103,7 @@ lightbulb team                  # the team, its computers and their roles
 
 ## Relays
 
-Two Macs on the same network, or with a direct path, connect straight to each other. When there is no direct path, the connection goes through a relay. A relay carries encrypted bytes only; [security](https://github.com/TheLightbulbCompany/cli/blob/main/docs/security.md) says what a relay can see.
+Two Macs on the same network, or with a direct path, connect straight to each other. When there is no direct path, the connection goes through a relay. A relay carries encrypted bytes only; [security](/docs/agent-network-security) says what a relay can see.
 
 ```sh
 lightbulb relay                     # the relays in use, and where they come from

@@ -108,7 +108,7 @@ async def test_another_viewer_cannot_answer(env):
 
 
 async def test_the_internal_route_needs_the_hook_token(env, async_client):
-    url = f"/api/v1/internal/network/holds/{OWNER}"
+    url = f"/api/v1/internal/messaging/network/holds/{OWNER}"
     with patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"hook_token": "tok"})):
         assert (await async_client.post(url, json=notice())).status_code == 401
         bad = {"Authorization": "Bearer nope"}

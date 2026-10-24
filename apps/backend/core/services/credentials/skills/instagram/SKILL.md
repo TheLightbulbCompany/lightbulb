@@ -6,15 +6,15 @@ description: Publish posts and Reels, moderate comments, and answer DMs on the o
 # Instagram
 
 The owner has connected their Instagram professional account. Credentials live at
-`/home/node/.openclaw/skills/instagram/credentials.json`.
+`$HERMES_HOME/skills/instagram/credentials.json`.
 
 **Always read the token through `token.sh`, never straight out of the JSON.** The
 token expires 60 days after it is issued and `token.sh` renews it when it is
 inside the last 30 days, so calling it is what keeps the connection alive:
 
 ```bash
-IG_TOKEN=$(/home/node/.openclaw/skills/instagram/token.sh) || exit 1
-IG_USER=$(jq -r .user_id /home/node/.openclaw/skills/instagram/credentials.json)
+IG_TOKEN=$($HERMES_HOME/skills/instagram/token.sh) || exit 1
+IG_USER=$(jq -r .user_id $HERMES_HOME/skills/instagram/credentials.json)
 ```
 
 Re-run `token.sh` at the start of each task that touches Instagram. It is cheap

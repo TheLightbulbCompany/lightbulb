@@ -65,6 +65,9 @@ const GOOGLE_SITE_VERIFICATION: Record<string, string[]> = {
     "google-site-verification=v-MtfFMuBP2VYDP5sIB3wVXTQU4SjimPoryr5oX6mQg",
     // Search Console domain property (admin@thelightbulb.company).
     "google-site-verification=Clg4oJdtZ_0J7pJRFmfJfkKr0KE8C9CVze8I7AIbaWU",
+    // Microsoft Entra custom-domain verification (publisher verification). Not
+    // a Google token; it lives here because this array IS the apex TXT set.
+    "MS=ms56087164",
   ],
   "isol8.co": [
     "google-site-verification=4m6AkWYnaePsQsIyDL4eJlPEddQg2RF1_Hxl7EFDHr8",

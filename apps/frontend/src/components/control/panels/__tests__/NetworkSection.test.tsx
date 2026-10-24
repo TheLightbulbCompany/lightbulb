@@ -37,9 +37,11 @@ describe("NetworkSection", () => {
     expect(screen.getByRole("button", { name: "Get my line" })).toBeInTheDocument();
   });
 
-  it("retries on 504 until the line arrives", async () => {
+  it("retries on 503, 504 and RUNTIME_UNAVAILABLE until the line arrives", async () => {
     vi.useFakeTimers();
     api.post.mockReset()
+      // API Gateway's HTTP API answers its 30 s integration timeout with 503 (seen on a cold microVM).
+      .mockRejectedValueOnce(new ApiError(503, { message: "Service Unavailable" }))
       .mockRejectedValueOnce(new ApiError(504, null))
       .mockRejectedValueOnce(new ApiError(502, { code: "RUNTIME_UNAVAILABLE" }))
       .mockResolvedValueOnce({ line: "lightbulb join abc", expiresAt: 1 });
@@ -47,9 +49,9 @@ describe("NetworkSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Get my line" }));
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByText("Starting your workspace… this can take a minute.")).toBeInTheDocument();
-    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(screen.getByText("lightbulb join abc")).toBeInTheDocument();
-    expect(api.post).toHaveBeenCalledTimes(3);
+    expect(api.post).toHaveBeenCalledTimes(4);
   });
 
   it("hides Reconnect workspace from members", () => {

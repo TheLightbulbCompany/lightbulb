@@ -1333,6 +1333,10 @@ async def write_profile_for_agent(
     if soul_md_override is not None:
         files.soul_md = soul_md_override
     await upload_profile(owner_id, agent_id, files)
+    if lone_agent:  # a roster fan-out runs at provision, before any connect; a lone agent comes later
+        from core.services.credentials import hermes_cli
+
+        await hermes_cli.seed_new_profile(owner_id, agent_id)  # never raises
     await _stage_owner_facts(owner_id, [agent_id], inputs, refresh_roster=lone_agent)
     if publish:  # ``write_profiles`` publishes once, after its whole fan-out
         from core.services import network_member

@@ -159,7 +159,13 @@ export function ConnectionsList({ canManage, exclude }: ConnectionsListProps) {
                   "Not available on this runtime"
                 ) : (
                   <>
-                    {connected ? "Connected" : unavailable ? "Not available yet" : "Not connected"}
+                    {connected
+                      ? "Connected"
+                      : connection.status === "reconnect_required"
+                        ? "Reconnect required"
+                        : unavailable
+                          ? "Not available yet"
+                          : "Not connected"}
                     {connection.acquisition === "direct_oauth"
                       ? " · OAuth"
                       : connection.acquisition === "aws_sts"

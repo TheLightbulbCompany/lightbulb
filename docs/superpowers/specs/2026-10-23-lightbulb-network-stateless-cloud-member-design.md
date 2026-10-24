@@ -265,7 +265,7 @@ person, …}` → `app.*` (E5), from a declared session for that app and person,
 - A tap → Clerk decision route → `InvokeAgentRuntime /network/hold {hold, verdict, scope,
   decided_by}` → `hold.answer` (E6).
 
-### 4.6 The doorbell (owner decision PENDING)
+### 4.6 The doorbell (owner: yes, 2026-10-24)
 
 **If allowed:** the member publishes `wake: {url, token}` in its own roster entry (E4). The URL is
 `https://api.thelightbulb.company/api/v1/network/wake/<token>`. A peer calls it with the system
@@ -506,8 +506,8 @@ ceremony), and key rotation.
   hosted-app and hold-decision paths.
 - The size of the Linux port (E0).
 
-## Owner to decide
+## Owner decided (2026-10-24)
 
-1. The doorbell: allow one call home (system `curl`, token URL in the member's roster entry), or no doorbell, and parked workspaces wait for their next wake.
-2. Which workspaces get a member: every workspace, paid only, or trials too.
-3. Accept that the agents can read the founder key (impostor risk with detection; revocation means a new team).
+1. Doorbell: yes — one content-free call to the wake URL the member publishes in its roster entry, after a failed direct dial.
+2. Every workspace gets a member: what people pay for is the cloud agents and the messaging; the network just connects them.
+3. The founder-key risk is accepted for phase 1; a separate Unix user for the sidecar is the phase-3 hardening.

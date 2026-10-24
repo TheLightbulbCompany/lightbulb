@@ -115,6 +115,27 @@ async def publish_sessions(owner_id: str) -> None:
         logger.warning("network sessions publish failed for owner=%s", owner_id, exc_info=True)
 
 
+async def app_call(auth, slug: str, client: str, op: str, **fields) -> dict:
+    """One ``network.app`` call as ``<client> via <person>``: the person's app session is declared
+    in ``sessions.json`` first (and published when new). The member holds the key, not us."""
+    from core.auth import resolve_owner_id
+    from core.services.messaging import human_display_name
+
+    owner_id = resolve_owner_id(auth)
+    person = app_person(auth.user_id)
+    doc = await _read_sessions(owner_id)
+    if doc is None:  # never write sessions.json for a workspace that is not a member
+        raise ApiProblem("NETWORK_NOT_CONNECTED", "This workspace is not on a network yet. Connect it in Settings.")
+    apps = _app_entries(doc)
+    if not any(s.get("name") == f"{slug}-{person}" for s in apps):
+        full = (await human_display_name(auth.user_id)).split()
+        title = f"{client} via {full[0] if full else client}"[:256]
+        entry = {"name": f"{slug}-{person}", "agent": slug, "title": title, "app": slug, "person": person}
+        await write_sessions(owner_id, apps=[*apps, entry])
+        await publish_sessions(owner_id)
+    return await container_rpc.call(owner_id, "network.app", {"op": op, "app": slug, "person": person, **fields})
+
+
 async def _session_is_warm(owner_id: str) -> bool:
     """The ``__session__#<owner>`` estimate ``runtime_transport`` keeps, for THIS runtime.
     False with no runtime yet (a fresh provision writes profiles before CreateAgentRuntime)."""

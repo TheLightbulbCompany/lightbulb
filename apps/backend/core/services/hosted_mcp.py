@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -35,6 +36,7 @@ from core.services import (
     local_sessions,
     messaging,
     native_session_tools,
+    network_member,
     session_browser,
     task_board,
     webhook_agents,
@@ -591,6 +593,31 @@ async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str,
     return updated["Attributes"]["roomId"]
 
 
+_STARTING = "RUNTIME_UNAVAILABLE: the workspace is starting; retry with the same request_id"
+
+
+async def _through_member(auth: AuthContext, op: str, **fields):
+    """A ``network.app`` call as this client via the signed-in person, its refusals as ToolErrors."""
+    slug, client = _sender(get_access_token())
+    try:
+        return await network_member.app_call(auth, slug, client, op, **fields)
+    except asyncio.TimeoutError as exc:
+        raise ToolError(_STARTING) from exc
+    except messaging.ApiProblem as exc:
+        if exc.error.code == "RUNTIME_UNAVAILABLE":
+            raise ToolError(_STARTING) from exc
+        raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
+    except RuntimeError as exc:  # the member answered with an error: {"code", "message"}
+        try:
+            error = json.loads(str(exc))
+        except ValueError:
+            error = {}
+        code = error.get("code") or "UNAVAILABLE"
+        if code == "RUNTIME_UNAVAILABLE":
+            raise ToolError(_STARTING) from exc
+        raise ToolError(f"{code}: {error.get('message') or 'the network refused the call'}") from exc
+
+
 async def _posted(auth: AuthContext, room_id: str, request_id: uuid.UUID) -> bool:
     """This send already committed in that room (a retry replays it wherever the room went since)."""
     return (
@@ -612,13 +639,20 @@ async def send_message(
     reply_to_message_id: uuid.UUID | None = None,
     mention_ids: list[str] | None = None,
     agent_id: str | None = None,
+    network_to: str | None = None,
 ) -> dict:
-    """Send as this client on the signed-in person's behalf (or, from a shared session, as that session) to exactly one of room_id, person_id (a member id; opens the DM if needed), session_id (delivers the text into that session as a follow-up prompt it acts on; it is not a link; see find_sessions canSend) or agent_id (a webhook agent from find_sessions agents: one webhook call; state delivered, failed or awaiting_approval). Use a new UUID request_id and reuse it on retry. Room and person sends from a person may reply in a thread or address room members; a shared session's send takes neither. Cannot answer permission prompts."""
+    """Send as this client on the signed-in person's behalf (or, from a shared session, as that session) to exactly one of room_id, person_id (a member id; opens the DM if needed), session_id (delivers the text into that session as a follow-up prompt it acts on; it is not a link; see find_sessions canSend), agent_id (a webhook agent from find_sessions agents: one webhook call; state delivered, failed or awaiting_approval) or network_to (an address on the team's lightbulb network, from network directory; sent through this workspace). Use a new UUID request_id and reuse it on retry. Room and person sends from a person may reply in a thread or address room members; a shared session's send takes neither. Cannot answer permission prompts."""
     auth = _caller(WRITE_SCOPE)
-    targets = (("room", room_id), ("person", person_id), ("session", session_id), ("agent", agent_id))
+    targets = (
+        ("room", room_id),
+        ("person", person_id),
+        ("session", session_id),
+        ("agent", agent_id),
+        ("network", network_to),
+    )
     if sum(target is not None for _, target in targets) != 1:
         raise messaging.ApiProblem(
-            "INVALID_REQUEST", "Send to exactly one of room_id, person_id, session_id or agent_id."
+            "INVALID_REQUEST", "Send to exactly one of room_id, person_id, session_id, agent_id or network_to."
         )
     if device := _mac():
         if reply_to_message_id or mention_ids:
@@ -627,6 +661,18 @@ async def send_message(
         return await _from_session(
             device, "send", {"destination": f"{kind}:{target}", "text": text, "requestId": str(request_id)}
         )
+    if network_to is not None:
+        if reply_to_message_id or mention_ids:
+            raise messaging.ApiProblem("INVALID_REQUEST", "A network send takes no thread or mentions.")
+        if not network_to.strip() or len(network_to) > 256:
+            raise messaging.ApiProblem("INVALID_REQUEST", "Invalid network_to.")
+        try:
+            await _pin_destination(auth, request_id, f"network:{network_to}")
+        except messaging.ApiProblem as exc:
+            raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
+        # The engine dedupes app.send on request_id per app session, so a retry sends once.
+        result = await _through_member(auth, "send", to=network_to, text=text, request_id=str(request_id))
+        return {"destination": f"network:{network_to}", "requestId": str(request_id), **result}
     slug, client = _sender(get_access_token())
     if agent_id is not None:
         if reply_to_message_id or mention_ids:
@@ -747,6 +793,9 @@ async def message_receipt(request_id: uuid.UUID) -> dict:
         return await webhook_agents.get_receipt(auth.org_id, auth.user_id, target, str(request_id)) or {
             "state": "unknown"
         }
+    if kind == "network":
+        result = await _through_member(auth, "receipt", request_id=str(request_id))
+        return {"destination": pinned["destination"], "requestId": str(request_id), **result}
     try:
         command = await local_sessions.get_command(auth, None, target, str(request_id))
     except messaging.ApiProblem as exc:
@@ -760,6 +809,17 @@ async def message_receipt(request_id: uuid.UUID) -> dict:
             raise
         return {"sessionId": target, "requestId": str(request_id), "state": "unknown"}
     return {"sessionId": target, "requestId": str(request_id), "state": command.state}
+
+
+@mcp.tool(annotations=READ)
+async def network(action: Literal["inbox", "directory"], query: str = "") -> list:
+    """The team's lightbulb network, through this workspace. "inbox": messages sent to you here (as this client via you). "directory": the addresses you can send to with send_message network_to; query narrows it."""
+    auth = _caller()
+    if _mac():  # a shared session's own computer is on the network itself
+        raise ToolError("INVALID_REQUEST: a shared session uses its own computer's network.")
+    if action == "inbox":
+        return await _through_member(auth, "inbox")
+    return await _through_member(auth, "directory", query=query)
 
 
 # API Gateway rewrites Host to the private ALB DNS name. The public OAuth URL is

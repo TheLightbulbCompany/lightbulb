@@ -1,5 +1,7 @@
 # Lightbulb network, phase 1 (the workspace as a computer on the network): acceptance
 
+> Clock note: the sections stamped 2026-10-25/26 were written against a wrong session clock; the GitHub run ids are the truth (deploy train 40079437330 ran 2026-10-24 08:47Z, so "10-25 ~20:35Z" is really 2026-10-24 ~05:30Z and so on, in order). Sections stamped 2026-10-24 09:xxZ onward carry real times.
+
 Evidence file for Task 13 of `2026-10-24-lightbulb-network-plan-c-phase-1.md`. Each item records
 what was run, when (UTC), the receipt states, and the log line or screenshot that proves it.
 Nothing here is claimed without its evidence line.
@@ -43,7 +45,7 @@ Nothing here is claimed without its evidence line.
 | `POST /api/v1/settings/network/invite` → 200 in 3.9 s with a person invite (`lightbulb join 'eyJ…' --name 'admin@thelightbulb.company'`, 827 chars, expiresAt +24 h) — the engine sidecar minted it inside the AgentCore microVM on the first RPC | ledger 20:35Z |
 | sessions.json: workspace "Network Phase One", six starter agents, `wake.url` = `https://api-dev.thelightbulb.company/api/v1/network/wake` + bearer token (never in the URL) | S3 head/body (names only) |
 | Settings → Connections → "Connect your computer": "Your workspace is connected." + install line + Get my line + Reconnect workspace | `win/dev-settings-connect-your-computer.jpg` |
-| Two-mac CI run 40076202039 (GitHub macOS runner): joined the workspace team through the person invite with NO Allow (`Team "Network Phase One" — 2 computers: You (ci-mac) · member; Network Phase One · founder`); its first message to `um6sfp7huaka/ceo` was `held` (600 s) → engine fix cli #34 (a computer admitted by a person link is that person; v0.3.1); no Activity item appeared for the hold → open item (bridge → backend hold notice chain; needs CloudWatch in the morning) | run log; ledger 21:35Z–22:30Z |
+| Two-mac CI run 40076202039 (GitHub macOS runner): joined the workspace team through the person invite with NO Allow (`Team "Network Phase One" — 2 computers: You (ci-mac) · member; Network Phase One · founder`); its first message to `um6sfp7huaka/ceo` was `held` (600 s) → engine fix cli #34 (a computer admitted by a person link is that person; v0.3.1); no Activity item appeared for the hold → root-caused and fixed the same day, see "Hold → Needs-you" below | run log; ledger 21:35Z–22:30Z |
 
 ## v0.3.1 (the person-link fix) — 2026-10-25 ~23:20Z–2026-10-26 ~00:40Z
 
@@ -52,6 +54,16 @@ Nothing here is claimed without its evidence line.
 | cli #34 (a computer admitted by a person link is that person) merged on green CI; bump #35; tag v0.3.1; release run 40077828639 (macOS arm64, Linux arm64, Linux x86_64, npm, brew); signing run 40078384034 success; owner's Mac `lightbulb update` → 0.3.1, Developer ID verified | run ids |
 | Hermes image re-pinned to v0.3.1 by checksum (#4332); image build 40078489921 → `h-2026.10.24-d1daf5d`; pins flipped (#4333); deploy train 40079437330 success end to end | run ids |
 | Runtimes: still on `h-2026.10.24-9566ac3` until the morning rolls (dev and prod; prod's roll also writes sessions.json) | ledger |
+
+## Hold → Needs-you (the missing item) — 2026-10-24 09:20Z–09:56Z
+
+| what | evidence |
+|---|---|
+| Root cause (code read, no logs needed): the bridge's `turn._post_backend` prefixes every callback with `/api/v1/internal/messaging/`, and the hold-notice router was mounted at `/api/v1/internal/network`, so the bridge posted to `…/internal/messaging/network/holds/{owner}` → 404, logged as a 4xx, never retried. The bridge test asserted only the relative path. | #4335 description |
+| Fix: #4335 (`0fc23c72e`) mounts the internal router under `/api/v1/internal/messaging/network`; backend only, no image change, Codex clean. Guard: #4336 (`9beb59943`, + #4337 for either quote style) resolves every bridge callback literal against `main.app`'s route table — fails on the old mount naming only the hold path. | PRs; dev push deploy 40082347779 success |
+| Probe after the dev deploy: `POST /api/v1/internal/messaging/network/holds/org_probe` → 401 (route exists, hook token required); the old path → 404 | curl, 09:50Z |
+| Re-test: two-mac run 40083685633 (GitHub macOS runner, `lightbulb 0.3.1`) joined "Network Phase One" through a fresh person invite (2 computers), sent to `um6sfp7huaka/ceo` → `0s held` (the dev member is still v0.3.0, so the hold is expected) → the admin's Activity list showed `nethold:H2` "ci-mac, at the terminal (not verified) wants to message um6sfp7huaka/ceo" with Send / Decline / Always allow and **no message preview**, filed 09:52:45Z (≈1 s after the send) → Send (`POST …/activity/nethold:H2/actions/send` → 200, item `resolved` 09:53:27Z) → receipt `46s delivered`; the runner left the team cleanly | run log + step summary; Activity JSON |
+| Prod: deploy train 40083908721 dispatched from `612e4eb61` (covers #4335–#4337); the two covered push deploys cancelled | run id |
 
 ## Step 2 — the demo on dev
 

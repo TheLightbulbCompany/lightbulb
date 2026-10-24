@@ -458,6 +458,68 @@ def _unavailable(method: str) -> dict:
                                    "message": f"{method} is not available on the Hermes runtime"}}
 
 
+# ---- network.* (the backend's calls onto the workspace's network member) ----------------------
+# Each one starts the sidecar in the foreground first: handle_plugin only starts it in the
+# background, so the first RPC of a cold microVM would otherwise find it off.
+def _net(method: str, op: str, body: dict) -> dict:
+    if not network.ensure_started(background=False):
+        return _unavailable(method)
+    try:
+        return {"ok": True, "payload": network.ask(op, body)}
+    except network.NetworkOff:
+        return _unavailable(method)
+    except network.OpError as exc:
+        error = {"code": exc.code, "message": f"{method} was refused ({exc.code})"}
+        if exc.reason:
+            error["reason"] = exc.reason
+        return {"ok": False, "error": error}
+
+
+def _pick(params: dict, *keys: str) -> dict:
+    return {k: params[k] for k in keys if params.get(k) is not None}
+
+
+def _network_invite(params: dict, **_kwargs) -> dict:
+    """The answer carries the invite line; nothing here logs it."""
+    return _net("network.invite", "team.invite", {"mode": "person", **_pick(params, "for", "name")})
+
+
+def _network_hold(params: dict, **_kwargs) -> dict:
+    return _net("network.hold", "hold.answer", _pick(params, "hold", "verdict", "scope", "decided_by"))
+
+
+def _network_app(params: dict, **_kwargs) -> dict:
+    op = params.get("op")
+    if op == "directory":
+        return _net("network.app", "directory", _pick(params, "query"))
+    if op in ("send", "inbox", "receipt"):
+        return _net("network.app", f"app.{op}", {k: v for k, v in params.items() if k != "op"})
+    return {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "op must be send|inbox|receipt|directory"}}
+
+
+def _network_sessions(params: dict, **_kwargs) -> dict:
+    if not network.ensure_started(background=False):
+        return _unavailable("network.sessions")
+    try:
+        return {"ok": True, "payload": {"count": network.reload_sessions()}}
+    except network.NetworkOff:
+        return _unavailable("network.sessions")
+    except network.OpError as exc:
+        return {"ok": False, "error": {"code": exc.code, "message": f"network.sessions was refused ({exc.code})"}}
+
+
+def _network_wake(params: dict, **_kwargs) -> dict:
+    """A peer rang the doorbell: start the member, nothing else (spec job 3)."""
+    if not network.ensure_started(background=False):
+        return _unavailable("network.wake")
+    return {"ok": True, "payload": {}}
+
+
+RPC_METHODS.update({"network.invite": _network_invite, "network.sessions": _network_sessions,
+                    "network.app": _network_app, "network.hold": _network_hold,
+                    "network.wake": _network_wake})
+
+
 def _rpc(body) -> tuple[int, dict]:
     if not isinstance(body, dict):
         return 400, {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "body must be an object"}}

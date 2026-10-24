@@ -2,7 +2,8 @@
 
 The fake (written into tmp_path) speaks the line protocol: the token is stdin's first line, each
 socket line is one JSON op, `subscribe` streams events, `snapshot` writes the file it is given,
-`stop` (or SIGTERM) writes the final snapshot and exits 0. Its knobs live in cfg.json.
+`stop` (or SIGTERM) writes the final snapshot and exits 0. Its knobs live in cfg.json (read at
+spawn); answers.json (re-read per op) adds fields to an op's answer; calls.jsonl logs each op.
 """
 from __future__ import annotations
 
@@ -67,9 +68,14 @@ def serve(conn):
             for ev in cfg.get("events", []):
                 conn.sendall((json.dumps(ev) + "\n").encode())
             continue
+        with open(D / "calls.jsonl", "a") as log:
+            log.write(json.dumps({{k: v for k, v in msg.items() if k != "token"}}) + "\n")
         if op == "snapshot":
             snapshot(msg["path"])
-        conn.sendall((json.dumps({{"id": msg["id"], "ok": True}}) + "\n").encode())
+        answer = {{"id": msg["id"], "ok": True}}
+        answers = json.loads((D / "answers.json").read_text()) if (D / "answers.json").exists() else {{}}
+        answer.update(answers.get(op, {{}}))
+        conn.sendall((json.dumps(answer) + "\n").encode())
         if op == "stop":
             if cfg.get("hang_on_stop"):
                 continue
@@ -111,6 +117,11 @@ class FakeS3:
                 return data
         return {"Body": _Body(), "ETag": etag}
 
+    def head_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise _Err("404")
+        return {"ETag": self.objects[Key][1]}
+
     def put_object(self, Bucket, Key, Body, IfMatch=None, IfNoneMatch=None):
         self.puts.append({"Key": Key, "Body": Body, "IfMatch": IfMatch, "IfNoneMatch": IfNoneMatch})
         current = self.objects.get(Key)
@@ -143,7 +154,8 @@ def net(tmp_path, monkeypatch):
     monkeypatch.setattr(network, "SOCKET", sock_dir / "n.sock")
     monkeypatch.setattr(network, "SAVE_DEBOUNCE_S", 0.05)
     for name, value in (("_proc", None), ("_token", ""), ("_etag", None), ("_sha", None), ("_next_try", 0.0),
-                        ("_off", False), ("_stopping", False), ("_sessions", {}), ("_save_timer", None)):
+                        ("_off", False), ("_stopping", False), ("_sessions", {}), ("_save_timer", None),
+                        ("_skip_logged", False)):
         monkeypatch.setattr(network, name, value)
     network._superseded.clear()
     network.on_event.clear()
@@ -155,6 +167,9 @@ def net(tmp_path, monkeypatch):
     n.spawns = lambda: len((fake_dir / "spawns.log").read_text().splitlines()) if (fake_dir / "spawns.log").exists() else 0
     n.cfg = lambda **kw: (fake_dir / "cfg.json").write_text(json.dumps(kw))
     n.state = lambda b: (fake_dir / "state.txt").write_bytes(b)
+    n.answer = lambda **ops: (fake_dir / "answers.json").write_text(json.dumps(ops))  # op name -> extra answer fields
+    n.calls = lambda op=None: [c for c in (json.loads(x) for x in (fake_dir / "calls.jsonl").read_text().splitlines())
+                               if op is None or c["op"] == op] if (fake_dir / "calls.jsonl").exists() else []
     yield n
     if network._proc is not None and network._proc.poll() is None:
         network._proc.kill()
@@ -363,3 +378,14 @@ def test_the_token_never_reaches_os_environ_or_a_file(net):
     for path in net.tmp.rglob("*"):
         if path.is_file():
             assert token.encode() not in path.read_bytes(), path
+
+
+def test_a_save_after_reconnect_deleted_the_prefix_puts_nothing(net, caplog):
+    assert network.ensure_started(background=False)
+    del net.s3.objects["org_test/network/sessions.json"]   # the backend's "Reconnect workspace"
+    net.state(b"old-key-state")
+    network.call("send", {"from": "friday", "to": "mac", "text": "hi", "request_id": "r"})
+    time.sleep(0.3)
+    network.stop()                                          # the SIGTERM save too
+    assert _state_puts(net) == []
+    assert caplog.text.count("network.save_skipped_reconnect") == 1

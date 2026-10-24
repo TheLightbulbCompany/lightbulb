@@ -47,12 +47,20 @@ READY_S = 10.0
 CONTESTED_WINDOW_S = 600.0
 CONTESTED_COUNT = 4  # "more than 3 superseded in 10 min" (spec §9)
 
-#: Event subscribers, filled by Task 6 (sweep, holds). Each gets the event dict.
+#: Extra event subscribers (the sweep and hold notices are called directly). Each gets the event dict.
 on_event: list[Callable[[dict], None]] = []
 
 
 class NetworkOff(RuntimeError):
     """The sidecar is not running in this process."""
+
+
+class OpError(RuntimeError):
+    """The engine answered ``ok:false``. Carries only its error code and reason, never a body."""
+
+    def __init__(self, op: str, code: str, reason: str | None = None) -> None:
+        super().__init__(f"{op}: {code}")
+        self.code, self.reason = code, reason
 
 
 _lock = threading.Lock()        # start/stop
@@ -67,6 +75,7 @@ _stopping = False
 _sessions: dict = {}
 _save_timer: threading.Timer | None = None
 _superseded: deque[float] = deque()
+_skip_logged = False            # network.save_skipped_reconnect is logged once per process
 
 
 def _key(name: str) -> str:
@@ -113,6 +122,8 @@ def _ensure() -> bool:
             started = False
         if not started:
             _next_try = time.monotonic() + RETRY_S
+        else:
+            threading.Thread(target=sweep, name="network-sweep", daemon=True).start()
         return started
 
 
@@ -206,18 +217,28 @@ def _connect(timeout_s: float | None) -> socket.socket:
     return sock
 
 
-def _line(op: str, body: dict | None) -> bytes:
-    return (json.dumps({**(body or {}), "token": _token, "id": secrets.token_hex(8), "op": op}) + "\n").encode()
+def _line(op: str, body: dict | None, rid=None) -> bytes:
+    # The daemon socket's Request.id is a u64 (a string id is answered bad_request). An op whose
+    # own body names an `id` (`inbox.ack {session, id, stage}`) sends that one instead: the line
+    # has one `id` key, and dropping the record id would ack the wrong thing.
+    rid = secrets.randbits(53) if rid is None else rid
+    return (json.dumps({"id": rid, **(body or {}), "token": _token, "op": op}) + "\n").encode()
 
 
 def _call(op: str, body: dict | None, timeout_s: float) -> dict:
+    rid = (body or {}).get("id", secrets.randbits(53))
     with _connect(timeout_s) as sock:
-        sock.sendall(_line(op, body))
+        sock.sendall(_line(op, body, rid))
         with sock.makefile("rb") as fh:
             raw = fh.readline()
     if not raw:
         raise NetworkOff(f"{op}: the sidecar closed the socket")
-    return json.loads(raw)
+    answer = json.loads(raw)
+    # The engine flattens its body into {id, ok, ...}: a body `id` (a hold's "H3", a receipt's)
+    # is serialized after ours and wins. Drop the envelope id only when it is still ours.
+    if answer.get("id") == rid and "id" not in (body or {}):
+        del answer["id"]
+    return answer
 
 
 def call(op: str, body: dict | None = None, timeout_s: float = 10.0) -> dict:
@@ -229,6 +250,29 @@ def call(op: str, body: dict | None = None, timeout_s: float = 10.0) -> dict:
         # ponytail: every op schedules a save; a read-only op costs one snapshot, no put (same sha).
         _schedule_save()
     return answer
+
+
+def ask(op: str, body: dict | None = None, timeout_s: float = 10.0) -> dict:
+    """``call`` that raises OpError on ``ok:false`` and returns the answer without ``ok``."""
+    answer = call(op, body, timeout_s)
+    if not answer.get("ok"):
+        raise OpError(op, str(answer.get("error") or "internal"), answer.get("reason"))
+    return {k: v for k, v in answer.items() if k != "ok"}
+
+
+def reload_sessions() -> int:
+    """Re-read ``sessions.json`` from S3 and declare it to the running sidecar (the backend's
+    ``network.sessions`` RPC, after it rewrote the file). Returns the session count."""
+    global _sessions
+    got = _get(_key("sessions.json"))
+    if got is None:
+        raise NetworkOff("sessions.json is gone")
+    raw = got["Body"].read()
+    data = json.loads(raw)
+    ask("cloud.sessions.set", {"sessions": data.get("sessions") or []})
+    _sessions = data
+    SESSIONS_FILE.write_bytes(raw)
+    return len(data.get("sessions") or [])
 
 
 def sessions() -> list[dict]:
@@ -268,11 +312,87 @@ def _handle_event(event: dict) -> None:
                         CONTESTED_COUNT, CONTESTED_WINDOW_S)
             sync.emit_metrics({"network.member_key_contested": (1, "Count")})
     _schedule_save()
+    kind = event.get("event")
+    if kind in ("message", "lag"):
+        sweep()
+    elif kind in ("held", "hold_closed"):
+        threading.Thread(target=_hold_notice, args=(event,), name="network-hold", daemon=True).start()
     for fn in list(on_event):
         try:
             fn(event)
         except Exception:  # noqa: BLE001 -- one bad subscriber must not stop the stream
             log.warning("network: on_event subscriber failed", exc_info=True)
+
+
+# ---- inbound: network messages as local run-less turns ----------------------------------------
+def sweep() -> None:
+    """One ``inbox.peek``; each record not yet run in this process becomes one run-less turn.
+    Runs at start, on ``message`` and on ``lag``. The message text goes only into the turn."""
+    from bridge import turn  # turn is heavy; network is imported by server before it needs it
+    try:
+        peek = ask("inbox.peek", {})
+    except Exception:  # noqa: BLE001 -- the next event or start sweeps again
+        log.warning("network: inbox.peek failed", exc_info=True)
+        return
+    for group in peek.get("sessions") or []:
+        session = group.get("session")
+        agent_id = agent_for_session(session)
+        for record in group.get("records") or []:
+            if not agent_id or not record.get("id"):
+                log.warning("network: a record for session %s has no agent or id; left unacked", session)
+                continue
+            if not turn.reserve_turn():
+                return  # a recycle hold: the rest stay unacked, and the next sweep runs them
+            key = f"event:{record['id']}"
+            if not turn.register_run(key):
+                turn.release_turn()  # already run in this process
+                continue
+            threading.Thread(target=_run_record, args=(session, agent_id, record, key),
+                             name=f"network-turn-{record['id']}", daemon=True).start()
+
+
+def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
+    """Holds one reserved turn. Acks ``delivered`` at start and ``read`` only when the turn returned."""
+    from bridge import turn
+    try:
+        ask("inbox.ack", {"session": session, "id": record["id"], "stage": "delivered"})
+    except Exception:  # noqa: BLE001 -- not taken: let a later sweep try it again
+        log.warning("network: delivered ack failed for %s", record["id"], exc_info=True)
+        turn.discard_run(key)
+        turn.release_turn()
+        return
+    body = {"version": 1, "eventKind": "network_message", "eventId": record["id"],
+            "targetAgentId": agent_id, "sessionKey": record.get("thread") or record.get("from"),
+            "message": {"text": record.get("framed") or "", "label": record.get("label")}}
+    returned = False
+    try:
+        turn.run_turn(agent_id, body, None, True)  # releases the reserved turn itself
+        returned = True
+    except Exception:  # noqa: BLE001 -- stays unread; the class only, never the text
+        log.warning("network: turn for %s failed", record["id"], exc_info=True)
+    finally:
+        if returned:
+            try:
+                ask("inbox.ack", {"session": session, "id": record["id"], "stage": "read"})
+            except Exception:  # noqa: BLE001
+                log.warning("network: read ack failed for %s", record["id"], exc_info=True)
+
+
+def _hold_notice(event: dict) -> None:
+    """Tell the backend a hold opened or closed: id, state, label and target only. The held
+    message's ``body`` (and any preview) never leaves the bridge."""
+    from bridge import turn
+    try:
+        hold = ask("hold.get", {"hold": event.get("id")})
+    except Exception:  # noqa: BLE001
+        log.warning("network: hold.get failed for %s", event.get("id"), exc_info=True)
+        return
+    turn._post_backend(f"network/holds/{bridge.OWNER}", {
+        "holdId": hold.get("id") or event.get("id"),
+        "state": "open" if event.get("event") == "held" else "closed",
+        "label": hold.get("label"),
+        "target": hold.get("target") or hold.get("target_session"),
+    })
 
 
 # ---- save --------------------------------------------------------------------------------------
@@ -299,15 +419,32 @@ def _debounced_save() -> None:
         log.warning("network: save failed", exc_info=True)
 
 
+def _sessions_file_exists() -> bool:
+    try:
+        sync._s3().head_object(Bucket=bridge.S3_BUCKET, Key=_key("sessions.json"))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        if _code(exc) in ("NoSuchKey", "404", "NotFound"):
+            return False
+        raise
+
+
 def _put_snapshot() -> None:
     """Upload SNAPSHOT if it changed, conditionally. A 412 turns the network off."""
-    global _etag, _sha, _off
+    global _etag, _sha, _off, _skip_logged
     with _save_lock:
         if _off:
             return
         data = SNAPSHOT.read_bytes()
         digest = hashlib.sha256(data).hexdigest()
         if digest == _sha:
+            return
+        if not _sessions_file_exists():
+            # "Reconnect workspace" deletes <owner>/network/: a save racing it (a SIGTERM's) must
+            # not resurrect the old key's state.db.
+            if not _skip_logged:
+                _skip_logged = True
+                log.warning("network.save_skipped_reconnect")
             return
         cond = {"IfMatch": _etag} if _etag else {"IfNoneMatch": "*"}
         try:

@@ -256,7 +256,22 @@ def _seed_new_profile(owner_id: str, agent_id: str, donors: list[str]) -> None:
     with _owner_lock(owner_id), tempfile.TemporaryDirectory(prefix="hermes-cli-seed-") as tmp:
         root = Path(tmp)
         files: dict[str, bytes] = {}
+        # A re-install onto an EXISTING agent must not clobber what it already holds: keep its own
+        # materializer subtrees and its cli-env.json keys (GOG_ACCOUNT is bound per agent).
+        own = root / "own"
+        own.mkdir()
+        hermes_profiles.fetch_profile_subtree(
+            owner_id, agent_id, (CLI_ENV_FILE, *(p for m in OWNED_PATHS for p in profile_paths(m))), own
+        )
+        try:
+            own_env = json.loads((own / CLI_ENV_FILE).read_text())
+        except (OSError, ValueError):
+            own_env = {}
+        if not isinstance(own_env, dict):
+            own_env = {}
         for materializer in OWNED_PATHS:
+            if _snapshot(own, materializer):
+                continue
             for donor in donors:
                 hermes_profiles.fetch_profile_subtree(owner_id, donor, profile_paths(materializer), root)
                 found = _snapshot(root, materializer)
@@ -271,7 +286,8 @@ def _seed_new_profile(owner_id: str, agent_id: str, donors: list[str]) -> None:
                 continue
             if isinstance(env, dict):
                 env = {k: v for k, v in env.items() if k not in PER_AGENT_ENV_KEYS}
-                if env:
+                env = {**env, **own_env}
+                if env != own_env:
                     files[CLI_ENV_FILE] = json.dumps(env).encode()
                 break
         if files:

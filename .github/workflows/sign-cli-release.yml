@@ -1,0 +1,213 @@
+# Sign and notarize a published release of the public CLI (TheLightbulbCompany/cli).
+#
+# The public repo's release.yml ships an unsigned arm64 `lightbulb`. macOS treats every unsigned
+# rebuild as a new program, so the Local Network permission is asked again after each update.
+# A Developer ID signature with the hardened runtime, notarized, keeps that permission across
+# updates. The signing secrets stay in this private repo, so this workflow signs the release
+# AFTER it is published and replaces its two assets, then moves the Homebrew formula's sha256.
+#
+# Run after every `v*` release of the CLI: gh workflow run sign-cli-release.yml -f tag=vX.Y.Z
+# Runbook: docs/runbooks/sign-cli-release.md.
+#
+# GitHub-hosted macos-latest on purpose: the self-hosted `macos-desktop` Mac is reserved for
+# desktop-build.yml and mobile-release.yml. The keychain and notarization-key steps are
+# desktop-build.yml's, verbatim apart from the self-hosted-only comments.
+name: sign-cli-release
+'on':
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Public CLI release tag to sign (e.g. v0.2.4)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: sign-cli-${{ inputs.tag }}
+  cancel-in-progress: false
+env:
+  # Same App Store Connect key as desktop-build.yml / the iOS release; IDs are public metadata.
+  APPLE_API_KEY: SZ68D5WBR2
+  APPLE_API_ISSUER: 7c5f3df2-6cda-46fb-b3d5-2ebbceb1dd0e
+  SIGN_ID: 'Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)'
+  TEAM_ID: WZX4U3C22Y
+  TAG: ${{ inputs.tag }}
+  ASSET: lightbulb-macos-arm64.tar.gz
+jobs:
+  sign:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+    - name: Preflight
+      run: |-
+        set -euo pipefail
+        echo "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::tag must look like v1.2.3, got '$TAG'"; exit 1; }
+        [ -n "${CLI_RELEASE_TOKEN:-}" ] || { echo "::error::CLI_RELEASE_TOKEN is not set: add a fine-grained PAT with Contents read/write on TheLightbulbCompany/cli only."; exit 1; }
+        [ -n "${HOMEBREW_TAP_DEPLOY_KEY:-}" ] || { echo "::error::HOMEBREW_TAP_DEPLOY_KEY is not set: the formula cannot be bumped."; exit 1; }
+      env:
+        CLI_RELEASE_TOKEN: ${{ secrets.CLI_RELEASE_TOKEN }}
+        HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+    - name: Download and verify the release
+      id: fetch
+      run: |-
+        set -euo pipefail
+        mkdir -p work/bin && cd work
+        gh release download "$TAG" -R TheLightbulbCompany/cli -p "$ASSET" -p "$ASSET.sha256"
+        shasum -a 256 -c "$ASSET.sha256"
+        OLD_SHA="$(cut -d' ' -f1 "$ASSET.sha256")"
+        echo "old_sha=$OLD_SHA" >> "$GITHUB_OUTPUT"
+        [ "$(tar -tzf "$ASSET")" = lightbulb ] || { echo "::error::$ASSET does not hold exactly one 'lightbulb' entry"; exit 1; }
+        tar -xzf "$ASSET" -C bin lightbulb
+        # Idempotent: a release already signed by our team is left alone (the brew step still
+        # runs, so a run that uploaded but failed to bump the tap can be finished by a re-run).
+        if codesign -dv bin/lightbulb 2>&1 | grep -q "TeamIdentifier=$TEAM_ID"; then
+          echo "::notice::$TAG is already signed by $TEAM_ID; not re-signing."
+          echo "already=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "already=false" >> "$GITHUB_OUTPUT"
+        fi
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Set up signing keychain
+      if: steps.fetch.outputs.already != 'true'
+      run: |-
+        set -euo pipefail
+        KEYCHAIN_PATH="$RUNNER_TEMP/lightbulb-build.keychain-db"
+        KEYCHAIN_PASSWORD="$(uuidgen)"
+        CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+        echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+        security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security set-keychain-settings -ut 21600 "$KEYCHAIN_PATH"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+          -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+        # shellcheck disable=SC2046 # the existing keychain list is split on purpose
+        security list-keychain -d user -s "$KEYCHAIN_PATH" \
+          $(security list-keychain -d user | tr -d '" \t')
+        security set-key-partition-list -S apple-tool:,apple:,codesign: \
+          -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+        rm -f "$CERT_PATH"
+
+        echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+        echo "Identity in keychain:"
+        security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+      env:
+        APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+    - name: Prepare notarization API key
+      if: steps.fetch.outputs.already != 'true'
+      run: |-
+        set -euo pipefail
+        KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+        rm -f "$KEY_PATH"
+        umask 077
+        printf '%s' "$EXPO_ASC_API_KEY_BASE64" | base64 --decode > "$KEY_PATH"
+        echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+      env:
+        EXPO_ASC_API_KEY_BASE64: ${{ secrets.EXPO_ASC_API_KEY_BASE64 }}
+    - name: Sign
+      if: steps.fetch.outputs.already != 'true'
+      working-directory: work/bin
+      run: |-
+        set -euo pipefail
+        codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" --sign "$SIGN_ID" lightbulb
+        codesign --verify --strict --verbose=2 lightbulb
+        codesign -dvv lightbulb
+    - name: Notarize
+      id: notarize
+      if: steps.fetch.outputs.already != 'true'
+      working-directory: work/bin
+      run: |-
+        set -euo pipefail
+        ditto -c -k --keepParent lightbulb lightbulb.zip
+        retry() { for i in 1 2 3; do "$@" && return 0; [ "$i" = 3 ] && return 1; echo "Attempt $i failed; retrying"; sleep $((i * 10)); done; }
+        # A submit "succeeds" once Apple has answered with an id; Accepted/Invalid is judged below,
+        # so an Invalid verdict is not resubmitted three times.
+        submit() {
+          xcrun notarytool submit lightbulb.zip --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" --wait --output-format json > notary.json || true
+          cat notary.json
+          jq -e '.id' notary.json >/dev/null
+        }
+        retry submit
+        ID="$(jq -r '.id' notary.json)"
+        STATUS="$(jq -r '.status // "unknown"' notary.json)"
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        if [ "$STATUS" != Accepted ]; then
+          echo "::error::Notarization $ID ended $STATUS"
+          xcrun notarytool log "$ID" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" || true
+          exit 1
+        fi
+        # No staple: a bare Mach-O executable cannot carry a stapled ticket (stapler handles
+        # bundles, dmg and pkg only). Gatekeeper looks the ticket up online by the code's hash.
+        rm -f lightbulb.zip notary.json
+    - name: Re-package
+      id: package
+      if: steps.fetch.outputs.already != 'true'
+      working-directory: work
+      env:
+        # No AppleDouble `._lightbulb` entry if the runner ever adds an xattr to the binary.
+        COPYFILE_DISABLE: '1'
+      run: |-
+        set -euo pipefail
+        # Exactly as the public release.yml packages it: one `lightbulb` entry, and
+        # "<sha256>  <asset>" written by shasum from the asset's own directory.
+        tar -czf "$ASSET" -C bin lightbulb
+        shasum -a 256 "$ASSET" > "$ASSET.sha256"
+        [ "$(tar -tzf "$ASSET")" = lightbulb ]
+        cat "$ASSET.sha256"
+    - name: Replace the release assets
+      if: steps.fetch.outputs.already != 'true'
+      working-directory: work
+      run: |-
+        set -euo pipefail
+        retry() { for i in 1 2 3; do "$@" && return 0; [ "$i" = 3 ] && return 1; echo "Attempt $i failed; retrying"; sleep $((i * 10)); done; }
+        retry gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber -R TheLightbulbCompany/cli
+      env:
+        GH_TOKEN: ${{ secrets.CLI_RELEASE_TOKEN }}
+    - name: Bump the Homebrew formula's sha256
+      id: brew
+      working-directory: work
+      run: |-
+        set -euo pipefail
+        SHA="$(cut -d' ' -f1 "$ASSET.sha256")"
+        echo "$SHA" | grep -Eqx '[0-9a-f]{64}'
+        echo "new_sha=$SHA" >> "$GITHUB_OUTPUT"
+        VERSION="${TAG#v}"
+        TAP="$RUNNER_TEMP/homebrew-tap"
+        KEY="$RUNNER_TEMP/homebrew-tap-key"
+        rm -rf "$TAP"
+        ( umask 077; printf '%s\n' "$HOMEBREW_TAP_DEPLOY_KEY" > "$KEY" )
+        export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$RUNNER_TEMP/homebrew-tap-known-hosts"
+        git clone --depth 1 git@github.com:TheLightbulbCompany/homebrew-tap.git "$TAP"
+        cd "$TAP"
+        F=Formula/lightbulb.rb
+        URL="https://github.com/TheLightbulbCompany/cli/releases/download/$TAG/$ASSET"
+        grep -Fqx "  url \"$URL\"" "$F" || { echo "::error::$F's url does not name $TAG (the public bump-brew has not run for it); not touching the sha256."; exit 1; }
+        sed -E "s|^(  sha256 )\"[0-9a-f]*\"|\1\"$SHA\"|" "$F" > "$F.new" && mv "$F.new" "$F"
+        git diff
+        if git diff --quiet; then echo "Formula already at the signed sha256"; exit 0; fi
+        git -c user.name="lightbulb-release" -c user.email="hello@thelightbulb.company" commit -am "lightbulb ${VERSION}: signed"
+        for i in 1 2 3; do git push origin HEAD && exit 0; [ "$i" = 3 ] && exit 1; sleep $((i * 10)); done
+      env:
+        HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+    - name: Summary
+      if: always()
+      run: |-
+        {
+          echo "### Signed CLI release $TAG"
+          echo "| | |"
+          echo "|---|---|"
+          echo "| Identity | $SIGN_ID |"
+          echo "| Already signed | ${{ steps.fetch.outputs.already }} |"
+          echo "| Notarization | ${{ steps.notarize.outputs.status || 'not run' }} |"
+          echo "| Old sha256 | \`${{ steps.fetch.outputs.old_sha }}\` |"
+          echo "| New sha256 | \`${{ steps.brew.outputs.new_sha }}\` |"
+        } >> "$GITHUB_STEP_SUMMARY"
+    - name: Clean up signing keychain
+      if: always()
+      run: |-
+        rm -f "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8" "$RUNNER_TEMP/homebrew-tap-key"
+        security delete-keychain "$RUNNER_TEMP/lightbulb-build.keychain-db" || true

@@ -75,6 +75,7 @@ from routers import (
     ses_inbound,
     agent_keys as agent_keys_router,
     webhook_agents as webhook_agents_router,
+    network as network_router,
     settings_keys,
     setup_requests,
     slack_app,
@@ -913,6 +914,7 @@ app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 app.include_router(agent_keys_router.router, prefix="/api/v1/settings/agent-keys", tags=["settings"])
 app.include_router(webhook_agents_router.router, prefix="/api/v1/settings/webhook-agents", tags=["settings"])
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
+app.include_router(network_router.router, prefix="/api/v1/settings/network", tags=["settings"])
 
 # Integrations (MCP servers, ClawHub)
 app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])

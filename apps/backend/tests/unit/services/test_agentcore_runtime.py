@@ -93,3 +93,68 @@ class TestRequestMatchesTheRealServiceModel:
         # a complete S3-resident $HERMES_HOME, not an EFS mount.)
         assert "lifecycleConfiguration" in shape.members
         assert "networkConfiguration" in shape.members
+
+
+# --- the workspace member key on the lightbulb network ---------------------------------------
+
+_CREDS = {"hook_token": "h", "gateway_token": "g", "bedrock_bearer": "b"}
+
+
+def _boot(sm, owner_id):
+    import json
+
+    return json.loads(sm.get_secret_value(SecretId=ar.boot_secret_name(owner_id))["SecretString"])
+
+
+async def test_write_boot_secret_carries_network_key_across_a_reconcile():
+    import boto3
+    from moto import mock_aws
+
+    with mock_aws():
+        sm = boto3.client("secretsmanager", region_name="us-east-1")
+        await ar.write_boot_secret("org_n", **_CREDS)
+        key = _boot(sm, "org_n")["networkKey"]
+
+        # A reconcile with a rotated bearer rewrites the secret but keeps the key.
+        assert await ar.write_boot_secret("org_n", **{**_CREDS, "bedrock_bearer": "b2"}) is True
+        assert _boot(sm, "org_n")["networkKey"] == key
+        assert await ar.write_boot_secret("org_n", **{**_CREDS, "bedrock_bearer": "b2"}) is False
+
+
+async def test_write_boot_secret_mints_once_and_reports_a_boot_change():
+    import base64
+    import json
+
+    import boto3
+    from moto import mock_aws
+
+    with mock_aws():
+        sm = boto3.client("secretsmanager", region_name="us-east-1")
+        name = ar.boot_secret_name("org_m")
+        # An existing secret from before the network: same credentials, no key.
+        sm.create_secret(
+            Name=name, SecretString=json.dumps({"hookToken": "h", "gatewayToken": "g", "bedrockBearer": "b"})
+        )
+        assert await ar.write_boot_secret("org_m", **_CREDS) is True
+        key = _boot(sm, "org_m")["networkKey"]
+        assert len(base64.b64decode(key)) == 32
+        assert await ar.write_boot_secret("org_m", **_CREDS) is False
+        assert _boot(sm, "org_m")["networkKey"] == key
+
+        # Reconnect drops it (not a boot change); the next write mints a different one.
+        assert await ar.write_boot_secret("org_m", **_CREDS, drop_network_key=True) is False
+        assert "networkKey" not in _boot(sm, "org_m")
+        assert await ar.write_boot_secret("org_m", **_CREDS) is True
+        assert _boot(sm, "org_m")["networkKey"] != key
+
+
+async def test_no_other_module_reads_network_key():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]  # apps/backend
+    readers = sorted(
+        str(p.relative_to(root))
+        for p in root.rglob("*.py")
+        if not {"tests", ".venv"} & set(p.relative_to(root).parts) and "networkKey" in p.read_text()
+    )
+    assert readers == ["core/services/agentcore_runtime.py"]

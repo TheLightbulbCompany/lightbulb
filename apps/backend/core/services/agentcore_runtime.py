@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 
 from core.config import settings
@@ -156,6 +157,7 @@ async def write_boot_secret(
     hook_token: str,
     gateway_token: str,
     bedrock_bearer: str,
+    drop_network_key: bool = False,
 ) -> bool:
     """Converge the owner's boot secret (named ``boot_secret_name(owner_id)``, the value a
     runtime's ``BOOT_SECRET_ENV_VAR`` carries). Plaintext lives in exactly one place: this secret.
@@ -166,7 +168,13 @@ async def write_boot_secret(
 
     Only the credentials are compared: an older secret still carrying a retired key
     (``providerChoice``/``providerSwitchFrozen``, or ``vaultToken`` -- which the execution role
-    could read) is rewritten without it, and without that reading as a boot change."""
+    could read) is rewritten without it, and without that reading as a boot change.
+
+    ``networkKey`` is the workspace's member key on the ``lightbulb`` network (read by the
+    network sidecar, and by no backend module but this one). It is carried over from the prior
+    secret and minted only when absent, so a reconcile never rotates it; a mint is a boot change.
+    ``drop_network_key=True`` (Settings -> Reconnect) writes the secret without it, so the next
+    write mints a new key, which makes a new team."""
     import boto3
 
     from core.secrets_manager import create_or_update_secret
@@ -184,6 +192,10 @@ async def write_boot_secret(
             prior = json.loads(sm.get_secret_value(SecretId=name)["SecretString"])
         except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
             prior = None  # absent, or scheduled for deletion (create_or_update_secret retries that)
+        if not drop_network_key:
+            # ponytail: two concurrent FIRST mints race and the last write wins; both report a
+            # boot change, so the restarted session reads the winner. A CAS needs a version check.
+            payload["networkKey"] = (prior or {}).get("networkKey") or base64.b64encode(os.urandom(32)).decode()
         if prior == payload:
             return False
         create_or_update_secret(sm, name, json.dumps(payload))

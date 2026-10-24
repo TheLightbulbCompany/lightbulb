@@ -35,7 +35,7 @@ the CREATE_FAILED ARN clear (``expected_field=``): it must not wipe a newer, hea
 recorded after deleting the same dead runtime.
 
 Boot secret (M4-R4/R5): the runtime's ``environmentVariables`` carry NO credential value. One JSON
-secret, ``agentcore_runtime.boot_secret_name(owner_id)`` = ``{"hookToken","gatewayToken","bedrockBearer"}``,
+secret, ``agentcore_runtime.boot_secret_name(owner_id)`` = ``{"hookToken","gatewayToken","bedrockBearer"}`` plus the network member key,
 is written via ``agentcore_runtime.write_boot_secret`` and only its NAME travels in the env, under
 ``agentcore_runtime.BOOT_SECRET_ENV_VAR`` — the bridge resolves it at boot with the runtime's own
 execution role. ``provision_hermes_runtime`` never re-fetches this name from anywhere: it is a pure
@@ -473,23 +473,31 @@ def _delete_boot_secret(owner_id: str) -> None:
 def _delete_profile_prefix_objects(owner_id: str) -> None:
     """Delete every S3 object under ``<owner>/hermes/`` -- the whole Hermes home, every agent's
     profile plus the root ``auth.json``. Only called by ``teardown_hermes_runtime`` when
-    ``delete_profiles=True`` (an account wipe, never a rollback). Paginated (S3's own 1000-key
-    batch cap), sync — call via ``run_in_thread``. Mirrors ``hermes_profiles.delete_profile``'s
-    own pagination shape."""
+    ``delete_profiles=True`` (an account wipe, never a rollback). Sync — call via
+    ``run_in_thread``."""
+    from core.services.hermes_profiles import root_home_prefix
+
+    _delete_prefixes(
+        [
+            root_home_prefix(owner_id),
+            f"marketplace-installs/{owner_id}/",
+            f"browser-state/{owner_id}/",
+            f"{owner_id}/browser-extensions/",
+        ]
+    )
+
+
+def _delete_prefixes(prefixes: list[str]) -> None:
+    """Delete every owner-state object under each prefix. Paginated (S3's own 1000-key batch
+    cap); raises on a partial delete. A no-op without a bucket. Sync — call via
+    ``run_in_thread``."""
     if not settings.OWNER_STATE_BUCKET:
         return
     import boto3
 
-    from core.services.hermes_profiles import root_home_prefix
-
     client = boto3.client("s3")
     paginator = client.get_paginator("list_objects_v2")
-    for prefix in (
-        root_home_prefix(owner_id),
-        f"marketplace-installs/{owner_id}/",
-        f"browser-state/{owner_id}/",
-        f"{owner_id}/browser-extensions/",
-    ):
+    for prefix in prefixes:
         for page in paginator.paginate(Bucket=settings.OWNER_STATE_BUCKET, Prefix=prefix):
             keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
             if keys:
@@ -511,7 +519,9 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
          cold-start; skipping this can leave it presenting a dead credential until AWS reaps it.
       2. ``DeleteAgentRuntime``.
       3. Revoke the row's own ``bedrock_gate_token_hash`` (the live bearer generation).
-      4. Delete the ONE JSON boot secret.
+      4. Delete the ONE JSON boot secret, and the workspace's ``<owner>/network/`` state
+         (whatever ``delete_profiles`` says: the member key dies with the secret, so the state
+         that key signed is dead too).
       5. (``delete_profiles`` only) delete every object under ``<owner>/hermes/`` in S3.
 
     ``delete_profiles=False`` is the default and what a reprovision wants -- S3 profiles are
@@ -558,6 +568,10 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
         await run_in_thread(_delete_boot_secret, owner_id)
     except Exception:  # noqa: BLE001 — best-effort cleanup
         logger.warning("hermes teardown: could not delete boot secret for owner=%s", owner_id, exc_info=True)
+    try:
+        await run_in_thread(_delete_prefixes, [f"{owner_id}/network/"])
+    except Exception:  # noqa: BLE001 — best-effort cleanup
+        logger.warning("hermes teardown: could not delete network state for owner=%s", owner_id, exc_info=True)
 
     if delete_profiles:
         try:
@@ -703,6 +717,7 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
         gateway_token=gateway_token,
         bedrock_bearer=bedrock_bearer,
     )
+    await _ensure_network_member(owner_id)
 
     # m2: the one step that mints three credentials and writes a secret was otherwise invisible
     # in the provision log. Never logs a value -- only which tokens were reused vs freshly minted.
@@ -719,6 +734,22 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
         # A no-op on a first provision (no company yet).
         await sync_paperclip_adapter_config(owner_id)
     return boot_changed
+
+
+async def _ensure_network_member(owner_id: str) -> None:
+    """Write ``sessions.json`` when it is absent, so every workspace is a member of the
+    ``lightbulb`` network from provision on. Best-effort: a network hiccup never fails a
+    provision, and the next reconcile (or a Settings connect) writes it. On a fresh provision the
+    roster is still empty here; ``write_profiles`` republishes it once the roster is seeded."""
+    if not settings.OWNER_STATE_BUCKET:
+        return
+    from core.services import network_member
+
+    try:
+        if not await network_member.sessions_exist(owner_id):
+            await network_member.write_sessions(owner_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("network sessions write failed for owner=%s", owner_id, exc_info=True)
 
 
 async def sync_paperclip_adapter_config(owner_id: str) -> None:
@@ -1417,6 +1448,10 @@ async def write_profiles(owner_id: str) -> None:
         )
         keep = current if current and not hermes_profiles.is_generated_soul(current) else None
         await write_profile_for_agent(owner_id, agent, soul_md_override=keep, inputs=inputs)
+
+    from core.services import network_member
+
+    await network_member.publish_sessions(owner_id)
 
 
 async def _stage_owner_facts(

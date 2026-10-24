@@ -1,0 +1,149 @@
+"""The workspace as one computer on the free ``lightbulb`` peer-to-peer network.
+
+The network engine runs as a sidecar in the workspace's AgentCore microVM. The backend owns two
+inputs it reads: the member key (in the boot secret, written only by
+``agentcore_runtime.write_boot_secret``) and ``<owner>/network/sessions.json``, the addresses
+this workspace answers on -- one per agent, plus any app entries the sidecar added.
+
+The invite line ``connect`` returns is a credential: it is never logged or stored here.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+
+from core.config import settings
+from core.dynamodb import run_in_thread
+from core.services import container_rpc
+from core.services.messaging import ApiProblem
+
+logger = logging.getLogger(__name__)
+
+MAX_SESSIONS = 100
+
+
+def sessions_key(owner_id: str) -> str:
+    return f"{owner_id}/network/sessions.json"
+
+
+def network_prefix(owner_id: str) -> str:
+    return f"{owner_id}/network/"
+
+
+def app_person(user_id: str) -> str:
+    """A short, stable, non-reversible handle for a person on an app's address."""
+    return hashlib.sha256(user_id.encode()).hexdigest()[:8]
+
+
+async def sessions_exist(owner_id: str) -> bool:
+    from core.services.hermes_profiles import owner_object_size
+
+    return await run_in_thread(owner_object_size, sessions_key(owner_id)) is not None
+
+
+async def _read_sessions(owner_id: str) -> dict | None:
+    from core.services.hermes_profiles import get_owner_object
+
+    body = await run_in_thread(get_owner_object, sessions_key(owner_id))
+    return json.loads(body) if body else None
+
+
+async def write_sessions(owner_id: str, *, apps: list[dict] | None = None) -> dict:
+    """Write ``sessions.json``: every roster agent, then the app entries. ``apps=None`` keeps
+    the earlier app entries (an app entry is one with no ``agentId``)."""
+    from core.services import clerk_admin
+    from core.services.company_identity import slugify
+    from core.services.hermes_profiles import put_owner_object
+    from core.services.messaging import load_agent_roster
+
+    if apps is None:
+        prior = await _read_sessions(owner_id) or {}
+        apps = [s for s in prior.get("sessions", []) if isinstance(s, dict) and "agentId" not in s]
+    roster = await load_agent_roster(owner_id)
+    if len(roster) + len(apps) > MAX_SESSIONS:
+        raise ApiProblem("INVALID_REQUEST", f"This workspace has reached {MAX_SESSIONS} network addresses.")
+
+    used = {s.get("name") for s in apps}
+    sessions = []
+    for agent in roster:
+        name = slugify(agent["name"]) or agent["id"][:8]
+        if name in used:
+            name = f"{name}-{agent['id'][:4]}"
+        used.add(name)
+        sessions.append({"name": name, "agent": "hermes", "title": agent["name"], "agentId": agent["id"]})
+
+    org = await clerk_admin.get_organization(owner_id) or {}
+    doc = {"workspace": org.get("name") or owner_id, "sessions": sessions + apps}
+    await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
+    return doc
+
+
+async def publish_sessions(owner_id: str) -> None:
+    """When this workspace is a member, rewrite ``sessions.json`` and tell the sidecar.
+    Best effort: never raises."""
+    if not settings.OWNER_STATE_BUCKET:
+        return
+    try:
+        if not await sessions_exist(owner_id):
+            return
+        await write_sessions(owner_id)
+        await container_rpc.call(owner_id, "network.sessions", {}, timeout_s=10)
+    except Exception:  # noqa: BLE001
+        logger.warning("network sessions publish failed for owner=%s", owner_id, exc_info=True)
+
+
+async def _runtime_arn(owner_id: str) -> str | None:
+    from core.repositories import container_repo
+
+    return ((await container_repo.get_by_owner_id(owner_id)) or {}).get("agentcore_runtime_arn")
+
+
+async def connect(owner_id: str, user_id: str, name: str) -> dict:
+    """An invite line for one person. A workspace that is not a member yet (not rolled, or just
+    reconnected) gets its key and ``sessions.json`` first, and a restart if the key is new."""
+    from core.services.hermes_provisioning import prepare_hermes_workspace, stop_runtime_session
+
+    if not await sessions_exist(owner_id):
+        if await prepare_hermes_workspace(owner_id):
+            arn = await _runtime_arn(owner_id)
+            if arn:
+                await stop_runtime_session(owner_id, arn)
+    return await container_rpc.call(owner_id, "network.invite", {"for": user_id, "name": name})
+
+
+def _read_boot_credentials(owner_id: str) -> dict | None:
+    import boto3
+
+    from core.services.agentcore_runtime import boot_secret_name
+
+    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+    try:
+        return json.loads(sm.get_secret_value(SecretId=boot_secret_name(owner_id))["SecretString"])
+    except sm.exceptions.ResourceNotFoundException:
+        return None
+
+
+async def reconnect(owner_id: str) -> None:
+    """Leave the current team: drop the member key, stop the session, delete the network state.
+    The next ``connect`` (or reconcile) mints a new key, which makes a new team.
+
+    Order matters: the key goes first so a cold start in between cannot read it; the stop comes
+    before the delete so a warm session cannot save network state back after it."""
+    from core.services.agentcore_runtime import write_boot_secret
+    from core.services.hermes_provisioning import _delete_prefixes, stop_runtime_session
+
+    creds = await run_in_thread(_read_boot_credentials, owner_id)
+    if creds:
+        await write_boot_secret(
+            owner_id,
+            hook_token=creds["hookToken"],
+            gateway_token=creds["gatewayToken"],
+            bedrock_bearer=creds["bedrockBearer"],
+            drop_network_key=True,
+        )
+    arn = await _runtime_arn(owner_id)
+    if arn:
+        await stop_runtime_session(owner_id, arn)
+    await run_in_thread(_delete_prefixes, [network_prefix(owner_id)])

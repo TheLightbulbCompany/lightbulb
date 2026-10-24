@@ -196,6 +196,10 @@ async def _invalidate(owner_id: str, method: str) -> None:
         await publish_owner_users(owner_id, make_live_event("runtime.resource.invalidated", {"resource": resource}))
     except Exception:
         logger.warning("resource invalidation publish failed resource=%s", resource, exc_info=True)
+    if method.startswith("agents."):
+        from core.services import network_member
+
+        await network_member.publish_sessions(owner_id)  # never raises
 
 
 def _guard_method(method: str) -> None:

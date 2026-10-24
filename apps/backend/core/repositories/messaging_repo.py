@@ -22,6 +22,8 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     STREAM#<key>    META                               reverse mapping AppSync onSubscribe reads
     OWNER#<owner>   OPERATION#<id>                     async runtime op status/result
     OWNER#<owner>   WORK#OPERATION#<id>                one-shot outbox for runtime work
+    OWNER#<owner>   NETWAKE                            network doorbell: tokenHash (sha256), lastWakeAt (no TTL)
+    OWNER#<owner>   WORK#NETWAKE#<ulid>                one-shot outbox: wake the parked workspace's network sidecar
     OWNER#<owner>   WORKSPACE                          opaque AppSync channel-path segment
     WORKSPACE#<ws>  META                               owner of the path segment (AppSync onPublish reads it)
     WORKSPACE#<ws>  MEMBER#<user>                      the user may subscribe /ws/<ws>/sessions (onSubscribe
@@ -234,6 +236,14 @@ def operation_sk(operation_id: str) -> str:
 
 def work_operation_sk(operation_id: str) -> str:
     return f"WORK#OPERATION#{operation_id}"
+
+
+def netwake_sk() -> str:
+    return "NETWAKE"
+
+
+def work_netwake_sk(ulid: str) -> str:
+    return f"WORK#NETWAKE#{ulid}"
 
 
 def followup_sk(follow_up_id: str) -> str:

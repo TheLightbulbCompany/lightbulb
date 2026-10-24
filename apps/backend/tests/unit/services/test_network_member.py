@@ -1,5 +1,7 @@
 """The workspace as one computer on the lightbulb network: sessions.json and its publishing."""
 
+# ruff: noqa: F811 -- `table` is the repo suite's moto fixture, imported and then requested by name.
+
 import json
 from unittest.mock import AsyncMock
 
@@ -7,14 +9,16 @@ import pytest
 
 from core.services import network_member
 from core.services.messaging import ApiProblem
+from tests.unit.repositories.test_messaging_repo import table  # noqa: F401
 
 A1 = "11111111-1111-1111-1111-111111111111"
 A2 = "22222222-2222-2222-2222-222222222222"
 
 
 @pytest.fixture
-def store(monkeypatch):
-    """The owner-state bucket as a dict, plus an org name and a two-agent roster."""
+def store(monkeypatch, table):
+    """The owner-state bucket as a dict, plus an org name and a two-agent roster (and the
+    messaging table, which holds the doorbell's token hash)."""
     objects: dict[str, bytes] = {}
     monkeypatch.setattr(network_member.settings, "OWNER_STATE_BUCKET", "bucket")
     monkeypatch.setattr("core.services.hermes_profiles.put_owner_object", lambda k, b: objects.__setitem__(k, b))
@@ -39,6 +43,8 @@ async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
     await network_member.write_sessions("org_a")  # apps=None keeps the earlier app entry
 
     assert network_member.sessions_key("org_a") == "org_a/network/sessions.json"
+    token = _doc(store)["wake"]["token"]
+    assert token.startswith("org_a.")
     assert _doc(store) == {
         "workspace": "Acme Builders",
         "sessions": [
@@ -46,6 +52,7 @@ async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
             {"name": "ops-lead", "agent": "hermes", "title": "Ops Lead", "agentId": A2},
             app,
         ],
+        "wake": {"url": f"http://localhost:8000/api/v1/network/wake/{token}", "token": token},
     }
     assert network_member.app_person("user_1") == network_member.app_person("user_1")
     assert len(network_member.app_person("user_1")) == 8

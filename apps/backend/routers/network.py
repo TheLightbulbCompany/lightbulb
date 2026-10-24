@@ -14,6 +14,7 @@ from core.services import network_member
 
 router = APIRouter()
 internal_router = APIRouter()
+wake_router = APIRouter()
 
 
 class InviteRequest(BaseModel):
@@ -63,3 +64,9 @@ async def network_hold_notice(owner_id: str, body: HoldNotice, request: Request)
     await _require_hook_token(owner_id, request)
     await network_member.hold_notice(owner_id, body.model_dump())
     return Response(status_code=204)
+
+
+@wake_router.post("/wake/{token}", include_in_schema=False)
+async def network_wake(token: str):
+    """The doorbell: unauthenticated by design, the token is the credential. No body either way."""
+    return Response(status_code=202 if await network_member.ring(token) else 404)

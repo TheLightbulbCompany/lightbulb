@@ -91,6 +91,11 @@ def _running() -> bool:
     return proc is not None and proc.poll() is None and not _stopping
 
 
+def running() -> bool:
+    """True while this process's sidecar runs."""
+    return _running()
+
+
 # ---- start -------------------------------------------------------------------------------------
 def ensure_started(*, background: bool) -> bool:
     """True when the sidecar runs. A no-op without the member key or without sessions.json.

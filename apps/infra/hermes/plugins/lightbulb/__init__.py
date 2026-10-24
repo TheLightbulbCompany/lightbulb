@@ -87,7 +87,7 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
         "eventId": f"{ctx.get('runId') or ctx.get('eventId') or uuid.uuid4()}:{ctx['agentId']}:tool:{next(_counter)}",
         "roomId": room, "agentId": ctx["agentId"], "text": text, "replyToMessageId": None,
         "threadRootMessageId": thread if paperclip else thread or ctx.get("threadRootMessageId"),
-        **({} if paperclip else {"runId": ctx["runId"]}),
+        **({"runId": ctx["runId"]} if not paperclip and ctx.get("runId") else {}),
     }
     url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/messaging/agent-messages/{ctx['ownerId']}"
     try:
@@ -399,13 +399,16 @@ NETWORK_NO_SESSION = ("You have no session on the Lightbulb network, so you cann
 _net_lock = threading.Lock()
 
 
-def _next_request_id(session_id: str, ctx: dict) -> str:
+def _next_request_id(session_id: str) -> str:
     """``<runId or eventId>:net:<n>``, n counted in the turn's own context file: the bridge
-    writes a fresh file for each turn, so a re-run turn re-sends with the same ids."""
+    writes a fresh file for each turn, so a re-run turn re-sends with the same ids. The file is
+    re-read under the lock, so parallel sends in one turn never share an id."""
     with _net_lock:
+        ctx = turn_context.read(session_id) or {}
+        base = ctx.get("runId") or ctx.get("eventId") or ctx.get("netBase") or str(uuid.uuid4())
         n = int(ctx.get("netCount") or 0) + 1
-        turn_context.write(turn_context._home(), session_id, {**ctx, "netCount": n})
-    return f"{ctx.get('runId') or ctx.get('eventId')}:net:{n}"
+        turn_context.write(turn_context._home(), session_id, {**ctx, "netCount": n, "netBase": base})
+    return f"{base}:net:{n}"
 
 
 def _network(args: dict, *, session_id: str = "", **_kw) -> str:
@@ -423,7 +426,7 @@ def _network(args: dict, *, session_id: str = "", **_kw) -> str:
             return json.dumps(network.ask("receipt", {"request_id": request_id}))
         if action != "send":
             return "action must be one of send|receipt|directory."
-        if not network._running():
+        if not network.running():
             return NETWORK_OFF
         sender = network.session_for_agent(ctx["agentId"])  # never a model argument
         if not sender:
@@ -431,7 +434,7 @@ def _network(args: dict, *, session_id: str = "", **_kw) -> str:
         to, text = str(args.get("to") or "").strip(), str(args.get("text") or "").strip()
         if not to or not text:
             return "to and text are required."
-        request_id = str(args.get("request_id") or "") or _next_request_id(session_id, ctx)
+        request_id = str(args.get("request_id") or "") or _next_request_id(session_id)
         if not _OPAQUE_RE.match(request_id):
             return "request_id must be an opaque token."
         body = {"from": sender, "to": to, "text": text, "request_id": request_id}

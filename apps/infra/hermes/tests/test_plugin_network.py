@@ -2,6 +2,7 @@
 import json
 import pathlib
 import sys
+import threading
 
 import pytest
 
@@ -19,7 +20,7 @@ CTX = {"apiUrl": "https://api.invalid", "ownerId": "org_test", "hookToken": "h",
 def net(tmp_path, monkeypatch):
     monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
     turn_context.write(tmp_path, SESSION, CTX)
-    monkeypatch.setattr(network, "_running", lambda: True)
+    monkeypatch.setattr(network, "running", lambda: True)
     monkeypatch.setattr(network, "_sessions", {"sessions": [{"name": "friday", "agentId": "a-friday"},
                                                             {"name": "ceo", "agentId": "a-ceo"}]})
     calls = []
@@ -54,7 +55,7 @@ def test_a_rerun_turn_reuses_its_request_ids(net, tmp_path):
 
 
 def test_the_tool_answers_cleanly_when_the_network_is_off(net, monkeypatch):
-    monkeypatch.setattr(network, "_running", lambda: False)
+    monkeypatch.setattr(network, "running", lambda: False)
     assert _send() == lightbulb.NETWORK_OFF
 
     def off(op, body=None, timeout_s=10.0):
@@ -70,3 +71,26 @@ def test_a_refusal_carries_only_its_code(net, monkeypatch):
         raise network.OpError(op, "unknown_session")
     monkeypatch.setattr(network, "ask", refuse)
     assert _send() == "Lightbulb network send refused: unknown_session"
+
+
+def test_parallel_sends_in_one_turn_get_distinct_ids(net):
+    gate = threading.Barrier(8)
+
+    def send():
+        gate.wait()
+        _send()
+    threads = [threading.Thread(target=send) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(b["request_id"] for _, b in net) == sorted(f"m1:net:{n}" for n in range(1, 9))
+
+
+def test_a_turn_with_neither_run_nor_event_id_gets_one_uuid_base(net, tmp_path):
+    turn_context.write(tmp_path, SESSION, {**CTX, "eventId": None})
+    _send()
+    _send()
+    ids = [b["request_id"] for _, b in net]
+    assert "None" not in ids[0] and ids[0].endswith(":net:1")
+    assert ids[1] == ids[0].removesuffix("1") + "2"

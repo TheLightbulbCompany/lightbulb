@@ -8,6 +8,8 @@ is in the profile sync's exclude list: the local-session JWT it carries never le
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 
 DIRNAME = ".lightbulb-turn"
@@ -26,7 +28,9 @@ def _path(root, session_id: str) -> Path:
 def write(root, session_id: str, ctx: dict) -> None:
     target = _path(root, session_id)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(ctx), encoding="utf-8")
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")  # atomic: a reader never sees half a file
+    tmp.write_text(json.dumps(ctx), encoding="utf-8")
+    os.replace(tmp, target)
 
 
 def read(session_id: str) -> dict | None:

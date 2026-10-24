@@ -50,3 +50,4 @@ def test_a_run_less_room_post_uses_the_network_message_id(tmp_path, monkeypatch)
     monkeypatch.setattr(lightbulb, "_post", lambda url, token, body: sent.append(body) or {"messageId": "m"})
     lightbulb._send_room_message({"roomId": OTHER_ROOM, "text": "hi"}, session_id=session)
     assert sent[0]["eventId"].startswith("msg-7:ceo:tool:")
+    assert "runId" not in sent[0]

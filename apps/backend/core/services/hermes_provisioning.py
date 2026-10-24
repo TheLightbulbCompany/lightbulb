@@ -119,6 +119,7 @@ def build_hermes_runtime_env(
     managed_model_id: str = "",
     memory_id: str = "",
     max_concurrent_turns: int | None = None,
+    project_id: str = "",
 ) -> dict[str, str]:
     """The bridge's environment (M4-R19). Identifiers ONLY — every credential lives in the ONE
     Secrets Manager boot secret ``boot_secret_id`` names; nothing here is a bearer, a hook token,
@@ -157,6 +158,10 @@ def build_hermes_runtime_env(
     # The bridge's per-microVM turn cap; absent keeps the image default (4).
     if max_concurrent_turns:
         env["LIGHTBULB_MAX_CONCURRENT_TURNS"] = str(int(max_concurrent_turns))
+    # The budget project the gate charges (sent as x-lightbulb-project-id); absent means the
+    # gate charges the workspace's "__default__" bucket.
+    if project_id:
+        env["LIGHTBULB_PROJECT_ID"] = project_id
     if managed_gate_url:
         env["LIGHTBULB_MANAGED_GATE_URL"] = managed_gate_url
         env["LIGHTBULB_MANAGED_MODEL_ID"] = managed_model_id
@@ -905,6 +910,7 @@ _OPTIONAL_ENV_KEYS = frozenset(
         "LIGHTBULB_MAX_CONCURRENT_TURNS",
         "LIGHTBULB_MANAGED_GATE_URL",
         "LIGHTBULB_MANAGED_MODEL_ID",
+        "LIGHTBULB_PROJECT_ID",
         "AGENT_BROWSER_PROVIDER",
         "AGENTCORE_REGION",
         "AGENTCORE_BROWSER_ID",

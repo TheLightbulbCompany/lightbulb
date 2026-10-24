@@ -140,6 +140,8 @@ export class OpenRouterGateStack extends cdk.Stack {
         FAST_GATE_TABLE: `${tablePrefix(env)}metronome-fast-gate`,
         // Settled OpenRouter cost is added here: the backend's own usage counters price only Bedrock.
         USAGE_COUNTERS_TABLE: `${tablePrefix(env)}usage-counters`,
+        // Settlement is the only writer of a project budget's spent_microcents (billing item).
+        BILLING_TABLE: `${tablePrefix(env)}billing-accounts`,
         RESERVE_TTL_SECONDS: "1200",
         METRONOME_API_KEY_SECRET_ID: `lightbulb/${env}/metronome_api_key`,
         OPENROUTER_MANAGEMENT_KEY_SECRET_ID: `lightbulb/${env}/openrouter/management`,
@@ -161,7 +163,7 @@ export class OpenRouterGateStack extends cdk.Stack {
     // Settlement only ADDs real OpenRouter cost to the usage counters (inside its transaction).
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["dynamodb:UpdateItem"],
-      resources: [tableArn("usage-counters")],
+      resources: [tableArn("usage-counters"), tableArn("billing-accounts")],
     }));
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:GetSecretValue"],

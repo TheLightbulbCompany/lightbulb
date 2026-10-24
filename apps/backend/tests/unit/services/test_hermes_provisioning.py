@@ -2268,3 +2268,9 @@ async def test_a_fresh_provision_mints_the_network_key_and_sessions_json(monkeyp
         again = json.loads(sm.get_secret_value(SecretId=hermes_provisioning.boot_secret_name("org_a"))["SecretString"])
         assert again["networkKey"] == boot["networkKey"]
         assert json.loads(objects["org_a/network/sessions.json"])["kept"] is True
+
+
+def test_project_id_rides_the_runtime_env_only_when_given():
+    kw = dict(owner_id="org_a", api_base="https://api-dev.thelightbulb.company", bucket="b", boot_secret_id="s")
+    assert "LIGHTBULB_PROJECT_ID" not in hermes_provisioning.build_hermes_runtime_env(**kw)
+    assert hermes_provisioning.build_hermes_runtime_env(**kw, project_id="proj-1")["LIGHTBULB_PROJECT_ID"] == "proj-1"

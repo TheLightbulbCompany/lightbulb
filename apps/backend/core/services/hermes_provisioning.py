@@ -568,8 +568,10 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
         await run_in_thread(_delete_boot_secret, owner_id)
     except Exception:  # noqa: BLE001 — best-effort cleanup
         logger.warning("hermes teardown: could not delete boot secret for owner=%s", owner_id, exc_info=True)
+    from core.services.network_member import network_prefix
+
     try:
-        await run_in_thread(_delete_prefixes, [f"{owner_id}/network/"])
+        await run_in_thread(_delete_prefixes, [network_prefix(owner_id)])
     except Exception:  # noqa: BLE001 — best-effort cleanup
         logger.warning("hermes teardown: could not delete network state for owner=%s", owner_id, exc_info=True)
 

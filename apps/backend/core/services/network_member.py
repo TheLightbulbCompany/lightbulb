@@ -10,9 +10,11 @@ The invite line ``connect`` returns is a credential: it is never logged or store
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import time
 
 from core.config import settings
 from core.dynamodb import run_in_thread
@@ -50,18 +52,26 @@ async def _read_sessions(owner_id: str) -> dict | None:
     return json.loads(body) if body else None
 
 
+def _app_entries(doc: dict) -> list[dict]:
+    """An app entry is one with no ``agentId``."""
+    return [s for s in doc.get("sessions", []) if isinstance(s, dict) and "agentId" not in s]
+
+
 async def write_sessions(owner_id: str, *, apps: list[dict] | None = None) -> dict:
     """Write ``sessions.json``: every roster agent, then the app entries. ``apps=None`` keeps
-    the earlier app entries (an app entry is one with no ``agentId``)."""
+    the earlier app entries."""
+    if apps is None:
+        apps = _app_entries(await _read_sessions(owner_id) or {})
+    return await _write(owner_id, apps)
+
+
+async def _write(owner_id: str, apps: list[dict]) -> dict:
     from core.services import clerk_admin
     from core.services.company_identity import slugify
     from core.services.hermes_profiles import put_owner_object
     from core.services.messaging import load_agent_roster
 
-    if apps is None:
-        prior = await _read_sessions(owner_id) or {}
-        apps = [s for s in prior.get("sessions", []) if isinstance(s, dict) and "agentId" not in s]
-    roster = await load_agent_roster(owner_id)
+    roster, org = await asyncio.gather(load_agent_roster(owner_id), clerk_admin.get_organization(owner_id))
     if len(roster) + len(apps) > MAX_SESSIONS:
         raise ApiProblem("INVALID_REQUEST", f"This workspace has reached {MAX_SESSIONS} network addresses.")
 
@@ -77,8 +87,7 @@ async def write_sessions(owner_id: str, *, apps: list[dict] | None = None) -> di
         used.add(name)
         sessions.append({"name": name, "agent": "hermes", "title": agent["name"], "agentId": agent["id"]})
 
-    org = await clerk_admin.get_organization(owner_id) or {}
-    doc = {"workspace": org.get("name") or owner_id, "sessions": sessions + apps}
+    doc = {"workspace": (org or {}).get("name") or owner_id, "sessions": sessions + apps}
     await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
     return doc
 
@@ -89,9 +98,10 @@ async def publish_sessions(owner_id: str) -> None:
     if not settings.OWNER_STATE_BUCKET:
         return
     try:
-        if not await sessions_exist(owner_id):
+        prior = await _read_sessions(owner_id)
+        if prior is None:
             return
-        await write_sessions(owner_id)
+        await _write(owner_id, _app_entries(prior))
         # Only a warm sidecar is pinged: a parked one reads sessions.json at its next start,
         # and an invoke here would cold-start the workspace (~55 s) from an agent edit.
         if await _session_is_warm(owner_id):
@@ -103,15 +113,10 @@ async def publish_sessions(owner_id: str) -> None:
 async def _session_is_warm(owner_id: str) -> bool:
     """The ``__session__#<owner>`` estimate ``runtime_transport`` keeps, for THIS runtime.
     False with no runtime yet (a fresh provision writes profiles before CreateAgentRuntime)."""
-    import time
-
     from core.repositories import container_repo
 
-    arn = await _runtime_arn(owner_id)
-    if not arn:
-        return False
-    row = await run_in_thread(container_repo.get_session_sync, owner_id)
-    return int(row.get("warm_until") or 0) > int(time.time()) and row.get("arn") == arn
+    arn, row = await asyncio.gather(_runtime_arn(owner_id), run_in_thread(container_repo.get_session_sync, owner_id))
+    return bool(arn) and int(row.get("warm_until") or 0) > int(time.time()) and row.get("arn") == arn
 
 
 async def _runtime_arn(owner_id: str) -> str | None:

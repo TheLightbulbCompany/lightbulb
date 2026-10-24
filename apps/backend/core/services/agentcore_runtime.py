@@ -151,6 +151,15 @@ def derive_vault_token(owner_id: str, row_id: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
+def _read_secret(sm, name: str) -> dict | None:
+    """The boot secret's JSON; None when absent, or scheduled for deletion
+    (``create_or_update_secret`` retries that)."""
+    try:
+        return json.loads(sm.get_secret_value(SecretId=name)["SecretString"])
+    except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
+        return None
+
+
 async def write_boot_secret(
     owner_id: str,
     *,
@@ -187,10 +196,7 @@ async def write_boot_secret(
     sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
 
     def _converge() -> bool:
-        try:
-            prior = json.loads(sm.get_secret_value(SecretId=name)["SecretString"])
-        except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
-            prior = None  # absent, or scheduled for deletion (create_or_update_secret retries that)
+        prior = _read_secret(sm, name)
         # ponytail: two concurrent FIRST mints race and the last write wins; both report a
         # boot change, so the restarted session reads the winner. A CAS needs a version check.
         payload["networkKey"] = (prior or {}).get("networkKey") or base64.b64encode(os.urandom(32)).decode()
@@ -215,11 +221,8 @@ async def drop_network_key(owner_id: str) -> None:
     sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
 
     def _drop() -> None:
-        try:
-            prior = json.loads(sm.get_secret_value(SecretId=name)["SecretString"])
-        except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
-            return
-        if prior.pop("networkKey", None) is not None:
+        prior = _read_secret(sm, name)
+        if prior and prior.pop("networkKey", None) is not None:
             create_or_update_secret(sm, name, json.dumps(prior))
 
     await run_in_thread(_drop)

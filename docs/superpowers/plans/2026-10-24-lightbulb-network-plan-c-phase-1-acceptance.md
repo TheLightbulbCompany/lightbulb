@@ -45,6 +45,14 @@ Nothing here is claimed without its evidence line.
 | Settings → Connections → "Connect your computer": "Your workspace is connected." + install line + Get my line + Reconnect workspace | `win/dev-settings-connect-your-computer.jpg` |
 | Two-mac CI run 40076202039 (GitHub macOS runner): joined the workspace team through the person invite with NO Allow (`Team "Network Phase One" — 2 computers: You (ci-mac) · member; Network Phase One · founder`); its first message to `um6sfp7huaka/ceo` was `held` (600 s) → engine fix cli #34 (a computer admitted by a person link is that person; v0.3.1); no Activity item appeared for the hold → open item (bridge → backend hold notice chain; needs CloudWatch in the morning) | run log; ledger 21:35Z–22:30Z |
 
+## v0.3.1 (the person-link fix) — 2026-10-25 ~23:20Z–2026-10-26 ~00:40Z
+
+| what | evidence |
+|---|---|
+| cli #34 (a computer admitted by a person link is that person) merged on green CI; bump #35; tag v0.3.1; release run 40077828639 (macOS arm64, Linux arm64, Linux x86_64, npm, brew); signing run 40078384034 success; owner's Mac `lightbulb update` → 0.3.1, Developer ID verified | run ids |
+| Hermes image re-pinned to v0.3.1 by checksum (#4332); image build 40078489921 → `h-2026.10.24-d1daf5d`; pins flipped (#4333); deploy train 40079437330 success end to end | run ids |
+| Runtimes: still on `h-2026.10.24-9566ac3` until the morning rolls (dev and prod; prod's roll also writes sessions.json) | ledger |
+
 ## Step 2 — the demo on dev
 
 | # | item | result | evidence |

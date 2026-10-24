@@ -10,11 +10,11 @@ from starlette.routing import Match, Mount
 from main import app
 
 BRIDGE = Path(__file__).resolve().parents[3] / "infra" / "hermes" / "bridge"
-_CALL = re.compile(r'_post_backend\(\s*f"([^"]+)"')
+_CALL = re.compile(r'_post_backend\(\s*f(["\'])([^"\']+)\1')  # either quote style
 
 
 def test_every_bridge_callback_path_is_routed():
-    raw_paths = {m for src in BRIDGE.glob("*.py") for m in _CALL.findall(src.read_text())}
+    raw_paths = {m[1] for src in BRIDGE.glob("*.py") for m in _CALL.findall(src.read_text())}
     assert raw_paths, f"no _post_backend calls found under {BRIDGE}"
     missing = []
     for raw in sorted(raw_paths):

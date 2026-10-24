@@ -157,3 +157,19 @@ test('a non-200 upstream body reaches end() (bounded) while the client still get
   assert.equal(JSON.parse(Buffer.concat(written).toString()).error.message, 'Upstream returned 403');
   assert.equal(result.preGeneration, true);
 });
+
+test('returns the model OpenRouter reports on the stream', async () => {
+  const requestImpl = (_url, _options, onResponse) => {
+    const req = new EventEmitter();
+    req.end = () => {
+      const upstream = new EventEmitter();
+      upstream.statusCode = 200;
+      upstream.headers = {};
+      onResponse(upstream);
+      queueMicrotask(() => { upstream.emit('data', Buffer.from('data: {"id":"gen-7","model":"anthropic/claude-sonnet-4.5","choices":[]}\n\n')); upstream.emit('end'); });
+    };
+    return req;
+  };
+  const result = await forward({ body: { stream: true }, key: 'k', requestImpl, writeHead: () => {}, write: () => {}, end: () => {} });
+  assert.equal(result.model, 'anthropic/claude-sonnet-4.5');
+});

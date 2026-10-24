@@ -217,3 +217,15 @@ test('every other path still 404s', async () => {
   await handleRequest(modelsEvent('/v1/embeddings'), f.responder, f.deps);
   assert.equal(f.calls.errors[0].status, 404);
 });
+
+test('auto-routed request records the model that answered, and an unlisted model is still refused', async () => {
+  const f = fixture();
+  f.deps.forwardImpl = async p => { p.writeHead(200, { 'content-type': 'text/event-stream' }); p.end(); return { status: 200, generationId: 'gen-1', model: 'anthropic/claude-sonnet-4.5' }; };
+  await handleRequest(f.event({ model: 'openrouter/auto', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps);
+  assert.equal(f.calls.errors.length, 0);
+  assert.ok(f.calls.updates.some(u => u.ExpressionAttributeValues?.[':model']?.S === 'anthropic/claude-sonnet-4.5'));
+  const g = fixture();
+  await handleRequest(g.event({ model: 'evil/model', messages: [{ role: 'user', content: 'Hi' }], stream: true }), g.responder, g.deps);
+  assert.equal(g.calls.errors[0].status, 400);
+  assert.equal(g.calls.errors[0].message, 'Model not allowed');
+});

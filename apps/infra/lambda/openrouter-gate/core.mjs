@@ -225,6 +225,10 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       }
     }
     if (result.generationId) await onGenerationId(result.generationId);
+    // The model that actually answered (openrouter/auto picks one): kept on the ledger row so a downgrade is visible.
+    if (result.model && result.generationId) {
+      try { await ddb.updateItem({ TableName: env.REQUESTS_TABLE, Key: { request_id: { S: requestId } }, UpdateExpression: 'SET resolved_model = :model', ConditionExpression: 'attribute_exists(request_id)', ExpressionAttributeValues: { ':model': { S: String(result.model) } } }); } catch (error) { console.error('resolved model stamp failed', error?.name); }
+    }
     if (result.preGeneration === true && !persistedId) {
       if (billingMode === 'paid') await release(ddb, env, ownerId, estimate, requestId);
       else await releaseFree(ddb, env, requestId);

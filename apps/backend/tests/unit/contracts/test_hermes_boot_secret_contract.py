@@ -15,6 +15,7 @@ shipping green on both sides and failing at container boot.
 
 from __future__ import annotations
 
+import base64
 import json
 
 import os
@@ -53,6 +54,8 @@ async def test_write_boot_secret_round_trips_through_the_bridges_own_reader():
         assert name.endswith("/org_a/boot")
 
         loaded = bridge_sync.load_boot_secrets(name, client=sm)
+        network_key = loaded.pop("networkKey")
+        assert len(base64.b64decode(network_key)) == 32
         assert loaded == {
             "hookToken": "hook-1",
             "gatewayToken": "gw-1",
@@ -94,7 +97,9 @@ async def test_a_retired_key_in_an_old_secret_is_dropped_without_a_boot_change()
         kwargs = {"hook_token": "h", "gateway_token": "g", "bedrock_bearer": "b"}
         assert await agentcore_runtime.write_boot_secret("org_c", **kwargs) is True
         name = agentcore_runtime.boot_secret_name("org_c")
+        network_key = json.loads(sm.get_secret_value(SecretId=name)["SecretString"])["networkKey"]
         old = {
+            "networkKey": network_key,
             "hookToken": "h",
             "gatewayToken": "g",
             "bedrockBearer": "b",
@@ -106,6 +111,7 @@ async def test_a_retired_key_in_an_old_secret_is_dropped_without_a_boot_change()
 
         assert await agentcore_runtime.write_boot_secret("org_c", **kwargs) is False
         assert json.loads(sm.get_secret_value(SecretId=name)["SecretString"]) == {
+            "networkKey": network_key,
             "hookToken": "h",
             "gatewayToken": "g",
             "bedrockBearer": "b",

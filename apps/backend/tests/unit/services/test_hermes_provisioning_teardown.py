@@ -252,3 +252,17 @@ async def test_teardown_pauses_paperclip_automation_and_a_paperclip_failure_neve
     await hermes_provisioning.delete_workspace_runtime("org_a")
     pause.assert_awaited_once_with("org_a")
     assert calls == ["reap"]
+
+
+@pytest.mark.asyncio
+async def test_teardown_deletes_network_state_even_without_delete_profiles(monkeypatch):
+    monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", lambda *a: None)
+    monkeypatch.setattr(hermes_provisioning, "_delete_runtime", lambda *a: None)
+    monkeypatch.setattr(hermes_provisioning, "_delete_boot_secret", lambda *a: None)
+    monkeypatch.setattr("core.billing.bedrock_gate_tokens.delete_gate_token_rows", AsyncMock())
+    deleted: list[list[str]] = []
+    monkeypatch.setattr(hermes_provisioning, "_delete_prefixes", lambda prefixes: deleted.append(prefixes))
+
+    await hermes_provisioning.teardown_hermes_runtime("org_a", container_row=ROW, delete_profiles=False)
+
+    assert deleted == [["org_a/network/"]]

@@ -615,6 +615,8 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
             "/api/v1/session-links",
             # webhook agents: a rejected body carries the webhook's key.
             "/api/v1/settings/webhook-agents",
+            # network holds: a rejected notice could carry held text.
+            "/api/v1/internal/network",
         )
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
@@ -915,6 +917,7 @@ app.include_router(agent_keys_router.router, prefix="/api/v1/settings/agent-keys
 app.include_router(webhook_agents_router.router, prefix="/api/v1/settings/webhook-agents", tags=["settings"])
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
 app.include_router(network_router.router, prefix="/api/v1/settings/network", tags=["settings"])
+app.include_router(network_router.internal_router, prefix="/api/v1/internal/network", tags=["settings"])
 
 # Integrations (MCP servers, ClawHub)
 app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])

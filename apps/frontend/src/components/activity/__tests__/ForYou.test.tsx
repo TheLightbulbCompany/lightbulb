@@ -228,6 +228,25 @@ describe("ForYou", () => {
     expect(props.onRunAction).toHaveBeenCalledWith("extension:e1", "add", {});
   });
 
+  it("renders a nethold item with the generic ask row: Send and Decline answer it", async () => {
+    const act_ = (id: string, label: string) => ({ id, label, style: id === "send" ? "primary" as const : null, confirm: null, input: null, navigate: null });
+    const hold = { ...approval, id: "nethold:h1", kind: "session" as const, subtype: "join_request" as const, createdAt: "2026-09-08T09:00:00Z",
+      actor: { kind: "agent" as const, id: "", name: "Aden's Claude" },
+      summary: { ...approval.summary, title: "Aden's Claude wants to message friday", preview: null, links: [] },
+      actions: [act_("send", "Send"), act_("decline", "Decline"), act_("allow", "Always allow")] };
+    const props = setup({ activityItems: [hold] });
+    const row = document.querySelector('[data-for-you-id="nethold:h1"]')!;
+    expect(row).toHaveTextContent("Aden's Claude");
+    expect(row).toHaveTextContent("wants to message friday");
+    await userEvent.click(within(row as HTMLElement).getByRole("button", { name: "Decline" }));
+    expect(props.onRunAction).toHaveBeenLastCalledWith("nethold:h1", "decline", {});
+    // Review asks once inline (a session ask with no session link), then Send answers it.
+    // Like a webhook agent's ask, the one-line row offers the primary and Decline only.
+    await userEvent.click(within(row as HTMLElement).getByRole("button", { name: "Review" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(props.onRunAction).toHaveBeenLastCalledWith("nethold:h1", "send", {});
+  });
+
   it("offers the server's decline beside a login or extension ask, and runs it", async () => {
     const notNow = { id: "decline", label: "Not now", style: null, confirm: null, input: null, navigate: null };
     const extension = { ...approval, id: "extension:e1", kind: "extension" as const, subtype: "extension" as const, createdAt: "2026-09-08T08:00:00Z",

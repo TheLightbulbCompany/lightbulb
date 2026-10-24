@@ -52,6 +52,27 @@ async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
 
 
 @pytest.mark.asyncio
+async def test_agents_whose_names_and_id_prefixes_collide_get_distinct_names(store, monkeypatch):
+    ids = [f"abcd1111-0000-0000-0000-00000000000{i}" for i in range(4)]
+    roster = [{"id": i, "name": "Friday"} for i in ids]
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    await network_member.write_sessions("org_a", apps=[])
+    first = [s["name"] for s in _doc(store)["sessions"]]
+    assert first == ["friday", "friday-abcd", "friday-idabcd1111", f"friday-id{ids[3]}"]
+    assert not any(network_member.app_target(n) for n in first)  # an agent never reads as an app
+    await network_member.write_sessions("org_a", apps=[])  # deterministic for an unchanged roster
+    assert [s["name"] for s in _doc(store)["sessions"]] == first
+
+
+@pytest.mark.asyncio
+async def test_an_agent_named_like_an_app_address_gets_a_suffix(store, monkeypatch):
+    roster = [{"id": A1, "name": "Ops deadbeef"}]
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    await network_member.write_sessions("org_a", apps=[])
+    assert [s["name"] for s in _doc(store)["sessions"]] == ["ops-deadbeef-1111"]
+
+
+@pytest.mark.asyncio
 async def test_a_101st_session_is_refused_with_a_clear_error(store):
     apps = [{"name": f"app-{i}", "agent": "app", "title": f"App {i}"} for i in range(98)]
     await network_member.write_sessions("org_a", apps=apps)  # 2 agents + 98 apps = 100

@@ -2047,6 +2047,8 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None, spo
         # bug the agent_mail branch already fixed, now generalised.
         identity = f"You are {name}, answering a Paperclip run trigger. Reply as yourself. {_repo_rule(agent_id)}\n{CHAT_STYLE}"
     elif event_kind == "network_message":
+        from bridge import network  # the agent's name is its declared network session's title
+        name = next((s.get("title") for s in network.sessions() if s.get("agentId") == agent_id), None) or "an agent"
         label = (body.get("message") or {}).get("label") or "someone on the network"
         identity = (f"You are {name}, answering a network message from {label}. "
                     f"Reply with lightbulb_network if a reply is needed. {_repo_rule(agent_id)}")
@@ -4092,7 +4094,9 @@ def _remember_turn(session_key: str, info: dict) -> None:
             DELEGATION_TURN.setdefault(record["delegation_id"], info)
 
 
-def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, reserved: bool = False) -> None:
+def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, reserved: bool = False) -> str:
+    """Runs one turn; returns its outcome ("completed", "error", "aborted"). Never raises for an
+    in-turn failure: bridge.network reads the outcome to decide whether a message was read."""
     run = body.get("run") or {}
     run_id = run.get("runId")
     has_run = bool(run_id)  # agent_mail (Task 20) carries no run block: no callbacks, no frames
@@ -4253,3 +4257,4 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                  " silent" if error_kind == SILENT else "", took, len(reply))
     finally:
         _end_turn()
+    return outcome

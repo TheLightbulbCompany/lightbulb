@@ -461,11 +461,12 @@ def _unavailable(method: str) -> dict:
 # ---- network.* (the backend's calls onto the workspace's network member) ----------------------
 # Each one starts the sidecar in the foreground first: handle_plugin only starts it in the
 # background, so the first RPC of a cold microVM would otherwise find it off.
-def _net(method: str, op: str, body: dict) -> dict:
+def _net(method: str, op: str, body: dict | None = None, run=None) -> dict:
+    """``run`` (no arguments) replaces the one engine op when a method does more than ask."""
     if not network.ensure_started(background=False):
         return _unavailable(method)
     try:
-        return {"ok": True, "payload": network.ask(op, body)}
+        return {"ok": True, "payload": run() if run else network.ask(op, body)}
     except network.NetworkOff:
         return _unavailable(method)
     except network.OpError as exc:
@@ -498,14 +499,7 @@ def _network_app(params: dict, **_kwargs) -> dict:
 
 
 def _network_sessions(params: dict, **_kwargs) -> dict:
-    if not network.ensure_started(background=False):
-        return _unavailable("network.sessions")
-    try:
-        return {"ok": True, "payload": {"count": network.reload_sessions()}}
-    except network.NetworkOff:
-        return _unavailable("network.sessions")
-    except network.OpError as exc:
-        return {"ok": False, "error": {"code": exc.code, "message": f"network.sessions was refused ({exc.code})"}}
+    return _net("network.sessions", "cloud.sessions.set", run=lambda: {"count": network.reload_sessions()})
 
 
 def _network_wake(params: dict, **_kwargs) -> dict:

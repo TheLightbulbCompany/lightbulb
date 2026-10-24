@@ -3,7 +3,8 @@
 The fake (written into tmp_path) speaks the line protocol: the token is stdin's first line, each
 socket line is one JSON op, `subscribe` streams events, `snapshot` writes the file it is given,
 `stop` (or SIGTERM) writes the final snapshot and exits 0. Its knobs live in cfg.json (read at
-spawn); answers.json (re-read per op) adds fields to an op's answer; calls.jsonl logs each op.
+spawn); answers.json (re-read per op) is an op's `result` (or, with ok:false, its whole answer);
+calls.jsonl logs each op without its token.
 """
 from __future__ import annotations
 
@@ -24,7 +25,8 @@ import bridge
 from bridge import network, sync
 
 KEY = base64.b64encode(bytes(range(32))).decode()
-SESSIONS = {"workspace": "Acme", "sessions": [{"name": "friday", "agent": "Friday", "agentId": "a-friday"}]}
+SESSIONS = {"workspace": "Acme", "sessions": [{"name": "friday", "agent": "Friday", "title": "Friday",
+                                               "agentId": "a-friday"}]}
 
 FAKE = r'''#!{python}
 import json, os, signal, socket, sys, threading, time
@@ -72,9 +74,12 @@ def serve(conn):
             log.write(json.dumps({{k: v for k, v in msg.items() if k != "token"}}) + "\n")
         if op == "snapshot":
             snapshot(msg["path"])
-        answer = {{"id": msg["id"], "ok": True}}
         answers = json.loads((D / "answers.json").read_text()) if (D / "answers.json").exists() else {{}}
-        answer.update(answers.get(op, {{}}))
+        got = answers.get(op, {{}})
+        if got.get("ok") is False:   # a refusal replaces the envelope
+            answer = {{**got, "id": msg["id"]}}
+        else:
+            answer = {{"id": msg["id"], "ok": True, "result": got}}
         conn.sendall((json.dumps(answer) + "\n").encode())
         if op == "stop":
             if cfg.get("hang_on_stop"):

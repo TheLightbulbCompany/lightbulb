@@ -4,6 +4,7 @@ notice. Runs against test_network's fake sidecar; turn.run_turn is replaced by a
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -28,6 +29,7 @@ def turns(monkeypatch):
             if gate["raise"]:
                 raise RuntimeError("boom")
             ran.append((agent_id, body))
+            return "completed"
         finally:
             turn.release_turn()  # the real run_turn's _end_turn does this
 
@@ -37,7 +39,7 @@ def turns(monkeypatch):
 
 
 def _acks(n, stage=None):
-    return [(c["id"], c["stage"]) for c in n.calls("inbox.ack") if stage is None or c["stage"] == stage]
+    return [(c["record"], c["stage"]) for c in n.calls("inbox.ack") if stage is None or c["stage"] == stage]
 
 
 def test_a_sweep_starts_one_turn_per_record_acked_delivered_at_start_and_read_at_end(net, turns):
@@ -53,6 +55,7 @@ def test_a_sweep_starts_one_turn_per_record_acked_delivered_at_start_and_read_at
         stages = [s for i, s in _acks(net) if i == rid]
         assert stages == ["delivered", "read"]
     assert all(c["session"] == "friday" for c in net.calls("inbox.ack"))
+    assert all(isinstance(c["id"], int) for c in net.calls("inbox.ack"))  # the line id is ours, never the record
     assert turn._busy == 0
 
 
@@ -110,7 +113,7 @@ def test_a_lagged_event_triggers_a_sweep(net, turns):
     network._handle_event({"event": "lag"})
     assert _until(lambda: len(turns.ran) == 1)
     network._handle_event({"event": "message", "to_session": "friday", "id": "m9"})
-    assert len(net.calls("inbox.peek")) == 3
+    assert _until(lambda: len(net.calls("inbox.peek")) == 3)
 
 
 def test_a_hold_notice_carries_no_text(net, monkeypatch):
@@ -139,3 +142,32 @@ def test_a_hold_notice_carries_no_text(net, monkeypatch):
     network._handle_event({"event": "hold_closed", "id": "H3", "verdict": "allow", "by": "user_x"})
     assert done.wait(5)
     assert posted[1][1]["state"] == "closed" and set(posted[1][1]) == {"holdId", "state", "label", "target"}
+
+
+def test_a_failed_real_turn_is_acked_delivered_but_not_read(net, monkeypatch):
+    """The real run_turn reports a failure as outcome "error" and returns; it never raises."""
+    from bridge import sync
+
+    def broken_restore(agent_id):
+        raise RuntimeError("bad S3 object")
+
+    monkeypatch.setattr(turn, "restore_profile", broken_restore)
+    monkeypatch.setattr(sync, "restore_root_auth", lambda: None)
+    monkeypatch.setattr(sync, "save_root_auth", lambda: None)
+    monkeypatch.setattr(turn, "save_profile", lambda agent_id: None)
+    monkeypatch.setattr(turn, "report_usage", lambda *a, **kw: None)
+    net.answer(**_peek(REC))
+    assert network.ensure_started(background=False)
+    assert _until(lambda: _acks(net) == [("m1", "delivered")] and turn._busy == 0)
+    time.sleep(0.2)
+    assert _acks(net) == [("m1", "delivered")]
+
+
+def test_the_identity_line_names_the_agent_from_its_session_title(net):
+    assert network.ensure_started(background=False)
+    body = {"version": 1, "eventKind": "network_message", "eventId": "m1", "targetAgentId": "a-friday",
+            "sessionKey": "t-1", "message": {"text": "[peer] hello", "label": "Prasiddha's Mac"}}
+    assert turn.system_prompt(body, "a-friday").startswith(
+        "You are Friday, answering a network message from Prasiddha's Mac. "
+        "Reply with lightbulb_network if a reply is needed.")
+    assert turn.system_prompt({**body, "targetAgentId": "a-x"}, "a-x").startswith("You are an agent, ")

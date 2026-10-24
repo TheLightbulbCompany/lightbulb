@@ -217,28 +217,20 @@ def _connect(timeout_s: float | None) -> socket.socket:
     return sock
 
 
-def _line(op: str, body: dict | None, rid=None) -> bytes:
-    # The daemon socket's Request.id is a u64 (a string id is answered bad_request). An op whose
-    # own body names an `id` (`inbox.ack {session, id, stage}`) sends that one instead: the line
-    # has one `id` key, and dropping the record id would ack the wrong thing.
-    rid = secrets.randbits(53) if rid is None else rid
-    return (json.dumps({"id": rid, **(body or {}), "token": _token, "op": op}) + "\n").encode()
+def _line(op: str, body: dict | None) -> bytes:
+    # The line id is always ours, an integer (the engine's request id is a u64); op bodies never
+    # carry an `id` (an ack names its record as `record`).
+    return (json.dumps({**(body or {}), "token": _token, "id": secrets.randbits(53), "op": op}) + "\n").encode()
 
 
 def _call(op: str, body: dict | None, timeout_s: float) -> dict:
-    rid = (body or {}).get("id", secrets.randbits(53))
     with _connect(timeout_s) as sock:
-        sock.sendall(_line(op, body, rid))
+        sock.sendall(_line(op, body))
         with sock.makefile("rb") as fh:
             raw = fh.readline()
     if not raw:
         raise NetworkOff(f"{op}: the sidecar closed the socket")
-    answer = json.loads(raw)
-    # The engine flattens its body into {id, ok, ...}: a body `id` (a hold's "H3", a receipt's)
-    # is serialized after ours and wins. Drop the envelope id only when it is still ours.
-    if answer.get("id") == rid and "id" not in (body or {}):
-        del answer["id"]
-    return answer
+    return json.loads(raw)
 
 
 def call(op: str, body: dict | None = None, timeout_s: float = 10.0) -> dict:
@@ -253,11 +245,12 @@ def call(op: str, body: dict | None = None, timeout_s: float = 10.0) -> dict:
 
 
 def ask(op: str, body: dict | None = None, timeout_s: float = 10.0) -> dict:
-    """``call`` that raises OpError on ``ok:false`` and returns the answer without ``ok``."""
+    """``call`` that returns the answer's ``result`` (``{id, ok, result}``) and raises OpError
+    from the top-level ``error``/``reason`` on ``ok:false``."""
     answer = call(op, body, timeout_s)
     if not answer.get("ok"):
         raise OpError(op, str(answer.get("error") or "internal"), answer.get("reason"))
-    return {k: v for k, v in answer.items() if k != "ok"}
+    return answer.get("result") or {}
 
 
 def reload_sessions() -> int:
@@ -313,8 +306,8 @@ def _handle_event(event: dict) -> None:
             sync.emit_metrics({"network.member_key_contested": (1, "Count")})
     _schedule_save()
     kind = event.get("event")
-    if kind in ("message", "lag"):
-        sweep()
+    if kind in ("message", "lag"):  # off the reader thread: a peek must not stall the stream
+        threading.Thread(target=sweep, name="network-sweep", daemon=True).start()
     elif kind in ("held", "hold_closed"):
         threading.Thread(target=_hold_notice, args=(event,), name="network-hold", daemon=True).start()
     for fn in list(on_event):
@@ -352,30 +345,34 @@ def sweep() -> None:
 
 
 def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
-    """Holds one reserved turn. Acks ``delivered`` at start and ``read`` only when the turn returned."""
+    """Holds one reserved turn. Acks ``delivered`` at start and ``read`` only when the turn
+    completed: a failed turn (run_turn reports it, it does not raise) stays unread, so the engine
+    keeps its text and the next process runs it again."""
     from bridge import turn
     try:
-        ask("inbox.ack", {"session": session, "id": record["id"], "stage": "delivered"})
+        ask("inbox.ack", {"session": session, "record": record["id"], "stage": "delivered"})
     except Exception:  # noqa: BLE001 -- not taken: let a later sweep try it again
         log.warning("network: delivered ack failed for %s", record["id"], exc_info=True)
         turn.discard_run(key)
         turn.release_turn()
         return
     body = {"version": 1, "eventKind": "network_message", "eventId": record["id"],
-            "targetAgentId": agent_id, "sessionKey": record.get("thread") or record.get("from"),
+            "targetAgentId": agent_id,
+            "sessionKey": record.get("thread") or record.get("from") or record["id"],
             "message": {"text": record.get("framed") or "", "label": record.get("label")}}
-    returned = False
+    outcome = None
     try:
-        turn.run_turn(agent_id, body, None, True)  # releases the reserved turn itself
-        returned = True
+        outcome = turn.run_turn(agent_id, body, None, True)  # releases the reserved turn itself
     except Exception:  # noqa: BLE001 -- stays unread; the class only, never the text
         log.warning("network: turn for %s failed", record["id"], exc_info=True)
     finally:
-        if returned:
+        if outcome == "completed":
             try:
-                ask("inbox.ack", {"session": session, "id": record["id"], "stage": "read"})
+                ask("inbox.ack", {"session": session, "record": record["id"], "stage": "read"})
             except Exception:  # noqa: BLE001
                 log.warning("network: read ack failed for %s", record["id"], exc_info=True)
+        else:
+            log.warning("network: turn for %s ended %s; left unread", record["id"], outcome)
 
 
 def _hold_notice(event: dict) -> None:

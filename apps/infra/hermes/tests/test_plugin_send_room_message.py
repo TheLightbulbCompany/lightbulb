@@ -38,3 +38,15 @@ def test_the_voice_room_is_refused_for_any_thread(voice, args):
 def test_another_room_still_posts(voice):
     lightbulb._send_room_message({"roomId": OTHER_ROOM, "text": "hi"}, session_id=SESSION)
     assert [b["roomId"] for b in voice] == [OTHER_ROOM]
+
+
+def test_a_run_less_room_post_uses_the_network_message_id(tmp_path, monkeypatch):
+    session = "agent:ceo:lightbulb:network:t-1"
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    turn_context.write(tmp_path, session, {
+        "apiUrl": "https://api.invalid", "ownerId": "org_test", "hookToken": "h", "agentId": "ceo",
+        "runId": None, "eventId": "msg-7", "sessionKey": session, "roomId": None, "family": "unavailable"})
+    sent = []
+    monkeypatch.setattr(lightbulb, "_post", lambda url, token, body: sent.append(body) or {"messageId": "m"})
+    lightbulb._send_room_message({"roomId": OTHER_ROOM, "text": "hi"}, session_id=session)
+    assert sent[0]["eventId"].startswith("msg-7:ceo:tool:")

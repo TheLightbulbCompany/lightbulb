@@ -5,12 +5,14 @@ import itertools
 import json
 import logging
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 from . import turn_context
-from bridge import browser_control, website_logins
+from bridge import browser_control, network, website_logins
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +83,8 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     if not paperclip and room == _normalize_room(str(ctx.get("roomId") or "")) and thread in (None, own_thread):
         return OWN_THREAD_REFUSAL
     body = {
-        "eventId": f"{ctx['runId']}:{ctx['agentId']}:tool:{next(_counter)}",
+        # A run-less turn (a network message) has no runId: its eventId is the message id.
+        "eventId": f"{ctx.get('runId') or ctx.get('eventId') or uuid.uuid4()}:{ctx['agentId']}:tool:{next(_counter)}",
         "roomId": room, "agentId": ctx["agentId"], "text": text, "replyToMessageId": None,
         "threadRootMessageId": thread if paperclip else thread or ctx.get("threadRootMessageId"),
         **({} if paperclip else {"runId": ctx["runId"]}),
@@ -366,6 +369,81 @@ def _local_sessions(args: dict, *, session_id: str = "", **_kw) -> str:
         return SESSIONS_UNAVAILABLE
     except Exception:  # noqa: BLE001 — no status, no URL, no detail reaches the agent
         return SESSIONS_UNAVAILABLE
+
+
+# ---- lightbulb_network: messages to people's computers and their agents ----------------------
+NETWORK_SCHEMA = {
+    "name": "lightbulb_network",
+    "description": "Messages to people's computers and their agents on the Lightbulb network (not "
+                   "rooms, and not your local coding sessions; for those use lightbulb_local_sessions). "
+                   "action \"directory\" finds sessions (optional query); \"send\" sends text to a "
+                   "session name and returns a receipt; \"receipt\" reads a sent message's state by its "
+                   "request_id. A message held for its owner's approval stays held: say so, do not re-send.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["send", "receipt", "directory"]},
+            "to": {"type": "string", "description": "The session name to send to (from directory)."},
+            "text": {"type": "string", "maxLength": 8192},
+            "reply_to": {"type": "string", "description": "The message id this answers."},
+            "request_id": {"type": "string", "description": "Omit on send (one is made for you); "
+                                                            "required for receipt."},
+            "query": {"type": "string", "maxLength": 200},
+        },
+        "required": ["action"],
+    },
+}
+NETWORK_OFF = "The Lightbulb network is off for this workspace right now. Say so; do not retry in this turn."
+NETWORK_NO_SESSION = ("You have no session on the Lightbulb network, so you cannot send network "
+                      "messages. Say so.")
+_net_lock = threading.Lock()
+
+
+def _next_request_id(session_id: str, ctx: dict) -> str:
+    """``<runId or eventId>:net:<n>``, n counted in the turn's own context file: the bridge
+    writes a fresh file for each turn, so a re-run turn re-sends with the same ids."""
+    with _net_lock:
+        n = int(ctx.get("netCount") or 0) + 1
+        turn_context.write(turn_context._home(), session_id, {**ctx, "netCount": n})
+    return f"{ctx.get('runId') or ctx.get('eventId')}:net:{n}"
+
+
+def _network(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not ctx:
+        return NO_TURN
+    action = args.get("action")
+    try:
+        if action == "directory":
+            return json.dumps(network.ask("directory", {"query": str(args.get("query") or "")}))
+        if action == "receipt":
+            request_id = str(args.get("request_id") or "")
+            if not _OPAQUE_RE.match(request_id):
+                return "request_id is required (the one send returned)."
+            return json.dumps(network.ask("receipt", {"request_id": request_id}))
+        if action != "send":
+            return "action must be one of send|receipt|directory."
+        if not network._running():
+            return NETWORK_OFF
+        sender = network.session_for_agent(ctx["agentId"])  # never a model argument
+        if not sender:
+            return NETWORK_NO_SESSION
+        to, text = str(args.get("to") or "").strip(), str(args.get("text") or "").strip()
+        if not to or not text:
+            return "to and text are required."
+        request_id = str(args.get("request_id") or "") or _next_request_id(session_id, ctx)
+        if not _OPAQUE_RE.match(request_id):
+            return "request_id must be an opaque token."
+        body = {"from": sender, "to": to, "text": text, "request_id": request_id}
+        if args.get("reply_to"):
+            body["reply_to"] = str(args["reply_to"])
+        return json.dumps(network.ask("send", body))
+    except network.NetworkOff:
+        return NETWORK_OFF
+    except network.OpError as exc:
+        return f"Lightbulb network {action} refused: {exc.code}" + (f" ({exc.reason})" if exc.reason else "")
+    except Exception as exc:  # noqa: BLE001 -- the class only, never a traceback
+        return f"Lightbulb network {action} failed: {type(exc).__name__}"
 
 
 # ---- read_rooms: other rooms, with the access of the person who asked --------------------------
@@ -688,6 +766,8 @@ def register(ctx) -> None:
                       description=APPROVAL_SCHEMA["description"], emoji="✅")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,
                       description=SESSIONS_SCHEMA["description"], emoji="🖥️")
+    ctx.register_tool("lightbulb_network", "lightbulb", NETWORK_SCHEMA, _network,
+                      description=NETWORK_SCHEMA["description"], emoji="🌐")
     ctx.register_tool("lightbulb_read_rooms", "lightbulb", READ_ROOMS_SCHEMA, _read_rooms,
                       description=READ_ROOMS_SCHEMA["description"], emoji="🗂️")
     ctx.register_tool("lightbulb_voice_profile", "lightbulb", VOICE_PROFILE_SCHEMA, _voice_profile,

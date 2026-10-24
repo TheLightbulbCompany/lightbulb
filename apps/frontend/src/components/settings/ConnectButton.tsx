@@ -109,6 +109,8 @@ export function ConnectButton({
   refreshConnections,
 }: ConnectButtonProps) {
   const { provider, display_name, acquisition, status } = connection;
+  // A grant the backend marked dead (refresh failed, token revoked): same flow, honest label.
+  const connectLabel = status === "reconnect_required" ? "Reconnect" : "Connect";
   const api = useApi();
   const { openSupport } = useSupport();
   const [token, setToken] = useState("");
@@ -543,9 +545,9 @@ export function ConnectButton({
             size="sm"
             disabled={busy || !canManage}
             onClick={() => run(() => startOAuth(provider))}
-            aria-label={`Connect ${display_name}`}
+            aria-label={`${connectLabel} ${display_name}`}
           >
-            {busy ? oauthBusyLabel : "Connect"}
+            {busy ? oauthBusyLabel : connectLabel}
           </Button>
         )}
         {renderByoSetup()}
@@ -578,9 +580,9 @@ export function ConnectButton({
           size="sm"
           disabled={busy || !canManage}
           onClick={() => run(() => startOAuth(provider))}
-          aria-label={`Connect ${display_name}`}
+          aria-label={`${connectLabel} ${display_name}`}
         >
-          {busy ? oauthBusyLabel : "Connect"}
+          {busy ? oauthBusyLabel : connectLabel}
         </Button>
         {err && (
           <p className="text-xs text-[var(--err)]" role="alert">
@@ -648,9 +650,9 @@ export function ConnectButton({
             size="sm"
             disabled={busy || !canManage || !complete}
             onClick={submitFields}
-            aria-label={`Connect ${display_name}`}
+            aria-label={`${connectLabel} ${display_name}`}
           >
-            {busy ? "Connecting…" : "Connect"}
+            {busy ? "Connecting…" : connectLabel}
           </Button>
         </div>
         {err && (
@@ -706,9 +708,9 @@ export function ConnectButton({
           size="sm"
           disabled={busy || !canManage || !token.trim()}
           onClick={submit}
-          aria-label={`Connect ${display_name}`}
+          aria-label={`${connectLabel} ${display_name}`}
         >
-          {busy ? "Connecting…" : "Connect"}
+          {busy ? "Connecting…" : connectLabel}
         </Button>
       </div>
       {/* The placeholder is gone on the first keystroke and the box is too

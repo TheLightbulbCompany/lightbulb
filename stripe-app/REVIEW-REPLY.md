@@ -1,4 +1,4 @@
-Subject: Re: Lightbulb 0.0.4 App Review (company.thelightbulb.company.lightbulb)
+Subject: Re: Lightbulb 0.0.4 App Review (company.thelightbulb.lightbulb)
 
 Hello Stripe App Review team,
 

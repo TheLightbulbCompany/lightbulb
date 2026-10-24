@@ -119,3 +119,57 @@ async def test_the_internal_route_needs_the_hook_token(env, async_client):
         assert refused.status_code == 400 and "held words" not in refused.text
         assert (await async_client.post(url, json=notice(), headers=good)).status_code == 204
     assert [i.id for i in await _items(USER_A)] == ["nethold:h1"]
+
+
+async def test_an_app_hold_whose_person_left_asks_nobody(env):
+    await network_member.hold_notice(OWNER, notice(target=f"github-{network_member.app_person('user_gone')}"))
+    assert await _items(USER_A) == [] and await _items(USER_B) == []
+
+
+async def test_a_lost_activity_row_is_refiled_by_the_repeat_notice(env, caplog):
+    real = repo.put_activity_row
+    calls = {"n": 0}
+
+    async def flaky(item):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("throttled")
+        await real(item)
+
+    with patch.object(repo, "put_activity_row", flaky), pytest.raises(RuntimeError):
+        await network_member.hold_notice(OWNER, notice())
+    assert "network hold activity row failed" in caplog.text
+    lost = [u for u in (USER_A, USER_B) if not await _items(u)]
+    assert len(lost) == 1
+    await network_member.hold_notice(OWNER, notice())  # the bridge resends
+    for user in (USER_A, USER_B):
+        [item] = await _items(user)
+        assert item.id == "nethold:h1" and item.state == "open"
+
+
+@pytest.mark.parametrize("error", ['{"code": "hold_not_found"}', None])
+async def test_a_gone_hold_answers_hold_gone_and_resolves(env, error):
+    await network_member.hold_notice(OWNER, notice())
+    if error:  # the engine no longer has it
+        env.side_effect = RuntimeError(error)
+    else:  # a second tap raced past the open check after the first closed it
+
+        async def first_tap_won(*_a, **_k):
+            await network_member.hold_notice(OWNER, notice(state="closed"))
+            raise RuntimeError('{"code": "UNAVAILABLE"}')
+
+        env.side_effect = first_tap_won
+    with pytest.raises(ApiProblem) as exc:
+        await activity.run_action(viewer(), "nethold:h1", "send", ActivityActionRequest(), teams_ctx=AsyncMock())
+    assert exc.value.error.code == "HOLD_GONE" and exc.value.status_code == 409
+    [item] = await _items(USER_A)
+    assert item.state == "resolved"
+
+
+async def test_another_engine_error_keeps_the_hold_open(env):
+    await network_member.hold_notice(OWNER, notice())
+    env.side_effect = RuntimeError('{"code": "UNAVAILABLE"}')
+    with pytest.raises(RuntimeError):
+        await activity.run_action(viewer(), "nethold:h1", "send", ActivityActionRequest(), teams_ctx=AsyncMock())
+    [item] = await _items(USER_A)
+    assert item.state == "open"

@@ -58,9 +58,18 @@ async def test_agents_whose_names_and_id_prefixes_collide_get_distinct_names(sto
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
     await network_member.write_sessions("org_a", apps=[])
     first = [s["name"] for s in _doc(store)["sessions"]]
-    assert first == ["friday", "friday-abcd", "friday-abcd1111", f"friday-{ids[3]}"]
+    assert first == ["friday", "friday-abcd", "friday-idabcd1111", f"friday-id{ids[3]}"]
+    assert not any(network_member.app_target(n) for n in first)  # an agent never reads as an app
     await network_member.write_sessions("org_a", apps=[])  # deterministic for an unchanged roster
     assert [s["name"] for s in _doc(store)["sessions"]] == first
+
+
+@pytest.mark.asyncio
+async def test_an_agent_named_like_an_app_address_gets_a_suffix(store, monkeypatch):
+    roster = [{"id": A1, "name": "Ops deadbeef"}]
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    await network_member.write_sessions("org_a", apps=[])
+    assert [s["name"] for s in _doc(store)["sessions"]] == ["ops-deadbeef-1111"]
 
 
 @pytest.mark.asyncio

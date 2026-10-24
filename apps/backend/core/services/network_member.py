@@ -77,18 +77,18 @@ async def _write(owner_id: str, apps: list[dict]) -> dict:
         raise ApiProblem("INVALID_REQUEST", f"This workspace has reached {MAX_SESSIONS} network addresses.")
 
     # ponytail: names are claimed in order (apps, then agents by id), so a new duplicate-named
-    # agent with a lower id, or an app named like an agent, can move an existing agent's address,
-    # A taken name's suffix grows (id[:4], id[:8], the full id) until unique.
-    # Stable addresses need a stored name per agent.
+    # agent with a lower id, or an app named like an agent, can move an existing agent's address.
+    # A taken name's suffix grows (-<id[:4]>, -id<id[:8]>, -id<id>) until unique, and an agent
+    # name never takes the app shape ``{app}-{8 hex}``. Stable addresses need a stored name per agent.
     used = {s.get("name") for s in apps}
     sessions = []
     for agent in roster:
         base = slugify(agent["name"]) or agent["id"][:8]
         name = base
-        for n in (4, 8, None):
-            if name not in used:
+        for suffix in (agent["id"][:4], f"id{agent['id'][:8]}", f"id{agent['id']}"):
+            if name not in used and not app_target(name):
                 break
-            name = f"{base}-{agent['id'][:n]}"
+            name = f"{base}-{suffix}"
         used.add(name)
         sessions.append({"name": name, "agent": "hermes", "title": agent["name"], "agentId": agent["id"]})
 
@@ -208,9 +208,10 @@ async def _asked(owner_id: str, target: str) -> list[str]:
 
     humans = await _humans_to_ask(owner_id, None)
     app = app_target(target)
-    # An address that only looks app-shaped (an agent named "x-deadbeef") asks everyone.
-    mine = [h for h in humans if app and app_person(h) == app[1]]
-    return mine or humans
+    if app is None:
+        return humans
+    # An app address belongs to one person; if they have left, nobody else may answer for it.
+    return [h for h in humans if app_person(h) == app[1]]
 
 
 async def hold_notice(owner_id: str, notice: dict) -> None:
@@ -242,8 +243,6 @@ async def hold_notice(owner_id: str, notice: dict) -> None:
         await asyncio.gather(*(_invalidate_activity(owner_id, u) for u in asked))
         return
 
-    created = utc_now_iso()
-    expires = int(time.time()) + HOLD_TTL_S
     asked = await _asked(owner_id, notice["target"])
     row = {
         **key,
@@ -252,35 +251,52 @@ async def hold_notice(owner_id: str, notice: dict) -> None:
         "target": notice["target"],
         "state": "open",
         "askedUserIds": asked,
-        "createdAt": created,
-        "expiresAt": expires,
+        "createdAt": utc_now_iso(),
+        "expiresAt": int(time.time()) + HOLD_TTL_S,
     }
     try:
         await run_in_thread(messaging_repo._table().put_item, Item=row, ConditionExpression="attribute_not_exists(pk)")
     except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return  # a repeated notice: already filed
-        raise
-    sk = messaging_repo.activity_sk(created, hold_item_id(hold_id))
-    await asyncio.gather(
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # A repeated notice (the bridge resending after a failed answer): file any lost item
+        # again under the stored createdAt. ``put_activity_row`` is idempotent on its key.
+        row = await get_hold(owner_id, hold_id)
+        if not row or row.get("state") != "open":
+            return
+    await _file_hold_items(owner_id, row)
+
+
+async def _file_hold_items(owner_id: str, hold: dict) -> None:
+    from core.repositories import messaging_repo
+    from core.services.webhook_agents import _invalidate_activity
+
+    asked = hold.get("askedUserIds") or []
+    sk = messaging_repo.activity_sk(hold["createdAt"], hold_item_id(hold["holdId"]))
+    results = await asyncio.gather(
         *(
             messaging_repo.put_activity_row(
                 {
                     "pk": messaging_repo.activity_pk(owner_id, user_id),
                     "sk": sk,
                     "kind": "network_hold",
-                    "holdId": hold_id,
-                    "label": notice["label"],
-                    "target": notice["target"],
-                    "createdAt": created,
-                    "expiresAt": expires,
+                    **{k: hold[k] for k in ("holdId", "label", "target", "createdAt", "expiresAt")},
                 }
             )
             for user_id in asked
         ),
         return_exceptions=True,
     )
-    await asyncio.gather(*(_invalidate_activity(owner_id, u) for u in asked))
+    failed = [u for u, r in zip(asked, results) if isinstance(r, BaseException)]
+    for user_id in failed:
+        logger.warning("network hold activity row failed owner=%s user=%s hold=%s", owner_id, user_id, hold["holdId"])
+    await asyncio.gather(*(_invalidate_activity(owner_id, u) for u in asked if u not in failed))
+    if failed:
+        # A non-2xx makes the bridge resend; the repeat refiles the lost rows.
+        raise RuntimeError("network hold activity rows failed")
+
+
+_GONE_CODES = ("not_found", "unknown", "gone", "expired")
 
 
 async def decide_hold(auth, hold_id: str, action_id: str) -> None:
@@ -289,7 +305,17 @@ async def decide_hold(auth, hold_id: str, action_id: str) -> None:
     from core.auth import resolve_owner_id
 
     owner_id = resolve_owner_id(auth)
-    await container_rpc.call(
-        owner_id, "network.hold", {"hold": hold_id, **_VERDICTS[action_id], "decided_by": auth.user_id}
-    )
+    try:
+        await container_rpc.call(
+            owner_id, "network.hold", {"hold": hold_id, **_VERDICTS[action_id], "decided_by": auth.user_id}
+        )
+    except RuntimeError as exc:  # the engine answered with an error
+        hold = await get_hold(owner_id, hold_id)
+        gone = any(code in str(exc).lower() for code in _GONE_CODES)
+        if hold and hold.get("state") == "open" and not gone:
+            raise
+        # Another tap answered it first, or the engine no longer has it (expired, or the close
+        # notice was lost): the item reads answered for everyone.
+        await hold_notice(owner_id, {"holdId": hold_id, "state": "closed"})
+        raise ApiProblem("HOLD_GONE", "This request was already answered or has expired.") from exc
     await hold_notice(owner_id, {"holdId": hold_id, "state": "closed"})

@@ -9,6 +9,7 @@ import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccount
 import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsSection";
 import { BrowserExtensionsSection } from "@/components/control/panels/BrowserExtensionsSection";
 import { AgentKeysSection } from "@/components/control/panels/AgentKeysSection";
+import { NetworkSection } from "@/components/control/panels/NetworkSection";
 import { WebhookAgentsSection } from "@/components/control/panels/WebhookAgentsSection";
 import { AgentGuardrails } from "@/components/settings/AgentGuardrails";
 import { useConnections } from "@/hooks/useConnections";
@@ -68,6 +69,7 @@ export function ConnectionsPanel() {
         {/* Sign-ins the shared browser fills for agents (the Browser panel's menu opens here). */}
         <WebsiteLoginsSection canManage={canManage} />
         <BrowserExtensionsSection />
+        <NetworkSection />
         <AgentKeysSection />
         <WebhookAgentsSection />
 

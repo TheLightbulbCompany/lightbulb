@@ -35,7 +35,7 @@ env:
   ASSET: lightbulb-macos-arm64.tar.gz
 jobs:
   sign:
-    runs-on: macos-latest
+    runs-on: [self-hosted, macos-desktop] # the native lane; GitHub-hosted macOS is paid for a private repo
     timeout-minutes: 30
     steps:
     - name: Preflight

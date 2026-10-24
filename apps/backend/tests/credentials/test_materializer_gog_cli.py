@@ -24,7 +24,7 @@ class _FakeResp:
         pass
 
     def json(self):
-        return {"emailAddress": self._email}
+        return {"email": self._email}
 
 
 def _patch_efs(monkeypatch, tmp_path):
@@ -99,13 +99,13 @@ def test_write_seeds_client_and_token_via_gog(monkeypatch, tmp_path, cred):
     monkeypatch.setattr(gog_cli.os, "geteuid", lambda: 1000)
 
     # write returns the derived account email so the connect path can record it
-    # in the per-owner Google inventory without a second profile fetch.
+    # in the per-owner Google inventory without a second userinfo fetch.
     assert gog_cli.write("org_1", "google", cred) == "user@example.com"
 
-    # getProfile called with the Bearer access token.
+    # userinfo called with the Bearer access token.
     assert profile_calls == [
         (
-            "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+            "https://openidconnect.googleapis.com/v1/userinfo",
             {"Authorization": "Bearer at"},
         )
     ]
@@ -494,3 +494,32 @@ def test_disconnect_all_is_idempotent_when_missing(monkeypatch, tmp_path):
     _patch_keyring_password(monkeypatch)
     # No keyring dir and no accounts — a full disconnect must not raise.
     gog_cli.remove("org_1", "google", {"disconnect_all": True, "accounts": []})
+
+
+def test_write_reads_platform_secret_when_credential_has_none(monkeypatch, tmp_path):
+    """google is a platform app: oauth_dance blanks the secret, so the materializer
+    must fetch the app's client from the platform store for gog's own refresh."""
+    _patch_efs(monkeypatch, tmp_path)
+    runs = []
+
+    class _Done:
+        returncode = 0
+        stdout = ""
+
+    def _fake_run(argv, **kw):
+        runs.append(kw.get("input"))
+        return _Done()
+
+    async def _app(name):
+        assert name == "google"
+        return {"client_id": "pcid", "client_secret": "psec"}
+
+    monkeypatch.setattr(gog_cli.httpx, "get", lambda *a, **k: _FakeResp("user@example.com"))
+    monkeypatch.setattr(gog_cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(gog_cli.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(gog_cli.platform_oauth_app_store, "get", _app)
+
+    cred = {"client_id": "pcid", "client_secret": "", "refresh_token": "rt", "access_token": "at"}
+    assert gog_cli.write("org_1", "google", cred) == "user@example.com"
+    web = json.loads(runs[0])["web"]
+    assert (web["client_id"], web["client_secret"]) == ("pcid", "psec")

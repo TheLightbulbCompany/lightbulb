@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
@@ -44,44 +44,6 @@ const NON_ADMIN_MSG = "Only organization admins can manage connections.";
  */
 function byoRedirectUri(provider: string): string {
   return `${BACKEND_URL}/oauth/${provider}/callback`;
-}
-
-/**
- * Google Cloud Console deep links, one per screen the setup actually visits.
- *
- * These are Google's own console URLs, not our configuration — only the
- * redirect URI is environment-derived (see `byoRedirectUri`). Naming each
- * screen AND linking it is deliberate: the single biggest support driver on
- * this connection was owners not realising a Google Cloud *project* has to
- * exist before any of the rest of it is reachable, so step 1 is the project.
- */
-const GOOGLE_CONSOLE = {
-  newProject: "https://console.cloud.google.com/projectcreate",
-  apiLibrary: "https://console.cloud.google.com/apis/library",
-  consentScreen: "https://console.cloud.google.com/auth/overview",
-  audience: "https://console.cloud.google.com/auth/audience",
-  credentials: "https://console.cloud.google.com/apis/credentials",
-} as const;
-
-/** The three OAuth scopes `providers.yaml` requests for `google`, in console wording. */
-const GOOGLE_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.modify",
-  "https://www.googleapis.com/auth/calendar",
-  "https://www.googleapis.com/auth/drive",
-] as const;
-
-/** A console deep link rendered inline inside a step. */
-function ConsoleLink({ href, children }: { href: string; children: ReactNode }) {
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer noopener"
-      className="text-midnight underline underline-offset-2 hover:text-[var(--info)]"
-    >
-      {children}
-    </a>
-  );
 }
 
 /**
@@ -221,88 +183,21 @@ export function ConnectButton({
       );
     }
 
-    const isGoogle = provider === "google";
-
     return (
       <div className="flex max-h-[70vh] w-80 flex-col items-stretch gap-2 overflow-y-auto rounded-md border border-[var(--edge)] bg-cream p-3">
         <p className="text-sm font-medium text-midnight">{setupLabel}</p>
-        {isGoogle ? (
-          // Google publishes no shared app we could ship, so the owner registers
-          // their own (providers.yaml: `byo_required: true`). Saying so up front
-          // stops the "why am I being asked for a client secret at all?" ticket.
-          <p className="text-xs text-[var(--midnight-muted)]">
-            Google has no shared Lightbulb app — you register your own OAuth client in
-            Google Cloud and paste its ID and secret here. About five minutes, and you
-            only do it once.
-          </p>
-        ) : (
-          connection.byo_setup_url && (
-            <Link
-              href={connection.byo_setup_url}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="text-xs text-[var(--midnight-muted)] underline underline-offset-2 hover:text-midnight"
-            >
-              Register an OAuth app →
-            </Link>
-          )
+        {connection.byo_setup_url && (
+          <Link
+            href={connection.byo_setup_url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="text-xs text-[var(--midnight-muted)] underline underline-offset-2 hover:text-midnight"
+          >
+            Register an OAuth app →
+          </Link>
         )}
         <ol className="list-decimal pl-4 text-xs text-[var(--midnight-muted)] space-y-1">
-          {isGoogle && (
-            <>
-              {/* THE step people miss. Everything below lives inside a project,
-                  and the console silently shows an empty one until you make it. */}
-              <li>
-                <ConsoleLink href={GOOGLE_CONSOLE.newProject}>
-                  Create a Google Cloud project
-                </ConsoleLink>{" "}
-                — pick any name, then make sure it is the project selected in the
-                console&apos;s top bar. Skip if you already have one to use.
-              </li>
-              <li>
-                <ConsoleLink href={GOOGLE_CONSOLE.apiLibrary}>
-                  APIs &amp; Services → Library
-                </ConsoleLink>{" "}
-                — search for and <strong>Enable</strong> the <strong>Gmail API</strong>,{" "}
-                <strong>Google Calendar API</strong> and <strong>Google Drive API</strong>,
-                one at a time.
-              </li>
-              <li>
-                <ConsoleLink href={GOOGLE_CONSOLE.consentScreen}>
-                  OAuth consent screen
-                </ConsoleLink>{" "}
-                — fill in the app name and support email. Choose{" "}
-                <strong>Internal</strong> if everyone who will use it is in your Google
-                Workspace organisation; otherwise <strong>External</strong>.
-              </li>
-              <li>
-                <ConsoleLink href={GOOGLE_CONSOLE.audience}>Audience</ConsoleLink> — on{" "}
-                <strong>External</strong>, add your own Google account under{" "}
-                <strong>Test users</strong>. Internal apps have no test-user list and can
-                skip this.
-              </li>
-              <li>
-                <ConsoleLink href={GOOGLE_CONSOLE.credentials}>
-                  Credentials → Create credentials → OAuth client ID
-                </ConsoleLink>{" "}
-                — application type <strong>Web application</strong>. It has to be Web
-                application: the other types are never issued the client secret this
-                connection needs.
-              </li>
-              <li>
-                Under <strong>Authorized redirect URIs</strong>, click{" "}
-                <strong>Add URI</strong> and paste the URI shown below — exactly, with no
-                trailing slash — then <strong>Create</strong>.
-              </li>
-              <li>
-                Copy the <strong>Client ID</strong> and <strong>Client secret</strong>{" "}
-                Google shows you into the boxes below and press{" "}
-                <strong>Save &amp; connect</strong>. Google then asks you to sign in and
-                approve access to Gmail, Calendar and Drive.
-              </li>
-            </>
-          )}
-          {provider !== "x" && !isGoogle && (
+          {provider !== "x" && (
             <li>Create an OAuth client ID — application type <strong>Web application</strong>.</li>
           )}
           {provider === "x" && (
@@ -319,7 +214,7 @@ export function ConnectButton({
               agent to do — reading, posting, and Direct Messages are separate levels.
             </li>
           )}
-          {!isGoogle && <li>Add the authorized redirect URI shown below.</li>}
+          <li>Add the authorized redirect URI shown below.</li>
           {provider === "x" && (
             <li>
               Which endpoints actually work depends on your X API access level — if calls
@@ -332,55 +227,9 @@ export function ConnectButton({
               pair, <em>not</em> the API Key and Secret.
             </li>
           )}
-          {provider !== "x" && !isGoogle && <li>Paste the Client ID and secret here.</li>}
+          {provider !== "x" && <li>Paste the Client ID and secret here.</li>}
         </ol>
 
-        {isGoogle && (
-          // Progressive disclosure: the three failures that actually reach
-          // support, kept collapsed so the happy path stays short. Each maps to
-          // a real cause — Google's own error strings are quoted so a search of
-          // the message lands here.
-          <details className="rounded-md border border-[var(--edge)] px-2 py-1.5">
-            <summary className="cursor-pointer text-xs font-medium text-midnight">
-              If Google refuses the connection
-            </summary>
-            <dl className="mt-1.5 space-y-1.5 text-xs text-[var(--midnight-muted)]">
-              <div>
-                <dt className="text-midnight">
-                  &ldquo;Access blocked: … has not completed the Google verification
-                  process&rdquo;
-                </dt>
-                <dd>
-                  Your app is <strong>External</strong> and still in{" "}
-                  <strong>Testing</strong>, and the account you are signing in with is not
-                  on the test-user list. Add it under{" "}
-                  <ConsoleLink href={GOOGLE_CONSOLE.audience}>Audience</ConsoleLink> →
-                  Test users. Note that Google expires a testing app&apos;s access after
-                  seven days, so you would have to reconnect weekly — choosing{" "}
-                  <strong>Internal</strong> avoids both.
-                </dd>
-              </div>
-              <div>
-                <dt className="text-midnight">&ldquo;Error 400: redirect_uri_mismatch&rdquo;</dt>
-                <dd>
-                  The URI in your OAuth client does not match the one below character for
-                  character. Copy it from here rather than typing it.
-                </dd>
-              </div>
-              <div>
-                <dt className="text-midnight">
-                  Connected, but the agent&apos;s mail or calendar calls fail
-                </dt>
-                <dd>
-                  Usually &ldquo;API has not been used in project … or it is
-                  disabled&rdquo; — step 2 was skipped for that one API. Enable it in the{" "}
-                  <ConsoleLink href={GOOGLE_CONSOLE.apiLibrary}>Library</ConsoleLink> and
-                  retry; no need to reconnect.
-                </dd>
-              </div>
-            </dl>
-          </details>
-        )}
         <div className="flex flex-col gap-1">
           <span className="text-xs text-[var(--midnight-muted)]">Authorized redirect URI to register:</span>
           <code className="break-all rounded-sm bg-cream px-2 py-1 text-caption text-midnight border border-[var(--edge)]">
@@ -388,23 +237,6 @@ export function ConnectButton({
           </code>
         </div>
 
-        {isGoogle && (
-          // The exact scope strings, for the console's Data access screen and so
-          // the owner can see what they are about to grant. Collapsed — it is
-          // reference, not a step.
-          <details className="rounded-md border border-[var(--edge)] px-2 py-1.5">
-            <summary className="cursor-pointer text-xs font-medium text-midnight">
-              Access this asks for
-            </summary>
-            <ul className="mt-1.5 space-y-0.5 text-xs text-[var(--midnight-muted)]">
-              {GOOGLE_SCOPES.map((scope) => (
-                <li key={scope}>
-                  <code className="break-all">{scope}</code>
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
         <label htmlFor={`byo-client-id-${provider}`} className="text-xs text-[var(--midnight-muted)]">
           Client ID
         </label>

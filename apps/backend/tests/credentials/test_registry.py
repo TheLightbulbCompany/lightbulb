@@ -31,7 +31,14 @@ def test_direct_oauth_provider_shape():
     assert p.actor == "cli"
     assert p.refresh_owner == "actor"
     assert p.oauth.token_url == "https://oauth2.googleapis.com/token"
-    assert "https://www.googleapis.com/auth/gmail.modify" in p.oauth.scopes
+    assert p.oauth.scopes == [
+        "openid",
+        "email",
+        "profile",
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/drive.file",
+    ]
     assert p.wiring.materializer == "gog_cli"
 
 
@@ -54,20 +61,16 @@ def test_posthog_oauth_requests_full_scope_set():
     assert len(scopes) == len(set(scopes))  # no duplicate scope slipped into the yaml
 
 
-def test_google_is_byo_required():
-    from core.services.credentials import registry
-
+def test_google_is_a_platform_app_not_byo():
     g = registry.get_provider("google")
-    assert g.byo_required is True
-    assert g.byo_setup_url == "https://console.cloud.google.com/apis/credentials"
-    assert not hasattr(g, "allow_byo_app")
+    assert g.byo_required is False
+    assert g.byo_setup_url is None
+    assert g.oauth.platform_app == "google"
 
 
-def test_no_provider_is_byo_required_except_google_and_x():
-    from core.services.credentials import registry
-
+def test_no_provider_is_byo_required_except_x():
     byo = [k for k, v in registry.all_providers().items() if v.byo_required]
-    assert byo == ["google", "x"]
+    assert byo == ["x"]
 
 
 def test_x_is_byo_direct_oauth_cli_provider():

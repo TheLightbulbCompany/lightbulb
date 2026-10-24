@@ -47,16 +47,16 @@ def test_engine_internals_are_suppressed():
     assert reqs == {}
 
 
-def test_gog_tool_is_byo():
+def test_gog_tool_is_connect():
+    """Google is a platform app now: a buyer just connects, no OAuth app of their own."""
     reqs = _classify([Hit("tool", "gog", "p")])
-    assert reqs["google"].disposition == Disposition.BYO
-    assert "own" in (reqs["google"].reason or "").lower()
+    assert reqs["google"].disposition == Disposition.CONNECT
+    assert reqs["google"].reason is None
 
 
-def test_google_tool_is_byo():
-    """A bare `--tool google` resolves to the byo-required google provider → BYO."""
+def test_google_tool_is_connect():
     reqs = _classify([Hit("tool", "google", "p")])
-    assert reqs["google"].disposition == Disposition.BYO
+    assert reqs["google"].disposition == Disposition.CONNECT
 
 
 def test_slack_tool_is_connect_channel():

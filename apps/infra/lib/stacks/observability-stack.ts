@@ -2722,7 +2722,7 @@ def handler(event, context):
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       severity: "page",
       description:
-        "PAGE: a workspace's network member key is in use by a second engine (more than 3 superseded links in 10 min). Treat the key as stolen: the owner reconnects the workspace (a new key and team; every computer pastes a new line).",
+        "PAGE: a workspace's network member key is in use by a second engine (more than 3 superseded links in 10 min). First rule out a split session (two microVMs for one owner; see docs/runbooks/runtime-split-brain-detection.md). Otherwise treat the key as stolen: the owner reconnects the workspace (a new key and team; every computer pastes a new line).",
     });
   }
 

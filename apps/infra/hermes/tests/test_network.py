@@ -214,6 +214,25 @@ def test_start_restores_state_db_and_writes_identity_key_0600(net):
     assert "identity.key" not in " ".join(p["Key"] for p in net.s3.puts)
 
 
+def test_restore_drops_a_stale_journal_first(net, monkeypatch):
+    net.s3.seed("org_test/network/state.db", b"kept-state")
+    home = network.NET_HOME
+    home.mkdir(parents=True)
+    for leftover in ("state.db-journal", "state.db-wal", "state.db-shm"):
+        (home / leftover).write_bytes(b"hot journal from a crashed sidecar")
+    seen = {}
+    real_popen = network.subprocess.Popen
+
+    def popen(*a, **kw):  # what the sidecar would open
+        seen["files"] = sorted(p.name for p in home.iterdir())
+        return real_popen(*a, **kw)
+
+    monkeypatch.setattr(network.subprocess, "Popen", popen)
+    assert network.ensure_started(background=False)
+    assert seen["files"] == ["identity.key", "state.db"]
+    assert (home / "state.db").read_bytes() == b"kept-state"
+
+
 def test_concurrent_first_invokes_start_one_sidecar(net):
     results = []
     threads = [threading.Thread(target=lambda: results.append(network.ensure_started(background=False)))

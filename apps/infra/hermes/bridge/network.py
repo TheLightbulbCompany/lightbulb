@@ -78,7 +78,8 @@ def _code(exc: Exception) -> str:
 
 
 def _running() -> bool:
-    return _proc is not None and _proc.poll() is None and not _stopping
+    proc = _proc  # one read: a concurrent _kill() may clear it
+    return proc is not None and proc.poll() is None and not _stopping
 
 
 # ---- start -------------------------------------------------------------------------------------
@@ -135,6 +136,9 @@ def _start() -> bool:
         path.mkdir(parents=True, exist_ok=True)
     SESSIONS_FILE.write_bytes(raw_sessions)
 
+    # A crashed sidecar can leave a hot journal; SQLite would roll it onto the restored file.
+    for leftover in ("state.db-journal", "state.db-wal", "state.db-shm"):
+        (NET_HOME / leftover).unlink(missing_ok=True)
     state = _get(_key("state.db"))
     if state is None:
         _etag, _sha = None, None

@@ -85,6 +85,13 @@ RUN set -eux; \
     sh -n /usr/local/bin/lightbulb-quickbooks-mcp; \
     chown -R root:root /opt/quickbooks-mcp /usr/local/bin/lightbulb-quickbooks-mcp
 
+# ---- network engine (the `lightbulb member` sidecar, bridge/network.py) ----------------------
+# The engine (TheLightbulbCompany/cli): its static musl release asset, pinned by tag and checksum.
+# REPLACE_WITH_V030_SHA256 is filled with the v0.3.0 .sha256 asset's value once that release exists.
+RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.3.0/lightbulb-linux-arm64.tar.gz \
+ && echo "REPLACE_WITH_V030_SHA256  /tmp/lb.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/lb.tgz -C /usr/local/bin lightbulb && rm /tmp/lb.tgz && lightbulb version
+
 # ---- CLI connector binaries ------------------------------------------------------------------
 # The binaries behind the five CLI-materializer connectors whose credentials the backend projects
 # into every profile (core/services/credentials/hermes_cli.py). Instagram's "CLI" is curl + jq,
@@ -92,12 +99,6 @@ RUN set -eux; \
 # so every recipe names the arm64 artefact. Each layer keeps its own smoke test, so a binary
 # that did not materialise fails the build instead of a turn.
 COPY --from=gocli /out/bin/gog /usr/local/bin/
-
-# The engine (TheLightbulbCompany/cli): its static musl release asset, pinned by tag and checksum.
-# REPLACE_WITH_V030_SHA256 is filled with the v0.3.0 .sha256 asset's value once that release exists.
-RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.3.0/lightbulb-linux-arm64.tar.gz \
- && echo "REPLACE_WITH_V030_SHA256  /tmp/lb.tgz" | sha256sum -c - \
- && tar -xzf /tmp/lb.tgz -C /usr/local/bin lightbulb && rm /tmp/lb.tgz && lightbulb version
 
 # AWS CLI v2 -- the official bundled installer (apt and pip ship only v1); aarch64 asset.
 RUN curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64-2.17.0.zip" -o /tmp/awscliv2.zip \

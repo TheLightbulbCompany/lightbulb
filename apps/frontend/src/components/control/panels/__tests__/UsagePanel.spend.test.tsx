@@ -32,6 +32,7 @@ vi.mock("@/hooks/useBilling", () => ({
     refresh: () => {},
   }),
 }));
+vi.mock("@/hooks/useBudgets", () => ({ useBudgets: () => ({ data: undefined }) }));
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ membership: null }) }));
 
 // UsagePanel's own useSWR("/billing/usage", fetchUsage) call needs the

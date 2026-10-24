@@ -419,6 +419,7 @@ async def test_find_sessions_and_list_targets_offer_held_sends_and_say_they_wait
     )
     monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Someone"))
     monkeypatch.setattr(native_session_tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=[])))
+    monkeypatch.setattr("core.services.webhook_agents.targets", AsyncMock(return_value=[]))
 
     found = (await hosted_mcp.sessions_for(BOB))["sessions"]
     assert [(s["canSend"], s["needsOwnerOk"]) for s in found] == [

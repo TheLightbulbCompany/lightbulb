@@ -1,5 +1,7 @@
 """The workspace as one computer on the lightbulb network: sessions.json and its publishing."""
 
+# ruff: noqa: F811 -- `table` is the repo suite's moto fixture, imported and then requested by name.
+
 import json
 from unittest.mock import AsyncMock
 
@@ -7,14 +9,16 @@ import pytest
 
 from core.services import network_member
 from core.services.messaging import ApiProblem
+from tests.unit.repositories.test_messaging_repo import table  # noqa: F401
 
 A1 = "11111111-1111-1111-1111-111111111111"
 A2 = "22222222-2222-2222-2222-222222222222"
 
 
 @pytest.fixture
-def store(monkeypatch):
-    """The owner-state bucket as a dict, plus an org name and a two-agent roster."""
+def store(monkeypatch, table):
+    """The owner-state bucket as a dict, plus an org name and a two-agent roster (and the
+    messaging table, which holds the doorbell's token hash)."""
     objects: dict[str, bytes] = {}
     monkeypatch.setattr(network_member.settings, "OWNER_STATE_BUCKET", "bucket")
     monkeypatch.setattr("core.services.hermes_profiles.put_owner_object", lambda k, b: objects.__setitem__(k, b))
@@ -39,6 +43,8 @@ async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
     await network_member.write_sessions("org_a")  # apps=None keeps the earlier app entry
 
     assert network_member.sessions_key("org_a") == "org_a/network/sessions.json"
+    token = _doc(store)["wake"]["token"]
+    assert token.startswith("org_a.")
     assert _doc(store) == {
         "workspace": "Acme Builders",
         "sessions": [
@@ -46,9 +52,31 @@ async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
             {"name": "ops-lead", "agent": "hermes", "title": "Ops Lead", "agentId": A2},
             app,
         ],
+        "wake": {"url": "http://localhost:8000/api/v1/network/wake", "token": token},
     }
     assert network_member.app_person("user_1") == network_member.app_person("user_1")
     assert len(network_member.app_person("user_1")) == 8
+
+
+@pytest.mark.asyncio
+async def test_agents_whose_names_and_id_prefixes_collide_get_distinct_names(store, monkeypatch):
+    ids = [f"abcd1111-0000-0000-0000-00000000000{i}" for i in range(4)]
+    roster = [{"id": i, "name": "Friday"} for i in ids]
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    await network_member.write_sessions("org_a", apps=[])
+    first = [s["name"] for s in _doc(store)["sessions"]]
+    assert first == ["friday", "friday-abcd", "friday-idabcd1111", f"friday-id{ids[3]}"]
+    assert not any(network_member.app_target(n) for n in first)  # an agent never reads as an app
+    await network_member.write_sessions("org_a", apps=[])  # deterministic for an unchanged roster
+    assert [s["name"] for s in _doc(store)["sessions"]] == first
+
+
+@pytest.mark.asyncio
+async def test_an_agent_named_like_an_app_address_gets_a_suffix(store, monkeypatch):
+    roster = [{"id": A1, "name": "Ops deadbeef"}]
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    await network_member.write_sessions("org_a", apps=[])
+    assert [s["name"] for s in _doc(store)["sessions"]] == ["ops-deadbeef-1111"]
 
 
 @pytest.mark.asyncio
@@ -229,3 +257,15 @@ async def test_connect_clears_a_stale_state_db_before_joining(monkeypatch):
     monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"line": "l", "expires_at": "t"}))
     await network_member.connect("org_a", "user_1", "Sam")
     assert order == [("delete", ["org_a/network/state.db"]), "prepare"]
+
+
+@pytest.mark.asyncio
+async def test_a_write_with_no_prior_keeps_the_wake_token_and_hash(store, table):
+    await network_member.write_sessions("org_a", apps=[])
+    token = _doc(store)["wake"]["token"]
+    key = {"pk": "OWNER#org_a", "sk": "NETWAKE"}
+    hashed = table.get_item(Key=key)["Item"]["tokenHash"]
+
+    await network_member._write("org_a", [])  # a writer with no prior in hand
+    assert _doc(store)["wake"]["token"] == token
+    assert table.get_item(Key=key)["Item"]["tokenHash"] == hashed

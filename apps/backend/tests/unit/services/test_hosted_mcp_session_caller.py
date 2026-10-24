@@ -155,7 +155,7 @@ async def test_use_browser_from_a_session_moves_that_session(as_session, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_exactly_the_nine_tools_and_only_send_is_destructive():
+async def test_exactly_the_ten_tools_and_only_send_is_destructive():
     listed = {tool.name: tool for tool in await hosted_mcp.mcp.list_tools()}
     assert sorted(listed) == sorted(
         [
@@ -168,6 +168,7 @@ async def test_exactly_the_nine_tools_and_only_send_is_destructive():
             "read_task",
             "update_task",
             "use_browser",
+            "network",
         ]
     )
     for name, tool in listed.items():

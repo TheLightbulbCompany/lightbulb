@@ -4,13 +4,17 @@ A parked runtime can outlast API Gateway's 30 s on ``/invite``; the client retri
 ``RUNTIME_UNAVAILABLE``. The invite line is a credential: returned once, never logged or stored.
 """
 
-from fastapi import APIRouter, Body, Depends, Response
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from fastapi import APIRouter, Body, Depends, Request, Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.services import network_member
 
 router = APIRouter()
+internal_router = APIRouter()
+wake_router = APIRouter()
 
 
 class InviteRequest(BaseModel):
@@ -40,3 +44,32 @@ async def network_reconnect(auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     await network_member.reconnect(resolve_owner_id(auth))
     return {}
+
+
+class HoldNotice(BaseModel):
+    """The bridge's content-free hold notice. Any other field (the held text) is refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    holdId: str = Field(pattern=network_member.HOLD_ID_RE.pattern)
+    state: Literal["open", "closed"]
+    label: str = Field(default="", max_length=200)
+    target: str = Field(default="", max_length=200)
+
+
+@internal_router.post("/holds/{owner_id}", status_code=204)
+async def network_hold_notice(owner_id: str, body: HoldNotice, request: Request):
+    from routers.messaging import _require_hook_token
+
+    await _require_hook_token(owner_id, request)
+    await network_member.hold_notice(owner_id, body.model_dump())
+    return Response(status_code=204)
+
+
+@wake_router.post("/wake", include_in_schema=False)
+async def network_wake(request: Request):
+    """The doorbell: no Clerk auth, ``Authorization: Bearer <owner>.<secret>`` is the credential
+    (a header, never the path, which access logs record). No body either way."""
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    ok = await network_member.ring(token.strip() if scheme.lower() == "bearer" else "")
+    return Response(status_code=202 if ok else 404)

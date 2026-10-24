@@ -43,6 +43,7 @@ if cfg.get("fail"):
     sys.exit(3)
 token = sys.stdin.readline().strip()
 subs = []
+time.sleep(cfg.get("socket_delay", 0))
 
 def snapshot(path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -165,7 +166,7 @@ def net(tmp_path, monkeypatch):
     monkeypatch.setattr(network, "SOCKET", sock_dir / "n.sock")
     monkeypatch.setattr(network, "SAVE_DEBOUNCE_S", 0.05)
     for name, value in (("_proc", None), ("_token", ""), ("_etag", None), ("_sha", None), ("_next_try", 0.0),
-                        ("_off", False), ("_stopping", False), ("_sessions", {}), ("_save_timer", None),
+                        ("_off", False), ("_stopping", False), ("_ready", False), ("_sessions", {}), ("_save_timer", None),
                         ("_skip_logged", False)):
         monkeypatch.setattr(network, name, value)
     network._superseded.clear()
@@ -257,6 +258,17 @@ def test_restore_drops_a_stale_journal_first(net, monkeypatch):
     assert network.ensure_started(background=False)
     assert seen["files"] == ["identity.key", "state.db"]
     assert (home / "state.db").read_bytes() == b"kept-state"
+
+
+def test_an_rpc_during_a_background_start_waits_for_the_socket(net):
+    """The 13:26Z race: the boot path starts the sidecar in the background, and an RPC arriving
+    before its socket opened was told the network runs, then failed to connect."""
+    net.cfg(socket_delay=1.0)
+    network.ensure_started(background=True)
+    assert _until(lambda: net.spawns() == 1)
+    assert network.ensure_started(background=False)
+    assert network.call("status", {})["ok"] is True
+    assert net.spawns() == 1
 
 
 def test_concurrent_first_invokes_start_one_sidecar(net):

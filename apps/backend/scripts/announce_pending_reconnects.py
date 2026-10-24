@@ -22,6 +22,7 @@ import sys
 
 from core.repositories import integrations_repo
 from core.services.credentials import access_token
+from core.services.owner_facts import write_owner_facts
 
 
 async def main(argv: list[str] | None = None) -> int:
@@ -36,6 +37,7 @@ async def main(argv: list[str] | None = None) -> int:
             print(f"{owner_id} {provider} would-announce")
             continue
         await access_token._announce_reconnect(owner_id, provider)
+        await write_owner_facts(owner_id)  # drop it from the agents' connected_integrations, as _mark_reconnect does
         print(f"{owner_id} {provider} announced")
     return 0
 

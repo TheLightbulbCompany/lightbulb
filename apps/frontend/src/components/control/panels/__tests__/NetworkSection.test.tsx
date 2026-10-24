@@ -64,4 +64,25 @@ describe("NetworkSection", () => {
     await screen.findByText("lightbulb join abc");
     expect(container.textContent).not.toMatch(/mail/i);
   });
+
+  it("reconnects as admin: confirm, POST, revalidate", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    mount();
+    await screen.findByText("Reconnect workspace");
+    const before = api.get.mock.calls.length;
+    fireEvent.click(screen.getByText("Reconnect workspace"));
+    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith("/settings/network/reconnect", {}));
+    await vi.waitFor(() => expect(api.get.mock.calls.length).toBeGreaterThan(before));
+    expect(window.confirm).toHaveBeenCalledWith("Every computer will need a new line.");
+  });
+
+  it("says the workspace is still starting after 12 tries", async () => {
+    vi.useFakeTimers();
+    api.post.mockReset().mockRejectedValue(new ApiError(504, null));
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: "Get my line" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(11 * 10_000); });
+    expect(api.post).toHaveBeenCalledTimes(12);
+    expect(screen.getByRole("alert")).toHaveTextContent("Your workspace is still starting. Try again in a few minutes.");
+  });
 });

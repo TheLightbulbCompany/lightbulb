@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 
 import { Button } from "@/components/ui/button";
@@ -26,12 +26,14 @@ function isStarting(e: unknown): boolean {
 export function NetworkSection() {
   const api = useApi();
   const isAdmin = useIsWorkspaceAdmin();
-  const { data } = useSWR<{ connected: boolean }>(KEY, () => api.get(KEY) as Promise<{ connected: boolean }>);
+  const { data, mutate } = useSWR<{ connected: boolean }>(KEY, () => api.get(KEY) as Promise<{ connected: boolean }>);
   const [fresh, setFresh] = useState<{ line: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const getLine = async () => {
     setBusy(true);
@@ -40,20 +42,22 @@ export function NetworkSection() {
       for (let i = 0; i < MAX_TRIES; i++) {
         try {
           const made = await api.post(`${KEY}/invite`, {}) as { line: string };
+          if (!alive.current) return;
           setFresh({ line: made.line });
           return;
         } catch (e) {
           if (!isStarting(e)) throw e;
+          if (!alive.current) return;
           setStarting(true);
           if (i < MAX_TRIES - 1) await new Promise((r) => setTimeout(r, RETRY_MS));
+          if (!alive.current) return;
         }
       }
       setFailure("Your workspace is still starting. Try again in a few minutes.");
     } catch (e) {
-      setFailure(e instanceof Error && e.message ? e.message : "Couldn't get a line.");
+      if (alive.current) setFailure(e instanceof Error && e.message ? e.message : "Couldn't get a line.");
     } finally {
-      setStarting(false);
-      setBusy(false);
+      if (alive.current) { setStarting(false); setBusy(false); }
     }
   };
 
@@ -63,6 +67,7 @@ export function NetworkSection() {
     try {
       await api.post(`${KEY}/reconnect`, {});
       setFresh(null);
+      await mutate();
     } catch (e) {
       setFailure(e instanceof Error && e.message ? e.message : "Couldn't reconnect the workspace.");
     }

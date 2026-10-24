@@ -151,6 +151,12 @@ def deserialize_pointer(body: str) -> dict[str, Any]:
         except (TypeError, ValueError, AttributeError) as exc:
             raise ValueError("invalid operationId") from exc
         return value
+    if kind == "network_wake":
+        if set(value) != {"kind", "ownerId"}:
+            raise ValueError("invalid network_wake pointer")
+        if not isinstance(value["ownerId"], str) or not value["ownerId"]:
+            raise ValueError("invalid ownerId")
+        return value
     raise ValueError("unknown work pointer kind")
 
 
@@ -338,6 +344,8 @@ class OpenClawWorkWorker:
                 await self._room_dispatch(pointer)
             elif pointer["kind"] == "room_follow_up":
                 await self._room_follow_up(pointer)
+            elif pointer["kind"] == "network_wake":
+                await self._network_wake(pointer)
             else:
                 await self._runtime_operation(pointer)
             await asyncio.to_thread(
@@ -889,6 +897,16 @@ class OpenClawWorkWorker:
             # session acks in milliseconds; queue visibility must outlast this budget.
             timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
         )
+
+    async def _network_wake(self, pointer: dict[str, Any]) -> None:
+        """The invoke starts the microVM; the bridge's ``network.wake`` starts the sidecar. Best
+        effort: a failed wake is not retried, the ringing Mac rings again."""
+        from core.services import container_rpc
+
+        try:
+            await container_rpc.call(pointer["ownerId"], "network.wake", {})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("network wake failed owner=%s (%s)", pointer["ownerId"], type(exc).__name__)
 
     async def _runtime_operation(self, pointer: dict[str, Any]) -> None:
         owner_id = pointer["ownerId"]

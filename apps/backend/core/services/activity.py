@@ -852,6 +852,71 @@ def render_webhook_agent_ask(row: dict, agent: dict, held: list[dict], *, seen: 
     )
 
 
+def render_network_hold(row: dict, *, seen: str | None) -> ActivityItem:
+    """A stranger's first message on the network, held for a person's Allow
+    (``network_member.hold_notice``). The notice carries no text, so the item has no preview."""
+    from core.services import network_member
+
+    label = str(row.get("label") or "Someone on the network")
+    target = str(row.get("target") or "")
+    app = network_member.app_target(target)
+    open_ = row.get("state") == "open"
+    created = _when(row["createdAt"])
+    actor = ActivityActor(kind="agent", id="", name=label)
+    return ActivityItem(
+        id=network_member.hold_item_id(row["holdId"]),
+        kind="session",
+        subtype="join_request",
+        actor=actor,
+        created_at=created,
+        state="open" if open_ else "resolved",
+        resolved_at=None if open_ else _when(row.get("resolvedAt") or row["createdAt"]),
+        read=not _newer_than(created, seen),
+        summary=ActivitySummary(
+            title=_clip(f"{label} wants to message {f'your {app[0]}' if app else target}", TITLE_CHARS),
+            requester=actor,
+            reason=WEBHOOK_ASK_REASON,
+            preview=None,
+            links=[],
+        ),
+        actions=[
+            ActivityAction(id="send", label="Send", style="primary"),
+            ActivityAction(id="decline", label="Decline"),
+            ActivityAction(id="allow", label="Always allow"),
+        ]
+        if open_
+        else [],
+    )
+
+
+async def _render_network_hold_rows(owner_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
+    from core.services import network_member
+
+    rows = [row for row in rows if row.get("kind") == "network_hold"]
+    found = await asyncio.gather(*(network_member.get_hold(owner_id, str(row.get("holdId"))) for row in rows))
+    return [render_network_hold(hold, seen=seen) for hold in found if hold]
+
+
+async def _run_network_hold_action(auth: AuthContext, hold_id: str, action_id: str) -> ActivityItem:
+    """Send / Decline / Always allow, for a person the hold was filed to."""
+    from core.services import network_member
+
+    owner_id = resolve_owner_id(auth)
+
+    async def current() -> ActivityItem:
+        hold = await network_member.get_hold(owner_id, hold_id)
+        if not hold or auth.user_id not in (hold.get("askedUserIds") or []):
+            raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
+        return render_network_hold(hold, seen=None)
+
+    item = await current()
+    if item.state != "open":
+        return item  # already answered (a retried tap, another person, or the engine closed it)
+    _require_action(item, action_id)
+    await network_member.decide_hold(auth, hold_id, action_id)
+    return await current()
+
+
 async def _webhook_ask(owner_id: str, user_id: str, row: dict, seen: str | None) -> ActivityItem | None:
     from core.services import webhook_agents
 
@@ -904,16 +969,19 @@ async def _render_rows(
     *,
     admin: bool = False,
 ) -> list[ActivityItem]:
-    messages, sessions, logins, extensions, webhooks, reconnects = await asyncio.gather(
+    messages, sessions, logins, extensions, webhooks, reconnects, holds = await asyncio.gather(
         _render_message_rows(owner_id, user_id, rows, seen, gates),
         _render_session_rows(owner_id, user_id, rows, seen),
         _render_login_rows(owner_id, rows, seen, admin),
         _render_extension_rows(owner_id, rows, seen),
         _render_webhook_agent_rows(owner_id, user_id, rows, seen),
         _render_reconnect_rows(owner_id, rows, seen),
+        _render_network_hold_rows(owner_id, rows, seen),
     )
     return sorted(
-        messages + sessions + logins + extensions + webhooks + reconnects, key=lambda i: i.created_at, reverse=True
+        messages + sessions + logins + extensions + webhooks + reconnects + holds,
+        key=lambda i: i.created_at,
+        reverse=True,
     )
 
 
@@ -2029,6 +2097,8 @@ async def run_action(
         return await _run_login_action(auth, parts[1], action_id, body)
     if parts[0] == "extension" and len(parts) == 2:
         return await _run_extension_action(auth, parts[1], action_id)
+    if parts[0] == "nethold" and len(parts) == 2:
+        return await _run_network_hold_action(auth, parts[1], action_id)
     if parts[0] == "agenthook" and len(parts) == 4 and all(_ID_RE.match(x) for x in parts[1:]):
         return await _run_webhook_agent_action(auth, parts[1], parts[2], parts[3], action_id)
     if parts[0] in ("join", "pickup") and len(parts) == 4 and all(_ID_RE.match(x) for x in parts[1:]):

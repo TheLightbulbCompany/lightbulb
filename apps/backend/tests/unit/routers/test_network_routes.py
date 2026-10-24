@@ -1,7 +1,7 @@
 """Settings -> Network: connect status, the invite line, and reconnect."""
 
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -93,6 +93,9 @@ async def test_reconnect_is_admin_only_and_drops_key_and_state(
     monkeypatch.setattr(
         "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"agentcore_runtime_arn": "arn:r"})
     )
+    table = MagicMock()
+    table.delete_item.side_effect = lambda Key: calls.append(("delete_row", Key["sk"]))
+    monkeypatch.setattr("core.repositories.messaging_repo._table", lambda: table)
 
     member = await async_client_org_member.post("/api/v1/settings/network/reconnect")
     assert member.status_code == 403 and calls == []
@@ -104,4 +107,5 @@ async def test_reconnect_is_admin_only_and_drops_key_and_state(
         ("drop", "org_test_456"),
         ("stop", "arn:r"),
         ("delete", ["org_test_456/network/"]),
+        ("delete_row", "NETWAKE"),
     ]

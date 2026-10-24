@@ -282,7 +282,10 @@ def reload_sessions() -> int:
     if fetched is None:
         raise NetworkOff("sessions.json is gone")
     raw, data = fetched
-    ask("cloud.sessions.set", {"sessions": data.get("sessions") or []})
+    params = {"sessions": data.get("sessions") or []}
+    if "members" in data:  # the engine keeps its gate when the key is absent, so pass it only when written
+        params["members"] = data["members"]
+    ask("cloud.sessions.set", params)
     _sessions = data
     SESSIONS_FILE.write_bytes(raw)
     return len(data.get("sessions") or [])

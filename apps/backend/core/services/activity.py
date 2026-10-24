@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import logging
 import re
 import uuid
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 # ``reaction`` and ``agent_run`` arrive in a later PR (new writers, same shape).
 ActivityKind = Literal[
-    "mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session", "login", "extension"
+    "mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session", "login", "extension", "reconnect"
 ]
 ActorKind = Literal["human", "agent", "system"]
 LinkKind = Literal["issue", "room", "thread", "run", "approval", "session"]
@@ -163,6 +164,7 @@ class ActivityItem(ContractModel):
             "agent_ask",
             "login",
             "extension",
+            "reconnect",
         ]
         | None
     ) = None
@@ -748,6 +750,58 @@ def render_extension_request(row: dict, *, seen: str | None) -> ActivityItem:
     )
 
 
+def reconnect_item_id(provider: str) -> str:
+    # The cursor regex wants a 32-hex id after the kind, so the provider key is hashed.
+    return f"reconnect:{hashlib.sha256(provider.encode()).hexdigest()[:32]}"
+
+
+async def _render_reconnect_rows(owner_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
+    """An integration's grant went ``reconnect_required`` (``access_token._mark_reconnect``).
+    Open while the integration row still says so; a reconnect flips it back and the item
+    disappears. A provider that failed twice has two rows: only the newest renders."""
+    from core.repositories import integrations_repo
+    from core.services.credentials import registry
+
+    newest: dict[str, dict] = {}
+    for row in rows:
+        if row.get("kind") == "reconnect" and row.get("provider"):
+            if row["provider"] not in newest or row["createdAt"] > newest[row["provider"]]["createdAt"]:
+                newest[row["provider"]] = row
+    items = []
+    for provider, row in newest.items():
+        # consistent: the item is filed right after the flip, and a stale "connected" would hide it
+        integration = await integrations_repo.get(owner_id, provider, consistent=True)
+        if not integration or integration.get("status") != "reconnect_required":
+            continue
+        try:
+            name = registry.get_provider(provider).display_name
+        except KeyError:
+            continue
+        created = _when(row["createdAt"])
+        actor = ActivityActor(kind="system", id="", name="Lightbulb")
+        items.append(
+            ActivityItem(
+                id=reconnect_item_id(provider),
+                kind="reconnect",
+                subtype="reconnect",
+                actor=actor,
+                created_at=created,
+                state="open",
+                read=not _newer_than(created, seen),
+                summary=ActivitySummary(
+                    title=_clip(f"Reconnect {name}", TITLE_CHARS),
+                    requester=actor,
+                    reason=(
+                        f"{name} stopped working (its sign-in expired or was revoked), so your agents "
+                        "cannot use it. Open Settings, then Connections, and press Reconnect."
+                    ),
+                ),
+                actions=[],
+            )
+        )
+    return items
+
+
 async def _render_extension_rows(owner_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
     from core.services import browser_extensions
 
@@ -915,16 +969,19 @@ async def _render_rows(
     *,
     admin: bool = False,
 ) -> list[ActivityItem]:
-    messages, sessions, logins, extensions, webhooks, holds = await asyncio.gather(
+    messages, sessions, logins, extensions, webhooks, reconnects, holds = await asyncio.gather(
         _render_message_rows(owner_id, user_id, rows, seen, gates),
         _render_session_rows(owner_id, user_id, rows, seen),
         _render_login_rows(owner_id, rows, seen, admin),
         _render_extension_rows(owner_id, rows, seen),
         _render_webhook_agent_rows(owner_id, user_id, rows, seen),
+        _render_reconnect_rows(owner_id, rows, seen),
         _render_network_hold_rows(owner_id, rows, seen),
     )
     return sorted(
-        messages + sessions + logins + extensions + webhooks + holds, key=lambda i: i.created_at, reverse=True
+        messages + sessions + logins + extensions + webhooks + reconnects + holds,
+        key=lambda i: i.created_at,
+        reverse=True,
     )
 
 
@@ -1451,6 +1508,7 @@ _PINNED_ORDER = {
     "login": 1,
     "code": 1,
     "extension": 1,
+    "reconnect": 1,
     "failed_run": 2,
 }
 
@@ -1461,7 +1519,7 @@ def needs_you(item: ActivityItem) -> bool:
     shared sessions still waiting for your input."""
     if item.kind == "session":
         return item.state == "open" and item.subtype in ("waiting", "join_request", "agent_ask")
-    if item.kind in ("login", "extension"):
+    if item.kind in ("login", "extension", "reconnect"):
         return item.state == "open"
     return item.kind == "paperclip" and item.state == "open" and item.subtype in _PINNED_ORDER
 
@@ -1689,7 +1747,7 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
             1
             for item in pinned
             # A login ask badges only the people who can answer it (admins get its actions).
-            if item.kind == "session"
+            if item.kind in ("session", "reconnect")
             or (item.kind in ("login", "extension") and item.actions)
             or (item.kind not in ("login", "extension") and not _newer_than(item.created_at, seen))
         )

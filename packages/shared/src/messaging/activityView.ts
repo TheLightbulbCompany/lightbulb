@@ -21,7 +21,7 @@ export const ACTIVITY_FILTERS: readonly { id: ActivityFilter; label: string }[] 
  * a failed run, one of your shared sessions still waiting for you, or a teammate asking to join one. */
 export function isNeedsYou(item: ActivityItem): boolean {
   if (item.kind === "session") return item.state === "open" && (item.subtype === "waiting" || item.subtype === "join_request" || item.subtype === "agent_ask");
-  if (item.kind === "login" || item.kind === "extension") return item.state === "open";
+  if (item.kind === "login" || item.kind === "extension" || item.kind === "reconnect") return item.state === "open";
   return item.kind === "paperclip" && item.state === "open"
     && (item.subtype === "approval" || item.subtype === "interaction" || item.subtype === "failed_run");
 }

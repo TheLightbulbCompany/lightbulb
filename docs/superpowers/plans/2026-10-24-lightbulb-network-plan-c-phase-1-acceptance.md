@@ -26,6 +26,9 @@ Nothing here is claimed without its evidence line.
 |---|---|---|
 | 2026-10-25 ~14:45Z | WSL `lightbulb join '<ticket>' --name 'WSL'` with the Mac's `ask`-mode invite (minted on the Mac via `lightbulb invite` in tmux, person-only) → WSL printed "Asking whoever sent the link… (this waits up to 10 minutes)"; the Mac's engine dialog: 'WSL (computer "GlenhardieWindows") wants to join your team using your invite link… Or run: lightbulb approve J8'; the owner clicked Allow (`lightbulb approve J8` then answered "J8 was already answered in the dialog") | j3.png; `lightbulb team` on the Mac: Team "prasiddhaparthsarthy" — 2 computers: You · PPs-MacBook-Pro · founder; WSL · GlenhardieWindows · member |
 
+| 2026-10-25 ~15:05Z–15:35Z | Mac → WSL first message: `lightbulb send WSL/inbox "hello from the Mac — acceptance step 0"` (tmux) → "Sent. WSL has to allow it first (they see a prompt)", id `01M5P9AC9QMY5NYQ0THSK8VXQT`; on WSL `lightbulb held` listed it as H1, `approve H1` → "Allowed H1.", `listen --as inbox --once` printed it; the Mac's receipt then read "Delivered to WSL on GlenhardieWindows." | apprs.png; receipt line |
+| 2026-10-25 ~15:40Z | WSL → Mac first message: `lightbulb send gjivepwnkmgn/inbox "hello from WSL - acceptance step 0, reverse direction"` → id `01M5P9WEWVEXHM0JQYJBYNT6GK`; the Mac held it as H9 (CLI list and the engine's native dialog); `approve H9` (tmux) → "Allowed H9."; `listen --as inbox --once` → "From WSL, at the terminal (not verified): hello from WSL - acceptance step 0, reverse direction" | wsends.png (the Mac dialog), approve2.txt |
+
 ## Step 1 — dev pin flip and roll
 
 - [ ] `hermes-version.json` `dev.tag` → candidate; deploy run id; `roll_hermes_runtimes --all` exit code; `get-agent-runtime` `containerUri` ends with the tag.

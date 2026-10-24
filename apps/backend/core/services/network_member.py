@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import time
+from typing import Any
 
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
@@ -106,13 +107,63 @@ async def publish_sessions(owner_id: str) -> None:
         prior = await _read_sessions(owner_id)
         if prior is None:
             return
-        await _write(owner_id, _app_entries(prior))
-        # Only a warm sidecar is pinged: a parked one reads sessions.json at its next start,
-        # and an invoke here would cold-start the workspace (~55 s) from an agent edit.
-        if await _session_is_warm(owner_id):
-            await container_rpc.call(owner_id, "network.sessions", {})
+        await _write_and_ping(owner_id, _app_entries(prior))
     except Exception:  # noqa: BLE001
         logger.warning("network sessions publish failed for owner=%s", owner_id, exc_info=True)
+
+
+async def _write_and_ping(owner_id: str, apps: list[dict]) -> None:
+    await _write(owner_id, apps)
+    # Only a warm sidecar is pinged: a parked one reads sessions.json at its next start,
+    # and an invoke here would cold-start the workspace (~55 s) from an agent edit.
+    if await _session_is_warm(owner_id):
+        await container_rpc.call(owner_id, "network.sessions", {})
+
+
+async def _declare(owner_id: str, user_id: str, slug: str, client: str, doc: dict) -> None:
+    """Write (or rewrite, with a fresh title) this person's app entry, then tell a warm sidecar."""
+    from core.services.messaging import human_display_name
+
+    person = app_person(user_id)
+    name = f"{slug}-{person}"
+    resolved = (await human_display_name(user_id)).strip()
+    # The lookup answers the user id when Clerk cannot say: never publish an id on the network.
+    first = resolved.split()[0] if resolved and resolved != user_id else "a teammate"
+    entry = {"name": name, "agent": slug, "title": f"{client} via {first}"[:256], "app": slug, "person": person}
+    apps = [s for s in _app_entries(doc) if s.get("name") != name]
+    await _write_and_ping(owner_id, [*apps, entry])
+
+
+def rpc_error(exc: RuntimeError) -> dict:
+    """The ``{"code", "message", ...}`` a ``container_rpc`` RuntimeError carries; ``{}`` if none."""
+    try:
+        error = json.loads(str(exc))
+    except ValueError:
+        return {}
+    return error if isinstance(error, dict) else {}
+
+
+async def app_call(auth, slug: str, client: str, op: str, **fields) -> Any:
+    """One ``network.app`` call as ``<client> via <person>``: the person's app session is declared
+    in ``sessions.json`` first (and published when new). The member holds the key, not us."""
+    from core.auth import resolve_owner_id
+
+    owner_id = resolve_owner_id(auth)
+    person = app_person(auth.user_id)
+    doc = await _read_sessions(owner_id)
+    if doc is None:  # never write sessions.json for a workspace that is not a member
+        raise ApiProblem("NETWORK_NOT_CONNECTED", "This workspace is not on a network yet. Connect it in Settings.")
+    if not any(s.get("name") == f"{slug}-{person}" for s in _app_entries(doc)):
+        await _declare(owner_id, auth.user_id, slug, client, doc)
+    params = {"op": op, "app": slug, "person": person, **fields}
+    try:
+        return await container_rpc.call(owner_id, "network.app", params)
+    except RuntimeError as exc:
+        # The sidecar never learned the entry (a lost ping, a stale warm estimate): declare once more.
+        if rpc_error(exc).get("reason") != "not_declared":
+            raise
+    await _declare(owner_id, auth.user_id, slug, client, await _read_sessions(owner_id) or doc)
+    return await container_rpc.call(owner_id, "network.app", params)
 
 
 async def _session_is_warm(owner_id: str) -> bool:

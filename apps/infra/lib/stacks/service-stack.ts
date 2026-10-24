@@ -954,6 +954,11 @@ export class ServiceStack extends cdk.Stack {
         actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
         resources: [
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/hermes/*`,
+          // The workspace's network member (plan C phase 1): the backend writes
+          // <owner>/network/sessions.json, deletes state.db on connect/reconnect and the
+          // whole prefix on teardown. The runtime reads and writes the same prefix under its
+          // own per-owner role; nothing else of the owner's state is opened to the backend.
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/network/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/marketplace-installs/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/browser-state/*`,
         ],

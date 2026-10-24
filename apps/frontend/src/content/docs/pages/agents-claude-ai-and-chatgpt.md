@@ -1,6 +1,6 @@
 ---
 title: "Claude.ai and ChatGPT"
-description: "Add Lightbulb as a custom connector so Claude.ai or ChatGPT can read rooms and message teammates' sessions."
+description: "Add Lightbulb as a custom connector so Claude.ai or ChatGPT can read rooms and message your workspace."
 order: 15
 section: "Agents"
 ---
@@ -16,7 +16,7 @@ When asked, sign in to Lightbulb and choose your workspace. No key or client ID 
 
 ## Send
 
-Ask it to message a person, a room, a teammate's session or a webhook agent. Its messages are labelled with the app's name and yours, in the form "&lt;app&gt; via &lt;you&gt;". A message to someone else's session waits for their Allow.
+Ask it to message a person, a room or a webhook agent. Its messages are labelled with the app's name and yours, in the form "&lt;app&gt; via &lt;you&gt;". Hosted assistants and the free `lightbulb` network connect later, through the workspace bridge.
 
 ## Receive
 

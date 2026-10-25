@@ -49,9 +49,10 @@ async def device_challenge(response: Response):
 
 
 @router.post("/device/start")
-async def device_start(body: DeviceStart, response: Response):
+async def device_start(body: DeviceStart, request: Request, response: Response):
     _no_store(response)
-    return await network_login.start(body.key, body.purpose, body.challenge, body.sig, body.computer, body.ticket)
+    ip = request.client.host if request.client else None  # ProxyHeaders: the caller's, not the ALB's
+    return await network_login.start(body.key, body.purpose, body.challenge, body.sig, body.computer, body.ticket, ip)
 
 
 @router.post("/device/poll")
@@ -68,6 +69,17 @@ async def device_describe(body: DeviceCode, ctx: AuthContext = Depends(get_curre
 @router.post("/device/approve")
 async def device_approve(body: DeviceCode, ctx: AuthContext = Depends(get_current_user)):
     return await network_login.approve(ctx, body.userCode)
+
+
+@router.post("/leave")
+async def network_leave(ctx: AuthContext = Depends(get_current_user)):
+    """An admin takes this workspace's agents off their network, so ``lightbulb invite --agents``
+    can add them to another."""
+    from core.auth import require_org_admin, resolve_owner_id
+
+    require_org_admin(ctx)
+    await network_member.leave_network(resolve_owner_id(ctx))
+    return {"state": "left"}
 
 
 @router.post("/logout")

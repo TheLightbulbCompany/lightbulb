@@ -17,6 +17,7 @@ another writer: the sidecar stops and the network stays off for this process. ``
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -298,15 +299,36 @@ def reload_sessions() -> int:
 JOIN_WAIT_S = 660.0
 
 
+#: Each once link this process joined with (its SHA-256, never the link): ``joining`` while the
+#: join waits for Allow, ``joined`` after. A retried ``network.join`` (an API Gateway 504, a lost
+#: answer) with the same link is that join, not a second one; a failed join can be tried again.
+_joins: dict[str, str] = {}
+
+
+def _link_id(ticket: str) -> str:
+    return hashlib.sha256(ticket.encode()).hexdigest()
+
+
+def join_known(ticket: str) -> bool:
+    return _joins.get(_link_id(ticket)) in ("joining", "joined")
+
+
 def join_in_background(ticket: str) -> None:
     """``team.join`` with an admin computer's once link, off the RPC thread: the join waits for
     that admin's Allow. Logs the outcome's state and reason, never the link."""
+    link = _link_id(ticket)
+    if _joins.get(link) in ("joining", "joined"):
+        return
+    _joins[link] = "joining"
+
     def _join() -> None:
         try:
             r = ask("team.join", {"ticket": ticket, "name": str(_sessions.get("workspace") or "")},
                     timeout_s=JOIN_WAIT_S)
             log.info("network.join state=%s reason=%s", r.get("state"), r.get("reason"))
+            _joins[link] = "joined" if r.get("state") == "admitted" else "failed"
         except Exception as exc:  # noqa: BLE001 -- the admin's computer shows nothing; the log says why
+            _joins[link] = "failed"
             log.warning("network.join failed (%s)", type(exc).__name__)
 
     _spawn(_join, "network-join")

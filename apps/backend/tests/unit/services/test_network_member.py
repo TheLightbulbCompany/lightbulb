@@ -33,7 +33,7 @@ def store(monkeypatch, table):
     keys = {"user_1": ["key_1a", "key_1b"], "user_2": [], "user_3": ["key_3"]}
     monkeypatch.setattr(
         "core.repositories.network_keys_repo.keys_for_users",
-        AsyncMock(side_effect=lambda users: sorted(k for u in users for k in keys.get(u, []))),
+        AsyncMock(side_effect=lambda users, *_: sorted(k for u in users for k in keys.get(u, []))),
     )
     return objects
 
@@ -302,15 +302,42 @@ async def test_join_network_maps_the_bridges_refusals(store, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_publish_for_users_republishes_each_of_their_workspaces_once(monkeypatch):
+async def test_workspaces_of_is_strict_and_lists_each_workspace_once(monkeypatch):
     orgs = {"user_1": [{"id": "org_a"}, {"id": "org_b"}], "user_2": [{"id": "org_b"}]}
-    monkeypatch.setattr(
-        "core.services.clerk_admin.list_user_organizations", AsyncMock(side_effect=lambda u: orgs.get(u, []))
-    )
-    published = []
-    monkeypatch.setattr(network_member, "publish_sessions", AsyncMock(side_effect=published.append))
-    await network_member.publish_for_users("user_1", "user_2", "")
-    assert published == ["org_a", "org_b"]
+    lookup = AsyncMock(side_effect=lambda u, **kw: orgs.get(u, []))
+    monkeypatch.setattr("core.services.clerk_admin.list_user_organizations", lookup)
+    assert await network_member.workspaces_of("user_1", "user_2", "") == ["org_a", "org_b"]
+    assert all(c.kwargs.get("strict") is True for c in lookup.await_args_list)
+    lookup.side_effect = RuntimeError("clerk down")
+    with pytest.raises(RuntimeError):
+        await network_member.workspaces_of("user_1")
+
+
+@pytest.mark.asyncio
+async def test_republish_rewrites_members_only_and_raises_when_a_write_fails(store, monkeypatch):
+    monkeypatch.setattr(network_member, "_session_is_warm", AsyncMock(return_value=False))
+    await network_member.write_sessions("org_a")
+    await network_member.republish(["org_a", "org_nope"])  # org_nope is no member: skipped
+    keys = AsyncMock(return_value=[])
+    monkeypatch.setattr("core.repositories.network_keys_repo.keys_for_users", keys)
+    await network_member.republish(["org_a"], extra=("k_new",))
+    assert keys.await_args.args[1:] == (("k_new",), ())
+    monkeypatch.setattr(network_member, "_write_and_ping", AsyncMock(side_effect=RuntimeError("s3")))
+    with pytest.raises(RuntimeError):
+        await network_member.republish(["org_a"])
+
+
+@pytest.mark.asyncio
+async def test_the_joined_mark_survives_rewrites_and_leave_clears_it(store, monkeypatch):
+    await network_member.write_sessions("org_a")
+    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"state": "joining"}))
+    await network_member.join_network("org_a", "TICKET")
+    assert _doc(store)["joined"] is True
+    await network_member.publish_sessions("org_a")
+    assert _doc(store)["joined"] is True
+    await network_member.leave_network("org_a")
+    assert "joined" not in _doc(store)
+    network_member.container_rpc.call.assert_awaited_with("org_a", "network.leave", {})
 
 
 @pytest.mark.asyncio

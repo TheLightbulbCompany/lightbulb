@@ -52,7 +52,29 @@ async def _keys_of(user_id: str) -> list[str]:
         kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
 
-async def keys_for_users(user_ids: list[str]) -> list[str]:
-    """Every key bound to one of ``user_ids``, sorted (one GSI query per user)."""
-    found = await asyncio.gather(*(_keys_of(u) for u in user_ids))
-    return sorted({k for keys in found for k in keys})
+async def _consistent(keys: set[str]) -> dict[str, dict]:
+    """The base-table rows of ``keys``, strongly consistent (the GSI may lag a put or delete)."""
+    table = _table()
+    out: dict[str, dict] = {}
+    pending = [{"key": k} for k in sorted(keys)]
+    while pending:
+        batch, pending = pending[:100], pending[100:]
+        request = {table.name: {"Keys": batch, "ConsistentRead": True}}
+        while request:
+            resp = await run_in_thread(table.meta.client.batch_get_item, RequestItems=request)
+            for row in resp.get("Responses", {}).get(table.name, []):
+                out[row["key"]] = row
+            request = resp.get("UnprocessedKeys") or None
+    return out
+
+
+async def keys_for_users(user_ids: list[str], extra: tuple[str, ...] = (), exclude: tuple[str, ...] = ()) -> list[str]:
+    """Every key bound to one of ``user_ids``, sorted. The ``by-user`` GSI names the candidates
+    (plus ``extra``: a key just bound, which the GSI may not show yet); each is then checked
+    against a consistent read of its row, so a key just deleted or moved to someone else is
+    never listed. ``exclude`` drops keys about to be unbound."""
+    users = set(user_ids)
+    found = await asyncio.gather(*(_keys_of(u) for u in users))
+    candidates = ({k for keys in found for k in keys} | set(extra)) - set(exclude)
+    rows = await _consistent(candidates) if candidates else {}
+    return sorted(k for k, row in rows.items() if row.get("user_id") in users)

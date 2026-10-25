@@ -65,7 +65,8 @@ def env(table, monkeypatch):
     monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"}))
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ada Lovelace"))
     published = AsyncMock()
-    monkeypatch.setattr(network_member, "publish_for_users", published)
+    monkeypatch.setattr(network_member, "republish", published)
+    monkeypatch.setattr(network_member, "workspaces_of", AsyncMock(side_effect=lambda *u: sorted(f"org_{x}" for x in u if x)))
     join = AsyncMock(return_value={"state": "joining"})
     monkeypatch.setattr(network_member, "join_network", join)
 
@@ -113,18 +114,20 @@ def test_login_binds_the_computer_to_the_confirming_person_and_polls_once(env):
     started = _start(client, mac)
     assert started.status_code == 200, started.text
     s = started.json()
-    assert s["verifyUrl"] == f"https://dev.example/auth/network?code={s['userCode']}"
+    assert s["verifyUrl"] == "https://dev.example/auth/network"  # the person types the code
     assert _poll(client, s["code"]) == {"status": "pending"}
 
     seen = client.post("/api/v1/network/device/describe", json={"userCode": s["userCode"]})
-    assert seen.json() == {"purpose": "login", "computer": "Ada's Mac"}
+    seen = seen.json()
+    assert (seen["purpose"], seen["computer"], seen["ip"]) == ("login", "Ada's Mac", "testclient")
+    assert abs(seen["startedAt"] - time.time()) < 60
     assert _confirm(client, s["userCode"]).status_code == 200
 
     import asyncio
 
     row = asyncio.run(network_keys_repo.get(mac.key))
     assert (row["user_id"], row["computer"]) == ("user_ada", "Ada's Mac")
-    published.assert_awaited_once_with("user_ada", "")
+    published.assert_awaited_once_with(["org_user_ada"], extra=(mac.key,))
     assert _poll(client, s["code"]) == {"status": "approved", "name": "Ada Lovelace"}
     assert _poll(client, s["code"]) == {"status": "expired"}  # single use
 
@@ -167,10 +170,8 @@ def test_invite_agents_needs_a_signed_in_computer_of_this_admin(env):
     s = _start(client, mac).json()
     _confirm(client, s["userCode"])
     started = _start(client, mac, "agents", TICKET).json()
-    assert client.post("/api/v1/network/device/describe", json={"userCode": started["userCode"]}).json() == {
-        "purpose": "agents",
-        "computer": "Ada's Mac",
-    }
+    seen = client.post("/api/v1/network/device/describe", json={"userCode": started["userCode"]}).json()
+    assert (seen["purpose"], seen["computer"]) == ("agents", "Ada's Mac")
 
     # A member is not an admin; an admin whose computer this is not, neither is it theirs to use.
     who["ctx"] = AuthContext(user_id="user_ada", org_id=ORG, org_role="org:member")
@@ -219,7 +220,7 @@ def test_logout_drops_the_binding_and_republishes_its_person(env):
     import asyncio
 
     assert asyncio.run(network_keys_repo.get(mac.key)) is None
-    published.assert_awaited_once_with("user_ada")
+    published.assert_awaited_once_with(["org_user_ada"], exclude=(mac.key,))
     # A login proof is no logout proof.
     body = mac.signed(client, "login")
     assert client.post("/api/v1/network/logout", json=body).status_code == 401
@@ -231,7 +232,7 @@ def test_a_relogin_by_someone_else_republishes_both_people(env):
     _confirm(client, _start(client, mac).json()["userCode"])
     who["ctx"] = AuthContext(user_id="user_bob", org_id=ORG)
     _confirm(client, _start(client, mac).json()["userCode"])
-    assert published.await_args.args == ("user_bob", "user_ada")
+    assert published.await_args.args == (["org_user_ada", "org_user_bob"],)
 
 
 def test_no_key_code_or_link_reaches_the_logs(env, caplog):
@@ -249,3 +250,52 @@ def test_no_key_code_or_link_reaches_the_logs(env, caplog):
     assert caplog.records
     for secret in (mac.key, s["code"], a["code"], TICKET):
         assert secret not in text
+
+
+def test_a_clerk_error_changes_nothing_and_a_retry_completes_the_logout(env):
+    client, _, published, _ = env
+    mac = Computer()
+    _confirm(client, _start(client, mac).json()["userCode"])
+    network_member.workspaces_of.side_effect = RuntimeError("clerk down")
+    assert client.post("/api/v1/network/logout", json=mac.signed(client, "logout")).status_code == 503
+    import asyncio
+
+    assert asyncio.run(network_keys_repo.get(mac.key)) is not None  # still bound: retry republishes
+    network_member.workspaces_of.side_effect = lambda *u: ["org_a"]
+    published.side_effect = RuntimeError("s3")
+    assert client.post("/api/v1/network/logout", json=mac.signed(client, "logout")).status_code == 503
+    assert asyncio.run(network_keys_repo.get(mac.key)) is not None
+    published.side_effect = None
+    assert client.post("/api/v1/network/logout", json=mac.signed(client, "logout")).status_code == 200
+    assert asyncio.run(network_keys_repo.get(mac.key)) is None
+
+
+def test_someone_else_confirming_an_approved_code_is_told_so(env):
+    client, who, *_ = env
+    s = _start(client, Computer()).json()
+    assert _confirm(client, s["userCode"]).status_code == 200
+    who["ctx"] = AuthContext(user_id="user_eve", org_id=None)
+    taken = _confirm(client, s["userCode"])
+    assert taken.status_code == 409 and taken.json()["detail"] == "Someone else already confirmed this code."
+
+
+def test_a_free_account_with_no_workspace_signs_a_computer_in(env):
+    client, who, published, _ = env
+    who["ctx"] = AuthContext(user_id="user_free", org_id=None)
+    mac = Computer()
+    assert _confirm(client, _start(client, mac).json()["userCode"]).status_code == 200
+    import asyncio
+
+    assert asyncio.run(network_keys_repo.get(mac.key))["user_id"] == "user_free"
+    published.assert_awaited_once_with(["org_user_free"], extra=(mac.key,))
+
+
+def test_an_admin_takes_the_workspace_off_its_network(env, monkeypatch):
+    client, who, *_ = env
+    leave = AsyncMock(return_value={})
+    monkeypatch.setattr(network_member, "leave_network", leave)
+    who["ctx"] = AuthContext(user_id="user_ada", org_id=ORG, org_role="org:member")
+    assert client.post("/api/v1/network/leave").status_code == 403
+    who["ctx"] = AuthContext(user_id="user_ada", org_id=ORG, org_role="org:admin")
+    assert client.post("/api/v1/network/leave").json() == {"state": "left"}
+    leave.assert_awaited_once_with(ORG)

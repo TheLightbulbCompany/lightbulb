@@ -67,7 +67,7 @@ async def start(tauri_mac_pubkey: str, cli_pubkey: str, machine_name: str | None
     return await create(fields, "/auth/connect-machine")
 
 
-async def create(fields: dict, page: str) -> dict:
+async def create(fields: dict, page: str, *, code_in_url: bool = True) -> dict:
     """A pending login row carrying ``fields``, and what the CLI shows and polls with. ``page``
     is the frontend path the person confirms on (``?code=<userCode>``)."""
     code = secrets.token_urlsafe(32)
@@ -87,7 +87,9 @@ async def create(fields: dict, page: str) -> dict:
     return {
         "code": code,
         "userCode": user_code,
-        "verifyUrl": f"{settings.FRONTEND_URL.rstrip('/')}{page}?code={user_code}",
+        # Without the code, the person types what their terminal shows: a link alone (a phish)
+        # then confirms nothing.
+        "verifyUrl": f"{settings.FRONTEND_URL.rstrip('/')}{page}" + (f"?code={user_code}" if code_in_url else ""),
         "interval": POLL_INTERVAL_S,
         "expiresIn": LOGIN_TTL_S,
     }
@@ -103,7 +105,8 @@ async def claim(user_code: str, owner_id: str, user_id: str, *, kind: str | None
     code_hash = row["pk"].removeprefix("DEVICELOGIN#")
     if not await messaging_repo.claim_device_login(code_hash, owner_id, user_id):
         await live_row(user_code, kind)  # taken or expired between the read and the claim: 410
-        raise HTTPException(status_code=409, detail="Someone else already connected this Mac.")
+        detail = "Someone else already confirmed this code." if kind else "Someone else already connected this Mac."
+        raise HTTPException(status_code=409, detail=detail)
     return row
 
 

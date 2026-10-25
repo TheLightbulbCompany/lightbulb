@@ -97,3 +97,23 @@ def test_network_sessions_rereads_the_file_and_declares_it(net):
     assert declared["member_keys"] == ["key_a"]
     assert network.agent_for_session("atlas") == "a-atlas"
     assert json.loads(network.SESSIONS_FILE.read_text()) == new
+
+
+def test_a_retried_join_with_the_same_link_is_that_join_not_a_second(net):
+    ticket = "TICKET-retry-once"
+    net.answer(**{"team.get": {"members": [{"key": "me"}]},
+                  "team.join": {"state": "admitted", "reason": None, "team": "acme", "online": 2}})
+    assert _rpc("network.join", {"ticket": ticket})["payload"] == {"state": "joining"}
+    assert _until(lambda: net.calls("team.join"))
+    # Joined now: the team has two members, yet the same link's retry answers joining again.
+    net.answer(**{"team.get": {"members": [{"key": "me"}, {"key": "admin"}]}})
+    assert _until(lambda: network.join_known(ticket))
+    assert _rpc("network.join", {"ticket": ticket}) == {"ok": True, "payload": {"state": "joining"}}
+    assert len(net.calls("team.join")) == 1
+    assert _rpc("network.join", {"ticket": "another-link"})["error"]["code"] == "already_in_team"
+
+
+def test_leave_runs_team_leave(net):
+    net.answer(**{"team.leave": {"left": True}})
+    assert _rpc("network.leave") == {"ok": True, "payload": {"left": True}}
+    assert _sent(net, "team.leave")[0]["op"] == "team.leave"

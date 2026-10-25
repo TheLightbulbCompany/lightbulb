@@ -49,3 +49,21 @@ async def test_bind_rebind_list_and_unbind(keys_table):
     assert (await repo.delete("k1"))["user_id"] == "user_a"
     assert await repo.delete("k1") is None
     assert await repo.keys_for_users(["user_a"]) == []
+
+
+@pytest.mark.asyncio
+async def test_a_lagging_index_never_lists_a_moved_or_deleted_key_and_extra_covers_a_new_one(keys_table, monkeypatch):
+    from core.repositories import network_keys_repo as repo
+
+    await repo.put("k1", "user_a", "mac")
+    await repo.put("k2", "user_b", "mbp")
+    stale = {"user_a": ["k1", "k2", "gone"], "user_b": []}  # the GSI before it caught up
+
+    async def lagging(user_id):
+        return stale.get(user_id, [])
+
+    monkeypatch.setattr(repo, "_keys_of", lagging)
+    assert await repo.keys_for_users(["user_a"]) == ["k1"]  # k2 moved, "gone" deleted
+    assert await repo.keys_for_users(["user_b"]) == []  # the index has not seen k2 yet
+    assert await repo.keys_for_users(["user_b"], extra=("k2",)) == ["k2"]
+    assert await repo.keys_for_users(["user_a"], exclude=("k1",)) == []

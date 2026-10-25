@@ -490,6 +490,8 @@ def _network_join(params: dict, **_kwargs) -> dict:
         return {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "ticket is required"}}
 
     def run() -> dict:
+        if network.join_known(ticket):  # a retry of the join already under way (or done)
+            return {"state": "joining"}
         if len(network.ask("team.get", {}).get("members") or []) > 1:
             raise network.OpError("team.get", "already_in_team")
         network.join_in_background(ticket)
@@ -513,6 +515,12 @@ def _network_app(params: dict, **_kwargs) -> dict:
                                    "message": "op must be send|inbox|ack|unread|receipt|directory"}}
 
 
+def _network_leave(params: dict, **_kwargs) -> dict:
+    """An admin takes the workspace off its network (``team.leave``): back to its own solo team,
+    so ``invite --agents`` can add it to another."""
+    return _net("network.leave", "team.leave", {})
+
+
 def _network_sessions(params: dict, **_kwargs) -> dict:
     return _net("network.sessions", "cloud.sessions.set", run=lambda: {"count": network.reload_sessions()})
 
@@ -524,6 +532,7 @@ def _network_wake(params: dict, **_kwargs) -> dict:
 
 RPC_METHODS.update({"network.join": _network_join, "network.sessions": _network_sessions,
                     "network.app": _network_app, "network.hold": _network_hold,
+                    "network.leave": _network_leave,
                     "network.wake": _network_wake})
 
 

@@ -41,6 +41,8 @@ KEY_RE = re.compile(r"^[a-z2-7]{52}$")  # the engine's member key: lowercase bas
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 TICKET_RE = re.compile(r"^[A-Za-z0-9_-]{1,8192}$")  # an encoded ticket is base64url
 _BAD_PROOF = "This computer's proof did not check out. Run the command again."
+_RETRY = "Lightbulb could not update your workspaces just now. Run the command again."
+_TAKEN = "Someone else already confirmed this code."
 _LOGIN_FIRST = "Sign this computer in as you first: run `lightbulb login` on it, then try again."
 
 
@@ -109,7 +111,9 @@ async def _proven(key: str, purpose: str, nonce: str, sig: str, ticket: str | No
         raise HTTPException(status_code=401, detail=_BAD_PROOF)
 
 
-async def start(key: str, purpose: str, nonce: str, sig: str, computer: str | None, ticket: str | None) -> dict:
+async def start(
+    key: str, purpose: str, nonce: str, sig: str, computer: str | None, ticket: str | None, ip: str | None = None
+) -> dict:
     if purpose not in DEVICE_PURPOSES or (purpose == "agents") != (ticket is not None):
         raise HTTPException(status_code=422, detail="Unknown request. Run lightbulb update.")
     await _proven(key, purpose, nonce, sig, ticket)
@@ -120,15 +124,23 @@ async def start(key: str, purpose: str, nonce: str, sig: str, computer: str | No
         "purpose": purpose,
         "computerKey": key,
         "machineName": device_login.clean_machine_name(computer),
+        # Shown on the confirm page beside the name, which the computer chose itself.
+        "startedAt": int(time.time()),
+        "sourceIp": (ip or "")[:64],
     }
     if ticket is not None:
         fields["ticket"] = ticket
-    return await device_login.create(fields, PAGE)
+    return await device_login.create(fields, PAGE, code_in_url=False)
 
 
 async def describe(user_code: str) -> dict:
     row = await device_login.live_row(user_code, KIND)
-    return {"purpose": row["purpose"], "computer": row.get("machineName") or ""}
+    return {
+        "purpose": row["purpose"],
+        "computer": row.get("machineName") or "",
+        "startedAt": row.get("startedAt"),
+        "ip": row.get("sourceIp") or "",
+    }
 
 
 async def approve(ctx: AuthContext, user_code: str) -> dict:
@@ -146,11 +158,18 @@ async def approve(ctx: AuthContext, user_code: str) -> dict:
         if not bound or bound.get("user_id") != ctx.user_id:
             raise HTTPException(status_code=409, detail=_LOGIN_FIRST)
     if row.get("status") == "approved":
+        if row.get("approverUserId") != ctx.user_id:
+            raise HTTPException(status_code=409, detail=_TAKEN)
         return {"status": "approved"}  # a retried confirm after a lost answer
     row = await device_login.claim(user_code, owner_id, ctx.user_id, kind=KIND)
     if purpose == "login":
-        old = await network_keys_repo.put(row["computerKey"], ctx.user_id, row.get("machineName") or "")
-        await network_member.publish_for_users(ctx.user_id, (old or {}).get("user_id", ""))
+        key = row["computerKey"]
+        old = await network_keys_repo.get(key)
+        # Resolved before the binding moves: a Clerk error now is a 503 the person retries, not a
+        # gate left open in a workspace nobody republished.
+        owners = await _workspaces(ctx.user_id, (old or {}).get("user_id", ""))
+        await network_keys_repo.put(key, ctx.user_id, row.get("machineName") or "")
+        await _republish(owners, extra=(key,))
         result = {"name": await _name(ctx.user_id)}
     else:
         await network_member.join_network(owner_id, row["ticket"])
@@ -159,13 +178,32 @@ async def approve(ctx: AuthContext, user_code: str) -> dict:
     return {"status": "approved", **result}
 
 
-async def logout(key: str, nonce: str, sig: str) -> None:
-    await _proven(key, "logout", nonce, sig)
-    old = await network_keys_repo.delete(key)
-    if old:
-        from core.services import network_member
+async def _workspaces(*user_ids: str) -> list[str]:
+    from core.services import network_member
 
-        await network_member.publish_for_users(old["user_id"])
+    try:
+        return await network_member.workspaces_of(*user_ids)
+    except Exception as exc:  # noqa: BLE001 -- Clerk could not say; nothing has changed yet
+        raise HTTPException(status_code=503, detail=_RETRY) from exc
+
+
+async def _republish(owners: list[str], **delta) -> None:
+    from core.services import network_member
+
+    try:
+        await network_member.republish(owners, **delta)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=_RETRY) from exc
+
+
+async def logout(key: str, nonce: str, sig: str) -> None:
+    """The binding goes last: a failed republish leaves it in place, so running ``lightbulb
+    logout`` again republishes everything again."""
+    await _proven(key, "logout", nonce, sig)
+    bound = await network_keys_repo.get(key)
+    if bound:
+        await _republish(await _workspaces(bound["user_id"]), exclude=(key,))
+        await network_keys_repo.delete(key)
 
 
 async def _name(user_id: str) -> str | None:

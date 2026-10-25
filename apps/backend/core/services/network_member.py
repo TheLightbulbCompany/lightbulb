@@ -72,7 +72,9 @@ async def write_sessions(owner_id: str, *, apps: list[dict] | None = None) -> di
     return await _write(owner_id, _app_entries(prior) if apps is None else apps, prior)
 
 
-async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> dict:
+async def _write(
+    owner_id: str, apps: list[dict], prior: dict | None = None, extra: tuple = (), exclude: tuple = ()
+) -> dict:
     from core.repositories import network_keys_repo
     from core.services import clerk_admin
     from core.services.company_identity import slugify
@@ -103,16 +105,19 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
         # `agent` is what a teammate's screen calls the sender ("From The Lightbulb Company's Friday").
         sessions.append({"name": name, "agent": agent["name"] or name, "title": agent["name"], "agentId": agent["id"]})
 
-    # The wake token survives every writer: with no prior in hand, read the current file.
-    wake = await _wake(owner_id, prior if prior is not None else (await _read_sessions(owner_id) or {}))
+    # The wake token and the joined mark survive every writer: with no prior in hand, read the file.
+    prior = prior if prior is not None else (await _read_sessions(owner_id) or {})
+    wake = await _wake(owner_id, prior)
     doc = {
         "workspace": (org or {}).get("name") or owner_id,
         "sessions": sessions + apps,
         "wake": wake,
         "members": members,
         # The sidecar's gate: only these computers' messages reach the agents.
-        "member_keys": await network_keys_repo.keys_for_users(members),
+        "member_keys": await network_keys_repo.keys_for_users(members, extra, exclude),
     }
+    if prior.get("joined"):
+        doc["joined"] = True  # on a network an admin added it to (``join_network``)
     await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
     return doc
 
@@ -131,8 +136,8 @@ async def publish_sessions(owner_id: str) -> None:
         logger.warning("network sessions publish failed for owner=%s", owner_id, exc_info=True)
 
 
-async def _write_and_ping(owner_id: str, apps: list[dict]) -> None:
-    await _write(owner_id, apps)
+async def _write_and_ping(owner_id: str, apps: list[dict], extra: tuple = (), exclude: tuple = ()) -> None:
+    await _write(owner_id, apps, None, extra, exclude)
     # Only a warm sidecar is pinged: a parked one reads sessions.json at its next start,
     # and an invoke here would cold-start the workspace (~55 s) from an agent edit.
     if await _session_is_warm(owner_id):
@@ -207,14 +212,34 @@ async def _runtime_arn(owner_id: str) -> str | None:
     return ((await container_repo.get_by_owner_id(owner_id)) or {}).get("agentcore_runtime_arn")
 
 
-async def publish_for_users(*user_ids: str) -> None:
-    """``member_keys`` follow a login or logout: republish every workspace these people are in.
-    Best effort: never raises (``publish_sessions`` swallows its own failures)."""
+async def workspaces_of(*user_ids: str) -> list[str]:
+    """Every workspace these people are in, from Clerk; raises when Clerk cannot say (a login
+    or logout must not skip a workspace's gate)."""
     from core.services import clerk_admin
 
-    orgs = await asyncio.gather(*(clerk_admin.list_user_organizations(u) for u in user_ids if u))
-    owners = sorted({o["id"] for found in orgs for o in found if o.get("id")})
-    await asyncio.gather(*(publish_sessions(o) for o in owners))
+    orgs = await asyncio.gather(
+        *(clerk_admin.list_user_organizations(u, limit=100, strict=True) for u in user_ids if u)
+    )
+    return sorted({o["id"] for found in orgs for o in found if o.get("id")})
+
+
+async def republish(owners: list[str], *, extra: tuple = (), exclude: tuple = ()) -> None:
+    """``member_keys`` follow a login or logout: rewrite each member workspace's ``sessions.json``
+    (``extra``: a key just bound; ``exclude``: one about to be unbound). Raises if any write
+    failed, so the caller answers 503 and the CLI's retry runs it all again."""
+    if not settings.OWNER_STATE_BUCKET:
+        return
+
+    async def one(owner_id: str) -> None:
+        prior = await _read_sessions(owner_id)
+        if prior is not None:
+            await _write_and_ping(owner_id, _app_entries(prior), extra, exclude)
+
+    results = await asyncio.gather(*(one(o) for o in owners), return_exceptions=True)
+    failed = [o for o, r in zip(owners, results) if isinstance(r, BaseException)]
+    if failed:
+        logger.warning("network republish failed owners=%s", failed)
+        raise RuntimeError("network republish failed")
 
 
 async def join_network(owner_id: str, ticket: str) -> dict:
@@ -234,7 +259,9 @@ async def join_network(owner_id: str, ticket: str) -> dict:
                 await stop_runtime_session(owner_id, arn)
         await write_sessions(owner_id)
     try:
-        return await container_rpc.call(owner_id, "network.join", {"ticket": ticket})
+        answer = await container_rpc.call(owner_id, "network.join", {"ticket": ticket})
+        await _mark_joined(owner_id, True)
+        return answer
     except RuntimeError as exc:
         error = rpc_error(exc)
         # The bridge answers UNAVAILABLE while its network sidecar is off or starting (a fresh
@@ -246,6 +273,33 @@ async def join_network(owner_id: str, ticket: str) -> dict:
                 "NETWORK_ALREADY_JOINED", "This workspace's agents are already on another network."
             ) from exc
         raise
+
+
+async def _mark_joined(owner_id: str, joined: bool) -> None:
+    """``sessions.json``'s ``joined``: the hosted MCP routes a member's apps through this
+    workspace only while it is on a network an admin added it to."""
+    from core.services.hermes_profiles import put_owner_object
+
+    doc = await _read_sessions(owner_id)
+    if doc is None or bool(doc.get("joined")) == joined:
+        return
+    doc = {k: v for k, v in doc.items() if k != "joined"} | ({"joined": True} if joined else {})
+    await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
+
+
+async def leave_network(owner_id: str) -> dict:
+    """An admin takes the workspace off its network (``team.leave``), so ``invite --agents``
+    can add it to another. A workspace that is not a member is NETWORK_NOT_CONNECTED."""
+    if not await sessions_exist(owner_id):
+        raise ApiProblem("NETWORK_NOT_CONNECTED", "This workspace is not on a network.")
+    try:
+        answer = await container_rpc.call(owner_id, "network.leave", {})
+    except RuntimeError as exc:
+        if rpc_error(exc).get("code") in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
+            raise container_rpc._unavailable() from exc
+        raise
+    await _mark_joined(owner_id, False)
+    return answer
 
 
 # ---------------------------------------------------------------------------

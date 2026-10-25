@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from . import agents as _agents
 from . import approvals as _approvals
+from . import budgets as _budgets
 from . import attention as _attention
 from . import cases as _cases
 from . import decisions as _decisions
@@ -24,6 +25,7 @@ router = APIRouter(prefix="/teams", tags=["teams"])
 router.include_router(_agents.router)
 router.include_router(_inbox.router)
 router.include_router(_approvals.router)
+router.include_router(_budgets.router)
 router.include_router(_attention.router)
 router.include_router(_decisions.router)
 router.include_router(_issues.router)

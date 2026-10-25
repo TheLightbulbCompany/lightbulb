@@ -173,7 +173,7 @@ async def app_call(auth, slug: str, client: str, op: str, **fields) -> Any:
         # let the work queue's wake start it (the same doorbell a Mac rings).
         await wake(owner_id)
         raise ApiProblem("RUNTIME_UNAVAILABLE", "The workspace is starting.")
-    params = {"op": op, "app": slug, "person": person, **fields}
+    params = {**fields, "op": op, "app": slug, "person": person}  # never overridden by a field
     try:
         return await container_rpc.call(owner_id, "network.app", params)
     except RuntimeError as exc:

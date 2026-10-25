@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import logging
 import re
@@ -239,48 +240,83 @@ async def unread_note(owner: str, session_id: str) -> str | None:
     return f"{count} unread message{'' if count == 1 else 's'} for this session; it arrives at your next step."
 
 
+# API Gateway cuts a request at 30 s: a hosted tool answers within this budget, its network
+# calls included (container_rpc's own floor is 90 s, for a cold start this answer never waits on).
+HOSTED_BUDGET_S = 24.0
+# check_inbox waits for mail at most this long, keeping the rest of the budget for peek and ack.
+INBOX_WAIT_CAP_S = 20.0
+_RESERVE_S = 3.0  # what a peek, an ack or the unread line may take on a warm workspace
+_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("hosted_mcp_deadline", default=None)
+_NETWORK_TOOLS = frozenset({"find_sessions", "send_message", "message_receipt", "check_inbox"})
+_sleep = asyncio.sleep  # a seam for tests
+
+
+def _remaining() -> float:
+    deadline = _deadline.get()
+    return HOSTED_BUDGET_S if deadline is None else deadline - time.monotonic()
+
+
+async def _app_declared(owner_id: str, slug: str, user_id: str) -> bool:
+    """This client's app session is in ``sessions.json``: the workspace is a member, and the
+    client has made a network call before."""
+    doc = await network_member._read_sessions(owner_id)
+    name = f"{slug}-{network_member.app_person(user_id)}"
+    return bool(doc) and any(s.get("name") == name for s in network_member._app_entries(doc))
+
+
 async def network_unread_note() -> str | None:
     """The engine's unread line for this client's app session on the network (a hosted client
-    is pull-only). Only while the workspace is warm: asking a parked one would start it."""
+    is pull-only). Only while the workspace is warm (asking a parked one would start it) and the
+    app session is declared (no refusal per call)."""
     from core.auth import resolve_owner_id
 
     auth = _caller()
     owner_id = resolve_owner_id(auth)
-    if not await network_member._session_is_warm(owner_id):
-        return None
     slug, _ = _sender(get_access_token())
+    if not await network_member._session_is_warm(owner_id) or not await _app_declared(owner_id, slug, auth.user_id):
+        return None
     params = {"op": "unread", "app": slug, "person": network_member.app_person(auth.user_id)}
-    # An app session not declared yet (or a runtime off the network) refuses: no note.
-    result = await container_rpc.call(owner_id, "network.app", params, timeout_s=5.0)
-    count = int((result or {}).get("unread") or 0) if isinstance(result, dict) else 0
+    try:
+        result = await container_rpc.call(owner_id, "network.app", params)
+    except (RuntimeError, messaging.ApiProblem, asyncio.TimeoutError):
+        logger.debug("network unread refused owner=%s", owner_id)
+        return None
+    count = int(result.get("unread") or 0) if isinstance(result, dict) else 0
     if not count:
         return None
     return f"{count} unread message{'' if count == 1 else 's'} for this session; call check_inbox to read them."
 
 
 def _noted(tool):
-    """Every tool result carries ``unread`` while mail waits: a shared session's undelivered
-    sends, or a hosted client's network mail. The note never fails a tool."""
+    """Every tool result for a shared-session caller carries ``unread`` while that session has
+    undelivered sends; a hosted client's network tools carry its network mail's unread line.
+    Each call runs within ``HOSTED_BUDGET_S``, and the note never fails a tool."""
+    network = tool.__name__ in _NETWORK_TOOLS
 
     @functools.wraps(tool)
     async def call(*args, **kwargs):
-        result = await tool(*args, **kwargs)
-        if not isinstance(result, dict):
-            return result
-        device = _mac()
-        source = (get_access_token().claims.get("source") or {}) if device else {}
+        token = _deadline.set(time.monotonic() + HOSTED_BUDGET_S)
         try:
-            if device:
+            result = await tool(*args, **kwargs)
+            if not isinstance(result, dict):
+                return result
+            device = _mac()
+            source = (get_access_token().claims.get("source") or {}) if device else {}
+            try:
                 note = None
-                if isinstance(source.get("sourceSessionId"), str):
+                if device and isinstance(source.get("sourceSessionId"), str):
                     note = await unread_note(device.owner_id, source["sourceSessionId"])
-            else:
-                note = await network_unread_note()
-            if note:
-                result = {**result, "unread": note}
-        except Exception:  # noqa: BLE001 -- a note never fails the tool it rides on
-            logger.warning("unread note unavailable", exc_info=True)
-        return result
+                elif not device and network and _remaining() > 1.0:
+                    note = await asyncio.wait_for(network_unread_note(), min(_RESERVE_S, _remaining()))
+                if note:
+                    result = {**result, "unread": note}
+            except asyncio.TimeoutError:
+                logger.debug("network unread note timed out")
+            except Exception:  # noqa: BLE001 -- a note never fails the tool it rides on
+                logger.warning("unread note unavailable", exc_info=True)
+            return result
+        finally:
+            _deadline.reset(token)
 
     return call
 
@@ -446,11 +482,19 @@ async def find_sessions(query: str = "", limit: int = 30) -> dict:
         for session in result["sessions"]:
             session["isThisSession"] = session["sessionId"] == own
         return result
+    from core.auth import resolve_owner_id
+
+    owner_id = resolve_owner_id(auth)
     try:
+        if await network_member._read_sessions(owner_id) is None:
+            return result  # not on a network
+        if not await network_member._session_is_warm(owner_id):
+            # A read never starts the workspace; a send or check_inbox does.
+            result["network"] = _PARKED
+            return result
         found = await _network_sessions(auth, query)
     except ToolError as exc:
-        if "NETWORK_NOT_CONNECTED" not in str(exc):
-            result["network"] = str(exc)  # e.g. starting: the network sessions come on a retry
+        result["network"] = _PARKED if exc.args and exc.args[0] == _STARTING else str(exc)
         return result
     except Exception:  # noqa: BLE001 -- the network half never fails the rest of the list
         logger.warning("network sessions unavailable", exc_info=True)
@@ -683,14 +727,21 @@ async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str,
 
 
 _STARTING = "RUNTIME_UNAVAILABLE: the workspace is starting; retry with the same request_id"
+_PARKED = (
+    "The workspace is parked, so its network sessions are not listed. "
+    "send_message or check_inbox starts it; call find_sessions again in a minute."
+)
 
 
 async def _through_member(auth: AuthContext, op: str, *, sender: tuple[str, str] | None = None, **fields):
     """A ``network.app`` call as this client (or ``sender``) via the signed-in person, its refusals
     as ToolErrors."""
     slug, client = sender or _sender(get_access_token())
+    remaining = _remaining()
+    if remaining <= 0.5:  # past the budget: the client hears "starting", and retries
+        raise ToolError(_STARTING)
     try:
-        return await network_member.app_call(auth, slug, client, op, **fields)
+        return await asyncio.wait_for(network_member.app_call(auth, slug, client, op, **fields), remaining)
     except asyncio.TimeoutError as exc:
         raise ToolError(_STARTING) from exc
     except messaging.ApiProblem as exc:
@@ -891,9 +942,15 @@ async def message_receipt(request_id: str) -> dict:
     request_id = str(request_id)
     if device := _mac():
         return await _from_session(device, "receipt", {"requestId": str(_uuid_request_id(request_id))})
-    # A UUID is pinned in its canonical text; a network id as given.
-    request_id = str(uuid.UUID(request_id)) if _is_uuid(request_id) else _network_request_id(request_id)
-    pinned = await messaging_repo._get(*_sent_key(auth, request_id))
+    # A network id is pinned as given; a hub UUID in its canonical text.
+    pinned = None
+    if NETWORK_REQUEST_ID.fullmatch(request_id):
+        pinned = await messaging_repo._get(*_sent_key(auth, request_id))
+    if pinned is None and _is_uuid(request_id):
+        request_id = str(uuid.UUID(request_id))
+        pinned = await messaging_repo._get(*_sent_key(auth, request_id))
+    elif pinned is None:
+        _network_request_id(request_id)  # refuses a malformed id
     if pinned is None:
         return {"state": "unknown"}
     kind, target = pinned["destination"].split(":", 1)
@@ -930,24 +987,42 @@ async def message_receipt(request_id: str) -> dict:
 @mcp.tool(annotations=READ)
 @_noted
 async def check_inbox(wait_secs: int = 0) -> dict:
-    """Takes the messages sent to this client on the team's lightbulb network (as "<client> via <you>", through this workspace). Each message has its raw text and, in framed, the text as delivered; pass its requestId as send_message reply_to to answer it. wait_secs is accepted for the local tool's shape; this call answers at once. The first call from this client adds its address to the workspace."""
+    """Takes the messages sent to this client on the team's lightbulb network (as "<client> via <you>", through this workspace), first waiting up to wait_secs (at most 20 per call) for one. Each message has its raw text and, in framed, the text as delivered; pass its requestId as send_message reply_to to answer it. The first call from this client adds its address to the workspace."""
     auth = _caller()
     if _mac():  # a shared session's own computer is on the network itself
         raise ToolError("INVALID_REQUEST: a shared session uses its own computer's network.")
     if not 0 <= wait_secs <= 600:
         raise ToolError("INVALID_REQUEST: wait_secs is 0 to 600.")
+    if wait_secs:
+        # Polls the cheap count, not the inbox, and stops early enough for the peek and ack.
+        until = min(time.monotonic() + min(wait_secs, INBOX_WAIT_CAP_S), time.monotonic() + _remaining() - _RESERVE_S)
+        delay = 1.0
+        while True:
+            count = await _through_member(auth, "unread")
+            left = until - time.monotonic()
+            if (isinstance(count, dict) and count.get("unread")) or left <= 0:
+                break
+            await _sleep(min(delay, left))
+            delay = min(delay * 1.5, 3.0)
     # Peek, build the answer, then ack: a call that fails before here loses nothing (the mail is
     # handed out again), at the cost of a repeat when only the ack is lost.
     answer = await _through_member(auth, "inbox", peek=True)
     records = answer.get("records") if isinstance(answer, dict) else None
-    messages = [r for r in records if isinstance(r, dict)] if isinstance(records, list) else []
+    messages = [r for r in records if isinstance(r, dict)][:_ACK_MAX] if isinstance(records, list) else []
     result = {"messages": messages}
-    if ids := [m["id"] for m in messages if isinstance(m.get("id"), str)]:
+    ids = [m["id"] for m in messages if isinstance(m.get("id"), str)]
+    if ids and _remaining() < _RESERVE_S:
+        # A late peek may already be past API Gateway's cut: leave the mail to be handed out again.
+        logger.info("network inbox ack skipped (late); %d record(s) repeat", len(ids))
+    elif ids:
         try:
             await _through_member(auth, "ack", ids=ids)
         except ToolError:  # an engine before app.ack took them already; otherwise they repeat
             logger.warning("network inbox ack failed; %d record(s) may repeat", len(ids))
     return result
+
+
+_ACK_MAX = 100  # the engine's app.ack limit; the rest wait for the next call
 
 
 # API Gateway rewrites Host to the private ALB DNS name. The public OAuth URL is

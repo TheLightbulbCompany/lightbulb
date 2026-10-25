@@ -36,6 +36,8 @@ class Engine:
         self.lose_next_answer = False
         self.refuse_next: list[Exception] = []
         self.no_ack = False
+        self.hang: asyncio.Event | None = None
+        self.on_inbox = None
 
     async def __call__(self, owner, method, params):
         assert (owner, method) == (OWNER, "network.app")
@@ -43,6 +45,8 @@ class Engine:
         if self.refuse_next:
             raise self.refuse_next.pop(0)
         op = params["op"]
+        if self.hang is not None:
+            await self.hang.wait()
         if op == "send":
             self.sent.setdefault(params["request_id"], params["text"])
             if self.lose_next_answer:
@@ -54,6 +58,8 @@ class Engine:
             return {"request_id": rid, "state": "delivered" if rid in self.sent else "unknown"}
         if op == "inbox":
             assert params.get("peek") is True  # a take would lose mail an answer never carried
+            if self.on_inbox:
+                self.on_inbox()
             return {"records": list(self.mail)}
         if op == "ack":
             if self.no_ack:  # an engine before app.ack: the bridge refuses the op
@@ -285,7 +291,9 @@ async def test_a_cold_workspace_answers_starting_at_once_and_queues_one_wake(mem
     wakes = [i for i in member.table.scan()["Items"] if str(i["sk"]).startswith("WORK#NETWAKE#")]
     assert [w["payload"] for w in wakes] == [{"kind": "network_wake", "ownerId": OWNER}]  # the window holds one
     out = await hosted_mcp.find_sessions()
-    assert out["network"] == STARTING and out["sessions"] == []
+    assert out["network"] == hosted_mcp._PARKED and out["sessions"] == []
+    assert "request_id" not in out["network"]
+    assert len([i for i in member.table.scan()["Items"] if str(i["sk"]).startswith("WORK#NETWAKE#")]) == 1
 
 
 @pytest.mark.asyncio
@@ -358,3 +366,100 @@ async def test_the_assistant_apps_send_as_claude_and_chatgpt(member):
         ("claude", "Claude via Ann"),
         ("chatgpt", "ChatGPT via Ann"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_hung_member_answers_starting_within_the_budget(member, monkeypatch):
+    monkeypatch.setattr(hosted_mcp, "HOSTED_BUDGET_S", 0.3)
+    member.engine.hang = asyncio.Event()  # a stale warm estimate: the invoke would wait 90 s
+    with pytest.raises(ToolError) as err:
+        await asyncio.wait_for(hosted_mcp.send_message(text="hi", request_id="r1", session_id=ADEN), 5)
+    assert str(err.value) == STARTING
+    with pytest.raises(ToolError):
+        await asyncio.wait_for(hosted_mcp.check_inbox(), 5)
+    assert "ack" not in member.engine.ops()  # no ack after a lost peek
+
+
+@pytest.mark.asyncio
+async def test_a_late_peek_is_not_acked_so_the_mail_repeats(member, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(hosted_mcp, "time", SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 0))
+    member.engine.mail = [_record("q1")]
+    member.engine.on_inbox = lambda: clock.__setitem__(0, clock[0] + 23)  # past API Gateway's cut
+    assert (await hosted_mcp.check_inbox())["messages"] == [_record("q1")]
+    assert "ack" not in member.engine.ops()
+    member.engine.on_inbox = None
+    assert (await hosted_mcp.check_inbox())["messages"] == [_record("q1")]
+    assert member.engine.ops().count("ack") == 1
+
+
+@pytest.mark.asyncio
+async def test_check_inbox_waits_by_polling_the_count(member, monkeypatch):
+    slept = []
+
+    async def sleep(seconds):
+        slept.append(seconds)
+        if len(slept) == 2:
+            member.engine.mail = [_record("q1")]
+
+    monkeypatch.setattr(hosted_mcp, "_sleep", sleep)
+    out = await hosted_mcp.check_inbox(wait_secs=600)
+    assert out["messages"] == [_record("q1")]
+    assert member.engine.ops()[:5] == ["unread", "unread", "unread", "inbox", "ack"]
+    assert slept == [1.0, 1.5]
+    with pytest.raises(ToolError, match="INVALID_REQUEST"):
+        await hosted_mcp.check_inbox(wait_secs=601)
+
+
+@pytest.mark.asyncio
+async def test_check_inbox_wait_ends_inside_the_budget(member, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(hosted_mcp, "time", SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 0))
+
+    async def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(hosted_mcp, "_sleep", sleep)
+    out = await hosted_mcp.check_inbox(wait_secs=60)
+    assert out["messages"] == []
+    assert clock[0] <= hosted_mcp.HOSTED_BUDGET_S - hosted_mcp._RESERVE_S  # room left for peek and ack
+
+
+@pytest.mark.asyncio
+async def test_the_unread_line_rides_only_the_network_tools(member, monkeypatch):
+    monkeypatch.setattr(hosted_mcp, "rooms_for", AsyncMock(return_value={"rooms": []}))
+    assert "unread" not in await hosted_mcp.find_rooms()  # before any network call: not declared
+    await hosted_mcp.check_inbox()
+    member.engine.mail = [_record("q1")]
+    member.engine.calls.clear()
+    assert "unread" not in await hosted_mcp.find_rooms()
+    assert member.engine.calls == []  # a room read never touches the runtime
+    assert (await hosted_mcp.message_receipt("nope"))["unread"].startswith("1 unread message")
+
+
+@pytest.mark.asyncio
+async def test_an_undeclared_app_session_is_never_asked_for_its_count(member):
+    member.engine.mail = [_record("q1")]
+    await hosted_mcp.message_receipt("nope")
+    assert member.engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_no_field_overrides_the_app_session(member):
+    await network_member.app_call(
+        SimpleNamespace(user_id=USER, org_id=OWNER),
+        "claude-code",
+        "Claude Code",
+        "inbox",
+        app="other",
+        person="deadbeef",
+        peek=True,
+    )
+    assert member.engine.calls[-1] == {"op": "inbox", "app": "claude-code", "person": PERSON, "peek": True}
+
+
+@pytest.mark.asyncio
+async def test_a_uuid_shaped_network_request_id_reads_its_own_receipt(member):
+    rid = str(uuid.uuid4()).upper()
+    await hosted_mcp.send_message(text="hi", request_id=rid, session_id=ADEN)
+    assert (await hosted_mcp.message_receipt(rid))["state"] == "delivered"

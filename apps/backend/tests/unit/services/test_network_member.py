@@ -49,8 +49,8 @@ async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
     assert _doc(store) == {
         "workspace": "Acme Builders",
         "sessions": [
-            {"name": "friday", "agent": "hermes", "title": "Friday", "agentId": A1},
-            {"name": "ops-lead", "agent": "hermes", "title": "Ops Lead", "agentId": A2},
+            {"name": "friday", "agent": "Friday", "title": "Friday", "agentId": A1},
+            {"name": "ops-lead", "agent": "Ops Lead", "title": "Ops Lead", "agentId": A2},
             app,
         ],
         "wake": {"url": "http://localhost:8000/api/v1/network/wake", "token": token},

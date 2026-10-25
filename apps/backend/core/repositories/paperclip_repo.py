@@ -1036,6 +1036,55 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return
 
+    async def add_agent_cost_remainder(self, org_id: str, key: str, delta: int, *, need: int = 0) -> dict | None:
+        """Atomically ADD ``delta`` microcents to ``agent_cost_remainder[key]``; return the whole map.
+
+        Internal sub-cent carry for Paperclip cost events (Paperclip owns the budget and stores
+        integer cents). ``need`` > 0 makes the write conditional on the bucket holding at least
+        that much (the claim before a post). None when the row is missing or the condition fails.
+        """
+        table = self._table()
+        exc = table.meta.client.exceptions.ConditionalCheckFailedException
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": org_id},
+                UpdateExpression="SET agent_cost_remainder = :empty",
+                ConditionExpression="attribute_exists(user_id) AND attribute_not_exists(agent_cost_remainder)",
+                ExpressionAttributeValues={":empty": {}},
+            )
+        except exc:
+            pass
+        cond = "attribute_exists(user_id)"
+        values: dict = {":d": delta}
+        if need:
+            cond += " AND agent_cost_remainder.#k >= :need"
+            values[":need"] = need
+        try:
+            resp = await run_in_thread(
+                table.update_item,
+                Key={"user_id": org_id},
+                UpdateExpression="ADD agent_cost_remainder.#k :d",
+                ConditionExpression=cond,
+                ExpressionAttributeNames={"#k": key},
+                ExpressionAttributeValues=values,
+                ReturnValues="ALL_NEW",
+            )
+        except exc:
+            return None
+        return resp["Attributes"]["agent_cost_remainder"]
+
+    async def prune_agent_cost_remainder(self, org_id: str, keys: list[str]) -> None:
+        if not keys:
+            return
+        names = {f"#k{i}": k for i, k in enumerate(keys)}
+        await run_in_thread(
+            self._table().update_item,
+            Key={"user_id": org_id},
+            UpdateExpression="REMOVE " + ", ".join(f"agent_cost_remainder.{n}" for n in names),
+            ExpressionAttributeNames=names,
+        )
+
     async def claim_first_contact(self, org_id: str, *, onboarding_generation: str) -> bool:
         """Conditional ``first_contact_state -> sending``, generation-fenced.
 

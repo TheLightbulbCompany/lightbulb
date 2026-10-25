@@ -896,6 +896,9 @@ app.include_router(container.router, prefix="/api/v1/container", tags=["containe
 app.include_router(container.browser_router, prefix="/api/v1/browser", tags=["browser"])
 app.include_router(container.browser_internal_router, prefix="/api/v1/internal/browser", tags=["browser"])
 app.include_router(container.provision_events_router, prefix="/api/v1/internal/provisioning", tags=["container"])
+from routers import paperclip_cost as paperclip_cost_router  # noqa: E402
+
+app.include_router(paperclip_cost_router.router, prefix="/api/v1/internal/paperclip", tags=["paperclip"])
 app.include_router(mac_cdp.router, prefix="/api/v1/internal/mac-cdp", tags=["mac-cdp"])
 
 # Workspace website logins (the store behind every agent's browser vault)

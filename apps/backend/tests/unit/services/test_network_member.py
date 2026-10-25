@@ -30,6 +30,11 @@ def store(monkeypatch, table):
     roster = [{"id": A1, "name": "Friday"}, {"id": A2, "name": "Ops Lead"}]
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
     monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=["user_1", "user_2"]))
+    keys = {"user_1": ["key_1a", "key_1b"], "user_2": [], "user_3": ["key_3"]}
+    monkeypatch.setattr(
+        "core.repositories.network_keys_repo.keys_for_users",
+        AsyncMock(side_effect=lambda users: sorted(k for u in users for k in keys.get(u, []))),
+    )
     return objects
 
 
@@ -55,6 +60,7 @@ async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
         ],
         "wake": {"url": "http://localhost:8000/api/v1/network/wake", "token": token},
         "members": ["user_1", "user_2"],
+        "member_keys": ["key_1a", "key_1b"],
     }
     assert network_member.app_person("user_1") == network_member.app_person("user_1")
     assert len(network_member.app_person("user_1")) == 8
@@ -261,9 +267,8 @@ async def test_an_agent_delete_republishes_sessions(monkeypatch, published):
 
 
 @pytest.mark.asyncio
-async def test_connect_clears_a_stale_state_db_before_joining(monkeypatch):
+async def test_join_network_makes_a_new_member_first_then_asks_the_bridge(store, monkeypatch):
     order = []
-    monkeypatch.setattr(network_member, "sessions_exist", AsyncMock(return_value=False))
     monkeypatch.setattr(
         "core.services.hermes_provisioning._delete_prefixes", lambda prefixes: order.append(("delete", prefixes))
     )
@@ -271,9 +276,41 @@ async def test_connect_clears_a_stale_state_db_before_joining(monkeypatch):
         "core.services.hermes_provisioning.prepare_hermes_workspace",
         AsyncMock(side_effect=lambda o: order.append("prepare") or False),
     )
-    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"line": "l", "expires_at": "t"}))
-    await network_member.connect("org_a", "user_1", "Sam")
-    assert order == [("delete", ["org_a/network/state.db"]), "prepare"]
+
+    async def _rpc(owner_id, method, params=None, **kw):
+        order.append((method, params, network_member.sessions_key(owner_id) in store))
+        return {"state": "joining"}
+
+    monkeypatch.setattr(network_member.container_rpc, "call", _rpc)
+    assert await network_member.join_network("org_a", "TICKET") == {"state": "joining"}
+    assert order == [("delete", ["org_a/network/state.db"]), "prepare", ("network.join", {"ticket": "TICKET"}, True)]
+
+    order.clear()  # a member already: straight to the bridge
+    await network_member.join_network("org_a", "TICKET")
+    assert order == [("network.join", {"ticket": "TICKET"}, True)]
+
+
+@pytest.mark.asyncio
+async def test_join_network_maps_the_bridges_refusals(store, monkeypatch):
+    await network_member.write_sessions("org_a")
+    for code, problem in (("already_in_team", "NETWORK_ALREADY_JOINED"), ("UNAVAILABLE", "RUNTIME_UNAVAILABLE")):
+        error = RuntimeError(json.dumps({"code": code, "message": "x"}))
+        monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(side_effect=error))
+        with pytest.raises(ApiProblem) as raised:
+            await network_member.join_network("org_a", "TICKET")
+        assert raised.value.error.code == problem
+
+
+@pytest.mark.asyncio
+async def test_publish_for_users_republishes_each_of_their_workspaces_once(monkeypatch):
+    orgs = {"user_1": [{"id": "org_a"}, {"id": "org_b"}], "user_2": [{"id": "org_b"}]}
+    monkeypatch.setattr(
+        "core.services.clerk_admin.list_user_organizations", AsyncMock(side_effect=lambda u: orgs.get(u, []))
+    )
+    published = []
+    monkeypatch.setattr(network_member, "publish_sessions", AsyncMock(side_effect=published.append))
+    await network_member.publish_for_users("user_1", "user_2", "")
+    assert published == ["org_a", "org_b"]
 
 
 @pytest.mark.asyncio
@@ -292,13 +329,15 @@ async def test_a_write_with_no_prior_keeps_the_wake_token_and_hash(store, table)
 async def test_members_follow_the_workspace_on_join_and_leave(store, monkeypatch):
     humans = AsyncMock(return_value=["user_1"])
     monkeypatch.setattr("core.services.website_logins._humans_to_ask", humans)
-    await network_member.write_sessions("org_a")  # what connect() leaves behind
+    await network_member.write_sessions("org_a")  # what a provision leaves behind
     assert _doc(store)["members"] == ["user_1"]
 
     humans.return_value = ["user_1", "user_3"]  # a join
     await network_member.publish_sessions("org_a")
     assert _doc(store)["members"] == ["user_1", "user_3"]
+    assert _doc(store)["member_keys"] == ["key_1a", "key_1b", "key_3"]  # their signed-in computers
 
     humans.return_value = ["user_3"]  # a leave
     await network_member.publish_sessions("org_a")
     assert _doc(store)["members"] == ["user_3"]
+    assert _doc(store)["member_keys"] == ["key_3"]

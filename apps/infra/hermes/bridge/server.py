@@ -480,9 +480,22 @@ def _pick(params: dict, *keys: str) -> dict:
     return {k: params[k] for k in keys if params.get(k) is not None}
 
 
-def _network_invite(params: dict, **_kwargs) -> dict:
-    """The answer carries the invite line; nothing here logs it."""
-    return _net("network.invite", "team.invite", {"mode": "person", **_pick(params, "for", "name")})
+def _network_join(params: dict, **_kwargs) -> dict:
+    """An admin ran ``lightbulb invite --agents``: join the network their computer's once ask link
+    is for. Answers at once (``{state: "joining"}``); the join itself waits for that admin's
+    Allow in the background. A workspace already on a network is ``already_in_team`` (the first
+    network wins). The link is a credential: nothing here logs it."""
+    ticket = params.get("ticket")
+    if not isinstance(ticket, str) or not ticket:
+        return {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "ticket is required"}}
+
+    def run() -> dict:
+        if len(network.ask("team.get", {}).get("members") or []) > 1:
+            raise network.OpError("team.get", "already_in_team")
+        network.join_in_background(ticket)
+        return {"state": "joining"}
+
+    return _net("network.join", "", run=run)
 
 
 def _network_hold(params: dict, **_kwargs) -> dict:
@@ -507,7 +520,7 @@ def _network_wake(params: dict, **_kwargs) -> dict:
     return _net("network.wake", "", run=dict)
 
 
-RPC_METHODS.update({"network.invite": _network_invite, "network.sessions": _network_sessions,
+RPC_METHODS.update({"network.join": _network_join, "network.sessions": _network_sessions,
                     "network.app": _network_app, "network.hold": _network_hold,
                     "network.wake": _network_wake})
 

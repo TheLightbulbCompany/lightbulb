@@ -96,7 +96,8 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
                 break
             name = f"{base}-{suffix}"
         used.add(name)
-        sessions.append({"name": name, "agent": "hermes", "title": agent["name"], "agentId": agent["id"]})
+        # `agent` is what a teammate's screen calls the sender ("From The Lightbulb Company's Friday").
+        sessions.append({"name": name, "agent": agent["name"] or name, "title": agent["name"], "agentId": agent["id"]})
 
     # The wake token survives every writer: with no prior in hand, read the current file.
     wake = await _wake(owner_id, prior if prior is not None else (await _read_sessions(owner_id) or {}))

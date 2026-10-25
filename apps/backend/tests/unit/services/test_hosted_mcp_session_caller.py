@@ -168,7 +168,7 @@ async def test_exactly_the_ten_tools_and_only_send_is_destructive():
             "read_task",
             "update_task",
             "use_browser",
-            "network",
+            "check_inbox",
         ]
     )
     for name, tool in listed.items():

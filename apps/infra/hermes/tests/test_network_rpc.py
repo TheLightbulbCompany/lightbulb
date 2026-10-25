@@ -61,6 +61,14 @@ def test_rpc_starts_the_sidecar_in_the_foreground_and_maps_ops(net):
                                 "text": "hi", "request_id": "q"})["payload"] == {"id": "r1", "state": "stored"}
     assert _sent(net, "app.send")[-1] == {"op": "app.send", "app": "slack", "person": "ab12cd34", "to": "mac",
                                           "text": "hi", "request_id": "q"}
+    net.answer(**{"app.inbox": {"records": [{"id": "m1"}]}, "app.ack": {"acked": 1}, "app.unread": {"unread": 2}})
+    assert _rpc("network.app", {"op": "inbox", "app": "slack", "person": "ab12cd34", "peek": True})["payload"] == \
+        {"records": [{"id": "m1"}]}
+    assert _sent(net, "app.inbox")[-1] == {"op": "app.inbox", "app": "slack", "person": "ab12cd34", "peek": True}
+    assert _rpc("network.app", {"op": "ack", "app": "slack", "person": "ab12cd34", "ids": ["m1"]})["payload"] == \
+        {"acked": 1}
+    assert _sent(net, "app.ack")[-1] == {"op": "app.ack", "app": "slack", "person": "ab12cd34", "ids": ["m1"]}
+    assert _rpc("network.app", {"op": "unread", "app": "slack", "person": "ab12cd34"})["payload"] == {"unread": 2}
     assert _rpc("network.app", {"op": "nope"})["error"]["code"] == "INVALID_REQUEST"
     net.answer(**{"hold.answer": {"ok": False, "error": "not_found"}})
     assert _rpc("network.hold", {"hold": "H9", "verdict": "allow", "decided_by": "u"})["error"]["code"] == "not_found"

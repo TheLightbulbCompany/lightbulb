@@ -288,10 +288,10 @@ async def network_unread_note() -> str | None:
     app session is declared (no refusal per call)."""
     auth = _net_caller()
     slug, client = _sender(get_access_token())
-    owner_id = await network_route.workspace_for(auth)
     try:
-        if owner_id is None:  # a computer route: online by definition, so asking is cheap
-            result = await network_route.app_call(auth.user_id, slug, client, "unread", _RESERVE_S)
+        owner_id, route = await _route(auth, slug, client)
+        if owner_id is None:  # a computer route: online (or refused at once), so asking is cheap
+            result = await network_route.app_call(auth.user_id, slug, client, "unread", _RESERVE_S, route=route)
         else:
             if not await network_member._session_is_warm(owner_id) or not await _app_declared(
                 owner_id, slug, auth.user_id
@@ -299,7 +299,7 @@ async def network_unread_note() -> str | None:
                 return None
             params = {"op": "unread", "app": slug, "person": network_member.app_person(auth.user_id)}
             result = await container_rpc.call(owner_id, "network.app", params)
-    except (RuntimeError, messaging.ApiProblem, asyncio.TimeoutError):
+    except (RuntimeError, messaging.ApiProblem, asyncio.TimeoutError, ToolError):
         logger.debug("network unread refused user=%s", auth.user_id)
         return None
     count = int(result.get("unread") or 0) if isinstance(result, dict) else 0
@@ -506,7 +506,8 @@ async def find_sessions(query: str = "", limit: int = 30) -> dict:
             session["isThisSession"] = session["sessionId"] == own
         return result
     try:
-        owner_id = await network_route.workspace_for(auth)
+        slug, client = _sender(get_access_token())
+        owner_id, _ = await _route(auth, slug, client)
         if owner_id is not None and not await network_member._session_is_warm(owner_id):
             # A read never starts the workspace; a send or check_inbox does.
             result["network"] = _PARKED
@@ -761,12 +762,9 @@ async def _through_member(auth: AuthContext, op: str, *, sender: tuple[str, str]
     remaining = _remaining()
     if remaining <= 0.5:  # past the budget: the client hears "starting", and retries
         raise ToolError(_STARTING)
-    try:
-        owner_id = await network_route.workspace_for(auth)
-    except Exception as exc:  # noqa: BLE001 -- Clerk could not say which workspaces are theirs
-        raise ToolError("UNAVAILABLE: Lightbulb could not look up your routes; retry") from exc
+    owner_id, route = await _route(auth, slug, client)
     if owner_id is None:
-        return await _through_computer(auth, slug, client, op, remaining, **fields)
+        return await _through_computer(auth, slug, client, op, remaining, route, **fields)
     if owner_id != auth.org_id:  # a free-account grant routed through one of their workspaces
         auth = AuthContext(user_id=auth.user_id, org_id=owner_id, verified_issuer=auth.verified_issuer)
     try:
@@ -789,10 +787,26 @@ async def _through_member(auth: AuthContext, op: str, *, sender: tuple[str, str]
 _SLOW = "UNAVAILABLE: your computer did not answer in time; retry with the same request_id"
 
 
-async def _through_computer(auth: AuthContext, slug: str, client: str, op: str, remaining: float, **fields):
-    """The same call through the person's most recently connected logged-in computer."""
+async def _route(auth: AuthContext, slug: str, client: str) -> tuple[str | None, dict]:
+    """This app connection's pinned route (``network_route.route_for``): ``(owner, route)`` for
+    a workspace, ``(None, route)`` for a computer. Its refusals as ToolErrors."""
     try:
-        return await network_route.app_call(auth.user_id, slug, client, op, remaining - 0.5, **fields)
+        route = await network_route.route_for(auth, get_access_token().client_id, slug, client)
+        if route.get("kind") == "workspace":
+            return await network_route.pinned_workspace(auth, route), route
+        return None, route
+    except messaging.ApiProblem as exc:
+        raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
+    except Exception as exc:  # noqa: BLE001 -- Clerk or DynamoDB could not say
+        raise ToolError("UNAVAILABLE: Lightbulb could not look up this app's route; retry") from exc
+
+
+async def _through_computer(
+    auth: AuthContext, slug: str, client: str, op: str, remaining: float, route: dict, **fields
+):
+    """The same call through the app's pinned computer (never another)."""
+    try:
+        return await network_route.app_call(auth.user_id, slug, client, op, remaining - 0.5, route=route, **fields)
     except asyncio.TimeoutError as exc:
         raise ToolError(_SLOW) from exc
     except messaging.ApiProblem as exc:

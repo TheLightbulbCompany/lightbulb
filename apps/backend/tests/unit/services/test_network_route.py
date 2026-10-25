@@ -57,12 +57,13 @@ def free(table, monkeypatch):
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ann Lee"))
     monkeypatch.setattr(network_member, "workspaces_of", AsyncMock(return_value=[]))
     rows = [
-        {"key": "kold", "userId": USER, "generation": "g1", "connectedAt": 100, "taskAddress": HERE},
-        {"key": "knew", "userId": USER, "generation": "g2", "connectedAt": 200, "taskAddress": HERE},
+        {"key": "kold", "userId": USER, "generation": "g1", "connectedAt": 100, "taskAddress": HERE, "name": "mbp"},
+        {"key": "knew", "userId": USER, "generation": "g2", "connectedAt": 200, "taskAddress": HERE, "name": "mac"},
         {"key": "kother", "userId": "user_x", "generation": "g3", "connectedAt": 300, "taskAddress": HERE},
     ]
     connections = SimpleNamespace(
-        routes_for_user=AsyncMock(side_effect=lambda u: [r for r in rows if r["userId"] == u])
+        routes_for_user=AsyncMock(side_effect=lambda u: [r for r in rows if r["userId"] == u]),
+        live_routes=AsyncMock(side_effect=lambda keys: [r for r in rows if r["key"] in keys]),
     )
     monkeypatch.setattr(network_route, "_connections", lambda: connections)
     computers = {}
@@ -88,7 +89,7 @@ def free(table, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_free_accounts_send_goes_through_its_newest_computer(free):
+async def test_a_new_app_is_pinned_to_the_newest_computer_and_never_moves_off_it(free):
     sent = await hosted_mcp.send_message("hello", "req-1", session_id="ab12/claude-5")
     assert sent["state"] == "delivered" and sent["destination"] == "network:ab12/claude-5"
     op = free.computers["knew"].ops[0]
@@ -97,6 +98,14 @@ async def test_a_free_accounts_send_goes_through_its_newest_computer(free):
     assert (op["to"], op["text"], op["request_id"]) == ("ab12/claude-5", "hello", "req-1")
     receipt = await hosted_mcp.message_receipt("req-1")
     assert receipt["destination"] == "network:ab12/claude-5"
+    pin = await network_route.get_pin(USER, "https://claude.ai/oauth/mcp")
+    assert pin["route"] == {"kind": "computer", "key": "knew", "name": "mac"}
+    # The pinned computer goes offline: a clear refusal naming it, never the other computer.
+    free.rows[:] = [r for r in free.rows if r["key"] != "knew"]
+    with pytest.raises(ToolError) as offline:
+        await hosted_mcp.send_message("again", "req-1b", session_id="ab12/claude-5")
+    assert str(offline.value) == ("NETWORK_OFFLINE: mac is offline. Open it, or reconnect this app to your workspace.")
+    assert free.computers["kold"].ops == []
 
 
 @pytest.mark.asyncio
@@ -112,7 +121,7 @@ async def test_check_inbox_and_find_sessions_through_the_computer(free):
 
 @pytest.mark.asyncio
 async def test_no_computer_online_is_a_clear_refusal_and_nothing_is_queued(free):
-    free.connections.routes_for_user.side_effect = lambda u: []
+    free.rows.clear()
     with pytest.raises(ToolError) as refused:
         await hosted_mcp.send_message("hello", "req-2", session_id="ab12/claude-5")
     assert str(refused.value).startswith("NETWORK_NO_ROUTE: None of your computers is online")
@@ -130,19 +139,22 @@ async def test_a_free_account_gets_no_workspace_tool(free):
 
 
 @pytest.mark.asyncio
-async def test_a_workspace_on_a_network_is_preferred_over_the_computer(free, monkeypatch):
+async def test_an_app_pinned_to_a_workspace_uses_its_bridge_and_never_a_computer(free, monkeypatch):
     monkeypatch.setattr(network_member, "workspaces_of", AsyncMock(return_value=["org_a"]))
     monkeypatch.setattr(network_member, "_read_sessions", AsyncMock(return_value={"joined": True}))
     via = AsyncMock(return_value={"request_id": "req-3", "state": "delivered"})
     monkeypatch.setattr(network_member, "app_call", via)
     monkeypatch.setattr(network_member, "_session_is_warm", AsyncMock(return_value=False))
+    await network_route.set_pin(
+        USER, "https://claude.ai/oauth/mcp", {"kind": "workspace", "owner": "org_a"}, "claude", "Claude"
+    )
     await hosted_mcp.send_message("hello", "req-3", session_id="ab12/claude-5")
     assert via.await_args.args[0].org_id == "org_a" and free.computers["knew"].ops == []
-    # Not on a network (no joined mark): the computer again.
+    # Off its network since: refused, and no computer stands in.
     network_member._read_sessions.return_value = {"sessions": []}
-    await hosted_mcp.send_message("hello", "req-4", session_id="ab12/claude-5")
-    sends = [o for o in free.computers["knew"].ops if o["op"] == "app.send"]
-    assert [o["request_id"] for o in sends] == ["req-4"]
+    with pytest.raises(ToolError) as gone:
+        await hosted_mcp.send_message("hello", "req-4", session_id="ab12/claude-5")
+    assert "not on a network any more" in str(gone.value) and free.computers["knew"].ops == []
 
 
 @pytest.mark.asyncio
@@ -355,3 +367,41 @@ def test_the_bridges_app_mail_notice_wakes_that_persons_app(monkeypatch):
         assert client.post(path, json={"session": f"grok-{PERSON}"}).status_code == 204
         assert client.post(path, json={"session": "no spaces/allowed"}).status_code == 422
     notify.assert_awaited_once_with(USER, f"grok-{PERSON}")
+
+
+def test_the_apps_page_lists_pins_and_moves_an_app_to_an_online_route(free, monkeypatch):
+    from routers import network_route as router
+
+    monkeypatch.setattr(network_member, "workspaces_of", AsyncMock(return_value=["org_a"]))
+    monkeypatch.setattr(network_member, "_read_sessions", AsyncMock(return_value={"joined": True}))
+    monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value={"name": "Acme"}))
+    app = FastAPI()
+    app.include_router(router.router, prefix="/api/v1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=USER, org_id=None)
+    asyncio.run(
+        network_route.set_pin(
+            USER, "chatgpt-client", {"kind": "computer", "key": "knew", "name": "mac"}, "chatgpt", "ChatGPT"
+        )
+    )
+    with TestClient(app) as client:
+        listed = client.get("/api/v1/network/apps").json()
+        assert [a["clientId"] for a in listed["apps"]] == ["chatgpt-client"]
+        assert [(r["kind"], r.get("key") or r.get("owner")) for r in listed["routes"]] == [
+            ("computer", "knew"),
+            ("computer", "kold"),
+            ("workspace", "org_a"),
+        ]
+        moved = client.put(
+            "/api/v1/network/apps/route", json={"clientId": "chatgpt-client", "kind": "workspace", "owner": "org_a"}
+        )
+        assert moved.json()["route"] == {"kind": "workspace", "owner": "org_a"}
+        offline = client.put(
+            "/api/v1/network/apps/route", json={"clientId": "chatgpt-client", "kind": "computer", "key": "k-gone"}
+        )
+        assert offline.status_code == 409
+        assert (
+            client.put(
+                "/api/v1/network/apps/route", json={"clientId": "nope", "kind": "computer", "key": "knew"}
+            ).status_code
+            == 404
+        )

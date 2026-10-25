@@ -25,10 +25,23 @@ function page() {
 beforeEach(() => {
   vi.clearAllMocks();
   s.signedIn = true;
-  s.get.mockImplementation(async () => ({ wakes: s.wakes }));
+  s.get.mockImplementation(async (url: string) =>
+    url === "/network/apps"
+      ? { apps: [{ clientId: "c1", client: "ChatGPT", route: { kind: "computer", key: "k1", name: "mac" } }],
+          routes: [{ kind: "computer", key: "k1", name: "mac" }, { kind: "workspace", owner: "org_a", name: "Acme" }] }
+      : { wakes: s.wakes });
 });
 
 describe("your apps on the network", () => {
+  it("an app shows its pinned route and moves to another", async () => {
+    page();
+    const select = await screen.findByLabelText("Route for ChatGPT");
+    expect((select as HTMLSelectElement).value).toBe("computer:k1");
+    fireEvent.change(select, { target: { value: "workspace:org_a" } });
+    await waitFor(() =>
+      expect(s.put).toHaveBeenCalledWith("/network/apps/route", { clientId: "c1", kind: "workspace", key: undefined, owner: "org_a" }));
+  });
+
   it("signed out shows sign-in", () => {
     s.signedIn = false;
     page();

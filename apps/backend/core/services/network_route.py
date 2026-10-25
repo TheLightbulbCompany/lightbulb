@@ -1,20 +1,27 @@
 """A signed-in person's routes onto the free ``lightbulb`` network, for their hosted apps.
 
-A hosted app (Claude app, ChatGPT, a bot) cannot run the engine. The hosted MCP hands each of
-its network calls to one of its person's online routes, preferred first:
+A hosted app (Claude app, ChatGPT, a bot) cannot run the engine. Each app connection (an OAuth
+client, or an ``lbk_`` key) is PINNED to one route, so its session ``<route member>/<app>-<person>``
+and its inbox live in one place:
 
-1. their workspace, when it is on a network an admin added it to (``sessions.json``'s
-   ``joined``): the existing ``network.app`` bridge path (``network_member.app_call``);
-2. else their most recently connected logged-in computer, over its route link: one outbound
-   WebSocket the daemon keeps to ``/api/v1/gateway/network`` (the machine-relay door), signed
-   with its member key over a nonce this socket sends. Over it the backend asks only the
-   ``app.*`` ops (and ``directory``) the workspace bridge asks, for the app sessions
-   ``<computer>/<app>-<person>`` of that computer's own person.
+- ``{kind: workspace, owner}``: a workspace of theirs on a network an admin added it to
+  (``sessions.json``'s ``joined``), through the existing ``network.app`` bridge path
+  (``network_member.app_call``; always on: a parked one is woken);
+- ``{kind: computer, key, name}``: one of their logged-in computers, over its route link: one
+  outbound WebSocket the daemon keeps to ``/api/v1/gateway/network`` (the machine-relay door),
+  its hello signed with its member key over a nonce this socket sends and carrying its sign-in
+  proof. Over it the backend asks only the ``app.*`` ops (and ``directory``) the bridge asks.
 
-No route online is a clear refusal: nothing is queued here. The text of a message passes
-through in transit and is never stored. A link's presence is a TTL row in the ws-connections
-table (``ConnectionService.put_route``) naming the task that holds the socket; a call landing on
-another task is forwarded to it (``/api/v1/network/internal/route``, the internal secret).
+The person picks the route on ``/auth/network/apps``; until then the first call pins the most
+recently connected online computer (else their workspace on a network). A pinned computer
+that is offline is a clear refusal: never another computer, nothing queued here. The text of a
+message passes through in transit and is never stored. A link's presence is a TTL row in the
+ws-connections table (``ConnectionService.put_route``) naming the task that holds the socket;
+a call landing on another task is forwarded to it (``/api/v1/network/internal/route``).
+
+Pins are rows in the messaging table, ``NETPIN#<user>`` / ``<client id>`` (an OAuth grant is
+Clerk's record, so it cannot carry the attribute itself; a key's client id is
+``agentkey:<keyId>``).
 """
 
 from __future__ import annotations
@@ -33,6 +40,8 @@ from core.services.messaging import ApiProblem
 logger = logging.getLogger(__name__)
 
 NO_ROUTE = "None of your computers is online; open one (lightbulb login) or add a workspace."
+OFFLINE = "{name} is offline. Open it, or reconnect this app to your workspace."
+NOT_JOINED = "That workspace is not on a network any more. Pick another route for this app."
 ROUTE_OPS = frozenset({"directory", "app.send", "app.inbox", "app.ack", "app.unread", "app.receipt"})
 HELLO_DEADLINE_S = 10.0
 REFRESH_S = 60.0
@@ -94,15 +103,76 @@ async def best_link(user_id: str) -> dict | None:
     return max(rows, key=lambda r: r["connectedAt"], default=None)
 
 
-async def app_call(user_id: str, slug: str, client: str, op: str, timeout_s: float, **fields) -> Any:
-    """One app op (``send``, ``inbox``, ``ack``, ``unread``, ``receipt``, or ``directory``) as
-    ``<client> via <person>`` through this person's computer. ``title`` rides every call, so
-    the computer declares the app session as it runs it."""
+def _pin_key(user_id: str, client_id: str) -> dict:
+    return {"pk": f"NETPIN#{user_id}", "sk": client_id}
+
+
+async def get_pin(user_id: str, client_id: str) -> dict | None:
+    from core.repositories import messaging_repo
+
+    return await messaging_repo._get(**_pin_key(user_id, client_id))
+
+
+async def set_pin(user_id: str, client_id: str, route: dict, app: str, client: str) -> dict:
+    from core.dynamodb import run_in_thread, utc_now_iso
+    from core.repositories import messaging_repo
+
+    item = {**_pin_key(user_id, client_id), "route": route, "app": app, "client": client, "pinnedAt": utc_now_iso()}
+    await run_in_thread(messaging_repo._table().put_item, Item=item)
+    return item
+
+
+async def list_pins(user_id: str) -> list[dict]:
+    from core.repositories import messaging_repo
+
+    return await messaging_repo._query(f"NETPIN#{user_id}")
+
+
+async def route_for(auth, client_id: str, slug: str, client: str) -> dict:
+    """This app connection's pinned route; the first call pins the default (the most recently
+    connected online computer, else a workspace of theirs on a network)."""
+    pin = await get_pin(auth.user_id, client_id)
+    if pin is not None:
+        return pin["route"]
+    link = await best_link(auth.user_id)
+    if link is not None:
+        route = {"kind": "computer", "key": link["key"], "name": link.get("name") or "Your computer"}
+    elif (owner := await workspace_for(auth)) is not None:
+        route = {"kind": "workspace", "owner": owner}
+    else:
+        raise ApiProblem("NETWORK_NO_ROUTE", NO_ROUTE)
+    await set_pin(auth.user_id, client_id, route, slug, client)
+    return route
+
+
+async def pinned_workspace(auth, route: dict) -> str:
+    """A workspace pin, while the person is still in it and it is still on a network."""
     from core.services import network_member
 
-    row = await best_link(user_id)
+    owner = route.get("owner")
+    owners = [auth.org_id] if auth.org_id == owner else await network_member.workspaces_of(auth.user_id)
+    doc = await network_member._read_sessions(owner) if owner in owners else None
+    if not doc or not doc.get("joined"):
+        raise ApiProblem("NETWORK_NO_ROUTE", NOT_JOINED)
+    return owner
+
+
+async def computer_link(user_id: str, route: dict) -> dict:
+    """A computer pin's live link, or the offline refusal (never another computer)."""
+    rows = await _connections().live_routes([route["key"]])
+    row = next((r for r in rows if r["userId"] == user_id), None)
     if row is None:
-        raise ApiProblem("NETWORK_NO_ROUTE", NO_ROUTE)
+        raise ApiProblem("NETWORK_OFFLINE", OFFLINE.format(name=route.get("name") or "Your computer"))
+    return row
+
+
+async def app_call(user_id: str, slug: str, client: str, op: str, timeout_s: float, *, route: dict, **fields) -> Any:
+    """One app op (``send``, ``inbox``, ``ack``, ``unread``, ``receipt``, or ``directory``) as
+    ``<client> via <person>`` through the pinned computer. ``title`` rides every call, so the
+    computer declares the app session as it runs it."""
+    from core.services import network_member
+
+    row = await computer_link(user_id, route)
     params = {
         **fields,
         "app": slug,
@@ -208,7 +278,9 @@ async def serve(websocket) -> None:
     links[key] = link
     if old is not None:
         _fail(old)
-    await connections.put_route(key=key, user_id=user_id, generation=generation)
+    name = hello.get("computer") if isinstance(hello.get("computer"), str) else ""
+    name = "".join(c for c in name if c.isprintable())[:64]
+    await connections.put_route(key=key, user_id=user_id, generation=generation, name=name)
     logger.info("network route link up user=%s", user_id)  # never the key
     await send({"type": "ready", "person": network_member.app_person(user_id)})
     code = 1000

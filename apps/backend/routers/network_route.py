@@ -85,6 +85,73 @@ async def remove_wake(app: str, ctx: AuthContext = Depends(get_current_user)):
     return Response(status_code=204)
 
 
+class PinRoute(BaseModel):
+    clientId: str = Field(..., min_length=1, max_length=512)
+    kind: str = Field(..., pattern="^(computer|workspace)$")
+    key: str | None = Field(default=None, max_length=64)
+    owner: str | None = Field(default=None, max_length=128)
+
+
+async def _routes(ctx: AuthContext) -> list[dict]:
+    """What an app may be pinned to now: each online computer, each workspace on a network."""
+    from core.services import clerk_admin, network_member
+
+    out = [
+        {"kind": "computer", "key": r["key"], "name": r.get("name") or "Your computer", "online": True}
+        for r in sorted(
+            await network_route._connections().routes_for_user(ctx.user_id), key=lambda r: -r["connectedAt"]
+        )
+    ]
+    for owner in await network_member.workspaces_of(ctx.user_id):
+        doc = await network_member._read_sessions(owner)
+        if doc and doc.get("joined"):
+            org = await clerk_admin.get_organization(owner) or {}
+            out.append({"kind": "workspace", "owner": owner, "name": org.get("name") or "Your workspace"})
+    return out
+
+
+@router.get("/network/apps")
+async def list_apps(ctx: AuthContext = Depends(get_current_user)):
+    """The person's hosted apps (each pinned to one route) and the routes they may pick."""
+    pins = await network_route.list_pins(ctx.user_id)
+    apps = [{"clientId": p["sk"], "app": p.get("app"), "client": p.get("client"), "route": p["route"]} for p in pins]
+    return {"apps": apps, "routes": await _routes(ctx)}
+
+
+@router.put("/network/apps/route")
+async def pin_app(body: PinRoute, ctx: AuthContext = Depends(get_current_user)):
+    """Pin an app to one route. A computer must be online now (its name comes from its link);
+    a workspace must be one of theirs on a network."""
+    pin = await network_route.get_pin(ctx.user_id, body.clientId)
+    if pin is None and not body.clientId.startswith("agentkey:"):
+        raise HTTPException(404, detail="That app has not connected yet.")
+    if body.clientId.startswith("agentkey:"):
+        from core.services import agent_keys
+
+        owner = ctx.org_id or ctx.user_id
+        keys = {k["keyId"]: k for k in await agent_keys.list_keys(owner, ctx.user_id)}
+        key = keys.get(body.clientId.removeprefix("agentkey:"))
+        if key is None:
+            raise HTTPException(404, detail="No such agent key of yours.")
+        slug, client = f"agent-{key['keyId']}", key["name"]
+    else:
+        slug, client = pin.get("app") or "app", pin.get("client") or "An app"
+    match = next(
+        (
+            r
+            for r in await _routes(ctx)
+            if r["kind"] == body.kind
+            and r.get("key" if body.kind == "computer" else "owner") == (body.key or body.owner)
+        ),
+        None,
+    )
+    if match is None:
+        raise HTTPException(409, detail="That computer is offline or that workspace is not on a network.")
+    route = {k: match[k] for k in (("kind", "key", "name") if body.kind == "computer" else ("kind", "owner"))}
+    await network_route.set_pin(ctx.user_id, body.clientId, route, slug, client)
+    return {"clientId": body.clientId, "route": route}
+
+
 class AppMail(BaseModel):
     session: str = Field(..., pattern=_SESSION.pattern)
 

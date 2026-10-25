@@ -905,6 +905,30 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def post_cost_event(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        agent_id: str,
+        model: str,
+        cost_cents: int,
+        occurred_at: str,
+        provider: str = "openrouter",
+    ) -> dict:
+        """POST an agent-scoped priced cost event (whole cents; fork ``createCostEventSchema``)."""
+        return await self._post(
+            f"/api/companies/{quote(company_id, safe='')}/cost-events",
+            {
+                "agentId": agent_id,
+                "provider": provider,
+                "model": model,
+                "costCents": cost_cents,
+                "occurredAt": occurred_at,
+            },
+            session_cookie,
+        )
+
     async def pause_agent(self, *, session_cookie: str, agent_id: str) -> dict:
         """Pause an agent (stops it running on events).
 

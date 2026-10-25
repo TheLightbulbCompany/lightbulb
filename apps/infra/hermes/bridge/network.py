@@ -283,12 +283,33 @@ def reload_sessions() -> int:
         raise NetworkOff("sessions.json is gone")
     raw, data = fetched
     params = {"sessions": data.get("sessions") or []}
-    if "members" in data:  # the engine keeps its gate when the key is absent, so pass it only when written
-        params["members"] = data["members"]
+    # The engine keeps its gate when a key is absent, so pass each only when written. An engine
+    # before `member_keys` gates on `members` (person ids); a newer one ignores `members`.
+    for gate in ("members", "member_keys"):
+        if gate in data:
+            params[gate] = data[gate]
     ask("cloud.sessions.set", params)
     _sessions = data
     SESSIONS_FILE.write_bytes(raw)
     return len(data.get("sessions") or [])
+
+
+#: How long a join waits for the inviting admin's Allow (the engine's own wait is 600 s).
+JOIN_WAIT_S = 660.0
+
+
+def join_in_background(ticket: str) -> None:
+    """``team.join`` with an admin computer's once link, off the RPC thread: the join waits for
+    that admin's Allow. Logs the outcome's state and reason, never the link."""
+    def _join() -> None:
+        try:
+            r = ask("team.join", {"ticket": ticket, "name": str(_sessions.get("workspace") or "")},
+                    timeout_s=JOIN_WAIT_S)
+            log.info("network.join state=%s reason=%s", r.get("state"), r.get("reason"))
+        except Exception as exc:  # noqa: BLE001 -- the admin's computer shows nothing; the log says why
+            log.warning("network.join failed (%s)", type(exc).__name__)
+
+    _spawn(_join, "network-join")
 
 
 def sessions() -> list[dict]:

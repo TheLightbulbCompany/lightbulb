@@ -448,3 +448,25 @@ describe("DatabaseStack — workspace join links", () => {
     });
   });
 });
+
+describe("DatabaseStack — network keys", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  test("creates network-keys keyed by member key, durable, with a by-user GSI", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "lightbulb-dev-network-keys",
+      KeySchema: [{ AttributeName: "key", KeyType: "HASH" }],
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+      TimeToLiveSpecification: Match.absent(),
+      GlobalSecondaryIndexes: [
+        Match.objectLike({
+          IndexName: "by-user",
+          KeySchema: [{ AttributeName: "user_id", KeyType: "HASH" }],
+        }),
+      ],
+    });
+  });
+});

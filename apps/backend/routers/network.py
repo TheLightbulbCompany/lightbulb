@@ -1,48 +1,78 @@
-"""Settings -> Network: this workspace on the free ``lightbulb`` peer-to-peer network.
+"""The workspace on the free ``lightbulb`` peer-to-peer network.
 
-A parked runtime can outlast API Gateway's 30 s on ``/invite``; the client retries on 504 or
-``RUNTIME_UNAVAILABLE``. The invite line is a credential: returned once, never logged or stored.
+``/api/v1/network``: ``lightbulb login`` / ``logout`` and ``lightbulb invite --agents``
+(``network_login``; the CLI's calls carry no Clerk token, a signature over a one-time challenge
+instead; the browser's confirm is Clerk), and the doorbell. Keys, codes and links are never
+logged or echoed beyond the one answer that hands them out.
 """
 
 from typing import Literal
 
-from fastapi import APIRouter, Body, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
-from core.services import network_member
+from core.auth import AuthContext, get_current_user
+from core.services import device_login, network_login, network_member
 
 router = APIRouter()
 internal_router = APIRouter()
-wake_router = APIRouter()
 
 
-class InviteRequest(BaseModel):
-    name: str | None = Field(default=None, max_length=80)
+class _Signed(BaseModel):
+    key: str = Field(..., min_length=1, max_length=64)
+    challenge: str = Field(..., min_length=1, max_length=64)
+    sig: str = Field(..., min_length=1, max_length=128)
 
 
-@router.get("")
-async def network_status(auth: AuthContext = Depends(get_current_user)):
-    return {"connected": await network_member.sessions_exist(resolve_owner_id(auth))}
+class DeviceStart(_Signed):
+    purpose: str = Field(..., max_length=16)
+    computer: str | None = Field(default=None, max_length=256)
+    ticket: str | None = Field(default=None, max_length=8192)
 
 
-@router.post("/invite")
-async def network_invite(
-    response: Response,
-    body: InviteRequest | None = Body(default=None),
-    auth: AuthContext = Depends(get_current_user),
-):
-    owner_id = resolve_owner_id(auth)
-    name = ((body.name if body else None) or "").strip() or auth.email or auth.user_id
-    result = await network_member.connect(owner_id, auth.user_id, name)
+class DeviceCode(BaseModel):
+    userCode: str = Field(..., min_length=1, max_length=16)
+
+
+class DevicePoll(BaseModel):
+    code: str = Field(..., min_length=1, max_length=128)
+
+
+def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
-    return {"line": result["line"], "expiresAt": result["expires_at"]}
 
 
-@router.post("/reconnect")
-async def network_reconnect(auth: AuthContext = Depends(get_current_user)):
-    require_org_admin(auth)
-    await network_member.reconnect(resolve_owner_id(auth))
+@router.post("/device/challenge")
+async def device_challenge(response: Response):
+    _no_store(response)
+    return await network_login.challenge()
+
+
+@router.post("/device/start")
+async def device_start(body: DeviceStart, response: Response):
+    _no_store(response)
+    return await network_login.start(body.key, body.purpose, body.challenge, body.sig, body.computer, body.ticket)
+
+
+@router.post("/device/poll")
+async def device_poll(body: DevicePoll, response: Response):
+    _no_store(response)
+    return await device_login.poll(body.code)
+
+
+@router.post("/device/describe")
+async def device_describe(body: DeviceCode, ctx: AuthContext = Depends(get_current_user)):
+    return await network_login.describe(body.userCode)
+
+
+@router.post("/device/approve")
+async def device_approve(body: DeviceCode, ctx: AuthContext = Depends(get_current_user)):
+    return await network_login.approve(ctx, body.userCode)
+
+
+@router.post("/logout")
+async def network_logout(body: _Signed):
+    await network_login.logout(body.key, body.challenge, body.sig)
     return {}
 
 
@@ -66,7 +96,7 @@ async def network_hold_notice(owner_id: str, body: HoldNotice, request: Request)
     return Response(status_code=204)
 
 
-@wake_router.post("/wake", include_in_schema=False)
+@router.post("/wake", include_in_schema=False)
 async def network_wake(request: Request):
     """The doorbell: no Clerk auth, ``Authorization: Bearer <owner>.<secret>`` is the credential
     (a header, never the path, which access logs record). No body either way."""

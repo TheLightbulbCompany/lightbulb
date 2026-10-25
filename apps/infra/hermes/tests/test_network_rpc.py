@@ -20,19 +20,30 @@ def _rpc(method, params=None):
     return body
 
 
-def test_invite_returns_the_line_and_never_logs_it(net, caplog):
+def test_join_starts_a_background_team_join_and_never_logs_the_link(net, caplog):
     caplog.set_level(logging.DEBUG)
-    line = "lightbulb join TICKET-abc123secret"
-    net.answer(**{"team.invite": {"line": line, "expires_at": "2026-10-25T00:00:00Z"}})
-    answer = _rpc("network.invite", {"for": "Aden", "name": "Aden's Mac"})
-    assert answer == {"ok": True, "payload": {"line": line, "expires_at": "2026-10-25T00:00:00Z"}}
-    assert _sent(net, "team.invite") == [{"op": "team.invite", "mode": "person", "for": "Aden", "name": "Aden's Mac"}]
+    ticket = "TICKET-abc123secret"
+    net.answer(**{"team.get": {"members": [{"key": "me"}]},
+                  "team.join": {"state": "admitted", "reason": None, "team": "acme", "online": 2}})
+    assert _rpc("network.join", {"ticket": ticket}) == {"ok": True, "payload": {"state": "joining"}}
+    assert _until(lambda: net.calls("team.join"))
+    sent = _sent(net, "team.join")[0]
+    assert sent["ticket"] == ticket and sent["op"] == "team.join"
+    assert _until(lambda: "network.join state=admitted" in caplog.text)
     assert "TICKET" not in caplog.text
+
+
+def test_join_is_refused_once_the_workspace_is_on_a_network(net):
+    net.answer(**{"team.get": {"members": [{"key": "me"}, {"key": "admin"}]}})
+    answer = _rpc("network.join", {"ticket": "T"})
+    assert answer["ok"] is False and answer["error"]["code"] == "already_in_team"
+    assert net.calls("team.join") == []
+    assert _rpc("network.join", {})["error"]["code"] == "INVALID_REQUEST"
 
 
 def test_network_rpc_when_off_answers_unavailable(net, monkeypatch):
     monkeypatch.setattr(bridge, "NETWORK_KEY", "")
-    for method, params in (("network.invite", {"for": "x"}), ("network.sessions", {}),
+    for method, params in (("network.join", {"ticket": "t"}), ("network.sessions", {}),
                            ("network.app", {"op": "directory"}), ("network.hold", {"hold": "H1"}),
                            ("network.wake", {})):
         answer = _rpc(method, params)
@@ -68,12 +79,13 @@ def test_rpc_starts_the_sidecar_in_the_foreground_and_maps_ops(net):
 
 def test_network_sessions_rereads_the_file_and_declares_it(net):
     assert network.ensure_started(background=False)
-    new = {"workspace": "Acme", "members": ["user_a", "user_b"],
+    new = {"workspace": "Acme", "members": ["user_a", "user_b"], "member_keys": ["key_a"],
            "sessions": [{"name": "friday", "agent": "Friday", "agentId": "a-friday"},
                         {"name": "atlas", "agent": "Atlas", "agentId": "a-atlas"}]}
     net.s3.seed("org_test/network/sessions.json", json.dumps(new).encode())
     assert _rpc("network.sessions") == {"ok": True, "payload": {"count": 2}}
     declared = net.calls("cloud.sessions.set")[-1]
     assert (declared["sessions"], declared["members"]) == (new["sessions"], ["user_a", "user_b"])
+    assert declared["member_keys"] == ["key_a"]
     assert network.agent_for_session("atlas") == "a-atlas"
     assert json.loads(network.SESSIONS_FILE.read_text()) == new

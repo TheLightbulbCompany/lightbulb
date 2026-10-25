@@ -3,9 +3,12 @@
 The network engine runs as a sidecar in the workspace's AgentCore microVM. The backend owns two
 inputs it reads: the member key (in the boot secret, written only by
 ``agentcore_runtime.write_boot_secret``) and ``<owner>/network/sessions.json``, the addresses
-this workspace answers on -- one per agent, plus any app entries the sidecar added.
+this workspace answers on -- one per agent, plus any app entries the sidecar added -- and
+``member_keys``, the computers of its members who ran ``lightbulb login`` (the only senders
+the sidecar answers).
 
-The invite line ``connect`` returns is a credential: it is never logged or stored here.
+A workspace never invites: it joins one network when an admin runs ``lightbulb invite
+--agents`` (``join_network``). The once link it joins with is a credential: never logged here.
 """
 
 from __future__ import annotations
@@ -70,6 +73,7 @@ async def write_sessions(owner_id: str, *, apps: list[dict] | None = None) -> di
 
 
 async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> dict:
+    from core.repositories import network_keys_repo
     from core.services import clerk_admin
     from core.services.company_identity import slugify
     from core.services.hermes_profiles import put_owner_object
@@ -106,6 +110,8 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
         "sessions": sessions + apps,
         "wake": wake,
         "members": members,
+        # The sidecar's gate: only these computers' messages reach the agents.
+        "member_keys": await network_keys_repo.keys_for_users(members),
     }
     await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
     return doc
@@ -165,7 +171,9 @@ async def app_call(auth, slug: str, client: str, op: str, **fields) -> Any:
     person = app_person(auth.user_id)
     doc = await _read_sessions(owner_id)
     if doc is None:  # never write sessions.json for a workspace that is not a member
-        raise ApiProblem("NETWORK_NOT_CONNECTED", "This workspace is not on a network yet. Connect it in Settings.")
+        raise ApiProblem(
+            "NETWORK_NOT_CONNECTED", "This workspace is not on a network yet. An admin runs lightbulb invite --agents."
+        )
     if not any(s.get("name") == f"{slug}-{person}" for s in _app_entries(doc)):
         await _declare(owner_id, auth.user_id, slug, client, doc)
     params = {"op": op, "app": slug, "person": person, **fields}
@@ -194,47 +202,45 @@ async def _runtime_arn(owner_id: str) -> str | None:
     return ((await container_repo.get_by_owner_id(owner_id)) or {}).get("agentcore_runtime_arn")
 
 
-async def connect(owner_id: str, user_id: str, name: str) -> dict:
-    """An invite line for one person. A workspace that is not a member yet (not rolled, or just
-    reconnected) gets its key and ``sessions.json`` first, and a restart if the key is new."""
+async def publish_for_users(*user_ids: str) -> None:
+    """``member_keys`` follow a login or logout: republish every workspace these people are in.
+    Best effort: never raises (``publish_sessions`` swallows its own failures)."""
+    from core.services import clerk_admin
+
+    orgs = await asyncio.gather(*(clerk_admin.list_user_organizations(u) for u in user_ids if u))
+    owners = sorted({o["id"] for found in orgs for o in found if o.get("id")})
+    await asyncio.gather(*(publish_sessions(o) for o in owners))
+
+
+async def join_network(owner_id: str, ticket: str) -> dict:
+    """Join the network ``ticket`` (an admin computer's once ask link) is for. A workspace that is
+    not a member yet gets its key and ``sessions.json`` first, and a restart if the key is new.
+    The bridge answers at once (``{state: "joining"}``); the admin's computer then asks Allow."""
     from core.services.hermes_provisioning import prepare_hermes_workspace, stop_runtime_session
 
     if not await sessions_exist(owner_id):
         from core.services.hermes_provisioning import _delete_prefixes
 
-        # A SIGTERM save from the session reconnect stopped can land after reconnect's delete;
-        # a stale state.db under the new key is a KEY_MISMATCH, so clear it once more first.
+        # A stale state.db under a new key is a KEY_MISMATCH: clear it first.
         await run_in_thread(_delete_prefixes, [f"{network_prefix(owner_id)}state.db"])
         if await prepare_hermes_workspace(owner_id):
             arn = await _runtime_arn(owner_id)
             if arn:
                 await stop_runtime_session(owner_id, arn)
+        await write_sessions(owner_id)
     try:
-        return await container_rpc.call(owner_id, "network.invite", {"for": user_id, "name": name})
+        return await container_rpc.call(owner_id, "network.join", {"ticket": ticket})
     except RuntimeError as exc:
+        error = rpc_error(exc)
         # The bridge answers UNAVAILABLE while its network sidecar is off or starting (a fresh
-        # microVM): a retryable 503 the Settings page waits on, not a bare 500 (dev, 2026-10-24).
-        if rpc_error(exc).get("code") in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
+        # microVM): a retryable 503 the confirm page waits on, not a bare 500.
+        if error.get("code") in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
             raise container_rpc._unavailable() from exc
+        if error.get("code") == "already_in_team":
+            raise ApiProblem(
+                "NETWORK_ALREADY_JOINED", "This workspace's agents are already on another network."
+            ) from exc
         raise
-
-
-async def reconnect(owner_id: str) -> None:
-    """Leave the current team: drop the member key, stop the session, delete the network state.
-    The next ``connect`` (or reconcile) mints a new key, which makes a new team.
-
-    Order matters: the key goes first so a cold start in between cannot read it; the stop comes
-    before the delete so a warm session cannot save network state back after it."""
-    from core.repositories import messaging_repo
-    from core.services.agentcore_runtime import drop_network_key
-    from core.services.hermes_provisioning import _delete_prefixes, stop_runtime_session
-
-    await drop_network_key(owner_id)
-    arn = await _runtime_arn(owner_id)
-    if arn:
-        await stop_runtime_session(owner_id, arn)
-    await run_in_thread(_delete_prefixes, [network_prefix(owner_id)])
-    await run_in_thread(messaging_repo._table().delete_item, Key=_netwake_key(owner_id))  # a new token next time
 
 
 # ---------------------------------------------------------------------------

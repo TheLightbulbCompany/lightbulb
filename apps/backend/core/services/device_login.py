@@ -59,18 +59,25 @@ async def start(tauri_mac_pubkey: str, cli_pubkey: str, machine_name: str | None
             _public_key_raw_bytes(pem)
         except Exception as exc:  # noqa: BLE001 -- any parse failure is the caller's bad key
             raise HTTPException(status_code=422, detail="Public keys must be PEM-encoded Ed25519.") from exc
-    code = secrets.token_urlsafe(32)
-    expires_at = int(time.time()) + LOGIN_TTL_S
     fields = {
-        "status": "pending",
         "tauriMacPubKey": tauri_mac_pubkey,
         "cliPubKey": cli_pubkey,
         "machineName": clean_machine_name(machine_name),
     }
+    return await create(fields, "/auth/connect-machine")
+
+
+async def create(fields: dict, page: str) -> dict:
+    """A pending login row carrying ``fields``, and what the CLI shows and polls with. ``page``
+    is the frontend path the person confirms on (``?code=<userCode>``)."""
+    code = secrets.token_urlsafe(32)
+    expires_at = int(time.time()) + LOGIN_TTL_S
     for _ in range(3):  # 32^8 codes; a collision with a live one is vanishingly rare
         user_code = _user_code()
         try:
-            await messaging_repo.create_device_login(_hash(code), user_code, fields, expires_at)
+            await messaging_repo.create_device_login(
+                _hash(code), user_code, {**fields, "status": "pending"}, expires_at
+            )
             break
         except ClientError as exc:
             if not messaging_repo.is_cancelled(exc):
@@ -80,36 +87,38 @@ async def start(tauri_mac_pubkey: str, cli_pubkey: str, machine_name: str | None
     return {
         "code": code,
         "userCode": user_code,
-        "verifyUrl": f"{settings.FRONTEND_URL.rstrip('/')}/auth/connect-machine?code={user_code}",
+        "verifyUrl": f"{settings.FRONTEND_URL.rstrip('/')}{page}?code={user_code}",
         "interval": POLL_INTERVAL_S,
         "expiresIn": LOGIN_TTL_S,
     }
 
 
-async def claim(user_code: str, owner_id: str, user_id: str) -> dict:
+async def claim(user_code: str, owner_id: str, user_id: str, *, kind: str | None = None) -> dict:
     """Bind the login to this approver and return the row (with the Mac's keys).
 
     410 when the code is unknown, used or expired; 409 when someone else approved it.
     Re-approving as the same person in the same workspace is allowed (pair and enroll
     are idempotent), so a lost approve response can simply be retried."""
-    row = await _live_row(user_code)
+    row = await live_row(user_code, kind)
     code_hash = row["pk"].removeprefix("DEVICELOGIN#")
     if not await messaging_repo.claim_device_login(code_hash, owner_id, user_id):
-        await _live_row(user_code)  # taken or expired between the read and the claim: 410
+        await live_row(user_code, kind)  # taken or expired between the read and the claim: 410
         raise HTTPException(status_code=409, detail="Someone else already connected this Mac.")
     return row
 
 
-async def _live_row(user_code: str) -> dict:
+async def live_row(user_code: str, kind: str | None = None) -> dict:
+    """The live row for ``user_code``, of ``kind`` (``None``: the desktop's; ``"network"``:
+    ``lightbulb login``'s), so neither flow's page can confirm the other's code. 410 otherwise."""
     row = await messaging_repo.get_device_login_by_user_code(user_code.strip().upper())
-    if not _live(row):
+    if not _live(row) or row.get("kind") != kind:
         raise HTTPException(status_code=410, detail=_EXPIRED)
     return row
 
 
 async def describe(user_code: str) -> dict:
     """What the approve page shows before the click: the name the Mac reported."""
-    row = await _live_row(user_code)
+    row = await live_row(user_code)
     return {"machineName": row.get("machineName") or ""}
 
 

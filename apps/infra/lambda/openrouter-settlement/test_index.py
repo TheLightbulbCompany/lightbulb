@@ -698,5 +698,80 @@ class ScheduledRunTests(unittest.TestCase):
         self.assertEqual((result["settlement"], store.rows["late"]["state"], result["retirement"]["disabled"]), ({"deferred": 1}, "pending", 1))
 
 
+class PaperclipCostReportTests(unittest.TestCase):
+    """After the money truth settles, report the gate-stamped per-agent cost to the backend (best effort)."""
+
+    def setUp(self):
+        env = patch.dict(os.environ, {"OPENROUTER_MARKUP": "1.2"})
+        env.start()
+        self.addCleanup(env.stop)
+        self.row = {
+            "request_id": "req-1", "owner_id": "owner-1", "key_hash": "h", "secret_name": "s",
+            "generation_id": "gen-1", "state": "pending", "created_at": 1_700_000_000,
+            "reservation_microcents": 300_000, "billing_mode": "paid",
+            "agent_id": "agent-1", "cost_microcents": Decimal("600"),
+        }
+        self.generation = {"id": "gen-1", "total_cost": Decimal("0.0005"),
+                           "created_at": "2023-11-14T22:13:20Z", "model": "m", "provider_name": "p"}
+
+    def _settle(self, row, report, *, commit=lambda *_: "settled", ingest=lambda *_: None):
+        fail = lambda *_: self.fail("unexpected callback")
+        return worker.settle_one(row, get_generation=lambda *_: self.generation, ingest=ingest, commit=commit,
+                                 commit_free=lambda *_: "settled", release_unknown=fail,
+                                 release_stale_metadata=fail, now=1_700_000_001, report_cost=report)
+
+    def test_settled_managed_row_reports_once_after_commit(self):
+        order = []
+        reports = []
+        self._settle(self.row, lambda *a: reports.append(a), ingest=lambda *_: order.append("ingest"),
+                     commit=lambda *_: order.append("commit") or "settled")
+        self.assertEqual(order, ["ingest", "commit"])
+        self.assertEqual(reports, [(self.row, "m", "2023-11-14T22:13:20Z")])
+
+    def test_capped_managed_row_also_reports(self):
+        reports = []
+        self._settle({**self.row, "billing_mode": "capped"}, lambda *a: reports.append(a))
+        self.assertEqual(len(reports), 1)
+
+    def test_rows_without_agent_cost_or_managed_mode_report_nothing(self):
+        no_agent = {k: v for k, v in self.row.items() if k != "agent_id"}
+        no_cost = {k: v for k, v in self.row.items() if k != "cost_microcents"}
+        zero_cost = {**self.row, "cost_microcents": Decimal("0")}
+        byo = {**self.row, "billing_mode": "byo"}
+        for row in (no_agent, no_cost, zero_cost, byo):
+            with self.subTest(row=sorted(row)):
+                self._settle(row, lambda *_: self.fail("reported"))
+
+    def test_duplicate_or_already_processed_rows_report_nothing(self):
+        self._settle(self.row, lambda *_: self.fail("reported"), commit=lambda *_: "duplicate_generation")
+        self._settle({**self.row, "state": "settled"}, lambda *_: self.fail("reported"))
+
+    def test_report_failure_does_not_fail_the_settle(self):
+        def boom(*_):
+            raise RuntimeError("backend down")
+        with patch("builtins.print") as printed:
+            self.assertEqual(self._settle(self.row, boom), "settled")
+        self.assertIn("paperclip_post_failed", printed.call_args[0][0])
+
+    def test_post_sends_body_and_secret_header(self):
+        seen = {}
+        class Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        def fake_urlopen(request, timeout):
+            seen.update(url=request.full_url, headers=dict(request.header_items()),
+                        body=json.loads(request.data), timeout=timeout)
+            return Resp()
+        env = {"BACKEND_INTERNAL_URL": "https://api.example", "WS_INTERNAL_SECRET_ID": "sec"}
+        with patch.dict(os.environ, env), patch.object(worker, "_secret", return_value="s3cret"), \
+                patch.object(worker.urllib.request, "urlopen", fake_urlopen):
+            worker._report_paperclip_cost(self.row, "m", "2023-11-14T22:13:20Z")
+        self.assertEqual(seen["url"], "https://api.example/api/v1/internal/paperclip/cost/owner-1")
+        self.assertEqual(seen["headers"]["X-lightbulb-ws-internal"], "s3cret")
+        self.assertEqual(seen["body"], {"agentId": "agent-1", "generationId": "gen-1", "costMicrocents": 600,
+                                        "model": "m", "occurredAt": "2023-11-14T22:13:20Z"})
+        self.assertEqual(seen["timeout"], 10)
+
+
 if __name__ == "__main__":
     unittest.main()

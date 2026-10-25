@@ -402,7 +402,7 @@ _net_lock = threading.Lock()
 
 
 def _next_request_id(session_id: str) -> str:
-    """``<runId or eventId>:net:<n>``, n counted in the turn's own context file: the bridge
+    """``<runId or eventId>.net.<n>`` (the engine takes only ``[A-Za-z0-9._-]``), n counted in the turn's own context file: the bridge
     writes a fresh file for each turn, so a re-run turn re-sends with the same ids. The file is
     re-read under the lock, so parallel sends in one turn never share an id."""
     with _net_lock:
@@ -410,7 +410,7 @@ def _next_request_id(session_id: str) -> str:
         base = ctx.get("runId") or ctx.get("eventId") or ctx.get("netBase") or str(uuid.uuid4())
         n = int(ctx.get("netCount") or 0) + 1
         turn_context.write(turn_context._home(), session_id, {**ctx, "netCount": n, "netBase": base})
-    return f"{base}:net:{n}"
+    return f"{base}.net.{n}"
 
 
 def _network(args: dict, *, session_id: str = "", **_kw) -> str:

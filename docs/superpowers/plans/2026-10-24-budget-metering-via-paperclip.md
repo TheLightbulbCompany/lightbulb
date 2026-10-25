@@ -26,6 +26,8 @@
 - **Cut/aborted stream:** missing final-chunk cost falls back to `GET /generation`, never a silent $0 — pins in Task 2.
 - **Per-agent bearer isolation:** one agent's bearer must map only to that agent+owner; a leaked/forged bearer must not bill another owner — pins in Task 1.
 - **Managed-only:** a BYO/ChatGPT run emits no cost_event — pins in Task 3.
+- **Sub-cent carry:** a cheap managed call is sub-cent; the backend accrues microcents and posts whole cents only when the carry crosses ≥1¢, keeping the remainder per `(owner, agent, month)`, so cheap-model budgets accrue correctly and nothing rounds to a silent 0 — pins in Task 3.
+- **Best-effort, never blocking money:** the Paperclip post runs after the Metronome ingest + settle, so a Paperclip/endpoint failure under-counts the (soft) budget but never fails settlement or double-counts on retry (the settle-once gate) — pins in Task 3.
 - **Credit floor + per-key limit unchanged** by the new bearer/capture — pins in Task 1/2.
 
 ---
@@ -50,12 +52,20 @@
 
 ### Task 3: Feed per-agent real cost into Paperclip
 
-**Files:** `apps/infra/lambda/openrouter-settlement/index.py` (post an agent-scoped priced cost_event to Paperclip's existing `POST /companies/:id/cost-events`), `apps/backend/core/services/` (a small Paperclip cost-events client method on `PaperclipAdminClient`).
+> **Design corrected 2026-10-25 (owner: "fix the design").** The settlement Lambda is standalone stdlib (urllib + boto3, no backend import) and Paperclip admin auth is a Better-Auth **session cookie** + `Origin` — so settlement **cannot** call `PaperclipAdminClient` directly, and it cannot replicate that auth sanely. And Paperclip stores integer **cents** while a managed per-call cost is **sub-cent** (~$0.0005 → 0.06¢ → rounds to 0), so a per-call cents post makes the budget inert for cheap models. The corrected path routes settlement → a backend internal endpoint (the established `x-lightbulb-ws-internal` / `WS_INTERNAL_SECRET` Lambda→backend pattern) → Paperclip, and carries sub-cent microcents on the backend side.
 
-**Interfaces:** Consumes Task 2's stamped cost + owner + agent + generation_id; produces a Paperclip cost_event {company, agent, model, cost_cents} deduped by generation_id.
+**Files:**
+- `apps/infra/lambda/openrouter-settlement/index.py` — inside `settle_one`, for a managed row with `cost_microcents` + `agent_id`, **after** the Metronome ingest and **after** the row is marked settled (best-effort; Paperclip must never block the Metronome money truth), POST the backend internal endpoint with `{owner, agentId, generationId, costMicrocents, model, occurredAt}`. A failure is a logged metric, not a settle failure.
+- `apps/backend/routers/` — new internal route `POST /api/v1/internal/paperclip/cost/{owner}` gated by `x-lightbulb-ws-internal` (`WS_INTERNAL_SECRET`), like `routers/container.py`'s EventBridge callback. It resolves owner→Paperclip company, accrues, and posts.
+- `apps/backend/core/services/` — the accrual+carry (a per-`(owner, agent, month)` microcents remainder stored as a **pruned map on the PaperclipCompany DDB row** — internal carry, NOT a second budget store; Paperclip stays the budget source of truth) and `PaperclipAdminClient.post_cost_event(company_id, session_cookie, {...})` → `POST /api/companies/{company}/cost-events`.
+- `apps/infra/lib/stacks/openrouter-gate-stack.ts` — pass `BACKEND_INTERNAL_URL` + `WS_INTERNAL_SECRET` to the settlement Lambda.
 
-- [ ] **Step 1:** failing test — a managed generation posts ONE agent-scoped priced cost_event (deduped by generation_id; a retry posts none); a BYO/ChatGPT generation posts none; the heartbeat's $0 run event is left untouched (additive, no double-count).
-- [ ] **Step 2–4:** implement the client + the settlement post, green, commit. Verify in a dev company that an agent budget now trips (80% warn, hard pause) — receipts in the ledger.
+**Interfaces:** Consumes Task 2's `cost_microcents` + `owner_id` + `agent_id` (= the Paperclip agent UUID — `hermes_provisioning.py:1322`, no mapping) + `generation_id`. Produces Paperclip cost_events `{agentId, provider:"openrouter", model, costCents, occurredAt}`. `costCents = floor(accrued_microcents / 1e4)` posted when the carry crosses ≥1¢; remainder carried.
+
+- [ ] **Step 1 (PaperclipAdminClient):** failing test → add `post_cost_event`; green.
+- [ ] **Step 2 (backend endpoint + accrual):** failing test — a managed cost accrues on the company row; crossing 1¢ posts ONE agent-scoped cost_event with the carried whole cents and keeps the sub-cent remainder; a second month keys separately; the endpoint is `x-lightbulb-ws-internal`-gated (401 without). Green.
+- [ ] **Step 3 (settlement wiring):** failing test — a managed settled row with `cost_microcents` + `agent_id` calls the endpoint once (after settle); a BYO/ChatGPT or `agent_id`-absent or `cost_microcents`-absent row calls nothing; the heartbeat's $0 event is untouched (additive); a Paperclip/endpoint failure does not fail the settle. Green.
+- [ ] **Step 4:** `cd apps/infra && npx cdk synth`, commit the regenerated `deploy.yml` with the settlement env vars. Verify in a dev company that an agent budget trips (80% warn, hard pause) — receipts in the ledger.
 
 ### Task 4: Surface Paperclip budgets + Costs in our app
 

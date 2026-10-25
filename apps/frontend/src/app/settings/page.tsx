@@ -21,6 +21,7 @@ import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
 import { Logo } from "@/components/Logo";
 import { PlanChooser } from "@/components/settings/PlanChooser";
 import { UsagePanel } from "@/components/control/panels/UsagePanel";
+import { BudgetsPanel } from "@/components/control/panels/BudgetsPanel";
 import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
@@ -49,6 +50,7 @@ type Panel =
   | "connections"
   | "billing"
   | "usage"
+  | "budgets"
   | "providers"
   | "mcp"
   | "desktop"
@@ -711,6 +713,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   connections: ConnectionsPanel,
   billing: BillingPanel,
   usage: UsagePanel,
+  budgets: BudgetsPanel,
   providers: ModelPanel,
   mcp: IntegrationsPanel,
   desktop: DesktopSettings,

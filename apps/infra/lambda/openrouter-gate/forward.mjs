@@ -12,13 +12,18 @@ export function forward({ body, key, writeHead, write, waitForDrain, onGeneratio
     }, upstream => {
       const status = upstream.statusCode ?? 502;
       try { writeHead(status, upstream.headers); } catch (error) { req.destroy(error); reject(error); return; }
-      let line = '', generationId, model, notified = false, buffered = [], bufferedBytes = 0, errorBody = '';
+      let line = '', tail = '', cost, generationId, model, notified = false, buffered = [], bufferedBytes = 0, errorBody = '';
       upstream.on('data', chunk => {
         // Kept (bounded) so the gate can tell a per-key daily limit from other 403s.
         if (status !== 200 && errorBody.length < 8192) errorBody += chunk.toString('utf8');
         if (status === 200) {
           upstream.pause?.();
           pending = pending.then(async () => {
+            // The final usage chunk carries the call's real USD cost. A bounded tail survives a read
+            // boundary inside it; a stream cut before that chunk leaves cost undefined (never 0).
+            tail = (tail + chunk.toString('utf8')).slice(-4096);
+            const found = /"cost"\s*:\s*(\d[\d.eE+-]*)(?=[,}\s])/.exec(tail);
+            if (found && Number.isFinite(Number(found[1]))) cost = Number(found[1]);
             if (!generationId) {
               buffered.push(chunk);
               bufferedBytes += chunk.length;
@@ -47,7 +52,7 @@ export function forward({ body, key, writeHead, write, waitForDrain, onGeneratio
           }).catch(error => { req.destroy(error); reject(error); });
         }
       });
-      upstream.on('end', () => { pending.then(() => { if (status !== 200) write(Buffer.from(JSON.stringify({ error: { message: `Upstream returned ${status}` } }))); end(errorBody.slice(0, 8192)); resolve({ status, generationId, model, preGeneration: [400, 401, 402, 403, 404, 422, 429].includes(status) }); }).catch(reject); });
+      upstream.on('end', () => { pending.then(() => { if (status !== 200) write(Buffer.from(JSON.stringify({ error: { message: `Upstream returned ${status}` } }))); end(errorBody.slice(0, 8192)); resolve({ status, generationId, model, cost, preGeneration: [400, 401, 402, 403, 404, 422, 429].includes(status) }); }).catch(reject); });
       upstream.on('error', rejectAfterPending);
     });
     req.on('error', rejectAfterPending);

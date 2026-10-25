@@ -186,7 +186,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     const projectId = projectIdOf(event);
     if (billingMode === 'paid' && projectBudgetExhausted(billing, projectId)) throw new GateError(429, 'Lightbulb: project budget reached', 'project_budget_exceeded', { project_id: projectId });
     if (billingMode === 'paid' && (!S(billing, 'metronome_customer_id') || !S(billing, 'metronome_contract_id'))) fail(429, 'Credit ledger unavailable');
-    const outbox = { request_id: { S: requestId }, owner_id: { S: ownerId }, project_id: { S: projectId }, key_hash: { S: S(keyRow, 'key_hash') }, secret_name: { S: S(keyRow, 'secret_name') }, model: { S: body.model }, policy_revision: { S: String(policy.revision) }, billing_mode: { S: billingMode }, reservation_microcents: { N: String(estimate) }, state: { S: 'pending' }, created_at: { N: String(Math.floor(Date.now() / 1000)) } };
+    const outbox = { request_id: { S: requestId }, owner_id: { S: ownerId }, ...(agentId ? { agent_id: { S: agentId } } : {}), project_id: { S: projectId }, key_hash: { S: S(keyRow, 'key_hash') }, secret_name: { S: S(keyRow, 'secret_name') }, model: { S: body.model }, policy_revision: { S: String(policy.revision) }, billing_mode: { S: billingMode }, reservation_microcents: { N: String(estimate) }, state: { S: 'pending' }, created_at: { N: String(Math.floor(Date.now() / 1000)) } };
     const admitted = billingMode === 'paid' ? await reserve(ddb, env, ownerId, estimate, outbox) : await recordFree(ddb, env, outbox);
     if (!admitted) fail(429, 'Credit balance exhausted');
     // Owner question: do paying customers draw on the cheap-model budget?
@@ -239,6 +239,14 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     // The model that actually answered (openrouter/auto picks one): kept on the ledger row so a downgrade is visible.
     if (result.model && result.generationId) {
       try { await ddb.updateItem({ TableName: env.REQUESTS_TABLE, Key: { request_id: { S: requestId } }, UpdateExpression: 'SET resolved_model = :model', ConditionExpression: 'attribute_exists(request_id)', ExpressionAttributeValues: { ':model': { S: String(result.model) } } }); } catch (error) { console.error('resolved model stamp failed', error?.name); }
+    }
+    // Real cost x markup, in the reservation's own unit (ceilPricedTokens; settlement's debit_microcents:
+    // nanodollars x markup / 1000). Absent on a cut stream: settlement's /generation fallback fills it.
+    if (result.cost != null && result.generationId) {
+      try {
+        const costMicrocents = (ceilPricedTokens(Math.round(result.cost * 1e9), env.OPENROUTER_MARKUP) + 999n) / 1000n;
+        await ddb.updateItem({ TableName: env.REQUESTS_TABLE, Key: { request_id: { S: requestId } }, UpdateExpression: 'SET cost_microcents = :cost', ConditionExpression: 'attribute_exists(request_id)', ExpressionAttributeValues: { ':cost': { N: String(costMicrocents) } } });
+      } catch (error) { console.error('cost stamp failed', error?.name); }
     }
     if (result.preGeneration === true && !persistedId) {
       if (billingMode === 'paid') await release(ddb, env, ownerId, estimate, requestId);

@@ -173,3 +173,26 @@ test('returns the model OpenRouter reports on the stream', async () => {
   const result = await forward({ body: { stream: true }, key: 'k', requestImpl, writeHead: () => {}, write: () => {}, end: () => {} });
   assert.equal(result.model, 'anthropic/claude-sonnet-4.5');
 });
+
+const streamOf = chunks => (_url, _options, onResponse) => {
+  const req = new EventEmitter();
+  req.end = () => {
+    const upstream = new EventEmitter();
+    upstream.statusCode = 200;
+    upstream.headers = {};
+    onResponse(upstream);
+    queueMicrotask(async () => { for (const c of chunks) { upstream.emit('data', Buffer.from(c)); await new Promise(r => setImmediate(r)); } upstream.emit('end'); });
+  };
+  return req;
+};
+const run = chunks => forward({ body: { stream: true }, key: 'k', requestImpl: streamOf(chunks), writeHead: () => {}, write: () => {}, end: () => {} });
+
+test('returns usage.cost from the final usage chunk, even when it is split across reads', async () => {
+  const result = await run(['data: {"id":"gen-8","choices":[{"delta":{"content":"hi"}}]}\n\n', 'data: {"id":"gen-8","choices":[],"usage":{"prompt_tokens":5,"cost_details":{"upstream_inference_cost":0.9},"cost":0.00', '123}}\n\ndata: [DONE]\n\n']);
+  assert.equal(result.cost, 0.00123);
+});
+
+test('a stream cut before the usage chunk reports no cost (undefined, never 0)', async () => {
+  const result = await run(['data: {"id":"gen-9","choices":[{"delta":{"content":"hi"}}]}\n\n']);
+  assert.equal(result.cost, undefined);
+});

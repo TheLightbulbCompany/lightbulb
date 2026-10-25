@@ -275,3 +275,31 @@ test('a capped owner over a project budget is not hard-blocked (best-effort)', a
   await handleRequest(g.event(dsBody(), PROJECT), g.responder, g.deps);
   assert.equal(g.calls.errors.length, 0); assert.equal(g.calls.forwards.length, 1); assert.ok(f);
 });
+
+// Real cost x markup stamped on the requests row (microcents = USD x 1e6 x markup, as settlement's debit_microcents).
+const costStamp = f => f.calls.updates.find(u => u.ExpressionAttributeValues?.[':cost']);
+test('a completed stream stamps cost_microcents = ceil(usage.cost x 1e6 x markup) on the requests row', async () => {
+  const f = fixture();
+  f.deps.forwardImpl = async p => { p.writeHead(200, { 'content-type': 'text/event-stream' }); p.end(); return { status: 200, generationId: 'gen-1', cost: 0.00123 }; };
+  await handleRequest(f.event(), f.responder, f.deps);
+  const u = costStamp(f);
+  assert.equal(u.TableName, 'requests');
+  assert.match(u.UpdateExpression, /cost_microcents/);
+  assert.equal(u.ExpressionAttributeValues[':cost'].N, '1476'); // 1230 x 1.2
+});
+test('a stream cut before the usage chunk leaves cost_microcents absent, never 0', async () => {
+  const f = fixture();
+  await handleRequest(f.event(), f.responder, f.deps); // default forwardImpl returns no cost
+  assert.equal(costStamp(f), undefined);
+  assert.equal(JSON.stringify(f.calls.updates).includes('cost_microcents'), false);
+});
+test('the requests row carries agent_id for a per-agent bearer and omits it for an owner bearer', async () => {
+  const f = fixture();
+  const get = f.deps.ddb.getItem;
+  f.deps.ddb.getItem = async p => p.TableName === 'tokens' ? { Item: { owner_id: AV('owner-1'), agent_id: AV('agent-7') } } : get(p);
+  await handleRequest(f.event(), f.responder, f.deps);
+  assert.equal(f.calls.puts[0].Item.agent_id.S, 'agent-7');
+  const g = fixture();
+  await handleRequest(g.event(), g.responder, g.deps);
+  assert.equal('agent_id' in g.calls.puts[0].Item, false);
+});

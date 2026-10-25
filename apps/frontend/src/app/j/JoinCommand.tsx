@@ -1,25 +1,29 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { capture } from "@/lib/analytics";
 
 const INSTALL = "curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh";
 
+const onHashChange = (cb: () => void) => {
+  window.addEventListener("hashchange", cb);
+  return () => window.removeEventListener("hashchange", cb);
+};
+
 // The ticket lives in the URL fragment: read here in the browser only, never sent or logged.
 export function JoinCommand() {
-  const [ticket, setTicket] = useState<string | null>(null);
-  const [invalid, setInvalid] = useState(false);
+  // null on the server and before hydration: nothing renders until the browser has read it.
+  const t = useSyncExternalStore(onHashChange, () => window.location.hash.slice(1), () => null);
   const [copied, setCopied] = useState(false);
+  // Tickets are base64url. Anything else is refused, never decoded or repaired into a shell line.
+  const valid = t !== null && /^[A-Za-z0-9_-]{1,4096}$/.test(t);
+  const invalid = !!t && !valid;
+  const ticket = invalid ? null : t;
 
   useEffect(() => {
-    const t = window.location.hash.slice(1);
-    // Tickets are base64url. Anything else is refused, never decoded or repaired into a shell line.
-    const valid = /^[A-Za-z0-9_-]{1,4096}$/.test(t);
-    capture("join_link_viewed", { valid }); // never the ticket
-    if (t && !valid) setInvalid(true);
-    else setTicket(t);
-  }, []);
+    if (t !== null) capture("join_link_viewed", { valid }); // never the ticket
+  }, [t, valid]);
 
   if (invalid) return <p>This link is not valid. Ask for a new one.</p>;
   if (ticket === null) return null;

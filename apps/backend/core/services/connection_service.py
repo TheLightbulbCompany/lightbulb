@@ -595,6 +595,92 @@ class ConnectionService:
                 return False
             raise
 
+    # ---- a logged-in computer's route link (``network_route``) ---------------------------------
+
+    @staticmethod
+    def route_id(key: str) -> str:
+        return f"netroute#{key}"
+
+    async def put_route(self, *, key: str, user_id: str, generation: str) -> None:
+        """The newest link of computer ``key`` (its member key) wins: one row per key."""
+        now = int(time.time())
+        item = {
+            "connectionId": {"S": self.route_id(key)},
+            "userId": {"S": user_id},
+            "connectionType": {"S": "net-route"},
+            "generation": {"S": generation},
+            "connectedAt": {"N": str(now)},
+            "taskAddress": {"S": task_address.own_address()},
+            "ttl": {"N": str(now + self.RELAY_TTL_SECONDS)},
+        }
+        await asyncio.to_thread(self._client.put_item, TableName=self.table_name, Item=item)
+
+    async def refresh_route(self, key: str, generation: str) -> bool:
+        """False when a newer link of this computer replaced the row (or it expired)."""
+        try:
+            await asyncio.to_thread(
+                self._client.update_item,
+                TableName=self.table_name,
+                Key={"connectionId": {"S": self.route_id(key)}},
+                UpdateExpression="SET #ttl = :ttl, taskAddress = :addr",
+                ConditionExpression="#generation = :generation",
+                ExpressionAttributeNames={"#ttl": "ttl", "#generation": "generation"},
+                ExpressionAttributeValues={
+                    ":ttl": {"N": str(int(time.time()) + self.RELAY_TTL_SECONDS)},
+                    ":addr": {"S": task_address.own_address()},
+                    ":generation": {"S": generation},
+                },
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
+    async def delete_route(self, key: str, generation: str) -> None:
+        """Only this link's row: a closing old link never erases its successor's."""
+        try:
+            await asyncio.to_thread(
+                self._client.delete_item,
+                TableName=self.table_name,
+                Key={"connectionId": {"S": self.route_id(key)}},
+                ConditionExpression="#generation = :generation",
+                ExpressionAttributeNames={"#generation": "generation"},
+                ExpressionAttributeValues={":generation": {"S": generation}},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+
+    async def live_routes(self, keys: list[str]) -> list[dict]:
+        """The live (unexpired) route rows of ``keys``: ``{key, userId, generation, connectedAt,
+        taskAddress}``, read consistently (a computer that just reconnected routes to its new task)."""
+        now = int(time.time())
+        out: list[dict] = []
+        for i in range(0, len(keys), 100):
+            request = {
+                self.table_name: {
+                    "Keys": [{"connectionId": {"S": self.route_id(k)}} for k in keys[i : i + 100]],
+                    "ConsistentRead": True,
+                }
+            }
+            while request:
+                resp = await asyncio.to_thread(self._client.batch_get_item, RequestItems=request)
+                for item in resp.get("Responses", {}).get(self.table_name, []):
+                    if int(item.get("ttl", {}).get("N", "0")) <= now:
+                        continue
+                    out.append(
+                        {
+                            "key": item["connectionId"]["S"].removeprefix("netroute#"),
+                            "userId": item.get("userId", {}).get("S", ""),
+                            "generation": item.get("generation", {}).get("S", ""),
+                            "connectedAt": int(item.get("connectedAt", {}).get("N", "0")),
+                            "taskAddress": item.get("taskAddress", {}).get("S", ""),
+                        }
+                    )
+                request = resp.get("UnprocessedKeys") or None
+        return out
+
     async def delete_relay_rows_for_device(self, owner_id: str, device_id: str) -> int:
         """Force-close a revoked device's live relay and ready presence rows.
 

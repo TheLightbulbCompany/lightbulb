@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
-from core.services import hosted_mcp, network_member
+from core.services import hosted_mcp, network_member, network_route
 from core.services.messaging import ApiProblem
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401
 
@@ -94,7 +94,9 @@ def member(table, monkeypatch):
     monkeypatch.setattr("core.repositories.network_keys_repo.keys_for_users", AsyncMock(return_value=[]))
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ann Lee"))
     monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=[USER]))
-    objects[network_member.sessions_key(OWNER)] = json.dumps({"workspace": "Acme", "sessions": []}).encode()
+    objects[network_member.sessions_key(OWNER)] = json.dumps(
+        {"workspace": "Acme", "sessions": [], "joined": True}
+    ).encode()
     events: list[str] = []
     engine = Engine()
 
@@ -275,9 +277,9 @@ async def test_find_sessions_lists_the_network_sessions_in_the_engines_shape(mem
 
 @pytest.mark.asyncio
 async def test_find_sessions_without_a_network_lists_the_rest(member):
-    member.objects.clear()  # not a member
+    member.objects.clear()  # not a member, and no computer of Ann's online either
     out = await hosted_mcp.find_sessions()
-    assert out == {"sessions": [], "total": 0, "agents": []}
+    assert out == {"sessions": [], "total": 0, "agents": [], "network": f"NETWORK_NO_ROUTE: {network_route.NO_ROUTE}"}
 
 
 @pytest.mark.asyncio

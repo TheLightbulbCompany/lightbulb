@@ -33,12 +33,14 @@ from core.dynamodb import run_in_thread
 from core.repositories import local_sessions_repo, messaging_repo
 from core.services import (
     agent_keys,
+    app_wake,
     clerk_admin,
     container_rpc,
     local_sessions,
     messaging,
     native_session_tools,
     network_member,
+    network_route,
     session_browser,
     task_board,
     webhook_agents,
@@ -109,10 +111,12 @@ class ClerkOAuthVerifier(TokenVerifier):
                 return None
             org_id = identity.get("org_id")
             if not isinstance(org_id, str) or not org_id.startswith("org_"):
-                return None
-            organizations = await clerk_admin.list_user_organizations(subject, limit=100, strict=True)
-            if not any(org["id"] == org_id for org in organizations):
-                return None
+                # A free account (or a grant with no workspace selected): the network tools only.
+                org_id = None
+            else:
+                organizations = await clerk_admin.list_user_organizations(subject, limit=100, strict=True)
+                if not any(org["id"] == org_id for org in organizations):
+                    return None
             return AccessToken(
                 token=token,
                 client_id=client_id,
@@ -160,8 +164,12 @@ class LightbulbVerifier(ClerkOAuthVerifier):
             row = await agent_keys.resolve(token)
             if row is None:
                 return None
-            organizations = await clerk_admin.list_user_organizations(row["userId"], limit=100, strict=True)
-            if not any(org["id"] == row["ownerId"] for org in organizations):
+            # A free account's key is its own (ownerId is the user): the network tools only.
+            personal = row["ownerId"] == row["userId"]
+            organizations = (
+                [] if personal else await clerk_admin.list_user_organizations(row["userId"], limit=100, strict=True)
+            )
+            if not personal and not any(org["id"] == row["ownerId"] for org in organizations):
                 return None
         except (ClientError, RuntimeError, ValueError, KeyError):
             logger.warning("Lightbulb MCP agent key verification failed")  # never the key text
@@ -175,7 +183,7 @@ class LightbulbVerifier(ClerkOAuthVerifier):
             resource=RESOURCE,
             subject=row["userId"],
             claims={
-                "org_id": row["ownerId"],
+                "org_id": None if personal else row["ownerId"],
                 "iss": settings.CLERK_ISSUER,
                 "agentKey": {"keyId": row["keyId"], "name": row["name"]},
             },
@@ -206,19 +214,29 @@ async def _from_session(device: MachineIdentity, tool: str, arguments: dict) -> 
         raise ToolError("INVALID_REQUEST: invalid session source.") from exc
 
 
+_NEEDS_WORKSPACE = (
+    "WORKSPACE_REQUIRED: this needs a Lightbulb workspace. The network tools (find_sessions, "
+    "send_message to a session_id, check_inbox, message_receipt, wake_me) work without one."
+)
+
+
 def _caller(scope: str = READ_SCOPE) -> AuthContext:
+    """A workspace's caller: every tool but the network ones needs a selected workspace."""
+    auth = _net_caller(scope)
+    if not auth.org_id:
+        raise ToolError(_NEEDS_WORKSPACE)
+    return auth
+
+
+def _net_caller(scope: str = READ_SCOPE) -> AuthContext:
+    """The network tools' caller: a workspace's, or a free account's (``org_id`` None)."""
     token = get_access_token()
-    if (
-        token is None
-        or scope not in token.scopes
-        or not token.subject
-        or not token.claims
-        or not isinstance(token.claims.get("org_id"), str)
-    ):
-        raise PermissionError(f"Lightbulb OAuth scope {scope} and selected workspace required")
+    if token is None or scope not in token.scopes or not token.subject or not token.claims:
+        raise PermissionError(f"Lightbulb OAuth scope {scope} required")
+    org_id = token.claims.get("org_id")
     return AuthContext(
         user_id=token.subject,
-        org_id=token.claims["org_id"],
+        org_id=org_id if isinstance(org_id, str) else None,
         verified_issuer=token.claims.get("iss"),
     )
 
@@ -247,7 +265,7 @@ HOSTED_BUDGET_S = 24.0
 INBOX_WAIT_CAP_S = 20.0
 _RESERVE_S = 3.0  # what a peek, an ack or the unread line may take on a warm workspace
 _deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("hosted_mcp_deadline", default=None)
-_NETWORK_TOOLS = frozenset({"find_sessions", "send_message", "message_receipt", "check_inbox"})
+_NETWORK_TOOLS = frozenset({"find_sessions", "send_message", "message_receipt", "check_inbox", "wake_me"})
 _sleep = asyncio.sleep  # a seam for tests
 
 
@@ -268,18 +286,21 @@ async def network_unread_note() -> str | None:
     """The engine's unread line for this client's app session on the network (a hosted client
     is pull-only). Only while the workspace is warm (asking a parked one would start it) and the
     app session is declared (no refusal per call)."""
-    from core.auth import resolve_owner_id
-
-    auth = _caller()
-    owner_id = resolve_owner_id(auth)
-    slug, _ = _sender(get_access_token())
-    if not await network_member._session_is_warm(owner_id) or not await _app_declared(owner_id, slug, auth.user_id):
-        return None
-    params = {"op": "unread", "app": slug, "person": network_member.app_person(auth.user_id)}
+    auth = _net_caller()
+    slug, client = _sender(get_access_token())
+    owner_id = await network_route.workspace_for(auth)
     try:
-        result = await container_rpc.call(owner_id, "network.app", params)
+        if owner_id is None:  # a computer route: online by definition, so asking is cheap
+            result = await network_route.app_call(auth.user_id, slug, client, "unread", _RESERVE_S)
+        else:
+            if not await network_member._session_is_warm(owner_id) or not await _app_declared(
+                owner_id, slug, auth.user_id
+            ):
+                return None
+            params = {"op": "unread", "app": slug, "person": network_member.app_person(auth.user_id)}
+            result = await container_rpc.call(owner_id, "network.app", params)
     except (RuntimeError, messaging.ApiProblem, asyncio.TimeoutError):
-        logger.debug("network unread refused owner=%s", owner_id)
+        logger.debug("network unread refused user=%s", auth.user_id)
         return None
     count = int(result.get("unread") or 0) if isinstance(result, dict) else 0
     if not count:
@@ -469,26 +490,24 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
 @_noted
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
     """The coding sessions you can message. Sessions on the team's lightbulb network have a session_id (an address such as "ab12cd34/claude-5"; this client's own is is_this_session): pass it as send_message session_id. Also finds coding sessions shared with the workspace, and your own that are not (shared false: Only me, takes no message), by readable title, provider or folder (these have a sessionId). Also lists agents: webhook agents such as "Aden's Grok Bot" that live in another cloud; pass an agentId as send_message agent_id (with needsOwnerOk true it waits for that agent's person to allow you). Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; with needsOwnerOk true the send waits for the session's owner to allow you, and its state reads awaiting_approval until they do; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason). Called from a shared session, that session is marked isThisSession: never message it."""
-    auth = _caller()
-    result = await sessions_for(auth, query, limit)
+    auth = _net_caller()
+    result: dict = {"sessions": [], "total": 0, "agents": []}
     needle = query.casefold().strip()
-    result["agents"] = [
-        a
-        for a in await webhook_agents.targets(auth.org_id, auth.user_id)
-        if not needle or any(needle in a[k].casefold() for k in ("displayName", "kind", "ownerName"))
-    ][: max(1, min(limit, 50))]
+    if auth.org_id:
+        result = await sessions_for(auth, query, limit)
+        result["agents"] = [
+            a
+            for a in await webhook_agents.targets(auth.org_id, auth.user_id)
+            if not needle or any(needle in a[k].casefold() for k in ("displayName", "kind", "ownerName"))
+        ][: max(1, min(limit, 50))]
     if _mac():
         own = (get_access_token().claims.get("source") or {}).get("sourceSessionId")
         for session in result["sessions"]:
             session["isThisSession"] = session["sessionId"] == own
         return result
-    from core.auth import resolve_owner_id
-
-    owner_id = resolve_owner_id(auth)
     try:
-        if await network_member._read_sessions(owner_id) is None:
-            return result  # not on a network
-        if not await network_member._session_is_warm(owner_id):
+        owner_id = await network_route.workspace_for(auth)
+        if owner_id is not None and not await network_member._session_is_warm(owner_id):
             # A read never starts the workspace; a send or check_inbox does.
             result["network"] = _PARKED
             return result
@@ -661,8 +680,10 @@ def _is_uuid(value: str) -> bool:
 
 
 def _sent_key(auth: AuthContext, request_id: uuid.UUID | str) -> tuple[str, str]:
-    # Under the workspace's OWNER# partition, so both wipes' delete_owner_partition removes it.
-    return messaging_repo.owner_pk(auth.org_id), f"MCPSEND#{auth.user_id}#{request_id}"
+    # Under the workspace's OWNER# partition, so both wipes' delete_owner_partition removes it;
+    # a free account's under its own NETAPP# partition.
+    pk = messaging_repo.owner_pk(auth.org_id) if auth.org_id else f"NETAPP#{auth.user_id}"
+    return pk, f"MCPSEND#{auth.user_id}#{request_id}"
 
 
 async def _pin_destination(auth: AuthContext, request_id: uuid.UUID | str, destination: str, **extra) -> dict:
@@ -741,6 +762,14 @@ async def _through_member(auth: AuthContext, op: str, *, sender: tuple[str, str]
     if remaining <= 0.5:  # past the budget: the client hears "starting", and retries
         raise ToolError(_STARTING)
     try:
+        owner_id = await network_route.workspace_for(auth)
+    except Exception as exc:  # noqa: BLE001 -- Clerk could not say which workspaces are theirs
+        raise ToolError("UNAVAILABLE: Lightbulb could not look up your routes; retry") from exc
+    if owner_id is None:
+        return await _through_computer(auth, slug, client, op, remaining, **fields)
+    if owner_id != auth.org_id:  # a free-account grant routed through one of their workspaces
+        auth = AuthContext(user_id=auth.user_id, org_id=owner_id, verified_issuer=auth.verified_issuer)
+    try:
         return await asyncio.wait_for(network_member.app_call(auth, slug, client, op, **fields), remaining)
     except asyncio.TimeoutError as exc:
         raise ToolError(_STARTING) from exc
@@ -754,6 +783,25 @@ async def _through_member(auth: AuthContext, op: str, *, sender: tuple[str, str]
         # The bridge answers UNAVAILABLE while its network sidecar is off or starting.
         if code in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
             raise ToolError(_STARTING) from exc
+        raise ToolError(f"{code}: {error.get('message') or 'the network refused the call'}") from exc
+
+
+_SLOW = "UNAVAILABLE: your computer did not answer in time; retry with the same request_id"
+
+
+async def _through_computer(auth: AuthContext, slug: str, client: str, op: str, remaining: float, **fields):
+    """The same call through the person's most recently connected logged-in computer."""
+    try:
+        return await network_route.app_call(auth.user_id, slug, client, op, remaining - 0.5, **fields)
+    except asyncio.TimeoutError as exc:
+        raise ToolError(_SLOW) from exc
+    except messaging.ApiProblem as exc:
+        raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
+    except RuntimeError as exc:
+        error = network_member.rpc_error(exc)
+        code = error.get("code") or "UNAVAILABLE"
+        if code in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
+            raise ToolError("UNAVAILABLE: your computer's link closed; retry with the same request_id") from exc
         raise ToolError(f"{code}: {error.get('message') or 'the network refused the call'}") from exc
 
 
@@ -787,7 +835,7 @@ async def send_message(
     agent_id: str | None = None,
 ) -> dict:
     """Send as this client on the signed-in person's behalf (or, from a shared session, as that session) to exactly one of session_id, room_id, person_id (a member id; opens the DM if needed) or agent_id (a webhook agent from find_sessions agents: one webhook call; state delivered, failed or awaiting_approval). session_id comes from find_sessions: a network session_id (an address) sends on the team's lightbulb network through this workspace, and reply_to (the requestId of a message you got from check_inbox) answers it; reply_to alone replies to whoever sent that message. A shared session's sessionId (a UUID) delivers the text into it as a follow-up prompt it acts on (see canSend). request_id: a new [A-Za-z0-9._-]{1,128} string for a network send, a new UUID for any other; reuse it only to retry that same send. Room and person sends from a person may reply in a thread (reply_to_message_id) or address room members; a shared session's send takes neither. Cannot answer permission prompts."""
-    auth = _caller(WRITE_SCOPE)
+    auth = _net_caller(WRITE_SCOPE)
     request_id = str(request_id)
     network_to = None
     if (session_id is not None and not _is_uuid(session_id)) or (reply_to is not None and session_id is None):
@@ -835,6 +883,8 @@ async def send_message(
             fields["reply_to"] = reply_to
         result = await _through_member(auth, "send", sender=(slug, client), **fields)
         return _record(result, destination, request_id)
+    if not auth.org_id:
+        raise ToolError(_NEEDS_WORKSPACE)
     request_id = _uuid_request_id(request_id)
     if agent_id is not None:
         if reply_to_message_id or mention_ids:
@@ -938,7 +988,7 @@ async def send_message(
 @_noted
 async def message_receipt(request_id: str) -> dict:
     """The receipt of a message you sent, by its request_id, including when the send response was lost."""
-    auth = _caller()
+    auth = _net_caller()
     request_id = str(request_id)
     if device := _mac():
         return await _from_session(device, "receipt", {"requestId": str(_uuid_request_id(request_id))})
@@ -988,7 +1038,7 @@ async def message_receipt(request_id: str) -> dict:
 @_noted
 async def check_inbox(wait_secs: int = 0) -> dict:
     """Takes the messages sent to this client on the team's lightbulb network (as "<client> via <you>", through this workspace), first waiting up to wait_secs (at most 20 per call) for one. Each message has its raw text and, in framed, the text as delivered; pass its requestId as send_message reply_to to answer it. The first call from this client adds its address to the workspace."""
-    auth = _caller()
+    auth = _net_caller()
     if _mac():  # a shared session's own computer is on the network itself
         raise ToolError("INVALID_REQUEST: a shared session uses its own computer's network.")
     if not 0 <= wait_secs <= 600:
@@ -1023,6 +1073,20 @@ async def check_inbox(wait_secs: int = 0) -> dict:
 
 
 _ACK_MAX = 100  # the engine's app.ack limit; the rest wait for the next call
+
+
+@mcp.tool(annotations=WRITE)
+@_noted
+async def wake_me(webhook_url: str) -> dict:
+    """For a bot that cannot keep calling check_inbox (a Grok routine, a Muse agent): give the https URL of the webhook that starts you, and Lightbulb POSTs it when new network mail arrives for this client (content-free: you then call check_inbox). Its key is never given here: your person pastes it on the Lightbulb page this answer names. Calling it again replaces the URL (and needs the key again)."""
+    auth = _net_caller(WRITE_SCOPE)
+    if _mac():
+        raise ToolError("INVALID_REQUEST: a shared session is woken by its own computer.")
+    slug, client = _sender(get_access_token())
+    try:
+        return await app_wake.request(auth.user_id, slug, client, webhook_url)
+    except messaging.ApiProblem as exc:
+        raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
 
 
 # API Gateway rewrites Host to the private ALB DNS name. The public OAuth URL is

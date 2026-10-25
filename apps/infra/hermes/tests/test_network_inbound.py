@@ -171,3 +171,20 @@ def test_the_identity_line_names_the_agent_from_its_session_title(net):
         "You are Friday, answering a network message from Prasiddha's Mac. "
         "Reply with lightbulb_network if a reply is needed.")
     assert turn.system_prompt({**body, "targetAgentId": "a-x"}, "a-x").startswith("You are an agent, ")
+
+
+def test_mail_for_an_app_session_tells_the_backend_its_name_only(net, monkeypatch):
+    posted: list[tuple[str, dict]] = []
+    done = threading.Event()
+
+    def fake_post(path, body):
+        posted.append((path, body))
+        done.set()
+        return 204
+
+    monkeypatch.setattr(turn, "_post_backend", fake_post)
+    assert network.ensure_started(background=False)
+    network._handle_event({"event": "message", "to_session": "friday", "id": "m1"})
+    network._handle_event({"event": "message", "to_session": "grok-ab12cd34", "id": "m2"})
+    assert done.wait(5)
+    assert posted == [("network/app-mail/org_test", {"session": "grok-ab12cd34"})]

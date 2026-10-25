@@ -50,6 +50,7 @@ async def test_no_note_when_nothing_waits(as_session, commands):  # noqa: F811
 async def test_a_person_caller_never_gets_the_note(monkeypatch, commands):
     monkeypatch.setattr(hosted_mcp, "_mac", lambda: None)
     monkeypatch.setattr(hosted_mcp, "_caller", lambda *_: None)
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda *_: None)
     commands.append(_command())
     assert "unread" not in await hosted_mcp.find_rooms()
 
@@ -68,4 +69,4 @@ async def test_the_decorator_keeps_every_tool_schema():
     assert set(tools["send_message"].input_schema["required"]) == {"text", "request_id"}
     assert "session_id" in tools["send_message"].input_schema["properties"]
     assert tools["read_messages"].input_schema["required"] == ["room_id"]
-    assert len(tools) == 10 and all(t.description for t in tools.values())
+    assert len(tools) == 11 and all(t.description for t in tools.values())

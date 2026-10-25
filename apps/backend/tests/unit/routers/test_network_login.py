@@ -66,7 +66,9 @@ def env(table, monkeypatch):
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ada Lovelace"))
     published = AsyncMock()
     monkeypatch.setattr(network_member, "republish", published)
-    monkeypatch.setattr(network_member, "workspaces_of", AsyncMock(side_effect=lambda *u: sorted(f"org_{x}" for x in u if x)))
+    monkeypatch.setattr(
+        network_member, "workspaces_of", AsyncMock(side_effect=lambda *u: sorted(f"org_{x}" for x in u if x))
+    )
     join = AsyncMock(return_value={"state": "joining"})
     monkeypatch.setattr(network_member, "join_network", join)
 
@@ -128,7 +130,11 @@ def test_login_binds_the_computer_to_the_confirming_person_and_polls_once(env):
     row = asyncio.run(network_keys_repo.get(mac.key))
     assert (row["user_id"], row["computer"]) == ("user_ada", "Ada's Mac")
     published.assert_awaited_once_with(["org_user_ada"], extra=(mac.key,))
-    assert _poll(client, s["code"]) == {"status": "approved", "name": "Ada Lovelace"}
+    assert _poll(client, s["code"]) == {
+        "status": "approved",
+        "name": "Ada Lovelace",
+        "routeUrl": settings.GATEWAY_RELAY_URL.removesuffix("/ws") + "/network",
+    }
     assert _poll(client, s["code"]) == {"status": "expired"}  # single use
 
 

@@ -144,16 +144,21 @@ async def _write_and_ping(owner_id: str, apps: list[dict], extra: tuple = (), ex
         await container_rpc.call(owner_id, "network.sessions", {})
 
 
-async def _declare(owner_id: str, user_id: str, slug: str, client: str, doc: dict) -> None:
-    """Write (or rewrite, with a fresh title) this person's app entry, then tell a warm sidecar."""
+async def app_title(user_id: str, client: str) -> str:
+    """What the network calls a person's app session: ``"<client> via <first name>"``."""
     from core.services.messaging import human_display_name
 
-    person = app_person(user_id)
-    name = f"{slug}-{person}"
     resolved = (await human_display_name(user_id)).strip()
     # The lookup answers the user id when Clerk cannot say: never publish an id on the network.
     first = resolved.split()[0] if resolved and resolved != user_id else "a teammate"
-    entry = {"name": name, "agent": slug, "title": f"{client} via {first}"[:256], "app": slug, "person": person}
+    return f"{client} via {first}"[:256]
+
+
+async def _declare(owner_id: str, user_id: str, slug: str, client: str, doc: dict) -> None:
+    """Write (or rewrite, with a fresh title) this person's app entry, then tell a warm sidecar."""
+    person = app_person(user_id)
+    name = f"{slug}-{person}"
+    entry = {"name": name, "agent": slug, "title": await app_title(user_id, client), "app": slug, "person": person}
     apps = [s for s in _app_entries(doc) if s.get("name") != name]
     await _write_and_ping(owner_id, [*apps, entry])
 

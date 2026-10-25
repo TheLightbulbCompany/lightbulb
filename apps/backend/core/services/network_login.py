@@ -170,12 +170,20 @@ async def approve(ctx: AuthContext, user_code: str) -> dict:
         owners = await _workspaces(ctx.user_id, (old or {}).get("user_id", ""))
         await network_keys_repo.put(key, ctx.user_id, row.get("machineName") or "")
         await _republish(owners, extra=(key,))
-        result = {"name": await _name(ctx.user_id)}
+        # Where the computer's daemon keeps its route link (the machine-relay door), so the
+        # person's hosted apps can reach the network through it.
+        result = {"name": await _name(ctx.user_id), "routeUrl": route_url()}
     else:
         await network_member.join_network(owner_id, row["ticket"])
         result = {"workspaceName": await _workspace(owner_id)}
     await device_login.finish(row, ctx.user_id, result)
     return {"status": "approved", **result}
+
+
+def route_url() -> str:
+    from core.config import settings
+
+    return settings.GATEWAY_RELAY_URL.rsplit("/", 1)[0] + "/network"
 
 
 async def _workspaces(*user_ids: str) -> list[str]:

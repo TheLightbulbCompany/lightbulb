@@ -28,18 +28,17 @@ beforeEach(() => {
   s.get.mockImplementation(async (url: string) =>
     url === "/network/apps"
       ? { apps: [{ clientId: "c1", client: "ChatGPT", route: { kind: "computer", key: "k1", name: "mac" } }],
-          routes: [{ kind: "computer", key: "k1", name: "mac" }, { kind: "workspace", owner: "org_a", name: "Acme" }] }
+          routes: [{ kind: "computer", key: "k1", name: "mac" }, { kind: "computer", key: "k2", name: "mbp" }] }
       : { wakes: s.wakes });
 });
 
 describe("your apps on the network", () => {
-  it("an app shows its pinned route and moves to another", async () => {
+  it("an app shows its pinned computer and moves to another", async () => {
     page();
-    const select = await screen.findByLabelText("Route for ChatGPT");
-    expect((select as HTMLSelectElement).value).toBe("computer:k1");
-    fireEvent.change(select, { target: { value: "workspace:org_a" } });
-    await waitFor(() =>
-      expect(s.put).toHaveBeenCalledWith("/network/apps/route", { clientId: "c1", kind: "workspace", key: undefined, owner: "org_a" }));
+    const select = await screen.findByLabelText("Computer for ChatGPT");
+    expect((select as HTMLSelectElement).value).toBe("k1");
+    fireEvent.change(select, { target: { value: "k2" } });
+    await waitFor(() => expect(s.put).toHaveBeenCalledWith("/network/apps/route", { clientId: "c1", key: "k2" }));
   });
 
   it("signed out shows sign-in", () => {

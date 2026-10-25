@@ -9,16 +9,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useApi } from "@/lib/api";
 
-// Your apps on the lightbulb network: each app is pinned to ONE route (a logged-in computer, or
-// a workspace of yours on a network), so its inbox lives in one place; a bot that called
+// Your apps on the lightbulb network: each app is pinned to ONE of your logged-in computers, so
+// its inbox lives in one place; a bot that called
 // `wake_me` waits here for its webhook's key (pasted here, never in a chat); and agent keys for
 // apps that cannot sign in with OAuth. A free account (no workspace) uses this page too.
 
-type Route = { kind: "computer" | "workspace"; key?: string; owner?: string; name?: string };
+type Route = { kind: "computer"; key: string; name?: string };
 type App = { clientId: string; app?: string; client?: string; route: Route };
 
 const APPS = "/network/apps";
-const routeId = (r: Route) => `${r.kind}:${r.key ?? r.owner ?? ""}`;
+const routeId = (r: Route) => r.key;
 
 function Apps() {
   const api = useApi();
@@ -32,18 +32,18 @@ function Apps() {
     if (!r) return;
     setFailure(null);
     try {
-      await api.put(`${APPS}/route`, { clientId: app.clientId, kind: r.kind, key: r.key, owner: r.owner });
+      await api.put(`${APPS}/route`, { clientId: app.clientId, key: r.key });
       await mutate();
     } catch {
-      setFailure("That route is not available now. Open the computer, then try again.");
+      setFailure("That computer is offline. Open it, then try again.");
     }
   };
   return (
     <section className="rounded-md border border-[var(--edge)] px-5 py-4">
       <h2 className="text-base font-semibold">Connected apps</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Each app reaches the network through one route. If that computer is offline, the app says
-        so; it never switches to another on its own.
+        Each app reaches the network through one of your signed-in computers. If that computer is
+        offline, the app says so; it never switches to another on its own.
       </p>
       {apps.length === 0 ? (
         <p className="mt-3 text-sm text-muted-foreground">No app has connected yet.</p>
@@ -54,11 +54,11 @@ function Apps() {
             return (
               <li key={a.clientId} className="py-3 border-b border-[var(--edge)] last:border-0 flex items-center justify-between gap-3">
                 <p className="font-medium">{a.client || a.app}</p>
-                <select aria-label={`Route for ${a.client || a.app}`} className="rounded-md border border-[var(--edge)] bg-transparent px-2 py-1 text-sm"
+                <select aria-label={`Computer for ${a.client || a.app}`} className="rounded-md border border-[var(--edge)] bg-transparent px-2 py-1 text-sm"
                   value={routeId(a.route)} onChange={(e) => void move(a, e.target.value)}>
                   {options.map((r) => (
                     <option key={routeId(r)} value={routeId(r)}>
-                      {r.kind === "workspace" ? `Workspace: ${r.name ?? r.owner}` : `Computer: ${r.name ?? "Your computer"}`}
+                      {r.name ?? "Your computer"}
                     </option>
                   ))}
                 </select>

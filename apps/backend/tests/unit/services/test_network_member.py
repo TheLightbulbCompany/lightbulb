@@ -296,18 +296,6 @@ async def test_join_network_maps_the_bridges_refusals(store, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_workspaces_of_is_strict_and_lists_each_workspace_once(monkeypatch):
-    orgs = {"user_1": [{"id": "org_a"}, {"id": "org_b"}], "user_2": [{"id": "org_b"}]}
-    lookup = AsyncMock(side_effect=lambda u, **kw: orgs.get(u, []))
-    monkeypatch.setattr("core.services.clerk_admin.list_user_organizations", lookup)
-    assert await network_member.workspaces_of("user_1", "user_2", "") == ["org_a", "org_b"]
-    assert all(c.kwargs.get("strict") is True for c in lookup.await_args_list)
-    lookup.side_effect = RuntimeError("clerk down")
-    with pytest.raises(RuntimeError):
-        await network_member.workspaces_of("user_1")
-
-
-@pytest.mark.asyncio
 async def test_the_joined_mark_survives_rewrites_and_leave_clears_it(store, monkeypatch):
     await network_member.write_sessions("org_a")
     monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"state": "joining"}))

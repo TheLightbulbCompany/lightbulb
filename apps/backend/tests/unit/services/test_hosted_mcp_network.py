@@ -1,7 +1,7 @@
 """A hosted assistant (ChatGPT, Claude.ai, Grok...) reaches the lightbulb network THROUGH the
-workspace member, as "<Client> via <Person>", with the engine's own tools: find_sessions,
-send_message(session_id, request_id, reply_to), check_inbox and message_receipt. The backend
-holds no network key and dials no Mac."""
+signed-in computer its connection is pinned to, as "<Client> via <Person>", with the engine's own
+tools: find_sessions, send_message(session_id, request_id, reply_to), check_inbox and
+message_receipt. The backend holds no network key."""
 
 # ruff: noqa: F811 -- `table` is the repo suite's moto fixture, imported and then requested by name.
 
@@ -20,7 +20,6 @@ from tests.unit.repositories.test_messaging_repo import table  # noqa: F401
 
 OWNER, USER = "org_a", "user_ann"
 PERSON = network_member.app_person(USER)
-STARTING = "RUNTIME_UNAVAILABLE: the workspace is starting; retry with the same request_id"
 ADEN = "ab12cd34/aden-mac"
 OWN = f"w1w1w1w1/claude-code-{PERSON}"
 
@@ -84,32 +83,27 @@ class Engine:
 
 @pytest.fixture
 def member(table, monkeypatch):
-    """A warm workspace that is on the network, called by Ann's Claude Code."""
-    objects: dict[str, bytes] = {}
-    monkeypatch.setattr(network_member.settings, "OWNER_STATE_BUCKET", "bucket")
-    monkeypatch.setattr("core.services.hermes_profiles.put_owner_object", lambda k, b: objects.__setitem__(k, b))
-    monkeypatch.setattr("core.services.hermes_profiles.get_owner_object", lambda k: objects.get(k))
-    monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value={"name": "Acme"}))
-    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[]))
-    monkeypatch.setattr(network_route, "best_link", AsyncMock(return_value=None))  # no computer online
+    """Ann's Claude Code, pinned to her online computer, whose engine answers the app ops."""
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ann Lee"))
-    monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=[USER]))
-    objects[network_member.sessions_key(OWNER)] = json.dumps(
-        {"workspace": "Acme", "sessions": [], "joined": True}
-    ).encode()
-    events: list[str] = []
     engine = Engine()
+    route = {"kind": "computer", "key": "kann", "name": "Ann's Mac"}
+    monkeypatch.setattr(network_route, "route_for", AsyncMock(return_value=route))
+    sent_to: list[dict] = []
 
-    async def rpc(owner, method, params, **_kwargs):
-        if method == "network.sessions":  # the warm sidecar is told sessions.json changed
-            events.append("publish")
-            return {}
-        events.append(params["op"])
-        return await engine(owner, method, params)
+    titles: list[str] = []
 
-    monkeypatch.setattr(network_member.container_rpc, "call", rpc)
-    warm = AsyncMock(return_value=True)
-    monkeypatch.setattr(network_member, "_session_is_warm", warm)
+    async def link(row, op, params, timeout_s):  # the computer's link (network_route.call)
+        sent_to.append(row)
+        params = dict(params)
+        if "title" in params:
+            titles.append(params.pop("title"))  # rides every app op: it declares the session there
+        return await engine(OWNER, "network.app", {**params, "op": op.removeprefix("app.")})
+
+    rows = [{"key": "kann", "userId": USER, "generation": "g", "connectedAt": 1, "taskAddress": "x"}]
+    monkeypatch.setattr(
+        network_route, "_connections", lambda: SimpleNamespace(live_routes=AsyncMock(return_value=rows))
+    )
+    monkeypatch.setattr(network_route, "call", link)
     token = SimpleNamespace(
         client_id="https://claude.ai/oauth/claude-code-client-metadata",
         scopes=[hosted_mcp.READ_SCOPE, hosted_mcp.WRITE_SCOPE],
@@ -119,12 +113,7 @@ def member(table, monkeypatch):
     monkeypatch.setattr(hosted_mcp, "get_access_token", lambda: token)
     monkeypatch.setattr(hosted_mcp, "sessions_for", AsyncMock(return_value={"sessions": [], "total": 0}))
     monkeypatch.setattr(hosted_mcp.webhook_agents, "targets", AsyncMock(return_value=[]))
-    return SimpleNamespace(engine=engine, events=events, objects=objects, table=table, token=token, warm=warm)
-
-
-def _app_entries(objects):
-    doc = json.loads(objects[network_member.sessions_key(OWNER)])
-    return [s for s in doc["sessions"] if "agentId" not in s]
+    return SimpleNamespace(engine=engine, table=table, token=token, rows=rows, sent_to=sent_to, titles=titles)
 
 
 def _pins(table):
@@ -136,19 +125,9 @@ def _record(rid, text="hello"):
 
 
 @pytest.mark.asyncio
-async def test_a_send_to_a_network_session_id_declares_the_app_session_then_sends(member):
+async def test_a_send_to_a_network_session_id_goes_through_the_pinned_computer(member):
     out = await hosted_mcp.send_message(text="hi Aden", request_id="req.1", session_id=ADEN)
 
-    assert _app_entries(member.objects) == [
-        {
-            "name": f"claude-code-{PERSON}",
-            "agent": "claude-code",
-            "title": "Claude Code via Ann",
-            "app": "claude-code",
-            "person": PERSON,
-        }
-    ]
-    assert member.events[:2] == ["publish", "send"]
     assert member.engine.calls[0] == {
         "op": "send",
         "app": "claude-code",
@@ -157,6 +136,7 @@ async def test_a_send_to_a_network_session_id_declares_the_app_session_then_send
         "text": "hi Aden",
         "request_id": "req.1",
     }
+    assert member.sent_to[0]["key"] == "kann" and member.titles[0] == "Claude Code via Ann"
     assert out == {
         "destination": f"network:{ADEN}",
         "requestId": "req.1",
@@ -188,12 +168,11 @@ async def test_a_retry_with_the_same_request_id_sends_once(member):
     member.engine.lose_next_answer = True
     with pytest.raises(ToolError) as lost:
         await hosted_mcp.send_message(text="hi", request_id="r1", session_id=ADEN)
-    assert str(lost.value) == STARTING
+    assert str(lost.value) == hosted_mcp._SLOW
 
     out = await hosted_mcp.send_message(text="hi", request_id="r1", session_id=ADEN)
     assert out["state"] == "delivered"
     assert list(member.engine.sent) == ["r1"]
-    assert member.events.count("publish") == 1  # the app session was new only the first time
     assert len(_pins(member.table)) == 1
     receipt = await hosted_mcp.message_receipt("r1")
     assert member.engine.calls[-2] == {"op": "receipt", "app": "claude-code", "person": PERSON, "request_id": "r1"}
@@ -257,7 +236,7 @@ async def test_a_lost_ack_repeats_mail_and_never_loses_it(member):
     second = await hosted_mcp.check_inbox()
     assert first["messages"] == second["messages"] == [_record("q1")]
     member.engine.refuse_next = [RuntimeError(json.dumps({"code": "UNAVAILABLE"}))]
-    with pytest.raises(ToolError, match="RUNTIME_UNAVAILABLE"):  # the peek failed: nothing was taken
+    with pytest.raises(ToolError, match="UNAVAILABLE"):  # the peek failed: nothing was taken
         await hosted_mcp.check_inbox()
     member.engine.no_ack = False
     assert (await hosted_mcp.check_inbox())["messages"] == [_record("q1")]
@@ -273,78 +252,6 @@ async def test_find_sessions_lists_the_network_sessions_in_the_engines_shape(mem
         {"session_id": OWN, "title": "Claude Code via Ann", "agent": "claude-code", "is_this_session": True},
     ]
     assert out["total"] == 2 and out["agents"] == [] and "network" not in out
-
-
-@pytest.mark.asyncio
-async def test_find_sessions_without_a_network_lists_the_rest(member):
-    member.objects.clear()  # not a member, and no computer of Ann's online either
-    out = await hosted_mcp.find_sessions()
-    assert out == {"sessions": [], "total": 0, "agents": [], "network": f"NETWORK_NO_ROUTE: {network_route.NO_ROUTE}"}
-
-
-@pytest.mark.asyncio
-async def test_a_cold_workspace_answers_starting_at_once_and_queues_one_wake(member):
-    await network_member.write_sessions(OWNER)  # the doorbell row a member's sessions.json carries
-    member.warm.return_value = False
-    for _ in range(2):
-        with pytest.raises(ToolError) as cold:
-            await hosted_mcp.send_message(text="hi", request_id="r1", session_id=ADEN)
-        assert str(cold.value) == STARTING
-    assert member.engine.calls == []  # no invoke waited on a cold start
-    wakes = [i for i in member.table.scan()["Items"] if str(i["sk"]).startswith("WORK#NETWAKE#")]
-    assert [w["payload"] for w in wakes] == [{"kind": "network_wake", "ownerId": OWNER}]  # the window holds one
-    out = await hosted_mcp.find_sessions()
-    assert out["network"] == hosted_mcp._PARKED and out["sessions"] == []
-    assert "request_id" not in out["network"]
-    assert len([i for i in member.table.scan()["Items"] if str(i["sk"]).startswith("WORK#NETWAKE#")]) == 1
-
-
-@pytest.mark.asyncio
-async def test_a_hosted_caller_gets_the_unread_line_only_while_warm(member):
-    await hosted_mcp.check_inbox()  # declares the app session
-    member.engine.mail = [_record("q1")]
-    out = await hosted_mcp.send_message(text="hi", request_id="r1", session_id=ADEN)
-    assert out["unread"] == "1 unread message for this session; call check_inbox to read them."
-    member.warm.return_value = False
-    member.engine.calls.clear()
-    out = await hosted_mcp.find_sessions()
-    assert "unread" not in out and member.engine.calls == []  # a note never wakes the workspace
-
-
-@pytest.mark.asyncio
-async def test_the_bridges_unavailable_answer_is_the_starting_error(member):
-    off = {"code": "UNAVAILABLE", "message": "network.app is not available on the Hermes runtime"}
-    member.engine.refuse_next = [RuntimeError(json.dumps(off)), ApiProblem("RUNTIME_UNAVAILABLE", "starting")]
-    for rid in ("a", "b"):
-        with pytest.raises(ToolError) as err:
-            await hosted_mcp.send_message(text="hi", request_id=rid, session_id=ADEN)
-        assert str(err.value) == STARTING
-
-
-@pytest.mark.asyncio
-async def test_a_sidecar_that_never_learned_the_entry_is_told_again(member):
-    await hosted_mcp.check_inbox()  # the entry is in sessions.json now
-    member.events.clear()
-    refused = {"code": "refused", "message": "no such app session", "reason": "not_declared"}
-    member.engine.refuse_next = [RuntimeError(json.dumps(refused))]
-    out = await hosted_mcp.send_message(text="hi", request_id="r1", session_id=ADEN)
-    assert out["state"] == "delivered"
-    assert member.events[:3] == ["send", "publish", "send"]
-    assert len(_app_entries(member.objects)) == 1
-
-
-@pytest.mark.asyncio
-async def test_an_unknown_name_is_never_published_and_heals_on_redeclare(member, monkeypatch):
-    lookup = AsyncMock(return_value=USER)  # what the lookup answers when Clerk cannot say
-    monkeypatch.setattr("core.services.messaging.human_display_name", lookup)
-    await hosted_mcp.check_inbox()
-    [entry] = _app_entries(member.objects)
-    assert entry["title"] == "Claude Code via a teammate" and USER not in json.dumps(entry)
-
-    lookup.return_value = "Ann Lee"
-    member.engine.refuse_next = [RuntimeError(json.dumps({"code": "refused", "reason": "not_declared"}))]
-    await hosted_mcp.check_inbox()
-    assert [e["title"] for e in _app_entries(member.objects)] == ["Claude Code via Ann"]
 
 
 @pytest.mark.asyncio
@@ -365,19 +272,17 @@ async def test_the_assistant_apps_send_as_claude_and_chatgpt(member):
     await hosted_mcp.send_message(text="hi", request_id="c1", session_id=ADEN)
     member.token.client_id = "https://chatgpt.com/oauth/abc123/client.json"
     await hosted_mcp.send_message(text="hi", request_id="g1", session_id=ADEN)
-    assert [(e["app"], e["title"]) for e in _app_entries(member.objects)] == [
-        ("claude", "Claude via Ann"),
-        ("chatgpt", "ChatGPT via Ann"),
-    ]
+    assert [c["app"] for c in member.engine.calls if c["op"] == "send"] == ["claude", "chatgpt"]
+    assert {"Claude via Ann", "ChatGPT via Ann"} <= set(member.titles)
 
 
 @pytest.mark.asyncio
-async def test_a_hung_member_answers_starting_within_the_budget(member, monkeypatch):
+async def test_a_hung_computer_answers_within_the_budget(member, monkeypatch):
     monkeypatch.setattr(hosted_mcp, "HOSTED_BUDGET_S", 0.3)
-    member.engine.hang = asyncio.Event()  # a stale warm estimate: the invoke would wait 90 s
+    member.engine.hang = asyncio.Event()  # the computer never answers
     with pytest.raises(ToolError) as err:
         await asyncio.wait_for(hosted_mcp.send_message(text="hi", request_id="r1", session_id=ADEN), 5)
-    assert str(err.value) == STARTING
+    assert str(err.value) == hosted_mcp._SLOW
     with pytest.raises(ToolError):
         await asyncio.wait_for(hosted_mcp.check_inbox(), 5)
     assert "ack" not in member.engine.ops()  # no ack after a lost peek
@@ -431,8 +336,6 @@ async def test_check_inbox_wait_ends_inside_the_budget(member, monkeypatch):
 @pytest.mark.asyncio
 async def test_the_unread_line_rides_only_the_network_tools(member, monkeypatch):
     monkeypatch.setattr(hosted_mcp, "rooms_for", AsyncMock(return_value={"rooms": []}))
-    assert "unread" not in await hosted_mcp.find_rooms()  # before any network call: not declared
-    await hosted_mcp.check_inbox()
     member.engine.mail = [_record("q1")]
     member.engine.calls.clear()
     assert "unread" not in await hosted_mcp.find_rooms()
@@ -441,28 +344,35 @@ async def test_the_unread_line_rides_only_the_network_tools(member, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_an_undeclared_app_session_is_never_asked_for_its_count(member):
-    member.engine.mail = [_record("q1")]
-    await hosted_mcp.message_receipt("nope")
-    assert member.engine.calls == []
-
-
-@pytest.mark.asyncio
-async def test_no_field_overrides_the_app_session(member):
-    await network_member.app_call(
-        SimpleNamespace(user_id=USER, org_id=OWNER),
-        "claude-code",
-        "Claude Code",
-        "inbox",
-        app="other",
-        person="deadbeef",
-        peek=True,
-    )
-    assert member.engine.calls[-1] == {"op": "inbox", "app": "claude-code", "person": PERSON, "peek": True}
-
-
-@pytest.mark.asyncio
 async def test_a_uuid_shaped_network_request_id_reads_its_own_receipt(member):
     rid = str(uuid.uuid4()).upper()
     await hosted_mcp.send_message(text="hi", request_id=rid, session_id=ADEN)
     assert (await hosted_mcp.message_receipt(rid))["state"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_an_offline_pinned_computer_is_named_and_no_other_stands_in(member):
+    member.rows.clear()
+    with pytest.raises(ToolError) as err:
+        await hosted_mcp.send_message(text="hi", request_id="r9", session_id=ADEN)
+    assert str(err.value) == "NETWORK_OFFLINE: Ann's Mac is offline. Open it."
+    out = await hosted_mcp.find_sessions()
+    assert out["network"] == "NETWORK_OFFLINE: Ann's Mac is offline. Open it."
+
+
+@pytest.mark.asyncio
+async def test_no_field_overrides_the_app_session(member):
+    await network_route.app_call(
+        USER,
+        "claude-code",
+        "Claude Code",
+        "inbox",
+        5,
+        route={"kind": "computer", "key": "kann"},
+        app="other",
+        person="deadbeef",
+        peek=True,
+    )
+    call = member.engine.calls[-1]
+    assert (call["app"], call["person"], call["peek"]) == ("claude-code", PERSON, True)
+    assert member.titles[-1] == "Claude Code via Ann"

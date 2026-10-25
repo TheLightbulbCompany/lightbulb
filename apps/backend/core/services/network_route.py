@@ -1,23 +1,19 @@
-"""A signed-in person's routes onto the free ``lightbulb`` network, for their hosted apps.
+"""A signed-in person's own computers as the route onto the free ``lightbulb`` network, for
+their hosted apps (Reason's model).
 
 A hosted app (Claude app, ChatGPT, a bot) cannot run the engine. Each app connection (an OAuth
-client, or an ``lbk_`` key) is PINNED to one route, so its session ``<route member>/<app>-<person>``
-and its inbox live in one place:
+client, or an ``lbk_`` key) is PINNED to one of its person's logged-in computers, so its session
+``<computer>/<app>-<person>`` and its inbox live in one place. The computer's daemon keeps one
+outbound WebSocket to ``/api/v1/gateway/network`` (the machine-relay door), its hello signed with
+its member key over a nonce this socket sends and carrying its sign-in proof. Over it the
+backend asks only the ``app.*`` ops (and ``directory``) the workspace bridge asks.
 
-- ``{kind: workspace, owner}``: a workspace of theirs on a network an admin added it to
-  (``sessions.json``'s ``joined``), through the existing ``network.app`` bridge path
-  (``network_member.app_call``; always on: a parked one is woken);
-- ``{kind: computer, key, name}``: one of their logged-in computers, over its route link: one
-  outbound WebSocket the daemon keeps to ``/api/v1/gateway/network`` (the machine-relay door),
-  its hello signed with its member key over a nonce this socket sends and carrying its sign-in
-  proof. Over it the backend asks only the ``app.*`` ops (and ``directory``) the bridge asks.
-
-The person picks the route on ``/auth/network/apps``; until then the first call pins the most
-recently connected online computer (else their workspace on a network). A pinned computer
-that is offline is a clear refusal: never another computer, nothing queued here. The text of a
-message passes through in transit and is never stored. A link's presence is a TTL row in the
-ws-connections table (``ConnectionService.put_route``) naming the task that holds the socket;
-a call landing on another task is forwarded to it (``/api/v1/network/internal/route``).
+The person picks the computer on ``/auth/network/apps``; until then the first call pins the
+most recently connected online one. A pinned computer that is offline is a clear refusal:
+never another computer, nothing queued here. The text of a message passes through in transit
+and is never stored. A link's presence is a TTL row in the ws-connections table
+(``ConnectionService.put_route``) naming the task that holds the socket; a call landing on
+another task is forwarded to it (``/api/v1/network/internal/route``).
 
 Pins are rows in the messaging table, ``NETPIN#<user>`` / ``<client id>`` (an OAuth grant is
 Clerk's record, so it cannot carry the attribute itself; a key's client id is
@@ -39,9 +35,8 @@ from core.services.messaging import ApiProblem
 
 logger = logging.getLogger(__name__)
 
-NO_ROUTE = "None of your computers is online; open one (lightbulb login) or add a workspace."
-OFFLINE = "{name} is offline. Open it, or reconnect this app to your workspace."
-NOT_JOINED = "That workspace is not on a network any more. Pick another route for this app."
+NO_ROUTE = "None of your computers is online; open one (lightbulb login)."
+OFFLINE = "{name} is offline. Open it."
 ROUTE_OPS = frozenset({"directory", "app.send", "app.inbox", "app.ack", "app.unread", "app.receipt"})
 HELLO_DEADLINE_S = 10.0
 REFRESH_S = 60.0
@@ -84,19 +79,6 @@ def _refused(code: str, message: str, reason: str | None = None) -> RuntimeError
 # ---- choosing a route -------------------------------------------------------------------------
 
 
-async def workspace_for(auth) -> str | None:
-    """The workspace that routes this person's apps: their selected one (or, for a free
-    account's grant, any of theirs) that is on a network. None: route through a computer."""
-    from core.services import network_member
-
-    owners = [auth.org_id] if auth.org_id else await network_member.workspaces_of(auth.user_id)
-    for owner_id in owners:
-        doc = await network_member._read_sessions(owner_id)
-        if doc and doc.get("joined"):
-            return owner_id
-    return None
-
-
 async def best_link(user_id: str) -> dict | None:
     """This person's most recently connected live computer link, or None."""
     rows = await _connections().routes_for_user(user_id)
@@ -129,32 +111,17 @@ async def list_pins(user_id: str) -> list[dict]:
 
 
 async def route_for(auth, client_id: str, slug: str, client: str) -> dict:
-    """This app connection's pinned route; the first call pins the default (the most recently
-    connected online computer, else a workspace of theirs on a network)."""
+    """This app connection's pinned computer; the first call pins the most recently connected
+    online one."""
     pin = await get_pin(auth.user_id, client_id)
-    if pin is not None:
+    if pin is not None and pin["route"].get("kind") == "computer":
         return pin["route"]
     link = await best_link(auth.user_id)
-    if link is not None:
-        route = {"kind": "computer", "key": link["key"], "name": link.get("name") or "Your computer"}
-    elif (owner := await workspace_for(auth)) is not None:
-        route = {"kind": "workspace", "owner": owner}
-    else:
+    if link is None:
         raise ApiProblem("NETWORK_NO_ROUTE", NO_ROUTE)
+    route = {"kind": "computer", "key": link["key"], "name": link.get("name") or "Your computer"}
     await set_pin(auth.user_id, client_id, route, slug, client)
     return route
-
-
-async def pinned_workspace(auth, route: dict) -> str:
-    """A workspace pin, while the person is still in it and it is still on a network."""
-    from core.services import network_member
-
-    owner = route.get("owner")
-    owners = [auth.org_id] if auth.org_id == owner else await network_member.workspaces_of(auth.user_id)
-    doc = await network_member._read_sessions(owner) if owner in owners else None
-    if not doc or not doc.get("joined"):
-        raise ApiProblem("NETWORK_NO_ROUTE", NOT_JOINED)
-    return owner
 
 
 async def computer_link(user_id: str, route: dict) -> dict:

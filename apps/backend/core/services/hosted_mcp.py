@@ -35,7 +35,6 @@ from core.services import (
     agent_keys,
     app_wake,
     clerk_admin,
-    container_rpc,
     local_sessions,
     messaging,
     native_session_tools,
@@ -274,31 +273,14 @@ def _remaining() -> float:
     return HOSTED_BUDGET_S if deadline is None else deadline - time.monotonic()
 
 
-async def _app_declared(owner_id: str, slug: str, user_id: str) -> bool:
-    """This client's app session is in ``sessions.json``: the workspace is a member, and the
-    client has made a network call before."""
-    doc = await network_member._read_sessions(owner_id)
-    name = f"{slug}-{network_member.app_person(user_id)}"
-    return bool(doc) and any(s.get("name") == name for s in network_member._app_entries(doc))
-
-
 async def network_unread_note() -> str | None:
     """The engine's unread line for this client's app session on the network (a hosted client
-    is pull-only). Only while the workspace is warm (asking a parked one would start it) and the
-    app session is declared (no refusal per call)."""
+    is pull-only), from its pinned computer. Never fails the tool it rides on."""
     auth = _net_caller()
     slug, client = _sender(get_access_token())
     try:
-        owner_id, route = await _route(auth, slug, client)
-        if owner_id is None:  # a computer route: online (or refused at once), so asking is cheap
-            result = await network_route.app_call(auth.user_id, slug, client, "unread", _RESERVE_S, route=route)
-        else:
-            if not await network_member._session_is_warm(owner_id) or not await _app_declared(
-                owner_id, slug, auth.user_id
-            ):
-                return None
-            params = {"op": "unread", "app": slug, "person": network_member.app_person(auth.user_id)}
-            result = await container_rpc.call(owner_id, "network.app", params)
+        route = await _route(auth, slug, client)
+        result = await network_route.app_call(auth.user_id, slug, client, "unread", _RESERVE_S, route=route)
     except (RuntimeError, messaging.ApiProblem, asyncio.TimeoutError, ToolError):
         logger.debug("network unread refused user=%s", auth.user_id)
         return None
@@ -506,15 +488,9 @@ async def find_sessions(query: str = "", limit: int = 30) -> dict:
             session["isThisSession"] = session["sessionId"] == own
         return result
     try:
-        slug, client = _sender(get_access_token())
-        owner_id, _ = await _route(auth, slug, client)
-        if owner_id is not None and not await network_member._session_is_warm(owner_id):
-            # A read never starts the workspace; a send or check_inbox does.
-            result["network"] = _PARKED
-            return result
         found = await _network_sessions(auth, query)
     except ToolError as exc:
-        result["network"] = _PARKED if exc.args and exc.args[0] == _STARTING else str(exc)
+        result["network"] = str(exc)
         return result
     except Exception:  # noqa: BLE001 -- the network half never fails the rest of the list
         logger.warning("network sessions unavailable", exc_info=True)
@@ -748,57 +724,29 @@ async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str,
     return updated["Attributes"]["roomId"]
 
 
-_STARTING = "RUNTIME_UNAVAILABLE: the workspace is starting; retry with the same request_id"
-_PARKED = (
-    "The workspace is parked, so its network sessions are not listed. "
-    "send_message or check_inbox starts it; call find_sessions again in a minute."
-)
-
-
 async def _through_member(auth: AuthContext, op: str, *, sender: tuple[str, str] | None = None, **fields):
-    """A ``network.app`` call as this client (or ``sender``) via the signed-in person, its refusals
-    as ToolErrors."""
+    """An app op as this client (or ``sender``) via the signed-in person's pinned computer, its
+    refusals as ToolErrors."""
     slug, client = sender or _sender(get_access_token())
     remaining = _remaining()
-    if remaining <= 0.5:  # past the budget: the client hears "starting", and retries
-        raise ToolError(_STARTING)
-    owner_id, route = await _route(auth, slug, client)
-    if owner_id is None:
-        return await _through_computer(auth, slug, client, op, remaining, route, **fields)
-    if owner_id != auth.org_id:  # a free-account grant routed through one of their workspaces
-        auth = AuthContext(user_id=auth.user_id, org_id=owner_id, verified_issuer=auth.verified_issuer)
-    try:
-        return await asyncio.wait_for(network_member.app_call(auth, slug, client, op, **fields), remaining)
-    except asyncio.TimeoutError as exc:
-        raise ToolError(_STARTING) from exc
-    except messaging.ApiProblem as exc:
-        if exc.error.code == "RUNTIME_UNAVAILABLE":
-            raise ToolError(_STARTING) from exc
-        raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
-    except RuntimeError as exc:  # the member answered with an error: {"code", "message"}
-        error = network_member.rpc_error(exc)
-        code = error.get("code") or "UNAVAILABLE"
-        # The bridge answers UNAVAILABLE while its network sidecar is off or starting.
-        if code in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
-            raise ToolError(_STARTING) from exc
-        raise ToolError(f"{code}: {error.get('message') or 'the network refused the call'}") from exc
+    if remaining <= 0.5:  # past the budget: the client retries
+        raise ToolError(_SLOW)
+    route = await _route(auth, slug, client)
+    return await _through_computer(auth, slug, client, op, remaining, route, **fields)
 
 
 _SLOW = "UNAVAILABLE: your computer did not answer in time; retry with the same request_id"
 
 
-async def _route(auth: AuthContext, slug: str, client: str) -> tuple[str | None, dict]:
-    """This app connection's pinned route (``network_route.route_for``): ``(owner, route)`` for
-    a workspace, ``(None, route)`` for a computer. Its refusals as ToolErrors."""
+async def _route(auth: AuthContext, slug: str, client: str) -> dict:
+    """This app connection's pinned computer (``network_route.route_for``). Its refusals as
+    ToolErrors."""
     try:
-        route = await network_route.route_for(auth, get_access_token().client_id, slug, client)
-        if route.get("kind") == "workspace":
-            return await network_route.pinned_workspace(auth, route), route
-        return None, route
+        return await network_route.route_for(auth, get_access_token().client_id, slug, client)
     except messaging.ApiProblem as exc:
         raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
-    except Exception as exc:  # noqa: BLE001 -- Clerk or DynamoDB could not say
-        raise ToolError("UNAVAILABLE: Lightbulb could not look up this app's route; retry") from exc
+    except Exception as exc:  # noqa: BLE001 -- DynamoDB could not say
+        raise ToolError("UNAVAILABLE: Lightbulb could not look up this app's computer; retry") from exc
 
 
 async def _through_computer(
@@ -848,7 +796,7 @@ async def send_message(
     mention_ids: list[str] | None = None,
     agent_id: str | None = None,
 ) -> dict:
-    """Send as this client on the signed-in person's behalf (or, from a shared session, as that session) to exactly one of session_id, room_id, person_id (a member id; opens the DM if needed) or agent_id (a webhook agent from find_sessions agents: one webhook call; state delivered, failed or awaiting_approval). session_id comes from find_sessions: a network session_id (an address) sends on the team's lightbulb network through this workspace, and reply_to (the requestId of a message you got from check_inbox) answers it; reply_to alone replies to whoever sent that message. A shared session's sessionId (a UUID) delivers the text into it as a follow-up prompt it acts on (see canSend). request_id: a new [A-Za-z0-9._-]{1,128} string for a network send, a new UUID for any other; reuse it only to retry that same send. Room and person sends from a person may reply in a thread (reply_to_message_id) or address room members; a shared session's send takes neither. Cannot answer permission prompts."""
+    """Send as this client on the signed-in person's behalf (or, from a shared session, as that session) to exactly one of session_id, room_id, person_id (a member id; opens the DM if needed) or agent_id (a webhook agent from find_sessions agents: one webhook call; state delivered, failed or awaiting_approval). session_id comes from find_sessions: a network session_id (an address) sends on the lightbulb network through your signed-in computer, and reply_to (the requestId of a message you got from check_inbox) answers it; reply_to alone replies to whoever sent that message. A shared session's sessionId (a UUID) delivers the text into it as a follow-up prompt it acts on (see canSend). request_id: a new [A-Za-z0-9._-]{1,128} string for a network send, a new UUID for any other; reuse it only to retry that same send. Room and person sends from a person may reply in a thread (reply_to_message_id) or address room members; a shared session's send takes neither. Cannot answer permission prompts."""
     auth = _net_caller(WRITE_SCOPE)
     request_id = str(request_id)
     network_to = None
@@ -1051,7 +999,7 @@ async def message_receipt(request_id: str) -> dict:
 @mcp.tool(annotations=READ)
 @_noted
 async def check_inbox(wait_secs: int = 0) -> dict:
-    """Takes the messages sent to this client on the team's lightbulb network (as "<client> via <you>", through this workspace), first waiting up to wait_secs (at most 20 per call) for one. Each message has its raw text and, in framed, the text as delivered; pass its requestId as send_message reply_to to answer it. The first call from this client adds its address to the workspace."""
+    """Takes the messages sent to this client on the team's lightbulb network (as "<client> via <you>", through the signed-in computer this client is pinned to), first waiting up to wait_secs (at most 20 per call) for one. Each message has its raw text and, in framed, the text as delivered; pass its requestId as send_message reply_to to answer it. The first network call from this client pins it to your most recently connected signed-in computer (change it at /auth/network/apps)."""
     auth = _net_caller()
     if _mac():  # a shared session's own computer is on the network itself
         raise ToolError("INVALID_REQUEST: a shared session uses its own computer's network.")

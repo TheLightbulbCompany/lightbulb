@@ -22,7 +22,6 @@ import re
 import secrets
 import time
 import uuid
-from typing import Any
 
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
@@ -150,15 +149,6 @@ async def app_title(user_id: str, client: str) -> str:
     return f"{client} via {first}"[:256]
 
 
-async def _declare(owner_id: str, user_id: str, slug: str, client: str, doc: dict) -> None:
-    """Write (or rewrite, with a fresh title) this person's app entry, then tell a warm sidecar."""
-    person = app_person(user_id)
-    name = f"{slug}-{person}"
-    entry = {"name": name, "agent": slug, "title": await app_title(user_id, client), "app": slug, "person": person}
-    apps = [s for s in _app_entries(doc) if s.get("name") != name]
-    await _write_and_ping(owner_id, [*apps, entry])
-
-
 def rpc_error(exc: RuntimeError) -> dict:
     """The ``{"code", "message", ...}`` a ``container_rpc`` RuntimeError carries; ``{}`` if none."""
     try:
@@ -166,36 +156,6 @@ def rpc_error(exc: RuntimeError) -> dict:
     except ValueError:
         return {}
     return error if isinstance(error, dict) else {}
-
-
-async def app_call(auth, slug: str, client: str, op: str, **fields) -> Any:
-    """One ``network.app`` call as ``<client> via <person>``: the person's app session is declared
-    in ``sessions.json`` first (and published when new). The member holds the key, not us."""
-    from core.auth import resolve_owner_id
-
-    owner_id = resolve_owner_id(auth)
-    person = app_person(auth.user_id)
-    doc = await _read_sessions(owner_id)
-    if doc is None:  # never write sessions.json for a workspace that is not a member
-        raise ApiProblem(
-            "NETWORK_NOT_CONNECTED", "This workspace is not on a network yet. An admin runs lightbulb invite --agents."
-        )
-    if not any(s.get("name") == f"{slug}-{person}" for s in _app_entries(doc)):
-        await _declare(owner_id, auth.user_id, slug, client, doc)
-    if not await _session_is_warm(owner_id):
-        # API Gateway cuts a request at 30 s and a cold start takes ~55 s: answer at once and
-        # let the work queue's wake start it (the same doorbell a Mac rings).
-        await wake(owner_id)
-        raise ApiProblem("RUNTIME_UNAVAILABLE", "The workspace is starting.")
-    params = {**fields, "op": op, "app": slug, "person": person}  # never overridden by a field
-    try:
-        return await container_rpc.call(owner_id, "network.app", params)
-    except RuntimeError as exc:
-        # The sidecar never learned the entry (a lost ping, a stale warm estimate): declare once more.
-        if rpc_error(exc).get("reason") != "not_declared":
-            raise
-    await _declare(owner_id, auth.user_id, slug, client, await _read_sessions(owner_id) or doc)
-    return await container_rpc.call(owner_id, "network.app", params)
 
 
 async def _session_is_warm(owner_id: str) -> bool:
@@ -211,17 +171,6 @@ async def _runtime_arn(owner_id: str) -> str | None:
     from core.repositories import container_repo
 
     return ((await container_repo.get_by_owner_id(owner_id)) or {}).get("agentcore_runtime_arn")
-
-
-async def workspaces_of(*user_ids: str) -> list[str]:
-    """Every workspace these people are in, from Clerk; raises when Clerk cannot say (a login
-    or logout must not skip a workspace's gate)."""
-    from core.services import clerk_admin
-
-    orgs = await asyncio.gather(
-        *(clerk_admin.list_user_organizations(u, limit=100, strict=True) for u in user_ids if u)
-    )
-    return sorted({o["id"] for found in orgs for o in found if o.get("id")})
 
 
 async def join_network(owner_id: str, ticket: str) -> dict:
@@ -502,17 +451,6 @@ async def ring(token: str) -> bool:
         return _refused()
     await _queue_wake(owner_id, digest)
     return True
-
-
-async def wake(owner_id: str) -> None:
-    """Start a parked workspace without waiting for it (``ring``'s queue and window, keyed by
-    the stored doorbell hash). No doorbell row: not a member, nothing to wake."""
-    from core.repositories import messaging_repo
-
-    key = _netwake_key(owner_id)
-    row = await messaging_repo._get(key["pk"], key["sk"])
-    if row and row.get("tokenHash"):
-        await _queue_wake(owner_id, str(row["tokenHash"]))
 
 
 async def _queue_wake(owner_id: str, digest: str) -> None:

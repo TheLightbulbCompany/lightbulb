@@ -2,9 +2,8 @@
 app session gets network mail, instead of polling ``check_inbox``.
 
 The bot gives only its webhook URL (``request``); the person pastes the webhook's key on a
-signed-in Lightbulb page (``set_key``), never in a chat. On new mail for that app session (the
-route's engine tells us: a computer's link sends a ``mail`` notice, a workspace's bridge posts
-one) the backend makes ONE content-free POST (``webhook_agents.post``: Bearer key, public
+signed-in Lightbulb page (``set_key``), never in a chat. On new mail for that app session (its
+pinned computer's link sends a ``mail`` notice) the backend makes ONE content-free POST (``webhook_agents.post``: Bearer key, public
 addresses only, a bounded retry), at most once per ``WINDOW_S`` per app.
 
 Rows (messaging table): ``APPWAKE#<user>`` / ``<app slug>`` -- the app, the URL's host, its
@@ -157,17 +156,3 @@ async def notify(user_id: str, session: str) -> bool:
     except Exception:  # noqa: BLE001 -- a wake is a courtesy; mail stays for check_inbox
         logger.warning("app wake failed user=%s", user_id, exc_info=True)
         return False
-
-
-async def notify_workspace(owner_id: str, session: str) -> bool:
-    """A workspace's bridge saw mail for app session ``session``: wake its person's app."""
-    from core.services import network_member
-    from core.services.website_logins import _humans_to_ask
-
-    target = network_member.app_target(session)
-    if target is None:
-        return False
-    for user_id in await _humans_to_ask(owner_id, None):
-        if network_member.app_person(user_id) == target[1]:
-            return await notify(user_id, session)
-    return False

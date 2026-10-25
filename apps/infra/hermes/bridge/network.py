@@ -373,8 +373,6 @@ def _handle_event(event: dict) -> None:
     _schedule_save()
     if kind in ("message", "lag"):  # off the reader thread: a peek must not stall the stream
         _spawn(sweep, "network-sweep")
-    if kind == "message" and event.get("to_session") and not agent_for_session(event["to_session"]):
-        _spawn(_app_mail, "network-app-mail", event["to_session"])
     elif kind in ("held", "hold_closed"):
         _spawn(_hold_notice, "network-hold", event)
     for fn in list(on_event):
@@ -443,16 +441,6 @@ def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
                 log.warning("network: read ack failed for %s", record["id"], exc_info=True)
         else:
             log.warning("network: turn for %s ended %s; left unread", record["id"], outcome)
-
-
-def _app_mail(session: str) -> None:
-    """New mail for a hosted app's session (``<app>-<person>``): the backend wakes its bot if it
-    asked (``wake_me``). The session name only, never the mail."""
-    from bridge import turn
-    try:
-        turn._post_backend(f"network/app-mail/{bridge.OWNER}", {"session": session})
-    except Exception:  # noqa: BLE001 -- a wake is a courtesy; the mail waits for check_inbox
-        log.warning("network: app-mail notice failed", exc_info=True)
 
 
 def _hold_notice(event: dict) -> None:

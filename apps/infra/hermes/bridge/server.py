@@ -504,17 +504,6 @@ def _network_hold(params: dict, **_kwargs) -> dict:
     return _net("network.hold", "hold.answer", _pick(params, "hold", "verdict", "scope", "decided_by"))
 
 
-def _network_app(params: dict, **_kwargs) -> dict:
-    op = params.get("op")
-    if op == "directory":
-        return _net("network.app", "directory", _pick(params, "query"))
-    # inbox {peek: true} leaves the mail until the backend acks the ids it answered with.
-    if op in ("send", "inbox", "ack", "unread", "receipt"):
-        return _net("network.app", f"app.{op}", {k: v for k, v in params.items() if k != "op"})
-    return {"ok": False, "error": {"code": "INVALID_REQUEST",
-                                   "message": "op must be send|inbox|ack|unread|receipt|directory"}}
-
-
 def _network_leave(params: dict, **_kwargs) -> dict:
     """An admin takes the workspace off its network (``team.leave``): back to its own solo team,
     so ``invite --agents`` can add it to another."""
@@ -531,7 +520,7 @@ def _network_wake(params: dict, **_kwargs) -> dict:
 
 
 RPC_METHODS.update({"network.join": _network_join, "network.sessions": _network_sessions,
-                    "network.app": _network_app, "network.hold": _network_hold,
+                    "network.hold": _network_hold,
                     "network.leave": _network_leave,
                     "network.wake": _network_wake})
 

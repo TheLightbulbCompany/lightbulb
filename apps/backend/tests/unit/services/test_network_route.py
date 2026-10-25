@@ -55,7 +55,6 @@ def free(table, monkeypatch):
     """Ann has a free account (no workspace) and two logged-in computers online on this task."""
     monkeypatch.setattr("core.services.task_address.own_address", lambda: HERE)
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ann Lee"))
-    monkeypatch.setattr(network_member, "workspaces_of", AsyncMock(return_value=[]))
     rows = [
         {"key": "kold", "userId": USER, "generation": "g1", "connectedAt": 100, "taskAddress": HERE, "name": "mbp"},
         {"key": "knew", "userId": USER, "generation": "g2", "connectedAt": 200, "taskAddress": HERE, "name": "mac"},
@@ -104,7 +103,7 @@ async def test_a_new_app_is_pinned_to_the_newest_computer_and_never_moves_off_it
     free.rows[:] = [r for r in free.rows if r["key"] != "knew"]
     with pytest.raises(ToolError) as offline:
         await hosted_mcp.send_message("again", "req-1b", session_id="ab12/claude-5")
-    assert str(offline.value) == ("NETWORK_OFFLINE: mac is offline. Open it, or reconnect this app to your workspace.")
+    assert str(offline.value) == ("NETWORK_OFFLINE: mac is offline. Open it.")
     assert free.computers["kold"].ops == []
 
 
@@ -136,25 +135,6 @@ async def test_a_free_account_gets_no_workspace_tool(free):
     assert str(refused.value).startswith("WORKSPACE_REQUIRED")
     with pytest.raises(ToolError):
         await hosted_mcp.send_message("hi", "00000000-0000-0000-0000-000000000001", room_id="x")
-
-
-@pytest.mark.asyncio
-async def test_an_app_pinned_to_a_workspace_uses_its_bridge_and_never_a_computer(free, monkeypatch):
-    monkeypatch.setattr(network_member, "workspaces_of", AsyncMock(return_value=["org_a"]))
-    monkeypatch.setattr(network_member, "_read_sessions", AsyncMock(return_value={"joined": True}))
-    via = AsyncMock(return_value={"request_id": "req-3", "state": "delivered"})
-    monkeypatch.setattr(network_member, "app_call", via)
-    monkeypatch.setattr(network_member, "_session_is_warm", AsyncMock(return_value=False))
-    await network_route.set_pin(
-        USER, "https://claude.ai/oauth/mcp", {"kind": "workspace", "owner": "org_a"}, "claude", "Claude"
-    )
-    await hosted_mcp.send_message("hello", "req-3", session_id="ab12/claude-5")
-    assert via.await_args.args[0].org_id == "org_a" and free.computers["knew"].ops == []
-    # Off its network since: refused, and no computer stands in.
-    network_member._read_sessions.return_value = {"sessions": []}
-    with pytest.raises(ToolError) as gone:
-        await hosted_mcp.send_message("hello", "req-4", session_id="ab12/claude-5")
-    assert "not on a network any more" in str(gone.value) and free.computers["knew"].ops == []
 
 
 @pytest.mark.asyncio
@@ -353,55 +333,21 @@ async def test_a_user_owned_agent_key_is_a_free_accounts_network_caller(monkeypa
     orgs.assert_not_awaited()
 
 
-def test_the_bridges_app_mail_notice_wakes_that_persons_app(monkeypatch):
+def test_the_apps_page_lists_pins_and_moves_an_app_to_an_online_computer(free):
     from routers import network_route as router
 
-    monkeypatch.setattr("routers.messaging._require_hook_token", AsyncMock())
-    monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=["user_x", USER]))
-    notify = AsyncMock(return_value=True)
-    monkeypatch.setattr(app_wake, "notify", notify)
-    app = FastAPI()
-    app.include_router(router.router, prefix="/api/v1")
-    with TestClient(app) as client:
-        path = "/api/v1/internal/messaging/network/app-mail/org_a"
-        assert client.post(path, json={"session": f"grok-{PERSON}"}).status_code == 204
-        assert client.post(path, json={"session": "no spaces/allowed"}).status_code == 422
-    notify.assert_awaited_once_with(USER, f"grok-{PERSON}")
-
-
-def test_the_apps_page_lists_pins_and_moves_an_app_to_an_online_route(free, monkeypatch):
-    from routers import network_route as router
-
-    monkeypatch.setattr(network_member, "workspaces_of", AsyncMock(return_value=["org_a"]))
-    monkeypatch.setattr(network_member, "_read_sessions", AsyncMock(return_value={"joined": True}))
-    monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value={"name": "Acme"}))
     app = FastAPI()
     app.include_router(router.router, prefix="/api/v1")
     app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=USER, org_id=None)
-    asyncio.run(
-        network_route.set_pin(
-            USER, "chatgpt-client", {"kind": "computer", "key": "knew", "name": "mac"}, "chatgpt", "ChatGPT"
-        )
-    )
+    route = {"kind": "computer", "key": "knew", "name": "mac"}
+    asyncio.run(network_route.set_pin(USER, "chatgpt-client", route, "chatgpt", "ChatGPT"))
     with TestClient(app) as client:
         listed = client.get("/api/v1/network/apps").json()
         assert [a["clientId"] for a in listed["apps"]] == ["chatgpt-client"]
-        assert [(r["kind"], r.get("key") or r.get("owner")) for r in listed["routes"]] == [
-            ("computer", "knew"),
-            ("computer", "kold"),
-            ("workspace", "org_a"),
-        ]
-        moved = client.put(
-            "/api/v1/network/apps/route", json={"clientId": "chatgpt-client", "kind": "workspace", "owner": "org_a"}
-        )
-        assert moved.json()["route"] == {"kind": "workspace", "owner": "org_a"}
-        offline = client.put(
-            "/api/v1/network/apps/route", json={"clientId": "chatgpt-client", "kind": "computer", "key": "k-gone"}
-        )
+        assert [r["key"] for r in listed["routes"]] == ["knew", "kold"]  # newest first
+        moved = client.put("/api/v1/network/apps/route", json={"clientId": "chatgpt-client", "key": "kold"})
+        assert moved.json()["route"] == {"kind": "computer", "key": "kold", "name": "mbp"}
+        offline = client.put("/api/v1/network/apps/route", json={"clientId": "chatgpt-client", "key": "k-gone"})
         assert offline.status_code == 409
-        assert (
-            client.put(
-                "/api/v1/network/apps/route", json={"clientId": "nope", "kind": "computer", "key": "knew"}
-            ).status_code
-            == 404
-        )
+        unknown = client.put("/api/v1/network/apps/route", json={"clientId": "nope", "key": "knew"})
+        assert unknown.status_code == 404

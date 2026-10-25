@@ -9,7 +9,6 @@ import logging
 import time
 from unittest.mock import AsyncMock, patch
 
-import boto3
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI
@@ -17,8 +16,7 @@ from fastapi.testclient import TestClient
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings
-from core.repositories import network_keys_repo
-from core.services import clerk_admin, device_login, network_login, network_member
+from core.services import clerk_admin, device_login, network_login, network_member, network_proof
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401
 
 ORG = "org_a"
@@ -44,31 +42,10 @@ class Computer:
 def env(table, monkeypatch):
     from routers import network
 
-    resource = boto3.resource("dynamodb", region_name="us-east-1")
-    resource.create_table(
-        TableName="test-network-keys",
-        KeySchema=[{"AttributeName": "key", "KeyType": "HASH"}],
-        AttributeDefinitions=[
-            {"AttributeName": "key", "AttributeType": "S"},
-            {"AttributeName": "user_id", "AttributeType": "S"},
-        ],
-        GlobalSecondaryIndexes=[
-            {
-                "IndexName": "by-user",
-                "KeySchema": [{"AttributeName": "user_id", "KeyType": "HASH"}],
-                "Projection": {"ProjectionType": "ALL"},
-            }
-        ],
-        BillingMode="PAY_PER_REQUEST",
-    )
+    monkeypatch.setattr(settings, "NETWORK_PROOF_KEY", "test-proof-seed")
     monkeypatch.setattr(settings, "FRONTEND_URL", "https://dev.example")
     monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"}))
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ada Lovelace"))
-    published = AsyncMock()
-    monkeypatch.setattr(network_member, "republish", published)
-    monkeypatch.setattr(
-        network_member, "workspaces_of", AsyncMock(side_effect=lambda *u: sorted(f"org_{x}" for x in u if x))
-    )
     join = AsyncMock(return_value={"state": "joining"})
     monkeypatch.setattr(network_member, "join_network", join)
 
@@ -81,13 +58,15 @@ def env(table, monkeypatch):
 
     app.dependency_overrides[get_current_user] = _override
     with patch("core.dynamodb._table_prefix", "test-"), TestClient(app) as client:
-        yield client, who, published, join
+        yield client, who, join
 
 
-def _start(client, computer, purpose="login", ticket=None):
+def _start(client, computer, purpose="login", ticket=None, proof=None):
     body = {**computer.signed(client, purpose, ticket), "purpose": purpose, "computer": "Ada's Mac"}
     if ticket is not None:
         body["ticket"] = ticket
+    if proof is not None:
+        body["proof"] = proof
     return client.post("/api/v1/network/device/start", json=body)
 
 
@@ -110,8 +89,15 @@ def test_the_signed_message_is_the_engines_canonical_json():
     )
 
 
-def test_login_binds_the_computer_to_the_confirming_person_and_polls_once(env):
-    client, _, published, _ = env
+def _login(client, computer):
+    """``lightbulb login`` end to end: the poll's answer (with the proof)."""
+    s = _start(client, computer).json()
+    assert _confirm(client, s["userCode"]).status_code == 200
+    return _poll(client, s["code"])
+
+
+def test_login_hands_the_computer_a_proof_of_its_person_and_polls_once(env):
+    client, *_ = env
     mac = Computer()
     started = _start(client, mac)
     assert started.status_code == 200, started.text
@@ -119,23 +105,34 @@ def test_login_binds_the_computer_to_the_confirming_person_and_polls_once(env):
     assert s["verifyUrl"] == "https://dev.example/auth/network"  # the person types the code
     assert _poll(client, s["code"]) == {"status": "pending"}
 
-    seen = client.post("/api/v1/network/device/describe", json={"userCode": s["userCode"]})
-    seen = seen.json()
+    seen = client.post("/api/v1/network/device/describe", json={"userCode": s["userCode"]}).json()
     assert (seen["purpose"], seen["computer"], seen["ip"]) == ("login", "Ada's Mac", "testclient")
     assert abs(seen["startedAt"] - time.time()) < 60
-    assert _confirm(client, s["userCode"]).status_code == 200
+    confirmed = _confirm(client, s["userCode"])
+    assert confirmed.status_code == 200 and "proof" not in confirmed.json()  # never to the browser
 
-    import asyncio
-
-    row = asyncio.run(network_keys_repo.get(mac.key))
-    assert (row["user_id"], row["computer"]) == ("user_ada", "Ada's Mac")
-    published.assert_awaited_once_with(["org_user_ada"], extra=(mac.key,))
-    assert _poll(client, s["code"]) == {
-        "status": "approved",
-        "name": "Ada Lovelace",
-        "routeUrl": settings.GATEWAY_RELAY_URL.removesuffix("/ws") + "/network",
-    }
+    polled = _poll(client, s["code"])
+    assert (polled["status"], polled["name"]) == ("approved", "Ada Lovelace")
+    assert polled["routeUrl"] == settings.GATEWAY_RELAY_URL.removesuffix("/ws") + "/network"
+    claims = network_proof.verify(polled["proof"], mac.key)
+    assert claims["sub"] == "user_ada" and claims["exp"] - claims["iat"] == network_proof.LIFE_S
+    assert network_proof.verify(polled["proof"], Computer().key) is None  # another computer's
     assert _poll(client, s["code"]) == {"status": "expired"}  # single use
+
+
+def test_a_proof_is_ours_unaltered_and_in_force():
+    settings.NETWORK_PROOF_KEY = "seed-a"
+    try:
+        token = network_proof.mint("k" * 52, "user_a", now=1_000)
+        assert network_proof.verify(token, "k" * 52, now=1_001)["sub"] == "user_a"
+        assert network_proof.verify(token, "k" * 52, now=1_000 + network_proof.LIFE_S + 1) is None
+        h, p, sig = token.split(".")
+        forged = network_proof._b64(b'{"iat":1000,"exp":9999999999,"sub":"user_b","computer":"' + b"k" * 52 + b'"}')
+        assert network_proof.verify(f"{h}.{forged}.{sig}", "k" * 52, now=1_001) is None
+        settings.NETWORK_PROOF_KEY = "seed-b"  # another issuer key
+        assert network_proof.verify(token, "k" * 52, now=1_001) is None
+    finally:
+        settings.NETWORK_PROOF_KEY = ""
 
 
 def test_a_challenge_is_single_use_and_needs_this_keys_signature(env):
@@ -167,15 +164,14 @@ def test_an_expired_challenge_is_refused(env, table):
     assert client.post("/api/v1/network/device/start", json=body).status_code == 401
 
 
-def test_invite_agents_needs_a_signed_in_computer_of_this_admin(env):
-    client, who, _, join = env
+def test_invite_agents_needs_this_admins_own_signed_in_computer(env):
+    client, who, join = env
     mac = Computer()
     refused = _start(client, mac, "agents", TICKET)
     assert refused.status_code == 409 and "lightbulb login" in refused.json()["detail"]
-
-    s = _start(client, mac).json()
-    _confirm(client, s["userCode"])
-    started = _start(client, mac, "agents", TICKET).json()
+    proof = _login(client, mac)["proof"]
+    assert _start(client, mac, "agents", TICKET, proof=_login(client, Computer())["proof"]).status_code == 409
+    started = _start(client, mac, "agents", TICKET, proof=proof).json()
     seen = client.post("/api/v1/network/device/describe", json={"userCode": started["userCode"]}).json()
     assert (seen["purpose"], seen["computer"]) == ("agents", "Ada's Mac")
 
@@ -216,64 +212,42 @@ def test_desktop_and_network_codes_never_cross(env):
     assert gone.value.status_code == 410
 
 
-def test_logout_drops_the_binding_and_republishes_its_person(env):
-    client, _, published, _ = env
+def test_a_proof_is_renewed_only_in_its_last_week_and_never_once_expired(env, monkeypatch):
+    client, *_ = env
     mac = Computer()
-    s = _start(client, mac).json()
-    _confirm(client, s["userCode"])
-    published.reset_mock()
-    assert client.post("/api/v1/network/logout", json=mac.signed(client, "logout")).status_code == 200
-    import asyncio
+    proof = _login(client, mac)["proof"]
 
-    assert asyncio.run(network_keys_repo.get(mac.key)) is None
-    published.assert_awaited_once_with(["org_user_ada"], exclude=(mac.key,))
-    # A login proof is no logout proof.
-    body = mac.signed(client, "login")
-    assert client.post("/api/v1/network/logout", json=body).status_code == 401
+    def refresh(token):
+        return client.post("/api/v1/network/proof/refresh", json={**mac.signed(client, "refresh"), "proof": token})
 
-
-def test_a_relogin_by_someone_else_republishes_both_people(env):
-    client, who, published, _ = env
-    mac = Computer()
-    _confirm(client, _start(client, mac).json()["userCode"])
-    who["ctx"] = AuthContext(user_id="user_bob", org_id=ORG)
-    _confirm(client, _start(client, mac).json()["userCode"])
-    assert published.await_args.args == (["org_user_ada", "org_user_bob"],)
+    assert refresh(proof).json() == {"proof": proof}  # weeks left: unchanged
+    late = int(time.time()) - network_proof.LIFE_S + 3 * 86_400
+    old = network_proof.mint(mac.key, "user_ada", now=late)
+    renewed = refresh(old).json()["proof"]
+    assert renewed != old and network_proof.verify(renewed, mac.key)["sub"] == "user_ada"
+    expired = network_proof.mint(mac.key, "user_ada", now=late - 7 * 86_400)
+    assert refresh(expired).status_code == 401
+    other = Computer()
+    assert refresh(network_proof.mint(other.key, "user_ada", now=late)).status_code == 401
+    assert client.get("/api/v1/network/issuer").json()["env"].startswith(network_proof.kid() + ":")
 
 
-def test_no_key_code_or_link_reaches_the_logs(env, caplog):
+def test_no_key_code_link_or_proof_reaches_the_logs(env, caplog):
     client, *_ = env
     mac = Computer()
     with caplog.at_level(logging.DEBUG):
         s = _start(client, mac).json()
         _confirm(client, s["userCode"])
-        a = _start(client, mac, "agents", TICKET).json()
+        proof = _poll(client, s["code"])["proof"]
+        a = _start(client, mac, "agents", TICKET, proof=proof).json()
         _confirm(client, a["userCode"])
         _poll(client, a["code"])
     # Ours, not the AWS SDK's own DEBUG wire dumps (off in production).
     sdk = ("botocore", "boto3", "urllib3", "moto", "s3transfer")
     text = "\n".join(r.getMessage() for r in caplog.records if not r.name.startswith(sdk))
     assert caplog.records
-    for secret in (mac.key, s["code"], a["code"], TICKET):
+    for secret in (mac.key, s["code"], a["code"], TICKET, proof):
         assert secret not in text
-
-
-def test_a_clerk_error_changes_nothing_and_a_retry_completes_the_logout(env):
-    client, _, published, _ = env
-    mac = Computer()
-    _confirm(client, _start(client, mac).json()["userCode"])
-    network_member.workspaces_of.side_effect = RuntimeError("clerk down")
-    assert client.post("/api/v1/network/logout", json=mac.signed(client, "logout")).status_code == 503
-    import asyncio
-
-    assert asyncio.run(network_keys_repo.get(mac.key)) is not None  # still bound: retry republishes
-    network_member.workspaces_of.side_effect = lambda *u: ["org_a"]
-    published.side_effect = RuntimeError("s3")
-    assert client.post("/api/v1/network/logout", json=mac.signed(client, "logout")).status_code == 503
-    assert asyncio.run(network_keys_repo.get(mac.key)) is not None
-    published.side_effect = None
-    assert client.post("/api/v1/network/logout", json=mac.signed(client, "logout")).status_code == 200
-    assert asyncio.run(network_keys_repo.get(mac.key)) is None
 
 
 def test_someone_else_confirming_an_approved_code_is_told_so(env):
@@ -286,14 +260,10 @@ def test_someone_else_confirming_an_approved_code_is_told_so(env):
 
 
 def test_a_free_account_with_no_workspace_signs_a_computer_in(env):
-    client, who, published, _ = env
+    client, who, *_ = env
     who["ctx"] = AuthContext(user_id="user_free", org_id=None)
     mac = Computer()
-    assert _confirm(client, _start(client, mac).json()["userCode"]).status_code == 200
-    import asyncio
-
-    assert asyncio.run(network_keys_repo.get(mac.key))["user_id"] == "user_free"
-    published.assert_awaited_once_with(["org_user_free"], extra=(mac.key,))
+    assert network_proof.verify(_login(client, mac)["proof"], mac.key)["sub"] == "user_free"
 
 
 def test_an_admin_takes_the_workspace_off_its_network(env, monkeypatch):

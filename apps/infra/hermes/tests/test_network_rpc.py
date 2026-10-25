@@ -87,14 +87,14 @@ def test_rpc_starts_the_sidecar_in_the_foreground_and_maps_ops(net):
 
 def test_network_sessions_rereads_the_file_and_declares_it(net):
     assert network.ensure_started(background=False)
-    new = {"workspace": "Acme", "members": ["user_a", "user_b"], "member_keys": ["key_a"],
+    new = {"workspace": "Acme", "members": ["user_a", "user_b"],
            "sessions": [{"name": "friday", "agent": "Friday", "agentId": "a-friday"},
                         {"name": "atlas", "agent": "Atlas", "agentId": "a-atlas"}]}
     net.s3.seed("org_test/network/sessions.json", json.dumps(new).encode())
     assert _rpc("network.sessions") == {"ok": True, "payload": {"count": 2}}
     declared = net.calls("cloud.sessions.set")[-1]
     assert (declared["sessions"], declared["members"]) == (new["sessions"], ["user_a", "user_b"])
-    assert declared["member_keys"] == ["key_a"]
+    assert "member_keys" not in declared
     assert network.agent_for_session("atlas") == "a-atlas"
     assert json.loads(network.SESSIONS_FILE.read_text()) == new
 

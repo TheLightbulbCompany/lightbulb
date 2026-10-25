@@ -231,6 +231,7 @@ export class LightbulbStage extends cdk.Stage {
         metronomeApiKey: auth.metronomeApiKey.secretName,
         metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,
         wsInternalSecret: auth.wsInternalSecret.secretName,
+        networkProofKey: auth.networkProofKey.secretName,
         sesIngestSecret: auth.sesIngestSecret.secretName,
       },
       kmsKeyArn: auth.kmsKey.keyArn,

@@ -50,6 +50,7 @@ class Link:
     user_id: str
     generation: str
     send: Any  # async (dict) -> None
+    exp: int = 0  # its proof's: the link closes when it lapses (the computer refreshes first)
     pending: dict[int, asyncio.Future] = field(default_factory=dict)
     next_id: int = 1
 
@@ -89,10 +90,7 @@ async def workspace_for(auth) -> str | None:
 
 async def best_link(user_id: str) -> dict | None:
     """This person's most recently connected live computer link, or None."""
-    from core.repositories import network_keys_repo
-
-    keys = await network_keys_repo.keys_for_users([user_id])
-    rows = [r for r in await _connections().live_routes(keys) if r["userId"] == user_id] if keys else []
+    rows = await _connections().routes_for_user(user_id)
     return max(rows, key=lambda r: r["connectedAt"], default=None)
 
 
@@ -175,11 +173,11 @@ async def local_call(key: str, generation: str, op: str, params: dict, timeout_s
 
 
 async def serve(websocket) -> None:
-    """One computer's route link, for its life: challenge, the signed hello, ``ready``, then
-    answers to our ops and its mail notices. Closes 4401 on a bad proof, 4403 for a computer
-    nobody signed in on (or one since signed out), 4409 when a newer link of it took over."""
-    from core.repositories import network_keys_repo
-    from core.services import network_login, network_member
+    """One computer's route link, for its life: challenge, the hello (its member key's signature
+    over the nonce, and its sign-in proof), ``ready``, then answers to our ops and its mail
+    notices. Closes 4401 on a bad signature, 4403 for no proof (or one expired, or for another
+    computer), 4409 when a newer link of it took over."""
+    from core.services import network_login, network_member, network_proof
 
     await websocket.accept()
     nonce = secrets.token_urlsafe(32)
@@ -189,21 +187,22 @@ async def serve(websocket) -> None:
     except Exception:  # noqa: BLE001 -- a timeout, a disconnect or junk: no link
         await _close(websocket, CLOSE_BAD_PROOF)
         return
-    key, sig = (hello.get("key"), hello.get("sig")) if isinstance(hello, dict) else (None, None)
+    hello = hello if isinstance(hello, dict) else {}
+    key, sig = hello.get("key"), hello.get("sig")
     if not isinstance(key, str) or not isinstance(sig, str) or not network_login.verify(key, "route", nonce, sig):
         await _close(websocket, CLOSE_BAD_PROOF)
         return
-    bound = await network_keys_repo.get(key)
-    if not bound:
+    claims = network_proof.verify(hello.get("proof") or "", key)
+    if claims is None:
         await _close(websocket, CLOSE_NOT_SIGNED_IN)
         return
-    user_id = bound["user_id"]
+    user_id = claims["sub"]
     generation = str(uuid.uuid4())
 
     async def send(frame: dict) -> None:
         await websocket.send_text(json.dumps(frame))
 
-    link = Link(key, user_id, generation, send)
+    link = Link(key, user_id, generation, send, exp=claims["exp"])
     connections = _connections()
     old = links.get(key)
     links[key] = link
@@ -256,21 +255,20 @@ async def _read(websocket, link: Link) -> None:
 
 
 async def _keep(connections, link: Link) -> int:
-    """Every ``REFRESH_S``: the presence row (gone: a newer link took over) and the binding
-    (gone or moved: the person signed this computer out). Returns the close code."""
-    from core.repositories import network_keys_repo
+    """Every ``REFRESH_S``: the presence row (gone: a newer link took over) and the proof's
+    ``exp`` (lapsed: the computer reconnects with its renewed one). Returns the close code.
+    A logout is the computer's: it drops this link itself."""
+    import time
 
     while True:
         await asyncio.sleep(REFRESH_S)
+        if link.exp and time.time() > link.exp:
+            return CLOSE_NOT_SIGNED_IN
         try:
             if not await connections.refresh_route(link.key, link.generation):
                 return CLOSE_SUPERSEDED
-            bound = await network_keys_repo.get(link.key)
         except Exception:  # noqa: BLE001 -- a DynamoDB hiccup: the next tick tries again
             logger.warning("network route refresh failed", exc_info=True)
-            continue
-        if not bound or bound.get("user_id") != link.user_id:
-            return CLOSE_NOT_SIGNED_IN
 
 
 def _fail(link: Link) -> None:

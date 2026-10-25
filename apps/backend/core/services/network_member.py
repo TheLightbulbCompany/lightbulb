@@ -4,8 +4,8 @@ The network engine runs as a sidecar in the workspace's AgentCore microVM. The b
 inputs it reads: the member key (in the boot secret, written only by
 ``agentcore_runtime.write_boot_secret``) and ``<owner>/network/sessions.json``, the addresses
 this workspace answers on -- one per agent, plus any app entries the sidecar added -- and
-``member_keys``, the computers of its members who ran ``lightbulb login`` (the only senders
-the sidecar answers).
+``members``, the workspace's people: the sidecar answers only a computer whose sign-in proof
+(``network_proof``, shown in its hello) names one of them.
 
 A workspace never invites: it joins one network when an admin runs ``lightbulb invite
 --agents`` (``join_network``). The once link it joins with is a credential: never logged here.
@@ -72,10 +72,7 @@ async def write_sessions(owner_id: str, *, apps: list[dict] | None = None) -> di
     return await _write(owner_id, _app_entries(prior) if apps is None else apps, prior)
 
 
-async def _write(
-    owner_id: str, apps: list[dict], prior: dict | None = None, extra: tuple = (), exclude: tuple = ()
-) -> dict:
-    from core.repositories import network_keys_repo
+async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> dict:
     from core.services import clerk_admin
     from core.services.company_identity import slugify
     from core.services.hermes_profiles import put_owner_object
@@ -112,9 +109,8 @@ async def _write(
         "workspace": (org or {}).get("name") or owner_id,
         "sessions": sessions + apps,
         "wake": wake,
+        # The sidecar's gate: only computers whose sign-in proof names one of these people.
         "members": members,
-        # The sidecar's gate: only these computers' messages reach the agents.
-        "member_keys": await network_keys_repo.keys_for_users(members, extra, exclude),
     }
     if prior.get("joined"):
         doc["joined"] = True  # on a network an admin added it to (``join_network``)
@@ -136,8 +132,8 @@ async def publish_sessions(owner_id: str) -> None:
         logger.warning("network sessions publish failed for owner=%s", owner_id, exc_info=True)
 
 
-async def _write_and_ping(owner_id: str, apps: list[dict], extra: tuple = (), exclude: tuple = ()) -> None:
-    await _write(owner_id, apps, None, extra, exclude)
+async def _write_and_ping(owner_id: str, apps: list[dict]) -> None:
+    await _write(owner_id, apps)
     # Only a warm sidecar is pinged: a parked one reads sessions.json at its next start,
     # and an invoke here would cold-start the workspace (~55 s) from an agent edit.
     if await _session_is_warm(owner_id):
@@ -226,25 +222,6 @@ async def workspaces_of(*user_ids: str) -> list[str]:
         *(clerk_admin.list_user_organizations(u, limit=100, strict=True) for u in user_ids if u)
     )
     return sorted({o["id"] for found in orgs for o in found if o.get("id")})
-
-
-async def republish(owners: list[str], *, extra: tuple = (), exclude: tuple = ()) -> None:
-    """``member_keys`` follow a login or logout: rewrite each member workspace's ``sessions.json``
-    (``extra``: a key just bound; ``exclude``: one about to be unbound). Raises if any write
-    failed, so the caller answers 503 and the CLI's retry runs it all again."""
-    if not settings.OWNER_STATE_BUCKET:
-        return
-
-    async def one(owner_id: str) -> None:
-        prior = await _read_sessions(owner_id)
-        if prior is not None:
-            await _write_and_ping(owner_id, _app_entries(prior), extra, exclude)
-
-    results = await asyncio.gather(*(one(o) for o in owners), return_exceptions=True)
-    failed = [o for o, r in zip(owners, results) if isinstance(r, BaseException)]
-    if failed:
-        logger.warning("network republish failed owners=%s", failed)
-        raise RuntimeError("network republish failed")
 
 
 async def join_network(owner_id: str, ticket: str) -> dict:

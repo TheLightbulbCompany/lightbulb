@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from mcp.server.mcpserver.exceptions import ToolError
 
 from core.auth import AuthContext, get_current_user
-from core.services import app_wake, hosted_mcp, network_login, network_member, network_route
+from core.services import app_wake, hosted_mcp, network_login, network_member, network_proof, network_route
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401
 
 USER = "user_free"
@@ -56,13 +56,14 @@ def free(table, monkeypatch):
     monkeypatch.setattr("core.services.task_address.own_address", lambda: HERE)
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ann Lee"))
     monkeypatch.setattr(network_member, "workspaces_of", AsyncMock(return_value=[]))
-    monkeypatch.setattr("core.repositories.network_keys_repo.keys_for_users", AsyncMock(return_value=["kold", "knew"]))
     rows = [
         {"key": "kold", "userId": USER, "generation": "g1", "connectedAt": 100, "taskAddress": HERE},
         {"key": "knew", "userId": USER, "generation": "g2", "connectedAt": 200, "taskAddress": HERE},
         {"key": "kother", "userId": "user_x", "generation": "g3", "connectedAt": 300, "taskAddress": HERE},
     ]
-    connections = SimpleNamespace(live_routes=AsyncMock(return_value=rows))
+    connections = SimpleNamespace(
+        routes_for_user=AsyncMock(side_effect=lambda u: [r for r in rows if r["userId"] == u])
+    )
     monkeypatch.setattr(network_route, "_connections", lambda: connections)
     computers = {}
     for key, gen in (("kold", "g1"), ("knew", "g2")):
@@ -111,7 +112,7 @@ async def test_check_inbox_and_find_sessions_through_the_computer(free):
 
 @pytest.mark.asyncio
 async def test_no_computer_online_is_a_clear_refusal_and_nothing_is_queued(free):
-    free.connections.live_routes.return_value = []
+    free.connections.routes_for_user.side_effect = lambda u: []
     with pytest.raises(ToolError) as refused:
         await hosted_mcp.send_message("hello", "req-2", session_id="ab12/claude-5")
     assert str(refused.value).startswith("NETWORK_NO_ROUTE: None of your computers is online")
@@ -163,17 +164,22 @@ class Key:
         raw = self.private.public_key().public_bytes_raw()
         self.key = base64.b32encode(raw).decode().lower().rstrip("=")
 
-    def hello(self, challenge: str, purpose: str = "route") -> dict:
+    def hello(self, challenge: str, purpose: str = "route", user: str | None = USER) -> dict:
         sig = self.private.sign(network_login.message(self.key, purpose, challenge))
-        return {"type": "hello", "key": self.key, "sig": base64.urlsafe_b64encode(sig).decode().rstrip("=")}
+        proof = network_proof.mint(self.key, user) if user else None
+        return {
+            "type": "hello",
+            "key": self.key,
+            "proof": proof,
+            "sig": base64.urlsafe_b64encode(sig).decode().rstrip("="),
+        }
 
 
 @pytest.fixture
 def door(monkeypatch):
     from routers import network_route as router
 
-    bound: dict[str, dict] = {}
-    monkeypatch.setattr("core.repositories.network_keys_repo.get", AsyncMock(side_effect=lambda k: bound.get(k)))
+    monkeypatch.setattr("core.config.settings.NETWORK_PROOF_KEY", "test-proof-seed")
     presence = SimpleNamespace(
         put_route=AsyncMock(), refresh_route=AsyncMock(return_value=True), delete_route=AsyncMock()
     )
@@ -184,13 +190,12 @@ def door(monkeypatch):
     app = FastAPI()
     app.include_router(router.router, prefix="/api/v1")
     with TestClient(app) as client:
-        yield SimpleNamespace(client=client, bound=bound, presence=presence, notify=notify)
+        yield SimpleNamespace(client=client, presence=presence, notify=notify)
     network_route.links.clear()
 
 
 def test_a_signed_in_computer_links_and_answers_ops_forwarded_from_another_task(door):
     computer = Key()
-    door.bound[computer.key] = {"user_id": USER}
     with door.client.websocket_connect("/api/v1/gateway/network") as ws:
         challenge = ws.receive_json()
         assert challenge["type"] == "challenge"
@@ -242,7 +247,14 @@ def test_a_bad_proof_or_a_computer_nobody_signed_in_is_closed(door):
             ws.receive_json()
     assert closed.value.code == network_route.CLOSE_BAD_PROOF
     with door.client.websocket_connect("/api/v1/gateway/network") as ws:
-        ws.send_json(computer.hello(ws.receive_json()["challenge"]))
+        ws.send_json(computer.hello(ws.receive_json()["challenge"], user=None))  # never logged in
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+    assert closed.value.code == network_route.CLOSE_NOT_SIGNED_IN
+    with door.client.websocket_connect("/api/v1/gateway/network") as ws:
+        hello = computer.hello(ws.receive_json()["challenge"])
+        hello["proof"] = network_proof.mint(Key().key, USER)  # another computer's proof
+        ws.send_json(hello)
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_json()
     assert closed.value.code == network_route.CLOSE_NOT_SIGNED_IN

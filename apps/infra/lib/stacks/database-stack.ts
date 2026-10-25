@@ -49,7 +49,6 @@ export class DatabaseStack extends cdk.Stack {
   public readonly paperclipCompaniesTable: dynamodb.Table;
   public readonly roomReadCursorsTable: dynamodb.Table;
   public readonly workspaceJoinLinksTable: dynamodb.Table;
-  public readonly networkKeysTable: dynamodb.Table;
 
   // Paperclip Aurora Serverless v2 cluster (Task 1 of paperclip-rebuild).
   // pgvector extension is created by the drizzle migrations runner in
@@ -373,18 +372,6 @@ export class DatabaseStack extends cdk.Stack {
     // already shared, so it takes PITR like the rest of the durable tables.
     this.workspaceJoinLinksTable = createTable("WorkspaceJoinLinksTable", "workspace-join-links", {
       partitionKey: { name: "org_id", type: dynamodb.AttributeType.STRING },
-    });
-
-    // `lightbulb login`: one row per computer (its network member key) naming the Lightbulb
-    // user who confirmed it. The by-user GSI answers "this workspace's members' computers"
-    // (the `member_keys` written into each workspace's network sessions file). Durable: losing
-    // a row silently stops a workspace answering that person's computer.
-    this.networkKeysTable = createTable("NetworkKeysTable", "network-keys", {
-      partitionKey: { name: "key", type: dynamodb.AttributeType.STRING },
-    });
-    this.networkKeysTable.addGlobalSecondaryIndex({
-      indexName: "by-user",
-      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
     });
 
     // Paperclip companies — maps Isol8 user_id → their Paperclip company

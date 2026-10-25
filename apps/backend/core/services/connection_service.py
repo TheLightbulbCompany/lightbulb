@@ -601,12 +601,24 @@ class ConnectionService:
     def route_id(key: str) -> str:
         return f"netroute#{key}"
 
+    @staticmethod
+    def route_owner(user_id: str) -> str:
+        return f"netuser#{user_id}"
+
+    async def routes_for_user(self, user_id: str) -> list[dict]:
+        """This person's live computer links (``live_routes`` rows)."""
+        found = await self.query_by_owner(self.route_owner(user_id))
+        keys = [cid.removeprefix("netroute#") for cid, _, kind in found if kind == "net-route"]
+        return [r for r in await self.live_routes(keys) if r["userId"] == user_id] if keys else []
+
     async def put_route(self, *, key: str, user_id: str, generation: str) -> None:
         """The newest link of computer ``key`` (its member key) wins: one row per key."""
         now = int(time.time())
         item = {
             "connectionId": {"S": self.route_id(key)},
             "userId": {"S": user_id},
+            # The by-owner-id GSI lists a person's links (``routes_for_user``); no org is ever this.
+            "ownerId": {"S": self.route_owner(user_id)},
             "connectionType": {"S": "net-route"},
             "generation": {"S": generation},
             "connectedAt": {"N": str(now)},

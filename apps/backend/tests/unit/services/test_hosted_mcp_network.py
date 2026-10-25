@@ -91,7 +91,7 @@ def member(table, monkeypatch):
     monkeypatch.setattr("core.services.hermes_profiles.get_owner_object", lambda k: objects.get(k))
     monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value={"name": "Acme"}))
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[]))
-    monkeypatch.setattr("core.repositories.network_keys_repo.keys_for_users", AsyncMock(return_value=[]))
+    monkeypatch.setattr(network_route, "best_link", AsyncMock(return_value=None))  # no computer online
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ann Lee"))
     monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=[USER]))
     objects[network_member.sessions_key(OWNER)] = json.dumps(

@@ -107,6 +107,8 @@ export interface SecretNames {
    * the backend starts rejecting callers that lack the header.
    */
   wsInternalSecret: string;
+  /** Seed of the Ed25519 key that signs `lightbulb login` proofs (backend network_proof). */
+  networkProofKey: string;
   /**
    * Shared secret the SES-ingest Lambda (ses-inbound-stack.ts) attaches to
    * its POST /webhooks/ses-inbound calls. Created unconditionally in every
@@ -1995,6 +1997,10 @@ export class ServiceStack extends cdk.Stack {
           "ImportWsInternalSecret",
           props.secretNames.wsInternalSecret,
         ),
+      ),
+      // Signs `lightbulb login` proofs (network_proof). Same CMK as the other auth secrets.
+      NETWORK_PROOF_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportNetworkProofKey", props.secretNames.networkProofKey),
       ),
       // Shared secret the SES-ingest Lambda attaches as X-Lightbulb-SES-Secret.
       // The backend compares it in constant time (routers/ses_inbound.py)

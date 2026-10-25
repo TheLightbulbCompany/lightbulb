@@ -30,11 +30,6 @@ def store(monkeypatch, table):
     roster = [{"id": A1, "name": "Friday"}, {"id": A2, "name": "Ops Lead"}]
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
     monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=["user_1", "user_2"]))
-    keys = {"user_1": ["key_1a", "key_1b"], "user_2": [], "user_3": ["key_3"]}
-    monkeypatch.setattr(
-        "core.repositories.network_keys_repo.keys_for_users",
-        AsyncMock(side_effect=lambda users, *_: sorted(k for u in users for k in keys.get(u, []))),
-    )
     return objects
 
 
@@ -60,7 +55,6 @@ async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
         ],
         "wake": {"url": "http://localhost:8000/api/v1/network/wake", "token": token},
         "members": ["user_1", "user_2"],
-        "member_keys": ["key_1a", "key_1b"],
     }
     assert network_member.app_person("user_1") == network_member.app_person("user_1")
     assert len(network_member.app_person("user_1")) == 8
@@ -314,20 +308,6 @@ async def test_workspaces_of_is_strict_and_lists_each_workspace_once(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_republish_rewrites_members_only_and_raises_when_a_write_fails(store, monkeypatch):
-    monkeypatch.setattr(network_member, "_session_is_warm", AsyncMock(return_value=False))
-    await network_member.write_sessions("org_a")
-    await network_member.republish(["org_a", "org_nope"])  # org_nope is no member: skipped
-    keys = AsyncMock(return_value=[])
-    monkeypatch.setattr("core.repositories.network_keys_repo.keys_for_users", keys)
-    await network_member.republish(["org_a"], extra=("k_new",))
-    assert keys.await_args.args[1:] == (("k_new",), ())
-    monkeypatch.setattr(network_member, "_write_and_ping", AsyncMock(side_effect=RuntimeError("s3")))
-    with pytest.raises(RuntimeError):
-        await network_member.republish(["org_a"])
-
-
-@pytest.mark.asyncio
 async def test_the_joined_mark_survives_rewrites_and_leave_clears_it(store, monkeypatch):
     await network_member.write_sessions("org_a")
     monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"state": "joining"}))
@@ -362,9 +342,7 @@ async def test_members_follow_the_workspace_on_join_and_leave(store, monkeypatch
     humans.return_value = ["user_1", "user_3"]  # a join
     await network_member.publish_sessions("org_a")
     assert _doc(store)["members"] == ["user_1", "user_3"]
-    assert _doc(store)["member_keys"] == ["key_1a", "key_1b", "key_3"]  # their signed-in computers
 
     humans.return_value = ["user_3"]  # a leave
     await network_member.publish_sessions("org_a")
     assert _doc(store)["members"] == ["user_3"]
-    assert _doc(store)["member_keys"] == ["key_3"]

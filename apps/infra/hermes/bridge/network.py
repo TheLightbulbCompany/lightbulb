@@ -284,11 +284,10 @@ def reload_sessions() -> int:
         raise NetworkOff("sessions.json is gone")
     raw, data = fetched
     params = {"sessions": data.get("sessions") or []}
-    # The engine keeps its gate when a key is absent, so pass each only when written. An engine
-    # before `member_keys` gates on `members` (person ids); a newer one ignores `members`.
-    for gate in ("members", "member_keys"):
-        if gate in data:
-            params[gate] = data[gate]
+    # The engine keeps its gate when `members` is absent, so pass it only when written: it
+    # answers only computers whose sign-in proof names one of these people.
+    if "members" in data:
+        params["members"] = data["members"]
     ask("cloud.sessions.set", params)
     _sessions = data
     SESSIONS_FILE.write_bytes(raw)

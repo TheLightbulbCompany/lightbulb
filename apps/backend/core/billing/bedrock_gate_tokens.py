@@ -139,7 +139,7 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def derive_gate_bearer(owner_id: str, row_id: str, generation: int = 0) -> str:
+def derive_gate_bearer(owner_id: str, row_id: str, generation: int = 0, agent_id: str | None = None) -> str:
     """The owner's gate bearer for this containers-row incarnation and ``generation``:
     deterministic, so every concurrent provision run for one owner derives the SAME bearer
     and writes the same boot secret, token row and pointer instead of racing to rotate.
@@ -170,7 +170,10 @@ def derive_gate_bearer(owner_id: str, row_id: str, generation: int = 0) -> str:
         raise RuntimeError("GATE_BEARER_HMAC_KEY is not configured; refusing to derive a gate bearer")
     if not row_id:
         raise ValueError(f"no containers row id for {owner_id}; refusing to derive a gate bearer")
-    msg = f"lightbulb-gate-bearer:v1:{owner_id}:{row_id}:{int(generation)}".encode()
+    msg = f"lightbulb-gate-bearer:v1:{owner_id}:{row_id}:{int(generation)}"
+    if agent_id:  # a per-agent bearer; the owner-level message is byte-identical to before
+        msg += f":agent:{agent_id}"
+    msg = msg.encode()
     digest = hmac.new(key.encode("utf-8"), msg, hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
@@ -558,6 +561,46 @@ async def mint_gate_token(owner_id: str, *, row_id: str, generation: int = 0) ->
     return token
 
 
+async def mint_agent_gate_token(owner_id: str, agent_id: str, *, row_id: str, generation: int = 0) -> str:
+    """Ensure one roster agent's own gate bearer; return the PLAINTEXT (for that agent's profile).
+
+    Our auth only: the gate resolves it to ``{owner_id, agent_id}`` but still uses the OWNER's one
+    OpenRouter key and daily limit. Row is create-only ``{token_hash, owner_id, agent_id, denied,
+    created_at}``; a new agent inherits a deny already on the owner's token. The hash is tracked on
+    the containers row BEFORE the put (a tracked hash with no row is harmless; the reverse is an
+    unreachable live bearer). ponytail: rotation (generation bump) leaves the old generation's agent
+    rows tracked and undrained -- deny/wipe still reach them; add a drain when rotation is exercised.
+    """
+    token = derive_gate_bearer(owner_id, row_id, generation, agent_id=agent_id)
+    token_hash = hash_token(token)
+    await container_repo.add_agent_gate_hash(owner_id, token_hash)
+
+    table = _tokens_table()
+    denied = False
+    owner_hash = ((await container_repo.get_by_owner_id(owner_id, consistent=True)) or {}).get(
+        "bedrock_gate_token_hash"
+    )
+    if owner_hash:
+        resp = await run_in_thread(table.get_item, Key={"token_hash": owner_hash}, ConsistentRead=True)
+        denied = bool((resp.get("Item") or {}).get("denied"))
+    try:
+        await run_in_thread(
+            table.put_item,
+            Item={
+                "token_hash": token_hash,
+                "owner_id": owner_id,
+                "agent_id": agent_id,
+                "denied": denied,
+                "created_at": utc_now_iso(),
+            },
+            ConditionExpression="attribute_not_exists(token_hash)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    return token
+
+
 async def _swap_hash_pointer(
     owner_id: str,
     token_hash: str,
@@ -633,7 +676,11 @@ def owner_gate_token_hashes(row: dict | None) -> list[str]:
     this set before the row that names it is destroyed.
     """
     row = row or {}
-    hashes = [row.get("bedrock_gate_token_hash"), *(row.get(_SUPERSEDED_FIELD) or [])]
+    hashes = [
+        row.get("bedrock_gate_token_hash"),
+        *(row.get(_SUPERSEDED_FIELD) or []),
+        *sorted(row.get("agent_gate_token_hashes") or ()),
+    ]
     return list(dict.fromkeys(h for h in hashes if h))
 
 

@@ -1252,6 +1252,20 @@ async def resolve_profile_inputs(owner_id: str) -> ProfileInputs:
     )
 
 
+async def agent_gate_bearer(owner_id: str, agent_id: str) -> str | None:
+    """This agent's own openrouter-gate bearer, for its profile ``.env`` (metering attributes
+    inference to the agent). A row with no id yet (pre-prepare) mints none: the agent then
+    presents the owner-level boot bearer."""
+    from core.billing.bedrock_gate_tokens import mint_agent_gate_token
+
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    if not (row and row.get("id")):
+        return None
+    return await mint_agent_gate_token(
+        owner_id, agent_id, row_id=row["id"], generation=int(row.get("gate_bearer_generation") or 0)
+    )
+
+
 async def write_profile_for_agent(
     owner_id: str,
     agent_row: dict,
@@ -1324,6 +1338,7 @@ async def write_profile_for_agent(
         files = write_agent_profile(
             owner_id,
             agent_row,
+            gate_bearer=await agent_gate_bearer(owner_id, agent_id),
             provider_choice=inputs.provider_choice,
             paperclip_api_key=paperclip_api_key,
             integrations=inputs.integrations,

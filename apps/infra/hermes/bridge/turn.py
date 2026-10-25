@@ -2711,8 +2711,13 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
         secrets.update(overlay or {})
         # The owner bearer is boot-fetched, never trusted from an agent-editable profile .env.
         secrets.pop("LIGHTBULB_GATE_BEARER", None)
-        if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
-            secrets["LIGHTBULB_GATE_BEARER"] = os.environ["AWS_BEARER_TOKEN_BEDROCK"]
+        # The backend writes each agent's OWN gate bearer to its profile .env (metering is per
+        # agent); it wins over the boot one, which stays the fallback for a profile without it.
+        # An agent editing this can only name a bearer it already knows -- its own.
+        agent_bearer = secrets.pop("LIGHTBULB_AGENT_GATE_BEARER", None)
+        gate_bearer = agent_bearer or os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+        if gate_bearer:
+            secrets["LIGHTBULB_GATE_BEARER"] = gate_bearer
         # The bearer stays in the secret scope -- config.yaml's ${LIGHTBULB_GATE_BEARER} resolves
         # through get_secret -- but never reaches a shell child: exfiltrated, it spends the
         # owner's managed credits from anywhere (audit P1-3).

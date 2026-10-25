@@ -197,6 +197,26 @@ def test_managed_gate_bearer_comes_from_boot_secret_not_profile_dotenv(home, mon
     assert _stub_get_secret("LIGHTBULB_GATE_BEARER") is None
 
 
+def test_agents_own_gate_bearer_wins_over_boot_one_and_never_reaches_a_child(home, monkeypatch):
+    profile = sync._profile_dir("ceo")
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / ".env").write_text("PAPERCLIP_API_KEY=pcp_live_x\nLIGHTBULB_AGENT_GATE_BEARER=agent-bearer\n")
+    fake_agent_pkg = types.ModuleType("agent")
+    fake_ss = types.ModuleType("agent.secret_scope")
+    fake_ss.build_profile_secret_scope = _stub_build_profile_secret_scope
+    fake_ss.set_secret_scope = _stub_set_secret_scope
+    fake_ss.reset_secret_scope = _stub_reset_secret_scope
+    monkeypatch.setitem(sys.modules, "agent", fake_agent_pkg)
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", fake_ss)
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "boot-gate-bearer")
+    declared = []
+    monkeypatch.setattr(turn, "_declare_child_env_names", lambda names: declared.extend(names))
+
+    with turn._secret_scope("ceo"):
+        assert _stub_get_secret("LIGHTBULB_GATE_BEARER") == "agent-bearer"
+    assert "LIGHTBULB_AGENT_GATE_BEARER" not in declared and "LIGHTBULB_GATE_BEARER" not in declared
+
+
 def test_native_paperclip_identity_overlays_profile_secrets_without_process_leak(home, monkeypatch):
     profile = sync._profile_dir("ceo")
     profile.mkdir(parents=True, exist_ok=True)

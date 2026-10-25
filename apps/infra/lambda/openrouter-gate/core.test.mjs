@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handleRequest, prepareBody } from './core.mjs';
+import { createHash } from 'node:crypto';
+import { handleRequest, prepareBody, authenticateOwner } from './core.mjs';
 
 const policy = { revision: 'test-1', models: ['anthropic/claude-sonnet-4.5', 'openrouter/auto'], auto: { allowed_models: ['anthropic/claude-sonnet-4.5'], cost_tier: 'low' }, max_price: { prompt: 0.5, completion: 2 }, max_prompt_tokens: 100000 };
 const env = { TOKENS_TABLE: 'tokens', BILLING_TABLE: 'billing', FAST_GATE_TABLE: 'fast', OPENROUTER_KEYS_TABLE: 'keys', REQUESTS_TABLE: 'requests', RESERVE_ESTIMATE_MICROCENTS: '300000', RESERVE_TTL_SECONDS: '1200', MODEL_POLICY_JSON: JSON.stringify(policy), MAX_BODY_BYTES: '100000', MAX_OUTPUT_TOKENS: '8192', OPENROUTER_MARKUP: '1.2' };
@@ -31,6 +32,20 @@ function fixture({ token = 'good', status = 'active', balance = 1000000, provide
   return { calls, deps, responder, event };
 }
 
+test('authenticateOwner resolves a per-agent bearer to {ownerId, agentId}; a legacy owner bearer gets agentId null; unknown 401s; denied 403s', async () => {
+  const hashOf = (t) => createHash('sha256').update(t).digest('hex');
+  const byHash = {
+    [hashOf('agent')]: { owner_id: AV('owner-1'), agent_id: AV('agent-7') },
+    [hashOf('owner')]: { owner_id: AV('owner-1') },
+    [hashOf('denied')]: { owner_id: AV('owner-1'), agent_id: AV('agent-7'), denied: { BOOL: true } },
+  };
+  const ddb = { async getItem(p) { return { Item: byHash[p.Key.token_hash.S] }; } };
+  const ev = (t) => ({ headers: { authorization: `Bearer ${t}` } });
+  assert.deepEqual(await authenticateOwner(ev('agent'), ddb, env), { ownerId: 'owner-1', agentId: 'agent-7' });
+  assert.deepEqual(await authenticateOwner(ev('owner'), ddb, env), { ownerId: 'owner-1', agentId: null });
+  await assert.rejects(authenticateOwner(ev('forged'), ddb, env), { status: 401 });
+  await assert.rejects(authenticateOwner(ev('denied'), ddb, env), { status: 403 });
+});
 test('rejects unknown bearer before billing or upstream', async () => { const f = fixture({ token: 'wrong' }); await handleRequest(f.event(), f.responder, f.deps); assert.equal(f.calls.errors[0].status, 401); assert.equal(f.calls.forwards.length, 0); });
 test('zero-price model records a free outbox without a Metronome reservation', async () => { const f = fixture({ balance: null }); f.deps.env = { ...env, MODEL_POLICY_JSON: JSON.stringify({ ...policy, models: ['nvidia/nemotron-3-ultra-550b-a55b:free'], max_price: { prompt: 0, completion: 0 } }) }; await handleRequest(f.event({ model: 'nvidia/nemotron-3-ultra-550b-a55b:free', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors.length, 0, f.calls.errors[0]?.message); assert.equal(f.calls.forwards.length, 1); assert.equal(f.calls.puts.length, 1); assert.equal(f.calls.puts[0].Item.reservation_microcents.N, '0'); assert.equal(f.calls.puts[0].Item.billing_mode.S, 'free'); });
 test('trial_local owner may use only the zero-price policy without a provider choice or Metronome contract', async () => { const f = fixture({ balance: null, status: 'trial_local', provider: 'none' }); f.deps.env = { ...env, MODEL_POLICY_JSON: JSON.stringify({ ...policy, models: ['nvidia/nemotron-3-ultra-550b-a55b:free'], max_price: { prompt: 0, completion: 0 } }) }; await handleRequest(f.event({ model: 'nvidia/nemotron-3-ultra-550b-a55b:free', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors.length, 0, f.calls.errors[0]?.message); assert.equal(f.calls.forwards.length, 1); });

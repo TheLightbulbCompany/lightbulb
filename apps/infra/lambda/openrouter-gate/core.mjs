@@ -35,14 +35,15 @@ async function keyIsSpent(key, keyInfoImpl) {
 }
 
 // Shared by chat and the models-list probe: same bearer -> owner_id -> denied check.
-async function authenticateOwner(event, ddb, env) {
+// Returns {ownerId, agentId}; agentId is null for a legacy owner-level bearer (a mid-roll runtime).
+export async function authenticateOwner(event, ddb, env) {
   const bearer = /^(?:Bearer)\s+(\S+)$/i.exec(event.headers?.authorization ?? event.headers?.Authorization ?? '')?.[1];
   if (!bearer) fail(401, 'Invalid gateway token');
   const hash = createHash('sha256').update(bearer).digest('hex');
   const token = (await ddb.getItem({ TableName: env.TOKENS_TABLE, Key: { token_hash: { S: hash } }, ConsistentRead: true }))?.Item;
   const ownerId = S(token, 'owner_id');
   if (!ownerId || token?.denied?.BOOL) fail(token?.denied?.BOOL ? 403 : 401, 'Invalid gateway token');
-  return ownerId;
+  return { ownerId, agentId: S(token, 'agent_id') || null };
 }
 const routeFields = ['models', 'plugins', 'provider', 'route', 'user', 'metadata', 'trace', 'debug', 'service_tier', 'modalities', 'audio', 'prediction'];
 const isTextPart = part => part?.type === 'text' && typeof part.text === 'string' && Object.keys(part).every(key => key === 'type' || key === 'text');
@@ -127,7 +128,7 @@ export function prepareBody(input, policy, ownerId, env) {
 }
 
 export async function handleRequest(event, responder, { ddb, secrets, env, forwardImpl = forward, keyInfoImpl = keyInfo, log = console.log }) {
-  let ownerId, estimate, requestId, model;
+  let ownerId, agentId, estimate, requestId, model;
   try {
     const method = event.requestContext?.http?.method ?? event.httpMethod;
     // Hermes's OpenAI-compatible "custom" provider resolves context length for a base_url it
@@ -135,7 +136,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     // when base_url already ends in "/v1", the stripped "<host>/models" too (agent/model_metadata.py
     // fetch_endpoint_model_metadata) -- both land here as pre-auth 404s. Answer them instead.
     if (method === 'GET' && (event.rawPath === '/v1/models' || event.rawPath === '/models')) {
-      ownerId = await authenticateOwner(event, ddb, env);
+      ({ ownerId, agentId } = await authenticateOwner(event, ddb, env));
       const policy = JSON.parse(env.MODEL_POLICY_JSON);
       const data = (policy.models ?? []).map(id => ({ id, object: 'model', owned_by: 'lightbulb' }));
       responder.writeHead(200, { 'content-type': 'application/json' });
@@ -144,7 +145,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       return;
     }
     if (method !== 'POST' || event.rawPath !== '/v1/chat/completions') fail(404, 'Unknown route');
-    ownerId = await authenticateOwner(event, ddb, env);
+    ({ ownerId, agentId } = await authenticateOwner(event, ddb, env));
     const billing = (await ddb.getItem({ TableName: env.BILLING_TABLE, Key: { owner_id: { S: ownerId } }, ConsistentRead: true }))?.Item;
     const status = S(billing, 'subscription_status');
     // Capped traffic costs real money now: an EXPIRED trial and a lapsed Base are refused
@@ -252,7 +253,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     }
   } catch (error) {
     const gateError = error instanceof GateError ? error : new GateError(502, 'Inference gateway unavailable');
-    log(JSON.stringify({ status: gateError.status, code: gateError.code ?? null, message: gateError.message, owner_id: ownerId ?? null, model: model ?? null, request_id: requestId ?? null, cause: error instanceof GateError ? null : String(error?.name ?? 'Error') }));
+    log(JSON.stringify({ status: gateError.status, code: gateError.code ?? null, message: gateError.message, owner_id: ownerId ?? null, agent_id: agentId ?? null, model: model ?? null, request_id: requestId ?? null, cause: error instanceof GateError ? null : String(error?.name ?? 'Error') }));
     if (!responder.headersSent()) responder.error(gateError);
     else responder.end();
   }

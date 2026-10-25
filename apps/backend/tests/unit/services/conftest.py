@@ -27,6 +27,14 @@ from moto import mock_aws  # noqa: E402
 from core.services import marketplace_service  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_agent_gate_bearer(monkeypatch):
+    """Profile writes mint a per-agent gate bearer from the containers row; service tests that
+    write profiles mock the stores around them, not that lookup. Tests of the bearer itself live
+    in tests/unit/billing/test_agent_gate_bearer.py."""
+    monkeypatch.setattr("core.services.hermes_provisioning.agent_gate_bearer", AsyncMock(return_value=None))
+
+
 @pytest.fixture
 def dynamodb_table():
     """Moto-backed listings table with the prod schema (HASH listing_id +

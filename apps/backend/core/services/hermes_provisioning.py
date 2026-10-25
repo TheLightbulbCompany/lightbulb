@@ -739,16 +739,20 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
 
 
 async def _ensure_network_member(owner_id: str) -> None:
-    """Write ``sessions.json`` when it is absent, so every workspace is a member of the
-    ``lightbulb`` network from provision on. Best-effort: a network hiccup never fails a
-    provision, and the next reconcile (or a Settings connect) writes it. On a fresh provision the
-    roster is still empty here; ``write_profiles`` republishes it once the roster is seeded."""
+    """Write ``sessions.json``, so every workspace is a member of the ``lightbulb`` network from
+    provision on, and rewrite it when it exists so each provision, reconcile and roll carries the
+    current ``members`` (the people the workspace's agents answer; a file written before that
+    field existed would otherwise leave the gate off and hold every member's message).
+    Best-effort: a network hiccup never fails a provision. On a fresh provision the roster is
+    still empty here; ``write_profiles`` republishes it once the roster is seeded."""
     if not settings.OWNER_STATE_BUCKET:
         return
     from core.services import network_member
 
     try:
-        if not await network_member.sessions_exist(owner_id):
+        if await network_member.sessions_exist(owner_id):
+            await network_member.publish_sessions(owner_id)
+        else:
             await network_member.write_sessions(owner_id)
     except Exception:  # noqa: BLE001
         logger.warning("network sessions write failed for owner=%s", owner_id, exc_info=True)

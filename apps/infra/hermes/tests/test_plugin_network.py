@@ -39,6 +39,12 @@ def test_send_derives_from_from_the_turns_agent_not_the_model(net):
     assert net == [("send", {"from": "friday", "to": "mac-prasiddha", "text": "hi", "request_id": "m1:net:1"})]
 
 
+def test_a_reply_needs_no_to(net):
+    lightbulb._network({"action": "send", "text": "OK", "reply_to": "wsl-1"}, session_id=SESSION)
+    assert net == [("send", {"from": "friday", "text": "OK", "request_id": "m1:net:1", "reply_to": "wsl-1"})]
+    assert "required" in lightbulb._network({"action": "send", "text": "OK"}, session_id=SESSION)
+
+
 def test_an_agent_without_a_declared_session_is_told_so(net, monkeypatch):
     monkeypatch.setattr(network, "_sessions", {"sessions": [{"name": "ceo", "agentId": "a-ceo"}]})
     assert _send() == lightbulb.NETWORK_NO_SESSION

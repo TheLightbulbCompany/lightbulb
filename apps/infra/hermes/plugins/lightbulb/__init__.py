@@ -383,7 +383,9 @@ NETWORK_SCHEMA = {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["send", "receipt", "directory"]},
-            "to": {"type": "string", "description": "The session name to send to (from directory)."},
+            "to": {"type": "string", "description": "The session name to send to (from directory). "
+                                                  "Leave it out to answer a message: reply_to alone "
+                                                  "sends to its sender."},
             "text": {"type": "string", "maxLength": 8192},
             "reply_to": {"type": "string", "description": "The message id this answers."},
             "request_id": {"type": "string", "description": "Omit on send (one is made for you); "
@@ -432,12 +434,14 @@ def _network(args: dict, *, session_id: str = "", **_kw) -> str:
         if not sender:
             return NETWORK_NO_SESSION
         to, text = str(args.get("to") or "").strip(), str(args.get("text") or "").strip()
-        if not to or not text:
-            return "to and text are required."
+        if not text or not (to or args.get("reply_to")):
+            return "text, and to or reply_to, are required."
         request_id = str(args.get("request_id") or "") or _next_request_id(session_id)
         if not _OPAQUE_RE.match(request_id):
             return "request_id must be an opaque token."
-        body = {"from": sender, "to": to, "text": text, "request_id": request_id}
+        body = {"from": sender, "text": text, "request_id": request_id}
+        if to:  # without it the engine sends the reply to the sender of reply_to
+            body["to"] = to
         if args.get("reply_to"):
             body["reply_to"] = str(args["reply_to"])
         return json.dumps(network.ask("send", body))

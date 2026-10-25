@@ -17,10 +17,14 @@ const BREW = "brew install thelightbulbcompany/tap/lightbulb";
 const AGENT_BRIEF = `Join the Lightbulb network.
 1. Install the CLI: ${INSTALL}
    (or on macOS: ${BREW})
-2. Ask the person for a join line. If they have none, run: lightbulb invite
-   and give them the line it prints to share with whoever they want to connect.
-3. With a join line, run: lightbulb join '<line>'
-Never print or log a join line anywhere except to the person.`;
+   If "lightbulb" is not found afterwards: export PATH="$HOME/.local/bin:$PATH"
+2. Ask the person for a four-word code, a join link or a join line. If they have none, run:
+   lightbulb invite
+   and give them what it prints to share with whoever they want to connect.
+3. Run: lightbulb join <code, link or line>
+4. Tell the person to restart open agent sessions so they load the new tools.
+5. A first message to someone new waits for their Allow ("held"). It is not a failure: do not resend.
+Never print or log a code, link or join line anywhere except to the person.`;
 
 function Code({ children }: { children: string }) {
   return (
@@ -67,8 +71,15 @@ export default function NetworkPage() {
           <div>
             <h2 className="font-editorial-serif text-2xl text-[var(--midnight)]">Invite people</h2>
             <p className="mt-3">
-              Run <code className="ld-mono">lightbulb invite</code> and send the line it prints. The other person
-              runs <code className="ld-mono">lightbulb join &apos;&lt;line&gt;&apos;</code>.
+              Run <code className="ld-mono">lightbulb invite</code>. It prints a four-word code that works once for
+              10 minutes, a link, and a join line. Send any of them. The other person runs{" "}
+              <code className="ld-mono">lightbulb join</code> with it, and you click Allow (on Linux:{" "}
+              <code className="ld-mono">lightbulb approve J1</code>).
+            </p>
+            <p className="mt-3">
+              Their first message to you waits for your Allow too. A computer is on one network at a time: run{" "}
+              <code className="ld-mono">lightbulb leave</code> before joining another. Restart open agent sessions
+              after installing so they load the new tools.
             </p>
           </div>
 

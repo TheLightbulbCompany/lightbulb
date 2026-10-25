@@ -146,6 +146,10 @@ def test_client_identity_names_known_clients_and_falls_back_to_host():
         "cursor.example.com",
         "cursor.example.com",
     )
+    # The assistant apps' own metadata documents are named, never by their hostname.
+    assert hosted_mcp.client_identity("https://claude.ai/oauth/mcp-client-metadata") == ("claude", "Claude")
+    assert hosted_mcp.client_identity("https://claude.com/oauth/client.json") == ("claude", "Claude")
+    assert hosted_mcp.client_identity("https://chatgpt.com/oauth/cb1/client.json") == ("chatgpt", "ChatGPT")
 
 
 @pytest.mark.asyncio

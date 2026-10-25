@@ -176,7 +176,12 @@ async def app_call(auth, slug: str, client: str, op: str, **fields) -> Any:
         )
     if not any(s.get("name") == f"{slug}-{person}" for s in _app_entries(doc)):
         await _declare(owner_id, auth.user_id, slug, client, doc)
-    params = {"op": op, "app": slug, "person": person, **fields}
+    if not await _session_is_warm(owner_id):
+        # API Gateway cuts a request at 30 s and a cold start takes ~55 s: answer at once and
+        # let the work queue's wake start it (the same doorbell a Mac rings).
+        await wake(owner_id)
+        raise ApiProblem("RUNTIME_UNAVAILABLE", "The workspace is starting.")
+    params = {**fields, "op": op, "app": slug, "person": person}  # never overridden by a field
     try:
         return await container_rpc.call(owner_id, "network.app", params)
     except RuntimeError as exc:
@@ -448,8 +453,6 @@ async def ring(token: str) -> bool:
     """False when the token is not a workspace's doorbell (the route answers 404, nothing written).
     True otherwise; at most one wake per workspace per ``WAKE_WINDOW_S`` reaches the work queue.
     The token is a credential: never logged."""
-    from botocore.exceptions import ClientError
-
     from core.repositories import messaging_repo
 
     owner_id, dot, _ = token.partition(".")
@@ -461,6 +464,28 @@ async def ring(token: str) -> bool:
     digest = _token_hash(token)
     if not row or not hmac.compare_digest(str(row.get("tokenHash") or ""), digest):
         return _refused()
+    await _queue_wake(owner_id, digest)
+    return True
+
+
+async def wake(owner_id: str) -> None:
+    """Start a parked workspace without waiting for it (``ring``'s queue and window, keyed by
+    the stored doorbell hash). No doorbell row: not a member, nothing to wake."""
+    from core.repositories import messaging_repo
+
+    key = _netwake_key(owner_id)
+    row = await messaging_repo._get(key["pk"], key["sk"])
+    if row and row.get("tokenHash"):
+        await _queue_wake(owner_id, str(row["tokenHash"]))
+
+
+async def _queue_wake(owner_id: str, digest: str) -> None:
+    """At most one ``network_wake`` per workspace per ``WAKE_WINDOW_S`` reaches the work queue."""
+    from botocore.exceptions import ClientError
+
+    from core.repositories import messaging_repo
+
+    key = _netwake_key(owner_id)
     now = int(time.time())
     ulid = f"{now * 1000:012x}{uuid.uuid4().hex[:20]}"
     table_name = messaging_repo._table().name
@@ -498,6 +523,5 @@ async def ring(token: str) -> bool:
         if not messaging_repo.is_cancelled(exc):
             raise
         logger.info("network wake skipped (within %ss) owner=%s", WAKE_WINDOW_S, owner_id)
-        return True
+        return
     logger.info("network wake queued owner=%s", owner_id)
-    return True

@@ -506,9 +506,11 @@ def _network_app(params: dict, **_kwargs) -> dict:
     op = params.get("op")
     if op == "directory":
         return _net("network.app", "directory", _pick(params, "query"))
-    if op in ("send", "inbox", "receipt"):
+    # inbox {peek: true} leaves the mail until the backend acks the ids it answered with.
+    if op in ("send", "inbox", "ack", "unread", "receipt"):
         return _net("network.app", f"app.{op}", {k: v for k, v in params.items() if k != "op"})
-    return {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "op must be send|inbox|receipt|directory"}}
+    return {"ok": False, "error": {"code": "INVALID_REQUEST",
+                                   "message": "op must be send|inbox|ack|unread|receipt|directory"}}
 
 
 def _network_sessions(params: dict, **_kwargs) -> dict:

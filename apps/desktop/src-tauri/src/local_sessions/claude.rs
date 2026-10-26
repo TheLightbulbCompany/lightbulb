@@ -894,6 +894,23 @@ fn tool_result(block: &Value, row: &Value, ts: Option<&str>, id: Option<&str>) -
     e
 }
 
+/// A result row names only its call's `tool_use_id`, so the ids of private calls
+/// (`native_mcp::private_call`) are kept in the reader's state until their result is blanked;
+/// the result may come in a later batch.
+pub(super) fn hide_private_results(private: &mut std::collections::BTreeSet<String>, events: &mut [Value]) {
+    for e in events.iter_mut() {
+        if e["tool"]["name"].as_str().is_some_and(super::native_mcp::private_call) {
+            if let Some(id) = e["itemId"].as_str() {
+                private.insert(id.to_owned());
+            }
+        } else if e["parentId"].as_str().is_some_and(|id| private.remove(id)) {
+            e["text"] = json!("Lightbulb message result");
+            e["tool"]["result"] = json!({});
+            e["tool"]["lines"] = json!(0);
+        }
+    }
+}
+
 /// Claude 2.1.27x+ records a peer delivery as `isMeta`; ours (a Lightbulb-labelled follow-up)
 /// is still a real prompt. Any other meta row stays hidden.
 fn lightbulb_peer(row: &Value) -> bool {
@@ -1806,6 +1823,7 @@ mod tests {
             cursor: Cursor {
                 offset: meta.len(),
                 inode: Some(meta.ino()),
+                ..Cursor::default()
             },
             text: "unique".into(),
         };
@@ -1833,6 +1851,7 @@ mod tests {
             cursor: Cursor {
                 offset: 0,
                 inode: Some(fs::metadata(&path).unwrap().ino()),
+                ..Cursor::default()
             },
             ..ingress
         };
@@ -1848,6 +1867,26 @@ mod tests {
             .block_on(await_admission(Path::new("/unused"), &ingress));
         writer.join().unwrap();
         assert!(admitted.is_some(), "a row written after the send is admission");
+    }
+
+    #[test]
+    fn local_sessions_claude_hides_a_private_tool_result_by_its_tool_use_id() {
+        let call = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"a9",
+            "message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_9","name":"mcp__lightbulb__check_inbox","input":{}}]}});
+        let reply = |id: &str| json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u9","toolUseResult":[{"type":"text","text":"hi from Aden"}],
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":id,"content":[{"type":"text","text":"hi from Aden"}]}]}});
+        let mut private = std::collections::BTreeSet::new();
+        // The call and its result arrive in different batches.
+        let mut first = normalize("s", &call).unwrap();
+        hide_private_results(&mut private, &mut first);
+        let mut second = normalize("s", &reply("toolu_9")).unwrap();
+        hide_private_results(&mut private, &mut second);
+        assert_eq!(second[0]["text"], "Lightbulb message result");
+        assert!(!second[0].to_string().contains("hi from Aden"), "{}", second[0]);
+        assert!(private.is_empty(), "an id is dropped once its result is hidden");
+        let mut other = normalize("s", &reply("toolu_other")).unwrap();
+        hide_private_results(&mut private, &mut other);
+        assert!(other[0].to_string().contains("hi from Aden"), "another tool's result is shown");
     }
 
     #[test]

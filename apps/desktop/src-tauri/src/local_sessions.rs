@@ -9,9 +9,7 @@ mod native_mcp;
 mod native_tools;
 mod mod_socket;
 pub(crate) mod plugin;
-pub(crate) mod held_notice;
 mod presence;
-pub use native_mcp::serve_mcp;
 
 /// The shared session a browser connection comes from (session_browser), or why not.
 pub(crate) fn shared_session_for(scope: &Path, ancestors: &[u32]) -> Result<String> {
@@ -923,7 +921,7 @@ impl Journal {
                         return Err("partial transcript boundary".into());
                     }
                 }
-                Cursor { offset: meta.len(), inode: Some(meta.ino()) }
+                Cursor { offset: meta.len(), inode: Some(meta.ino()), ..Cursor::default() }
             }
         };
         receipt.ingress = Some(Ingress {
@@ -972,6 +970,9 @@ impl Journal {
 struct Cursor {
     offset: u64,
     inode: Option<u64>,
+    /// Claude private tool calls whose results are still to come (`claude::hide_private_results`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    private: std::collections::BTreeSet<String>,
 }
 
 #[derive(Deserialize)]
@@ -2055,11 +2056,12 @@ impl Mirror {
             let from = cursor.offset;
             for row in cursor.read(path, &self.native.provider)? {
                 stats.observe(&self.native.provider, &row);
-                let events = normalize_public_message(
+                let mut events = normalize_public_message(
                     &self.native.provider,
                     &self.native.conversation,
                     &row,
                 )?;
+                claude::hide_private_results(&mut cursor.private, &mut events);
                 for event in events {
                     enqueue(&mut queue, event);
                 }
@@ -2173,10 +2175,11 @@ impl Mirror {
             let session = if native.provider == "claude" { &native.conversation } else { id };
             let mut cursor = sub.cursor.clone();
             let read = cursor.read(path, &native.provider).and_then(|rows| {
-                let events = rows.iter().try_fold(vec![], |mut all, row| {
+                let mut events = rows.iter().try_fold(vec![], |mut all, row| {
                     all.extend(normalize_public_message(&native.provider, session, row)?);
                     Ok::<_, String>(all)
                 })?;
+                claude::hide_private_results(&mut cursor.private, &mut events);
                 Ok((rows, events))
             });
             match read {

@@ -62,13 +62,6 @@ pub(super) struct Entry {
 
 static PRESENCE: Mutex<BTreeMap<String, Entry>> = Mutex::new(BTreeMap::new());
 
-/// Rung after every change: the request notifications (`held_notice`) follow presence.
-static CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
-
-/// Resolves once presence changed since the last wait.
-pub(super) async fn changed() {
-    CHANGED.notified().await
-}
 
 /// Tests share the one global map; each takes this first.
 #[cfg(test)]
@@ -106,7 +99,6 @@ pub(super) fn offer_ack(ack: &Value, sids: &[String]) {
             None => {}
         }
     }
-    CHANGED.notify_one();
 }
 
 /// A new heartbeat round names every session this Mac still reports: forget the rest.
@@ -114,7 +106,6 @@ pub(super) fn retain(sids: &[String]) {
     if let Ok(mut map) = PRESENCE.lock() {
         map.retain(|sid, _| sids.contains(sid));
     }
-    CHANGED.notify_one();
 }
 
 /// The session ids one heartbeat frame carries.
@@ -128,7 +119,6 @@ pub(super) fn offer_frame(body: &Value) {
         if let Ok(mut map) = PRESENCE.lock() {
             offer(&mut map, sid, entry);
         }
-        CHANGED.notify_one();
     }
 }
 
@@ -169,7 +159,6 @@ pub(super) fn decided(sid: &str, payload: &Value, session: &Value) {
         }
     }
     drop(map);
-    CHANGED.notify_one();
 }
 
 #[cfg(test)]

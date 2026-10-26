@@ -287,7 +287,7 @@ impl Controller {
         self.serves(data)
     }
 
-    /// `lightbulb join` installed the launch agent while the window runs the service: stop our
+    /// `lightbulb pair` installed the launch agent while the window runs the service: stop our
     /// run first, then let go of `serve.lock` so `serve` takes it. True when it handed over.
     pub(crate) async fn hand_over_to_agent(&self, data: &Path, agent: &Path) -> bool {
         if !agent.exists() || !self.service.lock().is_ok_and(|held| held.is_some()) {
@@ -386,10 +386,7 @@ impl Controller {
                     socket,
                     scope,
                 } = prepared;
-                let native_tools = super::native_tools::serve(scope.clone(), enrollment.clone(), identity.clone());
                 let mod_socket = super::mod_socket::serve(scope.clone(), enrollment.clone(), identity.clone());
-                // Whoever runs local sessions posts their requests' notifications (Task 7b).
-                let notices = super::held_notice::run(scope.clone(), enrollment.clone());
                 // Pick-up snapshots run on their OWN task: sharing one `select!` with the
                 // relay would stall every relay frame while a snapshot does its work.
                 let snapshots = super::snapshot::run(
@@ -424,7 +421,7 @@ impl Controller {
                     // ends only itself.
                     let _snapshots = AbortOnDrop(tauri::async_runtime::spawn(snapshots));
                     let _resumes = AbortOnDrop(tauri::async_runtime::spawn(resumes));
-                    let _sockets = serve_sockets(vec![Box::pin(native_tools), Box::pin(mod_socket), Box::pin(notices)]);
+                    let _sockets = serve_sockets(vec![Box::pin(mod_socket)]);
                     let hooks = async move {
                         let mut bytes = [0u8; 2048];
                         loop {
@@ -609,7 +606,7 @@ pub(crate) fn launch_scope(state_dir: &Path) -> Result<String> {
 pub(crate) fn session_scope(state_dir: &Path) -> Result<PathBuf> {
     Ok(state_dir.join(launch_scope(state_dir)?))
 }
-/// `lightbulb join`'s write: the same private enrollment.json the window's enable writes.
+/// `lightbulb pair`'s write: the same private enrollment.json the window's enable writes.
 pub(crate) fn save_enrollment(state_dir: &Path, enrollment: &Enrollment) -> Result<()> {
     private_write(&state_dir.join("enrollment.json"), enrollment)
 }
@@ -679,10 +676,8 @@ fn silence(fd: std::os::unix::io::RawFd) {
 /// authority. The one exception to "never a decision" is a Claude permission
 /// prompt the app holds for a remote answer (owner ruling 2026-09-25): that
 /// path keeps a private copy of stdout and writes to it only a decision
-/// `approval::hold` built for that exact prompt. Codex's PostToolUse writes to
-/// that copy only `additionalContext`, the notice of a waiting request (Task 7b),
-/// never a decision. Every other path loses stdout before a byte of stdin is
-/// read (see [`silence`]).
+/// `approval::hold` built for that exact prompt. Every other path loses stdout
+/// before a byte of stdin is read (see [`silence`]).
 pub fn hook(provider: &str) {
     let answer = unsafe { libc::dup(HOOK_DECISION_FD) };
     silence(HOOK_DECISION_FD);
@@ -705,9 +700,7 @@ pub fn hook(provider: &str) {
 }
 
 /// A Cursor or Grok CLI hook (agent network phase 2): it registers its session, wakes the app,
-/// and, on a hook whose output reaches the model, hands over what waits for the session: its
-/// letters, then the one-line notice of a request waiting on its person (Task 7b), which
-/// nothing here answers.
+/// and, on a hook whose output reaches the model, hands over the letters that wait for the session.
 fn hooked_hook(provider: &str, event: &str, json: serde_json::Value, answer: std::os::unix::io::RawFd, wake: &Path, home: &Path, source: Option<&super::lifecycle::HookProcess>) {
     let close = |fd: std::os::unix::io::RawFd| if fd >= 0 { unsafe { libc::close(fd) }; };
     let Some(json) = super::hooked::normalize(provider, event, json) else { return close(answer) };
@@ -720,8 +713,7 @@ fn hooked_hook(provider: &str, event: &str, json: serde_json::Value, answer: std
     if answer < 0 || !super::hooked::takes_mail(provider, canonical) {
         return close(answer);
     }
-    let mut lines = super::hooked::drain(&dir, provider, session);
-    lines.extend(super::held_notice::ask_app(&wake.with_file_name("mod.sock"), session));
+    let lines = super::hooked::drain(&dir, provider, session);
     if lines.is_empty() {
         return close(answer);
     }
@@ -735,37 +727,23 @@ fn hooked_hook(provider: &str, event: &str, json: serde_json::Value, answer: std
 /// One hook after its stdin is read; `parent` is the hook's parent process.
 fn hook_input(
     provider: &str,
-    mut json: serde_json::Value,
+    json: serde_json::Value,
     parent: u32,
     holders: &[HolderInfo],
     answer: std::os::unix::io::RawFd,
     wake: &Path,
 ) {
-    super::native_mcp::canonical_hook(&mut json);
     if answer >= 0 && super::approval::holdable(provider, &json) {
         super::approval::hold(wake, provider, &json, answer);
         return;
     }
-    // Codex's PostToolUse runs only to tell the agent about a request waiting on its person
-    // (Task 7b): one line per request, once, and nothing that answers it.
-    if provider == "codex" && json["hook_event_name"] == "PostToolUse" {
-        if answer >= 0 {
-            let session = json["session_id"].as_str().unwrap_or("");
-            let lines = super::held_notice::ask_app(&wake.with_file_name("mod.sock"), session);
-            if let Some(out) = super::held_notice::hook_output(&lines) {
-                use std::io::Write;
-                use std::os::unix::io::FromRawFd;
-                // SAFETY: `answer` is this hook's own dup of stdout, owned and closed here.
-                let mut stdout = unsafe { fs::File::from_raw_fd(answer) };
-                let _ = stdout.write_all(out.to_string().as_bytes());
-            } else {
-                unsafe { libc::close(answer) };
-            }
-        }
-        return;
-    }
     if answer >= 0 {
         unsafe { libc::close(answer) };
+    }
+    // Codex's PostToolUse hook told the agent about held requests, which no longer exist (agents
+    // message through the engine); an installed one says nothing and is not a lifecycle event.
+    if provider == "codex" && json["hook_event_name"] == "PostToolUse" {
+        return;
     }
     // Discovery names a held Codex by the thread its own start hook records here.
     if provider == "codex" && json["hook_event_name"] == "SessionStart" {
@@ -883,7 +861,7 @@ fn provider_status(home: &Path, executable: &Path) -> Value {
     };
     let row = |provider: &str| json!({
         "cli": super::provider_program(home, provider).is_some(),
-        "mcp": super::native_mcp::status(home, executable, provider),
+        "mcp": super::native_mcp::status(home, provider),
         "hooks": hooks(provider),
     });
     json!({"claude": row("claude"), "codex": row("codex")})
@@ -1305,8 +1283,9 @@ fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> 
     if let Err(reason) = codex::configure_hooks(home, executable, true) {
         notes.push(format!("Codex hooks were not installed ({reason})"));
     }
-    notes.extend(super::native_mcp::configure(home, executable, true));
+    // hooked.rs first: native_mcp takes out the `session-mcp` entry it writes for Cursor and Grok.
     notes.extend(super::hooked::configure(home, executable, true));
+    notes.extend(super::native_mcp::configure(home, executable, true));
     if moved {
         if let Err(reason) = private_write(&record, &executable) {
             notes.push(format!("the hook executable record was not updated ({reason})"));
@@ -1435,43 +1414,54 @@ mod tests {
         assert!(none, "a holder whose provider is another process does not match");
     }
 
-    /// Task 7b: Codex's PostToolUse hook writes only the app's notice lines, as context, and no
-    /// lifecycle datagram; with nothing to tell, it writes nothing.
+    /// Codex's PostToolUse hook (installed for the retired held-request notice) writes nothing
+    /// and sends no lifecycle datagram.
     #[test]
-    fn local_sessions_codex_post_tool_use_hook_relays_the_notice_and_nothing_else() {
-        use std::io::{Read, Write};
+    fn local_sessions_codex_post_tool_use_hook_says_nothing() {
+        use std::io::Read;
         use std::os::unix::io::FromRawFd;
         let dir = tempfile::tempdir().unwrap();
         let wake = dir.path().join("wake.sock");
         let app = std::os::unix::net::UnixDatagram::bind(&wake).unwrap();
         app.set_nonblocking(true).unwrap();
-        let line = super::super::held_notice::notice_line("Aden's Codex");
-        let run = |lines: Vec<String>| -> String {
-            let listener = std::os::unix::net::UnixListener::bind(dir.path().join("mod.sock")).unwrap();
-            let server = std::thread::spawn(move || {
-                let (mut s, _) = listener.accept().unwrap();
-                let mut buf = [0u8; 4096];
-                let n = s.read(&mut buf).unwrap();
-                let request = String::from_utf8_lossy(&buf[..n]).to_string();
-                let body = json!({"lines": lines}).to_string();
-                s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
-                request
-            });
-            let mut fds = [0; 2];
-            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-            let stdin = json!({"hook_event_name":"PostToolUse","session_id":"thread-1","tool_name":"shell"});
-            hook_input("codex", stdin, std::process::id(), &[], fds[1], &wake);
-            let request = server.join().unwrap();
-            assert!(request.starts_with("POST /v1/notice ") && request.contains("\"sessionId\":\"thread-1\""));
-            let _ = fs::remove_file(dir.path().join("mod.sock"));
-            let mut out = String::new();
-            unsafe { fs::File::from_raw_fd(fds[0]) }.read_to_string(&mut out).unwrap();
-            out
-        };
-        let out: Value = serde_json::from_str(&run(vec![line.clone()])).unwrap();
-        assert_eq!(out, json!({"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":line}}));
-        assert_eq!(run(vec![]), "", "nothing waiting: no output at all");
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let stdin = json!({"hook_event_name":"PostToolUse","session_id":"thread-1","tool_name":"shell"});
+        hook_input("codex", stdin, std::process::id(), &[], fds[1], &wake);
+        let mut out = String::new();
+        unsafe { fs::File::from_raw_fd(fds[0]) }.read_to_string(&mut out).unwrap();
+        assert_eq!(out, "");
         assert!(app.recv(&mut [0u8; 64]).is_err(), "PostToolUse is not a lifecycle event");
+    }
+
+    /// Black box over hooked.rs's own Cursor and Grok writer: whatever it writes, a launch ends with
+    /// no `session-mcp` entry, and another program's `lightbulb` (the engine's) stays.
+    #[test]
+    fn cursor_and_grok_fixture_has_no_session_mcp_after_launch() {
+        let exe = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        let files = |h: &Path| [h.join(".cursor/mcp.json"), h.join(".grok/config.toml")].map(|p| fs::read_to_string(p).unwrap_or_default());
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        fs::create_dir_all(h.join(".cursor")).unwrap();
+        fs::create_dir_all(h.join(".grok")).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        // The fixture is not vacuous: hooked.rs on its own writes our entry into both.
+        let _ = super::super::hooked::configure(h, exe, true);
+        for (i, text) in files(h).iter().enumerate() {
+            assert!(text.contains("session-mcp"), "file {i}: {text}");
+        }
+        let _ = reassert_at(state.path(), h, exe);
+        for (i, text) in files(h).iter().enumerate() {
+            assert!(!text.contains("session-mcp"), "file {i} after launch: {text}");
+        }
+        // The engine's entry is someone else's: a launch keeps it.
+        let engine = json!({"mcpServers":{"lightbulb":{"command":"/Users/x/.lightbulb/connect/bin/lightbulb","args":["mcp"]}}});
+        fs::write(h.join(".cursor/mcp.json"), engine.to_string()).unwrap();
+        fs::write(h.join(".grok/config.toml"), "[mcp_servers.lightbulb]\ncommand = \"/Users/x/.lightbulb/connect/bin/lightbulb\"\nargs = [\"mcp\"]\n").unwrap();
+        let _ = reassert_at(state.path(), h, exe);
+        let [cursor, grok] = files(h);
+        assert_eq!(serde_json::from_str::<Value>(&cursor).unwrap()["mcpServers"]["lightbulb"], engine["mcpServers"]["lightbulb"]);
+        assert!(grok.contains("/Users/x/.lightbulb/connect/bin/lightbulb") && !grok.contains("session-mcp"), "{grok}");
     }
 
     /// Agent network phase 2: a Cursor or Grok CLI hook registers its session, wakes the app with
@@ -1583,7 +1573,7 @@ mod tests {
         assert!(window.window_serves(data.path(), &agent).unwrap(), "no agent yet: the window serves");
         assert!(!tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)));
         assert!(crate::headless::service_lock(data.path()).unwrap().is_none(), "still the window's");
-        fs::write(&agent, "plist").unwrap(); // `lightbulb join` installs it
+        fs::write(&agent, "plist").unwrap(); // `lightbulb pair` installs it
         assert!(tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)));
         assert!(window.running.lock().unwrap().is_none(), "stopped before the lock was let go");
         assert_eq!(*window.status.lock().unwrap(), "Local sharing runs in lightbulb-desktop serve.");
@@ -2230,18 +2220,16 @@ mod tests {
         fs::write(h.join(".codex/config.toml"), "").unwrap();
         assert_eq!(state("codex", "hooks"), "missing");
 
-        let server = |cmd: &str| json!({"mcpServers":{"lightbulb":{"command":cmd,"args":["session-mcp"]}}});
-        fs::write(h.join(".claude.json"), server(exe.to_str().unwrap()).to_string()).unwrap();
+        // The engine's `lightbulb` is the configured one; our old `session-mcp` entry is not.
+        let server = |cmd: &str, arg: &str| json!({"mcpServers":{"lightbulb":{"command":cmd,"args":[arg]}}});
+        fs::write(h.join(".claude.json"), server("/Users/x/.lightbulb/connect/bin/lightbulb", "mcp").to_string()).unwrap();
         assert_eq!(state("claude", "mcp"), "configured");
-        fs::write(h.join(".claude.json"), server("/other/server").to_string()).unwrap();
-        assert_eq!(state("claude", "mcp"), "collision");
-        // The hosted HTTP entry under the same name is a collision until enable replaces it.
-        fs::write(h.join(".claude.json"), json!({"mcpServers":{"lightbulb":{"type":"http","url":"https://api.flickmeon.ai/mcp"}}}).to_string()).unwrap();
-        assert_eq!(state("claude", "mcp"), "collision");
-        let toml = |cmd: &str| format!("[mcp_servers.lightbulb]\ncommand = \"{cmd}\"\nargs = [\"session-mcp\"]\n");
-        fs::write(h.join(".codex/config.toml"), toml(exe.to_str().unwrap())).unwrap();
+        fs::write(h.join(".claude.json"), server(exe.to_str().unwrap(), "session-mcp").to_string()).unwrap();
+        assert_eq!(state("claude", "mcp"), "missing");
+        let toml = |cmd: &str, arg: &str| format!("[mcp_servers.lightbulb]\ncommand = \"{cmd}\"\nargs = [\"{arg}\"]\n");
+        fs::write(h.join(".codex/config.toml"), toml("/Users/x/.lightbulb/connect/bin/lightbulb", "mcp")).unwrap();
         assert_eq!(state("codex", "mcp"), "configured");
-        fs::write(h.join(".codex/config.toml"), toml("/other/server")).unwrap();
-        assert_eq!(state("codex", "mcp"), "collision");
+        fs::write(h.join(".codex/config.toml"), toml(exe.to_str().unwrap(), "session-mcp")).unwrap();
+        assert_eq!(state("codex", "mcp"), "missing");
     }
 }

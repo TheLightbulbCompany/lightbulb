@@ -1091,16 +1091,18 @@ fn remove_trust(config: &str, key: &str) -> String {
 fn hook_timing(event: &str) -> (u64, bool) {
     match event {
         "SessionEnd" => (1, false),
-        // Synchronous: its output is how the agent hears a request is waiting (Task 7b).
-        "PostToolUse" => (5, false),
         _ => (5, true),
     }
 }
 
-/// The lifecycle events plus PostToolUse, which only Codex is given: Claude has its band.
+/// The lifecycle events Codex is given.
 fn codex_events() -> impl Iterator<Item = &'static str> {
-    super::claude::HOOK_EVENTS.iter().map(|(event, _)| *event).chain(["PostToolUse"])
+    super::claude::HOOK_EVENTS.iter().map(|(event, _)| *event)
 }
+
+/// Events earlier releases installed for Codex and this one removes: PostToolUse carried the
+/// retired held-request notice.
+const RETIRED_EVENTS: &[&str] = &["PostToolUse"];
 
 /// Read-only: "configured" when every lifecycle group runs `executable` and is
 /// trusted in `config.toml` (an untrusted group is skipped silently), else "missing".
@@ -1166,7 +1168,7 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
     let hooks = doc["hooks"].as_object_mut().ok_or("invalid Codex hooks")?;
     // key -> hash to trust, or None to untrust.
     let mut trust: Vec<(String, Option<String>)> = Vec::new();
-    for event in codex_events() {
+    for (event, enabled) in codex_events().map(|e| (e, enabled)).chain(RETIRED_EVENTS.iter().map(|e| (*e, false))) {
         let Some(label) = lifecycle::codex_event_label(event) else {
             continue;
         };
@@ -1415,7 +1417,7 @@ mod tests {
             "Codex has no Notification event"
         );
         let config = fs::read_to_string(fresh.path().join(".codex/config.toml")).unwrap();
-        assert_eq!(config.matches("[hooks.state.").count(), 5);
+        assert_eq!(config.matches("[hooks.state.").count(), 4);
 
         // No Codex on this Mac: nothing to install, and not an error.
         let bare = tempfile::tempdir().unwrap();
@@ -1439,15 +1441,14 @@ mod tests {
         let hooks = doc["hooks"].as_object().unwrap();
         assert_eq!(
             hooks.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "PostToolUse"],
-            "Codex installs the five shared events minus Notification, plus PostToolUse (Task 7b's notice), and nothing else"
+            ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"],
+            "Codex installs the five shared events minus Notification, and nothing else"
         );
         for (event, timeout, is_async) in [
             ("SessionStart", json!(5), json!(true)),
             ("UserPromptSubmit", json!(5), json!(true)),
             ("Stop", json!(5), json!(true)),
             ("SessionEnd", json!(1), json!(false)),
-            ("PostToolUse", json!(5), json!(false)),
         ] {
             assert_eq!(
                 hooks[event],
@@ -1463,7 +1464,6 @@ mod tests {
             (0, "user_prompt_submit", "sha256:1b9663f4792c847238b9ce60fa8356836634675cf6edcd96b9660a8bbac50d5a"),
             (0, "stop", "sha256:560328742055693cdfd246bce82c94a8b396c388029444fb0adb39b8899b547e"),
             (0, "session_end", "sha256:73824c3fd7c65d780e2b8aa1740084f4ce2090a802322de8aac307784a3698d8"),
-            (0, "post_tool_use", "sha256:0be577df5e9da83b39a4848f75b425d09b47d0100006fc1501d19a67d0c4fc6a"),
         ] {
             let key = lifecycle::codex_trust_key(&path, label, index);
             assert!(
@@ -1471,7 +1471,31 @@ mod tests {
                 "{label} trust entry moved"
             );
         }
-        assert_eq!(config.matches("[hooks.state.").count(), 5);
+        assert_eq!(config.matches("[hooks.state.").count(), 4);
+    }
+
+    /// The PostToolUse group an earlier release installed (for the retired held-request notice)
+    /// goes, with its trust entry; another tool's PostToolUse stays.
+    #[test]
+    fn local_sessions_codex_removes_our_old_post_tool_use_hook() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".codex");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hooks.json");
+        let ours = json!({"hooks":[{"type":"command","command":"'/app' local-session-hook codex","timeout":5,"async":false}]});
+        let theirs = json!({"hooks":[{"type":"command","command":"/bin/other","timeout":5,"async":false}]});
+        fs::write(&path, json!({"hooks":{"PostToolUse":[ours]}}).to_string()).unwrap();
+        let key = lifecycle::codex_trust_key(&path, "post_tool_use", 0);
+        fs::write(dir.join("config.toml"), format!("[hooks.state.\"{key}\"]\ntrusted_hash = \"sha256:0be577df5e9da83b39a4848f75b425d09b47d0100006fc1501d19a67d0c4fc6a\"\n")).unwrap();
+        configure_hooks(home.path(), Path::new("/app"), true).unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(doc["hooks"].get("PostToolUse").is_none(), "{doc}");
+        assert!(!fs::read_to_string(dir.join("config.toml")).unwrap().contains(&key));
+        assert_eq!(hooks_state(home.path(), Path::new("/app")), "configured");
+        fs::write(&path, json!({"hooks":{"PostToolUse":[theirs]}}).to_string()).unwrap();
+        configure_hooks(home.path(), Path::new("/app"), true).unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["hooks"]["PostToolUse"], json!([theirs]));
     }
 
     #[test]

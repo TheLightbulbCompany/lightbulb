@@ -83,11 +83,16 @@ export function DesktopPermissions() {
 
 export const SHARE_LIVE_LABEL = "Share every new session";
 export const SHARE_LIVE_FILES = "~/.zshrc, ~/.bashrc and your bash login file (~/.bash_profile, ~/.bash_login or ~/.profile, whichever you have)";
-export const SHARE_LIVE_DESCRIPTION = `On, while session sharing is on: every new Claude Code, Codex, Cursor or Grok CLI session on this Mac is shared with your workspace, from its start (a claude or codex you type in a new terminal tab is shared live). Off: a session is shared only when you choose to share it. Adds a marked block to ${SHARE_LIVE_FILES}; turning it off removes it.`;
+export const SHARE_LIVE_DESCRIPTION = `Every new Claude Code, Codex, Cursor or Grok CLI session on this Mac is shared with your workspace, from its start (a claude or codex you type in a new terminal tab is shared live). Set any one to Only me in its terminal or in Lightbulb. Adds a marked block to ${SHARE_LIVE_FILES}; turning sharing off removes it.`;
+/** What the one sharing switch (Settings and pairing) says before it is turned on. */
+export const SHARE_ON_SUMMARY = "On: every new Claude Code, Codex, Cursor or Grok CLI session on this Mac is shared with your workspace, from its start. Every member of your workspace, and its AI agents, can see a shared session’s live terminal and conversation. “Anyone with the link” is a separate choice you make per session, and you can switch any session back to Only me.";
 
 /** Settings row: "Share every new session" — the `claude`/`codex` shell functions (the desktop's
- *  shell_integration module). Hidden in a browser and on a desktop build without the command. */
-export function ShareEverySessionLive() {
+ *  shell_integration module). Hidden in a browser and on a desktop build without the command.
+ *  Turning session sharing on or off sets these too (`setEnabled`), so the Settings card shows this
+ *  row only on a Mac where sharing is on and the block is not (paired before the two were one, or
+ *  `lightbulb share off`). */
+export function ShareEverySessionLive({ onlyWhenOff = false }: { onlyWhenOff?: boolean }) {
   const [on, setOn] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +101,7 @@ export function ShareEverySessionLive() {
     if (!invoke) return;
     void invoke<boolean>("shell_integration_status").then(setOn).catch(() => setOn(null));
   }, []);
-  if (on === null) return null;
+  if (on === null || (onlyWhenOff && on && !busy)) return null;
   const toggle = async () => {
     const invoke = bridge();
     if (!invoke) return;
@@ -209,6 +214,9 @@ export function useLocalSessions(waitForRemoteDisable = false) {
       }
       if (operation.current !== currentOperation) return false;
       const revision = await invoke<number>("local_sessions_set", { enabled: next, token, humanUserId: userId ?? null, workspaceId: orgId ?? null });
+      // One switch: sharing on also shares every new session (the claude/codex shell block), off
+      // removes it. Best effort: a build without the command, or rc files it cannot edit, keep sharing as set.
+      await invoke("shell_integration_set", { enabled: next }).catch(() => {});
       const latest = await refresh(invoke, currentOperation);
       if (operation.current !== currentOperation) return false;
       if (!next && latest.enrollment && userId && orgId) {
@@ -273,7 +281,7 @@ export function LocalSessions() {
         <p className="settings-row-note">Sessions that are already running do not pick this up. Start a new one.</p>
       </div> : null}
       {!enabled && !recoveryPending ? <div className="settings-row-group">
-        <p className="settings-row-body">Nothing is shared until you start a session with Lightbulb, choose Share to Lightbulb in it, or turn on “{SHARE_LIVE_LABEL}”. Every member of your workspace, and its AI agents, can see a shared session’s live terminal and conversation. “Anyone with the link” is a separate choice you make per session, and you can switch any session back to Only me.</p>
+        <p className="settings-row-body">{SHARE_ON_SUMMARY} Off: nothing is shared.</p>
         <label className="settings-consent"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />I understand who can see my sessions.</label>
       </div> : null}
       <div className="settings-row-actions">
@@ -285,12 +293,12 @@ export function LocalSessions() {
       </div>
       {error ? <p className="settings-row-error" role="alert">{error}</p> : null}
     </SettingRow>
-    <ShareEverySessionLive />
+    {enabled ? <ShareEverySessionLive onlyWhenOff /> : null}
     <details className="settings-details">
       <summary>What is shared, and what this changes on your Mac</summary>
       <div className="settings-details-body">
         <p><strong>Who sees it.</strong> Every member of the workspace where sharing is on, and its AI agents, can see a shared session, and someone who joins later sees it too. Nobody outside the workspace does, unless you choose “Anyone with the link” for that session: then anyone with its link can watch its live terminal, view only. You can switch any session back to Only me. Sessions you have not shared and personal memory files stay on this Mac.</p>
-        <p><strong>What is shared.</strong> A session you start with Lightbulb (New session, <code>lightbulb claude</code>, <code>lightbulb codex</code>), every new session while Share every new session is on, and any other session once you choose Share to Lightbulb in it. Nothing of any other session leaves this Mac. A shared session is its live terminal, whole, from its start; one that runs inside the Claude or Codex app has no terminal and is shared as its conversation. A credential filter runs on this Mac, but it is not a guarantee.</p>
+        <p><strong>What is shared.</strong> While sharing is on, every new session: one you start with Lightbulb (New session, <code>lightbulb claude</code>, <code>lightbulb codex</code>) or type as <code>claude</code> or <code>codex</code> in a new terminal tab, and any older one once you choose Share to Lightbulb in it. Nothing of any other session leaves this Mac. A shared session is its live terminal, whole, from its start; one that runs inside the Claude or Codex app has no terminal and is shared as its conversation. A credential filter runs on this Mac, but it is not a guarantee.</p>
         <p><strong>Where it works.</strong> Claude Code, Codex, Cursor and Grok CLI in ordinary local macOS terminals with default profiles, not over SSH, in containers, in IDE runtimes or with custom data folders. A Codex session appears after its first prompt; a Cursor or Grok CLI session appears at its first hook and reads messages at its next tool call or turn end. For a session shared as its conversation, approvals stay on your Mac.</p>
         <p><strong>What it changes on this Mac.</strong> Sharing installs a <code>lightbulb-session-sharing</code> skill and a Claude wake hook, and this Mac serves the <code>lightbulb</code> MCP server to Claude Code, Codex, Cursor and Grok CLI in place of a hosted <code>lightbulb</code> entry. It adds hooks to <code>~/.cursor/hooks.json</code> and <code>~/.grok/hooks/lightbulb.json</code> and the MCP entry to <code>~/.cursor/mcp.json</code> and <code>~/.grok/config.toml</code>. Setup keeps a recoverable backup of each file it edits and changes no Codex launch configuration. Turning sharing off removes them and restores nothing. To use Lightbulb without the app, install the Lightbulb plugin from the <code>TheLightbulbCompany/lightbulb-plugin</code> marketplace in its place: <code>claude plugin marketplace remove lightbulb --scope user</code>, then <code>claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin</code> and <code>claude plugin install lightbulb@lightbulb</code>. Keep Lightbulb running (the menu bar counts). Changing the selected workspace does not move sharing. Anything Lightbulb cannot share (sharing off, the app closed, <code>claude -p</code>, scripts) runs as usual.</p>
       </div>

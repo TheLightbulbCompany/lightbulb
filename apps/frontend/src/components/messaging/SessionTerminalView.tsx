@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
 import { ApiError, audienceLine, NEW_SCREEN, personColor, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
 import type { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -65,7 +65,9 @@ export type SessionFrames = {
 };
 const accessGone = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404);
 
-export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false, resizable = false, kept = false, frames }: {
+export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false, resizable = false, kept = false, frames, keys }: {
+  /** Set while this view can type: sends `data` as typed keys, through the same queue and screen epoch. */
+  keys?: MutableRefObject<((data: string) => void) | null>;
   session: Pick<LocalSession, "sessionId" | "generation">;
   /** Absent, frames are read off `onEvent` with no subscription of this view's own (tests). */
   frames?: SessionFrames;
@@ -285,6 +287,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     document.addEventListener("visibilitychange", onShown);
     let pending = "";
     let frameId = 0;
+    if (keys) keys.current = (data) => { if (typing.current.canType) { pending += data; frameId ||= requestAnimationFrame(flush); } };
     // One call at a time keeps keystrokes in order; a refusal drops what is queued behind it, at once,
     // and for as long as the session is the one refused: a restarted one (a new generation) gets a new queue.
     let queue: { key: string; send: ReturnType<typeof createInputQueue> } | null = null;
@@ -451,8 +454,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       resizeTimer = setTimeout(() => sendSize.current(false), RESIZE_DEBOUNCE_MS);
     });
     if (box.current) observer?.observe(box.current);
-    return () => { alive = false; pending = ""; clearTimeout(resizeTimer); document.removeEventListener("visibilitychange", onShown); clearTimeout(typistTimer); setTypist(null); if (frameId) cancelAnimationFrame(frameId); termRef.current = null; clearTimeout(stale); clearTimeout(settle); off(); observer?.disconnect(); around?.removeEventListener("wheel", onWheel, { capture: true }); term?.dispose(); onLive(false); };
-  }, [session.sessionId, session.generation, onEvent, onLive]);
+    return () => { alive = false; pending = ""; if (keys) keys.current = null; clearTimeout(resizeTimer); document.removeEventListener("visibilitychange", onShown); clearTimeout(typistTimer); setTypist(null); if (frameId) cancelAnimationFrame(frameId); termRef.current = null; clearTimeout(stale); clearTimeout(settle); off(); observer?.disconnect(); around?.removeEventListener("wheel", onWheel, { capture: true }); term?.dispose(); onLive(false); };
+  }, [session.sessionId, session.generation, onEvent, onLive, keys]);
   return <>
     <div className="session-terminal-view session-terminal-frame" data-live={live} role="region" aria-label={canType ? "Live terminal" : "Live terminal (view only)"}>
       <div className="session-terminal-size" role="group" aria-label="Terminal size">

@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LiveEvent } from "@lightbulb/shared";
 import { type LocalSession } from "@lightbulb/shared";
 import { LocalSessionPanel } from "../LocalSessionPanel";
@@ -7,11 +7,12 @@ import { LocalSessionPanel } from "../LocalSessionPanel";
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "alice", orgId: "org_1" }) }));
 // The terminal itself is tested in SessionTerminalView.test; here it just reports that it is live.
-const typing = vi.hoisted(() => ({ canType: true, admitted: undefined as boolean | undefined, kept: undefined as boolean | undefined, mounts: 0 }));
+const typing = vi.hoisted(() => ({ canType: true, admitted: undefined as boolean | undefined, kept: undefined as boolean | undefined, mounts: 0, typed: [] as string[] }));
 vi.mock("../SessionTerminalView", async () => {
   const { useEffect } = await import("react");
-  return { SessionTerminalView: ({ onLive, onCanType, admitted, kept }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void; admitted?: boolean; kept?: boolean }) => {
+  return { SessionTerminalView: ({ onLive, onCanType, admitted, kept, keys }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void; admitted?: boolean; kept?: boolean; keys?: { current: ((d: string) => void) | null } }) => {
     typing.admitted = admitted; typing.kept = kept;
+    if (keys) keys.current = (d) => { typing.typed.push(d); };
     useEffect(() => { typing.mounts += 1; }, []);
     useEffect(() => { onLive(true); onCanType?.(typing.canType); }, [onLive, onCanType]);
     return <div role="region" aria-label="Live terminal (view only)"><div className="session-terminal-scroll" /></div>;
@@ -489,4 +490,77 @@ it("offers Open in a terminal for an app session, never for a Cursor or Grok CLI
   render(<LocalSessionPanel {...props} session={{ ...app, provider: "cursor", terminalReason: "unknown" }} />);
   expect(screen.queryByRole("button", { name: "Open in a terminal" })).toBeNull();
   expect(screen.getByText(/runs in the person's own terminal/)).toBeTruthy();
+});
+
+describe("Terminal | Conversation", () => {
+  const events = [
+    { seq: 1, truncated: false, kind: "text", role: "user", text: "fix it" },
+    { seq: 2, truncated: false, kind: "text", role: "assistant", text: "Done." }];
+  it("opens on the terminal, shows the conversation on its tab, and remembers the pick", async () => {
+    window.localStorage.clear();
+    client.listLocalSessionEvents.mockResolvedValue({ events, nextAfterSeq: null } as never);
+    const props = { ownerName: "Alice", own: true, client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+    const live = { ...session, latestEventSeq: 2 };
+    const first = render(<LocalSessionPanel {...props} session={live} />);
+    const terminalTab = await screen.findByRole("tab", { name: "Terminal" });
+    expect(terminalTab.getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByRole("region", { name: "Native session history" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Conversation" }));
+    expect(await screen.findByText("Done.")).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
+    expect(window.localStorage.getItem("lightbulb:session-view")).toBe("conversation");
+    first.unmount();
+    render(<LocalSessionPanel {...props} session={live} />);
+    expect((await screen.findByRole("tab", { name: "Conversation" })).getAttribute("aria-selected")).toBe("true");
+    window.localStorage.clear();
+    client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
+  });
+});
+
+describe("a question answered from Lightbulb", () => {
+  const asking = (questions: unknown) => ({ events: [
+    { seq: 1, truncated: false, kind: "tool", role: "assistant", text: "q", itemId: "q1", tool: { name: "AskUserQuestion", status: "running", input: { questions } } },
+    { seq: 2, truncated: false, kind: "lifecycle", role: "system", text: "q", lifecycle: "approval_pending" }], nextAfterSeq: null });
+  const props = { ownerName: "Alice", own: true, client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+  const waiting = { ...session, status: "waiting-approval" as const, latestEventSeq: 2 };
+  const tea = { question: "Tea or coffee?", options: [{ label: "Tea" }, { label: "Coffee" }] };
+
+  it("types one option's digit for a single question, and no longer says to answer in the terminal", async () => {
+    typing.typed = [];
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
+    await waitFor(() => expect(typing.typed).toEqual(["2"]));
+    expect(screen.queryByText("Answer it in the live terminal below.")).toBeNull();
+    expect(screen.getByText("Sent to the terminal.")).toBeTruthy();
+  });
+
+  it("types each pick, then Enter for the review screen, for two questions", async () => {
+    typing.typed = [];
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea, { question: "Hot or cold?", options: [{ label: "Hot" }, { label: "Cold" }] }]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hot" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send answer" }));
+    await waitFor(() => expect(typing.typed).toEqual(["2", "1", "\r"]), { timeout: 3000 });
+  });
+
+  it("toggles a multi-select question, moves on with Right, then Enter", async () => {
+    typing.typed = [];
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([{ question: "Add what?", multiSelect: true, options: [{ label: "Milk" }, { label: "Sugar" }, { label: "Honey" }] }]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Milk" }));
+    fireEvent.click(screen.getByRole("button", { name: "Honey" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send answer" }));
+    await waitFor(() => expect(typing.typed).toEqual(["1", "3", "\x1b[C", "\r"]), { timeout: 3000 });
+  });
+
+  it("keeps the terminal line when the viewer cannot type", async () => {
+    typing.canType = false;
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    expect(await screen.findByText(/this prompt can't be answered from here/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Coffee" })).toBeNull();
+    typing.canType = true;
+  });
 });

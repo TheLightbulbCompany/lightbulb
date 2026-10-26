@@ -768,3 +768,7 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 /* mermaid sizes each node for its label at ITS font size (13px), then puts the text in a <p>; the message prose rule
    above (`.room-message-content p`, 15px) would restyle that <p> and clip the last letter of every label. */
 .openui-diagram foreignObject p { font-size: inherit; line-height: inherit; margin: 0; }
+
+/* A Claude question answered from the session view: one fieldset per question. */
+.local-session-question { display: grid; gap: 8px; }
+.local-session-question fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }

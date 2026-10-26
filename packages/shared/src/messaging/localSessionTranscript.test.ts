@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { approvalInputView, buildRows, hasHiddenChars, canonicalJson, groupRows, inputDiff, lifecycleLabel, mainEvents, numberedDiff, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolActivity, toolHeader, toolRowView, type TranscriptRow, pendingApproval, sessionGlyph, GLYPH } from "./localSessionTranscript";
+import { approvalInputView, buildRows, hasHiddenChars, canonicalJson, groupRows, inputDiff, lifecycleLabel, mainEvents, numberedDiff, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolActivity, toolHeader, toolRowView, type TranscriptRow, pendingApproval, pendingQuestion, questionKeys, sessionGlyph, GLYPH } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -593,5 +593,51 @@ describe("sessionGlyph", () => {
     expect(sessionGlyph("cursor").prompt).toBe("›");
     expect(sessionGlyph("grok").bullet).toBe("•");
     expect(sessionGlyph("gemini")).toBe(GLYPH.codex);
+  });
+});
+
+describe("per-turn summary", () => {
+  const edit = (seq: number, id: string, lines: string[]) => [
+    ev(seq, { kind: "tool", role: "assistant", text: "a.ts", itemId: id, tool: { name: "Edit", status: "done", input: { file_path: "a.ts" } } }),
+    ev(seq + 1, { kind: "tool", role: "tool", text: "ok", parentId: id, tool: { name: "result", status: "done", result: { filePath: "a.ts", structuredPatch: [{ lines }] } } }),
+  ];
+  it("closes each turn with its time and only its own edits", () => {
+    const rows = buildRows([
+      ev(1, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_start" }),
+      ...edit(2, "e1", ["-old", "+new", "+more"]),
+      ev(4, { kind: "lifecycle", role: "system", text: "185000", lifecycle: "turn_end" }),
+      ev(5, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_start" }),
+      ev(6, { kind: "text", role: "assistant", text: "nothing to change", itemId: "m" }),
+      ev(7, { kind: "lifecycle", role: "system", text: "4000", lifecycle: "turn_end" }),
+      ev(8, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_start" }),
+      ...edit(9, "e2", ["+x"]),
+      ev(11, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_end" }),
+    ]);
+    const ends = rows.filter((r): r is Extract<TranscriptRow, { kind: "lifecycle" }> => r.kind === "lifecycle" && r.lifecycle === "turn_end");
+    expect(ends.map(lifecycleLabel)).toEqual(["Worked for 3m 5s · 1 file changed +2 −1", "Worked for 4s", "1 file changed +1 −0"]);
+  });
+});
+
+describe("pendingQuestion / questionKeys", () => {
+  const ask = (questions: unknown, answered = false) => [
+    ev(1, { kind: "tool", role: "assistant", text: "Tea or coffee?", itemId: "q1", tool: { name: "AskUserQuestion", status: "running", input: { questions } } }),
+    ev(2, { kind: "lifecycle", role: "system", text: "Tea or coffee? (Tea / Coffee)", lifecycle: "approval_pending" }),
+    ...(answered ? [ev(3, { kind: "tool", role: "tool", text: "Coffee", parentId: "q1", tool: { name: "result", status: "done" } })] : []),
+  ];
+  const tea = { question: "Tea or coffee?", options: [{ label: "Tea" }, { label: "Coffee" }] };
+  it("reads the open question and its options while the session waits", () => {
+    expect(pendingQuestion(ask([tea]))).toEqual([{ question: "Tea or coffee?", options: ["Tea", "Coffee"], multiSelect: false }]);
+  });
+  it("is null once answered, when not waiting, or with no options", () => {
+    expect(pendingQuestion(ask([tea], true))).toBeNull();
+    expect(pendingQuestion(ask([tea]).slice(0, 1))).toBeNull();
+    expect(pendingQuestion(ask([{ question: "Anything else?" }]))).toBeNull();
+  });
+  it("types the keys Claude Code 2.1.310's picker takes", () => {
+    const one = { question: "a", options: ["x", "y"], multiSelect: false };
+    const many = { question: "b", options: ["x", "y", "z"], multiSelect: true };
+    expect(questionKeys([one], [[1]])).toEqual(["2"]);
+    expect(questionKeys([one, one], [[1], [0]])).toEqual(["2", "1", "\r"]);
+    expect(questionKeys([many], [[0, 2]])).toEqual(["1", "3", "\x1b[C", "\r"]);
   });
 });

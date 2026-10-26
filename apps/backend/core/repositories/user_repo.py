@@ -239,8 +239,9 @@ def agent_send_without_asking(row: dict | None) -> bool:
 
 def sessions_reachable_from_background_work(row: dict | None) -> bool:
     """``users.sessions_reachable_from_background_work``: Paperclip runs, heartbeats and
-    routines may reach this person's shared sessions. Absent means OFF."""
-    return (row or {}).get("sessions_reachable_from_background_work") is True
+    routines may reach this person's shared sessions. Absent means ON (owner ruling 2026-10-26:
+    tasks use every tool a chat turn has); only an explicit False opts out."""
+    return (row or {}).get("sessions_reachable_from_background_work") is not False
 
 
 async def set_prefs(

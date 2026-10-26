@@ -119,7 +119,7 @@ export function ShareEverySessionLive() {
 type AgentSessionPrefs = { agentSendWithoutAsking: boolean; sessionsReachableFromBackgroundWork: boolean };
 const AGENT_SESSION_PREFS: Array<{ key: keyof AgentSessionPrefs; title: string; description: string }> = [
   { key: "agentSendWithoutAsking", title: "Agents can message my sessions without asking", description: "Off: an agent asks you first, and nothing is sent until you choose Send." },
-  { key: "sessionsReachableFromBackgroundWork", title: "Background work (issues, heartbeats, routines) can reach my sessions", description: "Off: only an agent answering in a conversation can see or message your sessions." },
+  { key: "sessionsReachableFromBackgroundWork", title: "Background work (issues, heartbeats, routines) can reach my sessions", description: "On by default. Off: only an agent answering in a conversation can see or message your sessions." },
 ];
 
 /** Settings rows: who may reach this person's shared sessions (spec 2026-10-07-agent-session-approval §3.4). */

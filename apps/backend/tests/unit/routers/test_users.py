@@ -422,14 +422,14 @@ class TestPrefs:
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
     async def test_the_agent_session_switches_default_off_and_are_set(self, mock_repo, async_client):
-        """Spec 2026-10-07-agent-session-approval §3.4: agents ask, and background work cannot
-        reach a person's sessions, until that person turns each on."""
+        """Agents ask until a person turns that off (spec 2026-10-07 §3.4); background work reaches
+        a person's sessions unless they opt out (owner ruling 2026-10-26)."""
         self._wire_real_helpers(mock_repo)
         mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
         mock_repo.set_prefs = AsyncMock(return_value=None)
 
         body = (await async_client.get("/api/v1/users/me/prefs")).json()
-        assert (body["agentSendWithoutAsking"], body["sessionsReachableFromBackgroundWork"]) == (False, False)
+        assert (body["agentSendWithoutAsking"], body["sessionsReachableFromBackgroundWork"]) == (False, True)
 
         mock_repo.get = AsyncMock(
             return_value={

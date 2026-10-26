@@ -144,7 +144,7 @@ def _prefs(row: dict | None) -> UserPrefs:
 async def get_my_prefs(auth: AuthContext = Depends(get_current_user)) -> UserPrefs:
     """The caller's per-human prefs: IANA ``timezone``, the ``dailySummary`` digest
     toggle, the account's ``chatTheme`` (null when never set), and the two agent-session
-    switches (``agentSendWithoutAsking``, ``sessionsReachableFromBackgroundWork``; both off by default)."""
+    switches (``agentSendWithoutAsking``, off by default; ``sessionsReachableFromBackgroundWork``, on by default)."""
     return _prefs(await user_repo.get(auth.user_id))
 
 

@@ -240,6 +240,19 @@ fn attach_holder(job: &str, list: impl Fn() -> Vec<HolderInfo>, start: impl Fn(&
     attempt.map_err(|e| relay_log(&format!("attach {job}: {e}"))).ok()
 }
 
+/// Resume of a background job its daemon retired (`bg retire …: idle-prompt`): `claude attach`
+/// starts its process again, under the same job and conversation, and shows it. A running attach
+/// holder already does both.
+pub(super) fn reopen(job: &str) -> Result<(), String> {
+    let mut started = STARTED.lock().map_err(|_| "attach state unavailable")?;
+    if manager::list().iter().any(|h| manager::attach_job(h) == Some(job)) {
+        return Ok(());
+    }
+    attach_start(job, None)?;
+    started.insert(job.to_owned(), Instant::now());
+    Ok(())
+}
+
 /// The size an attach holder starts at: the job's current size, so watching never resizes the
 /// owner's terminal (Task 0: the job draws at the latest attach size). Unknown: only the owner's
 /// panel may start one (it sizes it itself); a viewer or a typist gets None.

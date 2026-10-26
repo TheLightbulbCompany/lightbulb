@@ -50,6 +50,12 @@ pub(super) struct Hosted {
     /// Its run is not the one the relay has: its registration is a new process's, which is what
     /// answers a waiting resume (`session_resume.on_register`). A same-generation one answers none.
     fresh: bool,
+    /// The provider's id for it: what `claude attach` takes.
+    job: String,
+    /// Its mirror ended because the daemon retired the job's process (`bg retire …: idle-prompt`,
+    /// prod 2026-10-26). The job and its conversation remain: attaching starts a new process, whose
+    /// registration answers the resume. Never `claude --resume` it (a second branch).
+    retired: bool,
 }
 
 // One sender per running relay host, as for pick-up snapshots: the relay loop only offers.
@@ -92,15 +98,20 @@ pub(super) fn offer(resume: &Value, mirrors: &BTreeMap<String, Mirror>) {
 
 /// Whether a live mirror holds `conversation` (Some), and whether its provider's daemon hosts it.
 fn live(mirrors: &BTreeMap<String, Mirror>, provider: &str, conversation: &str) -> Option<Option<Hosted>> {
+    let held = |m: &&Mirror| m.native.provider == provider && m.native.conversation == conversation;
+    let retired = |m: &&Mirror| m.native.job.as_deref().and_then(crate::holder::manager::attach_provider) == Some("claude");
     let (key, m) = mirrors
         .iter()
-        .find(|(_, m)| m.ended_at.is_none() && m.native.provider == provider && m.native.conversation == conversation)?;
-    Some(m.native.job.is_some().then(|| Hosted {
+        .find(|(_, m)| m.ended_at.is_none() && held(m))
+        .or_else(|| mirrors.iter().find(|(_, m)| held(m) && retired(m)))?;
+    Some(m.native.job.clone().map(|job| Hosted {
         key: key.clone(),
         session_id: m.session_id.clone(),
         generation: m.registration.acknowledged.clone().unwrap_or_else(|| m.generation.clone()),
         shared: !m.withheld(),
         fresh: m.registration.acknowledged.as_ref().is_some_and(|known| *known != m.generation),
+        job,
+        retired: m.ended_at.is_some(),
     }))
 }
 
@@ -151,7 +162,8 @@ fn tag(resume: &Value, running: impl Fn(&str, &str) -> (String, Option<Option<Ho
                 mode: if e["mode"] == "default" { "default".into() } else { "plan".into() },
                 provider,
                 conversation_id,
-                running: running.is_some(),
+                // A retired job runs nothing until it is attached.
+                running: running.as_ref().is_some_and(|h| h.as_ref().is_none_or(|h| !h.retired)),
                 hosted: running.flatten(),
                 continued,
             })
@@ -295,8 +307,18 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
         }
         return Err("CONTINUED");
     }
-    if let Some(hosted) = &w.hosted {
+    // A retired job removed since (`claude rm`) has nothing to attach: it resumes as any other.
+    let jobs = claude_config(&home_dir()).join("jobs");
+    if let Some(hosted) = w.hosted.as_ref().filter(|h| !h.retired || jobs.join(&h.job).is_dir()) {
         return reattach(me, hosted, own).await;
+    }
+    // A background job Claude still lists (its mirror is gone or never knew the job) is attached,
+    // never refused as running elsewhere: `free` below would find it in the same listing.
+    if w.provider == "claude" {
+        if let Some(job) = claude::background_job(&home_dir(), &w.conversation_id).await {
+            reopen(job).await?;
+            return Ok(Some(true));
+        }
     }
     let want = w.clone();
     let Some((folder, argv)) = tauri::async_runtime::spawn_blocking(move || prepare(&want, own, &home_dir()))
@@ -335,24 +357,39 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
 /// whoever watches. A run its person paused is unpaused first, as the share skill does: its
 /// register carries `unshared` over. Only this Mac's own human may undo their own pause.
 async fn reattach(me: &Resumer, hosted: &Hosted, own: bool) -> std::result::Result<Option<bool>, &'static str> {
-    if hosted.shared {
-        return Ok(hosted.fresh.then_some(false));
+    if !hosted.shared {
+        if !own {
+            return Err("SHARING_OFF");
+        }
+        // A mirror the relay has not bound yet cannot be unpaused, and sharing it would let its first
+        // registration settle the resume with the row still paused: wait until it is bound.
+        let Some(sid) = &hosted.session_id else {
+            return Ok(None);
+        };
+        let unpause = json!({"sessionId": sid, "generation": hosted.generation, "decision": "unpause"});
+        post(me, "/api/v1/messaging/native-session-decisions", &unpause).await.map_err(|e| {
+            relay_log(&format!("{} unpause for resume failed: {e}", &sid[..sid.len().min(8)]));
+            "LAUNCH_FAILED"
+        })?;
+        super::transport::ask_share(&hosted.key, true);
     }
-    if !own {
-        return Err("SHARING_OFF");
+    if hosted.retired {
+        reopen(hosted.job.clone()).await?;
+        return Ok(Some(true));
     }
-    // A mirror the relay has not bound yet cannot be unpaused, and sharing it would let its first
-    // registration settle the resume with the row still paused: wait until it is bound.
-    let Some(sid) = &hosted.session_id else {
-        return Ok(None);
-    };
-    let unpause = json!({"sessionId": sid, "generation": hosted.generation, "decision": "unpause"});
-    post(me, "/api/v1/messaging/native-session-decisions", &unpause).await.map_err(|e| {
-        relay_log(&format!("{} unpause for resume failed: {e}", &sid[..sid.len().min(8)]));
-        "LAUNCH_FAILED"
-    })?;
-    super::transport::ask_share(&hosted.key, true);
-    Ok(hosted.fresh.then_some(true))
+    Ok(hosted.fresh.then_some(!hosted.shared))
+}
+
+/// `claude attach <job>` in an attach holder: it starts a retired job's process again.
+async fn reopen(job: String) -> std::result::Result<(), &'static str> {
+    let shown = job.clone();
+    tauri::async_runtime::spawn_blocking(move || super::screen::reopen(&job))
+        .await
+        .map_err(|_| "LAUNCH_FAILED")?
+        .map_err(|e| {
+            relay_log(&format!("attach {shown} for resume failed: {e}"));
+            "LAUNCH_FAILED"
+        })
 }
 
 /// Every conversation a local `provider` process runs now, held or private: the provider's own
@@ -611,7 +648,7 @@ mod tests {
         let job = hosted_mirrors(Some("70f755ac"), false);
         assert_eq!(
             live(&job, "claude", CONV),
-            Some(Some(Hosted { key: "k".repeat(64), session_id: Some("bbbbbbbb-2222-4222-8222-222222222222".into()), generation: "gen-1".into(), shared: false, fresh: true })),
+            Some(Some(Hosted { key: "k".repeat(64), session_id: Some("bbbbbbbb-2222-4222-8222-222222222222".into()), generation: "gen-1".into(), shared: false, fresh: true, job: "70f755ac".into(), retired: false })),
             "the run the relay knows, at the generation its row is at"
         );
         // A Codex app-server thread is hosted the same way (its job is the thread id).
@@ -620,9 +657,37 @@ mod tests {
         assert!(live(&codex, "codex", CONV).flatten().is_some_and(|h| h.shared));
         // A private terminal (`claude --resume`, `codex --no-daemon`): running, nothing to attach.
         assert_eq!(live(&hosted_mirrors(None, true), "claude", CONV), Some(None));
-        let mut ended = hosted_mirrors(Some("70f755ac"), true);
+        let mut ended = hosted_mirrors(None, true);
         ended.values_mut().for_each(|m| m.ended_at = Some(1));
-        assert_eq!(live(&ended, "claude", CONV), None);
+        assert_eq!(live(&ended, "claude", CONV), None, "an ended terminal session runs nothing");
+    }
+
+    /// Prod 2026-10-26, "Product Cleanup" (job 251719c2): Claude's daemon retired the job's idle
+    /// process (`bg retire 251719c2: idle-prompt, idle 61m`), so its mirror ended and the row
+    /// offered Resume. `claude agents --json` still listed the blocked job, `free` found it, and
+    /// Resume said "still running on your Mac … End it there". The job is attached instead: that
+    /// starts its process again (a new pid, so a new generation) and shows it.
+    #[test]
+    fn resume_attaches_a_background_job_whose_process_the_daemon_retired() {
+        let mut ended = hosted_mirrors(Some("251719c2"), true);
+        ended.values_mut().for_each(|m| m.ended_at = Some(1));
+        let hosted = live(&ended, "claude", CONV).flatten().expect("a retired job is still attachable");
+        assert!(hosted.retired && hosted.job == "251719c2" && hosted.shared);
+        let ack: Value = serde_json::from_str(ACK).unwrap();
+        let w = &tag(&ack["resume"], |p, c| (c.to_owned(), live(&ended, p, c)))[0];
+        assert!(w.hosted.is_some() && !w.running, "attached, never refused as running");
+        // A live mirror of the conversation wins over its ended one.
+        let mut both = ended.clone();
+        both.extend(hosted_mirrors(Some("251719c2"), true).into_iter().map(|(_, m)| ("l".repeat(64), m)));
+        assert!(live(&both, "claude", CONV).flatten().is_some_and(|h| !h.retired));
+        // The listing names the job even with no pid: that is the job to attach, not a refusal.
+        let rows: Vec<Value> = serde_json::from_value(json!([
+            {"id": "ae0e0fa4", "kind": "background", "sessionId": "ae0e0fa4-30b4-47c2-ab61-9c71f2002199", "state": "working"},
+            {"id": "251719c2", "kind": "background", "sessionId": CONV, "state": "working"},
+            {"kind": "interactive", "sessionId": "33333333-3333-4333-8333-333333333333", "pid": 1}
+        ])).unwrap();
+        assert_eq!(claude::job_of(&rows, CONV).as_deref(), Some("251719c2"));
+        assert_eq!(claude::job_of(&rows, "33333333-3333-4333-8333-333333333333"), None, "a terminal session is not a job");
     }
 
     /// 70f755ac continued in ae0e0fa4 (←): resuming 70f755ac with `claude --resume` would start
@@ -648,7 +713,7 @@ mod tests {
     #[tokio::test]
     async fn resume_reattaches_a_daemon_hosted_conversation_instead_of_refusing_it() {
         let me = Resumer { api: "http://127.0.0.1:9".into(), key_pem: String::new(), device: "d".into(), owner: "o".into(), human: "user_bob".into() };
-        let hosted = |shared: bool, sid: Option<&str>| Hosted { key: format!("{}{}{}", "e".repeat(62), u8::from(shared), u8::from(sid.is_some())), session_id: sid.map(str::to_owned), generation: "gen-1".into(), shared, fresh: true };
+        let hosted = |shared: bool, sid: Option<&str>| Hosted { key: format!("{}{}{}", "e".repeat(62), u8::from(shared), u8::from(sid.is_some())), session_id: sid.map(str::to_owned), generation: "gen-1".into(), shared, fresh: true, job: "70f755ac".into(), retired: false };
         // Shared already: its registration answers the resume; nothing starts.
         assert_eq!(reattach(&me, &hosted(true, Some("s")), true).await, Ok(Some(false)));
         // Its run is the one the relay has: no registration answers the resume, so it is asked again.

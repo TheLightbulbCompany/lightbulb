@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const SERVER_NAME: &str = "lightbulb";
+/// The retired app server's name before `lightbulb`; an install upgraded straight from it still
+/// carries this entry, and its `session-mcp` now exits 1.
+const LEGACY_SERVER_NAME: &str = "lightbulb_native_sessions";
 /// hooked.rs's note when it replaces a hosted entry; kept only because that file names it.
 pub(super) const REPLACED_NOTE: &str = "Mac bridge is serving lightbulb; the hosted entry was replaced";
 
@@ -276,14 +279,16 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
             continue;
         };
         configure_browser(home, &cli, provider, executable, enabled, &mut notes);
-        match entry(home, &cli, provider, SERVER_NAME) {
-            Ok(current) if ours(&current, executable) => {
-                if edit(home, &cli, provider, "remove", SERVER_NAME, &[]).is_err() {
-                    notes.push(format!("{provider} old {SERVER_NAME} entry could not be removed"));
+        for name in [SERVER_NAME, LEGACY_SERVER_NAME] {
+            match entry(home, &cli, provider, name) {
+                Ok(current) if ours(&current, executable) => {
+                    if edit(home, &cli, provider, "remove", name, &[]).is_err() {
+                        notes.push(format!("{provider} old {name} entry could not be removed"));
+                    }
                 }
+                Ok(_) => {}
+                Err(_) => notes.push(format!("{provider} MCP settings are unavailable")),
             }
-            Ok(_) => {}
-            Err(_) => notes.push(format!("{provider} MCP settings are unavailable")),
         }
         if provider == "codex" && configure_codex_policy(home).is_err() {
             notes.push("Codex MCP settings are unavailable".into());
@@ -533,10 +538,11 @@ json.dump(doc, open(p, "w"))
                 (json!({"command": "/Users/x/.lightbulb/connect/bin/lightbulb", "args": ["mcp"]}), true),
                 (json!({"command": "/opt/other", "args": ["session-mcp"]}), true),
             ] {
-                set_servers(h, provider, json!({"lightbulb": lightbulb, BROWSER_SERVER_NAME: browser, "other": other}));
+                set_servers(h, provider, json!({"lightbulb": lightbulb, LEGACY_SERVER_NAME: lightbulb, BROWSER_SERVER_NAME: browser, "other": other}));
                 configure(h, &exe, true);
                 let after = servers(h, provider);
                 assert_eq!(after["lightbulb"], if kept { lightbulb.clone() } else { Value::Null }, "{provider} {lightbulb}");
+                assert_eq!(after[LEGACY_SERVER_NAME], if kept { lightbulb.clone() } else { Value::Null }, "{provider} legacy {lightbulb}");
                 assert_eq!(after[BROWSER_SERVER_NAME], browser, "{provider}");
                 assert_eq!(after["other"], other, "{provider}");
             }

@@ -18,7 +18,7 @@ it("tells a Mac that shares sessions, once", async () => {
   const first = render(<ExplicitSharingNotice />);
   await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
   const { container } = render(<>{toast.mock.calls[0][0]}</>);
-  expect(container.textContent).toBe("A Claude Code, Codex, Cursor or Grok CLI session on this Mac is shared with your workspace when you start it with Lightbulb, choose Share to Lightbulb in it, or have Share every new session on. Any other session is only yours. Stop sharing one, or turn sharing off in Settings.");
+  expect(container.textContent).toBe("Every new Claude Code, Codex, Cursor or Grok CLI session on this Mac is shared with your workspace. Set one to Only me (Stop sharing in its terminal), or turn sharing off in Settings.");
   expect(localStorage.getItem(EXPLICIT_SHARING_SEEN_KEY)).toBe("1");
   first.unmount();
   render(<ExplicitSharingNotice />);

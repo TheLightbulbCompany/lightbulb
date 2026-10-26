@@ -86,8 +86,8 @@ class UserPrefs(BaseModel):
         default=False, description="Agents message this person's sessions without asking first; default off (ask)"
     )
     sessionsReachableFromBackgroundWork: bool = Field(
-        default=False,
-        description="Paperclip runs, heartbeats and routines may reach this person's shared sessions; default off",
+        default=True,
+        description="Paperclip runs, heartbeats and routines may reach this person's shared sessions; default on",
     )
 
 

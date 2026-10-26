@@ -413,9 +413,12 @@ async def test_a_stale_ask_fails_at_send_and_is_never_retried(asks):
 
 
 @pytest.mark.asyncio
-async def test_background_work_reaches_only_people_who_turned_it_on(asks):
+async def test_background_work_reaches_everyone_but_people_who_opted_out(asks):
     sid = await registered()
     run = asks.paperclip()
+    # Absent means on (owner ruling 2026-10-26): a task sees the session without anyone opting in.
+    assert [s.session_id for s in (await service.list_resources(run, None)).sessions] == [sid]
+    await _prefs(ALICE.user_id, sessions_reachable_from_background_work=False)
     assert (await service.list_resources(run, None)).sessions == []
     with pytest.raises(ApiProblem) as hidden:
         await service.list_events(run, None, sid)

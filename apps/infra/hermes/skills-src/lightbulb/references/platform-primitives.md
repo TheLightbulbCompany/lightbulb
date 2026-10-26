@@ -95,8 +95,8 @@ repeat a private DM into a room with other people unless the person asking wants
 
 `lightbulb_local_sessions` reaches people's shared Claude Code/Codex sessions.
 Any room turn may list (`resources`) and `read` every shared session in the
-workspace; a Paperclip run, heartbeat or routine may do so only for people who
-allow background work. Local sessions are resources, not agents or employees.
+workspace; a Paperclip run, heartbeat or routine may too, except for people who
+turned background work off. Local sessions are resources, not agents or employees.
 Never invent ownership or inject room history automatically.
 A read can include a session's subagents: their events carry `subagent` (the
 subagent's id), and `subagent_start` / `subagent_end` lifecycle events mark each one.

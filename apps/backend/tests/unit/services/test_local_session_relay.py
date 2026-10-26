@@ -1544,8 +1544,17 @@ async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_
     connect(transport, "conn-2", "2000")
     await relay(transport).handle_message("conn-2", registration())
     assert (await repo.get_session(OWNER, sid))["title"] == "Renamed by the harness"
+    # A new process on the same live conversation continues its run: its title stays.
     await relay(transport).handle_message(
         "conn-2", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    )
+    assert (await repo.get_session(OWNER, sid))["title"] == "Renamed by the harness"
+    # A run after an end is a new one: it starts with no title until it says one.
+    await relay(transport).handle_message(
+        "conn-2", {**fixture("session-ended"), "sessionId": sid, "generation": "generation-2", "endedAt": 10005}
+    )
+    await relay(transport).handle_message(
+        "conn-2", {**registration(generation="generation-3"), "previousGeneration": "generation-2"}
     )
     assert (await repo.get_session(OWNER, sid)).get("title") is None
 
@@ -2704,3 +2713,40 @@ async def test_a_new_wait_never_names_the_previous_prompt(transport):
     # Once B's row is stored, the same wait reads as B.
     row = await module.repo.get_session(OWNER, sid)
     assert module.waiting_line(None, await module._waiting_text(row)) == "Has a question: B? (Tea / Coffee)"
+
+
+@pytest.mark.asyncio
+async def test_a_new_process_on_the_same_live_conversation_continues_its_row(transport):
+    """Claude moves one conversation across pids (a daemon respawn, the agent view's restart, a
+    `--resume` in another pid). The Mac re-points the live row and names the generation we hold: the
+    same session id goes on, as one row, keeping its "Only you", title and place in the lists."""
+    with patch("core.services.local_session_relay.capture_product_event") as capture:
+        sid = await start(transport)
+        await relay(transport).handle_message("conn-1", registration(title="Ship row life"))
+        await service.set_sharing(ALICE, sid, False)
+        messaging_repo._table().update_item(
+            Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+            UpdateExpression="SET removedAt = :at, displayTitle = :name",
+            ExpressionAttributeValues={":at": 1, ":name": "Row life"},
+        )
+        moved = {**registration(generation="generation-2", title=None), "previousGeneration": "generation-1"}
+        response = await relay(transport).handle_message("conn-1", moved)
+    assert response["sessionId"] == sid
+    row = await repo.get_session(OWNER, sid)
+    assert row["generation"] == "generation-2" and "endedAt" not in row
+    assert (row["title"], row["displayTitle"], row["unshared"], row["removedAt"]) == (
+        "Ship row life",
+        "Row life",
+        True,
+        1,
+    )
+    assert "local_session_shared" not in [c.kwargs["event"] for c in capture.call_args_list[1:]], "not a new share"
+    # A generation that names none we hold is still a new run.
+    await relay(transport).handle_message(
+        "conn-1", {**fixture("session-ended"), "sessionId": sid, "generation": "generation-2", "endedAt": 10005}
+    )
+    await relay(transport).handle_message(
+        "conn-1", {**registration(generation="generation-3", title=None), "previousGeneration": "generation-2"}
+    )
+    row = await repo.get_session(OWNER, sid)
+    assert row.get("title") is None and "removedAt" not in row and row["displayTitle"] == "Row life"

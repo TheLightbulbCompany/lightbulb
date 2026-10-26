@@ -670,12 +670,26 @@ class LocalSessionRelay:
                     # have one, does not inherit its "Anyone with the link".
                     if previous and sessions.conversation_only(previous):
                         sessions.narrow_link(row)
+                    # A row's life is its conversation's, not its process's. A new process the Mac
+                    # moves this live row onto (Claude's daemon respawning a worker, the agent view's
+                    # restart, a `--resume` in another pid) names the generation we hold: the same
+                    # run goes on, with its title and its place in the lists. What the owner granted
+                    # a process (teammate control, the people let in) is granted again (below): a new
+                    # process is one they have not opted into. A run that ended first is a new one (a
+                    # resume), and so is a generation that names none.
+                    continuation = bool(
+                        previous
+                        and previous["generation"] != descriptor.generation
+                        and message.previous_generation == previous["generation"]
+                        and previous.get("endedAt") is None
+                    )
+                    new_run = previous is None or (previous["generation"] != descriptor.generation and not continuation)
                     # Paused on the Mac: what `set_sharing(False)` writes, so it reads as "Only you".
-                    # Only for a new run: the same run reconnecting may carry a pause its owner has
+                    # Only for a new process: the same one reconnecting may carry a pause its owner has
                     # since lifted from the web while the Mac was offline, and the Mac takes that
                     # from presence. Its own pauses reach us as `set_sharing` (the band, a stop owed).
-                    new_run = previous is None or previous["generation"] != descriptor.generation
-                    if descriptor.shared is False and new_run and not row.get("unshared"):
+                    new_process = previous is None or previous["generation"] != descriptor.generation
+                    if descriptor.shared is False and new_process and not row.get("unshared"):
                         row["unshared"] = True
                         sessions.narrow_link(row)
                         row.pop("pendingApproval", None)
@@ -691,8 +705,8 @@ class LocalSessionRelay:
                     elif descriptor.start_id is None:
                         row.pop("startId", None)
                     # A reconnect may find no prompt in the bounded desktop scan.
-                    # Keep the same process's title; a new generation starts fresh.
-                    if previous and previous["generation"] == descriptor.generation and descriptor.title is None:
+                    # Keep the same run's title (also across a continuation); a new run starts fresh.
+                    if previous and not new_run and descriptor.title is None:
                         row["title"] = previous.get("title")
                     if descriptor.status in _TURN_STATUSES and (previous or {}).get("status") not in _TURN_STATUSES:
                         row["busySince"] = int(time.time())
@@ -711,9 +725,7 @@ class LocalSessionRelay:
                         # The end rewrites who may resume; a new run has nobody to resume it. The
                         # same generation re-registering to drain an ended mirror keeps them.
                         row.pop("resumeAllowed", None)
-                        # Nor is it still removed from the lists (`sessions.remove_session`): the
-                        # owner started it again.
-                        row.pop("removedAt", None)
+                        # A terminal, a held prompt and control are the old process's, continued or not.
                         row.pop("terminal", None)
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
@@ -724,6 +736,10 @@ class LocalSessionRelay:
                             row["joinClosed"] = closed
                         for key in sessions.JOIN_FIELDS:
                             row.pop(key, None)
+                    if new_run:
+                        # Nor is it still removed from the lists (`sessions.remove_session`): the
+                        # owner started it again.
+                        row.pop("removedAt", None)
                     # A fork continues its origin's conversation: the name its person gave it there
                     # carries over, since the listing shows the fork in the origin's place.
                     # Also on a late re-register: a fork that registered before its origin had an id
@@ -747,7 +763,7 @@ class LocalSessionRelay:
                             await session_chat.follow_session(owner, sid)
                         except Exception:  # the next chat open reopens it too (_follow_lifecycle)
                             logger.warning("session chat reopen failed for %s", sid, exc_info=True)
-                    if previous is None or previous["generation"] != row["generation"]:
+                    if new_run:
                         # The desktop may discover an already-running native process: shared, not started.
                         _capture_lifecycle(row, "local_session_shared")
                     elif previous.get("connectionId") != row["connectionId"]:

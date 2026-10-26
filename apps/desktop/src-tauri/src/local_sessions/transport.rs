@@ -142,6 +142,9 @@ pub(super) struct Host {
     /// Whether the relay on this socket lists `endedStartId`; None until one of its acks has
     /// said. Per connection, like every feature: a reconnect can reach another relay version.
     relay_reads_ended_start: Option<bool>,
+    /// Claude background sessions whose process is gone and that nothing else holds yet, since
+    /// when: a daemon respawn kills the worker before its successor writes a record.
+    unheld: BTreeMap<String, Instant>,
     /// Sessions whose heartbeat fields moved between heartbeats: one goes out
     /// early rather than up to ten seconds late.
     heartbeat_dirty: BTreeSet<String>,
@@ -303,6 +306,10 @@ async fn settle_unknown(dir: &Path, home: &Path, verify: Verify, ask: &Ask) -> R
     }
     Ok(receipt)
 }
+
+/// How long a Claude background session may go unheld before its row ends: a daemon respawn
+/// kills the worker and a spare takes the conversation over within a second (2026-10-26, 140 ms).
+const JOB_HANDOVER: Duration = Duration::from_secs(3);
 
 /// How long a per-session verdict (a stale generation, a relay rejection) keeps that session out
 /// of rotation. Connections are long-lived now, so "for this connection" could mean hours; this
@@ -1048,7 +1055,17 @@ impl Host {
                 Ok(Some(key))
             }
             lifecycle::Transition::Ended(reason) => {
-                self.end_session(&key, reason)?;
+                // This process's end, not its conversation's: a background job's worker ends on a
+                // daemon respawn or retire, and another process may hold the conversation. Liveness
+                // ends the row once nothing does. A person's own exit still ends it here.
+                let m = &self.mirrors[&key].native;
+                let handed_over = provider == "claude"
+                    && reason != lifecycle::ON_PURPOSE
+                    && (m.job.is_some()
+                        || claude::Holders::read(&super::resume::claude_config(&self.home)).holds(&m.conversation, false, Some(m.process.pid)));
+                if !handed_over {
+                    self.end_session(&key, reason)?;
+                }
                 Ok(Some(key))
             }
             lifecycle::Transition::Release(id) => {
@@ -1345,20 +1362,51 @@ impl Host {
                 // A Codex thread its shared daemon dropped is stopped though the daemon runs on.
                 && (native.provider != "codex" || codex::loaded(&native.process, &native.conversation) != Some(false))
         };
+        // A row's life is its conversation's, not its pid's: Claude moves one conversation across
+        // pids (a daemon respawn, the agent view's restart, a second terminal's `--resume`, a
+        // `/resume` in another pid). While another live process holds it, the row stays and
+        // discovery re-points it at that process (`observe`: a successor, same session id).
+        // Claude's records are read at most once a tick, and only when a Claude mirror's own
+        // process no longer answers for it: the cost is records + mirrors, never their product.
+        let holders = std::cell::OnceCell::new();
+        let held = |native: &NativeSession| {
+            native.provider == "claude"
+                && holders
+                    .get_or_init(|| claude::Holders::read(&super::resume::claude_config(home)))
+                    .holds(&native.conversation, false, Some(native.process.pid))
+        };
+        let now = Instant::now();
+        let mut unheld = std::mem::take(&mut self.unheld);
         let gone: Vec<(String, &str)> = self
             .mirrors
             .iter()
-            .filter(|(_, m)| {
-                m.ended_at.is_none()
+            .filter(|(key, m)| {
+                let ends = m.ended_at.is_none()
                     && !runs(&m.native)
                     // While a successor waits for `advance`, `native` is the dead
                     // predecessor and the successor is the session that is running.
                     && m.registration.successor.as_ref().is_none_or(|next| !runs(next))
+                    && !held(&m.native);
+                // A background job ends only once nothing has held it for a while, nor written
+                // its transcript: a respawn kills the worker before its successor's record exists.
+                let job = m.native.provider == "claude" && m.native.job.is_some();
+                if !ends || !job {
+                    unheld.remove(*key);
+                    return ends;
+                }
+                let since = *unheld.entry((*key).clone()).or_insert(now);
+                let written = m.native.transcript.as_deref().and_then(|t| fs::metadata(t).ok()?.modified().ok());
+                let quiet = written.is_none_or(|at| at.elapsed().is_ok_and(|d| d >= JOB_HANDOVER));
+                now.duration_since(since) >= JOB_HANDOVER && quiet
             })
             // A process still running left the conversation on purpose; only a vanished
             // process with no end event of its own is an unexpected end.
             .map(|(key, m)| (key.clone(), if still_running(&m.native.process) { "exited" } else { "process-exited" }))
             .collect();
+        for (key, _) in &gone {
+            unheld.remove(key);
+        }
+        self.unheld = unheld;
         for (key, reason) in gone {
             if let Err(error) = self.end_session(&key, reason) {
                 relay_log(&format!("{} end not recorded: {error}", short(&key)));
@@ -1470,6 +1518,7 @@ impl Host {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            unheld: BTreeMap::new(),
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -3526,6 +3575,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            unheld: BTreeMap::new(),
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -4356,7 +4406,8 @@ pub(super) mod tests {
                 assert_eq!(host.apply_hook(&hook(provider.clone(), "Stop", SID)).unwrap(), Some(key.clone()));
                 assert_eq!(host.mirrors[&key].native.status, "idle");
                 assert_eq!(host.apply_hook(&hook(provider.clone(), "SessionEnd", SID)).unwrap(), Some(key.clone()));
-                assert!(host.mirrors[&key].ended_at.is_some());
+                // A background job's worker ending is not its conversation's end: liveness decides.
+                assert_eq!(host.mirrors[&key].ended_at.is_some(), provider == lifecycle::Provider::Codex);
             }
         }
     }
@@ -5168,6 +5219,172 @@ pub(super) mod tests {
             "a reused pid is not the session's process"
         );
         assert!(host.mirrors[SID].ended_at.is_some());
+    }
+
+    /// A Claude conversation's row as the relay knows it: registered at `gen-1`, "Only me" (paused
+    /// on the Mac), titled, on a process that has just gone. `job`: a daemon background session.
+    fn moved_row(dir: &Path, job: Option<&str>) -> (Host, String, Process) {
+        let mut native = test_native(SID);
+        native.provider = "claude".into();
+        native.app = false;
+        native.job = job.map(str::to_owned);
+        native.title = Some("Ship row life".into());
+        native.process.pid = 2_147_483_000; // gone
+        let gone = native.process.clone();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = native.clone();
+        mirror.session_id = Some("5eed0007-5e55-4000-8000-000000000007".into());
+        mirror.registration.acknowledged = Some("gen-1".into());
+        mirror.shared = false;
+        let key = native_key(&native);
+        (test_host(dir, vec![(key.as_str(), mirror)]), key, gone)
+    }
+
+    /// The same conversation, now on this test process: what discovery lists after the move.
+    fn moved_to_here(host: &Host, key: &str) -> NativeSession {
+        let mut native = host.mirrors[key].native.clone();
+        native.process = process(std::process::id()).unwrap();
+        native
+    }
+
+    /// The row re-points: same mirror, same Lightbulb session id, same sharing and title, no end
+    /// told, and its next registration chains from the generation the relay has.
+    fn assert_repointed(host: &mut Host, key: &str) {
+        let now = process(std::process::id()).unwrap().generation();
+        let m = &host.mirrors[key];
+        assert!(m.ended_at.is_none() && host.ended_pending.is_empty(), "no end between the two processes");
+        assert_eq!(m.session_id.as_deref(), Some("5eed0007-5e55-4000-8000-000000000007"));
+        assert!(m.withheld(), "still Only me");
+        assert_eq!(m.generation, now);
+        let frame = host.begin_registration(key).unwrap();
+        assert_eq!(frame["previousGeneration"], "gen-1", "a continuation of the run the relay has, not a sibling");
+        assert_eq!(frame["session"]["shared"], false);
+        assert_eq!(frame["session"]["title"], "Ship row life");
+        assert_eq!(host.mirrors.values().filter(|m| m.native.conversation == SID).count(), 1, "one row");
+    }
+
+    #[test]
+    fn local_sessions_a_daemon_respawn_keeps_one_row() {
+        // `claude respawn`: the daemon kills the worker, and the new one is in its roster ~140 ms
+        // before it writes its own record (2026-10-26). The old worker's SessionEnd is its own end.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, gone) = moved_row(dir.path(), Some("65ebc88a"));
+        let mut end = hook(lifecycle::Provider::Claude, "SessionEnd", SID);
+        end.source_process = Some(lifecycle::HookProcess::of(&gone));
+        end.reason = Some("other".into());
+        host.apply_hook(&end).unwrap();
+        host.liveness_tick();
+        assert!(host.mirrors[&key].ended_at.is_none(), "the gap before the successor's record is no end");
+        let me = process(std::process::id()).unwrap();
+        fs::create_dir_all(dir.path().join(".claude/daemon")).unwrap();
+        fs::write(dir.path().join(".claude/daemon/roster.json"), json!({"workers":{"65ebc88a":{"pid":me.pid,
+            "procStart":claude::proc_start(me.birth_micros),"sessionId":SID,"replPid":me.pid}}}).to_string()).unwrap();
+        host.unheld.values_mut().for_each(|at| *at = Instant::now().checked_sub(Duration::from_secs(60)).unwrap());
+        host.liveness_tick();
+        assert!(host.mirrors[&key].ended_at.is_none(), "the daemon runs it");
+        let next = moved_to_here(&host, &key);
+        host.observe(vec![next], &BTreeSet::new()).unwrap();
+        assert_repointed(&mut host, &key);
+    }
+
+    #[test]
+    fn local_sessions_liveness_reads_claudes_records_once_a_tick_whatever_the_mirrors() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, _, _) = moved_row(dir.path(), None);
+        for n in 0..5 {
+            let mut m = test_mirror(SID, "gen-x");
+            m.native.provider = "claude".into();
+            m.native.conversation = format!("0000000{n}-0000-4000-8000-00000000000{n}");
+            m.native.process.pid = 2_147_483_000;
+            host.mirrors.insert(native_key(&m.native), m);
+        }
+        let reads = || claude::tests::HOLDER_READS.with(std::cell::Cell::get);
+        let before = reads();
+        host.liveness_tick();
+        assert_eq!(reads() - before, 1, "six gone Claude mirrors, one read");
+        let before = reads();
+        host.liveness_tick();
+        assert_eq!(reads(), before, "nothing left to decide, nothing read");
+    }
+
+    #[test]
+    fn local_sessions_the_agent_views_restart_keeps_one_row() {
+        // The agent view restarts a stopped job with `fork:false`: the same id on a new pid, which
+        // writes its own record.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, _) = moved_row(dir.path(), Some("ae0e0fa4"));
+        claude::tests::live_record(&dir.path().join(".claude"), SID, None);
+        host.liveness_tick();
+        host.unheld.values_mut().for_each(|at| *at = Instant::now().checked_sub(Duration::from_secs(60)).unwrap());
+        host.liveness_tick();
+        assert!(host.mirrors[&key].ended_at.is_none());
+        let next = moved_to_here(&host, &key);
+        host.observe(vec![next], &BTreeSet::new()).unwrap();
+        assert_repointed(&mut host, &key);
+    }
+
+    #[test]
+    fn local_sessions_a_resume_in_another_pid_moves_the_row_and_ends_the_one_it_left() {
+        // Pid P ran X; `/resume Y` in P rewrites P's record to Y. Y's own process had gone: Y's row
+        // moves to P, X's ends (nothing holds X).
+        const X: &str = "0000000a-0000-4000-8000-00000000000a";
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, _) = moved_row(dir.path(), None);
+        let mut x = test_mirror(X, "x-1");
+        x.native.provider = "claude".into();
+        x.native.conversation = X.into();
+        let x_key = native_key(&x.native);
+        host.mirrors.insert(x_key.clone(), x);
+        claude::tests::live_record(&dir.path().join(".claude"), SID, None);
+        host.liveness_tick();
+        assert_eq!(host.mirrors[&x_key].ended_reason.as_deref(), Some("exited"), "P left X");
+        assert!(host.mirrors[&key].ended_at.is_none(), "P holds Y now");
+        host.ended_pending.clear();
+        let next = moved_to_here(&host, &key);
+        host.observe(vec![next], &BTreeSet::new()).unwrap();
+        assert_repointed(&mut host, &key);
+    }
+
+    #[test]
+    fn local_sessions_a_retired_job_ends_after_its_handover_and_its_revive_is_the_same_row() {
+        // `bg retire …: idle-prompt`: the worker goes and nothing holds the conversation (a "done"
+        // job). The row ends -- Resume attaches it (#4404) -- and the revive on a claimed spare
+        // (a new pid, hours later) is the same row again.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, _) = moved_row(dir.path(), Some("251719c2"));
+        host.liveness_tick();
+        assert!(host.mirrors[&key].ended_at.is_none(), "not on the first tick: a respawn may be under way");
+        host.unheld.values_mut().for_each(|at| *at = Instant::now().checked_sub(Duration::from_secs(60)).unwrap());
+        host.liveness_tick();
+        assert_eq!(host.mirrors[&key].ended_reason.as_deref(), Some("process-exited"));
+        assert!(host.unheld.is_empty());
+        let next = moved_to_here(&host, &key);
+        host.observe(vec![next], &BTreeSet::new()).unwrap();
+        let m = &host.mirrors[&key];
+        assert!(m.ended_at.is_none() && m.withheld() && m.session_id.as_deref() == Some("5eed0007-5e55-4000-8000-000000000007"));
+        let frame = host.begin_registration(&key).unwrap();
+        assert_eq!(frame["previousGeneration"], "gen-1");
+        assert_eq!(host.mirrors.len(), 1);
+    }
+
+    #[test]
+    fn local_sessions_an_attach_client_is_not_a_new_process_of_the_conversation() {
+        // `claude attach` is a PTY client of the job's worker and writes no record (checked live,
+        // 2026-10-26): the row stays on the worker, generation and all, while it comes and goes.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, _) = moved_row(dir.path(), Some("65ebc88a"));
+        let here = moved_to_here(&host, &key);
+        host.observe(vec![here.clone()], &BTreeSet::new()).unwrap();
+        host.mirrors.get_mut(&key).unwrap().registered();
+        let generation = host.mirrors[&key].generation.clone();
+        let mut client = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        host.liveness_tick();
+        host.observe(vec![here.clone()], &BTreeSet::new()).unwrap();
+        client.kill().unwrap();
+        client.wait().unwrap();
+        host.liveness_tick();
+        assert!(host.mirrors[&key].ended_at.is_none());
+        assert_eq!(host.mirrors[&key].generation, generation);
     }
 
     #[test]
@@ -6103,6 +6320,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            unheld: BTreeMap::new(),
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -6307,6 +6525,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            unheld: BTreeMap::new(),
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -7009,6 +7228,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            unheld: BTreeMap::new(),
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,

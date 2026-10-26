@@ -284,7 +284,11 @@ pub(super) fn still_registered(home: &Path, pid: u32, conversation: &str) -> boo
     else {
         return true;
     };
+    // ← parks the conversation in a background job (`parkedJobId`) while this pid stays, on the
+    // agent view, still naming it: the conversation left this pid. Reading it as still here
+    // revived the session after its fork ended it, so it was listed twice (2026-10-26).
     row["sessionId"].as_str().is_none_or(|id| id == conversation)
+        && row["parkedJobId"].as_str().is_none_or(|job| job.is_empty())
 }
 
 /// `verify_current_generation` found nothing this process wrote -- distinct from a
@@ -2410,6 +2414,8 @@ mod tests {
         fs::write(sessions.join("4242.json"), format!("{{\"pid\":4242,\"sessionId\":\"{a}\"}}xx")).unwrap();
         assert!(still_registered(home.path(), 4242, a));
         assert!(!still_registered(home.path(), 4242, "22222222-2222-4222-8222-222222222222"));
+        fs::write(sessions.join("4242.json"), format!("{{\"pid\":4242,\"sessionId\":\"{a}\",\"parkedJobId\":\"509ed8ba\"}}")).unwrap();
+        assert!(!still_registered(home.path(), 4242, a), "parked in a background job: it left this pid");
         fs::write(sessions.join("4242.json"), "not json").unwrap();
         assert!(still_registered(home.path(), 4242, a), "an unreadable file is not evidence");
         // Where it runs: only an `entrypoint` that is not `cli` says an app.

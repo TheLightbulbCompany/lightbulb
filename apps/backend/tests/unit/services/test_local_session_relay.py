@@ -1625,6 +1625,23 @@ async def test_a_legacy_background_row_is_an_ordinary_session_once_it_registers_
 
 
 @pytest.mark.asyncio
+async def test_a_session_paused_on_its_mac_registers_as_only_you(transport):
+    sid = await start(transport)
+    assert not (await repo.get_session(OWNER, sid)).get("unshared"), "absent leaves sharing as it is"
+    rerun = {**registration(generation="generation-2", shared=False), "previousGeneration": "generation-1"}
+    await relay(transport).handle_message("conn-1", rerun)
+    row = await repo.get_session(OWNER, sid)
+    assert row["unshared"] is True and "shared" not in row
+    await relay(transport).handle_message("conn-1", registration(generation="generation-2"))
+    assert (await repo.get_session(OWNER, sid))["unshared"] is True, "only the owner shares it again"
+    # The owner shares it again from the web while the Mac is away: the same run reconnecting with
+    # its stale pause does not take that back (the Mac follows presence instead).
+    await service.set_sharing(ALICE, sid, True)
+    await relay(transport).handle_message("conn-1", registration(generation="generation-2", shared=False))
+    assert not (await repo.get_session(OWNER, sid)).get("unshared")
+
+
+@pytest.mark.asyncio
 async def test_a_fork_records_the_session_it_continues(transport):
     origin = await start(transport)
     fork = await relay(transport).handle_message(

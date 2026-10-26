@@ -1064,6 +1064,14 @@ impl Cursor {
     }
 }
 
+/// Set while state writes fail on a full disk: logged once per episode, not once per hook.
+static DISK_FULL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// ENOSPC or EDQUOT, as `private_write` words them.
+fn disk_full(error: &str) -> bool {
+    error.contains("(os error 28)") || error.contains("(os error 69)")
+}
+
 fn private_write(path: &Path, value: &impl Serialize) -> Result<()> {
     if fs::symlink_metadata(path)
         .is_ok_and(|m| !m.is_file() || m.uid() != unsafe { libc::geteuid() })
@@ -1085,7 +1093,7 @@ fn private_write(path: &Path, value: &impl Serialize) -> Result<()> {
             )
         };
         if fd < 0 {
-            return Err("cannot create private state".into());
+            return Err(format!("cannot create private state: {}", std::io::Error::last_os_error()));
         }
         let mut file = unsafe { fs::File::from_raw_fd(fd) };
         file.write_all(&serde_json::to_vec(value).map_err(|e| e.to_string())?)
@@ -1100,7 +1108,7 @@ fn private_write(path: &Path, value: &impl Serialize) -> Result<()> {
             )
         } != 0
         {
-            return Err("cannot replace private state".into());
+            return Err(format!("cannot replace private state: {}", std::io::Error::last_os_error()));
         }
         directory.sync_all().map_err(|e| e.to_string())
     })();
@@ -1954,9 +1962,25 @@ struct RegistrationState {
 }
 
 impl Mirror {
+    /// A full disk is not fatal: the mirror in memory stays the truth (`dirty`) and the next
+    /// write saves it whole. Failing here ended the relay connection, and every reconnect failed
+    /// the same way, so every session went offline until the app was quit (2026-10-26).
     fn persist(&mut self, path: &Path) -> Result<()> {
+        match self.persist_durable(path) {
+            Err(error) if disk_full(&error) => Ok(()),
+            other => other,
+        }
+    }
+    /// On disk or an error: a register whose generation must survive a crash waits for this.
+    fn persist_durable(&mut self, path: &Path) -> Result<()> {
         self.dirty = true;
-        private_write(path, self)?;
+        if let Err(error) = private_write(path, self) {
+            if disk_full(&error) && !DISK_FULL.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                transport::relay_log(&format!("state not saved, kept in memory: {error}"));
+            }
+            return Err(error);
+        }
+        DISK_FULL.store(false, std::sync::atomic::Ordering::Relaxed);
         self.dirty = false;
         Ok(())
     }

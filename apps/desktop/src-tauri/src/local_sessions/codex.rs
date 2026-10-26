@@ -261,7 +261,7 @@ fn from_writer(
         holder: None,
         job: None,
         forked_from: None,
-        forked_by_person: false,
+        forked_by_person: None,
         aliases: vec![],
         // The header says who wrote it: the app's own conversations, never a TUI (the app's
         // bundled CLI run in a terminal writes `cli`).

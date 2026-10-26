@@ -179,7 +179,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         last_assistant_message: None,
         holder: None,
         job,
-        forked_by_person: lineage.as_ref().is_some_and(|l| l.by_person),
+        forked_by_person: lineage.as_ref().and_then(|l| l.by_person),
         forked_from: lineage.map(|l| l.origin),
         aliases: vec![],
         app: !background && in_app(home, pid, conversation),
@@ -207,42 +207,25 @@ pub(super) fn find_transcript(home: &Path, conversation: &str) -> Result<Option<
 pub(super) struct Continuation {
     pub to: String,
     at: String,
-    /// Who the origin's last turn before it came from (`turn_by_person`).
-    by_person: Option<bool>,
 }
 
 /// The tail's last `continued-in`, unless a prompt or reply came after it: Claude's own superseded
 /// test (`/resume` hides such an origin). An origin its person kept using made the other a branch.
 pub(super) fn continuation(path: &Path) -> Option<Continuation> {
-    let len = fs::metadata(path).ok()?.len();
-    // The link is at the tail; the turn before it can be megabytes back (tool output, attachments).
-    // ponytail: 32 MiB at most; a turn further back than that reads as nobody's.
-    for window in [256 * 1024, 4 << 20, 32 << 20] {
-        let (mut found, mut by_person) = (None, None);
-        for row in tail_rows(path, window)? {
-            match row["type"].as_str() {
-                Some("continued-in") => {
-                    found = row["continuedInSessionId"]
-                        .as_str()
-                        .filter(|s| uuid::Uuid::parse_str(s).is_ok())
-                        .map(|to| Continuation {
-                            to: to.to_owned(),
-                            at: row["timestamp"].as_str().unwrap_or_default().to_owned(),
-                            by_person,
-                        })
-                }
-                Some("user" | "assistant") => {
-                    found = None;
-                    by_person = turn_by_person(&row).or(by_person);
-                }
-                _ => {}
+    let mut found = None;
+    for row in tail_rows(path, 256 * 1024)? {
+        match row["type"].as_str() {
+            Some("continued-in") => {
+                found = row["continuedInSessionId"]
+                    .as_str()
+                    .filter(|s| uuid::Uuid::parse_str(s).is_ok())
+                    .map(|to| Continuation { to: to.to_owned(), at: row["timestamp"].as_str().unwrap_or_default().to_owned() })
             }
-        }
-        if found.as_ref().is_none_or(|c: &Continuation| c.by_person.is_some()) || window >= len {
-            return found;
+            Some("user" | "assistant") => found = None,
+            _ => {}
         }
     }
-    None
+    found
 }
 
 /// The rows written after `at`, from the tail: a continuation's own, after its copied history.
@@ -294,7 +277,8 @@ fn tail_rows(path: &Path, window: u64) -> Option<Vec<Value>> {
 /// moved it on (only then is it shared like its origin).
 pub(super) struct Lineage {
     pub origin: String,
-    pub by_person: bool,
+    /// None until the continuation has a turn of its own: then it is private.
+    pub by_person: Option<bool>,
     /// The origin's transcript, which holds the name this conversation had there.
     pub transcript: PathBuf,
 }
@@ -303,8 +287,9 @@ pub(super) struct Lineage {
 /// whose tail is `continued-in` → it, which Claude keeps after its terminal leaves the agent view
 /// or closes. A job's command line is no evidence (a claimed spare's never names its origin), and
 /// `hint` (the parked terminal's `parkedJobId` conversation) only says which transcript to read
-/// first. Who moved it on: the continuation's first prompt of its own (a peer reply backgrounds an
-/// idle terminal and lands as one), else the origin's last turn; unlabelled is not a person.
+/// first. Who moved it on: the continuation's first labelled prompt of its own (a peer reply
+/// backgrounds an idle terminal and lands as one, minutes later). Until there is one it is None:
+/// the origin's last turn says nothing about who moved it on.
 pub(super) fn continued_from(home: &Path, transcript: Option<&Path>, conversation: &str, hint: Option<&str>) -> Option<Lineage> {
     let linked = |path: &Path| continuation(path).filter(|c| c.to == conversation);
     let hinted = hint.and_then(|origin| {
@@ -337,7 +322,7 @@ pub(super) fn continued_from(home: &Path, transcript: Option<&Path>, conversatio
         })
     })?;
     let own_turn = transcript.and_then(|t| rows_since(t, &link.at).iter().find_map(turn_by_person));
-    Some(Lineage { origin, by_person: own_turn.or(link.by_person).unwrap_or(false), transcript: origin_path })
+    Some(Lineage { origin, by_person: own_turn, transcript: origin_path })
 }
 
 /// The conversation whose terminal moved into background job `job`: Claude writes `parkedJobId`
@@ -1574,7 +1559,7 @@ mod tests {
         let own = dir.join(format!("{NEXT}.jsonl"));
         // No `parkedJobId` (its terminal left the agent view) and no command line: the origin's tail says it.
         let l = continued_from(home.path(), Some(&own), NEXT, None).unwrap();
-        assert_eq!((l.origin.as_str(), l.by_person), (ORIGIN, true));
+        assert_eq!((l.origin.as_str(), l.by_person), (ORIGIN, Some(true)));
         assert!(continued_from(home.path(), Some(&own), NEXT, Some(ORIGIN)).is_some_and(|l| l.origin == ORIGIN), "the fast path");
         // A stale hint is no evidence: the scan still finds the real origin.
         assert!(continued_from(home.path(), Some(&own), NEXT, Some(NEXT)).is_some_and(|l| l.origin == ORIGIN));
@@ -1584,9 +1569,9 @@ mod tests {
         fs::write(dir.join(format!("{ORIGIN}.jsonl")), copied.clone() + &long + &link).unwrap();
         let late = format!("{{\"type\":\"assistant\",\"timestamp\":\"2026-10-26T03:05:00.000Z\",\"message\":{{\"content\":\"{}\"}}}}\n", "y".repeat(600 * 1024));
         fs::write(&own, copied.clone() + &long + &prompt("human", "2026-10-26T03:04:24.000Z") + &late).unwrap();
-        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.by_person));
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.by_person == Some(true)));
         fs::write(&own, copied.clone() + &long + &prompt("peer", "2026-10-26T03:04:24.000Z") + &late).unwrap();
-        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| !l.by_person), "its own first turn, megabytes back");
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.by_person == Some(false)), "its own first turn, megabytes back");
         // An origin that kept going after the link is a branch's parent, not a continuation's origin.
         fs::write(dir.join(format!("{ORIGIN}.jsonl")), copied.clone() + &link + &prompt("human", "2026-10-26T03:00:00.000Z")).unwrap();
         assert!(continued_from(home.path(), Some(&own), NEXT, Some(ORIGIN)).is_none());
@@ -1602,15 +1587,12 @@ mod tests {
             (NEXT, copied.clone() + &prompt("task-notification", "2026-10-26T03:06:00.000Z") + &prompt("peer", "2026-10-26T03:12:05.000Z") + &prompt("human", "2026-10-26T03:20:00.000Z")),
         ]);
         let own = dir.join(format!("{NEXT}.jsonl"));
-        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.origin == ORIGIN && !l.by_person));
-        // Before it has a prompt of its own, the origin's last turn says who: a person's here...
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.origin == ORIGIN && l.by_person == Some(false)));
+        // Before it has a prompt of its own nothing is decided, whatever the origin's last turn was:
+        // the peer's message lands minutes after the link (prod 2026-10-26: 6 minutes).
         fs::write(&own, copied.clone()).unwrap();
-        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.by_person));
-        // ...a peer's there, and an unlabelled one is nobody's.
-        fs::write(dir.join(format!("{ORIGIN}.jsonl")), prompt("peer", "2026-10-26T03:00:00.000Z") + &link).unwrap();
-        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| !l.by_person));
-        fs::write(dir.join(format!("{ORIGIN}.jsonl")), "{\"type\":\"user\"}\n".to_owned() + &link).unwrap();
-        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| !l.by_person));
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.by_person.is_none()));
+        assert!(continued_from(home.path(), None, NEXT, Some(ORIGIN)).is_some_and(|l| l.by_person.is_none()), "no transcript yet");
     }
 
     #[test]
@@ -2074,7 +2056,7 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
-            forked_by_person: false,
+            forked_by_person: None,
             aliases: vec![],
             app: true,
         };

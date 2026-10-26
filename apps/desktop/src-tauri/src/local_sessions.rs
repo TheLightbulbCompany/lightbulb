@@ -1307,10 +1307,10 @@ struct NativeSession {
     /// origin whose transcript ends `continued-in` → this one (`claude::continued_from`).
     #[serde(default)]
     forked_from: Option<String>,
-    /// Its person moved it on (their own turn, not a peer's or another agent's): only then is it
-    /// shared like its origin.
+    /// Whether its person moved it on (its own first turn is theirs, not a peer's or another
+    /// agent's): only then is it shared like its origin. None until it has a turn of its own.
     #[serde(default)]
-    forked_by_person: bool,
+    forked_by_person: Option<bool>,
     /// Every earlier id of this conversation, oldest first (Claude gives a continuation a new id):
     /// a request naming any of them means this session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2357,7 +2357,7 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
-            forked_by_person: false,
+            forked_by_person: None,
             aliases: vec![],
             app: true,
         }
@@ -2548,7 +2548,7 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
-            forked_by_person: false,
+            forked_by_person: None,
             aliases: vec![],
             app: true,
         };
@@ -2616,7 +2616,7 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
-            forked_by_person: false,
+            forked_by_person: None,
             aliases: vec![],
             app: true,
         };
@@ -3011,7 +3011,7 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
-            forked_by_person: false,
+            forked_by_person: None,
             aliases: vec![],
             app: true,
         };
@@ -3117,7 +3117,7 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
-                forked_by_person: false,
+                forked_by_person: None,
                 aliases: vec![],
                 app: true,
             },
@@ -3208,7 +3208,7 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
-                forked_by_person: false,
+                forked_by_person: None,
                 aliases: vec![],
                 app: true,
             },
@@ -3298,7 +3298,7 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
-                forked_by_person: false,
+                forked_by_person: None,
                 aliases: vec![],
                 app: true,
             },
@@ -3403,7 +3403,7 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
-                forked_by_person: false,
+                forked_by_person: None,
                 aliases: vec![],
                 app: true,
             },
@@ -3473,7 +3473,7 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
-                forked_by_person: false,
+                forked_by_person: None,
                 aliases: vec![],
                 app: true,
             },

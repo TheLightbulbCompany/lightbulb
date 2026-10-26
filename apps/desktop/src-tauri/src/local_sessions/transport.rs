@@ -545,7 +545,7 @@ impl Host {
             // that job was listed as a session nobody started (2026-10-26). Not out of one that
             // never had a prompt (no transcript) either.
             let ours = native.holder.is_some()
-                || native.forked_by_person && native.forked_from.as_deref().is_some_and(|origin| {
+                || native.forked_by_person == Some(true) && native.forked_from.as_deref().is_some_and(|origin| {
                     self.mirrors.values().any(|m| {
                         m.shared
                             && m.native.transcript.is_some()
@@ -567,6 +567,15 @@ impl Host {
                 // session the relay has heard of: its person stopped sharing it, and stays asked.
                 if ours && !mirror.shared && mirror.session_id.is_none() {
                     mirror.shared = true;
+                }
+                // A continuation stays private until its own first turn says who moved it on
+                // (an old human turn in its origin says nothing about a peer's background). Its
+                // person's turn shares it then, registered or not, unless they stopped sharing it.
+                let decided = mirror.native.forked_by_person.is_none() && native.forked_by_person == Some(true);
+                let stopped = STOPPED_AT.lock().is_ok_and(|s| s.contains_key(&key));
+                if ours && !mirror.shared && decided && !stopped {
+                    mirror.shared = true;
+                    invalidate = true;
                 }
                 if mirror.ended_at.is_some() {
                     // The session is over: a hook or its own pid said so, and a
@@ -651,6 +660,8 @@ impl Host {
                 // `forkedFrom` on the next registration and lists the origin beside its fork.
                 if native.forked_from.is_none() && mirror.native.process == native.process {
                     native.forked_from.clone_from(&mirror.native.forked_from);
+                }
+                if native.forked_by_person.is_none() && mirror.native.process == native.process {
                     native.forked_by_person = mirror.native.forked_by_person;
                 }
                 // Nor its earlier ids, once its origin's mirror is reaped.
@@ -3427,7 +3438,7 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
-            forked_by_person: false,
+            forked_by_person: None,
             aliases: vec![],
             app: true,
         }
@@ -3529,10 +3540,10 @@ pub(super) mod tests {
         // ← out of a session that is shared, and out of one that is not.
         let mut fork = test_native("5eed0003-0000-4000-8000-000000000003");
         fork.forked_from = Some(held.conversation.clone());
-        fork.forked_by_person = true;
+        fork.forked_by_person = Some(true);
         let mut private_fork = test_native("5eed0004-0000-4000-8000-000000000004");
         private_fork.forked_from = Some(outside.conversation.clone());
-        private_fork.forked_by_person = true;
+        private_fork.forked_by_person = Some(true);
         // A peer's message moved the shared session on (its continuation's first prompt is the peer's).
         let mut peer_fork = test_native("5eed0007-0000-4000-8000-000000000007");
         peer_fork.forked_from = Some(held.conversation.clone());
@@ -3542,6 +3553,14 @@ pub(super) mod tests {
         assert_eq!(shared, [false, true, true, false, false, false], "a job out of a terminal nobody prompted, or moved on by a peer, is not the person's");
         // The continuation remembers the id it had before.
         assert_eq!(host.mirrors[&native_key(&fork)].native.aliases, [held.conversation.clone()]);
+        // Undecided (no turn of its own yet) is private, also once the relay has heard of it; its
+        // person's first turn then shares it and registers it again. A peer's never does.
+        let peer_key = native_key(&peer_fork);
+        host.mirrors.get_mut(&peer_key).unwrap().session_id = Some("5eed0007-5e55-4000-8000-000000000007".into());
+        let mut by_person = peer_fork.clone();
+        by_person.forked_by_person = Some(true);
+        let invalidated = host.observe(vec![held.clone(), by_person], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&peer_key].shared && invalidated.contains(&peer_key));
 
         // Only its person's and never shared: it registers, heartbeats and uploads nothing, and takes nothing.
         let key = native_key(&outside);
@@ -5807,7 +5826,7 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
-            forked_by_person: false,
+            forked_by_person: None,
             aliases: vec![],
             app: true,
         }
@@ -6099,7 +6118,7 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
-            forked_by_person: false,
+            forked_by_person: None,
             aliases: vec![],
             app: true,
         };
@@ -6226,7 +6245,7 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
-            forked_by_person: false,
+            forked_by_person: None,
             aliases: vec![],
             app: true,
         };

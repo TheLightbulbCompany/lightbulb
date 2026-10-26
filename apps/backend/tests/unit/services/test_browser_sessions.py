@@ -291,7 +291,9 @@ async def test_delete_browser_profiles_survives_a_delete_failure(stub_control):
 
 
 @pytest.mark.asyncio
-async def test_a_session_started_on_the_built_in_browser_is_still_found_after_the_move(stub_data, row, monkeypatch):
+async def test_a_session_started_on_the_built_in_browser_is_still_found_after_the_move(
+    stub_data, row, aws_creds, monkeypatch
+):
     """Codex on #4391: a session open on aws.browser.v1 when the VPC browser ships must still be
     read and stopped where it runs, not read as gone and orphaned until its TTL."""
     monkeypatch.setattr(browser_sessions, "BROWSER_ID", "lightbulb_dev_workspace_browser-Ab12Cd34Ef")

@@ -458,8 +458,6 @@ export interface LocalSession {
   pendingJoinIds?: Record<string, string>;
   /** The owner's own view only: names for people who asked from the public page and are not in the workspace yet. */
   pendingJoinNames?: Record<string, string>;
-  /** "Viewers can ask to join" on an "Anyone with the link" session: on unless the owner turned it off. */
-  askToJoin?: boolean;
   /** The READER's own ask to pick this session up: pending, or declined by the owner. */
   pickupRequest?: "pending" | "declined" | null;
   /** The owner's own view only: teammates waiting for an answer to "Ask to pick up", and their request ids. */

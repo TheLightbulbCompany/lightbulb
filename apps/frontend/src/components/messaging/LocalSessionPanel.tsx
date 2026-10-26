@@ -8,7 +8,7 @@ import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
   audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
-  CLI_ONLY, conversationOnly, joinRequestView, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
+  CLI_ONLY, conversationOnly, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox, watchOnlyLine,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -210,12 +210,10 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     capture("session_opened", { own, provider: session.provider, workspace_id: orgId, session_id: session.sessionId, origin: "web" });
   }, [session.sessionId, own, session.provider, orgId]);
   const control = canControlSession(session, own, userId);
-  // A live terminal is the only input: no message box under it. A viewer who cannot type keeps the Ask to join line.
+  // A live terminal is the only input: no message box under it. A viewer who cannot type keeps the watch-only line.
   const terminalLive = local === "local" || liveTerminal;
   const resume = useSessionResume(client, session, { own, userId, ownerName, nameOf: personName, uuid: () => crypto.randomUUID() });
-  const join = useSessionJoinRequest(client, session);
   const askPickup = useSessionJoinRequest(client, session, "pickup");
-  const asking = joinRequestView(join, ownerName);
   const glyph = session.provider === "claude" ? "❯" : "›";
   const plan = useMemo(() => sessionPlan(main), [main]);
   const changes = useMemo(() => sessionChanges(main), [main]);
@@ -273,7 +271,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     <Button type="button" variant="outline" size="sm" disabled>Resume</Button>
     <p>{`Resume works once ${own ? "your" : `${ownerName}'s`} Mac is back.`}{!own && canPickUp(session) ? " Pick up continues it on your Mac now." : ""}</p>
   </div>;
-  // A terminal session with no terminal (an older Mac app): what a teammate can do is message the owner (Ask to join is below).
+  // A terminal session with no terminal (an older Mac app): what a teammate can do is message the owner.
   const notice = sessionScreenNotice(session, own, ownerName);
   const reason = session.terminalReason === "plain" || session.terminalReason === "no-daemon" ? session.terminalReason : null;
   const settings = isDesktopApp()
@@ -387,13 +385,10 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       </div>}
     </form> : <div className="room-composer local-session-readonly">
       <div>
-        <p className="text-ui text-muted-foreground">{terminalLive && "Watching · "}{asking.line}</p>
+        <p className="text-ui text-muted-foreground">{terminalLive && "Watching · "}{watchOnlyLine(ownerName)}</p>
         <div className="local-session-actions">
-          {join.supported && <Button type="button" variant="outline" size="sm" disabled={asking.disabled}
-            onClick={() => void join.ask()}>{asking.button}</Button>}
           {waitingOn === null && !(notStarted && convo) && messageOwner}
         </div>
-        {join.error && <p role="alert" className="text-ui text-warn">{join.error}</p>}
       </div>
       {footer && <p className="native-session-footer">{footer}</p>}
     </div>}

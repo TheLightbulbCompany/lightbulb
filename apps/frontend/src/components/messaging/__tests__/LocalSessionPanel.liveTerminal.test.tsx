@@ -47,12 +47,12 @@ it("keeps the message box on a transcript", () => {
   expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
 });
 
-it("shows Watching · Ask to join, and no text box, under a live terminal for a teammate who may not send", async () => {
+it("shows Watching · Only Alice can type, no text box and no Ask to join, under a live terminal for a teammate who may not send", async () => {
   render(<LocalSessionPanel session={session} ownerName="Alice" own={false} client={{ ...client, requestLocalSessionJoin: vi.fn() } as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
   const terminal = await screen.findByRole("region", { name: "Live terminal (view only)" });
-  expect(below(terminal, await screen.findByText(/Watching · Only Alice can send/))).toBe(true);
+  expect(below(terminal, await screen.findByText(/Watching · Only Alice can type in this session/))).toBe(true);
   expect(screen.queryByRole("textbox")).toBeNull();
-  expect(screen.getByRole("button", { name: "Ask to join" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Ask to join" })).toBeNull();
 });
 
 it("never labels the status line as a transcript, and shows the ended and offline panels", () => {

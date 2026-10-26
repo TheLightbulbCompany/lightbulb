@@ -90,16 +90,9 @@ export function useSessionJoinRequest(client: SessionControlClient, session: Loc
   return { state, saving, error, ask, supported: !!send, again, lapsed };
 }
 
-/** The asker's line and button under a session they cannot send to, the same on the web and the
- *  phone (ISOA-729): waiting, not answered yet (remind), closed unanswered, declined, or not asked. */
-export function joinRequestView(join: Pick<ReturnType<typeof useSessionJoinRequest>, "state" | "again" | "lapsed" | "saving">, ownerName: string): { line: string; button: string; disabled: boolean } {
-  if (join.state === "pending") return join.again
-    ? { line: `${ownerName} has not answered your request yet.`, button: "Ask again", disabled: join.saving }
-    : { line: `Waiting for ${ownerName} to answer. Your request stays open until they do or the session ends.`, button: "Requested", disabled: true };
-  if (join.state === "declined") return { line: `${ownerName} declined your request.`, button: "Ask to join", disabled: join.saving };
-  if (join.lapsed) return { line: `Your request closed before ${ownerName} answered, because the session restarted.`, button: "Ask again", disabled: join.saving };
-  return { line: `Only ${ownerName} can send to this session.`, button: "Ask to join", disabled: join.saving };
-}
+/** The line under a teammate's session they cannot type into (owner ruling 2026-10-26): members
+ *  never ask to join; they type while the owner lets teammates control the session. */
+export const watchOnlyLine = (ownerName: string) => `Only ${ownerName} can type in this session.`;
 
 /** The one follow-up "Commit & open PR" sends. Plain instructions: the harness, not
  * Lightbulb, runs git, under the owner's own permissions and prompts. */

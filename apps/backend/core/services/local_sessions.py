@@ -325,9 +325,6 @@ class LocalSession(ContractModel):
     # The owner's own view only: names for the people asking from the public page, who are not in the
     # workspace yet ("Priya Shah (priya@acme.com)"), so the owner knows who they would let in.
     pending_join_names: dict[str, str] | None = None
-    # "Viewers can ask to join" (D2): people outside the workspace who watch an "Anyone with the link"
-    # page may ask. On unless the owner turned it off for this session.
-    ask_to_join: bool = True
     # Request id per waiting person, so an answer from the session names the request it saw.
     pending_join_ids: dict[str, str] | None = None
     # The READER's own ask to pick up, while pick-up is off; absent otherwise.
@@ -820,7 +817,6 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     if not row["capabilitiesVerified"]:
         public["capabilities"] = Capabilities().model_dump(by_alias=True)
     public["teamControl"] = team_control_on(row)
-    public["askToJoin"] = not row.get("askToJoinOff")
     public["allowedSenders"] = allowed_senders(row)
     ended = row.get("endedAt") is not None
     empty = ended_empty(row["provider"], public["status"], row.get("eventSeq", 0), row.get("controlUnavailableReason"))
@@ -2087,14 +2083,6 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
         if bool(row.get("teamControl")) == enabled:
             return _session_public(row, auth.user_id)
         updated = {**row, "teamControl": enabled, "revision": str(uuid.uuid4())}
-        if enabled:
-            # Everyone may send now, so a pending ask is answered: it leaves Needs you and the session.
-            updated["joinRequests"] = {
-                who: r for who, r in (row.get("joinRequests") or {}).items() if r.get("state") != "pending"
-            }
-            # So is a closure a restart left behind: those people can send now, and must not be told
-            # again that their request closed if the switch goes off later.
-            updated.pop("joinClosed", None)
         audit = audit_row(owner, row["sessionId"], auth, "team_control_on" if enabled else "team_control_off")
         try:
             await repo.put_session(
@@ -2203,40 +2191,13 @@ async def _change_session(
 
 
 async def request_join(auth: AuthContext, session_id: str) -> LocalSession:
-    """A teammate asks the owner to let them send. Asking again while pending reminds the owner at
-    most once per ASK_AGAIN_AFTER_S and otherwise changes nothing; a declined person may ask again."""
-    row, filed = await file_join_request(auth, session_id)
-    if filed:
-        await _notify_join_request(row, auth.user_id)
-        await _push_presence(row)
-    return _session_public(row, auth.user_id)
-
-
-async def file_join_request(auth: AuthContext, session_id: str) -> tuple[dict, bool]:
-    """The ask alone, with nothing said: (the session, whether this call filed or reminded it)."""
-    me = auth.user_id
-
-    def change(row: dict) -> dict | None:
-        if me == row["humanUserId"]:
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "This is your own session.")
-        requests = dict(row.get("joinRequests") or {})
-        if may_control(row, me):
-            return None
-        if (requests.get(me) or {}).get("state") == "pending":
-            if (again := _ask_again(requests[me])) is None:
-                return None
-            requests[me] = again
-        else:
-            requests[me] = _new_request()
-        updated = {**row, "joinRequests": requests}
-        if me in (row.get("joinClosed") or {}):  # asked again: the closure has been said
-            updated["joinClosed"] = {u: at for u, at in row["joinClosed"].items() if u != me}
-        return updated
-
-    row, audit = await _change_session(auth, session_id, change, "join_requested", None)
-    if audit is not None:
-        _capture_growth(row, "session_join_requested", me)
-    return row, audit is not None
+    """Owner ruling 2026-10-26: trust = membership. A workspace member types while the owner has
+    "Let teammates control this session" on and watches otherwise: there is no member ask. Only a
+    viewer of an "Anyone with the link" page asks (``session_links.ask_to_join``). Kept for clients
+    that still offer the old button."""
+    raise ApiProblem(
+        "LOCAL_SESSION_FORBIDDEN", "Teammates can type here only while its owner lets teammates control it."
+    )
 
 
 async def decide_join(
@@ -2316,29 +2277,6 @@ async def _admit_outsider(auth: AuthContext, session_id: str, user_id: str, row:
 OUTSIDER_ALLOW_COPY = (
     "They watched it from its public link. Allow makes them a member of your workspace and lets them use this session."
 )
-
-
-class AskToJoinSwitch(ContractModel):
-    enabled: bool
-
-
-async def set_ask_to_join(auth: AuthContext, session_id: str, enabled: bool) -> LocalSession:
-    """The owner's per-session "Viewers can ask to join" (D2: on by default)."""
-
-    def change(row: dict) -> dict | None:
-        if auth.user_id != row["humanUserId"]:
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can change this.")
-        if (not row.get("askToJoinOff")) == enabled:
-            return None
-        updated = {**row}
-        if enabled:
-            updated.pop("askToJoinOff", None)
-        else:
-            updated["askToJoinOff"] = True
-        return updated
-
-    row, _ = await _change_session(auth, session_id, change, "ask_to_join_on" if enabled else "ask_to_join_off", None)
-    return _session_public(row, auth.user_id)
 
 
 async def remove_sender(auth: AuthContext, session_id: str, user_id: str) -> LocalSession:

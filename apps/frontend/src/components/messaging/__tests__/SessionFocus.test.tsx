@@ -47,7 +47,7 @@ it("renders someone else's session alone, read-only, with no conversation column
   const heading = await screen.findByRole("heading", { name: "Claude Load test" });
   expect(heading).toHaveTextContent(/^Load test$/);
   expect(screen.queryByRole("complementary", { name: "Conversation" })).not.toBeInTheDocument();
-  expect(screen.getByText("Only Alice can send to this session.")).toBeInTheDocument();
+  expect(screen.getByText("Only Alice can type in this session.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Send follow-up" })).not.toBeInTheDocument();
 });
 
@@ -80,7 +80,7 @@ it("falls back to a direct fetch and renders an ended session as the Ended panel
   expect(statusLine().textContent).not.toMatch(/Transcript/);
   expect(within(statusLine()).getByText("Alice")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Send follow-up" })).not.toBeInTheDocument();
-  expect(screen.queryByText("Only Alice can send to this session.")).not.toBeInTheDocument();
+  expect(screen.queryByText("Only Alice can type in this session.")).not.toBeInTheDocument();
 });
 
 it("says 'your Mac' and 'your terminal', never \"You's\", for your own waiting session", async () => {
@@ -161,28 +161,12 @@ it("shows a sent follow-up at once as a quiet greyed pending row", async () => {
   expect(within(row).queryByRole("status")).not.toBeInTheDocument();
 });
 
-it("lets a teammate ask to join, then reads Requested until the owner answers", async () => {
-  const join = vi.fn(async () => ({ ...session, joinRequest: "pending" as const }));
-  focus({ session, ownerName: "Alice", own: false }, { join });
-  await userEvent.click(await screen.findByRole("button", { name: "Ask to join" }));
-  expect(join).toHaveBeenCalledWith("s1");
-  expect(await screen.findByRole("button", { name: "Requested" })).toBeDisabled();
-});
-
-// ISOA-729: a request never times out, so the person who asked sees where it stands and can nudge.
-it("says a request is waiting, and offers Ask again once it has waited ten minutes", async () => {
-  const join = vi.fn(async () => ({ ...session, joinRequest: "pending" as const }));
+it("offers a teammate no Ask to join: they watch until the owner lets teammates control it, and can still ask to pick up", async () => {
   const askPickup = vi.fn(async () => ({ ...session, pickupRequest: "pending" as const }));
-  const fresh = new Date().toISOString(), old = new Date(Date.now() - 11 * 60_000).toISOString();
-  const first = focus({ session: { ...session, joinRequest: "pending", joinRequestedAt: fresh }, ownerName: "Alice", own: false }, { join });
-  expect(await screen.findByText("Waiting for Alice to answer. Your request stays open until they do or the session ends.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Requested" })).toBeDisabled();
-  first.unmount();
-  focus({ session: { ...session, joinRequest: "pending", joinRequestedAt: old, pickupRequest: "pending", pickupRequestedAt: old }, ownerName: "Alice", own: false }, { join, askPickup });
-  expect(await screen.findByText("Alice has not answered your request yet.")).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Ask again" }));
-  expect(join).toHaveBeenCalledWith("s1");
-  await userEvent.click(screen.getByRole("button", { name: "No answer yet. Ask again" }));
+  focus({ session, ownerName: "Alice", own: false }, { join: vi.fn(), askPickup });
+  expect(await screen.findByText("Only Alice can type in this session.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Ask to join" })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Ask to pick up" }));
   expect(askPickup).toHaveBeenCalledWith("s1");
 });
 
@@ -195,22 +179,10 @@ it("lets the owner answer a request to join in the session itself", async () => 
   expect(decide).toHaveBeenCalledWith("s1", "bob", "allow", "req-1");
 });
 
-it("offers no Ask to join on a session that has ended", async () => {
-  focus({ session: { ...session, status: "ended" }, ownerName: "Alice", own: false }, { join: vi.fn() });
-  expect(await screen.findByRole("heading", { name: "Claude Load test" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Ask to join" })).not.toBeInTheDocument();
-});
-
-it("says the owner declined, and lets the person ask again", async () => {
-  focus({ session: { ...session, joinRequest: "declined" }, ownerName: "Alice", own: false }, { join: vi.fn() });
-  expect(await screen.findByText("Alice declined your request.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Ask to join" })).toBeEnabled();
-});
-
 it("gives a person the owner allowed the composer", async () => {
   focus({ session: { ...session, allowedSenders: ["user_test_123"] }, ownerName: "Alice", own: false });
   expect(await screen.findByRole("button", { name: "Send follow-up" })).toBeInTheDocument();
-  expect(screen.queryByText("Only Alice can send to this session.")).not.toBeInTheDocument();
+  expect(screen.queryByText("Only Alice can type in this session.")).not.toBeInTheDocument();
 });
 
 it("opens the session a Claude session moved to the background continues as", async () => {

@@ -523,31 +523,15 @@ describe("session screen", () => {
     expect(await screen.findByText("This session runs inside an app, so there is no terminal to show. This is its conversation.")).toBeTruthy();
   });
 
-  it("shows someone else's session read-only: no prompt row, only who can send", async () => {
-    mockSession = { ...base, humanUserId: "user-b" };
-    await render(<SessionScreen />);
-    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
-    expect(screen.getByText("Only Bob can send to this session.")).toBeTruthy();
-    expect(screen.queryByLabelText("Send a follow-up to Claude")).toBeNull();
-    // A backend that predates the join routes sends no `allowedSenders`, and
-    // asking it would only fail.
-    expect(screen.queryByText("Ask to join")).toBeNull();
-  });
-
-  it("asks to join someone else's session and reads Requested until they answer", async () => {
+  it("shows someone else's session read-only: no prompt row, only who can type, nothing to ask", async () => {
     mockSession = { ...base, humanUserId: "user-b", allowedSenders: [] };
     await render(<SessionScreen />);
-    await fireEvent.press(await screen.findByText("Ask to join"));
-    expect(mockAskToJoin).toHaveBeenCalledWith("sess-1");
-    expect(await screen.findByText("Requested")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Requested" })).toBeDisabled();
-  });
-
-  it("says when the owner declined, and lets the reader ask again", async () => {
-    mockSession = { ...base, humanUserId: "user-b", allowedSenders: [], joinRequest: "declined" };
-    await render(<SessionScreen />);
-    expect(await screen.findByText("Bob declined your request.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Ask to join" })).toBeEnabled();
+    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    expect(screen.getByText("Only Bob can type in this session.")).toBeTruthy();
+    expect(screen.queryByLabelText("Send a follow-up to Claude")).toBeNull();
+    // Owner ruling 2026-10-26: members never ask to join; teammates control is the gate.
+    expect(screen.queryByText("Ask to join")).toBeNull();
+    expect(mockAskToJoin).not.toHaveBeenCalled();
   });
 
   it.each([

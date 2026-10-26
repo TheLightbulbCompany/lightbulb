@@ -156,10 +156,10 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
       {session.pickup?.allowed && <p role="status" className="session-setting-state">{pickupStatus(session.pickup, timeAgo) || "Taking the first snapshot."}</p>}
     </div>
     {!ended && client.setLocalSessionTeamControl && <Setting label="Let teammates control this session" checked={control.enabled} disabled={control.saving} onChange={next => void control.set(next)} error={control.error}>
-      Workspace members can send follow-ups and answer permission prompts on your Mac. Every action is logged in the session’s conversation. Turns off when the session ends.
+      Workspace members can type in it, send follow-ups and answer permission prompts on your Mac, without asking. Off, they watch. Every action is logged in the session’s conversation. Turns off when the session ends.
     </Setting>}
     {!ended && <People session={session} ids={session.allowedSenders} remove={client.removeLocalSessionSender} nameOf={nameOf}
-      label="People you let in" about="They asked to join. They can send follow-ups and answer permission prompts until the session ends." />}
+      label="People you let in" about="They asked to join from the session’s link. They can send follow-ups and answer permission prompts until the session ends." />}
     {ended && <People session={session} ids={session.resumeAllowed} remove={client.revokeLocalSessionResume} nameOf={nameOf}
       label="Who can resume it" about="They could send to it when it ended. They can start it again on your Mac, in plan mode, with a message." />}
     {session.usage && client.setLocalSessionUsageSharing && <Setting label="Show token usage to teammates" checked={usage.enabled} disabled={usage.saving} onChange={next => void usage.set(next)} error={usage.error}>

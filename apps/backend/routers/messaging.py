@@ -41,6 +41,7 @@ from core.services import (
     link_preview,
     local_sessions,
     mac_live,
+    native_session_decisions,
     openclaw_work,
     session_chat,
     session_pickup,
@@ -95,6 +96,27 @@ from core.services.messaging import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+async def native_session_device(request: Request):
+    """A paired Mac, never a Clerk user or an agent-supplied identity."""
+    from core.services.machine_auth import verify_upgrade
+
+    authorization = request.headers.get("Authorization", "")
+    token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
+    device = await verify_upgrade(token, "openclaw-macos")
+    if device is None or not device.device_id:
+        raise HTTPException(403, "Paired Mac required")
+    return device
+
+
+@router.post("/messaging/native-session-decisions", response_model=local_sessions.LocalSession)
+async def native_session_decision(
+    body: native_session_decisions.NativeDecisionRequest,
+    device=Depends(native_session_device),
+):
+    """The owner answers a join or pick-up request, or pauses sharing, from their Mac."""
+    return await native_session_decisions.decide(device, body)
 
 
 async def computer_human(caller=Depends(network_login.computer_person)) -> AuthContext:

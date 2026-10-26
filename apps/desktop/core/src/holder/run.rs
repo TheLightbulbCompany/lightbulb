@@ -234,6 +234,10 @@ const SESSION_MARKERS: &[&str] = &[
     "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
     "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ATTENDED",
     "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SSE_PORT", "CLAUDE_PID", "CLAUDE_EFFORT",
+    // The parent's job folder: a held session that inherits it writes that job's state.json and
+    // names itself "<that job> (2)" (seen 2026-10-26, a throwaway renamed itself after the owner's
+    // live job and marked it "stuck on a startup dialog").
+    "CLAUDE_JOB_DIR",
 ];
 
 /// Claude Code's own switch for its classic renderer (code.claude.com/docs/en/fullscreen). Every

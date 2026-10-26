@@ -62,7 +62,12 @@ pub(super) fn channel() -> mpsc::Receiver<Vec<Wanted>> {
 
 /// Called from the relay loop with an acknowledgement's `resume` key (absent on an older backend).
 pub(super) fn offer(resume: &Value, mirrors: &BTreeMap<String, Mirror>) {
-    let wanted = tag(resume, |provider, conversation| live(mirrors, provider, conversation));
+    let config = claude_config(&home_dir());
+    let wanted = tag(resume, |provider, conversation| {
+        let newest = latest(&config, provider, conversation);
+        let running = live(mirrors, provider, &newest);
+        (newest, running)
+    });
     if wanted.is_empty() {
         return;
     }
@@ -85,7 +90,55 @@ fn live(mirrors: &BTreeMap<String, Mirror>, provider: &str, conversation: &str) 
     }))
 }
 
-fn tag(resume: &Value, running: impl Fn(&str, &str) -> Option<Option<Hosted>>) -> Vec<Wanted> {
+/// The newest conversation `conversation` continues as. ←, `/background` and a peer reply move a
+/// Claude conversation into a background job under a NEW id and write a `continued-in` row to the
+/// origin's transcript; `claude --resume` of that origin is allowed and starts a second live branch
+/// of it (how "ship-agent-network-phase-1 (2)" appeared). So Resume follows the chain as `/resume`
+/// does: to a continuation whose transcript exists, while nothing was typed in the origin after it.
+pub(crate) fn latest(config: &Path, provider: &str, conversation: &str) -> String {
+    let mut id = conversation.to_owned();
+    if provider != "claude" {
+        return id;
+    }
+    for _ in 0..8 {
+        let next = super::snapshot::find_transcript(config, &id)
+            .and_then(|path| continued_in(&path))
+            .filter(|next| *next != id && super::snapshot::find_transcript(config, next).is_some());
+        match next {
+            Some(next) => id = next,
+            None => break,
+        }
+    }
+    id
+}
+
+/// The `continuedInSessionId` of the last `continued-in` row in the transcript's final 256 KiB
+/// (Claude re-appends its metadata rows at the tail), unless a prompt or reply came after it.
+fn continued_in(path: &Path) -> Option<String> {
+    const TAIL: u64 = 256 * 1024;
+    let mut file = fs::File::open(path).ok()?;
+    let from = file.metadata().ok()?.len().saturating_sub(TAIL);
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut reader = BufReader::new(file);
+    if from > 0 {
+        reader.read_line(&mut String::new()).ok()?; // a partial row
+    }
+    let mut next = None;
+    for row in reader.lines().map_while(|l| l.ok()).filter_map(|l| serde_json::from_str::<Value>(&l).ok()) {
+        match row["type"].as_str() {
+            Some("continued-in") => {
+                next = row["continuedInSessionId"].as_str().filter(|s| uuid::Uuid::parse_str(s).is_ok()).map(str::to_owned)
+            }
+            Some("user" | "assistant") => next = None,
+            _ => {}
+        }
+    }
+    next
+}
+
+/// `running` names the conversation a resume of `conversation` acts on (`latest`), and whether a
+/// live mirror holds it.
+fn tag(resume: &Value, running: impl Fn(&str, &str) -> (String, Option<Option<Hosted>>)) -> Vec<Wanted> {
     let uuid = |v: &Value| v.as_str().filter(|s| uuid::Uuid::parse_str(s).is_ok()).map(str::to_owned);
     let text = |v: &Value, max: usize, or: &str| v.as_str().unwrap_or(or).chars().take(max).collect::<String>();
     resume
@@ -96,8 +149,7 @@ fn tag(resume: &Value, running: impl Fn(&str, &str) -> Option<Option<Hosted>>) -
         .filter_map(|e| {
             let provider = e["provider"].as_str().filter(|p| matches!(*p, "claude" | "codex"))?.to_owned();
             // A UUID can never be read as a flag by the CLI it is handed to.
-            let conversation_id = uuid(&e["conversationId"])?;
-            let running = running(&provider, &conversation_id);
+            let (conversation_id, running) = running(&provider, &uuid(&e["conversationId"])?);
             Some(Wanted {
                 resume_id: uuid(&e["resumeId"])?,
                 session_id: uuid(&e["sessionId"])?,
@@ -433,18 +485,18 @@ mod tests {
     #[test]
     fn resume_offer_reads_the_relay_entry_and_sees_a_running_conversation() {
         let ack: Value = serde_json::from_str(ACK).unwrap();
-        assert_eq!(tag(&ack["resume"], |_, _| None), vec![wanted("claude", "plan")]);
-        let held = tag(&ack["resume"], |provider, conversation| (provider == "claude" && conversation == CONV).then_some(None));
+        assert_eq!(tag(&ack["resume"], |_, c| (c.to_owned(), None)), vec![wanted("claude", "plan")]);
+        let held = tag(&ack["resume"], |provider, conversation| (conversation.to_owned(), (provider == "claude" && conversation == CONV).then_some(None)));
         assert!(held[0].running);
         let mut odd = ack["resume"].clone();
         odd[0]["conversationId"] = json!("--dangerously-skip-permissions");
-        assert!(tag(&odd, |_, _| None).is_empty(), "a conversation id that is not a UUID is refused");
+        assert!(tag(&odd, |_, c| (c.to_owned(), None)).is_empty(), "a conversation id that is not a UUID is refused");
         let mut shell = ack["resume"].clone();
         shell[0]["provider"] = json!("bash");
-        assert!(tag(&shell, |_, _| None).is_empty());
+        assert!(tag(&shell, |_, c| (c.to_owned(), None)).is_empty());
         let mut loose = ack["resume"].clone();
         loose[0]["mode"] = json!("bypassPermissions");
-        assert_eq!(tag(&loose, |_, _| None)[0].mode, "plan", "anything but default reads as plan");
+        assert_eq!(tag(&loose, |_, c| (c.to_owned(), None))[0].mode, "plan", "anything but default reads as plan");
     }
 
     #[test]
@@ -562,6 +614,26 @@ mod tests {
         let mut ended = hosted_mirrors(Some("70f755ac"), true);
         ended.values_mut().for_each(|m| m.ended_at = Some(1));
         assert_eq!(live(&ended, "claude", CONV), None);
+    }
+
+    /// 70f755ac continued in ae0e0fa4 (←): resuming 70f755ac with `claude --resume` would start
+    /// a second live branch of it, so a resume acts on ae0e0fa4.
+    #[test]
+    fn resume_follows_a_continued_conversation_to_its_newest_continuation() {
+        let config = tempfile::tempdir().unwrap();
+        let project = config.path().join("projects/-work");
+        fs::create_dir_all(&project).unwrap();
+        let (a, b, c) = (CONV, "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333");
+        let row = |from: &str, to: &str| format!("{{\"type\":\"continued-in\",\"sessionId\":\"{from}\",\"continuedInSessionId\":\"{to}\"}}\n");
+        fs::write(project.join(format!("{a}.jsonl")), format!("{{\"type\":\"user\"}}\n{}", row(a, b))).unwrap();
+        fs::write(project.join(format!("{b}.jsonl")), format!("{{\"type\":\"assistant\"}}\n{}{{\"type\":\"ai-title\"}}\n", row(b, c))).unwrap();
+        assert_eq!(latest(config.path(), "claude", a), b, "a continuation whose transcript is missing is not followed");
+        fs::write(project.join(format!("{c}.jsonl")), "{\"type\":\"user\"}\n").unwrap();
+        assert_eq!(latest(config.path(), "claude", a), c, "the whole chain");
+        assert_eq!(latest(config.path(), "codex", a), a, "a Codex thread keeps one id for life");
+        // Typed in after the continuation: the origin is a real branch of its own.
+        fs::write(project.join(format!("{a}.jsonl")), format!("{}{{\"type\":\"user\"}}\n", row(a, b))).unwrap();
+        assert_eq!(latest(config.path(), "claude", a), a);
     }
 
     #[tokio::test]

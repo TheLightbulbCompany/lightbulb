@@ -2,7 +2,7 @@
 
 At ``lightbulb login`` (the device flow, after the computer signed a backend challenge with its
 member key) the backend issues a compact EdDSA JWS ``{iat, exp, sub: <user id>, computer:
-<member key>}``, header ``{alg: EdDSA, kid}``. The computer keeps it and shows it: to a workspace
+<member key>, auth_time, org?: <workspace id>}``, header ``{alg: EdDSA, kid}``. The computer keeps it and shows it: to a workspace
 member's engine in its network ``hello`` (verified offline against the issuer key; it admits
 only ``sub`` in the workspace's ``members``) and to the route link here. Nothing about the
 binding is stored server-side.
@@ -58,9 +58,13 @@ def public_key() -> dict:
     return {"kid": kid(), "key": _b64(raw), "env": f"{kid()}:{_b64(raw)}"}
 
 
-def mint(member_key: str, user_id: str, now: int | None = None, auth_time: int | None = None) -> str:
+def mint(
+    member_key: str, user_id: str, now: int | None = None, auth_time: int | None = None, org: str | None = None
+) -> str:
     """``auth_time``: when the person confirmed in the browser (now, for a login); a renewal
-    carries the original."""
+    carries the original. ``org``: the workspace active in that browser, which the workspace
+    tools act in; a renewal carries it too. A proof without it (older, or a free account) is
+    still good: the tools then need the person to be in exactly one workspace."""
     now = int(time.time()) if now is None else now
     header = _b64(json.dumps({"alg": "EdDSA", "kid": kid()}, separators=(",", ":")).encode())
     claims = {
@@ -70,6 +74,8 @@ def mint(member_key: str, user_id: str, now: int | None = None, auth_time: int |
         "computer": member_key,
         "auth_time": now if auth_time is None else auth_time,
     }
+    if org:
+        claims["org"] = org
     payload = _b64(json.dumps(claims, separators=(",", ":")).encode())
     sig = _private().sign(f"{header}.{payload}".encode())
     return f"{header}.{payload}.{_b64(sig)}"
@@ -98,6 +104,7 @@ def verify(token: str, member_key: str, now: int | None = None) -> dict | None:
         or not isinstance(claims.get("iat"), int)
         or claims["iat"] > now + 300
         or now > claims["exp"]
+        or not isinstance(claims.get("org", ""), str)
     ):
         return None
     return claims

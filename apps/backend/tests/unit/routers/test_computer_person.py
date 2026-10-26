@@ -104,6 +104,23 @@ def test_computer_person_needs_one_workspace(env, monkeypatch):
         assert response.status_code == 409 and "WORKSPACE_REQUIRED" in response.text
 
 
+def test_the_login_workspace_picks_among_several_and_membership_is_rechecked(env, monkeypatch):
+    client, computer, _, orgs = env
+    read = AsyncMock(return_value={"rooms": []})
+    monkeypatch.setattr(router.hosted_mcp, "rooms_for", read)
+    proof = network_proof.mint(computer.key, "user_ada", org="org_2")
+    path = "/local-sessions/device/rooms"
+    orgs.return_value = [{"id": "org_1", "role": "org:member"}, {"id": "org_2", "role": "org:admin"}]
+    response = client.get(f"/api/v1{path}", headers=signed(computer, proof, "GET", path, label=f"{LABEL} a"))
+    assert response.status_code == 200, response.text
+    auth = read.await_args.args[0]
+    assert (auth.user_id, auth.org_id, auth.org_role) == ("user_ada", "org_2", "org:admin")
+    # Removed from the login's workspace: refused, never moved to another one.
+    orgs.return_value = [{"id": "org_1", "role": "org:member"}]
+    response = client.get(f"/api/v1{path}", headers=signed(computer, proof, "GET", path, label=f"{LABEL} b"))
+    assert response.status_code == 403
+
+
 def test_only_listed_routes_accept_computer_person():
     def deps(dependant):
         for dep in dependant.dependencies:

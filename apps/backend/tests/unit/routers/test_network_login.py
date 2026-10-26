@@ -118,6 +118,7 @@ def test_login_hands_the_computer_a_proof_of_its_person_and_polls_once(env):
     claims = network_proof.verify(polled["proof"], mac.key)
     assert claims["sub"] == "user_ada" and claims["exp"] - claims["iat"] == network_proof.LIFE_S
     assert claims["auth_time"] == claims["iat"]  # the browser login itself
+    assert claims["org"] == ORG  # the browser's active workspace: the one the tools act in
     assert network_proof.verify(polled["proof"], Computer().key) is None  # another computer's
     assert _poll(client, s["code"]) == {"status": "expired"}  # single use
 
@@ -265,7 +266,8 @@ def test_a_free_account_with_no_workspace_signs_a_computer_in(env):
     client, who, *_ = env
     who["ctx"] = AuthContext(user_id="user_free", org_id=None)
     mac = Computer()
-    assert network_proof.verify(_login(client, mac)["proof"], mac.key)["sub"] == "user_free"
+    claims = network_proof.verify(_login(client, mac)["proof"], mac.key)
+    assert claims["sub"] == "user_free" and "org" not in claims
 
 
 def test_an_admin_takes_the_workspace_off_its_network(env, monkeypatch):
@@ -292,6 +294,9 @@ def test_a_renewal_keeps_the_login_time_and_has_no_age_cap(env):
         renewed = refresh(network_proof.mint(mac.key, "user_ada", now=late, auth_time=logged_in))
         assert renewed.status_code == 200
         assert network_proof.verify(renewed.json()["proof"], mac.key)["auth_time"] == logged_in
+    # A renewal keeps the workspace chosen at login.
+    renewed = refresh(network_proof.mint(mac.key, "user_ada", now=late, org="org_9")).json()["proof"]
+    assert network_proof.verify(renewed, mac.key)["org"] == "org_9"
 
 
 def test_every_refresh_checks_the_account_even_far_from_expiry(env):

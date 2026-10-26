@@ -587,32 +587,6 @@ pub fn main(args: &[String]) -> i32 {
 /// Set once `~/.local/bin/lightbulb` is in place: the PATH line to show, if one is needed.
 static INSTALLED: OnceLock<Option<String>> = OnceLock::new();
 
-/// `~/.local/bin/lightbulb` → `exe`, in the user's own folder (no admin rights). Creates it, or
-/// repairs a link to another copy of this app (moved away or not); leaves anything else alone.
-pub fn install(exe: &Path, home: &Path) -> Result<(), String> {
-    let bin = home.join(".local/bin");
-    let link = bin.join("lightbulb");
-    match std::fs::symlink_metadata(&link) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            let target = std::fs::read_link(&link).map_err(|e| e.to_string())?;
-            if target == exe {
-                return Ok(());
-            }
-            // Dangling or not, only a link to a Lightbulb app binary is ours to repair.
-            if target.file_name() != exe.file_name() {
-                return Err("~/.local/bin/lightbulb points at another program; leaving it".into());
-            }
-        }
-        Ok(_) => return Err("~/.local/bin/lightbulb is not Lightbulb's; leaving it".into()),
-        Err(_) => {}
-    }
-    std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
-    let staged = bin.join(format!(".lightbulb-{}", std::process::id()));
-    let _ = std::fs::remove_file(&staged);
-    std::os::unix::fs::symlink(exe, &staged).map_err(|e| e.to_string())?;
-    std::fs::rename(&staged, &link).map_err(|e| e.to_string())
-}
-
 /// The one line that puts `~/.local/bin` on the login shell's PATH, if it is not there.
 pub fn path_line(shell: &str, path: &str, home: &Path) -> Option<String> {
     let bin = home.join(".local/bin");
@@ -638,12 +612,13 @@ pub(crate) fn installed_exe(exe: &Path, home: &Path) -> Option<PathBuf> {
     (exe.starts_with("/Applications") || exe.starts_with(home.join("Applications"))).then_some(exe)
 }
 
-/// At launch. Only an installed app links itself: a copy run from the disk image, a translocated
-/// path or a build folder moves away and would leave the link dangling.
+/// At launch: the PATH line, once the `lightbulb` command is in ~/.local/bin. The network
+/// engine owns that link (its `setup` points it at the engine, which hands `claude`, `codex`,
+/// `continue` and `share` to `lightbulb-desktop cli`); the app no longer writes it.
 pub fn install_at_launch() {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
     let Ok(exe) = std::env::current_exe().and_then(std::fs::canonicalize) else { return };
-    // Not an installed app (a build folder, the disk image): nothing to link, nothing to log.
+    // Not an installed app (a build folder, the disk image): nothing to show, nothing to log.
     if installed_exe(&exe, &home).is_none() {
         return;
     }
@@ -655,11 +630,13 @@ pub fn install_at_launch() {
     }
 }
 
-/// `~/.local/bin/lightbulb`, for an installed app only (see `install_at_launch`). The PATH line
-/// to show, if one is needed.
+/// For an installed app whose `~/.local/bin/lightbulb` exists (the engine's link; never
+/// written here): the PATH line to show, if one is needed.
 pub fn link_command(exe: &Path, home: &Path) -> Result<Option<String>, String> {
-    let exe = installed_exe(exe, home).ok_or("~/.local/bin/lightbulb is linked only from an app in /Applications")?;
-    install(&exe, home)?;
+    installed_exe(exe, home).ok_or("the lightbulb command is set up only for an app in /Applications")?;
+    if !home.join(".local/bin/lightbulb").exists() {
+        return Err("~/.local/bin/lightbulb is not installed yet; the network engine installs it".into());
+    }
     // The login shell's PATH, not this GUI app's.
     let env = crate::holder::run::login_environment();
     let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str()).unwrap_or_default();
@@ -885,41 +862,11 @@ mod tests {
     }
 
     #[test]
-    fn cli_install_links_repairs_and_never_clobbers() {
+    fn cli_never_writes_the_lightbulb_link() {
         let home = tempfile::tempdir().unwrap();
-        let macos = home.path().join("Lightbulb.app/Contents/MacOS");
-        std::fs::create_dir_all(&macos).unwrap();
-        let exe = macos.join("lightbulb-desktop");
-        std::fs::write(&exe, b"").unwrap();
-        let link = home.path().join(".local/bin/lightbulb");
-        install(&exe, home.path()).unwrap();
-        assert_eq!(std::fs::read_link(&link).unwrap(), exe);
-        install(&exe, home.path()).unwrap();
-
-        // A link left by a copy of the app that moved away is repaired.
-        std::fs::remove_file(&link).unwrap();
-        std::os::unix::fs::symlink(home.path().join("gone/lightbulb-desktop"), &link).unwrap();
-        install(&exe, home.path()).unwrap();
-        assert_eq!(std::fs::read_link(&link).unwrap(), exe);
-
-        // Someone else's `lightbulb`, a link or a file, stays.
-        let other = home.path().join("other-tool");
-        std::fs::write(&other, b"").unwrap();
-        std::fs::remove_file(&link).unwrap();
-        std::os::unix::fs::symlink(&other, &link).unwrap();
-        assert!(install(&exe, home.path()).is_err());
-        assert_eq!(std::fs::read_link(&link).unwrap(), other);
-        std::fs::remove_file(&link).unwrap();
-        std::fs::write(&link, b"#!/bin/sh\n").unwrap();
-        assert!(install(&exe, home.path()).is_err());
-        assert_eq!(std::fs::read(&link).unwrap(), b"#!/bin/sh\n");
-
-        // An unrelated link whose target is gone is not ours either.
-        std::fs::remove_file(&link).unwrap();
-        let nowhere = home.path().join("nowhere/other-tool");
-        std::os::unix::fs::symlink(&nowhere, &link).unwrap();
-        assert!(install(&exe, home.path()).is_err());
-        assert_eq!(std::fs::read_link(&link).unwrap(), nowhere);
+        let exe = home.path().join("Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        assert!(link_command(&exe, home.path()).is_err(), "no command yet: nothing to show");
+        assert!(std::fs::symlink_metadata(home.path().join(".local/bin/lightbulb")).is_err(), "and none is made");
     }
 
     #[test]

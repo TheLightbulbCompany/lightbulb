@@ -230,7 +230,10 @@ vendor_engine() {
     echo "${ENGINE_SHA256}  ${TARBALL}" | shasum -a 256 -c -
     tar -xzf "$TARBALL" -C "$BIN_DIR" lightbulb
     chmod +x "$BIN_DIR/lightbulb"
-    "$BIN_DIR/lightbulb" mcp --tools-json | cmp - "$TAURI_DIR/../../backend/core/services/network_tools.json"
+    # The arm64 binary runs only on an arm64 Mac: an Intel host vendors it unchecked.
+    if [ "$(uname -m)" = "arm64" ]; then
+        "$BIN_DIR/lightbulb" mcp --tools-json | cmp - "$TAURI_DIR/../../backend/core/services/network_tools.json"
+    fi
 }
 
 # CI passes a single target triple; local dev (no args) vendors both

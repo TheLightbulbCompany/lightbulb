@@ -570,6 +570,7 @@ json.dump(doc, open(p, "w"))
                     std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
                     std::fs::write(&canonical, format!("#!/bin/sh\necho 'lightbulb {version}'\n")).unwrap();
                     std::fs::set_permissions(&canonical, std::fs::Permissions::from_mode(0o755)).unwrap();
+                    std::fs::write(h.join(".lightbulb/connect/setup-version"), version).unwrap();
                 };
                 match fixture {
                     "app" => set_servers(h, provider, json!({"lightbulb": app_entry})),
@@ -583,7 +584,7 @@ json.dump(doc, open(p, "w"))
                     }
                 }
                 // Launch: the engine first, then the app's own MCP reconcile.
-                crate::engine::ensure_at(h, &bundled).unwrap();
+                crate::engine::ensure_at(h, &bundled, std::time::Duration::from_secs(30)).unwrap();
                 configure(h, exe, true);
                 let after = servers(h, provider);
                 assert_eq!(after["lightbulb"], engine_entry, "{provider} {fixture}: {after}");

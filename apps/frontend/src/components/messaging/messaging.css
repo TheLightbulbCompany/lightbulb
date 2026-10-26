@@ -64,8 +64,12 @@
 .room-message-actions button { border-radius: 4px; }
 .room-quick-reactions { display: inline-flex; gap: 2px; }
 .room-quick-reactions button { min-width: 28px; }
-.room-message-content { flex: 1; min-width: 0; line-height: var(--text-ui--line-height); }
-.room-message-content > :is(.prose, [class*="prose"]) { font-family: var(--font-sans); font-size: var(--text-ui); line-height: var(--text-ui--line-height); }
+.room-message-content { flex: 1; min-width: 0; font-family: var(--font-body); line-height: var(--text-ui--line-height); }
+.room-message-byline,
+.room-message-actions,
+.room-message-content :is(button, input, select, textarea),
+.room-reply { font-family: var(--font-sans); }
+.room-message-content > :is(.prose, [class*="prose"]) { font-family: inherit; font-size: var(--text-ui); line-height: var(--text-ui--line-height); }
 .room-message-content p { margin-top: 0; margin-bottom: 4px; font-size: var(--text-ui); line-height: var(--text-ui--line-height); }
 .room-author { cursor: pointer; text-align: left; font-weight: 700; }
 .room-author:hover { text-decoration: underline; }

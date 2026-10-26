@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
-import { Geist_Mono, Source_Sans_3, Lora } from "next/font/google";
+import { Geist_Mono, Inter } from "next/font/google";
+import localFont from "next/font/local";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { DeployRefresh } from "@/components/DeployRefresh";
@@ -26,20 +27,19 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-// §05: the product face. Never below 400 — the manual forbids light weights.
-const sourceSans = Source_Sans_3({
-  variable: "--font-source-sans",
+const inter = Inter({
+  variable: "--font-inter",
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
   display: "swap",
 });
 
-const lora = Lora({
-  variable: "--font-lora-serif",
-  subsets: ["latin"],
-  // Variable font: the manual sets Lora at 400/500/600 and static 400/700 snapped
-  // every 500 and 600 to 700 in production.
-  style: ["normal", "italic"],
+const satoshi = localFont({
+  src: "../fonts/satoshi-variable.woff2",
+  variable: "--font-satoshi",
+  weight: "300 900",
+  style: "normal",
+  display: "swap",
+  fallback: ["Avenir Next", "Segoe UI", "sans-serif"],
 });
 
 
@@ -100,7 +100,7 @@ export default function RootLayout({
       <html
         lang="en"
         suppressHydrationWarning
-        className={`${sourceSans.variable} ${lora.variable} ${geistMono.variable}`}
+        className={`${satoshi.variable} ${inter.variable} ${geistMono.variable}`}
       >
         <head>
           <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />

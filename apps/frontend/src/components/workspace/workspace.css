@@ -21,6 +21,7 @@
 .cream-sidebar {
   background: var(--plane-sidebar);
   border-right: 1px solid var(--edge);
+  font-family: var(--font-sans);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -385,6 +386,7 @@
 /* The rail: the four places, always reachable. */
 .workspace-rail {
   grid-area: rail;
+  font-family: var(--font-sans);
   display: flex;
   flex-direction: column;
   align-items: center;

@@ -77,6 +77,10 @@ def verify(key: str, purpose: str, challenge: str, sig: str, ticket: str | None 
     try:
         raw = base64.b32decode(key.upper() + "====")
         signature = base64.urlsafe_b64decode(sig + "=" * (-len(sig) % 4))
+        # One spelling per signature: the tools call's one-use key hashes this text, so a
+        # padded, stray-character or nonzero-trailing-bits spelling must not verify.
+        if base64.urlsafe_b64encode(signature).rstrip(b"=").decode() != sig:
+            return False
         Ed25519PublicKey.from_public_bytes(raw).verify(signature, message(key, purpose, challenge, ticket))
     except (InvalidSignature, ValueError, TypeError, binascii.Error):
         return False

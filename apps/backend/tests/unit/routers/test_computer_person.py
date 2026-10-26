@@ -72,6 +72,15 @@ def test_computer_person_refuses_replayed_stale_or_other_body(env, monkeypatch):
     assert client.patch(f"/api/v1{path}", content=body, headers=headers).status_code == 200
     # The same signed call again: good once.
     assert client.patch(f"/api/v1{path}", content=body, headers=headers).status_code == 401
+    # Nor under another spelling of the same signature (padding, or other unused trailing bits).
+    fresh = signed(computer, proof, "PATCH", path, body, ts=int(time.time()) - 1)  # another call
+    sig = fresh["X-Lightbulb-Sig"]
+    abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    last = abc[abc.index(sig[-1]) + 1]  # 64 bytes: the last character's low 4 bits are unused
+    for spelling in (sig + "==", sig[:-1] + last):
+        respelled = {**fresh, "X-Lightbulb-Sig": spelling}
+        assert client.patch(f"/api/v1{path}", content=body, headers=respelled).status_code == 401
+    assert client.patch(f"/api/v1{path}", content=body, headers=fresh).status_code == 200
     # Another body under a signature for this one.
     other = signed(computer, proof, "PATCH", path, body)
     assert client.patch(f"/api/v1{path}", content=b'{"status":"todo"}', headers=other).status_code == 401

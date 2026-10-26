@@ -347,13 +347,26 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
     // conversation is invisible to the mirrors. Two writers on one transcript fork it, so a resume
     // that cannot prove the conversation is free does not start.
     free(running_conversations(home_dir(), w.provider.clone()).await, &w.conversation_id)?;
-    let daemon = codex::on_daemon(&argv);
+    let mut argv = argv;
+    let mut daemon = codex::on_daemon(&argv);
     if daemon {
-        let socket = codex::daemon_socket(&home_dir()).ok_or("LAUNCH_FAILED")?;
-        codex::resume_on_daemon(&socket, &w.conversation_id, &folder, !own || w.mode != "default").await.map_err(|e| {
-            relay_log(&format!("{} resume on the Codex daemon refused: {e}", &w.session_id[..8]));
-            if e == codex::LOOSER { "ALREADY_RUNNING" } else { "LAUNCH_FAILED" }
-        })?;
+        let loaded = match codex::daemon_socket(&home_dir()) {
+            Some(socket) => codex::resume_on_daemon(&socket, &w.conversation_id, &folder, !own || w.mode != "default").await,
+            None => Err(codex::UNAVAILABLE.to_owned()),
+        };
+        match loaded {
+            Ok(()) => {}
+            // A daemon that is gone or stalled: the private writer it always was.
+            Err(e) if e == codex::UNAVAILABLE => {
+                relay_log(&format!("{} resume: {e}, so it starts as a private --no-daemon writer", &w.session_id[..8]));
+                argv = self::argv(Path::new(&argv[0]), w, own, false);
+                daemon = false;
+            }
+            Err(e) => {
+                relay_log(&format!("{} resume on the Codex daemon refused: {e}", &w.session_id[..8]));
+                return Err(if e == codex::LOOSER { "ALREADY_RUNNING" } else { "LAUNCH_FAILED" });
+            }
+        }
     }
     let held = crate::session_start::start_held(folder, argv).await.map_err(|e| {
         relay_log(&format!("{} resume launch failed: {e}", &w.session_id[..w.session_id.len().min(8)]));

@@ -420,9 +420,18 @@ pub(crate) async fn start_held(
 /// A linked start in a new holder. A Codex on the shared daemon learns its thread from the daemon
 /// (`codex::start_on_daemon`): its start hook runs there, without this holder's environment.
 async fn launch(folder: PathBuf, argv: Vec<String>, start_id: &str, scope: &str) -> Result<crate::holder::manager::HolderInfo, String> {
-    if crate::local_sessions::codex::on_daemon(&argv) {
+    use crate::local_sessions::codex;
+    let mut argv = argv;
+    if codex::on_daemon(&argv) {
         let link = Some((start_id.to_owned(), scope.to_owned()));
-        return crate::local_sessions::codex::start_on_daemon(&home(), folder, argv, link).await;
+        match codex::start_on_daemon(&home(), folder.clone(), argv.clone(), link).await {
+            // Nothing launched yet: the private writer a start was before the daemon.
+            Err(e) if e == codex::UNAVAILABLE => {
+                crate::log(&format!("[session-start] {e}: this start is a private --no-daemon writer"));
+                argv = codex::private_argv(&argv);
+            }
+            held => return held,
+        }
     }
     start_held(folder, held_argv(&argv, Some((start_id, scope)))).await
 }

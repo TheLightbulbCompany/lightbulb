@@ -493,21 +493,33 @@ const CLIENT_NAME: &str = "codex-tui";
 
 type Conn = WebSocketStream<tokio::net::UnixStream>;
 
+/// What every daemon door says when the daemon cannot be reached or does not finish `initialize`
+/// in time: a start or resume then falls back to a private `--no-daemon` writer.
+pub(crate) const UNAVAILABLE: &str = "Codex's shared daemon did not answer";
+/// A stalled app-server must not hold a start, a resume or the watcher forever.
+const HANDSHAKE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// An initialized app-server connection, or the server's refusal of `initialize` (Err inside Ok).
+/// Err(UNAVAILABLE) when the socket or the handshake fails or takes longer than HANDSHAKE.
 async fn connect(socket: &Path) -> Result<std::result::Result<Conn, Value>> {
-    let stream = tokio::net::UnixStream::connect(socket).await.map_err(|_| "control socket unavailable")?;
-    let (mut conn, _) = client_async("ws://localhost/", stream).await.map_err(|_| "control handshake failed")?;
-    let init = json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":CLIENT_NAME,"title":"Lightbulb","version":"0.1.0"}}});
-    conn.send(Message::Text(init.to_string().into())).await.map_err(|_| "control handshake failed")?;
-    let initialized = rpc_response(&mut conn, 1).await?;
-    if initialized.get("error").is_some() { return Ok(Err(initialized)); }
-    conn.send(Message::Text(r#"{"method":"initialized","params":{}}"#.into()))
-        .await.map_err(|_| "control handshake failed")?;
-    Ok(Ok(conn))
+    tokio::time::timeout(HANDSHAKE, async {
+        let stream = tokio::net::UnixStream::connect(socket).await.ok()?;
+        let (mut conn, _) = client_async("ws://localhost/", stream).await.ok()?;
+        let init = json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":CLIENT_NAME,"title":"Lightbulb","version":"0.1.0"}}});
+        conn.send(Message::Text(init.to_string().into())).await.ok()?;
+        let initialized = rpc_response(&mut conn, 1).await.ok()?;
+        if initialized.get("error").is_some() { return Some(Err(initialized)); }
+        conn.send(Message::Text(r#"{"method":"initialized","params":{}}"#.into())).await.ok()?;
+        Some(Ok(conn))
+    })
+    .await
+    .ok()
+    .flatten()
+    .ok_or_else(|| UNAVAILABLE.to_owned())
 }
 
 async fn connected(socket: &Path) -> Result<Conn> {
-    connect(socket).await?.map_err(|_| "control handshake refused".into())
+    connect(socket).await?.map_err(|_| UNAVAILABLE.into())
 }
 
 /// One request's `result`; an error answer is Err.
@@ -666,28 +678,50 @@ pub(crate) fn on_daemon(argv: &[String]) -> bool {
     argv.get(1..3).is_some_and(|flags| flags[0] == "--remote" && flags[1] == "unix://")
 }
 
+/// The private form of a daemon start argv (`session_start::argv`): what it falls back to when the
+/// daemon does not answer.
+pub(crate) fn private_argv(argv: &[String]) -> Vec<String> {
+    if !on_daemon(argv) || argv.len() < 7 {
+        return argv.to_vec();
+    }
+    // [program, --remote, unix://, -C, folder, -c, check_for_update_on_startup=false, rest...]
+    let mut private = vec![argv[0].clone(), "--no-daemon".into()];
+    private.extend_from_slice(&argv[7..]);
+    private
+}
+
 /// A held Codex start on the shared daemon. Its start hook runs in the daemon, which has neither
-/// the holder's environment nor its process, so the thread is learned here instead: the first
-/// person's thread the daemon starts in `folder` after the holder launches. That binds the holder
-/// (`holder::manager::bind_thread`) and the start link. Not seen in time: the thread is still
-/// listed, as a background one, and the start is not linked.
+/// the holder's environment nor its process, and nothing in the protocol names the client that
+/// started a thread. So the thread is learned here and bound only when it is provably this start's
+/// (`our_thread`): that binds the holder (`holder::manager::bind_thread`) and the start link. Not
+/// proven: the thread is still listed, as a background one, and the start is not linked.
+/// Err(UNAVAILABLE) before anything launched: the caller falls back to `--no-daemon`.
 pub(crate) async fn start_on_daemon(
     home: &Path,
     folder: PathBuf,
     argv: Vec<String>,
     link: Option<(String, String)>,
 ) -> std::result::Result<HolderInfo, String> {
-    let socket = daemon_socket(home).ok_or("Codex's shared daemon is not running")?;
-    // Listening before the TUI asks for its thread.
+    let socket = daemon_socket(home).ok_or(UNAVAILABLE)?;
+    // Listening before the TUI asks for its thread, and knowing what already runs.
     let mut conn = connected(&socket).await?;
+    let before: std::collections::BTreeSet<String> = tokio::time::timeout(HANDSHAKE, call(&mut conn, 3, "thread/loaded/list", json!({})))
+        .await
+        .ok()
+        .and_then(|listed| listed.ok())
+        .ok_or(UNAVAILABLE)?["data"]
+        .as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
     let want = fs::canonicalize(&folder).map_err(|e| e.to_string())?;
+    let prompt = argv.iter().position(|a| a == "--").and_then(|at| argv.get(at + 1)).cloned();
     let info = crate::session_start::start_held(folder, argv).await?;
     let (home, held) = (home.to_path_buf(), info.clone());
     tokio::spawn(async move {
-        let thread = tokio::time::timeout(std::time::Duration::from_secs(60), started_in(&mut conn, &want)).await.ok().flatten();
-        let Some(thread) = thread else {
-            crate::log("[session-start] Codex: no thread seen on the daemon for this start; it is listed unlinked");
-            return;
+        let thread = match our_thread(&mut conn, &want, &before, prompt.as_deref(), GRACE).await {
+            Ok(thread) => thread,
+            Err(why) => {
+                crate::log(&format!("[session-start] Codex: this start's thread is not bound ({why}); it is listed unlinked"));
+                return;
+            }
         };
         crate::holder::manager::bind_thread(&held, &thread);
         if let (Some((start_id, scope)), Some(daemon)) = (link, daemon_process(&home)) {
@@ -699,15 +733,57 @@ pub(crate) async fn start_on_daemon(
     Ok(info)
 }
 
-/// The id of the first person's thread started in `folder` (canonical) on this connection.
-async fn started_in(conn: &mut Conn, folder: &Path) -> Option<String> {
-    while let Some(Ok(frame)) = conn.next().await {
-        let Message::Text(text) = frame else { continue };
-        if let Some(id) = started_thread(&text, folder) {
-            return Some(id);
+/// How long after the first candidate another start in the same folder still makes it ambiguous.
+const GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// This start's thread, or why it cannot be proven. A candidate is a person's thread that STARTED
+/// (`thread/started`, not one already loaded: a resume elsewhere) in `folder` after the launch.
+/// Exactly one may appear by GRACE after the first; two (another client, a second Lightbulb start
+/// in the same folder) bind neither. With a prompt, the thread's first user message (`preview`,
+/// observed verbatim on 0.164.0) must be it: a different first message is another client's.
+async fn our_thread(
+    conn: &mut Conn,
+    folder: &Path,
+    before: &std::collections::BTreeSet<String>,
+    prompt: Option<&str>,
+    grace: std::time::Duration,
+) -> std::result::Result<String, &'static str> {
+    use tokio::time::{timeout_at, Instant};
+    let mut found: Vec<String> = vec![];
+    let mut until = Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        match timeout_at(until, conn.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                if let Some(id) = started_thread(&text, folder).filter(|id| !before.contains(id) && !found.contains(id)) {
+                    if found.is_empty() {
+                        until = Instant::now() + grace;
+                    }
+                    found.push(id);
+                }
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(_) => return Err("the daemon closed the connection"),
+            Err(_) => break,
         }
     }
-    None
+    let [thread] = found.as_slice() else {
+        return Err(if found.is_empty() { "no thread started" } else { "another thread started in the same folder" });
+    };
+    let Some(prompt) = prompt.filter(|p| !p.is_empty()) else { return Ok(thread.clone()) };
+    for n in 0..60 {
+        let read = call(conn, 200 + n, "thread/read", json!({"threadId": thread})).await.map_err(|_| "thread unreadable")?;
+        match first_turn(read["thread"]["preview"].as_str().unwrap_or(""), prompt) {
+            Some(true) => return Ok(thread.clone()),
+            Some(false) => return Err("its first message is not this start's prompt"),
+            None => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+        }
+    }
+    Err("its first message never came")
+}
+
+/// Whether a thread's first user message is this start's prompt; None while it has none.
+fn first_turn(preview: &str, prompt: &str) -> Option<bool> {
+    (!preview.is_empty()).then(|| preview == prompt)
 }
 
 fn started_thread(frame: &str, folder: &Path) -> Option<String> {
@@ -1671,6 +1747,86 @@ mod tests {
         assert!(wakes(r#"{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"idle"}}}"#));
         assert!(wakes(r#"{"method":"thread/closed","params":{"threadId":"t"}}"#));
         assert!(!wakes(r#"{"method":"account/updated","params":{}}"#));
+    }
+
+    /// The fake daemon side of `our_thread`: sends `frames`, then answers each `thread/read` with
+    /// `preview`.
+    async fn daemon_says(frames: Vec<Value>, preview: &'static str) -> (std::path::PathBuf, tempfile::TempDir, tokio::task::JoinHandle<()>) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut conn = tokio_tungstenite::accept_async(stream).await.unwrap();
+            read(&mut conn).await;
+            conn.send(Message::Text(json!({"id":1,"result":{}}).to_string().into())).await.unwrap();
+            read(&mut conn).await;
+            for frame in frames {
+                conn.send(Message::Text(frame.to_string().into())).await.unwrap();
+            }
+            while let Some(Ok(Message::Text(text))) = conn.next().await {
+                let request: Value = serde_json::from_str(&text).unwrap();
+                let reply = json!({"id":request["id"],"result":{"thread":{"id":request["params"]["threadId"],"preview":preview}}});
+                if conn.send(Message::Text(reply.to_string().into())).await.is_err() { break; }
+            }
+        });
+        (socket, dir, server)
+    }
+
+    /// Nothing in the protocol names the client that started a thread, so a held start binds only
+    /// a thread provably its own: the only one started in its folder, whose first message is its
+    /// prompt. Another client's start in the same folder during the wait binds nothing.
+    #[tokio::test]
+    async fn local_sessions_codex_a_held_start_binds_only_its_own_thread() {
+        let work = tempfile::tempdir().unwrap();
+        let folder = fs::canonicalize(work.path()).unwrap();
+        let started = |id: &str| json!({"method":"thread/started","params":{"thread":{"id":id,"cwd":work.path(),"ephemeral":false,"parentThreadId":null,"source":"vscode"}}});
+        let (ours, theirs, old) = ("01a17a65-6aa7-7222-8b6a-03942b282538", "01a17a65-0000-7000-8000-000000000002", "01a17a64-91ae-72c2-9a36-febc23604305");
+        let before: std::collections::BTreeSet<String> = [old.to_owned()].into();
+        let grace = std::time::Duration::from_millis(300);
+        let run = |frames: Vec<Value>, preview: &'static str, prompt: Option<&'static str>| {
+            let (folder, before) = (folder.clone(), before.clone());
+            async move {
+                let (socket, _dir, server) = daemon_says(frames, preview).await;
+                let mut conn = connected(&socket).await.unwrap();
+                let picked = our_thread(&mut conn, &folder, &before, prompt, grace).await;
+                drop(conn);
+                server.abort();
+                picked
+            }
+        };
+        assert_eq!(run(vec![started(old), started(ours)], "fix it", Some("fix it")).await.as_deref(), Ok(ours), "an already loaded thread is no candidate");
+        assert_eq!(run(vec![started(ours)], "", None).await.as_deref(), Ok(ours), "no prompt: the only start in the folder");
+        assert_eq!(run(vec![started(ours), started(theirs)], "fix it", Some("fix it")).await,
+            Err("another thread started in the same folder"));
+        assert_eq!(run(vec![started(theirs)], "something else", Some("fix it")).await,
+            Err("its first message is not this start's prompt"));
+        assert!(first_turn("", "fix it").is_none() && first_turn("fix it", "fix it") == Some(true));
+    }
+
+    /// An app-server that accepts the socket but never answers `initialize` fails the door in
+    /// HANDSHAKE as UNAVAILABLE, which a start or resume turns into its `--no-daemon` fallback.
+    #[tokio::test]
+    async fn local_sessions_codex_a_stalled_daemon_handshake_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut conn = tokio_tungstenite::accept_async(stream).await.unwrap();
+            read(&mut conn).await; // initialize, never answered
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+        let at = std::time::Instant::now();
+        assert_eq!(connected(&socket).await.err().as_deref(), Some(UNAVAILABLE));
+        assert!(at.elapsed() < HANDSHAKE + std::time::Duration::from_secs(2));
+        assert_eq!(connected(&dir.path().join("missing.sock")).await.err().as_deref(), Some(UNAVAILABLE));
+        server.abort();
+        let daemon: Vec<String> = ["/bin/codex", "--remote", "unix://", "-C", "/w", "-c", "check_for_update_on_startup=false",
+            "-m", "gpt", "--sandbox", "workspace-write", "--ask-for-approval", "on-request", "--", "fix it"].map(String::from).into();
+        assert_eq!(private_argv(&daemon), ["/bin/codex", "--no-daemon", "-m", "gpt", "--sandbox", "workspace-write",
+            "--ask-for-approval", "on-request", "--", "fix it"]);
+        assert_eq!(private_argv(&daemon[..1]), ["/bin/codex"]);
     }
 
     /// A teammate's resume is read-only: a thread the daemon already runs looser is refused.

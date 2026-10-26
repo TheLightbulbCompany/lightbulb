@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/expo";
 import { SymbolView } from "../../../components/ui/SymbolView";
 import {
-  ApiError, buildRows, canControlSession, endedWhy, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStateLabel, sessionTitle, sessionViewKey, sessionScreenNotice, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
+  ApiError, buildRows, canControlSession, endedWhy, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, sessionScreenNotice, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
   type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem, sessionAgentName,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -47,7 +47,7 @@ function sessionWhere(session: LocalSession, own: boolean, ownerName: string): s
   const why = endedWhy(session, mac, "’");
   if (why) return `Ended · ${why}`;
   if (session.status === "ended" && session.endedAt) return `Ended · ${relativeTime(Date.parse(session.endedAt))}`;
-  return `${sessionStateLabel(session)} on ${mac}`;
+  return `${sessionStatus[session.status]} on ${mac}`;
 }
 
 /**
@@ -532,7 +532,7 @@ function SessionBody({
         <View style={styles.sheetContent}>
           <View style={styles.sheetTextGroup}>
             <Text style={[styles.sheetHeadline, { color: palette.fg }]}>
-              {`${ownerName} · ${sessionStateLabel(session)}${session.cwdName ? ` · ${session.cwdName}` : ""}`}
+              {`${ownerName} · ${sessionStatus[session.status]}${session.cwdName ? ` · ${session.cwdName}` : ""}`}
             </Text>
             <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>
               {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${own ? "your" : `${ownerName}’s`} Mac. ${session.provider === "claude" ? "Exact Claude permissions can be answered here; questions stay in the terminal." : session.provider === "codex" ? "Codex permissions and first-run folder trust stay in the terminal." : `${sessionAgentName(session.provider)} permissions stay in the terminal.`}${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}

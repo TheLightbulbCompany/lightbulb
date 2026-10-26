@@ -778,19 +778,28 @@ fn head_rows(path: &Path, limit: u64) -> Option<(fs::Metadata, Vec<Value>)> {
 }
 
 /// What its person typed first, as the clients show it (wrappers and reminders off), one line:
-/// the title of a conversation Claude has not named.
+/// the title of a conversation Claude has not named. Only a row proven to be the person's: one
+/// labelled `human`, or an unlabelled one (older Claude) that no peer envelope wraps and no
+/// teammate header names. A peer's message is never the title.
 pub(super) fn first_prompt(path: &Path) -> Option<String> {
     let (_, head) = head_rows(path, 256 * 1024)?;
     head.iter()
         .filter(|row| row["type"] == "user" && row["isMeta"] != true && turn_by_person(row) != Some(false))
         .find_map(|row| {
+            let labelled = row["origin"]["kind"].is_string() || row["turnOrigin"].is_string();
             let content = &row["message"]["content"];
             let text = content.as_str().map(str::to_owned).or_else(|| {
                 let blocks = content.as_array()?;
                 let texts: Vec<&str> = blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
                 (!texts.is_empty()).then(|| texts.join("\n"))
             })?;
+            if !labelled && text.trim_start().starts_with(PEER_PREFIX.trim_end()) {
+                return None;
+            }
             let event = user_text(&text, None, None).into_iter().find(|e| e["kind"] == "text" && e["role"] == "user")?;
+            if !event["actor"].is_null() {
+                return None;
+            }
             let line = event["text"].as_str()?.lines().map(str::trim).find(|l| !l.is_empty())?;
             Some(line.chars().take(120).collect())
         })
@@ -1729,6 +1738,12 @@ mod tests {
         assert_eq!(first_prompt(&path).as_deref(), Some("fix the login bug"));
         fs::write(&path, prompt("peer", "2026-10-26T05:50:10.931Z")).unwrap();
         assert_eq!(first_prompt(&path), None, "a peer's message is not its person's prompt");
+        // An older Claude labels nothing: a peer envelope still says whose it is.
+        let peer = serde_json::to_string(&json!({"type":"user","message":{"content":format!("{PEER_PREFIX}deploy the relay{PEER_SUFFIX}")}})).unwrap();
+        fs::write(&path, format!("{peer}\n{typed}")).unwrap();
+        assert_eq!(first_prompt(&path).as_deref(), Some("fix the login bug"), "the unlabelled peer row is skipped");
+        fs::write(&path, format!("{peer}\n")).unwrap();
+        assert_eq!(first_prompt(&path), None);
     }
 
     #[test]

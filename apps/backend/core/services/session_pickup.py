@@ -528,10 +528,20 @@ def _blob(stored: dict) -> dict:
     return {"bytes": stored["bytes"], "sha256": stored["sha256"]}
 
 
+def _ticket_remote(remote: str) -> str:
+    """The author's Mac stores the remote already reduced to `host/org/repo`. Every desktop's
+    ticket parser runs that through `normalize_remote`, which reads only URL and scp forms, so
+    the bare form was refused as "malformed" (every code pick-up since #3330). An https URL
+    reduces to the same `host/org/repo` on every installed desktop."""
+    return remote if "://" in remote or ":" in remote else f"https://{remote}"
+
+
 def _manifest_public(manifest: dict) -> Manifest:
+    code = manifest["code"]
     return Manifest.model_validate(
         {
-            **{key: manifest[key] for key in ("series", "code", "sidecars", "ended")},
+            **{key: manifest[key] for key in ("series", "sidecars", "ended")},
+            "code": {**code, "remote": _ticket_remote(code["remote"])} if code else None,
             "parts": [{key: value for key, value in part.items() if key != "hashed"} for part in manifest["parts"]],
             **{key: manifest[key] for key in ("claudeVersion", "conversationId", "cwdName", "cwdRelative")},
             "snapshotAt": iso(manifest["snapshotAt"]),

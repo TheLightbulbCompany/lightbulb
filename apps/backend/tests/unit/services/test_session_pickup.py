@@ -484,6 +484,8 @@ async def test_ticket_permission_idempotency_and_expiry(transport, s3):
     manifest = ticket["manifest"]
     assert manifest["series"] == "s1" and manifest["cwdRelative"] == "apps/backend"
     assert [p["from"] for p in manifest["parts"]] == [0, 4] and manifest["sidecars"] is None
+    # Stored as `host/org/repo`; every desktop's parser reads only URL/scp forms (prod 2026-10-26).
+    assert manifest["code"]["remote"] == "https://github.com/acme/app"
     downloads = ticket["downloads"]
     assert [d["index"] for d in downloads["transcript"]] == [0, 1] and downloads["sidecars"] is None
     assert parse_qs(urlparse(downloads["code"]["url"]).query)["X-Amz-Expires"] == ["900"]

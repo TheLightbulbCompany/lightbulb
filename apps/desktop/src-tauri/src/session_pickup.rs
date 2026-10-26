@@ -129,6 +129,8 @@ pub(crate) fn normalize_remote(raw: &str) -> Option<String> {
     let raw = raw.trim();
     let rest = match raw.split_once("://") {
         Some((_, rest)) => rest.to_string(),
+        // Already `host/org/repo`: what a manifest carries (the author's Mac normalised it).
+        None if !raw.contains(':') && !raw.starts_with('/') => raw.to_string(),
         None => {
             // scp form: [user@]host:org/repo
             let (host, path) = raw.split_once(':')?;
@@ -1333,6 +1335,8 @@ mod tests {
             "https://user@GitHub.com/TheLightbulbCompany/lightbulb/",
             "ssh://git@github.com:22/TheLightbulbCompany/lightbulb.git",
             "git@github.com:TheLightbulbCompany/lightbulb.git",
+            // What a pick-up manifest carries: already normalised.
+            "github.com/TheLightbulbCompany/lightbulb",
         ] {
             assert_eq!(
                 normalize_remote(raw).as_deref(),

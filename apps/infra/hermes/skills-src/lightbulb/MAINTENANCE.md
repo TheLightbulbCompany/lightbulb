@@ -374,6 +374,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Provisioning rail ....... references/money.md
                               <- apps/backend/routers/company_provisioning.py (container routes, refusal codes);
                                  core/services/provisioning_workflow.py (STATES); core/services/owner_facts.py (the `provisioning` facts list)
+  - Budgets (monthly caps) .. references/money.md
+                              <- apps/frontend Settings -> Budgets panel; routers/teams/budgets.py (BFF proxy, admin-gated writes);
+                                 Paperclip budget engine (PATCH companies/agents budgets, GET budgets/overview). Real spend fed by
+                                 core/services/paperclip_cost.py + openrouter-settlement report.
   - Software projects ....... references/software-projects.md + SKILL.md routing row
                               + the Engineering persona (paperclip_provisioning.py STARTER_CAPABILITIES["engineering"])
                               <- core/services/credentials/providers.yaml (github scopes + gh_cli; vercel_cli paste_token +

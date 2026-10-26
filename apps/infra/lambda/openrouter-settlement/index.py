@@ -104,6 +104,10 @@ def settle_one(row, *, get_generation, ingest, commit, now, commit_free, release
         outcome = commit(row, event, amount, now)
     # Best effort, strictly AFTER the money truth is committed: a failure here never fails the
     # settle, and a retry sees a non-pending row, so a cost is reported at most once.
+    # ponytail: a report that fails (backend/Paperclip down) is NOT retried -- the row is settled,
+    # so the cost is dropped from the (soft) Paperclip budget, which under-counts during an outage.
+    # Accepted: the hard real-time stop is the gate reservation + OpenRouter per-key limit, untouched
+    # here; a settled-but-unreported re-drive (new query/flag + sweep) is the upgrade if it matters.
     if outcome == "settled" and report_cost and mode in ("paid", "capped") and row.get("agent_id"):
         try:
             # Prefer the gate's stamp; fall back to the settled /generation cost x markup when a cut

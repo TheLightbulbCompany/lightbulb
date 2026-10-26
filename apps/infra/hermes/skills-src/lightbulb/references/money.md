@@ -33,6 +33,18 @@ Two things worth saying accurately if asked:
 **Only workspace admins can open Money.** An ordinary org member gets
 a permission message, not an error — do not tell them to retry.
 
+## Budgets: monthly caps on agent spend
+
+A workspace admin can set a **monthly budget** on an agent (or on the whole
+company) at **Settings → Budgets** — a dollar ceiling on managed inference
+spend. Spend accrues there from the real per-call cost, so the figure is
+actual, not an estimate. At 80% the owner is warned; at the ceiling the agent
+is **paused** until the month rolls over or the owner raises the cap. Any
+member can see the budgets; only an admin can set them. If an agent reports
+being paused for budget, the answer is Settings → Budgets, not a retry. These
+caps are the soft, owner-facing layer — the hard real-time spend stop is the
+platform's own managed-credit limit, which is separate and always in force.
+
 ## Your company's Stripe account
 
 Money for the business (selling a product, taking payments, paying for a

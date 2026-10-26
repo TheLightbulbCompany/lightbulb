@@ -25,6 +25,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 # ponytail: proofs are not revocable before exp (30 d); removing a person from the workspace is
 # instant via members. Shorten LIFE_S (the engine refreshes 7 d before exp) if that matters.
 LIFE_S = 30 * 86_400
+# A renewal keeps the original browser login's ``auth_time``; past this the person logs in again.
+MAX_AUTH_AGE_S = 90 * 86_400
 MAX_TOKEN = 4096
 
 
@@ -57,10 +59,18 @@ def public_key() -> dict:
     return {"kid": kid(), "key": _b64(raw), "env": f"{kid()}:{_b64(raw)}"}
 
 
-def mint(member_key: str, user_id: str, now: int | None = None) -> str:
+def mint(member_key: str, user_id: str, now: int | None = None, auth_time: int | None = None) -> str:
+    """``auth_time``: when the person confirmed in the browser (now, for a login); a renewal
+    carries the original."""
     now = int(time.time()) if now is None else now
     header = _b64(json.dumps({"alg": "EdDSA", "kid": kid()}, separators=(",", ":")).encode())
-    claims = {"iat": now, "exp": now + LIFE_S, "sub": user_id, "computer": member_key}
+    claims = {
+        "iat": now,
+        "exp": now + LIFE_S,
+        "sub": user_id,
+        "computer": member_key,
+        "auth_time": now if auth_time is None else auth_time,
+    }
     payload = _b64(json.dumps(claims, separators=(",", ":")).encode())
     sig = _private().sign(f"{header}.{payload}".encode())
     return f"{header}.{payload}.{_b64(sig)}"

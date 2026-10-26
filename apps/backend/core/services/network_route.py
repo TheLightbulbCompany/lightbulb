@@ -44,6 +44,9 @@ MAX_FRAME = 1 << 20
 CLOSE_BAD_PROOF = 4401
 CLOSE_NOT_SIGNED_IN = 4403
 CLOSE_SUPERSEDED = 4409
+CLOSE_TOO_MANY = 4429
+MAX_LINKS_PER_USER = 10  # a person's computers online at once
+MAIL_PER_MINUTE = 30  # mail notices one link may send (each can POST a bot's webhook)
 
 
 @dataclass
@@ -55,6 +58,8 @@ class Link:
     generation: str
     send: Any  # async (dict) -> None
     exp: int = 0  # its proof's: the link closes when it lapses (the computer refreshes first)
+    mail_window: float = 0.0
+    mail_count: int = 0
     pending: dict[int, asyncio.Future] = field(default_factory=dict)
     next_id: int = 1
 
@@ -234,13 +239,17 @@ async def serve(websocket) -> None:
         await _close(websocket, CLOSE_NOT_SIGNED_IN)
         return
     user_id = claims["sub"]
+    connections = _connections()
+    online = await connections.routes_for_user(user_id)
+    if len(online) >= MAX_LINKS_PER_USER and all(r["key"] != key for r in online):
+        await _close(websocket, CLOSE_TOO_MANY)
+        return
     generation = str(uuid.uuid4())
 
     async def send(frame: dict) -> None:
         await websocket.send_text(json.dumps(frame))
 
     link = Link(key, user_id, generation, send, exp=claims["exp"])
-    connections = _connections()
     old = links.get(key)
     links[key] = link
     if old is not None:
@@ -286,7 +295,8 @@ async def _read(websocket, link: Link) -> None:
             # New mail for one of this computer's app sessions: wake its bot, if it asked.
             from core.services import app_wake
 
-            asyncio.create_task(app_wake.notify(link.user_id, frame["session"]))
+            if _mail_allowed(link):
+                asyncio.create_task(app_wake.notify(link.user_id, frame["session"]))
             continue
         future = link.pending.get(frame.get("id")) if isinstance(frame.get("id"), int) else None
         if future is not None and not future.done():
@@ -308,6 +318,18 @@ async def _keep(connections, link: Link) -> int:
                 return CLOSE_SUPERSEDED
         except Exception:  # noqa: BLE001 -- a DynamoDB hiccup: the next tick tries again
             logger.warning("network route refresh failed", exc_info=True)
+
+
+def _mail_allowed(link: Link) -> bool:
+    """At most ``MAIL_PER_MINUTE`` notices per link per minute; the rest are dropped (the bot
+    still reads its mail with check_inbox)."""
+    import time
+
+    now = time.monotonic()
+    if now - link.mail_window >= 60:
+        link.mail_window, link.mail_count = now, 0
+    link.mail_count += 1
+    return link.mail_count <= MAIL_PER_MINUTE
 
 
 def _fail(link: Link) -> None:

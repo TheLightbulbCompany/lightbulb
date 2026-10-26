@@ -44,6 +44,7 @@ NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 TICKET_RE = re.compile(r"^[A-Za-z0-9_-]{1,8192}$")  # an encoded ticket is base64url
 _BAD_PROOF = "This computer's proof did not check out. Run the command again."
 _TAKEN = "Someone else already confirmed this code."
+_SIGN_IN_AGAIN = "This computer's sign-in has ended. Sign in again: lightbulb login"
 _LOGIN_FIRST = "Sign this computer in as you first: run `lightbulb login` on it, then try again."
 
 
@@ -198,11 +199,27 @@ async def refresh(key: str, nonce: str, sig: str, proof: str) -> dict:
     fresh ``exp``. An expired proof is a ``login`` again."""
     await _proven(key, "refresh", nonce, sig)
     claims = network_proof.verify(proof, key)
-    if claims is None:
-        raise HTTPException(status_code=401, detail="This computer's sign-in expired. Run lightbulb login.")
-    if claims["exp"] - int(time.time()) > REFRESH_BEFORE_S:
+    now = int(time.time())
+    auth_time = claims.get("auth_time") if claims else None
+    if claims is None or not isinstance(auth_time, int) or now - auth_time > network_proof.MAX_AUTH_AGE_S:
+        raise HTTPException(status_code=401, detail=_SIGN_IN_AGAIN)
+    if claims["exp"] - now > REFRESH_BEFORE_S:
         return {"proof": proof}
-    return {"proof": network_proof.mint(key, claims["sub"])}
+    await require_live_user(claims["sub"])
+    return {"proof": network_proof.mint(key, claims["sub"], auth_time=auth_time)}
+
+
+async def require_live_user(user_id: str) -> None:
+    """The Clerk user still exists and is not banned or locked: 401 if not, 503 when Clerk cannot
+    say (fail closed). A proof is renewed, and a personal key used, only for a live account."""
+    from core.services import clerk_admin
+
+    try:
+        user = await clerk_admin.get_user_strict(user_id)
+    except Exception as exc:  # noqa: BLE001 -- ClerkLookupError: absence and a blip look alike
+        raise HTTPException(status_code=503, detail="Lightbulb could not check your account. Try again.") from exc
+    if not user or user.get("banned") or user.get("locked"):
+        raise HTTPException(status_code=401, detail=_SIGN_IN_AGAIN)
 
 
 async def _name(user_id: str) -> str | None:

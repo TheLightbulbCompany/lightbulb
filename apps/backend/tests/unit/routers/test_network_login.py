@@ -45,6 +45,7 @@ def env(table, monkeypatch):
     monkeypatch.setattr(settings, "NETWORK_PROOF_KEY", "test-proof-seed")
     monkeypatch.setattr(settings, "FRONTEND_URL", "https://dev.example")
     monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"}))
+    monkeypatch.setattr(clerk_admin, "get_user_strict", AsyncMock(return_value={"id": "user_ada"}))
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ada Lovelace"))
     join = AsyncMock(return_value={"state": "joining"})
     monkeypatch.setattr(network_member, "join_network", join)
@@ -116,6 +117,7 @@ def test_login_hands_the_computer_a_proof_of_its_person_and_polls_once(env):
     assert polled["routeUrl"] == settings.GATEWAY_RELAY_URL.removesuffix("/ws") + "/network"
     claims = network_proof.verify(polled["proof"], mac.key)
     assert claims["sub"] == "user_ada" and claims["exp"] - claims["iat"] == network_proof.LIFE_S
+    assert claims["auth_time"] == claims["iat"]  # the browser login itself
     assert network_proof.verify(polled["proof"], Computer().key) is None  # another computer's
     assert _poll(client, s["code"]) == {"status": "expired"}  # single use
 
@@ -275,3 +277,38 @@ def test_an_admin_takes_the_workspace_off_its_network(env, monkeypatch):
     who["ctx"] = AuthContext(user_id="user_ada", org_id=ORG, org_role="org:admin")
     assert client.post("/api/v1/network/leave").json() == {"state": "left"}
     leave.assert_awaited_once_with(ORG)
+
+
+def test_a_renewal_keeps_the_login_time_and_ends_after_ninety_days(env):
+    client, *_ = env
+    mac = Computer()
+
+    def refresh(token):
+        return client.post("/api/v1/network/proof/refresh", json={**mac.signed(client, "refresh"), "proof": token})
+
+    now = int(time.time())
+    late = now - network_proof.LIFE_S + 3 * 86_400  # in its last week
+    logged_in = now - 60 * 86_400
+    renewed = refresh(network_proof.mint(mac.key, "user_ada", now=late, auth_time=logged_in)).json()["proof"]
+    assert network_proof.verify(renewed, mac.key)["auth_time"] == logged_in
+    stale = refresh(network_proof.mint(mac.key, "user_ada", now=late, auth_time=now - 91 * 86_400))
+    assert stale.status_code == 401 and "lightbulb login" in stale.json()["detail"]
+
+
+def test_a_renewal_needs_a_live_account_and_fails_closed_when_clerk_cannot_say(env):
+    client, *_ = env
+    mac = Computer()
+    late = int(time.time()) - network_proof.LIFE_S + 3 * 86_400
+    old = network_proof.mint(mac.key, "user_ada", now=late)
+
+    def refresh():
+        return client.post("/api/v1/network/proof/refresh", json={**mac.signed(client, "refresh"), "proof": old})
+
+    for gone in (None, {"id": "user_ada", "banned": True}, {"id": "user_ada", "locked": True}):
+        clerk_admin.get_user_strict.return_value = gone
+        assert refresh().status_code == 401, gone
+    clerk_admin.get_user_strict.side_effect = clerk_admin.ClerkLookupError("blip")
+    assert refresh().status_code == 503
+    clerk_admin.get_user_strict.side_effect = None
+    clerk_admin.get_user_strict.return_value = {"id": "user_ada"}
+    assert refresh().status_code == 200

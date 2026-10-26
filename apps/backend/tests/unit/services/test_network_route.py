@@ -173,7 +173,10 @@ def door(monkeypatch):
 
     monkeypatch.setattr("core.config.settings.NETWORK_PROOF_KEY", "test-proof-seed")
     presence = SimpleNamespace(
-        put_route=AsyncMock(), refresh_route=AsyncMock(return_value=True), delete_route=AsyncMock()
+        put_route=AsyncMock(),
+        refresh_route=AsyncMock(return_value=True),
+        delete_route=AsyncMock(),
+        routes_for_user=AsyncMock(return_value=[]),
     )
     monkeypatch.setattr(network_route, "_connections", lambda: presence)
     monkeypatch.setattr("core.config.settings.WS_INTERNAL_SECRET", "s3cret")
@@ -328,9 +331,17 @@ async def test_a_user_owned_agent_key_is_a_free_accounts_network_caller(monkeypa
     monkeypatch.setattr(hosted_mcp.agent_keys, "resolve", AsyncMock(return_value=row))
     orgs = AsyncMock()
     monkeypatch.setattr(hosted_mcp.clerk_admin, "list_user_organizations", orgs)
+    user = AsyncMock(return_value={"id": USER})
+    monkeypatch.setattr(hosted_mcp.clerk_admin, "get_user_strict", user)
     token = await hosted_mcp.LightbulbVerifier().verify_token("lbk_x")
     assert token.subject == USER and token.claims["org_id"] is None
     orgs.assert_not_awaited()
+    # Only while the account is live; a Clerk blip fails closed.
+    for gone in (None, {"id": USER, "banned": True}, {"id": USER, "locked": True}):
+        user.return_value = gone
+        assert await hosted_mcp.LightbulbVerifier().verify_token("lbk_x") is None
+    user.side_effect = hosted_mcp.clerk_admin.ClerkLookupError("blip")
+    assert await hosted_mcp.LightbulbVerifier().verify_token("lbk_x") is None
 
 
 def test_the_apps_page_lists_pins_and_moves_an_app_to_an_online_computer(free):
@@ -351,3 +362,22 @@ def test_the_apps_page_lists_pins_and_moves_an_app_to_an_online_computer(free):
         assert offline.status_code == 409
         unknown = client.put("/api/v1/network/apps/route", json={"clientId": "nope", "key": "knew"})
         assert unknown.status_code == 404
+
+
+def test_a_person_holds_at_most_ten_links_and_a_link_sends_thirty_mail_notices_a_minute(door):
+    from starlette.websockets import WebSocketDisconnect
+
+    door.presence.routes_for_user.return_value = [{"key": f"k{i}"} for i in range(network_route.MAX_LINKS_PER_USER)]
+    computer = Key()
+    with door.client.websocket_connect("/api/v1/gateway/network") as ws:
+        ws.send_json(computer.hello(ws.receive_json()["challenge"]))
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+    assert closed.value.code == network_route.CLOSE_TOO_MANY
+    door.presence.put_route.assert_not_awaited()
+
+    link = network_route.Link("k", USER, "g", AsyncMock())
+    allowed = [network_route._mail_allowed(link) for _ in range(network_route.MAIL_PER_MINUTE + 5)]
+    assert allowed.count(True) == network_route.MAIL_PER_MINUTE and not any(allowed[network_route.MAIL_PER_MINUTE :])
+    link.mail_window -= 61  # a minute later
+    assert network_route._mail_allowed(link)

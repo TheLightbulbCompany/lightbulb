@@ -163,8 +163,13 @@ class LightbulbVerifier(ClerkOAuthVerifier):
             row = await agent_keys.resolve(token)
             if row is None:
                 return None
-            # A free account's key is its own (ownerId is the user): the network tools only.
+            # A free account's key is its own (ownerId is the user): the network tools only, and
+            # only while that account is live (not deleted, banned or locked).
             personal = row["ownerId"] == row["userId"]
+            if personal:
+                user = await clerk_admin.get_user_strict(row["userId"])
+                if not user or user.get("banned") or user.get("locked"):
+                    return None
             organizations = (
                 [] if personal else await clerk_admin.list_user_organizations(row["userId"], limit=100, strict=True)
             )

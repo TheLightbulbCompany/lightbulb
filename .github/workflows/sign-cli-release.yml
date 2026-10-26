@@ -188,7 +188,10 @@ jobs:
         printf '302a300506032b6570032100%s' "$PUB_HEX" | xxd -r -p > pub.der
         openssl pkey -pubin -inform DER -in pub.der -out pub.pem
         for A in lightbulb-linux-arm64.tar.gz lightbulb-linux-x86_64.tar.gz; do
-          gh release download "$TAG" -R TheLightbulbCompany/cli -p "$A.sha256" --clobber
+          gh release download "$TAG" -R TheLightbulbCompany/cli -p "$A" -p "$A.sha256" --clobber
+          # Sign only a sidecar that matches its archive: a stale one would pass here and fail
+          # every updater's checksum.
+          shasum -a 256 -c "$A.sha256" || { echo "::error::$A does not match $A.sha256; not signing."; exit 1; }
           openssl pkeyutl -sign -rawin -inkey "$KEY" -in "$A.sha256" -out "$A.sha256.sig"
           [ "$(wc -c < "$A.sha256.sig" | tr -d ' ')" = 64 ] || { echo "::error::$A.sha256.sig is not 64 bytes"; exit 1; }
           openssl pkeyutl -verify -pubin -inkey pub.pem -rawin -in "$A.sha256" -sigfile "$A.sha256.sig" >/dev/null \

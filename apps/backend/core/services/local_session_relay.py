@@ -427,18 +427,21 @@ def waiting_line(prompt: dict | None, text: str = "") -> str:
 
 
 async def _waiting_text(row: dict) -> str:
-    """The text of the prompt this wait is about: the newest ``approval_pending`` row stored around
-    the moment the session started waiting. Empty when its batch has not landed yet (the Mac sends
-    the status and the prompt row separately) or the read fails -- the generic line covers it."""
+    """The text of the prompt this wait is about: the session's LAST stored row, when that row is a
+    prompt stored around the moment the wait began. Anything after a prompt (its tool result, a
+    reply, a new turn) means it was answered, so an older prompt is never named for a new wait.
+    Empty when the new prompt's batch has not landed yet (the Mac sends the status and the prompt
+    row separately) or the read fails -- the generic line covers it."""
     try:
         events, _ = await repo.list_events(row["ownerId"], row["sessionId"], max(0, row.get("eventSeq", 0) - 10), 10)
     except Exception:
         logger.warning("Waiting prompt read failed", exc_info=True)
         return ""
-    since = row.get("waitingSince", 0) - 30  # an older prompt from earlier in the session is not this wait
-    for event in reversed(events):
-        if event.get("lifecycle") == "approval_pending" and event.get("text") and event.get("createdAt", 0) >= since:
-            return event["text"]
+    # A held prompt's release re-states it with no text: still the same prompt.
+    rows = [e for e in events if not (e.get("lifecycle") == "approval_pending" and not e.get("text"))]
+    last = rows[-1] if rows else {}
+    if last.get("lifecycle") == "approval_pending" and last.get("createdAt", 0) >= row.get("waitingSince", 0) - 30:
+        return last["text"]
     return ""
 
 

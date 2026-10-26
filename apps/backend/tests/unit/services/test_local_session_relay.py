@@ -2654,3 +2654,53 @@ async def test_waiting_on_a_question_names_it_from_the_prompt_row(transport):
     assert module.waiting_line(None, "Wants to run Bash(git push)") == (
         "Wants to run Bash(git push): answer it in your terminal"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_new_wait_never_names_the_previous_prompt(transport):
+    from core.services import local_session_relay as module
+
+    pushes = []
+
+    async def push(user_id, title, body, data=None):
+        pushes.append(body)
+
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+
+    def prompt(text):
+        return {"kind": "lifecycle", "role": "system", "text": text, "lifecycle": "approval_pending"}
+
+    def batch(batch_id, after, events):
+        return {
+            "type": "local.session.events",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "batchId": batch_id,
+            "afterSeq": after,
+            "events": events,
+        }
+
+    answered = {"kind": "text", "role": "assistant", "text": "Tea it is."}
+    frames = [
+        (10010, batch("a", 0, [prompt("A? (Yes / No)")])),
+        (10011, heartbeat(sid, status="waiting-approval")),
+        (10012, heartbeat(sid, status="busy")),
+        (10013, batch("a2", 1, [answered])),  # prompt A is answered
+        # A new wait 10 s later: the heartbeat lands before prompt B's batch.
+        (10020, heartbeat(sid, status="waiting-approval")),
+        (10021, batch("b", 2, [prompt("B? (Tea / Coffee)")])),
+    ]
+    with patch("core.services.push_service.send_push_to_user", push):
+        for stamp, message in frames:
+            with patch("time.time", return_value=stamp):
+                await relay(transport).handle_message("conn-1", message)
+                await asyncio.gather(*module._tasks)
+    # Never A for the second wait: the generic line, once (one wait is one notification).
+    assert pushes == [
+        "Has a question: A? (Yes / No)",
+        "Waiting for you: approve or answer it in your terminal",
+    ]
+    # Once B's row is stored, the same wait reads as B.
+    row = await module.repo.get_session(OWNER, sid)
+    assert module.waiting_line(None, await module._waiting_text(row)) == "Has a question: B? (Tea / Coffee)"

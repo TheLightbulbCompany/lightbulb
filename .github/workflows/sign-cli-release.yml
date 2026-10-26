@@ -5,6 +5,8 @@
 # A Developer ID signature with the hardened runtime, notarized, keeps that permission across
 # updates. The signing secrets stay in this private repo, so this workflow signs the release
 # AFTER it is published and replaces its two assets, then moves the Homebrew formula's sha256.
+# It also signs the two Linux assets' `.sha256` with the release key, which exists only on this
+# Mac (`~/Library/Application Support/lightbulb-release/release.key`), and uploads the `.sig`s.
 #
 # Run after every `v*` release of the CLI: gh workflow run sign-cli-release.yml -f tag=vX.Y.Z
 # Runbook: docs/runbooks/sign-cli-release.md.
@@ -167,6 +169,37 @@ jobs:
         set -euo pipefail
         retry() { for i in 1 2 3; do "$@" && return 0; [ "$i" = 3 ] && return 1; echo "Attempt $i failed; retrying"; sleep $((i * 10)); done; }
         retry gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber -R TheLightbulbCompany/cli
+      env:
+        GH_TOKEN: ${{ secrets.CLI_RELEASE_TOKEN }}
+    - name: Sign the Linux checksums
+      # Linux and WSL `lightbulb update` installs only a release whose `.sha256` carries an
+      # Ed25519 signature (`<asset>.sha256.sig`, raw 64 bytes over the file's exact bytes) under
+      # the engine's compiled-in RELEASE_KEY. The private key lives only on this Mac; it is
+      # never printed, copied or uploaded. Runs on every re-run (--clobber), signed or not.
+      run: |-
+        set -euo pipefail
+        KEY="$HOME/Library/Application Support/lightbulb-release/release.key"
+        [ -f "$KEY" ] || { echo "::error::The release key is missing on this runner; Linux updates cannot be signed."; exit 1; }
+        # RELEASE_KEY in the engine's src/cli.rs, as an Ed25519 SubjectPublicKeyInfo. Checking
+        # against it (not the key file's own public half) also catches a wrong key file.
+        PUB_HEX=5f56f67cef035900bfae7bca33e1ee5612dab82fb8d9ae3e317682d09a6a78df
+        DIR="$RUNNER_TEMP/linux-sums"
+        rm -rf "$DIR" && mkdir -p "$DIR" && cd "$DIR"
+        printf '302a300506032b6570032100%s' "$PUB_HEX" | xxd -r -p > pub.der
+        openssl pkey -pubin -inform DER -in pub.der -out pub.pem
+        for A in lightbulb-linux-arm64.tar.gz lightbulb-linux-x86_64.tar.gz; do
+          gh release download "$TAG" -R TheLightbulbCompany/cli -p "$A" -p "$A.sha256" --clobber
+          # Sign only a sidecar that matches its archive: a stale one would pass here and fail
+          # every updater's checksum.
+          shasum -a 256 -c "$A.sha256" || { echo "::error::$A does not match $A.sha256; not signing."; exit 1; }
+          openssl pkeyutl -sign -rawin -inkey "$KEY" -in "$A.sha256" -out "$A.sha256.sig"
+          [ "$(wc -c < "$A.sha256.sig" | tr -d ' ')" = 64 ] || { echo "::error::$A.sha256.sig is not 64 bytes"; exit 1; }
+          openssl pkeyutl -verify -pubin -inkey pub.pem -rawin -in "$A.sha256" -sigfile "$A.sha256.sig" >/dev/null \
+            || { echo "::error::$A.sha256.sig does not verify under RELEASE_KEY; not uploading."; exit 1; }
+        done
+        retry() { for i in 1 2 3; do "$@" && return 0; [ "$i" = 3 ] && return 1; echo "Attempt $i failed; retrying"; sleep $((i * 10)); done; }
+        retry gh release upload "$TAG" -R TheLightbulbCompany/cli --clobber \
+          lightbulb-linux-arm64.tar.gz.sha256.sig lightbulb-linux-x86_64.tar.gz.sha256.sig
       env:
         GH_TOKEN: ${{ secrets.CLI_RELEASE_TOKEN }}
     - name: Bump the Homebrew formula's sha256

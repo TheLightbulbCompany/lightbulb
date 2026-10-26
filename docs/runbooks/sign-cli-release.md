@@ -7,6 +7,13 @@ signs it with our Developer ID and the hardened runtime, notarizes it, replaces 
 `lightbulb-macos-arm64.tar.gz` and `.sha256`, and moves the sha256 in
 `TheLightbulbCompany/homebrew-tap` `Formula/lightbulb.rb`.
 
+It also signs the two Linux assets' `.sha256` (Linux and WSL `lightbulb update` refuses a release
+without them) with the release key and uploads `lightbulb-linux-{arm64,x86_64}.tar.gz.sha256.sig`.
+The key lives only on the self-hosted signing Mac, at
+`~/Library/Application Support/lightbulb-release/release.key` (0600). Never print, copy or upload
+it. Each signature is checked against the engine's `RELEASE_KEY` (pinned in the workflow) before
+upload, and the job fails if the key file is missing.
+
 ## When
 
 After every `v*` release of the CLI, once its own release workflow is green (its `bump-brew` job

@@ -264,7 +264,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {(endedEmpty || !screenDue) && <p>{endedEmpty || convoEmpty ? "This session ended before anything was sent." : "The screen is gone: this session's terminal closed."}</p>}
   </div>;
   const endedLine = <p className="session-ended-line" role="status">{why ? `Ended · ${why}` : endedAt ? <>Ended · {endedAt}</> : "Ended"}</p>;
-  const offlinePanel = <div className="session-state-panel" data-compact={convo || undefined} role="status">
+  // A paused session is never heartbeated (nothing of it leaves its Mac), so it reads offline whether or not its Mac is on.
+  const offlinePanel = session.shared === false ? <div className="session-state-panel" data-compact={convo || undefined} role="status">
+    <p className="session-state-title">Paused</p>
+    <p>{own ? "Sharing is paused, so nothing of this session leaves your Mac. Share it again from its terminal." : `${ownerName} paused sharing this session.`}</p>
+  </div> : <div className="session-state-panel" data-compact={convo || undefined} role="status">
     <p className="session-state-title">{own ? "Your Mac is offline" : `${ownerName}'s Mac is offline`}</p>
     {session.lastEventAt && <p>Last seen {timeAgo(session.lastEventAt)}</p>}
     <Button type="button" variant="outline" size="sm" disabled>Resume</Button>

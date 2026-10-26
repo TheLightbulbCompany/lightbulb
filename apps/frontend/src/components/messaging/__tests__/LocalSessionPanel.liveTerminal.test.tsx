@@ -69,6 +69,11 @@ it("never labels the status line as a transcript, and shows the ended and offlin
   expect(screen.getByText("Mac offline. Follow-ups wait up to 24 hours for this session to reconnect.")).toBeTruthy();
   expect(document.querySelector(".session-status-line")!.textContent).not.toMatch(/Transcript/);
   offline.unmount();
+  // Paused: the Mac stops heartbeating it, which is not the Mac being offline.
+  const paused = render(<LocalSessionPanel {...props} own session={{ ...session, status: "offline", shared: false }} />);
+  expect(document.querySelector(".session-state-title")!.textContent).toBe("Paused");
+  expect(screen.queryByText("Your Mac is offline")).toBeNull();
+  paused.unmount();
   render(<LocalSessionPanel {...props} own={false} session={session} />);
   expect(screen.queryByText(/Transcript/)).toBeNull();
 });

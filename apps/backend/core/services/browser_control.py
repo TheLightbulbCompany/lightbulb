@@ -43,6 +43,7 @@ import websockets
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from core.billing import bedrock_aip
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
@@ -126,7 +127,7 @@ async def _owned(owner: str, row: dict, state: dict) -> dict | None:
 async def _stream(session_id: str, enabled: bool, token: str) -> None:
     await run_in_thread(
         browser_sessions._data_client().update_browser_stream,
-        browserIdentifier=browser_sessions.BROWSER_ID,
+        browserIdentifier=await run_in_thread(browser_sessions.browser_of, session_id),
         sessionId=session_id,
         streamUpdate={"automationStreamUpdate": {"streamStatus": "ENABLED" if enabled else "DISABLED"}},
         clientToken=token,
@@ -396,10 +397,29 @@ async def _fail(owner: str, state: dict, message: str) -> None:
     await container_repo.compare_browser_state(owner, state, {**state, "mode": "error", "error": message})
 
 
+#: Owners whose ``owner-browser`` policy this process has rewritten for ``BROWSER_ID``.
+_GRANTED: set[str] = set()
+
+
+async def _grant_browser(owner: str, profile_id: str) -> None:
+    """Before a session starts on the VPC browser, make sure the owner's role names it: the
+    runtime calls ``InvokeBrowser`` (computer use) under that role, and a role written before
+    the move names only the built-in browser (a provision or roll rewrites it too). Once per
+    owner per process; a failure costs computer use, never the browser."""
+    if bedrock_aip.BROWSER_ID == bedrock_aip.BUILTIN_BROWSER_ID or owner in _GRANTED:
+        return
+    try:
+        await bedrock_aip.ensure_owner_browser_policy(owner, profile_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("owner browser policy refresh failed for %s: %s", owner, type(exc).__name__)
+        return
+    _GRANTED.add(owner)
+
+
 async def _retire(session_id: str) -> None:
     await run_in_thread(
         browser_sessions._data_client().stop_browser_session,
-        browserIdentifier=browser_sessions.BROWSER_ID,
+        browserIdentifier=await run_in_thread(browser_sessions.browser_of, session_id),
         sessionId=session_id,
     )
 
@@ -455,6 +475,7 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
             # the start token, so a retried start (same clientToken, same AWS session) agrees.
             helper_nonce = start_token[16:]
             session_config = await browser_extensions.session_config(owner, helper_nonce)
+            await _grant_browser(owner, row["browser_profile_id"])
             result = await run_in_thread(
                 browser_sessions._data_client().start_browser_session,
                 browserIdentifier=browser_sessions.BROWSER_ID,

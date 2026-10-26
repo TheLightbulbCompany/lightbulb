@@ -16,7 +16,7 @@ from botocore.exceptions import ClientError
 from botocore.session import get_session
 
 from core.billing import bedrock_aip
-from core.billing.bedrock_aip import BROWSER_ID
+from core.billing.bedrock_aip import BROWSER_ID, BUILTIN_BROWSER_ID
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
@@ -158,9 +158,37 @@ async def delete_browser_profiles(owner_id: str) -> int:
         return 0
 
 
+#: session id -> the browser it runs on. A session never changes browser, so a hit is final.
+_SESSION_BROWSER: dict[str, str] = {}
+
+
+def browser_of(session_id: str) -> str:
+    """Sync — call via ``run_in_thread``. The browser this session runs on: ``BROWSER_ID``, or
+    the built-in one for a session started before the move to the VPC browser, which is still
+    read, used and stopped there until it ends (an 8 h TTL at most). Unknown: ``BROWSER_ID``."""
+    if session_id not in _SESSION_BROWSER and BROWSER_ID != BUILTIN_BROWSER_ID:
+        try:
+            _get_session(session_id)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ResourceNotFoundException":
+                raise
+    return _SESSION_BROWSER.get(session_id, BROWSER_ID)
+
+
 def _get_session(session_id: str) -> dict:
-    """Sync — call via ``run_in_thread``."""
-    return _data_client().get_browser_session(browserIdentifier=BROWSER_ID, sessionId=session_id)
+    """Sync — call via ``run_in_thread``. Tries the session's known browser, else each one."""
+    known = _SESSION_BROWSER.get(session_id)
+    candidates = [known] if known else list(dict.fromkeys((BROWSER_ID, BUILTIN_BROWSER_ID)))
+    for browser in candidates:
+        try:
+            got = _data_client().get_browser_session(browserIdentifier=browser, sessionId=session_id)
+        except ClientError as exc:
+            if browser != candidates[-1] and exc.response["Error"]["Code"] == "ResourceNotFoundException":
+                continue
+            raise
+        _SESSION_BROWSER[session_id] = browser
+        return got
+    raise AssertionError("unreachable")
 
 
 async def owns_session(
@@ -205,7 +233,7 @@ def _presign_stream(session_id: str, stream: str) -> str:
     request = AWSRequest(
         method="GET",
         url=f"https://bedrock-agentcore.{region}.amazonaws.com"
-        f"/browser-streams/{BROWSER_ID}/sessions/{session_id}/{stream}",
+        f"/browser-streams/{browser_of(session_id)}/sessions/{session_id}/{stream}",
     )
     SigV4QueryAuth(credentials.get_frozen_credentials(), "bedrock-agentcore", region, expires=LIVE_VIEW_TTL_S).add_auth(
         request

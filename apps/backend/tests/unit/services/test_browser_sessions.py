@@ -288,3 +288,24 @@ async def test_delete_browser_profiles_survives_a_delete_failure(stub_control):
     )
     stub_control.add_client_error("delete_browser_profile", service_error_code="AccessDeniedException")
     assert await browser_sessions.delete_browser_profiles(OWNER) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_session_started_on_the_built_in_browser_is_still_found_after_the_move(stub_data, row, monkeypatch):
+    """Codex on #4391: a session open on aws.browser.v1 when the VPC browser ships must still be
+    read and stopped where it runs, not read as gone and orphaned until its TTL."""
+    monkeypatch.setattr(browser_sessions, "BROWSER_ID", "lightbulb_dev_workspace_browser-Ab12Cd34Ef")
+    monkeypatch.setattr(browser_sessions, "_SESSION_BROWSER", {})
+    stub_data.add_client_error(
+        "get_browser_session",
+        service_error_code="ResourceNotFoundException",
+        expected_params={"browserIdentifier": "lightbulb_dev_workspace_browser-Ab12Cd34Ef", "sessionId": "S1"},
+    )
+    stub_data.add_response(
+        "get_browser_session",
+        _got_session("S1", profile_id=PROFILE_ID),
+        {"browserIdentifier": "aws.browser.v1", "sessionId": "S1"},
+    )
+    assert await browser_sessions.owns_session(OWNER, "S1") is not None
+    assert browser_sessions.browser_of("S1") == "aws.browser.v1"  # no second lookup: cached
+    assert "/browser-streams/aws.browser.v1/sessions/S1/" in browser_sessions._presign_stream("S1", "automation")

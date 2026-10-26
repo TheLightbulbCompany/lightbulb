@@ -121,15 +121,11 @@ pub(super) fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf
     daemon_release(home, execution).map(|(path, _)| path)
 }
 
-/// Only the observed managed daemon protocol, never a global Codex socket or
-/// another app-server process. Its own lsof entry must name one user-owned socket.
+/// Only the managed daemon (`daemon_release`), never a global Codex socket or another app-server
+/// process. Its own lsof entry must name one user-owned socket. Any verified release: liveness reads
+/// it on every build; steer and interrupt stay on `CONTROL_DAEMON_VERSION` (`control`).
 async fn control_socket(home: &Path, execution: &Process) -> Option<(PathBuf, u64)> {
-    let root = home.join(format!(
-        ".codex/packages/app-server-daemon/releases/{}-{}-apple-darwin/bin/codex",
-        CONTROL_DAEMON_VERSION,
-        if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" },
-    ));
-    if execution.executable != root { return None; }
+    daemon_release(home, execution)?;
     let uid = unsafe { libc::geteuid() };
     let dir = fs::canonicalize("/tmp").ok()?.join(format!("codex-daemon-{uid}"));
     let pid = execution.pid.to_string();
@@ -260,7 +256,9 @@ fn from_writer(
         last_assistant_message: None,
         holder: None,
         job: None,
-        forked_from: None,
+        // A fork's header names the thread it came from (`forked_from_id`, 0.164.0), so its lineage
+        // outlives the daemon that ran it; the app-server's `forkedFromId` says the same while loaded.
+        forked_from: row["payload"]["forked_from_id"].as_str().filter(|id| !id.is_empty() && id.len() <= 128).map(str::to_owned),
         forked_by_person: None,
         aliases: vec![],
         // The header says who wrote it: the app's own conversations, never a TUI (the app's
@@ -330,6 +328,18 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
                 && p.extension().is_some_and(|e| e == "jsonl")
         })
         .collect();
+    // The shared daemon says which threads it runs and what each is doing (spec 2026-10-26 (b)):
+    // it lets an idle thread's rollout go while the thread stays loaded, so the open files alone
+    // lost every idle thread. A listing that fails says nothing: the open files still count.
+    let control = control_socket(home, &execution).await;
+    let threads = match &control {
+        Some((socket, _)) => loaded_threads(socket).await.ok(),
+        None => None,
+    };
+    if daemon_release(home, &execution).is_some() {
+        remember_loaded(&execution, threads.as_deref());
+    }
+    paths.extend(threads.iter().flatten().filter_map(|thread| thread_rollout(&root, thread)));
     if paths.is_empty() {
         return Err("native rollout is not available yet".into());
     }
@@ -348,7 +358,6 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
         }
     }
     .unwrap_or_default();
-    let control = control_socket(home, &execution).await;
     let mut found = Vec::with_capacity(paths.len());
     let mut refusal = None;
     for path in &paths {
@@ -359,6 +368,16 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
                     session.socket_inode = Some(*inode);
                 }
                 session.job = attach_thread(home, &execution, &session.conversation);
+                let thread = threads.iter().flatten().find(|t| t["id"] == session.conversation.as_str());
+                // A subagent's rollout is refused above (its source is not a user's); one the
+                // listing names is still its parent's, never a row (Codex desktop nests it).
+                if thread.is_some_and(subagent) {
+                    refusal.get_or_insert_with(|| "a subagent thread is its parent's".to_owned());
+                    continue;
+                }
+                if let Some(thread) = thread {
+                    apply_thread(&mut session, thread);
+                }
                 found.push(session);
             },
             Err(e) => {
@@ -458,27 +477,282 @@ pub(super) async fn control(home: &Path, native: &NativeSession, kind: &str, tur
 }
 
 async fn control_rpc(socket: &Path, request: &Value) -> Result<Value> {
-    let stream = tokio::net::UnixStream::connect(socket).await.map_err(|_| "control socket unavailable")?;
-    let (mut conn, _) = client_async("ws://localhost/", stream).await.map_err(|_| "control handshake failed")?;
-    conn.send(Message::Text(r#"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"lightbulb_local_session","title":"Lightbulb","version":"0.1.0"}}}"#.into()))
-        .await.map_err(|_| "control handshake failed")?;
-    let initialized = rpc_response(&mut conn, 1).await?;
-    if initialized.get("error").is_some() { return Ok(initialized); }
-    conn.send(Message::Text(r#"{"method":"initialized","params":{}}"#.into()))
-        .await.map_err(|_| "control handshake failed")?;
+    let mut conn = match connect(socket).await? {
+        Ok(conn) => conn,
+        Err(refused) => return Ok(refused),
+    };
     conn.send(Message::Text(request.to_string().into())).await.map_err(|_| "control request failed")?;
     rpc_response(&mut conn, 2).await
 }
 
-async fn rpc_response(conn: &mut WebSocketStream<tokio::net::UnixStream>, id: u64) -> Result<Value> {
-    for _ in 0..64 {
+/// The name this Mac's app-server client gives. Codex stamps the FIRST client's name into every
+/// thread its daemon creates after that (`session_meta.originator`, observed on 0.164.0): a daemon
+/// whose first client was this one marked the person's own TUI threads as ours, which
+/// `accepted_app_source` then refuses. It reads as the TUI the daemon serves, so the stamp stays true.
+const CLIENT_NAME: &str = "codex-tui";
+
+type Conn = WebSocketStream<tokio::net::UnixStream>;
+
+/// An initialized app-server connection, or the server's refusal of `initialize` (Err inside Ok).
+async fn connect(socket: &Path) -> Result<std::result::Result<Conn, Value>> {
+    let stream = tokio::net::UnixStream::connect(socket).await.map_err(|_| "control socket unavailable")?;
+    let (mut conn, _) = client_async("ws://localhost/", stream).await.map_err(|_| "control handshake failed")?;
+    let init = json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":CLIENT_NAME,"title":"Lightbulb","version":"0.1.0"}}});
+    conn.send(Message::Text(init.to_string().into())).await.map_err(|_| "control handshake failed")?;
+    let initialized = rpc_response(&mut conn, 1).await?;
+    if initialized.get("error").is_some() { return Ok(Err(initialized)); }
+    conn.send(Message::Text(r#"{"method":"initialized","params":{}}"#.into()))
+        .await.map_err(|_| "control handshake failed")?;
+    Ok(Ok(conn))
+}
+
+async fn connected(socket: &Path) -> Result<Conn> {
+    connect(socket).await?.map_err(|_| "control handshake refused".into())
+}
+
+/// One request's `result`; an error answer is Err.
+async fn call(conn: &mut Conn, id: u64, method: &str, params: Value) -> Result<Value> {
+    let request = json!({"id": id, "method": method, "params": params});
+    conn.send(Message::Text(request.to_string().into())).await.map_err(|_| "control request failed")?;
+    let mut response = rpc_response(conn, id).await?;
+    if response.get("error").is_some() { return Err(format!("{method} refused")); }
+    Ok(response["result"].take())
+}
+
+/// Notifications for every thread reach every client (`thread/status/changed`, `thread/started`,
+/// observed on 0.164.0), so a response can sit behind many of them; an oversized one is skipped.
+async fn rpc_response(conn: &mut Conn, id: u64) -> Result<Value> {
+    for _ in 0..512 {
         let Some(frame) = conn.next().await else { break; };
         let Message::Text(text) = frame.map_err(|_| "control response unavailable")? else { continue; };
-        if text.len() > 65536 { return Err("control response oversized".into()); }
+        if text.len() > 1024 * 1024 { continue; }
         let row: Value = serde_json::from_str(&text).map_err(|_| "control response invalid")?;
         if row["id"].as_u64() == Some(id) { return Ok(row); }
     }
     Err("control response unavailable".into())
+}
+
+/// Every thread the daemon has loaded (`thread/loaded/list`), as `thread/read` describes it.
+async fn loaded_threads(socket: &Path) -> Result<Vec<Value>> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut conn = connected(socket).await?;
+        let mut ids = vec![];
+        let mut cursor = Value::Null;
+        for page in 0..8 {
+            let listed = call(&mut conn, 10 + page, "thread/loaded/list", json!({"cursor": cursor})).await?;
+            ids.extend(listed["data"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned));
+            cursor = listed["nextCursor"].clone();
+            if cursor.is_null() || ids.len() >= 512 { break; }
+        }
+        let mut threads = vec![];
+        for (n, id) in ids.iter().take(512).enumerate() {
+            // A thread unloaded between the two calls is simply not running.
+            if let Ok(mut read) = call(&mut conn, 100 + n as u64, "thread/read", json!({"threadId": id})).await {
+                threads.push(read["thread"].take());
+            }
+        }
+        Ok(threads)
+    })
+    .await
+    .map_err(|_| "control response timed out".to_owned())?
+}
+
+/// A subagent thread belongs to its parent's row (Codex desktop shows it nested), never its own.
+fn subagent(thread: &Value) -> bool {
+    !thread["parentThreadId"].is_null() || thread["source"].get("subAgent").is_some()
+}
+
+/// The app-server's `ThreadStatus` in the mirror's words (the state table, spec 2026-10-26 (e)):
+/// working is busy; waiting on an approval or on an answer is waiting on its person; idle (its last
+/// turn done) and a system error are idle. `notLoaded` runs nowhere: None, the row is stopped.
+fn thread_status(status: &Value) -> Option<&'static str> {
+    match status["type"].as_str()? {
+        "active" if status["activeFlags"].as_array().is_some_and(|flags| !flags.is_empty()) => Some("waiting-approval"),
+        "active" => Some("busy"),
+        "idle" | "systemError" => Some("idle"),
+        _ => None,
+    }
+}
+
+/// The rollout of a loaded thread that is a row: a person's thread, written to disk, running.
+fn thread_rollout(root: &Path, thread: &Value) -> Option<PathBuf> {
+    if subagent(thread) || thread["ephemeral"] == true || thread_status(&thread["status"]).is_none() {
+        return None;
+    }
+    let path = PathBuf::from(thread["path"].as_str()?);
+    (path.starts_with(root) && path.is_file()).then_some(path)
+}
+
+/// What the daemon says outranks what the rollout's tail suggests: its status, and the thread a
+/// fork came from (`forkedFromId`), which the rollout does not carry.
+fn apply_thread(session: &mut NativeSession, thread: &Value) {
+    if let Some(status) = thread_status(&thread["status"]) {
+        session.status = status.into();
+    }
+    if let Some(origin) = thread["forkedFromId"].as_str().filter(|id| !id.is_empty() && id.len() <= 128) {
+        session.forked_from = Some(origin.to_owned());
+    }
+}
+
+/// The threads the shared daemon had loaded at its last listing, by daemon process.
+static LOADED: std::sync::Mutex<Option<(Process, std::collections::BTreeSet<String>)>> = std::sync::Mutex::new(None);
+
+fn remember_loaded(daemon: &Process, threads: Option<&[Value]>) {
+    let Ok(mut loaded) = LOADED.lock() else { return };
+    match threads {
+        Some(threads) => {
+            *loaded = Some((daemon.clone(), threads.iter().filter_map(|t| t["id"].as_str()).map(str::to_owned).collect()));
+        }
+        // A failed listing knows nothing: liveness falls back to the daemon's pid. Only this
+        // process's own listing is forgotten: the daemon's updater (same release, its own socket)
+        // never answers one, and must not erase the daemon's.
+        None if loaded.as_ref().is_some_and(|(known, _)| known == daemon) => *loaded = None,
+        None => {}
+    }
+}
+
+/// Whether the daemon `process` still has `conversation` loaded: None when its last listing is
+/// unknown. A thread it dropped is stopped although the daemon runs on (`notLoaded`).
+pub(super) fn loaded(process: &Process, conversation: &str) -> Option<bool> {
+    let loaded = LOADED.lock().ok()?;
+    let (daemon, threads) = loaded.as_ref()?;
+    (daemon == process).then(|| threads.contains(conversation))
+}
+
+/// The shared daemon's control socket while it runs: Codex's own link, resolved to a socket this
+/// user owns in `/tmp/codex-daemon-<uid>`. None: no daemon, and a start falls back to `--no-daemon`.
+pub(crate) fn daemon_socket(home: &Path) -> Option<PathBuf> {
+    let uid = unsafe { libc::geteuid() };
+    let dir = fs::canonicalize("/tmp").ok()?.join(format!("codex-daemon-{uid}"));
+    let path = fs::canonicalize(home.join(".codex/app-server-control/app-server-control.sock")).ok()?;
+    let meta = fs::symlink_metadata(&path).ok()?;
+    (path.parent() == Some(dir.as_path()) && meta.file_type().is_socket() && meta.uid() == uid).then_some(path)
+}
+
+/// The daemon process, from its own pid file, only when it is a verified managed release.
+fn daemon_process(home: &Path) -> Option<Process> {
+    let text = fs::read_to_string(home.join(".codex/app-server-daemon/daemon.pid")).ok()?;
+    let row: Value = serde_json::from_str(&text).ok()?;
+    let daemon = process(u32::try_from(row["pid"].as_u64()?).ok()?).ok()?;
+    daemon_release(home, &daemon).is_some().then_some(daemon)
+}
+
+/// Wakes discovery whenever the daemon says a thread started, closed or changed status, so a row's
+/// status follows the app-server, not the 60 s backstop. Runs until aborted.
+pub(super) async fn watch(home: PathBuf, wake: std::sync::Arc<tokio::sync::Notify>) {
+    loop {
+        if let Some(socket) = daemon_socket(&home) {
+            if let Ok(mut conn) = connected(&socket).await {
+                while let Some(Ok(frame)) = conn.next().await {
+                    let Message::Text(text) = frame else { continue };
+                    if text.len() <= 1024 * 1024 && wakes(&text) {
+                        wake.notify_one();
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+}
+
+fn wakes(frame: &str) -> bool {
+    serde_json::from_str::<Value>(frame)
+        .is_ok_and(|row| matches!(row["method"].as_str(), Some("thread/status/changed" | "thread/started" | "thread/closed")))
+}
+
+/// The daemon form of a held Codex argv (`session_start::argv`, `resume::argv`): a TUI client of
+/// the shared daemon, not a private writer.
+pub(crate) fn on_daemon(argv: &[String]) -> bool {
+    argv.get(1..3).is_some_and(|flags| flags[0] == "--remote" && flags[1] == "unix://")
+}
+
+/// A held Codex start on the shared daemon. Its start hook runs in the daemon, which has neither
+/// the holder's environment nor its process, so the thread is learned here instead: the first
+/// person's thread the daemon starts in `folder` after the holder launches. That binds the holder
+/// (`holder::manager::bind_thread`) and the start link. Not seen in time: the thread is still
+/// listed, as a background one, and the start is not linked.
+pub(crate) async fn start_on_daemon(
+    home: &Path,
+    folder: PathBuf,
+    argv: Vec<String>,
+    link: Option<(String, String)>,
+) -> std::result::Result<HolderInfo, String> {
+    let socket = daemon_socket(home).ok_or("Codex's shared daemon is not running")?;
+    // Listening before the TUI asks for its thread.
+    let mut conn = connected(&socket).await?;
+    let want = fs::canonicalize(&folder).map_err(|e| e.to_string())?;
+    let info = crate::session_start::start_held(folder, argv).await?;
+    let (home, held) = (home.to_path_buf(), info.clone());
+    tokio::spawn(async move {
+        let thread = tokio::time::timeout(std::time::Duration::from_secs(60), started_in(&mut conn, &want)).await.ok().flatten();
+        let Some(thread) = thread else {
+            crate::log("[session-start] Codex: no thread seen on the daemon for this start; it is listed unlinked");
+            return;
+        };
+        crate::holder::manager::bind_thread(&held, &thread);
+        if let (Some((start_id, scope)), Some(daemon)) = (link, daemon_process(&home)) {
+            if let Err(e) = super::start_links::record(&home, &start_id, &scope, "codex", &thread, daemon) {
+                crate::log(&format!("[session-start] Codex start link not recorded: {e}"));
+            }
+        }
+    });
+    Ok(info)
+}
+
+/// The id of the first person's thread started in `folder` (canonical) on this connection.
+async fn started_in(conn: &mut Conn, folder: &Path) -> Option<String> {
+    while let Some(Ok(frame)) = conn.next().await {
+        let Message::Text(text) = frame else { continue };
+        if let Some(id) = started_thread(&text, folder) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn started_thread(frame: &str, folder: &Path) -> Option<String> {
+    let row: Value = serde_json::from_str(frame).ok()?;
+    let thread = &row["params"]["thread"];
+    if row["method"] != "thread/started" || subagent(thread) || thread["ephemeral"] == true {
+        return None;
+    }
+    let cwd = fs::canonicalize(thread["cwd"].as_str()?).ok()?;
+    let id = thread["id"].as_str().filter(|id| uuid::Uuid::parse_str(id).is_ok())?;
+    (cwd == folder).then(|| id.to_owned())
+}
+
+/// Loads `thread` on the shared daemon for a resume, in `folder` with the mode the backend decided
+/// (`plan`: read-only). A `--remote` TUI may not set permissions on a resume ("Permission overrides
+/// are not supported when resuming a remote task", 0.163.0), and one that loads the thread itself
+/// takes the person's global config, which may be `danger-full-access`. So the thread is loaded
+/// here first, and the TUI rejoins it as it runs. A thread already running under looser terms is
+/// refused. The connection stays open a while so the thread is loaded when the TUI arrives.
+pub(super) async fn resume_on_daemon(socket: &Path, thread: &str, folder: &Path, plan: bool) -> Result<()> {
+    let mut conn = connected(socket).await?;
+    let params = json!({"threadId": thread, "cwd": folder, "excludeTurns": true,
+        "sandbox": if plan { "read-only" } else { "workspace-write" }, "approvalPolicy": "on-request"});
+    let resumed = tokio::time::timeout(std::time::Duration::from_secs(20), call(&mut conn, 2, "thread/resume", params))
+        .await
+        .map_err(|_| "thread/resume timed out")??;
+    if !within(&resumed, plan) {
+        return Err(LOOSER.into());
+    }
+    tokio::spawn(async move {
+        // ponytail: a fixed hold, not a handshake (the daemon has no "client joined" event); 0.164.0
+        // kept an idle thread loaded with no client at all.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(60), async { while conn.next().await.is_some() {} }).await;
+    });
+    Ok(())
+}
+
+/// `resume_on_daemon`'s refusal of a thread that already runs under looser permissions.
+pub(super) const LOOSER: &str = "thread runs under looser permissions";
+
+/// The thread's permissions after `thread/resume` are no looser than asked.
+fn within(resumed: &Value, plan: bool) -> bool {
+    let sandbox = resumed["sandbox"]["type"].as_str();
+    let sandbox_ok = if plan { sandbox == Some("readOnly") } else { matches!(sandbox, Some("readOnly" | "workspaceWrite")) };
+    sandbox_ok && matches!(resumed["approvalPolicy"].as_str(), Some("on-request" | "untrusted"))
 }
 
 const TURN_ROW_MAX: usize = 1024 * 1024;
@@ -1266,6 +1540,150 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
 mod tests {
     use super::*;
 
+    /// A `thread/read` result as Codex 0.164.0's app-server returns it (trimmed to what is read).
+    fn thread(id: &str, status: Value, path: &Path) -> Value {
+        json!({"id": id, "sessionId": id, "forkedFromId": null, "parentThreadId": null, "ephemeral": false,
+            "status": status, "path": path, "cwd": "/tmp/cx-e2e", "source": "vscode", "threadSource": "user",
+            "preview": "", "name": null, "turns": []})
+    }
+
+    #[test]
+    fn local_sessions_codex_thread_status_follows_the_app_server() {
+        // The state table (spec 2026-10-26 (e)): running, waiting on you, done, stopped.
+        assert_eq!(thread_status(&json!({"type":"active","activeFlags":[]})), Some("busy"));
+        assert_eq!(thread_status(&json!({"type":"active","activeFlags":["waitingOnApproval"]})), Some("waiting-approval"));
+        assert_eq!(thread_status(&json!({"type":"active","activeFlags":["waitingOnUserInput"]})), Some("waiting-approval"));
+        assert_eq!(thread_status(&json!({"type":"idle"})), Some("idle"));
+        assert_eq!(thread_status(&json!({"type":"systemError"})), Some("idle"));
+        assert_eq!(thread_status(&json!({"type":"notLoaded"})), None);
+        assert_eq!(thread_status(&Value::Null), None);
+    }
+
+    /// The daemon lets an idle thread's rollout go but keeps the thread loaded: it is still a row.
+    /// Subagents (nested under their parent), ephemeral helpers (the title namer) and threads it no
+    /// longer runs are not.
+    #[test]
+    fn local_sessions_codex_an_idle_loaded_thread_is_a_row_whatever_its_rollout() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join(".codex/sessions");
+        let day = root.join("2026/10/26");
+        fs::create_dir_all(&day).unwrap();
+        let rollout = |id: &str| { let p = day.join(format!("rollout-2026-10-26T17-47-06-{id}.jsonl")); fs::write(&p, "{}\n").unwrap(); p };
+        let idle = rollout("01a17a2e-71be-72a3-9ea3-db3681294921");
+        assert_eq!(thread_rollout(&root, &thread("01a17a2e-71be-72a3-9ea3-db3681294921", json!({"type":"idle"}), &idle)), Some(idle.clone()));
+        let mut child = thread("01a17a2f-0000-7000-8000-000000000001", json!({"type":"active","activeFlags":[]}), &rollout("01a17a2f-0000-7000-8000-000000000001"));
+        child["parentThreadId"] = json!("01a17a2e-71be-72a3-9ea3-db3681294921");
+        assert!(subagent(&child) && thread_rollout(&root, &child).is_none());
+        let mut spawned = thread("01a17a2f-0000-7000-8000-000000000002", json!({"type":"idle"}), &rollout("01a17a2f-0000-7000-8000-000000000002"));
+        spawned["source"] = json!({"subAgent":{"thread_spawn":{"parent_thread_id":"x","depth":1}}});
+        assert!(subagent(&spawned) && thread_rollout(&root, &spawned).is_none());
+        let mut namer = thread("01a17a2f-0000-7000-8000-000000000003", json!({"type":"idle"}), &rollout("01a17a2f-0000-7000-8000-000000000003"));
+        namer["ephemeral"] = json!(true);
+        assert!(thread_rollout(&root, &namer).is_none());
+        assert!(thread_rollout(&root, &thread("a", json!({"type":"notLoaded"}), &idle)).is_none());
+        assert!(thread_rollout(&root, &thread("a", json!({"type":"idle"}), Path::new("/etc/passwd"))).is_none(), "only under ~/.codex/sessions");
+        assert!(thread_rollout(&root, &thread("a", json!({"type":"idle"}), &day.join("missing.jsonl"))).is_none(), "not written yet");
+        assert!(!subagent(&thread("a", json!({"type":"idle"}), &idle)));
+    }
+
+    #[test]
+    fn local_sessions_codex_fork_lineage_and_status_come_from_the_thread() {
+        let mut session = super::super::transport::tests::test_mirror("01a17a35-0000-7000-8000-000000000001", "g").native;
+        session.status = "busy".into(); // what the rollout's tail guessed
+        let mut fork = thread("01a17a35-0000-7000-8000-000000000001", json!({"type":"active","activeFlags":["waitingOnApproval"]}), Path::new("/x"));
+        fork["forkedFromId"] = json!("01a17a2e-71be-72a3-9ea3-db3681294921");
+        apply_thread(&mut session, &fork);
+        assert_eq!(session.forked_from.as_deref(), Some("01a17a2e-71be-72a3-9ea3-db3681294921"));
+        assert_eq!(session.status, "waiting-approval");
+        let mut plain = super::super::transport::tests::test_mirror("01a17a35-0000-7000-8000-000000000002", "g").native;
+        apply_thread(&mut plain, &thread("01a17a35-0000-7000-8000-000000000002", json!({"type":"idle"}), Path::new("/x")));
+        assert_eq!((plain.forked_from, plain.status.as_str()), (None, "idle"));
+    }
+
+    #[test]
+    fn local_sessions_codex_a_thread_the_daemon_dropped_is_stopped() {
+        let daemon = process(std::process::id()).unwrap();
+        let other = Process { pid: daemon.pid + 1, ..daemon.clone() };
+        let listed = [json!({"id":"01a17a2e-71be-72a3-9ea3-db3681294921"})];
+        remember_loaded(&daemon, Some(&listed));
+        assert_eq!(loaded(&daemon, "01a17a2e-71be-72a3-9ea3-db3681294921"), Some(true));
+        assert_eq!(loaded(&daemon, "01a17a29-13c2-71e1-8501-912c2cf234c4"), Some(false));
+        assert_eq!(loaded(&other, "01a17a2e-71be-72a3-9ea3-db3681294921"), None, "another daemon: unknown");
+        remember_loaded(&other, None);
+        assert_eq!(loaded(&daemon, "01a17a29-13c2-71e1-8501-912c2cf234c4"), Some(false), "the updater's failed listing is not the daemon's");
+        remember_loaded(&daemon, None);
+        assert_eq!(loaded(&daemon, "01a17a29-13c2-71e1-8501-912c2cf234c4"), None, "a failed listing proves nothing");
+    }
+
+    /// One connection lists the loaded threads page by page and reads each one, past the
+    /// notifications the daemon sends every client; it introduces itself as the TUI (CLIENT_NAME).
+    async fn read(conn: &mut WebSocketStream<tokio::net::UnixStream>) -> Value {
+        serde_json::from_str(&conn.next().await.unwrap().unwrap().into_text().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn local_sessions_codex_lists_loaded_threads_over_the_control_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut conn = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let init = read(&mut conn).await;
+            assert_eq!(init["params"]["clientInfo"]["name"], "codex-tui", "the daemon stamps its first client's name on threads");
+            conn.send(Message::Text(json!({"id":1,"result":{}}).to_string().into())).await.unwrap();
+            assert_eq!(read(&mut conn).await["method"], "initialized");
+            let page = read(&mut conn).await;
+            assert_eq!(page["method"], "thread/loaded/list");
+            conn.send(Message::Text(json!({"method":"thread/status/changed","params":{"threadId":"t1","status":{"type":"idle"}}}).to_string().into())).await.unwrap();
+            conn.send(Message::Text(json!({"id":page["id"],"result":{"data":["t1"],"nextCursor":"c2"}}).to_string().into())).await.unwrap();
+            let page = read(&mut conn).await;
+            assert_eq!(page["params"]["cursor"], "c2");
+            conn.send(Message::Text(json!({"id":page["id"],"result":{"data":["t2"],"nextCursor":null}}).to_string().into())).await.unwrap();
+            for (id, status) in [("t1", json!({"type":"idle"})), ("t2", json!({"type":"active","activeFlags":[]}))] {
+                let request = read(&mut conn).await;
+                assert_eq!((request["method"].as_str(), request["params"]["threadId"].as_str()), (Some("thread/read"), Some(id)));
+                conn.send(Message::Text(json!({"id":request["id"],"result":{"thread":{"id":id,"status":status}}}).to_string().into())).await.unwrap();
+            }
+        });
+        let threads = loaded_threads(&socket).await.unwrap();
+        assert_eq!(threads.iter().map(|t| t["id"].as_str().unwrap()).collect::<Vec<_>>(), ["t1", "t2"]);
+        assert_eq!(thread_status(&threads[1]["status"]), Some("busy"));
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn local_sessions_codex_a_held_start_is_the_thread_started_in_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = fs::canonicalize(dir.path()).unwrap();
+        let started = |thread: Value| json!({"method":"thread/started","params":{"thread":thread}}).to_string();
+        let mut mine = json!({"id":"01a17a2e-71be-72a3-9ea3-db3681294921","cwd":dir.path(),"ephemeral":false,"parentThreadId":null,"source":"vscode"});
+        assert_eq!(started_thread(&started(mine.clone()), &folder).as_deref(), Some("01a17a2e-71be-72a3-9ea3-db3681294921"));
+        mine["ephemeral"] = json!(true);
+        assert!(started_thread(&started(mine.clone()), &folder).is_none(), "the title namer");
+        mine["ephemeral"] = json!(false);
+        mine["parentThreadId"] = json!("01a17a2e-0000-7000-8000-000000000000");
+        assert!(started_thread(&started(mine.clone()), &folder).is_none(), "a subagent");
+        mine["parentThreadId"] = Value::Null;
+        mine["cwd"] = json!("/");
+        assert!(started_thread(&started(mine), &folder).is_none(), "another folder's start");
+        assert!(started_thread(r#"{"method":"thread/status/changed","params":{}}"#, &folder).is_none());
+        assert!(wakes(r#"{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"idle"}}}"#));
+        assert!(wakes(r#"{"method":"thread/closed","params":{"threadId":"t"}}"#));
+        assert!(!wakes(r#"{"method":"account/updated","params":{}}"#));
+    }
+
+    /// A teammate's resume is read-only: a thread the daemon already runs looser is refused.
+    #[test]
+    fn local_sessions_codex_a_daemon_resume_is_never_looser_than_asked() {
+        let resumed = |sandbox: &str, approval: &str| json!({"sandbox":{"type":sandbox},"approvalPolicy":approval});
+        assert!(within(&resumed("readOnly", "on-request"), true));
+        assert!(!within(&resumed("workspaceWrite", "on-request"), true));
+        assert!(!within(&resumed("dangerFullAccess", "on-request"), false));
+        assert!(!within(&resumed("readOnly", "never"), false));
+        assert!(within(&resumed("workspaceWrite", "on-request"), false));
+    }
+
     #[test]
     fn setup_backs_up_codex_files_once() {
         let home = tempfile::tempdir().unwrap();
@@ -2040,6 +2458,24 @@ mod tests {
         assert_eq!(from_rollout(&root, process, &path, "0.160.1").unwrap().restriction.as_deref(), Some("runtime-unverified"));
     }
 
+    /// A fork's own rollout header names its origin (seen on a `codex fork` through the daemon,
+    /// 0.164.0), so a stopped fork keeps its lineage with no app-server to ask.
+    #[test]
+    fn local_sessions_codex_a_fork_rollout_names_its_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let process = Process { pid: 42, birth_micros: 123, executable: "/bin/codex".into() };
+        let path = root.join("rollout-fork.jsonl");
+        fs::write(&path, concat!(r#"{"type":"session_meta","payload":{"id":"01a17a4c-cd88-7092-8922-62097afde080","#,
+            r#""forked_from_id":"01a17a4b-d15a-7772-8898-d84c8a12fa4b","forked_from_ordinal_exclusive":31,"#,
+            r#""source":"cli","cli_version":"0.159.3","history_mode":"paginated","cwd":"/tmp/cx-e2e"}}"#, "\n")).unwrap();
+        let fork = from_rollout(&root, process.clone(), &path, "0.159.3").unwrap();
+        assert_eq!(fork.forked_from.as_deref(), Some("01a17a4b-d15a-7772-8898-d84c8a12fa4b"));
+        fs::write(&path, concat!(r#"{"type":"session_meta","payload":{"id":"01a17a4b-d15a-7772-8898-d84c8a12fa4b","#,
+            r#""source":"cli","cli_version":"0.159.3","history_mode":"paginated"}}"#, "\n")).unwrap();
+        assert_eq!(from_rollout(&root, process, &path, "0.159.3").unwrap().forked_from, None);
+    }
+
     #[test]
     fn local_sessions_codex_discovers_only_process_owned_cli_profile_history() {
         let dir = tempfile::tempdir().unwrap();
@@ -2228,3 +2664,4 @@ mod tests {
     }
 
 }
+

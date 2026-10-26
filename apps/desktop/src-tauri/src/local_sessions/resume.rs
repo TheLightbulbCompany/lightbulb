@@ -173,11 +173,27 @@ fn tag(resume: &Value, running: impl Fn(&str, &str) -> (String, Option<Option<Ho
 
 /// The exact argv: the fixed installed binary, the conversation, and a mode no looser than the
 /// owner's default. Anyone but this Mac's own human gets plan mode, whatever the request says.
-fn argv(program: &Path, w: &Wanted, own: bool) -> Vec<String> {
+/// `daemon`: Codex's shared daemon runs. Then the holder is one more client that rejoins the thread
+/// the daemon runs (`codex::resume_on_daemon` loads it first, with this mode), so every client sees
+/// ONE thread. Only without a daemon is it a private `--no-daemon` writer.
+fn argv(program: &Path, w: &Wanted, own: bool, daemon: bool) -> Vec<String> {
     let plan = !own || w.mode != "default";
     let program = program.to_string_lossy().into_owned();
+    if w.provider == "codex" && daemon {
+        // As `holder::manager::CODEX_ATTACH_SCRIPT` rejoins: no permission flags (a remote resume
+        // refuses them), and no update prompt over the conversation.
+        return vec![
+            program,
+            "--remote".into(),
+            "unix://".into(),
+            "-c".into(),
+            "check_for_update_on_startup=false".into(),
+            "resume".into(),
+            w.conversation_id.clone(),
+        ];
+    }
     if w.provider == "codex" {
-        // Root options before the subcommand; `--no-daemon` as New session starts Codex.
+        // Root options before the subcommand.
         vec![
             program,
             "--no-daemon".into(),
@@ -331,10 +347,22 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
     // conversation is invisible to the mirrors. Two writers on one transcript fork it, so a resume
     // that cannot prove the conversation is free does not start.
     free(running_conversations(home_dir(), w.provider.clone()).await, &w.conversation_id)?;
-    crate::session_start::start_held(folder, argv).await.map_err(|e| {
+    let daemon = codex::on_daemon(&argv);
+    if daemon {
+        let socket = codex::daemon_socket(&home_dir()).ok_or("LAUNCH_FAILED")?;
+        codex::resume_on_daemon(&socket, &w.conversation_id, &folder, !own || w.mode != "default").await.map_err(|e| {
+            relay_log(&format!("{} resume on the Codex daemon refused: {e}", &w.session_id[..8]));
+            if e == codex::LOOSER { "ALREADY_RUNNING" } else { "LAUNCH_FAILED" }
+        })?;
+    }
+    let held = crate::session_start::start_held(folder, argv).await.map_err(|e| {
         relay_log(&format!("{} resume launch failed: {e}", &w.session_id[..w.session_id.len().min(8)]));
         "LAUNCH_FAILED"
     })?;
+    if daemon {
+        // Its start hook runs in the daemon, not under this holder: the thread is known already.
+        crate::holder::manager::bind_thread(&held, &w.conversation_id);
+    }
     let who = if own { "You".to_owned() } else { w.by_name.clone() };
     let how = if own && w.mode == "default" {
         "End it from its panel in Lightbulb."
@@ -455,7 +483,11 @@ fn prepare(w: &Wanted, own: bool, home: &Path) -> std::result::Result<Option<(Pa
     // The folder it last ran in must still be approved now, as for New session and the CLI: the
     // owner may have removed it from File access after the session ended.
     let folder = approved_folder(&folder, &crate::session_start::approved_now())?;
-    Ok(Some((folder, argv(&program, w, own))))
+    let daemon = w.provider == "codex" && codex::daemon_socket(home).is_some();
+    if w.provider == "codex" && !daemon {
+        relay_log(&format!("{} resume: Codex's shared daemon is not running, so it starts as a private --no-daemon writer", &w.session_id[..8]));
+    }
+    Ok(Some((folder, argv(&program, w, own, daemon))))
 }
 
 pub(crate) fn claude_config(home: &Path) -> PathBuf {
@@ -545,21 +577,35 @@ mod tests {
         assert_eq!(tag(&loose, |_, c| (c.to_owned(), None))[0].mode, "plan", "anything but default reads as plan");
     }
 
+    /// On Codex's shared daemon a resume is one more client that rejoins the thread the daemon
+    /// runs (`codex::resume_on_daemon` loaded it with the mode), never a `--no-daemon` writer that
+    /// forks it; a remote resume takes no permission flags (Codex refuses them).
+    #[test]
+    fn resume_argv_on_the_codex_daemon_rejoins_the_thread() {
+        let held = argv(Path::new("/bin/codex"), &wanted("codex", "default"), false, true);
+        assert_eq!(held, ["/bin/codex", "--remote", "unix://", "-c", "check_for_update_on_startup=false", "resume", CONV]);
+        assert!(codex::on_daemon(&held));
+        assert!(!held.iter().any(|a| a == "--no-daemon" || a == "--sandbox" || a == "--ask-for-approval"));
+        // Without a daemon it is the private writer it always was.
+        assert!(!codex::on_daemon(&argv(Path::new("/bin/codex"), &wanted("codex", "default"), false, false)));
+        assert_eq!(argv(Path::new("/bin/claude"), &wanted("claude", "default"), true, true)[1], "--resume");
+    }
+
     #[test]
     fn resume_argv_gives_anyone_but_this_macs_human_plan_mode() {
         let claude = Path::new("/bin/claude");
-        assert_eq!(argv(claude, &wanted("claude", "default"), false), ["/bin/claude", "--resume", CONV, "--permission-mode", "plan"]);
-        assert_eq!(argv(claude, &wanted("claude", "default"), true), ["/bin/claude", "--resume", CONV, "--permission-mode", "manual"]);
-        assert_eq!(argv(claude, &wanted("claude", "plan"), true)[4], "plan");
+        assert_eq!(argv(claude, &wanted("claude", "default"), false, false), ["/bin/claude", "--resume", CONV, "--permission-mode", "plan"]);
+        assert_eq!(argv(claude, &wanted("claude", "default"), true, false), ["/bin/claude", "--resume", CONV, "--permission-mode", "manual"]);
+        assert_eq!(argv(claude, &wanted("claude", "plan"), true, false)[4], "plan");
         let codex = Path::new("/bin/codex");
         assert_eq!(
-            argv(codex, &wanted("codex", "default"), false),
+            argv(codex, &wanted("codex", "default"), false, false),
             ["/bin/codex", "--no-daemon", "--sandbox", "read-only", "--ask-for-approval", "on-request", "resume", CONV]
         );
-        assert_eq!(argv(codex, &wanted("codex", "default"), true)[3], "workspace-write");
+        assert_eq!(argv(codex, &wanted("codex", "default"), true, false)[3], "workspace-write");
         // A resumed Claude Code session runs in the classic renderer, as a new one does (owner ruling 2026-10-07).
         let classic = |argv: &[String]| crate::holder::run::provider_environment(vec![], argv).iter().any(|(k, _)| k == crate::holder::run::CLASSIC_RENDERER);
-        assert!(classic(&argv(claude, &wanted("claude", "default"), true)) && !classic(&argv(codex, &wanted("codex", "default"), true)));
+        assert!(classic(&argv(claude, &wanted("claude", "default"), true, false)) && !classic(&argv(codex, &wanted("codex", "default"), true, false)));
     }
 
     #[test]

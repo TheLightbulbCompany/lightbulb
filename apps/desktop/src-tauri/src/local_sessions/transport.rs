@@ -1342,6 +1342,8 @@ impl Host {
                 && (native.provider != "claude"
                     || native.job.is_some()
                     || claude::still_registered(home, native.process.pid, &native.conversation))
+                // A Codex thread its shared daemon dropped is stopped though the daemon runs on.
+                && (native.provider != "codex" || codex::loaded(&native.process, &native.conversation) != Some(false))
         };
         let gone: Vec<(String, &str)> = self
             .mirrors
@@ -1492,6 +1494,8 @@ impl Host {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let home = self.home.clone();
         self.rediscover = Some(wake.clone());
+        // Follows the shared Codex daemon's thread events (codex.rs); aborted with discovery.
+        let codex_watch = tokio::spawn(codex::watch(self.home.clone(), wake.clone()));
         let discovery = async move {
             // A 60s backstop, not the status source: hooks and the pid check drive
             // status now. A wake (a start hook, an enrollment change) runs it sooner,
@@ -1646,6 +1650,7 @@ impl Host {
         let mut discovery = tokio::spawn(discovery);
         tokio::select! {_ = &mut discovery=>{},_ = network=>{}}
         discovery.abort();
+        codex_watch.abort();
     }
 
     pub(super) async fn supervise(

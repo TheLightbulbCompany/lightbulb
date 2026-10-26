@@ -894,18 +894,9 @@ const RIGHT = "\x1b[C";
  * any multi-select, a review screen follows whose default is "Submit answers", taken with Enter.
  */
 export function questionKeys(questions: readonly SessionQuestion[], picks: readonly (readonly number[])[]): string[] {
-  return questionSteps(questions, picks).map(step => step.key);
-}
-
-/**
- * `questionKeys` with whether a key may be sent again when its send failed: a single-select digit may
- * (resent, it picks the same option). A multi-select toggle, a → or the review screen's Enter may not:
- * if the first send landed after all, a second one undoes it or moves on twice.
- */
-export function questionSteps(questions: readonly SessionQuestion[], picks: readonly (readonly number[])[]): { key: string; retry: boolean }[] {
-  const steps = questions.flatMap((q, i) => {
+  const keys = questions.flatMap((q, i) => {
     const digits = (picks[i] ?? []).map(n => String(n + 1));
-    return q.multiSelect ? [...digits, RIGHT].map(key => ({ key, retry: false })) : digits.slice(0, 1).map(key => ({ key, retry: true }));
+    return q.multiSelect ? [...digits, RIGHT] : digits.slice(0, 1);
   });
-  return questions.length > 1 || questions.some(q => q.multiSelect) ? [...steps, { key: "\r", retry: false }] : steps;
+  return questions.length > 1 || questions.some(q => q.multiSelect) ? [...keys, "\r"] : keys;
 }

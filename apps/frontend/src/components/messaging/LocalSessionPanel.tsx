@@ -7,7 +7,7 @@ import { isDesktopApp } from "@/lib/desktopNotify";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, pendingQuestion, questionSteps, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionLive, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
+  ApiError, audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, pendingQuestion, questionKeys, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionLive, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
   CLI_ONLY, conversationOnly, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox, watchOnlyLine,
   type LocalSession, type SessionControlClient, type SessionQuestion, type SessionSource,
 } from "@lightbulb/shared";
@@ -482,23 +482,27 @@ function JoinRequests({ waiting, ids, line, decide: send, enabled, personName }:
  */
 function QuestionAnswer({ questions, keys }: { questions: SessionQuestion[]; keys: React.RefObject<((data: string) => Promise<unknown>) | null> }) {
   const [picks, setPicks] = useState<number[][]>(() => questions.map(() => []));
-  // "sent" only once the relay took every key. After a failure: `taken` keys went through, and the rest is
-  // sent again from there ("failed"), unless the failed key cannot be resent safely ("stuck").
+  // "sent" only once the relay took every key. A key the server refused (a 4xx) was never written to the
+  // terminal: the rest is sent again from it ("failed"). A timeout, a lost connection or a 5xx leaves
+  // unknown whether it landed, and a key typed twice answers the next question or the composer: no retry ("stuck").
   const [state, setState] = useState<"idle" | "sending" | "sent" | "failed" | "stuck">("idle");
-  const progress = useRef<{ steps: { key: string; retry: boolean }[]; taken: number } | null>(null);
+  const progress = useRef<{ keys: string[]; taken: number } | null>(null);
   const [taken, setTaken] = useState(0);
   const sent = state === "sending" || state === "sent" || state === "stuck";
   const send = async (answer: number[][]) => {
     // A retry after a partial send resumes the same keys; with nothing taken yet it starts over with this answer.
-    const run = progress.current && progress.current.taken > 0 ? progress.current : { steps: questionSteps(questions, answer), taken: 0 };
+    const run = progress.current && progress.current.taken > 0 ? progress.current : { keys: questionKeys(questions, answer), taken: 0 };
     progress.current = run;
     setState("sending");
-    for (let i = run.taken; i < run.steps.length; i++) {
+    for (let i = run.taken; i < run.keys.length; i++) {
       if (i > 0) await new Promise(done => setTimeout(done, KEY_GAP_MS));
       try {
-        if (!keys.current) throw new Error("no terminal");
-        await keys.current(run.steps[i].key);
-      } catch { setState(run.steps[i].retry ? "failed" : "stuck"); return; }
+        if (!keys.current) throw new ApiError(409, null, "no terminal");
+        await keys.current(run.keys[i]);
+      } catch (e) {
+        setState(e instanceof ApiError && e.status >= 400 && e.status < 500 ? "failed" : "stuck");
+        return;
+      }
       run.taken = i + 1; setTaken(run.taken);
     }
     setState("sent");

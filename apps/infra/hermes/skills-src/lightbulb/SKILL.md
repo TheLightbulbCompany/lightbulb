@@ -29,7 +29,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/chat-vs-document.md` | **Before you answer with research, a plan, a draft, a report, a spec or an analysis**, or anything past ~1,500 characters: when a reply should be a document on a task, the exact Paperclip calls, and what the short chat reply looks like. |
 | `references/documents.md` | **How to write a document** (a plan, research, a report, a spec): open with the answer, owners and dates, tasks in a table, cards and diagrams. |
 | `references/platform-primitives.md` § Other rooms | Someone asks about another channel, DM or group chat ("what did we decide in #launch?", "check our recent conversations") → `lightbulb_read_rooms`, with the asker's own access. |
-| `references/platform-primitives.md` § Human-shared local sessions | Messaging or stopping a person's Claude Code/Codex session: direct only on its owner's request, else one approval ask. |
+| `references/platform-primitives.md` § Human-shared local sessions | Reading a person's Claude Code/Codex session (`lightbulb_local_sessions`); messaging one goes through `lightbulb_network`. |
 | `references/platform-primitives.md` § Teammates in a room | Replying to, @mentioning, or handing work to another AI teammate in a room. |
 | `references/surfaces.md` | Where a UI surface lives and what to tell the owner to click — the workspace rail, Chat, Activity, the agent inspector, Teams, Library, Marketplace, Settings, Docs/Blog, the desktop app. Also the Launch Competition. |
 | `references/surfaces.md` § Browser (the row) | **Before any work in the shared browser**: which tool for what (`browser_*` page tools, `browser_cdp`, `browser_dialog`, `computer_use` for Chrome itself), your own tab, extensions, downloads. |

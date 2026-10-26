@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 FEATURE = "sessionPresence"
 PICKUP_FEATURE = "pickupRequests"
-AGENT_ASK_FEATURE = "agentMessageAsks"
 # This Mac strips ctrl+x and mouse reports from remote input, so only the owner can operate the
 # band and nothing freezes while a request waits. An older presence Mac freezes remote input
 # instead, so the web says so (inputPaused).
@@ -78,6 +77,7 @@ LABEL_CHARS = 64
 # A held command's label, by (owner, session, request id): the label reads rooms and names, and
 # presence goes out on every heartbeat while someone is asking.
 # ponytail: process-local and cleared when full; a label stored on the command if it matters.
+HELD_PREVIEW_CHARS = 200
 _labels: dict[tuple[str, str, str], str | None] = {}
 
 
@@ -133,7 +133,7 @@ async def _held_sends(row: dict, users: list[str]) -> dict[str, dict]:
         # Allow releases every held message, so the preview says how many wait (first, so a
         # shortened preview keeps it).
         many = f"{count[user]} messages · " if count[user] > 1 else ""
-        held = {"text": (many + (command.get("text") or ""))[: sessions.ASK_PRESENCE_TEXT_CHARS]}
+        held = {"text": (many + (command.get("text") or ""))[:HELD_PREVIEW_CHARS]}
         label = await _label(row, command)
         if label:
             held["label"] = label
@@ -153,13 +153,6 @@ async def entry(row: dict, at: int) -> dict:
     ]
     viewers = sorted(r["userId"] for r in live)
     typing = {r["userId"] for r in live if int(r.get("typedAt", 0)) > now - TYPING_WINDOW_S}
-    # An agent's ask to message this session (spec 2026-10-07-agent-session-approval), only for a Mac
-    # that says it can show one: an older band would call it a join request. Allow answers Send.
-    asks = (
-        await sessions.pending_agent_asks(row["ownerId"], row["sessionId"])
-        if AGENT_ASK_FEATURE in row.get("deviceFeatures", ())
-        else []
-    )
     joins = pending_joins(row)
     held = await _held_sends(row, list(joins))
     return {
@@ -184,17 +177,6 @@ async def entry(row: dict, at: int) -> dict:
                 }
                 for kind, pending in (("join", joins), ("pickup", shown_pickups(row)))
                 for u, rid in pending.items()
-            ]
-            + [
-                {
-                    "userId": ask["agentId"],
-                    "name": ask.get("agentName") or "Your agent",
-                    "requestId": ask["requestId"],
-                    "kind": "agent_message",
-                    "action": ask["kind"],
-                    "text": (ask.get("text") or "")[: sessions.ASK_PRESENCE_TEXT_CHARS],
-                }
-                for ask in asks
             ],
             key=lambda r: (r["userId"], r["kind"]),
         ),

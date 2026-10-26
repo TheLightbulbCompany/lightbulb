@@ -50,7 +50,7 @@ export function activityVerb(item: ActivityItem): ForYouVerb | null {
   // Failed runs come from the Inbox's own list (every failure, with Retry and Dismiss), not this one.
   if (item.kind === "paperclip" && item.subtype === "failed_run") return null;
   if (!isNeedsYou(item)) return null;
-  if (item.subtype === "approval" || item.subtype === "interaction" || item.subtype === "agent_ask") return "decide";
+  if (item.subtype === "approval" || item.subtype === "interaction") return "decide";
   return "do";
 }
 

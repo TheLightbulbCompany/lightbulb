@@ -62,6 +62,7 @@ class Link:
     mail_count: int = 0
     pending: dict[int, asyncio.Future] = field(default_factory=dict)
     next_id: int = 1
+    signed_out: asyncio.Event = field(default_factory=asyncio.Event)  # its person signed it out
 
 
 links: dict[str, Link] = {}
@@ -190,7 +191,12 @@ async def _forward(row: dict, op: str, params: dict, timeout_s: float) -> Any:
 
 
 async def local_call(key: str, generation: str, op: str, params: dict, timeout_s: float) -> Any:
-    """``op`` over the socket this task holds for ``key`` (of ``generation``)."""
+    """``op`` over the socket this task holds for ``key`` (of ``generation``). ``close`` is ours,
+    not the computer's: its person signed it out, so the link closes now."""
+    if op == "close":
+        if (link := links.get(key)) is not None and link.generation == generation:
+            link.signed_out.set()
+        return {}
     if op not in ROUTE_OPS:
         raise _refused("INVALID_REQUEST", "not a route op")
     link = links.get(key)
@@ -209,6 +215,14 @@ async def local_call(key: str, generation: str, op: str, params: dict, timeout_s
         return answer.get("result")
     code = str(answer.get("error") or "internal")
     raise _refused(code, f"{op} was refused ({code})", answer.get("reason"))
+
+
+async def sign_out(user_id: str, key: str) -> None:
+    """Close this person's computer ``key``'s route link now, on whichever task holds it."""
+    for row in await _connections().live_routes([key]):
+        if row["userId"] == user_id:
+            with contextlib.suppress(Exception):  # gone already: nothing to close
+                await call(row, "close", {}, 5.0)
 
 
 # ---- the socket -------------------------------------------------------------------------------
@@ -235,7 +249,7 @@ async def serve(websocket) -> None:
         await _close(websocket, CLOSE_BAD_PROOF)
         return
     claims = network_proof.verify(hello.get("proof") or "", key)
-    if claims is None:
+    if claims is None or await network_login.is_revoked(claims["sub"], key):
         await _close(websocket, CLOSE_NOT_SIGNED_IN)
         return
     user_id = claims["sub"]
@@ -310,7 +324,10 @@ async def _keep(connections, link: Link) -> int:
     import time
 
     while True:
-        await asyncio.sleep(REFRESH_S)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(link.signed_out.wait(), REFRESH_S)
+        if link.signed_out.is_set():
+            return CLOSE_NOT_SIGNED_IN
         if link.exp and time.time() > link.exp:
             return CLOSE_NOT_SIGNED_IN
         try:

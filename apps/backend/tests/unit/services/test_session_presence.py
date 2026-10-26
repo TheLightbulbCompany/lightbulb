@@ -279,17 +279,13 @@ async def test_an_anyone_link_session_still_names_its_watchers_and_counts_link_v
     assert public["linkViewers"] == 1, "live seats only"
     workspace = await presence.entry(_row(shareLink={"audience": "workspace"}), 1)
     assert workspace["linkViewers"] == 0
-    ask = {"agentId": "agent-1", "agentName": "Friday", "requestId": "a1", "kind": "send", "text": "Run the tests"}
-    monkeypatch.setattr(presence.sessions, "pending_agent_asks", AsyncMock(return_value=[ask]))
     asked = _row(
         shareLink={"audience": "anyone", "publicId": "pub-1"},
         joinRequests={"user_zoe": {"state": "pending", "requestId": "r1"}},
         deviceFeatures=["sessionPresence", "agentMessageAsks"],
     )
-    assert [(r["name"], r.get("text")) for r in (await presence.entry(asked, 1))["joinRequests"]] == [
-        ("Friday", "Run the tests"),
-        ("Zoe", None),
-    ]
+    # An agent never asks to message a session any more: only people's asks are listed.
+    assert [(r["name"], r.get("text")) for r in (await presence.entry(asked, 1))["joinRequests"]] == [("Zoe", None)]
 
 
 @pytest.mark.asyncio
@@ -343,7 +339,7 @@ async def test_a_join_request_with_a_held_send_carries_its_preview_and_sender_la
             "requestId": "r1",
             "kind": "join",
             # Two wait, and Allow releases both: the preview says so, first.
-            "text": ("2 messages · " + "x" * 300)[: sessions.ASK_PRESENCE_TEXT_CHARS],
+            "text": ("2 messages · " + "x" * 300)[: presence.HELD_PREVIEW_CHARS],
             "label": "Aden's Codex",
         },
         {"userId": "user_zoe", "name": "Zoe", "requestId": "r2", "kind": "join"},

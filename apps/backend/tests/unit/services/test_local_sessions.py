@@ -147,34 +147,14 @@ async def test_agent_invocation_is_room_bound_typed_and_revocable(db, monkeypatc
     assert (await service.list_resources(caller, ROOM)).sessions[0].session_id == sid
     with pytest.raises(ApiProblem):
         await service.list_resources(caller, OTHER_ROOM)
-    # An agent commands only for the session's own human: a teammate's message or a routine
-    # (no requester) may read the session but never drive it.
+    # An agent reads the session but never commands it, whoever woke it: it messages through the engine.
     from dataclasses import replace as _replace
 
-    for requester in (BOB.user_id, None):
+    for requester in (ALICE.user_id, BOB.user_id, None):
         other = _replace(caller, requester_id=requester)
         assert (await service.list_events(other, ROOM, sid)).events == []
-        with pytest.raises(ApiProblem, match="owner"):
+        with pytest.raises(ApiProblem, match="Only a person"):
             await service.submit_command(other, ROOM, sid, command(service))
-    receipt = await service.submit_command(caller, ROOM, sid, command(service))
-    public = receipt.model_dump(by_alias=True)
-    assert public["actor"] == {"kind": "agent", "id": agent}
-    assert "actorUserId" not in public and "grant" not in str(public)
-    assert public["invocationExpiresAt"] == caller.expires_at
-    db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#agent#{agent}"})
-    with pytest.raises(ApiProblem):
-        await service.get_command(caller, ROOM, sid, receipt.request_id)
-    # The real transaction must independently fence removal after authorization.
-    checks = repo.room_conditions(OWNER, ALICE.user_id, public)
-    from botocore.exceptions import ClientError
-
-    with pytest.raises(ClientError):
-        await messaging_repo._transact(checks)
-
-    # Dispatch reconstructs a typed agent, never a human lookalike.
-    stored = await repo.get_command(OWNER, sid, receipt.request_id)
-    restored = service.command_caller(OWNER, stored)
-    assert isinstance(restored, grants.AgentInvocation) and restored.requester_id == ALICE.user_id
     from dataclasses import replace
 
     with pytest.raises(ApiProblem):

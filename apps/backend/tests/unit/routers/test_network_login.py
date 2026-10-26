@@ -279,7 +279,7 @@ def test_an_admin_takes_the_workspace_off_its_network(env, monkeypatch):
     leave.assert_awaited_once_with(ORG)
 
 
-def test_a_renewal_keeps_the_login_time_and_ends_after_ninety_days(env):
+def test_a_renewal_keeps_the_login_time_and_has_no_age_cap(env):
     client, *_ = env
     mac = Computer()
 
@@ -288,11 +288,32 @@ def test_a_renewal_keeps_the_login_time_and_ends_after_ninety_days(env):
 
     now = int(time.time())
     late = now - network_proof.LIFE_S + 3 * 86_400  # in its last week
-    logged_in = now - 60 * 86_400
-    renewed = refresh(network_proof.mint(mac.key, "user_ada", now=late, auth_time=logged_in)).json()["proof"]
-    assert network_proof.verify(renewed, mac.key)["auth_time"] == logged_in
-    stale = refresh(network_proof.mint(mac.key, "user_ada", now=late, auth_time=now - 91 * 86_400))
-    assert stale.status_code == 401 and "lightbulb login" in stale.json()["detail"]
+    for logged_in in (now - 60 * 86_400, now - 400 * 86_400):  # no 90-day cap: a live account renews
+        renewed = refresh(network_proof.mint(mac.key, "user_ada", now=late, auth_time=logged_in))
+        assert renewed.status_code == 200
+        assert network_proof.verify(renewed.json()["proof"], mac.key)["auth_time"] == logged_in
+
+
+def test_every_refresh_checks_the_account_even_far_from_expiry(env):
+    client, *_ = env
+    mac = Computer()
+    fresh = network_proof.mint(mac.key, "user_ada")
+    clerk_admin.get_user_strict.return_value = {"id": "user_ada", "banned": True}
+    response = client.post("/api/v1/network/proof/refresh", json={**mac.signed(client, "refresh"), "proof": fresh})
+    assert response.status_code == 401
+
+
+def test_a_signed_out_computer_cannot_refresh(env):
+    import asyncio
+
+    client, *_ = env
+    mac = Computer()
+    late = int(time.time()) - network_proof.LIFE_S + 3 * 86_400
+    old = network_proof.mint(mac.key, "user_ada", now=late)
+    asyncio.run(network_login.revoke("user_ada", mac.key))
+    response = client.post("/api/v1/network/proof/refresh", json={**mac.signed(client, "refresh"), "proof": old})
+    assert response.status_code == 401 and "lightbulb login" in response.json()["detail"]
+    assert asyncio.run(network_login.revoked_keys(["user_ada", "user_bob"])) == [mac.key]
 
 
 def test_a_renewal_needs_a_live_account_and_fails_closed_when_clerk_cannot_say(env):

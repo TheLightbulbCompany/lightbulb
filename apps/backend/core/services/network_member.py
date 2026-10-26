@@ -76,6 +76,7 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
     from core.services.company_identity import slugify
     from core.services.hermes_profiles import put_owner_object
     from core.services.messaging import load_agent_roster
+    from core.services import network_login
     from core.services.website_logins import _humans_to_ask
 
     roster, org, members = await asyncio.gather(
@@ -108,8 +109,10 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
         "workspace": (org or {}).get("name") or owner_id,
         "sessions": sessions + apps,
         "wake": wake,
-        # The sidecar's gate: only computers whose sign-in proof names one of these people.
+        # The sidecar's gate: only computers whose sign-in proof names one of these people, and
+        # never a computer its person signed out (``network_login.revoke``).
         "members": members,
+        "revoked_keys": await network_login.revoked_keys(members),
     }
     if prior.get("joined"):
         doc["joined"] = True  # on a network an admin added it to (``join_network``)

@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { ShieldCheck } from "lucide-react";
-import { APPROVAL_MODE_LABEL, approvalInputView, canControlSession, useSessionApproval, useShownInputMatches, type LocalSession, type PrivateSendApproval, type SessionControlClient } from "@lightbulb/shared";
+import { APPROVAL_MODE_LABEL, approvalInputView, canControlSession, useSessionApproval, useShownInputMatches, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Diff } from "./NativeSessionTranscript";
 
@@ -49,41 +49,21 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
   // Per prompt: a new prompt never opens mid-way through denying the last one.
   const [denyingFor, setDenyingFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
-  const [detail, setDetail] = useState<PrivateSendApproval | null>(null);
-  const [failedFor, setFailedFor] = useState<string | null>(null);
-  const [retry, setRetry] = useState(0);
   const reasonId = useId();
   const { userId } = useAuth();
-  const privateSend = pending?.tool === "mcp__lightbulb_native_sessions__send";
-  const approvalId = pending?.approvalId;
-  const inputDigest = pending?.inputDigest;
-  const detailKey = `${approvalId}:${inputDigest}`;
-  useEffect(() => {
-    if (!own || !privateSend || !approvalId || !inputDigest || !client.getPrivateSendApproval) return;
-    let active = true;
-    void client.getPrivateSendApproval(session.sessionId)
-      .then((value) => { if (active) { setDetail(value); setFailedFor(null); } })
-      .catch(() => { if (active) setFailedFor(detailKey); });
-    return () => { active = false; };
-  }, [client, own, privateSend, approvalId, inputDigest, detailKey, retry, session.sessionId]);
   if (!pending || session.provider !== "claude" || session.status !== "waiting-approval") return null;
-  const allowed = canControlSession(session, own, userId) && (!privateSend || own);
-  const shown = own && privateSend && detail?.approvalId === pending.approvalId && detail.inputDigest === pending.inputDigest ? detail : null;
-  const canApprove = privateSend ? !!shown : pending.exact || (pending.full === true && digestOk);
+  const allowed = canControlSession(session, own, userId);
+  const canApprove = pending.exact || (pending.full === true && digestOk);
   const denying = denyingFor === pending.approvalId;
   const current = state?.approvalId === pending.approvalId ? state : null;
   const busy = current?.status === "sending" || current?.status === "sent";
   const where = own ? "your" : `${ownerName}'s`;
   return <section className="mx-3 my-2 rounded-md border border-warn p-3 text-ui" aria-label="Permission prompt">
     <p className="font-medium">Claude wants to use {pending.tool}</p>
-    {pending.input && !privateSend ? <CallInput tool={pending.tool} input={pending.input} />
+    {pending.input ? <CallInput tool={pending.tool} input={pending.input} />
       : pending.summary && <pre className="my-2 whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-caption">{pending.summary}</pre>}
-    {shown && <div className="my-2 rounded bg-muted p-2 text-caption"><p className="font-medium">To: {shown.destination}</p><p className="text-muted-foreground">Request ID: {shown.requestId}</p><pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-words font-mono">{shown.text}</pre></div>}
-    {!allowed ? <p className="text-muted-foreground">Waiting on {where} approval{privateSend ? "." : " in the terminal."}</p> : <>
-      {!canApprove && <p className="text-muted-foreground">{privateSend
-        ? failedFor === detailKey ? "Could not load the exact message. Retry, or approve on your Mac." : "Loading the exact message…"
-        : <>Lightbulb shows only part of this call. Approve it on {where} Mac; you can deny it here.</>}</p>}
-      {privateSend && !shown && failedFor === detailKey && <Button size="sm" variant="outline" onClick={() => { setFailedFor(null); setRetry(value => value + 1); }}>Retry loading message</Button>}
+    {!allowed ? <p className="text-muted-foreground">Waiting on {where} approval in the terminal.</p> : <>
+      {!canApprove && <p className="text-muted-foreground">Lightbulb shows only part of this call. Approve it on {where} Mac; you can deny it here.</p>}
       {denying ? <form className="mt-2 flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void answer({ decision: "deny", reason }); }}>
         <label htmlFor={reasonId}>Tell Claude why (optional)</label>
         <input id={reasonId} className="room-input" maxLength={500} value={reason} onChange={event => setReason(event.target.value)} />

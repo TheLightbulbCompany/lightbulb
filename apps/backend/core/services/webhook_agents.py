@@ -1,8 +1,9 @@
 """Webhook agents: agents that live in someone else's cloud and wake on a webhook (Grok Bot first).
 
 Agent network phase 3. A person registers one in Settings with its webhook URL and bearer key.
-It is a send target like a session: an admitted message becomes ONE POST to that URL, and the
-agent answers through the hosted MCP's ``send_message`` (with an agent key, ``agent_keys``).
+It is no longer a send target (agents message through the engine; a webhook agent reaches the
+team through the connector like any app). Sends held before that still wait for its person's
+answer here: Send or Allow delivers them as ONE POST each, Decline drops them.
 
 Rows live in the messaging table under the workspace's OWNER# partition (both wipes remove them):
     WEBHOOKAGENT#<agentId>              the agent: its person, name, kind, who it lets straight in
@@ -10,9 +11,7 @@ Rows live in the messaging table under the workspace's OWNER# partition (both wi
 The URL and key are ONE Secrets Manager secret under the owner's integrations prefix, so the owner
 secret sweep (``owner_secret_sweep``) deletes it with the workspace. They are never returned or logged.
 
-Rules are the sessions' (agent network §4, §6): the loop limit (``over_loop_limit``), the hold (a
-sender the agent's person has not allowed waits for their Allow), the sender label
-(``local_session_relay._sender_label``) and the header defang.
+A delivery keeps the header defang.
 """
 
 from __future__ import annotations
@@ -39,8 +38,6 @@ from core.services.messaging import ApiProblem
 logger = logging.getLogger(__name__)
 
 MAX_AGENTS_PER_PERSON = 10
-HOLD_TTL_S = 24 * 3600  # sessions: 24 h for an ask nobody answers
-SEND_TTL_S = 7 * 24 * 3600
 TIMEOUT_S = 5.0
 RETRY_DELAYS_S = (0.5, 1.5)  # three attempts in all
 HEADER_PREFIX = "[Lightbulb teammate contribution"  # the Mac's header (local_sessions.rs)
@@ -262,9 +259,7 @@ def _reply_hint(send: dict, agent: dict) -> dict:
     """How the agent answers: the hosted MCP's send_message, to whoever wrote."""
     from core.services.hosted_mcp import RESOURCE
 
-    if send.get("sourceSessionId"):
-        to = {"session_id": send["sourceSessionId"]}
-    elif send["actorUserId"] != agent["ownerUserId"]:
+    if send["actorUserId"] != agent["ownerUserId"]:
         to = {"person_id": send["actorUserId"]}
     else:
         to = {}  # your own message from an OAuth client: nothing to address but a room
@@ -307,109 +302,9 @@ async def _deliver(owner_id: str, agent: dict, send: dict, text: str) -> dict:
     return updated["Attributes"]
 
 
-def receipt(send: dict) -> dict:
-    state = send["state"]
-    if state == "awaiting_approval" and int(send.get("expiresAt") or 0) <= time.time():
-        state = "expired"
-    return {
-        "destination": f"agent:{send['agentId']}",
-        "agentId": send["agentId"],
-        "requestId": send["requestId"],
-        "state": state,
-        "delivery": {
-            "awaiting_approval": "waiting for owner",
-            "sending": "sending",
-            "delivered": "delivered",
-            "failed": "failed",
-        }.get(state, state),
-        **({"reason": send["reason"]} if state == "failed" and send.get("reason") else {}),
-    }
-
-
-async def sent(owner_id: str, agent_id: str, request_id: str) -> dict | None:
-    return await repo._get(repo.owner_pk(owner_id), _send_sk(agent_id, request_id))
-
-
-async def get_receipt(owner_id: str, user_id: str, agent_id: str, request_id: str) -> dict | None:
-    row = await sent(owner_id, agent_id, request_id)
-    return receipt(row) if row and row.get("actorUserId") == user_id else None
-
-
-async def send(
-    auth,
-    agent_id: str,
-    text: str,
-    request_id: str,
-    *,
-    via_client: str | None = None,
-    source_session_id: str | None = None,
-) -> dict:
-    """Admit one message to a webhook agent: the loop limit, then the hold, then ONE POST."""
-    from core.services.local_session_relay import _sender_label
-    from core.services.native_session_tools import over_loop_limit
-
-    owner_id, user_id = auth.org_id, auth.user_id
-    agent = await get_agent(owner_id, agent_id)
-    if agent is None:
-        raise ApiProblem("MEMBER_NOT_FOUND", "That agent is not in this workspace.")
-    if not text.strip() or len(text.encode("utf-8")) > 4096:
-        raise ApiProblem("INVALID_REQUEST", "Message must be 1-4096 bytes.")
-    pk, sk = repo.owner_pk(owner_id), _send_sk(agent_id, request_id)
-    request_hash = repo.request_hash(user_id, source_session_id, via_client, text)
-    prior = await repo._get(pk, sk)
-    if prior is not None:
-        if prior.get("requestHash") != request_hash:
-            raise ApiProblem("IDEMPOTENCY_CONFLICT", "request_id was used for another send.")
-        return receipt(prior)  # a retry reports, it never posts twice
-    sends = await repo._query(pk, begins_with=f"WEBHOOKSEND#{agent_id}#")
-    if over_loop_limit(sends, request_id, user_id, source_session_id, via_client):
-        raise ApiProblem("RATE_LIMITED", "Too many messages to this agent; wait a few minutes.")
-    label = (
-        {"actor": {"kind": "session", "id": source_session_id}, "sourceHumanUserId": user_id}
-        if source_session_id
-        else {"actorUserId": user_id, **({"viaClient": via_client} if via_client else {})}
-    )
-    sender = ((await _sender_label(label, owner_id, agent["ownerUserId"])) or {}).get("displayName") or "A teammate"
-    held = user_id != agent["ownerUserId"] and user_id not in (agent.get("allowedSenders") or [])
-    now = int(time.time())
-    # The first held send from this person files the ask (one Needs-you item); later ones join it.
-    asked = (await _held(owner_id, agent_id, user_id))[:1] if held else []
-    row = {
-        "pk": pk,
-        "sk": sk,
-        "agentId": agent_id,
-        "requestId": request_id,
-        "requestHash": request_hash,
-        "actorUserId": user_id,
-        "from": sender,
-        "submittedAt": now,
-        "submittedNs": time.time_ns(),  # orders a burst within one second
-        "state": "awaiting_approval" if held else "sending",
-        "expiresAt": now + (HOLD_TTL_S if held else SEND_TTL_S),
-        **({"sourceSessionId": source_session_id} if source_session_id else {}),
-        **({"viaClient": via_client} if via_client else {}),
-        **({"text": text} if held else {}),  # kept only until the person answers
-        **({"askId": asked[0].get("askId") or asked[0]["requestId"]} if asked else {}),
-    }
-    try:
-        await run_in_thread(repo._table().put_item, Item=row, ConditionExpression="attribute_not_exists(sk)")
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-            raise
-        return await send(auth, agent_id, text, request_id, via_client=via_client, source_session_id=source_session_id)
-    if held:
-        await _announce_held(owner_id, agent, row, filed=not asked)
-        return receipt(row)
-    return receipt(await _deliver(owner_id, agent, row, text))
-
-
 def ask_item_id(agent_id: str, sender: str, ask_id: str) -> str:
     """The Activity item for one person's ask to reach a webhook agent (``activity.run_action``)."""
     return f"agenthook:{agent_id}:{sender}:{ask_id}"
-
-
-def _first(name: str, user_id: str) -> str:
-    return name.split()[0] if name and name != user_id else ""
 
 
 async def _invalidate_activity(owner_id: str, user_id: str) -> None:
@@ -422,48 +317,6 @@ async def _invalidate_activity(owner_id: str, user_id: str) -> None:
         )
     except Exception:  # noqa: BLE001 -- the badge catches up on the next focus
         logger.warning("webhook agent activity live event failed owner=%s", owner_id)
-
-
-async def _announce_held(owner_id: str, agent: dict, send: dict, *, filed: bool) -> None:
-    """A held send tells the agent's person the way a held session send does: the ask's Needs-you
-    item (once per ask), a live event, and a push with the message. Each is best effort."""
-    from core.services import notification_copy as copy
-    from core.services.local_session_relay import ACTIVITY_TTL_S
-    from core.services.messaging import human_display_name
-    from core.services.push_service import send_push_to_user
-
-    person, sender = agent["ownerUserId"], send["actorUserId"]
-    try:
-        name, owner_name = await human_display_name(sender), await human_display_name(person)
-    except Exception:  # noqa: BLE001
-        name, owner_name = sender, person
-    who = name if name != sender else "A teammate"
-    whose = f"{_first(owner_name, person)}'s {agent['name']}" if _first(owner_name, person) else agent["name"]
-    if filed:
-        created = utc_now_iso()
-        try:
-            await repo.put_activity_row(
-                {
-                    "pk": repo.activity_pk(owner_id, person),
-                    "sk": repo.activity_sk(created, ask_item_id(agent["agentId"], sender, send["requestId"])),
-                    "kind": "webhook_agent",
-                    "agentId": agent["agentId"],
-                    "requesterId": sender,
-                    "requesterName": who,
-                    "requestId": send["requestId"],
-                    "createdAt": created,
-                    "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
-                }
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning("webhook agent ask activity row failed owner=%s", owner_id)
-    await _invalidate_activity(owner_id, person)
-    title = f"{who} wants to message {whose}"
-    body = copy.line(send.get("text"), 140) or "Allow them to message it."
-    try:
-        await send_push_to_user(person, title, body, {"source": "webhook_agent", "webhookAgentId": agent["agentId"]})
-    except Exception:  # noqa: BLE001
-        logger.warning("webhook agent held push failed owner=%s", owner_id)
 
 
 async def _held(owner_id: str, agent_id: str, sender: str | None = None) -> list[dict]:
@@ -561,40 +414,3 @@ async def ping(owner_id: str, user_id: str, agent_id: str) -> dict:
         },
     )
     return {"delivered": delivered, **({"reason": reason} if reason else {})}
-
-
-# ---- as a send target ----------------------------------------------------
-
-
-async def targets(owner_id: str, viewer: str) -> list[dict]:
-    """Every webhook agent in the workspace, named as its person's: "Aden's Grok Bot"."""
-    from core.services import clerk_admin
-    from core.services.messaging import human_display_name
-
-    rows = await list_agents(owner_id)
-    people = sorted({r["ownerUserId"] for r in rows})
-    names = dict(zip(people, await asyncio.gather(*(human_display_name(u) for u in people))))
-    users = dict(zip(people, await asyncio.gather(*(clerk_admin.get_user(u) for u in people))))
-
-    def label(row: dict) -> str:
-        if row["ownerUserId"] == viewer:
-            return f"Your {row['name']}"
-        name = names[row["ownerUserId"]]
-        first = name.split()[0] if name and name != row["ownerUserId"] else ""
-        return f"{first}'s {row['name']}" if first else row["name"]
-
-    return [
-        {
-            "agentId": r["agentId"],
-            "displayName": label(r),
-            "name": r["name"],
-            "kind": r["kind"],
-            "ownerUserId": r["ownerUserId"],
-            "ownerName": names[r["ownerUserId"]],
-            "ownerImageUrl": (users[r["ownerUserId"]] or {}).get("image_url"),
-            "canSend": True,
-            # True: your message waits until its person allows you (state awaiting_approval).
-            "needsOwnerOk": r["ownerUserId"] != viewer and viewer not in (r.get("allowedSenders") or []),
-        }
-        for r in rows
-    ]

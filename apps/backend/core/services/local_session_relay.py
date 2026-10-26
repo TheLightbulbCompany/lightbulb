@@ -125,7 +125,6 @@ FEATURES = [
     "sessionStats",
     "sessionSubagents",
     "nativeControlCapabilities",
-    "privateSendApproval",
     "liveTerminal",
     "remoteInput",
     "sessionTerminal",
@@ -209,7 +208,6 @@ class Events(ContractModel):
     batch_id: sessions.OpaqueId
     after_seq: int = Field(ge=0, lt=10**20 - 33)
     events: list[Event] = Field(min_length=1, max_length=32)
-    private_approval: sessions.PrivateSendApproval | None = None
 
 
 class Receipt(ContractModel):
@@ -1148,10 +1146,7 @@ class LocalSessionRelay:
         sid = row["sessionId"]
         first_seq = message.after_seq + 1
         previous = await store._get(row["pk"], f"EVENT#{first_seq:020d}")
-        hash_body = message.model_dump(mode="json", by_alias=True)
-        if hash_body["privateApproval"] is None:
-            hash_body.pop("privateApproval")  # Old event batches keep their existing replay hash.
-        digest = store.request_hash(hash_body)
+        digest = store.request_hash(message.model_dump(mode="json", by_alias=True))
         if previous:
             if previous.get("batchHash") != digest:
                 raise _conflict("batch hash", sid=sid, first_seq=first_seq)
@@ -1191,19 +1186,6 @@ class LocalSessionRelay:
             )
         hint = now >= row.get("nextHintAt", 0)
         approval = pending_approval(message.events)
-        detail = message.private_approval
-        if detail is not None:
-            from core.services.native_session_tools import _send_args
-
-            _send_args({"destination": detail.destination, "text": detail.text, "requestId": detail.request_id})
-            if (
-                approval is None
-                or approval is _NO_PROMPT
-                or approval["tool"] != "mcp__lightbulb_native_sessions__send"
-                or approval["approvalId"] != detail.approval_id
-                or approval["inputDigest"] != detail.input_digest
-            ):
-                raise ApiProblem("INVALID_REQUEST", "Private approval does not match this prompt.")
         approval_changed = approval is not _NO_PROMPT and row.get("pendingApproval") != approval
         if approval_changed or (approval is not None and approval is not _NO_PROMPT):
             # Prompt changes, including release, must refresh the session list immediately.
@@ -1230,8 +1212,6 @@ class LocalSessionRelay:
             updated.pop("privateSendApproval", None)
             if approval is not None:
                 updated["pendingApproval"] = approval
-                if detail is not None:
-                    updated["privateSendApproval"] = detail.model_dump(by_alias=True)
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         # The write is cursor-fenced and a replayed batch returned above, so each end notifies once.
         if notify_ended is not None:

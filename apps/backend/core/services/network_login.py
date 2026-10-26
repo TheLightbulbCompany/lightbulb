@@ -19,6 +19,7 @@ Keys, codes, nonces, links and proofs are credentials or near enough: none is ev
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -28,7 +29,7 @@ import time
 from botocore.exceptions import ClientError
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from core.auth import AuthContext, require_org_admin, resolve_owner_id
 from core.repositories import messaging_repo
@@ -42,6 +43,10 @@ REFRESH_BEFORE_S = 7 * 86_400  # a proof is renewed in its last week only
 KEY_RE = re.compile(r"^[a-z2-7]{52}$")  # the engine's member key: lowercase base32 of 32 bytes
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 TICKET_RE = re.compile(r"^[A-Za-z0-9_-]{1,8192}$")  # an encoded ticket is base64url
+# A workspace tool call's challenge: "<unix ts> <METHOD> <path?query> <sha256(body) hex> <label>".
+# The label is the engine's roster label for the calling session; no control characters.
+TOOLS_CHALLENGE_RE = re.compile(r"^\d{1,12} [A-Z]{3,7} /\S{0,2048} [0-9a-f]{64} [^\x00-\x1f\x7f]{1,200}$")
+TOOLS_SKEW_S = 60
 _BAD_PROOF = "This computer's proof did not check out. Run the command again."
 _TAKEN = "Someone else already confirmed this code."
 _SIGN_IN_AGAIN = "This computer's sign-in has ended. Sign in again: lightbulb login"
@@ -58,12 +63,14 @@ def message(key: str, purpose: str, challenge: str, ticket: str | None = None) -
     body = {"challenge": challenge, "key": key, "purpose": f"lightbulb-{purpose}"}
     if ticket is not None:
         body["ticket"] = ticket
-    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    # ensure_ascii=False: a ``tools`` challenge carries a session label, which serde writes raw.
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 
 def verify(key: str, purpose: str, challenge: str, sig: str, ticket: str | None = None) -> bool:
     """Whether ``sig`` (base64url, no padding) is ``key``'s Ed25519 signature over ``message``."""
-    if not KEY_RE.match(key or "") or not NONCE_RE.match(challenge or ""):
+    challenge_re = TOOLS_CHALLENGE_RE if purpose == "tools" else NONCE_RE
+    if not KEY_RE.match(key or "") or not challenge_re.match(challenge or ""):
         return False
     if ticket is not None and not TICKET_RE.match(ticket):
         return False
@@ -127,6 +134,8 @@ async def start(
         raise HTTPException(status_code=422, detail="Unknown request. Run lightbulb update.")
     await _proven(key, purpose, nonce, sig, ticket)
     claims = network_proof.verify(proof or "", key) if purpose == "agents" else None
+    if claims is not None and await is_revoked(claims["sub"], key):
+        claims = None
     if purpose == "agents" and claims is None:
         raise HTTPException(status_code=409, detail=_LOGIN_FIRST)
     fields = {
@@ -196,17 +205,46 @@ def route_url() -> str:
 
 async def refresh(key: str, nonce: str, sig: str, proof: str) -> dict:
     """A computer renews its proof in its last week, signed, with no browser: the same user, a
-    fresh ``exp``. An expired proof is a ``login`` again."""
+    fresh ``exp``, for as long as the account is live and the person has not signed this computer
+    out (``revoke``). Every refresh checks both. An expired proof is a ``login`` again."""
     await _proven(key, "refresh", nonce, sig)
     claims = network_proof.verify(proof, key)
-    now = int(time.time())
-    auth_time = claims.get("auth_time") if claims else None
-    if claims is None or not isinstance(auth_time, int) or now - auth_time > network_proof.MAX_AUTH_AGE_S:
+    if claims is None or await is_revoked(claims["sub"], key):
         raise HTTPException(status_code=401, detail=_SIGN_IN_AGAIN)
-    if claims["exp"] - now > REFRESH_BEFORE_S:
-        return {"proof": proof}
     await require_live_user(claims["sub"])
-    return {"proof": network_proof.mint(key, claims["sub"], auth_time=auth_time)}
+    if claims["exp"] - int(time.time()) > REFRESH_BEFORE_S:
+        return {"proof": proof}
+    return {"proof": network_proof.mint(key, claims["sub"], auth_time=claims.get("auth_time"))}
+
+
+# --- Remote sign-out: a person signs one of their computers out from the website ---------------
+
+
+def _revoked_key(user_id: str, key: str) -> dict:
+    return {"pk": f"NETREVOKED#{user_id}", "sk": key}
+
+
+async def revoke(user_id: str, key: str) -> None:
+    """Sign ``key`` out for ``user_id``: its proof no longer refreshes or opens a route link or a
+    workspace tool call, and every workspace's engine refuses it (``revoked_keys`` in its
+    sessions file). Kept while a proof minted before it could still be in force."""
+    from core.dynamodb import run_in_thread
+
+    if not KEY_RE.match(key):
+        raise HTTPException(status_code=404, detail="No such computer of yours.")
+    item = {**_revoked_key(user_id, key), "ttl": int(time.time()) + network_proof.LIFE_S}
+    await run_in_thread(messaging_repo._table().put_item, Item=item)
+
+
+async def is_revoked(user_id: str, key: str) -> bool:
+    return await messaging_repo._get(**_revoked_key(user_id, key)) is not None
+
+
+async def revoked_keys(user_ids: list[str]) -> list[str]:
+    """The signed-out computer keys of these people, for an engine's gate."""
+    rows = await asyncio.gather(*(messaging_repo._query(f"NETREVOKED#{u}") for u in user_ids))
+    now = int(time.time())
+    return sorted({r["sk"] for found in rows for r in found if int(r.get("ttl") or 0) > now})
 
 
 async def require_live_user(user_id: str) -> None:
@@ -239,3 +277,73 @@ async def _workspace(owner_id: str) -> str | None:
         return ((await clerk_admin.get_organization(owner_id)) or {}).get("name") or None
     except Exception:  # noqa: BLE001
         return None
+
+
+# --- The workspace tools: a signed-in computer calls Lightbulb's REST API as its person ----------
+
+
+def _challenge(request: Request) -> str:
+    """``X-Lightbulb-Challenge``: base64url (no padding) of the UTF-8 challenge text."""
+    value = request.headers.get("X-Lightbulb-Challenge", "")
+    try:
+        return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)).decode("utf-8")
+    except (ValueError, UnicodeError, binascii.Error):
+        return ""
+
+
+async def computer_person(request: Request) -> tuple[AuthContext, str]:
+    """A signed-in computer's call (``lightbulb login``): the person its proof names, in their one
+    workspace, and the engine-verified label of the calling session. Each call is signed over its
+    method, path, query, body hash and a timestamp, and is good once, within ``TOOLS_SKEW_S``."""
+    import hashlib
+
+    from core.dynamodb import run_in_thread
+    from core.services import clerk_admin
+
+    proof = request.headers.get("X-Lightbulb-Proof", "")
+    sig = request.headers.get("X-Lightbulb-Sig", "")
+    challenge = _challenge(request)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(proof.split(".")[1] + "=="))
+        key = payload["computer"] if isinstance(payload, dict) else ""
+    except (ValueError, IndexError, KeyError, TypeError, binascii.Error):
+        key = ""
+    if not isinstance(key, str) or not verify(key, "tools", challenge, sig):
+        raise HTTPException(status_code=401, detail=_BAD_PROOF)
+    claims = network_proof.verify(proof, key)
+    if claims is None or await is_revoked(claims["sub"], key):
+        raise HTTPException(status_code=401, detail=_SIGN_IN_AGAIN)
+    ts, method, path, body_hash, label = challenge.split(" ", 4)
+    # The path as the server sees it (the API base's /api/v1 included), then the query.
+    target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+    if (
+        abs(int(time.time()) - int(ts)) > TOOLS_SKEW_S
+        or method != request.method
+        or path != target
+        or body_hash != hashlib.sha256(await request.body()).hexdigest()
+    ):
+        raise HTTPException(status_code=401, detail=_BAD_PROOF)
+    # Good once: a captured call cannot be replayed inside its window.
+    seen = hashlib.sha256(sig.encode()).hexdigest()
+    try:
+        await run_in_thread(
+            messaging_repo._table().put_item,
+            Item={"pk": f"NETTOOLS#{seen}", "sk": f"NETTOOLS#{seen}", "ttl": int(time.time()) + 2 * TOOLS_SKEW_S},
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        raise HTTPException(status_code=401, detail=_BAD_PROOF) from exc
+    try:
+        organizations = await clerk_admin.list_user_organizations(claims["sub"], limit=100, strict=True)
+    except Exception as exc:  # noqa: BLE001 -- Clerk could not say: fail closed
+        raise HTTPException(status_code=503, detail="Lightbulb could not check your workspace. Try again.") from exc
+    # ponytail: one workspace per person; add a workspace choice to the signed challenge when someone has two
+    if len(organizations) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail="WORKSPACE_REQUIRED: this computer's person must be in exactly one Lightbulb workspace.",
+        )
+    org = organizations[0]
+    return AuthContext(user_id=claims["sub"], org_id=org["id"], org_role=org.get("role")), label

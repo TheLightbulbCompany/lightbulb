@@ -165,64 +165,6 @@ async def test_an_approval_lands_only_on_the_exact_open_prompt(transport):
 
 
 @pytest.mark.asyncio
-async def test_private_native_send_is_visible_and_approvable_only_to_its_owner(transport):
-    # This is Claude's held PermissionRequest hook, not a Codex native intent.
-    await service.set_enrollment(
-        ALICE,
-        service.EnrollmentRequest(deviceId=relay_tests.MAC, cliDeviceId=relay_tests.CLI, enabled=True),
-    )
-    connect(transport)
-    sid = (
-        await relay(transport).handle_message(
-            "conn-1", registration(provider="claude", providerVersion="2.1.269", activeTurnId=None)
-        )
-    )["sessionId"]
-    event = {
-        **APPROVAL,
-        "text": "Lightbulb message",
-        "tool": {
-            **APPROVAL["tool"],
-            "name": "mcp__lightbulb_native_sessions__send",
-            "input": {**APPROVAL["tool"]["input"], "summary": "Lightbulb message", "exact": False},
-        },
-    }
-    detail = {
-        "approvalId": APPROVAL_ID,
-        "inputDigest": DIGEST,
-        "destination": "person:user-b",
-        "text": "Private\nbody",
-        "requestId": "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449",
-    }
-    batch = {
-        "type": "local.session.events",
-        "sessionId": sid,
-        "generation": "generation-1",
-        "batchId": "private-send-1",
-        "afterSeq": 0,
-        "events": [event],
-        "privateApproval": detail,
-    }
-    await relay(transport).handle_message("conn-1", batch)
-    await relay(transport).handle_message("conn-1", batch)  # A lost ACK must not duplicate the prompt.
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="waiting-approval", activeTurnId=None))
-    assert (await service.get_private_send_approval(ALICE, sid)).model_dump(by_alias=True) == detail
-    public = (await service.get_session(BOB, sid)).model_dump(by_alias=True)
-    assert public["pendingApproval"]["summary"] == "Lightbulb message"
-    assert public["pendingApproval"]["exact"] is False
-    assert "privateSendApproval" not in public
-    assert "Private\nbody" not in json.dumps((await service.list_events(BOB, None, sid)).model_dump(by_alias=True))
-    await service.set_team_control(ALICE, sid, True)
-    with pytest.raises(ApiProblem, match="unavailable"):
-        await service.get_private_send_approval(BOB, sid)
-    with pytest.raises(ApiProblem, match="owner"):
-        await service.submit_command(BOB, None, sid, approve())
-    assert (await service.submit_command(ALICE, None, sid, approve())).decision == "allow"
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="busy", activeTurnId=None))
-    with pytest.raises(ApiProblem, match="unavailable"):
-        await service.get_private_send_approval(ALICE, sid)
-
-
-@pytest.mark.asyncio
 async def test_a_prompt_the_approver_cannot_see_whole_is_deny_only(transport):
     sid = await start(transport)
     inexact = {**APPROVAL, "tool": {**APPROVAL["tool"], "input": {**APPROVAL["tool"]["input"], "exact": False}}}
@@ -736,7 +678,7 @@ async def test_an_agent_never_rides_a_persons_allow(transport, db, monkeypatch):
     await ask(BOB, sid)
     await service.decide_join(ALICE, sid, BOB.user_id, "allow")
     caller = grants.verify(grants.mint(OWNER, ROOM, "friday", OTHER_ROOM, BOB.user_id))
-    with pytest.raises(ApiProblem, match="owner"):
+    with pytest.raises(ApiProblem, match="Only a person"):
         await service.submit_command(caller, ROOM, sid, send("agent-1"))
 
 

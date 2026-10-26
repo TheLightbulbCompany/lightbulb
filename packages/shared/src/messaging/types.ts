@@ -559,14 +559,6 @@ export interface LocalSessionPendingApproval {
   modes: LocalSessionApprovalMode[];
 }
 
-export interface PrivateSendApproval {
-  approvalId: string;
-  inputDigest: string;
-  destination: string;
-  text: string;
-  requestId: string;
-}
-
 export interface LocalSessionAuditEntry {
   at: string;
   action: "native_send_requested" | "native_send_approved" | "native_send_denied" | "native_send_cancelled" | "send" | "interrupt" | "end" | "approve" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
@@ -672,17 +664,6 @@ export type LocalSessionCommandReceipt = {
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }
   | { actorUserId?: never; actor: { kind: "agent" | "session"; id: string }; invocationExpiresAt: number });
 
-/** An agent's ask to message (or stop) a session, waiting on `awaiting_approval` for its owner. */
-export interface AgentAskReceipt {
-  requestId: string;
-  sessionId: string;
-  kind: "send" | "interrupt";
-  text: string | null;
-  agentName?: string;
-  state: "awaiting_approval" | "pending" | "dispatched" | "applied" | "rejected" | "unknown";
-  reason?: string;
-}
-
 export interface LocalSessionOfflineOutbox {
   commands: LocalSessionCommandReceipt[];
 }
@@ -697,7 +678,7 @@ export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "age
 /** `interaction`: an agent paused on a task, waiting for a human to confirm or answer. */
 /** `waiting` / `finished`: one of your shared sessions paused for your input, or ended a long turn. */
 /** `login`: an agent needs a website login. (A sign-in code is typed into the shared browser, never asked for here.) */
-export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "agent_ask" | "login" | "extension" | "reconnect";
+export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "login" | "extension" | "reconnect";
 export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session";
 
 export interface ActivityActor {

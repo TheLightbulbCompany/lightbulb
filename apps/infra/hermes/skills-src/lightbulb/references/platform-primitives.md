@@ -93,7 +93,7 @@ repeat a private DM into a room with other people unless the person asking wants
 
 ## Human-shared local sessions (optional native adapter)
 
-`lightbulb_local_sessions` reaches people's shared Claude Code/Codex sessions.
+`lightbulb_local_sessions` reads people's shared Claude Code/Codex sessions.
 Any room turn may list (`resources`) and `read` every shared session in the
 workspace; a Paperclip run, heartbeat or routine may too, except for people who
 turned background work off. Local sessions are resources, not agents or employees.
@@ -103,21 +103,11 @@ subagent's id), and `subagent_start` / `subagent_end` lifecycle events mark each
 Native provider credentials, approvals and ordinary terminal workflows stay on
 the human's machine.
 
-`send` (`kind` `send` with `text`, or `interrupt` with no text) goes straight in
-only for the session of the person who woke you, or when the session's owner
-allows agent messages. Otherwise it returns `awaiting_approval` (`requestId`,
-`expiresAt`) and the owner gets a Send/Decline ask. Check each session's
-`agentSend` (`direct` / `ask` / `unavailable`) first. Ask once, then post ONE
-short room line ("I've asked <owner> before sending that to their session.") and
-nothing more: no second message, and never "Done." while the ask is awaiting
-approval. Never re-ask under a new `requestId`: `LOCAL_SESSION_ASK_PENDING` means your ask still
-waits, and `LOCAL_SESSION_ASK_DECLINED` (or a `rejected` receipt with
-`reason: "declined"`) is final for this run. Then say "<owner> declined it. Only
-<owner> can send it, by starting a fresh request themselves, or by turning on
-'Agents can message my sessions without asking' in Settings → Desktop." `agentSend` is not a setting anyone can change; never tell
-the requester to make it `direct`. A receipt means admission/queueing,
-not completed work; after an approval it carries `approvedBy`. Unknown delivery
-must not be resent under a new request ID.
+It only reads (`resources`, `read`): it never messages or stops a session. To
+message a session, use `lightbulb_network` (`directory` finds it, `send` sends):
+the session's own computer delivers it, and a person who has not let you in
+holds it for their answer. A held message stays held: say so, do not re-send.
+You cannot stop a session's turn; its person does that in its terminal.
 
 The grant behind this tool is bound to the current room turn or Paperclip run
 and lasts 30 minutes. There is no autonomous refresh or owner-wide hook

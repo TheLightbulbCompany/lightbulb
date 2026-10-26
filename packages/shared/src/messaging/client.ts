@@ -30,10 +30,8 @@ import type {
   UpsertRoomMemberRequest,
   WorkspaceSessions,
   LocalSession,
-  PrivateSendApproval,
   LocalSessionEventPage,
   LocalSessionCommand,
-  AgentAskReceipt,
   LocalSessionCommandReceipt,
   LocalSessionOfflineOutbox,
   LocalSessionAuditEntry,
@@ -97,7 +95,6 @@ export interface MessagingClient {
   openSessionChat(sessionId: string): Promise<RoomDetail>;
   /** Owner-only display name; null restores the provider title. */
   setLocalSessionDisplayTitle(sessionId: string, displayTitle: string | null): Promise<LocalSession>;
-  getPrivateSendApproval(sessionId: string): Promise<PrivateSendApproval>;
   listLocalSessionEvents(sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
   submitLocalSessionCommand(sessionId: string, request: LocalSessionCommand, replacesRequestId?: string): Promise<LocalSessionCommandReceipt>;
   getLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
@@ -122,10 +119,6 @@ export interface MessagingClient {
   sendLocalSessionInput(sessionId: string, data: string, epoch: number, size?: { cols: number; rows: number; claim: boolean }): Promise<void>;
   /** The owner allows or declines one person's ask. Allow lets just that person send. */
   decideLocalSessionJoin(sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string): Promise<LocalSession>;
-  /** Agents' asks waiting on this session; empty for anyone who may not answer them. */
-  listAgentAsks(sessionId: string): Promise<AgentAskReceipt[]>;
-  /** Answers one ask. A 409 means it was already answered. */
-  decideAgentAsk(sessionId: string, requestId: string, decision: "send" | "decline"): Promise<AgentAskReceipt>;
   /** The owner takes one allowed person's access back. */
   removeLocalSessionSender(sessionId: string, userId: string): Promise<LocalSession>;
   /** "Resume and send": starts an ended session again on its owner's Mac. Safe to repeat with the same resumeId. */
@@ -212,7 +205,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     },
     openSessionChat: (sessionId) => api.post(`${sessionPath(sessionId)}/chat`, {}) as Promise<RoomDetail>,
     setLocalSessionDisplayTitle: (sessionId, displayTitle) => api.patch(`${sessionPath(sessionId)}/display-title`, { displayTitle }) as Promise<LocalSession>,
-    getPrivateSendApproval: (sessionId) => api.get(`${sessionPath(sessionId)}/private-send-approval`) as Promise<PrivateSendApproval>,
     listLocalSessionEvents: (sessionId, afterSeq, limit = 50) => api.get(
       `${sessionPath(sessionId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ) as Promise<LocalSessionEventPage>,
@@ -230,9 +222,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     sendLocalSessionInput: async (sessionId, data, epoch, size) => { await api.post(`${sessionPath(sessionId)}/input`, { ...(data ? { data } : {}), epoch, ...(size ? { size } : {}) }); },
     decideLocalSessionJoin: (sessionId, userId, decision, requestId) =>
       api.post(`${sessionPath(sessionId)}/join-requests/${encodeURIComponent(userId)}`, { decision, ...(requestId ? { requestId } : {}) }) as Promise<LocalSession>,
-    listAgentAsks: (sessionId) => api.get(`${sessionPath(sessionId)}/agent-asks`) as Promise<AgentAskReceipt[]>,
-    decideAgentAsk: (sessionId, requestId, decision) =>
-      api.post(`${sessionPath(sessionId)}/agent-asks/${encodeURIComponent(requestId)}`, { decision }) as Promise<AgentAskReceipt>,
     removeLocalSessionSender: (sessionId, userId) =>
       api.del(`${sessionPath(sessionId)}/senders/${encodeURIComponent(userId)}`) as Promise<LocalSession>,
     resumeLocalSession: (sessionId, request) => api.post(`${sessionPath(sessionId)}/resume`, request) as Promise<LocalSession>,

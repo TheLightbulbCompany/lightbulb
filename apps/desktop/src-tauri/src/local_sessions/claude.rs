@@ -261,6 +261,26 @@ fn turn_by_person(row: &Value) -> Option<bool> {
     }
 }
 
+/// Who the first prompt among `rows` came from: Some(true) only for one labelled as its person's.
+/// Tool results and meta rows are no prompt, and the session's own task notifications say nothing;
+/// any other first prompt, unlabelled included, is not its person's (a later human row does not
+/// make it theirs). None while there is no prompt.
+fn first_turn(rows: &[Value]) -> Option<bool> {
+    for row in rows {
+        let content = &row["message"]["content"];
+        let tool_results = content.as_array().is_some_and(|blocks| !blocks.is_empty() && blocks.iter().all(|b| b["type"] == "tool_result"));
+        if row["type"] != "user" || row["isMeta"] == true || tool_results {
+            continue;
+        }
+        match turn_by_person(row) {
+            Some(by_person) => return Some(by_person),
+            None if row["origin"]["kind"].is_string() || row["turnOrigin"].is_string() => continue,
+            None => return Some(false),
+        }
+    }
+    None
+}
+
 /// The JSON rows in a file's final `window` bytes (Claude re-appends its metadata rows at the tail).
 fn tail_rows(path: &Path, window: u64) -> Option<Vec<Value>> {
     let mut file = secure_file(path).ok()?;
@@ -321,7 +341,7 @@ pub(super) fn continued_from(home: &Path, transcript: Option<&Path>, conversatio
             Some((origin, linked(&path)?, path))
         })
     })?;
-    let own_turn = transcript.and_then(|t| rows_since(t, &link.at).iter().find_map(turn_by_person));
+    let own_turn = transcript.and_then(|t| first_turn(&rows_since(t, &link.at)));
     Some(Lineage { origin, by_person: own_turn, transcript: origin_path })
 }
 
@@ -1588,6 +1608,13 @@ mod tests {
         ]);
         let own = dir.join(format!("{NEXT}.jsonl"));
         assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.origin == ORIGIN && l.by_person == Some(false)));
+        // An unlabelled first prompt is nobody's, whatever follows; a tool result is no prompt.
+        let tool = "{\"type\":\"user\",\"timestamp\":\"2026-10-26T03:06:30.000Z\",\"message\":{\"content\":[{\"type\":\"tool_result\"}]}}\n";
+        let bare = "{\"type\":\"user\",\"timestamp\":\"2026-10-26T03:07:00.000Z\",\"message\":{\"content\":\"hi\"}}\n";
+        fs::write(&own, copied.clone() + tool + bare + &prompt("human", "2026-10-26T03:20:00.000Z")).unwrap();
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.by_person == Some(false)));
+        fs::write(&own, copied.clone() + tool + &prompt("human", "2026-10-26T03:20:00.000Z")).unwrap();
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.by_person == Some(true)));
         // Before it has a prompt of its own nothing is decided, whatever the origin's last turn was:
         // the peer's message lands minutes after the link (prod 2026-10-26: 6 minutes).
         fs::write(&own, copied.clone()).unwrap();

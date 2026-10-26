@@ -44,6 +44,9 @@ pub(super) struct Hosted {
     /// The generation the relay last acknowledged: the one its row is at.
     generation: String,
     shared: bool,
+    /// Its run is not the one the relay has: its registration is a new process's, which is what
+    /// answers a waiting resume (`session_resume.on_register`). A same-generation one answers none.
+    fresh: bool,
 }
 
 // One sender per running relay host, as for pick-up snapshots: the relay loop only offers.
@@ -78,6 +81,7 @@ fn live(mirrors: &BTreeMap<String, Mirror>, provider: &str, conversation: &str) 
         session_id: m.session_id.clone(),
         generation: m.registration.acknowledged.clone().unwrap_or_else(|| m.generation.clone()),
         shared: !m.withheld(),
+        fresh: m.registration.acknowledged.as_ref().is_some_and(|known| *known != m.generation),
     }))
 }
 
@@ -206,8 +210,12 @@ pub(super) async fn run(mut rx: mpsc::Receiver<Vec<Wanted>>, me: Resumer) {
             };
             let short = &wanted.session_id[..8];
             match start(dir.as_deref(), &wanted, &me).await {
-                Ok(true) => relay_log(&format!("{short} resumed")),
-                Ok(false) => relay_log(&format!("{short} already runs in a holder; its registration answers the resume")),
+                Ok(Some(true)) => relay_log(&format!("{short} resumed")),
+                Ok(Some(false)) => relay_log(&format!("{short} already runs; its registration answers the resume")),
+                // Nothing will answer it yet: the next acknowledgement asks again.
+                Ok(None) => {
+                    handled.remove(&wanted.resume_id);
+                }
                 Err(code) => {
                     relay_log(&format!("{short} resume refused: {code}"));
                     if let Err(e) = report(&me, &wanted, code).await {
@@ -224,7 +232,8 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
-async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Result<bool, &'static str> {
+/// Some(true): started or shown again. Some(false): a registration answers it. None: ask again.
+async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Result<Option<bool>, &'static str> {
     if !dir.is_some_and(super::enrollment::sharing_on) {
         return Err("SHARING_OFF");
     }
@@ -237,7 +246,7 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
         .await
         .map_err(|_| "LAUNCH_FAILED")??
     else {
-        return Ok(false);
+        return Ok(Some(false));
     };
     // `running` only knows held sessions: a private `claude --resume` / `codex resume` of the same
     // conversation is invisible to the mirrors. Two writers on one transcript fork it, so a resume
@@ -261,16 +270,16 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
         None,
     )
     .await;
-    Ok(true)
+    Ok(Some(true))
 }
 
 /// The conversation runs on in its provider's daemon: share its mirror again, and the relay loop
 /// registers its run (that registration answers the resume) and starts an attach holder for
 /// whoever watches. A run its person paused is unpaused first, as the share skill does: its
 /// register carries `unshared` over. Only this Mac's own human may undo their own pause.
-async fn reattach(me: &Resumer, hosted: &Hosted, own: bool) -> std::result::Result<bool, &'static str> {
+async fn reattach(me: &Resumer, hosted: &Hosted, own: bool) -> std::result::Result<Option<bool>, &'static str> {
     if hosted.shared {
-        return Ok(false);
+        return Ok(hosted.fresh.then_some(false));
     }
     if !own {
         return Err("SHARING_OFF");
@@ -283,7 +292,7 @@ async fn reattach(me: &Resumer, hosted: &Hosted, own: bool) -> std::result::Resu
         })?;
     }
     super::transport::ask_share(&hosted.key, true);
-    Ok(true)
+    Ok(hosted.fresh.then_some(true))
 }
 
 /// Every conversation a local `provider` process runs now, held or private: the provider's own
@@ -541,7 +550,7 @@ mod tests {
         let job = hosted_mirrors(Some("70f755ac"), false);
         assert_eq!(
             live(&job, "claude", CONV),
-            Some(Some(Hosted { key: "k".repeat(64), session_id: Some("bbbbbbbb-2222-4222-8222-222222222222".into()), generation: "gen-1".into(), shared: false })),
+            Some(Some(Hosted { key: "k".repeat(64), session_id: Some("bbbbbbbb-2222-4222-8222-222222222222".into()), generation: "gen-1".into(), shared: false, fresh: true })),
             "the run the relay knows, at the generation its row is at"
         );
         // A Codex app-server thread is hosted the same way (its job is the thread id).
@@ -558,13 +567,15 @@ mod tests {
     #[tokio::test]
     async fn resume_reattaches_a_daemon_hosted_conversation_instead_of_refusing_it() {
         let me = Resumer { api: "http://127.0.0.1:9".into(), key_pem: String::new(), device: "d".into(), owner: "o".into(), human: "user_bob".into() };
-        let hosted = |shared: bool, sid: Option<&str>| Hosted { key: format!("{}{}{}", "e".repeat(62), u8::from(shared), u8::from(sid.is_some())), session_id: sid.map(str::to_owned), generation: "gen-1".into(), shared };
+        let hosted = |shared: bool, sid: Option<&str>| Hosted { key: format!("{}{}{}", "e".repeat(62), u8::from(shared), u8::from(sid.is_some())), session_id: sid.map(str::to_owned), generation: "gen-1".into(), shared, fresh: true };
         // Shared already: its registration answers the resume; nothing starts.
-        assert_eq!(reattach(&me, &hosted(true, Some("s")), true).await, Ok(false));
+        assert_eq!(reattach(&me, &hosted(true, Some("s")), true).await, Ok(Some(false)));
+        // Its run is the one the relay has: no registration answers the resume, so it is asked again.
+        assert_eq!(reattach(&me, &Hosted { fresh: false, ..hosted(true, Some("s")) }, true).await, Ok(None));
         // Paused by its person: only that person's own Resume shares it again.
         assert_eq!(reattach(&me, &hosted(false, Some("s")), false).await, Err("SHARING_OFF"));
         let mine = hosted(false, None);
-        assert_eq!(reattach(&me, &mine, true).await, Ok(true));
+        assert_eq!(reattach(&me, &mine, true).await, Ok(Some(true)));
         assert_eq!(super::super::transport::asked(&mine.key), Some((true, false)), "shared again, from this Mac");
         // A run the relay has, paused: the unpause must land first, or nothing is shared.
         assert_eq!(reattach(&me, &hosted(false, Some("s")), true).await, Err("LAUNCH_FAILED"));

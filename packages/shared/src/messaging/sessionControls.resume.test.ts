@@ -33,7 +33,7 @@ describe("resumeStatus", () => {
     expect(resumeStatus(ended({ resume: { state: "pending", byUserId: "bob", requestedAt: "" } }), true, "Alice", nameOf, "alice"))
       .toBe("Bob asked to resume this session. It starts on your Mac when that Mac is on, within 24 hours.");
     expect(resumeStatus(ended({ resume: { state: "failed", byUserId: "bob", requestedAt: "", reason: "ALREADY_RUNNING" } }), false, "Alice", nameOf, "bob"))
-      .toBe("Not resumed: it is still open in a terminal on Alice’s Mac that Lightbulb did not start. Close that terminal, then resume.");
+      .toBe("Not resumed: it is still running on Alice’s Mac, where Lightbulb cannot show it. End it there, then resume.");
     expect(resumeStatus(ended({ cwdName: "lightbulb", resume: { state: "failed", byUserId: "bob", requestedAt: "", reason: "FOLDER_NOT_APPROVED" } }), false, "Alice", nameOf, "bob"))
       .toBe("Not resumed: lightbulb is no longer an approved folder on Alice’s Mac.");
     expect(resumeStatus(ended(), false, "Alice", nameOf, "bob")).toBeNull();

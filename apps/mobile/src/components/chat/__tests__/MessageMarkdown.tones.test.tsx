@@ -25,7 +25,7 @@ it("inverts for a mine bubble, links and inline code included", async () => {
 
 it("labels a fence in the sans face and keeps the code mono", async () => {
   await render(<MessageMarkdown text={"```bash\ngh pr view 3284\n```"} palette={chatPalette.light} />);
-  expect(StyleSheet.flatten(screen.getByText("bash").props.style).fontFamily).toBe("SourceSans3_500Medium");
+  expect(StyleSheet.flatten(screen.getByText("bash").props.style).fontFamily).toBe("Satoshi-Medium");
   expect(StyleSheet.flatten(screen.getByText("gh pr view 3284").props.style).fontFamily).toBe("Menlo");
 });
 

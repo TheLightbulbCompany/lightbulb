@@ -173,7 +173,7 @@ const listContent = { flex: 0, flexShrink: 1 };
 // it internally, merging over its defaults (mergeStyle).
 const markdownStyles = {
   body: {
-    fontFamily: fonts.sans,
+    fontFamily: fonts.body,
     fontSize: 15,
     lineHeight: 22,
     color: colors.assistantInk,
@@ -213,7 +213,7 @@ const markdownStyles = {
   paragraph: { marginTop: 0, marginBottom: spacing.md },
   // Static weight-specific font files: neutralize the default synthetic
   // bold so iOS doesn't look for a bold face inside the 700 family.
-  strong: { fontFamily: fonts.sansSemiBold, fontWeight: "normal" as const },
+  strong: { fontFamily: fonts.bodySemiBold, fontWeight: "normal" as const },
   link: { color: colors.forest, textDecorationLine: "underline" as const },
   // `.room-mention` on web: info text on a 12% info wash, no underline, not
   // tappable (the `link` rule above renders it with no onPress).
@@ -222,7 +222,7 @@ const markdownStyles = {
     backgroundColor: colors.mentionBg,
     borderRadius: radii.xs,
     paddingHorizontal: spacing.xs,
-    fontFamily: fonts.sansSemiBold,
+    fontFamily: fonts.bodySemiBold,
   },
   bullet_list: { marginBottom: spacing.md },
   ordered_list: { marginBottom: spacing.md },
@@ -341,7 +341,7 @@ function bubbleStyles(p: ChatPalette, inverse: boolean) {
   return {
     // Blocks are spaced by the body's `gap`, not their own margins: a margin
     // under the last block left every bubble with a blank line at the bottom.
-    body: { fontFamily: fonts.sans, fontSize: 16, lineHeight: 22, color: ink, gap: spacing.md },
+    body: { fontFamily: fonts.body, fontSize: 16, lineHeight: 22, color: ink, gap: spacing.md },
     heading1: {
       fontFamily: fonts.sansSemiBold,
       fontSize: 18,
@@ -375,14 +375,14 @@ function bubbleStyles(p: ChatPalette, inverse: boolean) {
       marginBottom: -spacing.xs,
     },
     paragraph: { marginTop: 0, marginBottom: 0 },
-    strong: { fontFamily: fonts.sansSemiBold, fontWeight: "normal" as const },
+    strong: { fontFamily: fonts.bodySemiBold, fontWeight: "normal" as const },
     link: {
       color: inverse ? p.onFg : p.link,
       textDecorationLine: "underline" as const,
     },
     mention: {
       color: inverse ? p.onFg : p.link,
-      fontFamily: fonts.sansSemiBold,
+      fontFamily: fonts.bodySemiBold,
     },
     bullet_list: { marginBottom: 0 },
     ordered_list: { marginBottom: 0 },

@@ -276,7 +276,7 @@ const MANAGED_BY_ACCEPTED = ["lightbulb-backend"];
 
 /** Envs whose workspace sessions run on the VPC-mode AgentCore browser (fixed egress address).
  *  Add an env only after its runtimes are rolled onto an image built from #4391 or later. */
-const VPC_BROWSER_ENVS = new Set<string>([]);
+const VPC_BROWSER_ENVS = new Set<string>(["dev"]);
 
 export class ServiceStack extends cdk.Stack {
   public readonly service: ecs.FargateService;

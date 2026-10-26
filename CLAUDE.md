@@ -875,7 +875,9 @@ its own palette), `lib/clerkAppearance.ts` (`var()` tokens with brand fallbacks,
 literals as fixtures) —
 `src/__tests__/brandTokens.test.ts` enforces it,
 `node scripts/brand-tokens-scan.mjs` lists offenders. Fonts: Satoshi (headers, navigation, UI
-accents) / Inter (message bodies, prose) / mono for code only (#4375).
+accents) / Inter (message bodies, prose) / mono for code only (#4375). The phone
+mirrors it through `apps/mobile/src/config/theme.ts`'s `fonts` tokens (static Satoshi
+TTFs in `apps/mobile/assets/fonts/satoshi/`; native nav bars keep the system font).
 
 **`packages/shared` (`@lightbulb/shared`) is load-bearing:** the framework-neutral
 API client (`createApiClient`), the dependency-free AppSync live-event client

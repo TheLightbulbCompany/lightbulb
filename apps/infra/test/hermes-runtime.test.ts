@@ -280,7 +280,9 @@ describe("hermes runtime wiring", () => {
     const sg = dev.containerTemplate.toJSON().Resources[sgId];
     expect(sg.Properties.SecurityGroupEgress.map((r: { IpProtocol: string; FromPort: number; CidrIp: string }) =>
       [r.IpProtocol, r.FromPort, r.CidrIp])).toEqual([["tcp", 443, "0.0.0.0/0"], ["tcp", 80, "0.0.0.0/0"]]);
-    expect(JSON.stringify(dev.serviceTemplate.findResources("AWS::ECS::TaskDefinition"))).toContain('"AGENTCORE_BROWSER_ID"');
+    // Not yet in use: an env switches only after its runtimes run a bridge that accepts the
+    // custom browser's CDP URL (VPC_BROWSER_ENVS). Until then the backend stays on the built-in one.
+    expect(JSON.stringify(dev.serviceTemplate.findResources("AWS::ECS::TaskDefinition"))).not.toContain('"AGENTCORE_BROWSER_ID"');
   });
 
   it("the owner boundary permits AgentCore Browser use, and the base policy grants none", () => {

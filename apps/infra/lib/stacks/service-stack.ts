@@ -274,6 +274,10 @@ export interface ServiceStackProps extends cdk.StackProps {
  */
 const MANAGED_BY_ACCEPTED = ["lightbulb-backend"];
 
+/** Envs whose workspace sessions run on the VPC-mode AgentCore browser (fixed egress address).
+ *  Add an env only after its runtimes are rolled onto an image built from #4391 or later. */
+const VPC_BROWSER_ENVS = new Set<string>([]);
+
 export class ServiceStack extends cdk.Stack {
   public readonly service: ecs.FargateService;
   public readonly taskRole: iam.Role;
@@ -1510,8 +1514,10 @@ export class ServiceStack extends cdk.Stack {
       // Stamped into every runtime spec as AGENTCORE_MEMORY_ID; the image enables its memory
       // provider only when it is set (N-1 safe: an older image ignores it).
       AGENTCORE_MEMORY_ID: props.container.workspaceMemoryId,
-      // The browser every workspace session starts on (bedrock_aip.BROWSER_ID).
-      AGENTCORE_BROWSER_ID: props.container.workspaceBrowserId,
+      // The browser every workspace session starts on (bedrock_aip.BROWSER_ID); unset = the
+      // built-in one. Per env, and only once every runtime there runs a bridge that accepts a
+      // custom browser's CDP URL (#4391): an older bridge refuses it and the browser fails.
+      ...(VPC_BROWSER_ENVS.has(env) ? { AGENTCORE_BROWSER_ID: props.container.workspaceBrowserId } : {}),
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,

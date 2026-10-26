@@ -133,37 +133,75 @@
   margin: 1.7rem 0 0; max-width: 58ch;
 }
 .ld-page .lb-hero-cta { display: flex; justify-content: flex-start; gap: 0.7rem; margin-top: 2.3rem; flex-wrap: wrap; }
-.ld-page .lb-cta-col { display: flex; flex-direction: column; gap: 0.55rem; max-width: 30ch; }
-.ld-page .lb-cta-note { margin: 0; font-size: 0.86rem; line-height: 1.45; color: var(--lb-ink-mute); }
-.ld-page .lb-ticks { display: flex; gap: 1.5rem; margin-top: 1.5rem; flex-wrap: wrap; }
+/* one primary door: the second button is an outline, not a second filled block */
+.ld-page .lb-hero-cta .lb-btn-s { background: transparent; box-shadow: inset 0 0 0 1px var(--cream-deeper); }
+.ld-page .lb-hero-cta .lb-btn-s:hover { background: var(--cream-deeper); }
+.ld-page .lb-ticks { display: flex; gap: 1.5rem; margin: 1.5rem 0 0; padding: 0; list-style: none; flex-wrap: wrap; }
 .ld-page .lb-tick { display: flex; align-items: center; gap: 0.42rem; font-size: 0.86rem; color: var(--lb-ink-mute); }
 .ld-page .lb-tick i { width: 15px; height: 15px; border-radius: 50%; background: var(--cream-deeper); display: grid; place-items: center; }
 
-/* the painting: flush under the nav, bleeding off the right edge */
-.ld-page .lb-art { position: relative; overflow: hidden; background: #101a3a; }
-.ld-page .lb-art > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
-
-.ld-page .lb-float {
-  position: absolute; z-index: 2; border-radius: 10px; background: var(--cream);
-  border: 1px solid rgba(255,255,255,0.5); box-shadow: 0 22px 44px -18px rgba(4,8,22,0.85);
-  opacity: 0; transform: translateY(12px); animation: lb-pop 0.6s cubic-bezier(0.2,0.75,0.3,1) forwards;
+/* the product: a light ground with one framed copy of the /chat workspace.
+   The window is a fixed-size layout scaled by its column, so it reads as a
+   screenshot at every width instead of reflowing like a page. */
+.ld-page .lb-art {
+  position: relative; overflow: hidden; display: grid; place-items: center;
+  background: var(--cream-deep); border-left: 1px solid var(--rule);
+  padding: clamp(28px, 4vw, 64px) clamp(20px, 3vw, 48px);
 }
-.ld-page .lb-float-2 { animation-delay: 0.64s; }
-.ld-page .lb-float-3 { animation-delay: 1.08s; }
+.ld-page .lb-app {
+  width: 100%; max-width: 760px; border-radius: 12px; overflow: hidden;
+  background: var(--cream); border: 1px solid var(--rule);
+  box-shadow: 0 40px 80px -40px rgba(15,26,43,0.35), 0 2px 6px -2px rgba(15,26,43,0.08);
+  opacity: 0; transform: translateY(12px); animation: lb-pop 0.6s cubic-bezier(0.2,0.75,0.3,1) 0.2s forwards;
+}
 @keyframes lb-pop { to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
-  .ld-page .lb-float { animation: none; opacity: 1; transform: none; }
+  .ld-page .lb-app { animation: none; opacity: 1; transform: none; }
 }
+.ld-page .lb-app svg { width: 13px; height: 13px; stroke-width: 1.8; flex: 0 0 auto; }
+.ld-page .lb-app-cols { display: grid; grid-template-columns: 52px 168px 1fr; min-height: 440px; }
 
-.ld-page .lb-f-run { left: 6%; top: 15%; width: 62%; z-index: 3; padding: 0.5rem 0.62rem; }
-.ld-page .lb-f-app { left: 15%; top: 35%; width: 80%; overflow: hidden; z-index: 2; }
+.ld-page .lb-app-rail { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 0.6rem 0; background: var(--cream-deep); border-right: 1px solid var(--rule); }
+.ld-page .lb-app-rail span { position: relative; display: flex; flex-direction: column; align-items: center; gap: 0.12rem; width: 40px; padding: 0.32rem 0; border-radius: 7px; color: var(--lb-ink-mute); }
+.ld-page .lb-app-rail span.on { background: var(--cream-deeper); color: var(--lb-ink); }
+.ld-page .lb-app-rail svg { width: 15px; height: 15px; }
+.ld-page .lb-app-rail small { font-size: 0.52rem; }
+.ld-page .lb-app-rail em { position: absolute; top: 1px; right: 7px; font-style: normal; font-size: 0.5rem; font-weight: 700; min-width: 11px; height: 11px; border-radius: 6px; display: grid; place-items: center; background: var(--midnight); color: var(--cream); }
+
+.ld-page .lb-app-sb { padding: 0.55rem 0.5rem; border-right: 1px solid var(--rule); font-size: 0.7rem; color: var(--lb-ink-mute); }
+.ld-page .lb-app-org { display: flex; align-items: center; gap: 0.2rem; font-weight: 700; font-size: 0.78rem; color: var(--lb-ink); padding: 0.1rem 0.3rem 0.5rem; border-bottom: 1px solid var(--rule); margin-bottom: 0.45rem; }
+.ld-page .lb-app-sbh { display: flex; align-items: center; justify-content: space-between; font-weight: 600; color: var(--lb-ink); padding: 0 0.3rem 0.3rem; }
+.ld-page .lb-app-sb p { display: flex; align-items: center; gap: 0.2rem; margin: 0.4rem 0 0.15rem; padding: 0 0.15rem; font-size: 0.62rem; color: var(--lb-ink-faint); }
+.ld-page .lb-app-sb p svg { width: 10px; height: 10px; }
+.ld-page .lb-app-ch { display: flex; align-items: center; gap: 0.3rem; padding: 0.22rem 0.4rem; border-radius: 5px; }
+.ld-page .lb-app-ch.on { background: var(--cream-deeper); color: var(--lb-ink); font-weight: 600; }
+.ld-page .lb-app-note { padding: 0.1rem 0.4rem 0.3rem; font-size: 0.62rem; color: var(--lb-ink-faint); }
+
+.ld-page .lb-app-main { display: flex; flex-direction: column; min-width: 0; }
+.ld-page .lb-app-top { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--rule); }
+.ld-page .lb-app-top b { font-size: 0.86rem; margin-right: auto; }
+.ld-page .lb-app-search { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.68rem; color: var(--lb-ink-mute); }
+.ld-page .lb-app-feed { flex: 1; padding: 0.7rem 0.8rem 0.3rem; }
+.ld-page .lb-app-intro { display: flex; flex-direction: column; gap: 0.2rem; padding-bottom: 0.55rem; margin-bottom: 0.25rem; border-bottom: 1px solid var(--rule); }
+.ld-page .lb-app-intro b { font-size: 0.86rem; color: var(--lb-ink); }
+.ld-page .lb-app-intro span { font-size: 0.7rem; line-height: 1.45; color: var(--lb-ink-mute); }
+.ld-page .lb-app .lb-tx { font-size: 0.8rem; }
+.ld-page .lb-app .lb-ask { max-width: 300px; }
+.ld-page .lb-app-compose { margin: 0.3rem 0.7rem 0.7rem; border: 1px solid var(--rule); border-radius: 8px; }
+.ld-page .lb-app-tools { display: flex; gap: 0.55rem; padding: 0.35rem 0.55rem; border-bottom: 1px solid var(--rule); color: var(--lb-ink-mute); }
+.ld-page .lb-app-tools svg { width: 11px; height: 11px; }
+.ld-page .lb-app-input { display: flex; align-items: center; justify-content: space-between; padding: 0.45rem 0.55rem; font-size: 0.7rem; color: var(--lb-ink-faint); }
 
 @media (max-width: 900px) {
   .ld-page .lb-hero { grid-template-columns: 1fr; min-height: 0; }
   .ld-page .lb-hero-copy { padding: clamp(34px, 8vw, 56px) var(--lb-edge); }
-  .ld-page .lb-art { height: min(78vh, 540px); }
-  .ld-page .lb-f-run { left: 5%; width: 66%; }
-  .ld-page .lb-f-app { left: 12%; width: 82%; }
+  .ld-page .lb-art { border-left: 0; border-top: 1px solid var(--rule); }
+}
+/* phones: the sidebar would crush the conversation, so the window keeps the rail + channel only */
+@media (max-width: 620px) {
+  .ld-page .lb-app-cols { grid-template-columns: 44px 1fr; min-height: 0; }
+  .ld-page .lb-app-sb, .ld-page .lb-app-search { display: none; }
+  .ld-page .lb-app-rail span { width: 34px; }
 }
 
 /* ---------- the fake workspace used inside hero + band ---------- */

@@ -144,8 +144,6 @@ export class OpenRouterGateStack extends cdk.Stack {
         FAST_GATE_TABLE: `${tablePrefix(env)}metronome-fast-gate`,
         // Settled OpenRouter cost is added here: the backend's own usage counters price only Bedrock.
         USAGE_COUNTERS_TABLE: `${tablePrefix(env)}usage-counters`,
-        // Settlement is the only writer of a project budget's spent_microcents (billing item).
-        BILLING_TABLE: `${tablePrefix(env)}billing-accounts`,
         RESERVE_TTL_SECONDS: "1200",
         // Best-effort per-agent cost report to the backend, which feeds Paperclip's budgets.
         BACKEND_INTERNAL_URL: `https://${props.apiDomain}`,
@@ -170,7 +168,7 @@ export class OpenRouterGateStack extends cdk.Stack {
     // Settlement only ADDs real OpenRouter cost to the usage counters (inside its transaction).
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["dynamodb:UpdateItem"],
-      resources: [tableArn("usage-counters"), tableArn("billing-accounts")],
+      resources: [tableArn("usage-counters")],
     }));
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:GetSecretValue"],

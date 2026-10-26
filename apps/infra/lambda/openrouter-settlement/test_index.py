@@ -245,56 +245,6 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(calls[0]["TransactItems"][1]["Update"]["ExpressionAttributeValues"][":cost"]["S"], "0.012345678")
         self.assertEqual(calls[0]["TransactItems"][1]["Update"]["ExpressionAttributeValues"][":actual"]["N"], "12345678")
 
-    def _accrual_store(self, fail_first=0):
-        updates = []
-        class Err(Exception):
-            response = {"Error": {"Code": "ConditionalCheckFailedException"}}
-        class Ddb:
-            def transact_write_items(self, **kwargs): pass
-            def update_item(self, **kwargs):
-                updates.append(kwargs)
-                if len(updates) <= fail_first: raise Err()
-        return updates, worker.Store(Ddb(), requests_table="requests", fast_table="fast", billing_table="billing")
-
-    def test_commit_adds_marked_up_cost_to_the_project_budget_atomically(self):
-        updates, store = self._accrual_store()
-        row = {**self.row, "project_id": "proj-1"}
-        store.commit(row, worker.event_for(row, self.generation), 12345678, 1_700_000_001)
-        u = updates[0]
-        self.assertEqual(u["TableName"], "billing")
-        self.assertEqual(u["ExpressionAttributeNames"]["#p"], "proj-1")  # untrusted id is a name, never interpolated
-        self.assertEqual(u["UpdateExpression"], "ADD budgets.#p.spent_microcents :cost")
-        self.assertEqual((u["ExpressionAttributeValues"][":cost"]["N"], u["ExpressionAttributeValues"][":month"]["S"]), ("14815", "2023-11"))
-
-    def test_first_accrual_of_a_new_month_resets_spend_then_stamps_the_month(self):
-        updates, store = self._accrual_store(fail_first=1)  # ADD refused: stored month differs
-        row = {**self.row, "project_id": "__default__"}
-        store.commit(row, worker.event_for(row, self.generation), 12345678, 1_700_000_001)
-        self.assertTrue(updates[1]["UpdateExpression"].startswith("SET budgets.#p.spent_microcents = :cost"))
-        self.assertIn("<> :month", updates[1]["ConditionExpression"])
-
-    def test_no_budget_entry_or_no_project_accrues_nothing_and_never_fails_settlement(self):
-        updates, store = self._accrual_store(fail_first=99)  # entry absent: both conditions refuse
-        row = {**self.row, "project_id": "ghost"}
-        self.assertEqual(store.commit(row, worker.event_for(row, self.generation), 12345678, 1_700_000_001), "settled")
-        updates.clear()
-        store.commit(self.row, worker.event_for(self.row, self.generation), 12345678, 1_700_000_001)
-        self.assertEqual(updates, [])
-
-    def test_accrual_failure_emits_metric_and_still_settles(self):
-        class Ddb:
-            def transact_write_items(self, **kwargs): pass
-            def update_item(self, **kwargs): raise RuntimeError("boom")
-        store = worker.Store(Ddb(), requests_table="requests", fast_table="fast", billing_table="billing")
-        row = {**self.row, "project_id": "__default__"}
-        out = io.StringIO()
-        with patch.dict(os.environ, {"GATE_ENV": "dev"}), patch("sys.stdout", out):
-            self.assertEqual(store.commit(row, worker.event_for(row, self.generation), 12345678, 1_700_000_001), "settled")
-        line = json.loads(out.getvalue().splitlines()[0])
-        self.assertEqual(line["openrouter.settlement.budget_accrual_failed"], 1)
-        self.assertEqual((line["env"], line["service"], line["error"]), ("dev", "openrouter-settlement", "RuntimeError"))
-        self.assertEqual(line["_aws"]["CloudWatchMetrics"][0]["Namespace"], "LightbulbAI")
-
     def test_overshoot_keeps_real_debit_and_emits_metric(self):
         calls = []
         class Ddb:

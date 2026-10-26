@@ -264,42 +264,6 @@ class TestGetMyUsage:
         assert data["request_count"] == 0
 
 
-class TestBudgets:
-    @pytest.mark.asyncio
-    async def test_member_forbidden(self, async_client_org_member):
-        assert (await async_client_org_member.get("/api/v1/billing/budgets")).status_code == 403
-        r = await async_client_org_member.put("/api/v1/billing/budgets", json={"ceiling_microcents": 5})
-        assert r.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_admin_set_then_get(self, async_client):
-        store: dict = {}
-
-        async def _set(owner, pid, ceiling):
-            store[pid] = {"ceiling_microcents": ceiling, "spent_microcents": 0, "month": "2026-10"}
-            return store[pid]
-
-        with (
-            patch("routers.billing.billing_repo.set_project_budget", new=_set),
-            patch("routers.billing.billing_repo.list_project_budgets", new=AsyncMock(side_effect=lambda o: store)),
-        ):
-            r = await async_client.put("/api/v1/billing/budgets", json={"project_id": "p1", "ceiling_microcents": 1000})
-            assert r.status_code == 200 and r.json()["ceiling_microcents"] == 1000
-            g = await async_client.get("/api/v1/billing/budgets")
-        assert g.json()["budgets"]["p1"]["ceiling_microcents"] == 1000
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("bad", [-1, "abc", 1.5, None])
-    async def test_bad_ceiling_422(self, async_client, bad):
-        r = await async_client.put("/api/v1/billing/budgets", json={"ceiling_microcents": bad})
-        assert r.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_project_id_outside_gate_keyspace_422(self, async_client):
-        r = await async_client.put("/api/v1/billing/budgets", json={"project_id": "a.b-c d", "ceiling_microcents": 5})
-        assert r.status_code == 422
-
-
 class TestStripeWebhook:
     @pytest.fixture(autouse=True)
     def _no_front_desk_sync(self, monkeypatch):

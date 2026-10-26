@@ -5,7 +5,6 @@ import useSWR from "swr";
 import { Loader2, RefreshCw, AlertCircle } from "lucide-react";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { useBilling } from "@/hooks/useBilling";
-import { useBudgets } from "@/hooks/useBudgets";
 import type { UsageSummary } from "@/hooks/useBilling";
 import { Button } from "@/components/ui/button";
 import { planLabel, isFreeTierExpired, allowanceLine } from "@/lib/planLabel";
@@ -19,9 +18,6 @@ function formatTokens(n: number): string {
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toLocaleString();
 }
-
-const MICROCENTS_PER_DOLLAR = 1_000_000;
-const usd = (microcents: number) => `$${(microcents / MICROCENTS_PER_DOLLAR).toFixed(2)}`;
 
 // =============================================================================
 // Component
@@ -70,9 +66,6 @@ export function UsagePanel({ embedded = false }: UsagePanelProps = {}) {
       ? usageError.message
       : "Failed to fetch usage data"
     : null;
-
-  const { data: budgets } = useBudgets(isOrgAdmin);
-  const budgetRows = Object.entries(budgets ?? {});
 
   const handleRefresh = useCallback(() => {
     refresh();
@@ -135,36 +128,6 @@ export function UsagePanel({ embedded = false }: UsagePanelProps = {}) {
 
       {!isTrialExpired && allowanceLine(account) && (
         <p className="text-sm text-[var(--midnight)]">{allowanceLine(account)}</p>
-      )}
-
-      {budgetRows.length > 0 && (
-        <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3">
-          <h3 className="text-sm font-medium">Budget</h3>
-          {budgetRows.map(([projectId, b]) => {
-            const over = b.spent_microcents >= b.ceiling_microcents;
-            const pct = b.ceiling_microcents > 0 ? Math.min(100, (b.spent_microcents / b.ceiling_microcents) * 100) : 100;
-            return (
-              <div key={projectId} className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  {/* `__default__` is the workspace bucket everything accrues to today. */}
-                  <span className="font-medium">{projectId === "__default__" ? "Workspace" : projectId}</span>
-                  <span className={over ? "text-err" : "text-[var(--midnight-muted)]"}>
-                    {over ? "Limit reached" : `${usd(b.ceiling_microcents - b.spent_microcents)} left`}
-                  </span>
-                </div>
-                <div className="h-1.5 rounded-full bg-[var(--cream-deep)] overflow-hidden">
-                  <div
-                    className={over ? "h-full bg-err" : "h-full bg-[var(--midnight)]"}
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-                <div className="text-xs text-[var(--midnight-muted)] tabular-nums">
-                  {usd(b.spent_microcents)} of {usd(b.ceiling_microcents)} this month
-                </div>
-              </div>
-            );
-          })}
-        </div>
       )}
 
       {usage && (

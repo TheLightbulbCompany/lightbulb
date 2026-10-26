@@ -10,14 +10,6 @@ class GateError extends Error {
 const dailyCap = () => new GateError(429, 'Lightbulb: daily limit reached — resets at midnight UTC', 'trial_daily_cap');
 const fail = (status, message) => { throw new GateError(status, message); };
 const S = (item, field) => item?.[field]?.S;
-const DEFAULT_PROJECT = '__default__';
-// The runtime names the project in a header; anything absent or odd charges the workspace bucket.
-const projectIdOf = event => { const v = event.headers?.['x-lightbulb-project-id']; return typeof v === 'string' && /^[\w.:-]{1,128}$/.test(v) ? v : DEFAULT_PROJECT; };
-// Last-known spend (settlement is the only writer, <=5 min stale). A stale month reads as 0.
-const projectBudgetExhausted = (billing, projectId) => {
-  const entry = billing?.budgets?.M?.[projectId]?.M;
-  return !!entry && S(entry, 'month') === new Date().toISOString().slice(0, 7) && Number(entry.spent_microcents?.N ?? 0) >= Number(entry.ceiling_microcents?.N ?? Infinity);
-};
 // OpenRouter answers "Key limit exceeded" both when the key's own daily limit is spent and when
 // the ACCOUNT has no credits left (2026-10-13: a dry account capped every trial with $0 spent).
 // Only the key's own numbers tell them apart, read with the same key.
@@ -183,10 +175,8 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     if (!secret || !secret.startsWith('sk-or-')) fail(503, 'Owner key unavailable');
     requestId = randomUUID();
     estimate = billingMode === 'paid' ? reservationFor(body, policy, env.OPENROUTER_MARKUP) : 0;
-    const projectId = projectIdOf(event);
-    if (billingMode === 'paid' && projectBudgetExhausted(billing, projectId)) throw new GateError(429, 'Lightbulb: project budget reached', 'project_budget_exceeded', { project_id: projectId });
     if (billingMode === 'paid' && (!S(billing, 'metronome_customer_id') || !S(billing, 'metronome_contract_id'))) fail(429, 'Credit ledger unavailable');
-    const outbox = { request_id: { S: requestId }, owner_id: { S: ownerId }, ...(agentId ? { agent_id: { S: agentId } } : {}), project_id: { S: projectId }, key_hash: { S: S(keyRow, 'key_hash') }, secret_name: { S: S(keyRow, 'secret_name') }, model: { S: body.model }, policy_revision: { S: String(policy.revision) }, billing_mode: { S: billingMode }, reservation_microcents: { N: String(estimate) }, state: { S: 'pending' }, created_at: { N: String(Math.floor(Date.now() / 1000)) } };
+    const outbox = { request_id: { S: requestId }, owner_id: { S: ownerId }, ...(agentId ? { agent_id: { S: agentId } } : {}), key_hash: { S: S(keyRow, 'key_hash') }, secret_name: { S: S(keyRow, 'secret_name') }, model: { S: body.model }, policy_revision: { S: String(policy.revision) }, billing_mode: { S: billingMode }, reservation_microcents: { N: String(estimate) }, state: { S: 'pending' }, created_at: { N: String(Math.floor(Date.now() / 1000)) } };
     const admitted = billingMode === 'paid' ? await reserve(ddb, env, ownerId, estimate, outbox) : await recordFree(ddb, env, outbox);
     if (!admitted) fail(429, 'Credit balance exhausted');
     // Owner question: do paying customers draw on the cheap-model budget?

@@ -48,58 +48,6 @@ def dynamodb_table():
 
 
 @pytest.mark.asyncio
-async def test_project_budgets_set_get_list_no_clobber(dynamodb_table):
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("user_b", "cus_b")
-    assert await billing_repo.get_project_budget("user_b", "p1") is None
-    assert await billing_repo.list_project_budgets("user_b") == {}
-
-    e1 = await billing_repo.set_project_budget("user_b", "p1", 500)
-    await billing_repo.set_project_budget("user_b", "__default__", 900)
-    got = await billing_repo.get_project_budget("user_b", "p1")
-    assert got == e1
-    assert got["ceiling_microcents"] == 500 and got["spent_microcents"] == 0 and len(got["month"]) == 7
-    assert set(await billing_repo.list_project_budgets("user_b")) == {"p1", "__default__"}
-
-    # re-setting the ceiling keeps recorded spend
-    dynamodb_table.update_item(
-        Key={"owner_id": "user_b"},
-        UpdateExpression="SET budgets.p1.spent_microcents = :s",
-        ExpressionAttributeValues={":s": 42},
-    )
-    again = await billing_repo.set_project_budget("user_b", "p1", 700)
-    assert again["ceiling_microcents"] == 700 and again["spent_microcents"] == 42
-
-
-@pytest.mark.asyncio
-async def test_set_project_budget_two_projects_both_survive(dynamodb_table):
-    """Per-entry writes: setting B never rewrites A (the old whole-map write dropped one)."""
-    import asyncio
-
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("user_c", "cus_c")
-    await asyncio.gather(
-        billing_repo.set_project_budget("user_c", "A", 100),
-        billing_repo.set_project_budget("user_c", "B", 200),
-    )
-    got = await billing_repo.list_project_budgets("user_c")
-    assert got["A"]["ceiling_microcents"] == 100
-    assert got["B"]["ceiling_microcents"] == 200
-    # an untrusted id with path/reserved characters is a plain key
-    await billing_repo.set_project_budget("user_c", "a.b-c d", 5)
-    assert (await billing_repo.get_project_budget("user_c", "a.b-c d"))["ceiling_microcents"] == 5
-
-
-@pytest.mark.asyncio
-async def test_set_project_budget_no_row(dynamodb_table):
-    from core.repositories import billing_repo
-
-    assert await billing_repo.set_project_budget("nobody", "p1", 1) is None
-
-
-@pytest.mark.asyncio
 async def test_create_and_get(dynamodb_table):
     from core.repositories import billing_repo
 

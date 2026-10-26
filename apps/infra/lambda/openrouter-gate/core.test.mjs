@@ -7,12 +7,12 @@ const policy = { revision: 'test-1', models: ['anthropic/claude-sonnet-4.5', 'op
 const env = { TOKENS_TABLE: 'tokens', BILLING_TABLE: 'billing', FAST_GATE_TABLE: 'fast', OPENROUTER_KEYS_TABLE: 'keys', REQUESTS_TABLE: 'requests', RESERVE_ESTIMATE_MICROCENTS: '300000', RESERVE_TTL_SECONDS: '1200', MODEL_POLICY_JSON: JSON.stringify(policy), MAX_BODY_BYTES: '100000', MAX_OUTPUT_TOKENS: '8192', OPENROUTER_MARKUP: '1.2' };
 const AV = (s) => ({ S: s });
 
-function fixture({ token = 'good', status = 'active', balance = 1000000, provider = 'openrouter_managed', plan, keyState = 'active', cappedDay, metronome = true, trialEnd, budgets } = {}) {
+function fixture({ token = 'good', status = 'active', balance = 1000000, provider = 'openrouter_managed', plan, keyState = 'active', cappedDay, metronome = true, trialEnd } = {}) {
   const calls = { forwards: [], puts: [], updates: [], errors: [], chunks: [], logs: [] };
   const ddb = {
     async getItem(p) {
       if (p.TableName === 'tokens') return { Item: token === 'good' ? { owner_id: AV('owner-1') } : undefined };
-      if (p.TableName === 'billing') return { Item: { ...(provider ? { provider_choice: AV(provider) } : {}), ...(plan ? { plan: AV(plan) } : {}), ...(cappedDay ? { openrouter_capped_day: AV(cappedDay) } : {}), ...(trialEnd !== undefined ? { trial_end: { N: String(trialEnd) } } : {}), subscription_status: AV(status), ...(budgets ? { budgets } : {}), ...(metronome ? { metronome_customer_id: AV('mc'), metronome_contract_id: AV('ct') } : {}) } };
+      if (p.TableName === 'billing') return { Item: { ...(provider ? { provider_choice: AV(provider) } : {}), ...(plan ? { plan: AV(plan) } : {}), ...(cappedDay ? { openrouter_capped_day: AV(cappedDay) } : {}), ...(trialEnd !== undefined ? { trial_end: { N: String(trialEnd) } } : {}), subscription_status: AV(status), ...(metronome ? { metronome_customer_id: AV('mc'), metronome_contract_id: AV('ct') } : {}) } };
       if (p.TableName === 'fast') return { Item: balance == null ? undefined : { remaining_microcents: { N: String(balance) }, reserved_microcents: { N: '0' } } };
       if (p.TableName === 'keys') return { Item: { state: AV(keyState), key_hash: AV('hash-1'), secret_name: AV('secret-1') } };
     },
@@ -243,37 +243,6 @@ test('auto-routed request records the model that answered, and an unlisted model
   await handleRequest(g.event({ model: 'evil/model', messages: [{ role: 'user', content: 'Hi' }], stream: true }), g.responder, g.deps);
   assert.equal(g.calls.errors[0].status, 400);
   assert.equal(g.calls.errors[0].message, 'Model not allowed');
-});
-
-// Per-project budgets: the gate only READS the budget (ceiling + last-known spend); settlement accrues.
-const thisMonth = new Date().toISOString().slice(0, 7);
-const budgetMap = (id, ceiling, spent, month = thisMonth) => ({ M: { [id]: { M: { ceiling_microcents: { N: String(ceiling) }, spent_microcents: { N: String(spent) }, month: { S: month } } } } });
-const PROJECT = { 'x-lightbulb-project-id': 'proj-1' };
-test('a managed-paid request on a project at its ceiling is refused with project_budget_exceeded', async () => {
-  const f = fixture({ budgets: budgetMap('proj-1', 100, 100) }); await handleRequest(f.event(undefined, PROJECT), f.responder, f.deps);
-  assert.equal(f.calls.errors[0].status, 429); assert.equal(f.calls.errors[0].code, 'project_budget_exceeded');
-  assert.equal(JSON.parse(f.calls.errors[0].body()).error.project_id, 'proj-1');
-  assert.equal(f.calls.puts.length, 0); assert.equal(f.calls.forwards.length, 0);
-});
-test('a project under its ceiling, another project, or a stale month passes', async () => {
-  for (const [budgets, headers] of [[budgetMap('proj-1', 100, 99), PROJECT], [budgetMap('proj-1', 100, 100), { 'x-lightbulb-project-id': 'other' }], [budgetMap('proj-1', 100, 100, '2000-01'), PROJECT]]) {
-    const f = fixture({ budgets }); await handleRequest(f.event(undefined, headers), f.responder, f.deps);
-    assert.equal(f.calls.errors.length, 0); assert.equal(f.calls.forwards.length, 1);
-  }
-});
-test('no project header charges the __default__ bucket', async () => {
-  const f = fixture({ budgets: budgetMap('__default__', 5, 5) }); await handleRequest(f.event(), f.responder, f.deps);
-  assert.equal(f.calls.errors[0].code, 'project_budget_exceeded'); assert.equal(JSON.parse(f.calls.errors[0].body()).error.project_id, '__default__');
-});
-test('the project id rides the outbox row so settlement knows what to charge', async () => {
-  const f = fixture(); await handleRequest(f.event(undefined, PROJECT), f.responder, f.deps); assert.equal(f.calls.puts[0].Item.project_id.S, 'proj-1');
-  const g = fixture(); await handleRequest(g.event(), g.responder, g.deps); assert.equal(g.calls.puts[0].Item.project_id.S, '__default__');
-});
-test('a capped owner over a project budget is not hard-blocked (best-effort)', async () => {
-  const f = await runDs(cappedOwners.trial, dsBody(), f => { f.deps.env = dsEnv; });
-  const g = fixture({ balance: null, metronome: false, status: 'trial_local', provider: null, budgets: budgetMap('proj-1', 1, 1) }); g.deps.env = dsEnv;
-  await handleRequest(g.event(dsBody(), PROJECT), g.responder, g.deps);
-  assert.equal(g.calls.errors.length, 0); assert.equal(g.calls.forwards.length, 1); assert.ok(f);
 });
 
 // Real cost x markup stamped on the requests row (microcents = USD x 1e6 x markup, as settlement's debit_microcents).

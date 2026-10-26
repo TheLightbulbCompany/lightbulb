@@ -9,7 +9,7 @@ from uuid import UUID
 import httpx
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, Field
 
 from core.auth import (
     AuthContext,
@@ -313,27 +313,6 @@ async def get_spend(auth: AuthContext = Depends(get_current_user)):
     if auth.is_org_context:
         require_org_admin(auth)
     return SpendResponse(mode="tokens_only")
-
-
-class BudgetUpdate(BaseModel):
-    # pattern == the gate's core.mjs projectIdOf keyspace; anything else would be silently charged __default__.
-    project_id: str = Field(default=billing_repo.DEFAULT_BUDGET_PROJECT, pattern=r"^[\w.:-]{1,128}$")
-    ceiling_microcents: StrictInt = Field(ge=0)
-
-
-@router.get("/budgets", summary="List per-project budgets", operation_id="list_budgets")
-async def list_budgets(auth: AuthContext = Depends(get_current_user)):
-    require_org_admin(auth)
-    return {"budgets": await billing_repo.list_project_budgets(resolve_owner_id(auth))}
-
-
-@router.put("/budgets", summary="Set a per-project budget ceiling", operation_id="set_budget")
-async def set_budget(body: BudgetUpdate, auth: AuthContext = Depends(get_current_user)):
-    require_org_admin(auth)
-    entry = await billing_repo.set_project_budget(resolve_owner_id(auth), body.project_id, body.ceiling_microcents)
-    if entry is None:
-        raise HTTPException(status_code=404, detail="Billing account not found")
-    return {"project_id": body.project_id, **entry}
 
 
 @router.post(

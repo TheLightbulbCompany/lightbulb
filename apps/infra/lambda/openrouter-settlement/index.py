@@ -150,9 +150,8 @@ def _unmarshal(item):
 
 
 class Store:
-    def __init__(self, ddb, *, requests_table, fast_table, keys_table=None, usage_table=None, billing_table=None):
+    def __init__(self, ddb, *, requests_table, fast_table, keys_table=None, usage_table=None):
         self.ddb, self.requests_table, self.fast_table, self.keys_table = ddb, requests_table, fast_table, keys_table
-        self.billing_table = billing_table
         self.usage_table = usage_table
 
     def _spend(self, row, event, actual_nanodollars):
@@ -168,42 +167,6 @@ class Store:
             "UpdateExpression": "ADD total_spend_microdollars :spend",
             "ExpressionAttributeValues": {":spend": {"N": str((actual_nanodollars + 999) // 1000)}},  # USD x 1e6
         }} for period in (event["timestamp"][:7], "lifetime")]
-
-    def _accrue_budget(self, row, debit, now):
-        """Add the settled, marked-up cost to the row's project budget (the only writer of
-        ``spent_microcents``; the gate just reads it). Atomic nested ADD, no read-modify-write. The
-        month stamp resets spend on the first accrual of a new month. A project with no budget entry
-        (``__default__`` never set) has no ceiling to enforce, so there is nothing to accrue.
-        Best-effort after the settle commit: a failure only leaves the budget under-counted."""
-        project = row.get("project_id")
-        if not self.billing_table or not project or not debit:
-            return
-        month = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m")
-        base = {"TableName": self.billing_table, "Key": {"owner_id": {"S": row["owner_id"]}},
-                "ExpressionAttributeNames": {"#p": project, "#m": "month"}}
-        steps = (
-            ("ADD budgets.#p.spent_microcents :cost", "attribute_exists(budgets.#p) AND budgets.#p.#m = :month"),
-            ("SET budgets.#p.spent_microcents = :cost, budgets.#p.#m = :month", "attribute_exists(budgets.#p) AND budgets.#p.#m <> :month"),
-        )
-        values = {":cost": {"N": str(debit)}, ":month": {"S": month}}
-        try:
-            # A concurrent first-of-month accrual flips the month between our two conditions: retry once.
-            for _ in range(2):
-                for expr, condition in steps:
-                    try:
-                        self.ddb.update_item(**base, UpdateExpression=expr, ConditionExpression=condition, ExpressionAttributeValues=values)
-                        return
-                    except Exception as exc:
-                        if getattr(exc, "response", {}).get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-                            raise
-        except Exception as exc:
-            # EMF line -> LightbulbAI metric (same shape as the overshoot line in commit): an under-counted budget is silent money drift.
-            print(json.dumps({"_aws": {"Timestamp": now * 1000, "CloudWatchMetrics": [{
-                "Namespace": "LightbulbAI", "Dimensions": [["env", "service"]],
-                "Metrics": [{"Name": "openrouter.settlement.budget_accrual_failed", "Unit": "Count"}]}]},
-                "env": os.environ.get("GATE_ENV", ""), "service": "openrouter-settlement", "owner_id": row.get("owner_id"),
-                "request_id": row.get("request_id"), "error": exc.__class__.__name__,
-                "openrouter.settlement.budget_accrual_failed": 1}))
 
     def pending(self, page_size=25, max_pages=100):
         rows, cursor = [], None
@@ -391,7 +354,6 @@ class Store:
         ]
         try:
             self.ddb.transact_write_items(TransactItems=transaction)
-            self._accrue_budget(row, debit, now)
             overshoot = debit - int(row["reservation_microcents"])
             if overshoot > 0:
                 # The real debit is kept (Metronome bills it anyway). A charge above the
@@ -716,7 +678,6 @@ def handler(event, context):
         fast_table=os.environ["FAST_GATE_TABLE"],
         keys_table=os.environ.get("OPENROUTER_KEYS_TABLE"),
         usage_table=os.environ.get("USAGE_COUNTERS_TABLE"),
-        billing_table=os.environ.get("BILLING_TABLE"),
     )
     now = int(datetime.now(timezone.utc).timestamp())
     if event.get("retire_keys"):

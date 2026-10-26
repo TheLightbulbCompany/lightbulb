@@ -564,6 +564,22 @@ async def test_members_never_ask_teammates_control_is_their_only_gate(transport)
 
 
 @pytest.mark.asyncio
+async def test_turning_on_team_control_answers_an_old_member_ask_and_keeps_a_link_viewers(transport):
+    sid = await start(transport)
+    await seed_ask(BOB, sid)  # a member's ask left by a client from before the ruling
+
+    def outsider(row):
+        ask = {**service._new_request(), "outsider": True, "name": "Carol (carol@x.com)"}
+        return {**row, "joinRequests": {**row["joinRequests"], CAROL.user_id: ask}}
+
+    await service._change_session(CAROL, sid, outsider, "join_requested", None)
+    assert (await service.get_session(ALICE, sid)).pending_joins == sorted([BOB.user_id, CAROL.user_id])
+    await service.set_team_control(ALICE, sid, True)
+    assert (await service.get_session(ALICE, sid)).pending_joins == [CAROL.user_id]
+    assert (await service.get_session(BOB, sid)).join_request is None
+
+
+@pytest.mark.asyncio
 async def test_allow_lets_exactly_that_person_send(transport):
     sid = await start(transport)
     await ask(BOB, sid)

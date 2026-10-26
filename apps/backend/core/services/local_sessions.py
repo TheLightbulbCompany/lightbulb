@@ -2083,6 +2083,14 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
         if bool(row.get("teamControl")) == enabled:
             return _session_public(row, auth.user_id)
         updated = {**row, "teamControl": enabled, "revision": str(uuid.uuid4())}
+        if enabled:
+            # Members may type now, so a member's pending ask (left by an older client) is answered.
+            # A link viewer's ask (`outsider`) stays: team control does not admit them.
+            updated["joinRequests"] = {
+                who: r
+                for who, r in (row.get("joinRequests") or {}).items()
+                if r.get("state") != "pending" or r.get("outsider")
+            }
         audit = audit_row(owner, row["sessionId"], auth, "team_control_on" if enabled else "team_control_off")
         try:
             await repo.put_session(

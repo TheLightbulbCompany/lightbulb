@@ -11,8 +11,15 @@
      light ground is cream and never pure white. Need paper-white? Write it. */
   --color-white: var(--cream);
 
-  --font-sans: var(--font-source-sans);
-  --font-serif: var(--font-lora-serif);
+  /* Satoshi carries product chrome and display type. Inter is reserved for
+     reading surfaces so controls and message copy remain visually distinct. */
+  --font-sans: var(--font-satoshi), "Avenir Next", "Segoe UI", sans-serif;
+  --font-body: var(--font-inter), "SF Pro Text", "Segoe UI", sans-serif;
+  --font-serif: var(--font-sans);
+  /* Compatibility aliases keep legacy surfaces on the shared UI family
+     without loading the fonts they previously named. */
+  --font-source-sans: var(--font-sans);
+  --font-lora-serif: var(--font-sans);
   --font-mono: var(--font-geist-mono);
 
   /* Brand primitives as Tailwind colours: `bg-cream-deep`, `text-brass`,
@@ -452,8 +459,7 @@
 
   body {
     @apply bg-background text-foreground;
-    /* §05: Source Sans 3 for everything that is not prose. */
-    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+    font-family: var(--font-sans);
   }
 
   /* The one focus recipe. Keyboard focus only (`:focus-visible`, never
@@ -485,18 +491,28 @@
 }
 
 .font-editorial {
-  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
 }
 
 .font-editorial-serif {
-  font-family: var(--font-serif), Georgia, serif;
+  font-family: var(--font-sans);
+}
+
+/* Opt long-form reading surfaces into Inter while headings and controls keep
+   inheriting the Satoshi UI face. */
+:where(.prose, .long-form, .blog-prose) {
+  font-family: var(--font-body);
+}
+
+:where(.prose, .long-form, .blog-prose) :is(h1, h2, h3, h4, h5, h6, button, input, select, textarea) {
+  font-family: var(--font-sans);
 }
 
 .editorial-page {
   min-height: 100vh;
   background: var(--cream);
   color: var(--midnight);
-  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
 }
 
 .editorial-card,

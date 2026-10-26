@@ -10,7 +10,7 @@ vi.mock("@/lib/analytics", () => ({ register: (p: unknown) => register(p) }));
 vi.mock("next/image", () => ({ default: () => null }));
 
 import { Hero } from "../Hero";
-import { headlineCookieScript, headlineVariantProps } from "@/lib/headlineVariant";
+import { headlineCookieScript, headlineVariantProps, parseHeadlineVariant } from "@/lib/headlineVariant";
 
 beforeEach(() => {
   captureSignupCta.mockReset();
@@ -18,34 +18,55 @@ beforeEach(() => {
   document.cookie = "lb_hv=; Max-Age=0; Path=/";
 });
 
-describe("hero: two doors and the headline test", () => {
-  it("links the two buttons and tracks each with the variant", () => {
-    render(<Hero variant="B" />);
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("AI employees your whole team can see.");
-    const setup = screen.getByRole("link", { name: /Request a guided setup/ });
-    const start = screen.getByRole("link", { name: "Start free" });
-    expect(setup).toHaveAttribute("href", "/request-setup");
+describe("hero: one primary door, the trust row and the headline test", () => {
+  it("leads with self-serve, links both buttons and tracks each with the variant", () => {
+    render(<Hero variant="C" />);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      "Autonomous AI agents that live in your team’s chat and do the work.",
+    );
+    const [start, setup] = screen.getAllByRole("link");
+    expect(start).toHaveAccessibleName(/Try Lightbulb free/);
+    expect(start).toHaveClass("lb-btn-p");
     expect(start).toHaveAttribute("href", "/sign-up");
-    fireEvent.click(setup);
+    expect(setup).toHaveAccessibleName("Request a guided setup");
+    expect(setup).toHaveClass("lb-btn-s");
+    expect(setup).toHaveAttribute("href", "/request-setup");
     fireEvent.click(start);
+    fireEvent.click(setup);
     expect(captureSignupCta.mock.calls.map(([o]) => [o.ctaId, o.properties.headline_variant])).toEqual([
-      ["hero_setup", "B"],
-      ["hero_start_free", "B"],
+      ["hero_start_free", "C"],
+      ["hero_setup", "C"],
     ]);
+  });
+
+  it("shows the trust row under the buttons", () => {
+    render(<Hero variant="A" />);
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "30-day free trial",
+      "No credit card required",
+      "2 minute setup",
+    ]);
+  });
+
+  it("treats a cookie from the retired B headline as unassigned", () => {
+    expect(parseHeadlineVariant("B")).toBeNull();
+    document.cookie = "lb_hv=B; Path=/";
+    new Function(headlineCookieScript("C"))();
+    expect(document.cookie).toContain("lb_hv=C");
   });
 
   it("keeps the first variant in a cookie before PostHog starts, and never overwrites it", () => {
     new Function(headlineCookieScript("A"))();
     expect(document.cookie).toContain("lb_hv=A");
     expect(headlineVariantProps()).toEqual({ headline_variant: "A" });
-    new Function(headlineCookieScript("B"))();
+    new Function(headlineCookieScript("C"))();
     expect(document.cookie).toContain("lb_hv=A");
-    expect(document.cookie).not.toContain("lb_hv=B");
+    expect(document.cookie).not.toContain("lb_hv=C");
   });
 
   it("renders the cookie script in the hero and registers the variant", () => {
-    const { container } = render(<Hero variant="B" />);
-    expect(container.querySelector("script")?.innerHTML).toBe(headlineCookieScript("B"));
-    expect(register).toHaveBeenCalledWith({ headline_variant: "B" });
+    const { container } = render(<Hero variant="C" />);
+    expect(container.querySelector("script")?.innerHTML).toBe(headlineCookieScript("C"));
+    expect(register).toHaveBeenCalledWith({ headline_variant: "C" });
   });
 });

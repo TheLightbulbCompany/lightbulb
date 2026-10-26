@@ -44,12 +44,13 @@ fn app_exe() -> PathBuf {
 /// into its agents' shells, which have none. `function name {` so an alias of the same name is
 /// not expanded where the function is defined. The app by absolute path, `cli` so it runs as the
 /// command (`cli::cli_args`); the app itself runs the real tool when it is not running or cannot
-/// share. A missing app, or one that cannot launch (126/127), runs the real tool here.
+/// share. A missing app runs the real tool here. The app's exit code always stands: the app
+/// execs the provider, so retrying on a failure could run the provider twice.
 pub fn block(exe: &Path) -> String {
     let app = format!("'{}'", exe.display().to_string().replace('\'', r"'\''"));
     let function = |tool: &str| {
         format!(
-            "    function {tool} {{ if [ -t 0 ] && [ -t 1 ] && [ -x {app} ]; then {app} cli {tool} \"$@\"; local rc=$?; [ $rc -ne 126 ] && [ $rc -ne 127 ] && return $rc; fi; command {tool} \"$@\"; }}\n"
+            "    function {tool} {{ if [ -t 0 ] && [ -t 1 ] && [ -x {app} ]; then {app} cli {tool} \"$@\"; return; fi; command {tool} \"$@\"; }}\n"
         )
     };
     format!(
@@ -151,15 +152,16 @@ mod tests {
         let b = b();
         assert!(b.starts_with(BEGIN) && b.trim_end().ends_with(END));
         assert!(b.contains("case $- in\n  *i*)"));
-        assert!(b.contains(r#"function claude { if [ -t 0 ] && [ -t 1 ] && [ -x '/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop' ]; then '/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop' cli claude "$@"; local rc=$?; [ $rc -ne 126 ] && [ $rc -ne 127 ] && return $rc; fi; command claude "$@"; }"#));
-        assert!(b.contains(r#"cli codex "$@"; local rc=$?; [ $rc -ne 126 ] && [ $rc -ne 127 ] && return $rc; fi; command codex "$@"; }"#));
+        assert!(b.contains(r#"function claude { if [ -t 0 ] && [ -t 1 ] && [ -x '/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop' ]; then '/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop' cli claude "$@"; return; fi; command claude "$@"; }"#));
+        assert!(b.contains(r#"cli codex "$@"; return; fi; command codex "$@"; }"#));
         // Never whatever owns the `lightbulb` name.
         assert!(!b.contains(".local/bin") && !b.contains("command -v"));
         assert!(block(Path::new("/x/it's/lightbulb-desktop")).contains(r"'/x/it'\''s/lightbulb-desktop' cli claude"));
     }
 
     /// The block in a real zsh and bash (BSD `script` gives it a terminal so `-t 0/1` hold): the
-    /// app routes and its exit code stands; a missing app or a launch failure runs the real tool.
+    /// app routes and its exit code stands, even 126/127 (never a second run); a missing or
+    /// non-executable app runs the real tool.
     #[cfg(target_os = "macos")]
     #[test]
     fn shell_block_runs_the_real_tool_when_the_app_cannot() {
@@ -194,8 +196,11 @@ mod tests {
             }
             let _ = std::fs::remove_file(&app);
             assert!(run(shell).contains("real-claude hi"), "{shell}: no app");
-            script(&app, "exit 126");
-            assert!(run(shell).contains("real-claude hi"), "{shell}: the app cannot launch");
+            std::fs::write(&app, "not a program").unwrap();
+            assert!(run(shell).contains("real-claude hi"), "{shell}: app not executable");
+            script(&app, "exit 127");
+            let out = run(shell);
+            assert!(out.contains("rc=127") && !out.contains("real-claude"), "{shell}: {out}");
             script(&app, "[ \"$1\" = cli ] || exit 99; shift; echo app \"$@\"; exit 3");
             let out = run(shell);
             assert!(out.contains("app claude hi") && out.contains("rc=3"), "{shell}: {out}");

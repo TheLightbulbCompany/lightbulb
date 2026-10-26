@@ -632,21 +632,11 @@ async def require_caller(auth: Caller, room: str) -> None:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
 
 
-def command_caller(owner: str, command: dict) -> Caller:
+def command_caller(owner: str, command: dict) -> AuthContext:
+    """The person who admitted ``command``. Only people command a session; a row an agent or a
+    session admitted before they left the hub is refused at delivery."""
     if "actor" in command:
-        actor = AgentActor.model_validate(command["actor"])
-        if actor.kind == "session":
-            # Only the relay's native-source branch may restore this actor:
-            # it rechecks the source session, pairing and live connection.
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Native source needs device revalidation.")
-        return AgentInvocation(
-            owner,
-            command["roomId"],
-            actor.id,
-            int(command["invocationExpiresAt"]),
-            command["invocationId"],
-            command.get("invocationRequesterId"),
-        )
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only a person can command a session.")
     user = command["actorUserId"]
     return AuthContext(user_id=user, org_id=owner if owner != user else None)
 
@@ -1707,7 +1697,6 @@ async def submit_command(
                 1
                 for item in await repo.list_commands(owner, session_id)
                 if item.get("offlineIdentity")
-                and not item.get("heldFor")  # an unallowed person's held sends are not the owner's backlog
                 and item["state"] not in {"applied", "rejected"}
                 and item["deliverBy"] > now
             )
@@ -1786,8 +1775,7 @@ async def submit_command(
 async def _expire_pending_command(owner: str, sid: str, row: dict) -> dict:
     if row["state"] not in {"pending", "awaiting_approval"} or row["deliverBy"] > int(time.time()):
         return row
-    # Drops heldFor: an expired held send is settled, and a later Allow must never revive it.
-    expired = {k: v for k, v in row.items() if k != "heldFor"}
+    expired = dict(row)
     expired.update(state="rejected", updatedAt=int(time.time()), revision=str(uuid.uuid4()))
     try:
         await repo.replace_command(row, expired)
@@ -2294,77 +2282,7 @@ async def decide_join(
         if decision == "allow" or not answered.get("outsider"):  # 06 §2: a decline to an outsider is not announced
             await _notify_join_answer(row, user_id, action, answered["requestId"])
         await _push_presence(row)
-    # Also on a repeated answer: a release a failure cut short finishes here, and the conditional
-    # write in release_held keeps any one held command from being delivered twice.
-    await release_held(row["ownerId"], row["sessionId"], user_id, decision)
     return _session_public(row, auth.user_id)
-
-
-async def release_held(owner: str, session_id: str, user_id: str, decision: Literal["allow", "decline"]) -> int:
-    """Settle this person's held session sends once the owner answered their ask. Returns how many
-    changed. The session row decides, not ``decision`` (the answer the caller just wrote): they are
-    delivered only while this person may control the session and is still in the workspace, and
-    rejected otherwise. Only unexpired held rows are touched; an expired one stays rejected."""
-    from core.services.local_session_relay import get_local_session_relay, publish_resources_changed
-
-    now = int(time.time())
-    held = [
-        c
-        for c in await repo.list_commands(owner, session_id)
-        if c.get("heldFor") == user_id and c["state"] == "awaiting_approval" and c["deliverBy"] > now
-    ]
-    if not held:
-        return 0
-    row = await repo.get_session(owner, session_id)
-    allowed = (
-        row is not None
-        and row.get("removedAt") is None
-        and may_control(row, user_id)
-        and ((await messaging_repo.get_user_stream(owner, user_id)) or {}).get("active")
-    )
-    decision = "allow" if allowed else "decline"
-    changed = 0
-    for command in held:
-        settled = {k: v for k, v in command.items() if k != "heldFor"}
-        settled.update(updatedAt=now, revision=str(uuid.uuid4()))
-        if decision == "allow":
-            # The ask's 24 h wait is over: from now on it has the ordinary 30 s to reach the Mac.
-            # An offline-queued one keeps waiting for the target's Mac, as it would have unheld.
-            wait = OFFLINE_SEND_SECONDS if command.get("offlineIdentity") else 30
-            settled.update(state="pending", deliverBy=now + wait, releasedAt=now)
-        else:
-            settled["state"] = "rejected"
-        try:
-            # Conditional on the held state and revision this read saw: a racing Allow loses here.
-            await repo.replace_command(command, settled)
-            changed += 1
-            if decision == "decline" and row is not None:
-                capture_session_event(
-                    row,
-                    "local_session_command_settled",
-                    f"{command['requestId']}:rejected:declined",
-                    actor_user_id=user_id,
-                    request_id=command["requestId"],
-                    command_kind="send",
-                    origin="native" if command.get("actor") else "direct",
-                    state="rejected",
-                    offline_queued=False,
-                    outcome_reason="rejected",
-                )
-        except ClientError as exc:
-            # A racing Allow or the expiry pass settled it first: it is theirs.
-            if not messaging_repo._is_cancelled(exc):
-                raise
-    if changed and decision == "decline" and row is not None:
-        # The sender's receipt now reads rejected: hint the workspace so their client refetches.
-        await publish_resources_changed(owner, row["humanUserId"])
-    if changed and decision == "allow":
-        try:
-            await get_local_session_relay().dispatch_session(owner, session_id)
-        except Exception:
-            # Admitted and pending: the device heartbeat retries delivery.
-            logger.warning("held send dispatch failed session=%s", session_id, exc_info=True)
-    return changed
 
 
 async def _admit_outsider(auth: AuthContext, session_id: str, user_id: str, row: dict, request: dict) -> None:
@@ -2555,9 +2473,6 @@ async def _notify_join_request(
     requester: str,
     *,
     kind: str = "join",
-    held_text: str | None = None,
-    held_request_id: str | None = None,
-    activity: bool = True,
 ) -> None:
     """The owner's "needs you" item, a live event and a push. Best effort, each on its own.
     ``kind="pickup"`` is the same item for a request to pick up (spec 2026-10-05-ask-to-pick-up)."""
@@ -2579,43 +2494,32 @@ async def _notify_join_request(
     elif request.get("outsider"):
         title = join_request_title(name, row, again=again)
         body = OUTSIDER_ALLOW_COPY
-    elif held_text is not None:
-        # A held session send (agent network §6): what waits is the message itself.
-        from core.services import notification_copy as copy
-
-        title = _request_title(name, row, "message", again)
-        body = copy.line(held_text, 140) or "Allow them to send follow-ups and answer prompts in this session."
     else:
         title = join_request_title(name, row, again=again)
         body = "Allow them to send follow-ups and answer prompts in this session."
-    # The ask's Needs-you item is keyed by the ask, so a reminder rewrites it; each held message
-    # still gets a notice of its own.
+    # The ask's Needs-you item is keyed by the ask, so a reminder rewrites it.
     event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}"))
-    if activity:  # a later held send is the same ask: one Needs-you item
-        try:
-            await messaging_repo.put_activity_row(
-                {
-                    "pk": messaging_repo.activity_pk(owner, human),
-                    "sk": messaging_repo.activity_sk(created, f"session:{event_id}"),
-                    "kind": "session",
-                    "subtype": "join_request",
-                    "sessionId": sid,
-                    "requesterId": requester,
-                    "requesterName": name,
-                    "requestId": request_id,
-                    "createdAt": created,
-                    "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
-                    **({"request": "pickup"} if pickup else {}),
-                }
-            )
-        except Exception:
-            logger.warning("Session join request activity row failed", exc_info=True)
+    try:
+        await messaging_repo.put_activity_row(
+            {
+                "pk": messaging_repo.activity_pk(owner, human),
+                "sk": messaging_repo.activity_sk(created, f"session:{event_id}"),
+                "kind": "session",
+                "subtype": "join_request",
+                "sessionId": sid,
+                "requesterId": requester,
+                "requesterName": name,
+                "requestId": request_id,
+                "createdAt": created,
+                "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
+                **({"request": "pickup"} if pickup else {}),
+            }
+        )
+    except Exception:
+        logger.warning("Session join request activity row failed", exc_info=True)
     if again:  # its own live event: clients drop one they have already seen
         event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}|{request['askedAt']}"))
-    if held_request_id:
-        event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-held|{sid}|{held_request_id}"))
-    held = {"held": True, "host_device_id": row.get("deviceId")} if held_text is not None else {}
-    await _session_notice(owner, human, sid, "join_request", title, body, event_id, **held)
+    await _session_notice(owner, human, sid, "join_request", title, body, event_id)
 
 
 async def _push_presence(row: dict) -> None:
@@ -2632,9 +2536,6 @@ async def _session_notice(
     title: str,
     body: str,
     event_id: str,
-    *,
-    held: bool = False,
-    host_device_id: str | None = None,
 ) -> None:
     """A live event on ``user``'s own channel and a push, each best effort on its own."""
     from core.services.live_events import get_live_event_publisher
@@ -2648,13 +2549,7 @@ async def _session_notice(
             user,
             make_live_event(
                 "workspace.session.attention",
-                # held: the session's Mac posts its own notification, with Allow and Decline.
-                {
-                    "sessionId": sid,
-                    "state": state,
-                    "push": push,
-                    **({"held": True, "hostDeviceId": host_device_id} if held else {}),
-                },
+                {"sessionId": sid, "state": state, "push": push},
                 event_id=event_id,
             ),
         )

@@ -332,7 +332,6 @@ class TestPrefs:
         mock_repo.timezone_of = real_user_repo.timezone_of
         mock_repo.daily_summary_on = real_user_repo.daily_summary_on
         mock_repo.chat_theme_of = real_user_repo.chat_theme_of
-        mock_repo.agent_send_without_asking = real_user_repo.agent_send_without_asking
         mock_repo.sessions_reachable_from_background_work = real_user_repo.sessions_reachable_from_background_work
 
     @pytest.mark.asyncio
@@ -380,7 +379,6 @@ class TestPrefs:
             daily_summary=None,
             away_email=None,
             chat_theme="dark",
-            agent_send_without_asking=None,
             sessions_reachable_from_background_work=None,
         )
 
@@ -412,7 +410,6 @@ class TestPrefs:
             daily_summary=None,
             away_email=None,
             chat_theme=None,
-            agent_send_without_asking=None,
             sessions_reachable_from_background_work=None,
         )
         # The mocked row already carries chat_theme=dark, so the response still
@@ -422,31 +419,28 @@ class TestPrefs:
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
     async def test_the_agent_session_switches_default_off_and_are_set(self, mock_repo, async_client):
-        """Agents ask until a person turns that off (spec 2026-10-07 §3.4); background work reaches
-        a person's sessions unless they opt out (owner ruling 2026-10-26)."""
+        """Background work reaches a person's sessions unless they opt out (owner ruling 2026-10-26)."""
         self._wire_real_helpers(mock_repo)
         mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
         mock_repo.set_prefs = AsyncMock(return_value=None)
 
         body = (await async_client.get("/api/v1/users/me/prefs")).json()
-        assert (body["agentSendWithoutAsking"], body["sessionsReachableFromBackgroundWork"]) == (False, True)
+        assert body["sessionsReachableFromBackgroundWork"] is True and "agentSendWithoutAsking" not in body
 
         mock_repo.get = AsyncMock(
             return_value={
                 "user_id": "user_test_123",
-                "agent_send_without_asking": True,
                 "sessions_reachable_from_background_work": True,
             }
         )
         response = await async_client.put(
             "/api/v1/users/me/prefs",
-            json={"agentSendWithoutAsking": True, "sessionsReachableFromBackgroundWork": True},
+            json={"sessionsReachableFromBackgroundWork": True},
         )
         assert response.status_code == 200
-        assert response.json()["agentSendWithoutAsking"] is True
         assert response.json()["sessionsReachableFromBackgroundWork"] is True
         kwargs = mock_repo.set_prefs.await_args.kwargs
-        assert kwargs["agent_send_without_asking"] is True and kwargs["sessions_reachable_from_background_work"] is True
+        assert kwargs["sessions_reachable_from_background_work"] is True
 
 
 class TestDeleteMyAccount:

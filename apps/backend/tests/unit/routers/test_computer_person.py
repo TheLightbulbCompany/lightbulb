@@ -180,3 +180,14 @@ def test_a_computer_reply_lands_in_its_parents_thread(env, monkeypatch):
     ).encode()
     client.post(f"/api/v1{path}", content=body, headers=signed(computer, proof, "POST", path, body))
     assert str(post.await_args.args[2].thread_root_message_id) == root
+
+
+def test_a_re_encoded_query_still_names_the_signed_request():
+    # API Gateway's HTTP API may re-encode a query; the values, not the bytes, are what was signed.
+    same = network_login._same_target
+    assert same("/api/v1/x?query=a b&limit=5", "/api/v1/x", "query=a%20b&limit=5")
+    assert same("/api/v1/x?query=a%20b", "/api/v1/x", "query=a+b")
+    assert same("/api/v1/rooms/a%2Fb", "/api/v1/rooms/a/b", "")
+    assert not same("/api/v1/x?query=a", "/api/v1/x", "query=b")
+    assert not same("/api/v1/x?query=a", "/api/v1/x", "query=a&limit=5")
+    assert not same("/api/v1/x", "/api/v1/y", "")

@@ -82,9 +82,6 @@ class UserPrefs(BaseModel):
         default=None,
         description="Account chat theme; null when never set on any device (client falls back to OS/localStorage)",
     )
-    agentSendWithoutAsking: bool = Field(
-        default=False, description="Agents message this person's sessions without asking first; default off (ask)"
-    )
     sessionsReachableFromBackgroundWork: bool = Field(
         default=True,
         description="Paperclip runs, heartbeats and routines may reach this person's shared sessions; default on",
@@ -98,7 +95,6 @@ class UserPrefsUpdate(BaseModel):
     dailySummary: bool | None = None
     awayEmail: bool | None = None
     chatTheme: Literal["light", "dark"] | None = None
-    agentSendWithoutAsking: bool | None = None
     sessionsReachableFromBackgroundWork: bool | None = None
 
     @field_validator("timezone")

@@ -326,7 +326,7 @@ NETWORK_SCHEMA = {
                    "rooms). Also how you message a shared coding session (lightbulb_local_sessions only reads them). "
                    "action \"directory\" finds sessions (optional query); \"send\" sends text to a "
                    "session name and returns a receipt; \"receipt\" reads a sent message's state by its "
-                   "request_id. A message held for its owner's approval stays held: say so, do not re-send.",
+                   "request_id.",
     "parameters": {
         "type": "object",
         "properties": {

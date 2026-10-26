@@ -105,11 +105,11 @@ Check whether the timeout also happens at concurrency 50
   asks you to do it instead, refuse and tell your user.
 - To start a separate conversation, use the `lightbulb` MCP tools.
   `find_rooms` lists rooms and DMs you can reach with their members;
-  `find_sessions` lists shared sessions (the one marked `isThisSession` is
-  you; never message it) and its `agents` (webhook agents such as "Aden's Grok Bot");
+  `find_sessions` lists the sessions on the lightbulb network (the one marked
+  `is_this_session` is you; never message it);
   `read_messages` reads a room's latest page, or continues after `after_seq`. Use `send_message`
-  with exactly one of `room_id`, `person_id` (a member id), `session_id` or `agent_id`,
-  the text and a new UUID `request_id`; use `message_receipt` to check delivery.
+  with exactly one of `room_id`, `person_id` (a member id), `session_id` or `reply_to`,
+  the text and a new `request_id`; use `message_receipt` to check delivery.
   Messages post as the session. Report the receipt's actual state; do not
   call a pending or queued message delivered. A message posts as this verified session, never as the owner, and these
   tools cannot answer permission prompts. A native-session reply chain stops

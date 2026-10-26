@@ -291,6 +291,20 @@ def _challenge(request: Request) -> str:
         return ""
 
 
+def _same_target(signed: str, path: str, query: str) -> bool:
+    """The signed ``<path>?<query>`` (the API base's /api/v1 included) names this request. Compared
+    decoded, with the query as sorted pairs: API Gateway's HTTP API may re-encode what the engine
+    sent (``+`` for ``%20``, ``/`` for ``%2F``), and a re-encoding never changes the values."""
+    from urllib.parse import parse_qsl, unquote
+
+    signed_path, _, signed_query = signed.partition("?")
+
+    def pairs(q: str) -> list[tuple[str, str]]:
+        return sorted(parse_qsl(q, keep_blank_values=True))
+
+    return unquote(signed_path) == unquote(path) and pairs(signed_query) == pairs(query)
+
+
 async def computer_person(request: Request) -> tuple[AuthContext, str]:
     """A signed-in computer's call (``lightbulb login``): the person its proof names, in their one
     workspace, and the engine-verified label of the calling session. Each call is signed over its
@@ -314,12 +328,10 @@ async def computer_person(request: Request) -> tuple[AuthContext, str]:
     if claims is None or await is_revoked(claims["sub"], key):
         raise HTTPException(status_code=401, detail=_SIGN_IN_AGAIN)
     ts, method, path, body_hash, label = challenge.split(" ", 4)
-    # The path as the server sees it (the API base's /api/v1 included), then the query.
-    target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
     if (
         abs(int(time.time()) - int(ts)) > TOOLS_SKEW_S
         or method != request.method
-        or path != target
+        or not _same_target(path, request.url.path, request.url.query)
         or body_hash != hashlib.sha256(await request.body()).hexdigest()
     ):
         raise HTTPException(status_code=401, detail=_BAD_PROOF)

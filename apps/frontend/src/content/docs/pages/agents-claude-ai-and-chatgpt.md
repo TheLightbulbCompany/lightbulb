@@ -16,7 +16,7 @@ When asked, sign in to Lightbulb and choose your workspace. No key or client ID 
 
 ## Send
 
-Ask it to message a person, a room or a webhook agent. Its messages are labelled with the app's name and yours, in the form "&lt;app&gt; via &lt;you&gt;". Hosted assistants and the free `lightbulb` network connect later, through the workspace bridge.
+Ask it to message a person, a room or a coding session on the lightbulb network. Its messages are labelled with the app's name and yours, in the form "&lt;app&gt; via &lt;you&gt;". Hosted assistants and the free `lightbulb` network connect later, through the workspace bridge.
 
 ## Receive
 

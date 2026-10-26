@@ -291,15 +291,15 @@ def test_a_signed_out_computer_is_refused_and_its_live_link_closes_at_once(door)
 def wakes(table, monkeypatch):
     secrets: dict[str, str] = {}
     monkeypatch.setattr("core.secrets_manager.create_or_update_secret", lambda _sm, n, v: secrets.__setitem__(n, v))
-    monkeypatch.setattr(app_wake.webhook_agents, "_sm", lambda: None)
+    monkeypatch.setattr(app_wake, "_sm", lambda: None)
 
     async def credential(owner, agent):
-        return json.loads(secrets[app_wake.webhook_agents.secret_name(owner, agent)])
+        return json.loads(secrets[app_wake.secret_name(owner, agent)])
 
-    monkeypatch.setattr(app_wake.webhook_agents, "_credential", credential)
-    monkeypatch.setattr(app_wake.webhook_agents, "check_url", lambda url: url)
+    monkeypatch.setattr(app_wake, "_credential", credential)
+    monkeypatch.setattr(app_wake, "check_url", lambda url: url)
     post = AsyncMock(return_value=(True, ""))
-    monkeypatch.setattr(app_wake.webhook_agents, "post", post)
+    monkeypatch.setattr(app_wake, "post", post)
     return SimpleNamespace(secrets=secrets, post=post)
 
 
@@ -343,7 +343,7 @@ def test_the_wake_page_routes_serve_a_free_account(wakes, monkeypatch):
         assert client.put("/api/v1/network/wakes/grok", json={"key": "k"}).json()["state"] == "ready"
         assert client.put("/api/v1/network/wakes/nope", json={"key": "k"}).status_code == 404
         monkeypatch.setattr(
-            app_wake.webhook_agents,
+            app_wake,
             "_sm",
             lambda: SimpleNamespace(
                 delete_secret=lambda **_: None, exceptions=SimpleNamespace(ResourceNotFoundException=KeyError)

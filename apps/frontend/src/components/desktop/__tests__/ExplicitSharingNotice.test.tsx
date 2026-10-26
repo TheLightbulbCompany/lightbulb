@@ -13,8 +13,12 @@ beforeEach(() => {
   Object.assign(window, { __TAURI__: { core: { invoke } } });
 });
 
+const sharingOn = (everyNew: boolean | Error = true) => invoke.mockImplementation(async (command: string) => {
+  if (command === "shell_integration_status") { if (everyNew instanceof Error) throw everyNew; return everyNew; }
+  return { enrollment: { enabled: true } };
+});
 it("tells a Mac that shares sessions, once", async () => {
-  invoke.mockResolvedValue({ enrollment: { enabled: true } });
+  sharingOn();
   const first = render(<ExplicitSharingNotice />);
   await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
   const { container } = render(<>{toast.mock.calls[0][0]}</>);
@@ -28,10 +32,23 @@ it("tells a Mac that shares sessions, once", async () => {
 
 it("shows the Cursor and Grok wording once more to someone who dismissed the old notice", async () => {
   localStorage.setItem("lightbulb.desktop.allSessionsNotice", "1");
-  invoke.mockResolvedValue({ enrollment: { enabled: true } });
+  sharingOn();
   render(<ExplicitSharingNotice />);
   await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
   expect(EXPLICIT_SHARING_SEEN_KEY).not.toBe("lightbulb.desktop.allSessionsNotice");
+});
+
+it.each([false, new Error("no command")])("says nothing where sharing is on but new sessions are not shared (%s), and tells it later", async (everyNew) => {
+  sharingOn(everyNew);
+  const first = render(<ExplicitSharingNotice />);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_status"));
+  await Promise.resolve();
+  expect(toast).not.toHaveBeenCalled();
+  expect(localStorage.getItem(EXPLICIT_SHARING_SEEN_KEY)).toBeNull();
+  first.unmount();
+  sharingOn(true);
+  render(<ExplicitSharingNotice />);
+  await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
 });
 
 it("says nothing where sharing is off or outside the desktop app", async () => {

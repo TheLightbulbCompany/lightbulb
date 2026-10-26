@@ -595,14 +595,21 @@ pub(super) fn sender_handle(own: bool, handle: Option<&str>) -> String {
     }
 }
 
-/// Claude's own word for the session. `state` (2.1.289, background rows) is the sharper one:
-/// `blocked` is waiting on its person. A prompt Lightbulb holds open is layered on by the
-/// transport, never inferred here. A background job whose turn is over says `state: done` while
-/// its `status` can stay `busy` for hours; its registry then says `shell` (sitting at its shell).
+/// Claude's own word for the session. `state` (2.1.289, background rows) is the sharper one.
+/// A prompt Lightbulb holds open is layered on by the transport, never inferred here. A
+/// background job whose turn is over says `state: done` while its `status` can stay `busy` for
+/// hours; its registry then says `shell` (sitting at its shell).
+///
+/// `state: blocked` is the job's own hand-off note (`needs: "update the app, then press
+/// Resume"`), written when its recap names a next step for its person; it is a message, not a
+/// dialog. Only `status: waiting` means a prompt is open in the terminal (`waitingFor:
+/// "permission prompt"` / `"input needed"`). A blocked job with no open prompt is idle, so the
+/// clients do not tell the person a prompt waits in a terminal that sits at its shell (seen
+/// 2026-10-26 on the owner's own session).
 pub(super) fn listing_status(row: &Value) -> &'static str {
     match row["state"].as_str() {
         Some("working") => return "busy",
-        Some("blocked") => return "waiting-approval",
+        Some("blocked") => return if row["status"].as_str() == Some("waiting") { "waiting-approval" } else { "idle" },
         Some("done" | "idle") => return "idle",
         _ => {}
     }
@@ -2355,8 +2362,11 @@ mod tests {
         assert_eq!(listing_status(&json!({"status":"waiting"})), "waiting-approval");
         assert_eq!(listing_status(&json!({"status":"busy"})), "busy");
         assert_eq!(listing_status(&json!({})), "unknown");
-        // 2.1.289 background rows: `state` is Claude's sharper word.
-        assert_eq!(listing_status(&json!({"status":"idle","state":"blocked"})), "waiting-approval");
+        // 2.1.289 background rows: `state` is Claude's sharper word. `blocked` is the job's own
+        // hand-off note unless a prompt is open (`status: waiting`).
+        assert_eq!(listing_status(&json!({"status":"idle","state":"blocked"})), "idle");
+        assert_eq!(listing_status(&json!({"status":"busy","state":"blocked","needs":"press Resume once"})), "idle");
+        assert_eq!(listing_status(&json!({"status":"waiting","state":"blocked","waitingFor":"permission prompt"})), "waiting-approval");
         assert_eq!(listing_status(&json!({"status":"busy","state":"working"})), "busy");
         assert_eq!(listing_status(&json!({"status":"idle","state":"done"})), "idle");
         // A finished background job: its listing keeps a stale `busy` beside `state: done`.

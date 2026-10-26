@@ -192,7 +192,8 @@ async def approve(ctx: AuthContext, user_code: str) -> dict:
         # person's hosted apps can reach the network through it.
         result = {
             "name": await _name(ctx.user_id),
-            "proof": network_proof.mint(row["computerKey"], ctx.user_id),
+            # The browser's active workspace is the one this computer's workspace tools act in.
+            "proof": network_proof.mint(row["computerKey"], ctx.user_id, org=ctx.org_id),
             "routeUrl": route_url(),
         }
         await unrevoke(ctx.user_id, row["computerKey"])
@@ -220,7 +221,7 @@ async def refresh(key: str, nonce: str, sig: str, proof: str) -> dict:
     await require_live_user(claims["sub"])
     if claims["exp"] - int(time.time()) > REFRESH_BEFORE_S:
         return {"proof": proof}
-    return {"proof": network_proof.mint(key, claims["sub"], auth_time=claims.get("auth_time"))}
+    return {"proof": network_proof.mint(key, claims["sub"], auth_time=claims.get("auth_time"), org=claims.get("org"))}
 
 
 # --- Remote sign-out: a person signs one of their computers out from the website ---------------
@@ -350,8 +351,8 @@ def _same_target(signed: str, path: str, query: str) -> bool:
 
 
 async def computer_person(request: Request) -> tuple[AuthContext, str]:
-    """A signed-in computer's call (``lightbulb login``): the person its proof names, in their one
-    workspace, and the engine-verified label of the calling session. Each call is signed over its
+    """A signed-in computer's call (``lightbulb login``): the person its proof names, in the
+    workspace chosen at login, and the engine-verified label of the calling session. Each call is signed over its
     method, path, query, body hash and a timestamp, and is good once, within ``TOOLS_SKEW_S``."""
     import hashlib
 
@@ -395,11 +396,20 @@ async def computer_person(request: Request) -> tuple[AuthContext, str]:
         organizations = await clerk_admin.list_user_organizations(claims["sub"], limit=100, strict=True)
     except Exception as exc:  # noqa: BLE001 -- Clerk could not say: fail closed
         raise HTTPException(status_code=503, detail="Lightbulb could not check your workspace. Try again.") from exc
-    # ponytail: one workspace per person; add a workspace choice to the signed challenge when someone has two
-    if len(organizations) != 1:
+    # The workspace chosen at login (the proof's ``org``), while the person is still in it. A
+    # proof without one (minted before it was carried) works only for a one-workspace person.
+    if claims.get("org"):
+        org = next((o for o in organizations if o.get("id") == claims["org"]), None)
+        if org is None:
+            raise HTTPException(
+                status_code=403, detail="You are no longer in the workspace this computer signed in for."
+            )
+    elif len(organizations) == 1:
+        org = organizations[0]
+    else:
         raise HTTPException(
             status_code=409,
-            detail="WORKSPACE_REQUIRED: this computer's person must be in exactly one Lightbulb workspace.",
+            detail="WORKSPACE_REQUIRED: this computer's person must be in exactly one Lightbulb workspace. "
+            "Sign it in again with your workspace selected: lightbulb login",
         )
-    org = organizations[0]
     return AuthContext(user_id=claims["sub"], org_id=org["id"], org_role=org.get("role")), label

@@ -53,7 +53,7 @@ describe("confirm a lightbulb computer", () => {
     render(<NetworkConfirmPage />);
     expect(s.post).not.toHaveBeenCalled(); // nothing is looked up before a code is typed
     typeCode();
-    expect(await screen.findByText("Sign in Ada's Mac as you?")).toBeInTheDocument();
+    expect(await screen.findByText("Sign in Ada's Mac as you, for Acme?")).toBeInTheDocument();
     expect(s.post).toHaveBeenCalledWith("/network/device/describe", { userCode: "ABCD-EFGH" });
     expect(screen.getByText(/Requested 5 seconds ago from 203\.0\.113\.7/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Sign in this computer" }));
@@ -66,7 +66,8 @@ describe("confirm a lightbulb computer", () => {
     describes("login");
     render(<NetworkConfirmPage />);
     typeCode();
-    expect(await screen.findByRole("button", { name: "Sign in this computer" })).toBeInTheDocument();
+    expect(await screen.findByText("Sign in Ada's Mac as you?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in this computer" })).toBeInTheDocument();
   });
 
   it("agents asks about the selected workspace and says to allow it after", async () => {

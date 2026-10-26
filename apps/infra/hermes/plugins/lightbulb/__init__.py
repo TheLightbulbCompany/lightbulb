@@ -259,51 +259,35 @@ def _register_redaction_default() -> int:
     return _register_redaction(register_redaction_patterns)
 
 
-# Task 14: lightbulb_local_sessions tool
+# Task 14: lightbulb_local_sessions tool -- read-only: an agent messages a session with lightbulb_network
 SESSIONS_UNAVAILABLE = "Lightbulb local sessions unavailable"
 SESSIONS_MAX_BYTES = 2 * 1024 * 1024
-ASK_REFUSALS = {
-    "LOCAL_SESSION_ASK_PENDING": "your ask on this session still waits for its owner; do not ask again.",
-    "LOCAL_SESSION_ASK_DECLINED": "the session's owner declined your message; do not ask again in this run.",
-}
 _OPAQUE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,256}$")
 # Strict per-action allowlist: an unexpected param is a bug, not something to ignore.
 _ACTION_PARAMS = {
     "resources": {"action"},
     "read": {"action", "sessionId", "afterSeq", "limit"},
-    "send": {"action", "sessionId", "requestId", "expectedGeneration", "expectedTurnId", "text", "kind"},
-    "receipt": {"action", "sessionId", "requestId"},
 }
 
 SESSIONS_SCHEMA = {
     "name": "lightbulb_local_sessions",
-    "description": "Read and message people's shared Claude Code/Codex sessions. Check a "
-                   "session's agentSend first: \"direct\" goes straight in (the session of the "
-                   "person who woke you, or its owner allows it); \"ask\" returns "
-                   "awaiting_approval and its owner chooses Send or Decline -- ask once, say so "
-                   "in your reply, never re-ask under a new requestId; declined is final for this "
-                   "run. kind \"interrupt\" stops the session's turn: no text, and expectedTurnId = "
-                   "the session's activeTurnId (also needed to steer a busy session).",
+    "description": "Read people's shared Claude Code/Codex sessions: \"resources\" lists them, \"read\" "
+                   "pages one's events. To message a session, use lightbulb_network.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["resources", "read", "send", "receipt"]},
-            "sessionId": {"type": "string"}, "requestId": {"type": "string"},
-            "expectedGeneration": {"type": "string"}, "text": {"type": "string", "maxLength": 8192},
-            "expectedTurnId": {"type": "string", "description": "The session's activeTurnId."},
+            "action": {"type": "string", "enum": ["resources", "read"]},
+            "sessionId": {"type": "string"},
             "afterSeq": {"type": "integer", "minimum": 0},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-            "kind": {"type": "string", "enum": ["send", "interrupt"]},
         },
         "required": ["action"],
     },
 }
 
 
-def _call_sessions(method: str, url: str, token: str, body: dict | None = None) -> dict:
-    request = urllib.request.Request(
-        url, data=json.dumps(body).encode() if body is not None else None,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}, method=method)
+def _call_sessions(method: str, url: str, token: str) -> dict:
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method=method)
     with urllib.request.urlopen(request, timeout=10) as res:
         if res.status // 100 != 2 or res.status in (301, 302, 303, 307, 308):
             raise RuntimeError(f"status {res.status}")
@@ -317,56 +301,20 @@ def _local_sessions(args: dict, *, session_id: str = "", **_kw) -> str:
     action = args.get("action")
     allowed = _ACTION_PARAMS.get(action)
     if allowed is None:
-        return "action must be one of resources|read|send|receipt."
+        return "action must be one of resources|read."
     extra = set(args) - allowed
     if extra:
         return f"Params not allowed for action {action}: {', '.join(sorted(extra))}."
     base = f"{ctx['apiUrl'].rstrip('/')}/api/v1/messaging/local-session-agent"
     token, sid = ctx["localSessionToken"], str(args.get("sessionId") or "")
-    if action != "resources" and not _UUID_RE.match(sid):
-        return "Invalid sessionId: expected a session UUID."
     try:
         if action == "resources":
             return json.dumps(_call_sessions("GET", f"{base}/resources", token))
-        if action == "read":
-            after = max(0, int(args.get("afterSeq") or 0))
-            limit = min(100, max(1, int(args.get("limit") or 50)))
-            return json.dumps(_call_sessions(
-                "GET", f"{base}/sessions/{sid}/events?afterSeq={after}&limit={limit}", token))
-        request_id = str(args.get("requestId") or "")
-        if not _OPAQUE_RE.match(request_id):
-            return "requestId is required and must be an opaque token."
-        if action == "receipt":
-            return json.dumps(_call_sessions("GET", f"{base}/sessions/{sid}/commands/{request_id}", token))
-        generation = str(args.get("expectedGeneration") or "")
-        if not _OPAQUE_RE.match(generation):
-            return "expectedGeneration is required (take it from the resources listing)."
-        kind = args.get("kind") or "send"
-        if kind not in ("send", "interrupt"):
-            return "kind must be send or interrupt."
-        body = {"requestId": request_id, "expectedGeneration": generation, "kind": kind}
-        turn_id = str(args.get("expectedTurnId") or "")
-        if turn_id:
-            if not _OPAQUE_RE.match(turn_id):
-                return "expectedTurnId must be the session's activeTurnId."
-            body["expectedTurnId"] = turn_id
-        elif kind == "interrupt":
-            return "An interrupt needs expectedTurnId (the session's activeTurnId from resources or read)."
-        if kind == "send":  # the backend refuses text on an interrupt
-            text = str(args.get("text") or "").strip()
-            if not text:
-                return "text is required."
-            body["text"] = text
-        return json.dumps(_call_sessions("POST", f"{base}/sessions/{sid}/commands", token, body))
-    except urllib.error.HTTPError as exc:
-        # The two ask bounds steer the agent's next step, so their code (only) reaches it.
-        try:
-            code = json.loads(exc.read(4096) or b"{}").get("code")
-        except Exception:  # noqa: BLE001
-            code = None
-        if code in ASK_REFUSALS:
-            return f"{code}: {ASK_REFUSALS[code]}"
-        return SESSIONS_UNAVAILABLE
+        if not _UUID_RE.match(sid):
+            return "Invalid sessionId: expected a session UUID."
+        after = max(0, int(args.get("afterSeq") or 0))
+        limit = min(100, max(1, int(args.get("limit") or 50)))
+        return json.dumps(_call_sessions("GET", f"{base}/sessions/{sid}/events?afterSeq={after}&limit={limit}", token))
     except Exception:  # noqa: BLE001 — no status, no URL, no detail reaches the agent
         return SESSIONS_UNAVAILABLE
 
@@ -375,10 +323,10 @@ def _local_sessions(args: dict, *, session_id: str = "", **_kw) -> str:
 NETWORK_SCHEMA = {
     "name": "lightbulb_network",
     "description": "Messages to people's computers and their agents on the Lightbulb network (not "
-                   "rooms, and not your local coding sessions; for those use lightbulb_local_sessions). "
+                   "rooms). Also how you message a shared coding session (lightbulb_local_sessions only reads them). "
                    "action \"directory\" finds sessions (optional query); \"send\" sends text to a "
                    "session name and returns a receipt; \"receipt\" reads a sent message's state by its "
-                   "request_id. A message held for its owner's approval stays held: say so, do not re-send.",
+                   "request_id.",
     "parameters": {
         "type": "object",
         "properties": {

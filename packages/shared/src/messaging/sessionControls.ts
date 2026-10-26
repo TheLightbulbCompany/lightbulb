@@ -9,22 +9,19 @@ import type {
   LocalSessionAuditEntry,
   LocalSessionEvent,
   LocalSessionPendingApproval,
-  PrivateSendApproval,
 } from "./types";
 import type { createMessagingClient } from "./client";
 import { canonicalJson, hasHiddenChars } from "./localSessionTranscript";
 import { AUTO_CHECK_INTERVAL_MS, receiptChip, type SessionCommandAttempt, type SessionReceiptChip } from "./useSessionCommand";
 
 type Client = Pick<ReturnType<typeof createMessagingClient>,
-  "submitLocalSessionCommand" | "cancelLocalSessionCommand" | "listLocalSessionOutbox" | "getPrivateSendApproval"
+  "submitLocalSessionCommand" | "cancelLocalSessionCommand" | "listLocalSessionOutbox"
   | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
   | "setLocalSessionSharing" | "requestLocalSessionJoin" | "requestLocalSessionPickupAccess" | "removeLocalSessionSender"
   | "resumeLocalSession" | "revokeLocalSessionResume" | "getLocalSessionCommand" | "getLocalSession">;
 
 /** A session client that may predate the control routes (test doubles, older callers). */
 export type SessionControlClient = Pick<Client, "submitLocalSessionCommand"> & Partial<Omit<Client, "submitLocalSessionCommand">>;
-
-export type { PrivateSendApproval };
 
 /**
  * Who may use a session's controls (owner ruling 2026-09-25): its owner, any

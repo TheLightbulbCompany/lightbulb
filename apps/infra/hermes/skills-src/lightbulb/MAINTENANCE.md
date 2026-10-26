@@ -16,8 +16,8 @@ stale text until it was deleted). Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`
 (`terminal`, `file`, `web`, `memory`, `skills`, `browser`, `secrets`) plus our
 own plugin tools in `apps/infra/hermes/plugins/lightbulb/__init__.py`
-(`send_room_message`, `hire_suggestion`, `request_approval`, `suggest_idea`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — its direct-or-ask
-send rule is `agent_command` in `apps/backend/core/services/local_sessions.py`).
+(`send_room_message`, `hire_suggestion`, `request_approval`, `suggest_idea`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — read-only, `resources` and `read`;
+an agent messages a session with `lightbulb_network`, through the engine).
 
 MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   code. This skill is the fleet's knowledge of the platform. It is SPLIT: a
@@ -142,7 +142,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md ("Browsing");
                                  apps/frontend/src/components/messaging/SessionBrowserTab.tsx + LocalSessionPanel.tsx (the tab);
                                  BrowserFrameView.tsx (session mode); routes /messaging/sessions/{id}/browser/{viewing,input}
-                                 native_mcp.rs + native_tools.rs (use_browser); apps/backend/core/services/hosted_mcp.py (use_browser); routers/messaging.py (/local-sessions/device/sessions/{id}/browser-place)
+                                 the engine's `lightbulb` MCP (use_browser, signed by the computer); apps/backend/core/services/session_browser.py (place_by_native);
+                                 routers/messaging.py (/local-sessions/device/sessions/browser-place, computer_person)
   - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row, a pointer only) + references/surfaces.md
                               (Browser row: "Which tool", extensions, recording, downloads) +
                               references/platform-primitives.md (pointer)

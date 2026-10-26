@@ -22,11 +22,10 @@ import time
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-# ponytail: proofs are not revocable before exp (30 d); removing a person from the workspace is
-# instant via members. Shorten LIFE_S (the engine refreshes 7 d before exp) if that matters.
+# A proof stays valid until exp (30 d); a person signs a computer out with
+# ``network_login.revoke``, which every checker (refresh, route link, tool calls, engines'
+# ``revoked_keys``) honours. Removing a person from the workspace is instant via members.
 LIFE_S = 30 * 86_400
-# A renewal keeps the original browser login's ``auth_time``; past this the person logs in again.
-MAX_AUTH_AGE_S = 90 * 86_400
 MAX_TOKEN = 4096
 
 

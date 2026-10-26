@@ -288,6 +288,9 @@ def reload_sessions() -> int:
     # answers only computers whose sign-in proof names one of these people.
     if "members" in data:
         params["members"] = data["members"]
+    # The engine replaces its revoked set on every set (absent is none), so a sign-out
+    # (``network_login.revoke``) reaches a warm engine only if the reload carries it.
+    params["revoked_keys"] = data.get("revoked_keys") or []
     ask("cloud.sessions.set", params)
     _sessions = data
     SESSIONS_FILE.write_bytes(raw)

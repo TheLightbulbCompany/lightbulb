@@ -10,8 +10,9 @@ const s = vi.hoisted(() => ({
   get: vi.fn(),
   put: vi.fn(),
   del: vi.fn(),
+  post: vi.fn(),
 }));
-vi.mock("@/lib/api", () => ({ useApi: () => ({ get: s.get, put: s.put, del: s.del, post: vi.fn() }) }));
+vi.mock("@/lib/api", () => ({ useApi: () => ({ get: s.get, put: s.put, del: s.del, post: s.post }) }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: true, isSignedIn: s.signedIn }),
   SignIn: () => <div>sign in</div>,
@@ -39,6 +40,14 @@ describe("your apps on the network", () => {
     expect((select as HTMLSelectElement).value).toBe("k1");
     fireEvent.change(select, { target: { value: "k2" } });
     await waitFor(() => expect(s.put).toHaveBeenCalledWith("/network/apps/route", { clientId: "c1", key: "k2" }));
+  });
+
+  it("signs out one of your connected computers", async () => {
+    page();
+    const buttons = await screen.findAllByRole("button", { name: "Sign out" });
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[1]);
+    await waitFor(() => expect(s.post).toHaveBeenCalledWith("/network/computers/k2/sign-out", {}));
   });
 
   it("signed out shows sign-in", () => {

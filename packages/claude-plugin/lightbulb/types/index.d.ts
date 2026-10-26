@@ -1,6 +1,5 @@
 export type Viewer = { userId: string; name: string; canType: boolean; typing: boolean }
-/** `agent_message`: an agent asks to message this session (`userId` is the agent's id); `action` and `text` come with it. */
-export type JoinRequest = { userId: string; name: string; requestId: string; kind: 'join' | 'pickup' | 'agent_message'; action?: 'send' | 'interrupt'; text?: string }
+export type JoinRequest = { userId: string; name: string; requestId: string; kind: 'join' | 'pickup' }
 export type Continued = { from: string; title: string | null }
 export type TypedBy = { userId: string; name: string }
 export type SessionState = {

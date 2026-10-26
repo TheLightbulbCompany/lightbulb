@@ -76,6 +76,7 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
     from core.services.company_identity import slugify
     from core.services.hermes_profiles import put_owner_object
     from core.services.messaging import load_agent_roster
+    from core.services import network_login
     from core.services.website_logins import _humans_to_ask
 
     roster, org, members = await asyncio.gather(
@@ -108,8 +109,10 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
         "workspace": (org or {}).get("name") or owner_id,
         "sessions": sessions + apps,
         "wake": wake,
-        # The sidecar's gate: only computers whose sign-in proof names one of these people.
+        # The sidecar's gate: only computers whose sign-in proof names one of these people, and
+        # never a computer its person signed out (``network_login.revoke``).
         "members": members,
+        "revoked_keys": await network_login.revoked_keys(members),
     }
     if prior.get("joined"):
         doc["joined"] = True  # on a network an admin added it to (``join_network``)
@@ -283,13 +286,24 @@ async def _asked(owner_id: str, target: str) -> list[str]:
     return [h for h in humans if app_person(h) == app[1]]
 
 
+async def _invalidate_activity(owner_id: str, user_id: str) -> None:
+    from core.services.live_events import get_live_event_publisher
+    from core.services.messaging import make_live_event
+
+    try:
+        await get_live_event_publisher().publish_user(
+            owner_id, user_id, make_live_event("runtime.resource.invalidated", {"resource": "activity"})
+        )
+    except Exception:  # noqa: BLE001 -- the badge catches up on the next focus
+        logger.warning("network hold activity live event failed owner=%s", owner_id)
+
+
 async def hold_notice(owner_id: str, notice: dict) -> None:
     """The bridge's content-free notice ``{holdId, state, label, target}``: ``open`` files one
     Needs-you item per person asked (once per hold), ``closed`` resolves it for all of them."""
     from botocore.exceptions import ClientError
 
     from core.repositories import messaging_repo
-    from core.services.webhook_agents import _invalidate_activity
 
     hold_id = notice["holdId"]
     key = _hold_key(owner_id, hold_id)
@@ -338,7 +352,6 @@ async def hold_notice(owner_id: str, notice: dict) -> None:
 
 async def _file_hold_items(owner_id: str, hold: dict) -> None:
     from core.repositories import messaging_repo
-    from core.services.webhook_agents import _invalidate_activity
 
     asked = hold.get("askedUserIds") or []
     sk = messaging_repo.activity_sk(hold["createdAt"], hold_item_id(hold["holdId"]))

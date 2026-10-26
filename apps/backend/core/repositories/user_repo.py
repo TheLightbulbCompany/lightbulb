@@ -231,12 +231,6 @@ def chat_theme_of(row: dict | None) -> str | None:
     return theme if theme in ("light", "dark") else None
 
 
-def agent_send_without_asking(row: dict | None) -> bool:
-    """``users.agent_send_without_asking``: agents message this person's sessions without an
-    ask (spec 2026-10-07-agent-session-approval). Absent means OFF: they ask."""
-    return (row or {}).get("agent_send_without_asking") is True
-
-
 def sessions_reachable_from_background_work(row: dict | None) -> bool:
     """``users.sessions_reachable_from_background_work``: Paperclip runs, heartbeats and
     routines may reach this person's shared sessions. Absent means ON (owner ruling 2026-10-26:
@@ -251,7 +245,6 @@ async def set_prefs(
     daily_summary: bool | None = None,
     away_email: bool | None = None,
     chat_theme: str | None = None,
-    agent_send_without_asking: bool | None = None,
     sessions_reachable_from_background_work: bool | None = None,
 ) -> None:
     """Scoped SET of the given prefs on an existing row (no-op when the row is
@@ -264,7 +257,6 @@ async def set_prefs(
             ("daily_summary", daily_summary),
             ("away_email", away_email),
             ("chat_theme", chat_theme),
-            ("agent_send_without_asking", agent_send_without_asking),
             ("sessions_reachable_from_background_work", sessions_reachable_from_background_work),
         )
         if v is not None

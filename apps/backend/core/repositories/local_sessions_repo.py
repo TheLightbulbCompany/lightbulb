@@ -69,8 +69,6 @@ def pairing_condition(
     user_id: str,
     device_id: str,
     cli_device_id: str | None,
-    *,
-    also: tuple[str, str] | None = None,
 ) -> dict:
     names = {"#pd": "paired_devices", "#mac": device_id, "#uid": "userId", "#client": "clientId"}
     values = {":user": user_id, ":mac": "openclaw-macos"}
@@ -79,11 +77,6 @@ def pairing_condition(
         names["#cli"] = cli_device_id
         values[":cli"] = "node-host"
         expression += " AND #pd.#cli.#uid = :user AND #pd.#cli.#client = :cli"
-    if also is not None and also != (user_id, device_id):
-        source_user, source_device = also
-        names.update({"#sourceMac": source_device, "#sourceUid": "userId", "#sourceClient": "clientId"})
-        values.update({":sourceUser": source_user, ":sourceMac": "openclaw-macos"})
-        expression += " AND #pd.#sourceMac.#sourceUid = :sourceUser AND #pd.#sourceMac.#sourceClient = :sourceMac"
     return {
         "ConditionCheck": {
             "TableName": container_repo._get_table().name,
@@ -242,7 +235,7 @@ def room_conditions(owner: str, human: str, receipt: dict, *, include_meta: bool
     owner_check = [active_stream(human)] if (receipt.get("actor") or {}).get("kind") == "agent" else []
     if not room:
         # An offline teammate's old token is not authority at delivery time.
-        sender = receipt.get("actorUserId") or receipt.get("sourceHumanUserId")
+        sender = receipt.get("actorUserId")
         if receipt.get("offlineIdentity") and sender != human:
             return [active_stream(sender)]
         return owner_check
@@ -325,7 +318,6 @@ async def admit_command(
     *,
     allow_offline: bool = False,
     extra: Sequence[dict] = (),
-    source_pairing: tuple[str, str] | None = None,
     room_meta_fenced_by_extra: bool = False,
 ) -> None:
     owner, human, device = row["ownerId"], row["humanUserId"], row["deviceId"]
@@ -334,7 +326,7 @@ async def admit_command(
     await store._transact(
         room_conditions(owner, human, receipt, include_meta=not room_meta_fenced_by_extra)
         + [
-            pairing_condition(owner, human, device, None, also=source_pairing),
+            pairing_condition(owner, human, device, None),
             enrollment_condition(enrollment),
             {
                 "Update": {

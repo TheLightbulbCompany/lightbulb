@@ -213,43 +213,6 @@ async def test_an_end_never_replaces_the_start_id_its_run_registered(transport):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["none", "member", "expiry"])
-async def test_agent_dispatch_uses_typed_author_and_fences_revocation_or_expiry(transport, db, monkeypatch, change):
-    from core.services import local_session_grants as grants
-
-    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
-    db[0].put_item(Item={"pk": f"ROOM#{ROOM}", "sk": "MEMBER#agent#friday", "kind": "agent", "id": "friday"})
-    caller = grants.verify(grants.mint(OWNER, ROOM, "friday", OTHER_ROOM, ALICE.user_id))
-    sid = await start(transport)
-    await service.submit_command(caller, ROOM, sid, command(service))
-    transport[3].clear()
-    real = messaging_repo._transact
-    fired = False
-
-    async def race(items):
-        nonlocal fired
-        if not fired and any(op.get("Put", {}).get("Item", {}).get("state") == "dispatched" for op in items):
-            fired = True
-            if change == "member":
-                db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": "MEMBER#agent#friday"})
-            elif change == "expiry":
-                monkeypatch.setattr(time, "time", lambda: caller.expires_at)
-        await real(items)
-
-    with patch.object(messaging_repo, "_transact", race):
-        await relay(transport).dispatch_session(OWNER, sid)
-    assert fired
-    if change == "none":
-        wire = transport[3][0][1]["command"]
-        assert wire["actor"] == {"kind": "agent", "id": "friday"}
-        assert "actorUserId" not in wire and "invocationId" not in wire
-        assert wire["invocationExpiresAt"] == caller.expires_at
-    else:
-        assert transport[3] == []
-        assert (await repo.get_command(OWNER, sid, "request-1"))["state"] != "dispatched"
-
-
-@pytest.mark.asyncio
 async def test_dispatch_labels_the_sender_with_room_handle_and_name(transport, db):
     from core.services.messaging import with_human_handles
 
@@ -332,7 +295,6 @@ async def test_dispatch_names_a_person_who_sent_from_no_room(transport, monkeypa
     # A failed lookup answers the bare id: no label, never an opaque id in the terminal.
     names.return_value = BOB.user_id
     assert await relay_module._actor_label({"roomId": "", "actorUserId": BOB.user_id}) is None
-    assert await relay_module._actor_label({"roomId": "", "actor": {"kind": "agent", "id": "friday"}}) is None
 
 
 @pytest.mark.asyncio
@@ -2500,43 +2462,6 @@ async def test_subagent_events_round_trip_and_a_long_background_end_notifies_onc
 
 
 @pytest.mark.asyncio
-async def test_same_mac_native_session_send_names_each_item_once_and_dispatches(transport, monkeypatch):
-    source = await start(transport)
-    target = (await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-2")))[
-        "sessionId"
-    ]
-    now = time.time()
-    monkeypatch.setattr(time, "time", lambda: now)
-    sent = await service.submit_command(
-        ALICE,
-        None,
-        target,
-        command(service),
-        source_session_id=source,
-        source_generation="generation-1",
-        source_turn_id="turn-1",
-        native_hop=1,
-        source_pairing=(ALICE.user_id, MAC),
-    )
-    transactions, transact = [], messaging_repo._transact
-
-    async def recorded(items):
-        transactions.append(items)
-        await transact(items)
-
-    monkeypatch.setattr(messaging_repo, "_transact", recorded)
-    await relay(transport).dispatch_session(OWNER, target)
-    assert transactions
-    for items in transactions:
-        keys = [
-            (op["TableName"], json.dumps(op.get("Key") or {k: op["Item"][k] for k in ("pk", "sk")}, sort_keys=True))
-            for item in items
-            for op in item.values()
-        ]
-        assert len(keys) == len(set(keys))
-    assert (await repo.get_command(OWNER, target, sent.request_id))["state"] == "dispatched"
-
-
 @pytest.fixture
 def thread_hops(monkeypatch):
     """Every DynamoDB call, Management API post and AppSync signature is one job on the default
@@ -2603,22 +2528,6 @@ async def test_a_heartbeat_reports_the_time_of_each_of_its_steps(transport):
     finally:
         module.frame_steps.reset(token)
     assert set(steps) == {"connect", "screens", "renew", "resume", "pickup", "watching", "presence"}
-
-
-@pytest.mark.asyncio
-async def test_a_hosted_client_follow_up_is_labelled_with_its_client_and_person(monkeypatch):
-    from core.services import local_session_relay as relay_module, session_presence
-
-    command = {"roomId": "", "actorUserId": "user_a", "viaClient": "Claude Code"}
-    monkeypatch.setattr(session_presence, "human_display_name", AsyncMock(return_value="Ann"))
-    assert await relay_module._actor_label(command) == {
-        "kind": "human",
-        "handle": None,
-        "displayName": "Claude Code via Ann",
-    }
-    # A Clerk failure only blurs the label; dispatch still goes out.
-    monkeypatch.setattr(session_presence, "human_display_name", AsyncMock(side_effect=RuntimeError("clerk down")))
-    assert (await relay_module._actor_label(command))["displayName"] == "Claude Code via A teammate"
 
 
 @pytest.mark.asyncio

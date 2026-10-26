@@ -125,7 +125,6 @@ FEATURES = [
     "sessionStats",
     "sessionSubagents",
     "nativeControlCapabilities",
-    "privateSendApproval",
     "liveTerminal",
     "remoteInput",
     "sessionTerminal",
@@ -209,7 +208,6 @@ class Events(ContractModel):
     batch_id: sessions.OpaqueId
     after_seq: int = Field(ge=0, lt=10**20 - 33)
     events: list[Event] = Field(min_length=1, max_length=32)
-    private_approval: sessions.PrivateSendApproval | None = None
 
 
 class Receipt(ContractModel):
@@ -273,83 +271,26 @@ def _conflict(reason: str, **fields: object) -> ApiProblem:
     return ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed; reconcile before retrying.")
 
 
-async def _actor_label(command: dict, owner_human: str | None = None, owner: str | None = None) -> dict | None:
-    """Handle and name of the sender; the desktop shows it in the owner's terminal. The room's
-    member row when there is one; a person with no room (a follow-up sent from the session's own
-    page stores roomId "") or no row in it still gets the name presence shows. An agent's send
-    that a person approved says so: "Friday, approved by you" to the session's owner
-    (``owner_human``), "Friday, approved by Sam" when a teammate under team control approved."""
-    label = await _sender_label(command, owner, owner_human)
-    if label is None or not command.get("approvedBy"):
-        return label
-    from core.services.session_presence import _name
-
-    approver = command["approvedBy"]
-    by = "you" if approver == owner_human else await _name(approver)
-    return {**label, "displayName": f"{label.get('displayName') or 'An agent'}, approved by {by}"}
-
-
-async def _agent_roster_name(owner: str, agent_id: str) -> str | None:
-    from core.services.messaging import load_agent_roster
-
-    try:
-        return next((a.get("name") for a in await load_agent_roster(owner) if a.get("id") == agent_id), None)
-    except Exception:  # noqa: BLE001 -- a label never blocks delivery
-        return None
-
-
-async def _session_sender_label(command: dict, owner: str | None, target_human: str | None) -> dict:
-    """ "Aden's Codex" / "Your Claude Code": the sending session named as its owner's agent."""
-    from core.services.messaging import human_display_name
-
-    try:
-        row = await repo.get_session(owner, command["actor"]["id"]) if owner else None
-    except Exception:  # noqa: BLE001 -- a label never blocks delivery
-        row = None
-    human = (row or {}).get("humanUserId") or command.get("sourceHumanUserId")
-    provider = sessions.PROVIDER_NAMES.get((row or {}).get("provider"))
-    if human and human == target_human:
-        return {"kind": "session", "displayName": f"Your {provider or 'coding session'}"}
-    try:
-        name = (await human_display_name(human)) or "" if human else ""
-        # A failed lookup answers the raw user id: that is no name, not a first name.
-        first = name.split()[0] if name and name != human else ""
-    except Exception:  # noqa: BLE001
-        first = ""
-    if not first:
-        return {"kind": "session", "displayName": "Shared native session"}
-    return {"kind": "session", "displayName": f"{first}'s {provider or 'coding session'}"}
-
-
-async def _sender_label(command: dict, owner: str | None, target_human: str | None = None) -> dict | None:
+async def _actor_label(command: dict, owner: str | None = None) -> dict | None:
+    """Handle and name of the person who sent ``command``; the desktop shows it in the owner's
+    terminal. The room's member row when there is one; a person with no room (a follow-up sent
+    from the session's own page stores roomId "") or no row in it still gets the name presence shows."""
     from core.services.messaging import human_emails, with_human_handles
 
-    if (command.get("actor") or {}).get("kind") == "session":
-        return await _session_sender_label(command, owner, target_human)
-    kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
-    if command.get("viaClient"):
-        from core.services.session_presence import _name  # tolerant: a label never blocks delivery
-
-        name = await _name(member_id)
-        via = command["viaClient"] if name == member_id else f"{command['viaClient']} via {name}"
-        return {"kind": "human", "handle": None, "displayName": via[:256]}
+    member_id = command["actorUserId"]
     member = None
     if room_id := command.get("roomId"):
         room_members = await store.list_members(room_id)
         members = with_human_handles(room_members, await human_emails(room_members))
-        member = next((m for m in members if m.get("kind") == kind and str(m.get("id")) == member_id), None)
+        member = next((m for m in members if m.get("kind") == "human" and str(m.get("id")) == member_id), None)
     if member is None:
-        if kind != "human":
-            # An agent with no room (a Paperclip run) or no longer in it: the roster names it.
-            name = await _agent_roster_name(owner, member_id) if owner else None
-            return {"kind": "agent", "handle": None, "displayName": name} if name else None
         from core.services.session_presence import _name  # imports this module's siblings
 
         name = await _name(member_id)
         # A failed lookup answers the bare user id: no label is better than an opaque id.
         return None if name == member_id else {"kind": "human", "handle": None, "displayName": name}
     return {
-        "kind": kind,
+        "kind": "human",
         "handle": member.get("mentionHandle") or None,
         "displayName": member.get("displayName") or None,
     }
@@ -1148,10 +1089,7 @@ class LocalSessionRelay:
         sid = row["sessionId"]
         first_seq = message.after_seq + 1
         previous = await store._get(row["pk"], f"EVENT#{first_seq:020d}")
-        hash_body = message.model_dump(mode="json", by_alias=True)
-        if hash_body["privateApproval"] is None:
-            hash_body.pop("privateApproval")  # Old event batches keep their existing replay hash.
-        digest = store.request_hash(hash_body)
+        digest = store.request_hash(message.model_dump(mode="json", by_alias=True))
         if previous:
             if previous.get("batchHash") != digest:
                 raise _conflict("batch hash", sid=sid, first_seq=first_seq)
@@ -1191,19 +1129,6 @@ class LocalSessionRelay:
             )
         hint = now >= row.get("nextHintAt", 0)
         approval = pending_approval(message.events)
-        detail = message.private_approval
-        if detail is not None:
-            from core.services.native_session_tools import _send_args
-
-            _send_args({"destination": detail.destination, "text": detail.text, "requestId": detail.request_id})
-            if (
-                approval is None
-                or approval is _NO_PROMPT
-                or approval["tool"] != "mcp__lightbulb_native_sessions__send"
-                or approval["approvalId"] != detail.approval_id
-                or approval["inputDigest"] != detail.input_digest
-            ):
-                raise ApiProblem("INVALID_REQUEST", "Private approval does not match this prompt.")
         approval_changed = approval is not _NO_PROMPT and row.get("pendingApproval") != approval
         if approval_changed or (approval is not None and approval is not _NO_PROMPT):
             # Prompt changes, including release, must refresh the session list immediately.
@@ -1230,8 +1155,6 @@ class LocalSessionRelay:
             updated.pop("privateSendApproval", None)
             if approval is not None:
                 updated["pendingApproval"] = approval
-                if detail is not None:
-                    updated["privateSendApproval"] = detail.model_dump(by_alias=True)
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         # The write is cursor-fenced and a replayed batch returned above, so each end notifies once.
         if notify_ended is not None:
@@ -1334,13 +1257,10 @@ class LocalSessionRelay:
                 row,
                 "local_session_command_settled",
                 f"{message.request_id}:{message.outcome}",
-                actor_user_id=command.get("actorUserId") or command.get("sourceHumanUserId") or row["humanUserId"],
+                actor_user_id=command.get("actorUserId") or row["humanUserId"],
                 request_id=message.request_id,
-                source_session_id=(command.get("actor") or {}).get("id")
-                if (command.get("actor") or {}).get("kind") == "session"
-                else None,
                 command_kind=command["kind"],
-                origin="native" if (command.get("actor") or {}).get("kind") == "session" else "direct",
+                origin="direct",
                 state=message.outcome,
             )
         return {
@@ -1352,60 +1272,9 @@ class LocalSessionRelay:
 
     async def _dispatch_checks(self, row: dict, command: dict, claim: bool) -> list[dict] | None:
         owner, sid = row["ownerId"], row["sessionId"]
-        native_actor = (command.get("actor") or {}).get("kind") == "session"
-        source_checks, source_pairing = [], None
-        # A send held for the owner's Allow (``release_held``) is delivered on that Allow, long after
-        # the turn that wrote it: the owner's decision stands in for the source's turn, its 30 s
-        # window and its liveness (a teammate who closed their terminal still gets it delivered).
-        # Only the target's checks below and the sender still being in the workspace apply.
-        # An offline-queued send (``offlineIdentity``) is the same: it waits for the target's Mac, not the turn.
-        if native_actor and (command.get("releasedAt") is not None or command.get("offlineIdentity")):
-            sender = command["sourceHumanUserId"]
-            if not ((await store.get_user_stream(owner, sender)) or {}).get("active"):
-                raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sender is no longer in this workspace.")
-            auth = sessions.AuthContext(user_id=sender, org_id=owner if owner != sender else None)
-        elif native_actor:
-            source = await repo.get_session(owner, command["actor"]["id"])
-            if (
-                not source
-                or source.get("humanUserId") != command.get("sourceHumanUserId")
-                or source.get("generation") != command.get("sourceSessionGeneration")
-                or source.get("activeTurnId") != command.get("sourceTurnId")
-                or source.get("unshared")
-                or source.get("endedAt") is not None
-                or int(source.get("onlineUntil") or 0) < int(time.time())
-                or int(command.get("invocationExpiresAt") or 0) <= int(time.time())
-            ):
-                raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Source native session is no longer authorized.")
-            source_connection, source_enrollment = await self.connect(source.get("connectionId") or "")
-            if (
-                source_connection["device_id"] != source["deviceId"]
-                or source_connection["user_id"] != source["humanUserId"]
-            ):
-                raise _conflict("source connection changed", sid=sid)
-            # A DynamoDB transaction cannot name one item twice. Pairing is one row per
-            # owner, and a source on the target's Mac shares its enrollment and connection.
-            source_pairing = (source["humanUserId"], source["deviceId"])
-            source_checks = [
-                *(
-                    []
-                    if source_pairing == (row["humanUserId"], row["deviceId"])
-                    else [repo.enrollment_condition(source_enrollment)]
-                ),
-                self._session_check(source),
-                *(
-                    []
-                    if source["connectionId"] == row["connectionId"]
-                    else [self._connection_check(source["connectionId"], source_connection)]
-                ),
-            ]
-            auth = sessions.AuthContext(
-                user_id=source["humanUserId"], org_id=owner if owner != source["humanUserId"] else None
-            )
-        else:
-            auth = sessions.command_caller(owner, command)
+        auth = sessions.command_caller(owner, command)
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid, owner_only=True)
-        sender = command.get("actorUserId") or command.get("sourceHumanUserId")
+        sender = command["actorUserId"]
         if command.get("offlineIdentity") and sender != current["humanUserId"]:
             stream = await store.get_user_stream(owner, sender)
             if not stream or not stream.get("active"):
@@ -1429,8 +1298,7 @@ class LocalSessionRelay:
             return None
         return [
             *repo.room_conditions(owner, row["humanUserId"], command),
-            *source_checks,
-            repo.pairing_condition(owner, row["humanUserId"], row["deviceId"], None, also=source_pairing),
+            repo.pairing_condition(owner, row["humanUserId"], row["deviceId"], None),
             repo.enrollment_condition(enrollment),
             self._session_check(row),
             self._connection_check(row["connectionId"], connection),
@@ -1449,10 +1317,8 @@ class LocalSessionRelay:
                     if command["state"] in {"pending", "awaiting_approval"} and command["deliverBy"] <= int(
                         time.time()
                     ):
-                        # Drops heldFor: a later Allow must never revive an expired held send.
-                        unheld = {k: v for k, v in command.items() if k != "heldFor"}
                         await repo.replace_command(
-                            command, _revised(unheld, state="rejected", updatedAt=int(time.time()))
+                            command, _revised(command, state="rejected", updatedAt=int(time.time()))
                         )
                         _capture_offline_rejection(row, command, "expired")
                         expired = True
@@ -1463,8 +1329,6 @@ class LocalSessionRelay:
                         c
                         for c in commands
                         if c["state"] not in {"applied", "rejected"}
-                        # Held for its owner's Allow (``release_held``): never sent while held.
-                        and not c.get("heldFor")
                         and not (
                             c["state"] == "unknown"
                             and (c["expectedGeneration"] != row["generation"] or c.get("settled"))
@@ -1526,7 +1390,7 @@ class LocalSessionRelay:
                     continue
                 # Resolved before the claim: a membership read inside the claim window
                 # can spend the lease and turn a dispatchable command into a rejection.
-                actor = await _actor_label(command, row.get("humanUserId"), owner)
+                actor = await _actor_label(command, owner)
                 claim = _revised(command, claimUntil=min(int(time.time()) + CLAIM_SECONDS, command["deliverBy"]))
                 await repo.replace_command(command, claim, checks=checks)
                 row = await repo.get_session(owner, sid)

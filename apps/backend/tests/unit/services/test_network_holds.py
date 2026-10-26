@@ -29,7 +29,7 @@ def env(table):
             "core.repositories.paperclip_repo.PaperclipRepo.get_workspace",
             AsyncMock(return_value=SimpleNamespace(member_user_ids=[USER_A, USER_B])),
         ),
-        patch("core.services.webhook_agents._invalidate_activity", AsyncMock()),
+        patch("core.services.network_member._invalidate_activity", AsyncMock()),
         patch("core.services.container_rpc.call", rpc),
     ):
         yield rpc
@@ -57,7 +57,7 @@ async def test_a_notice_files_one_item_per_asked_human_with_no_text(env):
         [item] = await _items(user)
         assert item.id == "nethold:h1" and item.kind == "session" and item.subtype == "join_request"
         assert item.state == "open" and item.summary.preview is None
-        assert item.summary.reason == activity.WEBHOOK_ASK_REASON
+        assert item.summary.reason == activity.NETWORK_HOLD_REASON
         assert "Aden's Claude" in item.summary.title
         assert [a.id for a in item.actions] == ["send", "decline", "allow"]
 

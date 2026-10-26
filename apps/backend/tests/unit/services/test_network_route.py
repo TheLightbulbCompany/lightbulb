@@ -110,7 +110,7 @@ async def test_a_new_app_is_pinned_to_the_newest_computer_and_never_moves_off_it
 @pytest.mark.asyncio
 async def test_check_inbox_and_find_sessions_through_the_computer(free):
     found = await hosted_mcp.find_sessions()
-    assert found["sessions"][0]["session_id"] == "ab12/claude-5" and found["agents"] == []
+    assert found["sessions"][0]["session_id"] == "ab12/claude-5" and "agents" not in found
     inbox = await hosted_mcp.check_inbox()
     assert [m["id"] for m in inbox["messages"]] == ["m1"]
     ops = [o for o in free.computers["knew"].ops if o["op"] != "app.unread"]  # the unread line's
@@ -124,8 +124,8 @@ async def test_no_computer_online_is_a_clear_refusal_and_nothing_is_queued(free)
     with pytest.raises(ToolError) as refused:
         await hosted_mcp.send_message("hello", "req-2", session_id="ab12/claude-5")
     assert str(refused.value).startswith("NETWORK_NO_ROUTE: None of your computers is online")
-    found = await hosted_mcp.find_sessions()
-    assert "None of your computers is online" in found["network"]
+    with pytest.raises(ToolError, match="None of your computers is online"):
+        await hosted_mcp.find_sessions()
 
 
 @pytest.mark.asyncio
@@ -180,12 +180,14 @@ def door(monkeypatch):
     )
     monkeypatch.setattr(network_route, "_connections", lambda: presence)
     monkeypatch.setattr("core.config.settings.WS_INTERNAL_SECRET", "s3cret")
+    revoked: set[str] = set()
+    monkeypatch.setattr(network_login, "is_revoked", AsyncMock(side_effect=lambda _user, key: key in revoked))
     notify = AsyncMock()
     monkeypatch.setattr(app_wake, "notify", notify)
     app = FastAPI()
     app.include_router(router.router, prefix="/api/v1")
     with TestClient(app) as client:
-        yield SimpleNamespace(client=client, presence=presence, notify=notify)
+        yield SimpleNamespace(client=client, presence=presence, notify=notify, revoked=revoked)
     network_route.links.clear()
 
 
@@ -256,6 +258,32 @@ def test_a_bad_proof_or_a_computer_nobody_signed_in_is_closed(door):
     door.presence.put_route.assert_not_awaited()
 
 
+def test_a_signed_out_computer_is_refused_and_its_live_link_closes_at_once(door):
+    from starlette.websockets import WebSocketDisconnect
+
+    computer = Key()
+    with door.client.websocket_connect("/api/v1/gateway/network") as ws:
+        ws.send_json(computer.hello(ws.receive_json()["challenge"]))
+        assert ws.receive_json()["type"] == "ready"
+        generation = door.presence.put_route.await_args.kwargs["generation"]
+        # Its person signs it out from the website, on whichever task: the link closes now.
+        closed = door.client.post(
+            "/api/v1/network/internal/route",
+            json={"key": computer.key, "generation": generation, "op": "close", "params": {}, "timeoutS": 5},
+            headers={"x-lightbulb-ws-internal": "s3cret"},
+        )
+        assert closed.json() == {"ok": True, "result": {}}
+        with pytest.raises(WebSocketDisconnect) as gone:
+            ws.receive_json()
+    assert gone.value.code == network_route.CLOSE_NOT_SIGNED_IN
+    door.revoked.add(computer.key)
+    with door.client.websocket_connect("/api/v1/gateway/network") as ws:
+        ws.send_json(computer.hello(ws.receive_json()["challenge"]))
+        with pytest.raises(WebSocketDisconnect) as refused:
+            ws.receive_json()
+    assert refused.value.code == network_route.CLOSE_NOT_SIGNED_IN
+
+
 # ---- wake_me ------------------------------------------------------------------------------------
 
 
@@ -263,15 +291,15 @@ def test_a_bad_proof_or_a_computer_nobody_signed_in_is_closed(door):
 def wakes(table, monkeypatch):
     secrets: dict[str, str] = {}
     monkeypatch.setattr("core.secrets_manager.create_or_update_secret", lambda _sm, n, v: secrets.__setitem__(n, v))
-    monkeypatch.setattr(app_wake.webhook_agents, "_sm", lambda: None)
+    monkeypatch.setattr(app_wake, "_sm", lambda: None)
 
     async def credential(owner, agent):
-        return json.loads(secrets[app_wake.webhook_agents.secret_name(owner, agent)])
+        return json.loads(secrets[app_wake.secret_name(owner, agent)])
 
-    monkeypatch.setattr(app_wake.webhook_agents, "_credential", credential)
-    monkeypatch.setattr(app_wake.webhook_agents, "check_url", lambda url: url)
+    monkeypatch.setattr(app_wake, "_credential", credential)
+    monkeypatch.setattr(app_wake, "check_url", lambda url: url)
     post = AsyncMock(return_value=(True, ""))
-    monkeypatch.setattr(app_wake.webhook_agents, "post", post)
+    monkeypatch.setattr(app_wake, "post", post)
     return SimpleNamespace(secrets=secrets, post=post)
 
 
@@ -315,7 +343,7 @@ def test_the_wake_page_routes_serve_a_free_account(wakes, monkeypatch):
         assert client.put("/api/v1/network/wakes/grok", json={"key": "k"}).json()["state"] == "ready"
         assert client.put("/api/v1/network/wakes/nope", json={"key": "k"}).status_code == 404
         monkeypatch.setattr(
-            app_wake.webhook_agents,
+            app_wake,
             "_sm",
             lambda: SimpleNamespace(
                 delete_secret=lambda **_: None, exceptions=SimpleNamespace(ResourceNotFoundException=KeyError)
@@ -381,3 +409,32 @@ def test_a_person_holds_at_most_ten_links_and_a_link_sends_thirty_mail_notices_a
     assert allowed.count(True) == network_route.MAIL_PER_MINUTE and not any(allowed[network_route.MAIL_PER_MINUTE :])
     link.mail_window -= 61  # a minute later
     assert network_route._mail_allowed(link)
+
+
+def test_a_person_signs_out_one_of_their_connected_computers(table, monkeypatch):
+    from unittest.mock import patch
+
+    from core.services import clerk_admin
+    from routers import network_route as router
+
+    mine, theirs = Key().key, Key().key
+    rows = [{"key": mine, "userId": USER, "generation": "g", "connectedAt": 1, "name": "mac"}]
+    monkeypatch.setattr(
+        network_route, "_connections", lambda: SimpleNamespace(routes_for_user=AsyncMock(return_value=rows))
+    )
+    closed = AsyncMock()
+    monkeypatch.setattr(network_route, "sign_out", closed)
+    published = AsyncMock()
+    monkeypatch.setattr(network_member, "publish_sessions", published)
+    monkeypatch.setattr(clerk_admin, "list_user_organizations", AsyncMock(return_value=[{"id": "org_1"}]))
+    app = FastAPI()
+    app.include_router(router.router, prefix="/api/v1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=USER, org_id="org_1")
+    with patch("core.dynamodb._table_prefix", "test-"), TestClient(app) as client:
+        # Someone else's computer (or one not connected as you) never enters revoked_keys.
+        assert client.post(f"/api/v1/network/computers/{theirs}/sign-out").status_code == 404
+        assert client.post(f"/api/v1/network/computers/{mine}/sign-out").status_code == 204
+        assert asyncio.run(network_login.is_revoked(USER, mine))
+        assert asyncio.run(network_login.revoked_keys([USER])) == [mine]
+    closed.assert_awaited_once_with(USER, mine)
+    published.assert_awaited_once_with("org_1")

@@ -21,7 +21,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from core.observability.metrics import put_metric
 from core.observability.session_analytics import capture_session_event
 from core.dynamodb import run_in_thread
-from core.auth import AuthContext, get_current_user, get_human_session, get_optional_user, resolve_owner_id
+from core.auth import (
+    AuthContext,
+    get_current_user,
+    get_human_session,
+    get_optional_user,
+    resolve_owner_id,
+    security_optional,
+)
 from core.config import settings
 from core.repositories import container_repo, messaging_repo, user_repo
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -30,10 +37,11 @@ from core.services import messaging as service
 from core.services import (
     hook_grants,
     hosted_mcp,
+    network_login,
     link_preview,
     local_sessions,
     mac_live,
-    native_session_tools,
+    native_session_decisions,
     openclaw_work,
     session_chat,
     session_pickup,
@@ -102,71 +110,46 @@ async def native_session_device(request: Request):
     return device
 
 
-@router.post("/messaging/native-session-tools")
-async def native_session_tool(
-    body: native_session_tools.NativeToolRequest,
-    device=Depends(native_session_device),
-):
-    return await native_session_tools.execute(device, body)
-
-
-# Shipped Macs post sends here; a send now posts at once, like any other tool call.
-@router.post("/messaging/native-session-tools/prepare-send")
-async def prepare_native_session_send(
-    body: native_session_tools.NativeToolRequest,
-    device=Depends(native_session_device),
-):
-    return await native_session_tools.execute(device, body)
-
-
 @router.post("/messaging/native-session-decisions", response_model=local_sessions.LocalSession)
 async def native_session_decision(
-    body: native_session_tools.NativeDecisionRequest,
+    body: native_session_decisions.NativeDecisionRequest,
     device=Depends(native_session_device),
 ):
-    """The owner answers a join request or pauses sharing from their Claude terminal."""
-    return await native_session_tools.decide(device, body)
+    """The owner answers a join or pick-up request, or pauses sharing, from their Mac."""
+    return await native_session_decisions.decide(device, body)
 
 
-async def device_human(device=Depends(native_session_device)) -> AuthContext:
-    """The paired Mac's enrolled human. Read routes, plus one write: the task-board update (owner request
-    2026-10-11), which goes through the Teams PATCH as that human. (native-session-decisions is the other
-    device-token write, fenced in native_session_tools.decide.)"""
-    await local_sessions._enrolled(device.owner_id, device.user_id, device.device_id)
-    return AuthContext(user_id=device.user_id, org_id=device.org_id or None)
+async def computer_human(caller=Depends(network_login.computer_person)) -> AuthContext:
+    """A signed-in computer's person (``lightbulb login``): the engine's workspace tools."""
+    return caller[0]
 
 
 @router.get("/local-sessions/device/rooms")
-async def device_find_rooms(query: str = "", limit: int = 30, auth: AuthContext = Depends(device_human)):
+async def device_find_rooms(query: str = "", limit: int = 30, auth: AuthContext = Depends(computer_human)):
     return await hosted_mcp.rooms_for(auth, query, limit)
 
 
 @router.get("/local-sessions/device/rooms/{room_id}/messages")
 async def device_read_messages(
-    room_id: str, after_seq: int | None = None, limit: int = 25, auth: AuthContext = Depends(device_human)
+    room_id: str, after_seq: int | None = None, limit: int = 25, auth: AuthContext = Depends(computer_human)
 ):
     return await hosted_mcp.messages_for(auth, room_id, after_seq, limit)
 
 
-@router.get("/local-sessions/device/sessions")
-async def device_find_sessions(query: str = "", limit: int = 30, auth: AuthContext = Depends(device_human)):
-    return await hosted_mcp.sessions_for(auth, query, limit)
-
-
 @router.get("/local-sessions/device/receipt")
-async def device_message_receipt(room_id: str, request_id: uuid.UUID, auth: AuthContext = Depends(device_human)):
+async def device_message_receipt(room_id: str, request_id: uuid.UUID, auth: AuthContext = Depends(computer_human)):
     return await hosted_mcp.receipt_for(auth, room_id, request_id)
 
 
 @router.get("/local-sessions/device/tasks")
 async def device_find_tasks(
-    query: str = "", status: str = "", assignee: str = "", limit: int = 25, auth: AuthContext = Depends(device_human)
+    query: str = "", status: str = "", assignee: str = "", limit: int = 25, auth: AuthContext = Depends(computer_human)
 ):
     return await task_board.find_tasks(auth, query, status, assignee, limit)
 
 
 @router.get("/local-sessions/device/tasks/{task}")
-async def device_read_task(task: str, comments: int = 10, auth: AuthContext = Depends(device_human)):
+async def device_read_task(task: str, comments: int = 10, auth: AuthContext = Depends(computer_human)):
     return await task_board.read_task(auth, task, comments)
 
 
@@ -178,22 +161,32 @@ class DeviceTaskUpdate(BaseModel):
 
 
 @router.patch("/local-sessions/device/tasks/{task}")
-async def device_update_task(task: str, body: DeviceTaskUpdate, auth: AuthContext = Depends(device_human)):
+async def device_update_task(task: str, body: DeviceTaskUpdate, auth: AuthContext = Depends(computer_human)):
     return await task_board.update_task(auth, task, body.status, body.priority, body.append_note)
 
 
 class DeviceBrowserPlace(BaseModel):
     model_config = ConfigDict(extra="forbid")
     where: Literal["mac", "cloud"]
+    native_id: str = Field(min_length=1, max_length=128)
 
 
-@router.post("/local-sessions/device/sessions/{session_id}/browser-place")
-async def device_use_browser(session_id: str, body: DeviceBrowserPlace, device=Depends(native_session_device)):
-    """`use_browser` from the Mac's `lightbulb` MCP: the calling session (the Mac proved which) moves
-    its next browser connection."""
-    return await session_browser.place_from_mac(
-        device.owner_id, device.user_id, device.device_id, session_id, body.where
-    )
+@router.post("/local-sessions/device/sessions/browser-place")
+async def device_use_browser(body: DeviceBrowserPlace, auth: AuthContext = Depends(computer_human)):
+    """`use_browser` from the engine: the person's shared session whose native id (the engine
+    resolved the caller's own Claude session or Codex thread) moves its next browser connection."""
+    return await session_browser.place_by_native(resolve_owner_id(auth), auth.user_id, body.native_id, body.where)
+
+
+async def person_or_computer(
+    request: Request, credentials=Depends(security_optional)
+) -> tuple[AuthContext, str | None]:
+    """The web's Clerk person, or a signed-in computer's (``computer_person``) with its session's label."""
+    if request.headers.get("X-Lightbulb-Proof"):
+        return await network_login.computer_person(request)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return await get_current_user(credentials), None
 
 
 async def local_session_invocation(request: Request) -> local_session_grants.AgentInvocation:
@@ -270,42 +263,6 @@ async def agent_local_session_events(
     return await local_sessions.list_events(auth, auth.room_id, session_id, after_seq, limit)
 
 
-@router.post(
-    "/messaging/local-session-agent/sessions/{session_id}/commands",
-    response_model=local_sessions.AgentCommandReceipt,
-    status_code=202,
-)
-async def agent_local_session_command(
-    session_id: str,
-    body: local_sessions.LocalSessionCommand,
-    auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
-):
-    """``send``/``interrupt`` go straight in or file one ask for the session's owner (spec
-    2026-10-07-agent-session-approval): the receipt says ``awaiting_approval`` until they answer."""
-    from core.services.local_session_relay import get_local_session_relay
-
-    receipt = await local_sessions.agent_command(auth, session_id, body)
-    if isinstance(receipt, local_sessions.AgentCommandReceipt):
-        return receipt
-    try:
-        await get_local_session_relay().dispatch_session(auth.owner_id, receipt.session_id)
-    except Exception:
-        logger.warning("Local session dispatch deferred")
-    return await local_sessions.get_agent_receipt(auth, receipt.session_id, body.request_id)
-
-
-@router.get(
-    "/messaging/local-session-agent/sessions/{session_id}/commands/{request_id}",
-    response_model=local_sessions.AgentCommandReceipt,
-)
-async def agent_local_session_receipt(
-    session_id: str,
-    request_id: str,
-    auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
-):
-    return await local_sessions.get_agent_receipt(auth, session_id, request_id)
-
-
 @router.get("/messaging/sessions", response_model=local_sessions.WorkspaceSessions)
 async def list_workspace_sessions(
     auth: AuthContext = Depends(get_current_user), include_ended: bool = Query(False, alias="includeEnded")
@@ -336,26 +293,6 @@ async def remove_local_session(session_id: str, auth: AuthContext = Depends(get_
 @router.get("/messaging/sessions/{session_id}", response_model=local_sessions.LocalSession)
 async def get_local_session(session_id: str, auth: AuthContext = Depends(get_current_user)):
     return await local_sessions.get_session(auth, session_id)
-
-
-class AgentAskDecisionRequest(ContractModel):
-    decision: Literal["send", "decline"]
-
-
-@router.get("/messaging/sessions/{session_id}/agent-asks", response_model=list[local_sessions.AgentCommandReceipt])
-async def list_session_agent_asks(session_id: str, auth: AuthContext = Depends(get_current_user)):
-    """Agents' asks waiting on this session; empty for anyone who may not answer them."""
-    return await local_sessions.list_agent_asks(auth, session_id)
-
-
-@router.post(
-    "/messaging/sessions/{session_id}/agent-asks/{request_id}", response_model=local_sessions.AgentCommandReceipt
-)
-async def decide_session_agent_ask(
-    session_id: str, request_id: str, body: AgentAskDecisionRequest, auth: AuthContext = Depends(get_current_user)
-):
-    """The session's owner, or a teammate while team control is on, answers an agent's ask."""
-    return await local_sessions.decide_agent_ask(auth, session_id, request_id, body.decision)
 
 
 class SessionOpenRequest(ContractModel):
@@ -658,12 +595,6 @@ async def list_local_session_events(
     return await local_sessions.list_events(auth, None, session_id, after_seq, limit)
 
 
-@router.get("/messaging/sessions/{session_id}/private-send-approval", response_model=local_sessions.PrivateSendApproval)
-async def get_private_send_approval(session_id: str, response: Response, auth: AuthContext = Depends(get_current_user)):
-    response.headers["Cache-Control"] = "private, no-store"
-    return await local_sessions.get_private_send_approval(auth, session_id)
-
-
 @router.post(
     "/messaging/sessions/{session_id}/commands",
     response_model=local_sessions.CommandReceipt,
@@ -883,7 +814,10 @@ async def put_sections(request: SectionsRequest, auth: AuthContext = Depends(get
 
 
 @router.post("/messaging/rooms", response_model=RoomDetail, status_code=201)
-async def create_room(request: CreateRoomRequest, auth: AuthContext = Depends(get_current_user)):
+async def create_room(request: CreateRoomRequest, caller=Depends(person_or_computer)):
+    auth, label = caller
+    if label is not None and request.kind != "dm":
+        raise ApiProblem("ROOM_FORBIDDEN", "A computer opens direct messages only.")
     return await service.create_room(auth, request)
 
 
@@ -969,9 +903,31 @@ async def warm_message_search(auth: AuthContext = Depends(get_current_user)) -> 
 async def create_room_message(
     room_id: str,
     request: CreateMessageRequest,
-    auth: AuthContext = Depends(get_current_user),
+    caller=Depends(person_or_computer),
 ):
-    return await service.create_human_message(auth, room_id, request)
+    auth, label = caller
+    if label is None:
+        return await service.create_human_message(auth, room_id, request)
+    # A coding session's send through its signed-in computer: authored "<label> via <person>",
+    # accountable to the person, exactly as the hosted MCP's room send is. The engine names only the
+    # message it replies to; its thread is that message's (as the hosted send resolves it).
+    if request.reply_to_message_id and not request.thread_root_message_id:
+        parent = await messaging_repo.get_message_by_id(room_id, str(request.reply_to_message_id))
+        if parent is None:
+            raise ApiProblem("MESSAGE_NOT_FOUND", "Referenced message not found in this room.")
+        root = parent.get("threadRootMessageId") or parent["messageId"]
+        request = request.model_copy(update={"thread_root_message_id": uuid.UUID(root)})
+    return await service.create_human_message(
+        auth,
+        room_id,
+        request,
+        via="lightbulb_mcp",
+        author_override={
+            "kind": "system",
+            "id": f"mcp:{auth.user_id}:engine",
+            "displayName": f"{label} via {await service.human_display_name(auth.user_id)}"[:256],
+        },
+    )
 
 
 @router.put("/messaging/rooms/{room_id}/messages/{message_id}/reactions", response_model=CanonicalMessage)

@@ -1061,7 +1061,8 @@ impl Host {
                 let m = &self.mirrors[&key].native;
                 let handed_over = provider == "claude"
                     && reason != lifecycle::ON_PURPOSE
-                    && (m.job.is_some() || claude::held_live(&self.home, &m.conversation, false, Some(m.process.pid)));
+                    && (m.job.is_some()
+                        || claude::Holders::read(&super::resume::claude_config(&self.home)).holds(&m.conversation, false, Some(m.process.pid)));
                 if !handed_over {
                     self.end_session(&key, reason)?;
                 }
@@ -1365,8 +1366,14 @@ impl Host {
         // pids (a daemon respawn, the agent view's restart, a second terminal's `--resume`, a
         // `/resume` in another pid). While another live process holds it, the row stays and
         // discovery re-points it at that process (`observe`: a successor, same session id).
+        // Claude's records are read at most once a tick, and only when a Claude mirror's own
+        // process no longer answers for it: the cost is records + mirrors, never their product.
+        let holders = std::cell::OnceCell::new();
         let held = |native: &NativeSession| {
-            native.provider == "claude" && claude::held_live(home, &native.conversation, false, Some(native.process.pid))
+            native.provider == "claude"
+                && holders
+                    .get_or_init(|| claude::Holders::read(&super::resume::claude_config(home)))
+                    .holds(&native.conversation, false, Some(native.process.pid))
         };
         let now = Instant::now();
         let mut unheld = std::mem::take(&mut self.unheld);
@@ -5281,12 +5288,32 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn local_sessions_liveness_reads_claudes_records_once_a_tick_whatever_the_mirrors() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, _, _) = moved_row(dir.path(), None);
+        for n in 0..5 {
+            let mut m = test_mirror(SID, "gen-x");
+            m.native.provider = "claude".into();
+            m.native.conversation = format!("0000000{n}-0000-4000-8000-00000000000{n}");
+            m.native.process.pid = 2_147_483_000;
+            host.mirrors.insert(native_key(&m.native), m);
+        }
+        let reads = || claude::tests::HOLDER_READS.with(std::cell::Cell::get);
+        let before = reads();
+        host.liveness_tick();
+        assert_eq!(reads() - before, 1, "six gone Claude mirrors, one read");
+        let before = reads();
+        host.liveness_tick();
+        assert_eq!(reads(), before, "nothing left to decide, nothing read");
+    }
+
+    #[test]
     fn local_sessions_the_agent_views_restart_keeps_one_row() {
         // The agent view restarts a stopped job with `fork:false`: the same id on a new pid, which
         // writes its own record.
         let dir = tempfile::tempdir().unwrap();
         let (mut host, key, _) = moved_row(dir.path(), Some("ae0e0fa4"));
-        claude::tests::live_record(dir.path(), SID, None);
+        claude::tests::live_record(&dir.path().join(".claude"), SID, None);
         host.liveness_tick();
         host.unheld.values_mut().for_each(|at| *at = Instant::now().checked_sub(Duration::from_secs(60)).unwrap());
         host.liveness_tick();
@@ -5308,7 +5335,7 @@ pub(super) mod tests {
         x.native.conversation = X.into();
         let x_key = native_key(&x.native);
         host.mirrors.insert(x_key.clone(), x);
-        claude::tests::live_record(dir.path(), SID, None);
+        claude::tests::live_record(&dir.path().join(".claude"), SID, None);
         host.liveness_tick();
         assert_eq!(host.mirrors[&x_key].ended_reason.as_deref(), Some("exited"), "P left X");
         assert!(host.mirrors[&key].ended_at.is_none(), "P holds Y now");

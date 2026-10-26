@@ -491,7 +491,7 @@ fn prepare(w: &Wanted, own: bool, home: &Path) -> std::result::Result<Option<(Pa
     // As the Claude app gates its own Resume (`liveOwnershipRefusal`): any live process Claude's
     // records name for this id -- a terminal parked in the agent view included -- is a writer, and
     // `--resume` beside it is a second branch. Its row stays live meanwhile, and shows its tail.
-    if w.provider == "claude" && claude::held_live(home, &w.conversation_id, true, None) {
+    if w.provider == "claude" && claude::Holders::read(&claude_config(home)).holds(&w.conversation_id, true, None) {
         return Err("ALREADY_RUNNING");
     }
     if !crate::session_start::tools(home).iter().any(|t| t["id"] == w.provider.as_str()) {
@@ -701,9 +701,9 @@ mod tests {
         // A terminal that parked the conversation in the agent view still names it, and `claude
         // agents` does not list it: `free` cannot see it. Claude's records can.
         let home = tempfile::tempdir().unwrap();
-        claude::tests::live_record(home.path(), CONV, Some("251719c2"));
+        claude::tests::live_record(&home.path().join(".claude"), CONV, Some("251719c2"));
         assert_eq!(prepare(&wanted("claude", "plan"), true, home.path()), Err("ALREADY_RUNNING"));
-        claude::tests::live_record(home.path(), "99999999-2222-4333-8444-555555555555", None);
+        claude::tests::live_record(&home.path().join(".claude"), "99999999-2222-4333-8444-555555555555", None);
         assert_ne!(prepare(&wanted("claude", "plan"), true, home.path()), Err("ALREADY_RUNNING"), "nothing holds it now");
     }
 

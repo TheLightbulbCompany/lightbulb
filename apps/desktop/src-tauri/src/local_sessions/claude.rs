@@ -440,47 +440,73 @@ pub(super) fn proc_start(birth_micros: u64) -> String {
     )
 }
 
-/// Whether a live process holds `conversation` now, read the way the Claude app's
-/// `CliLivenessRegistry` reads it: a `~/.claude/sessions/<pid>.json` naming it whose pid is alive
-/// with the same `procStart` and whose `updatedAt` is under a day old, or a daemon worker in
-/// `~/.claude/daemon/roster.json` running it (a respawn names the new worker there before its
-/// record is written). `parked`: a terminal that moved the conversation into a background job
-/// (`parkedJobId`) counts too -- it does for Resume (a `--resume` of it is a second branch), not for
-/// the row's life (the conversation went on as the job). `except`: a pid whose own end is being
-/// decided, which does not count.
-pub(super) fn held_live(home: &Path, conversation: &str, parked: bool, except: Option<u32>) -> bool {
-    let leading = |path: &Path, limit: u64| -> Option<Value> {
-        let mut text = String::new();
-        confined_path(home, path).and_then(|p| secure_file(&p)).ok()?.take(limit).read_to_string(&mut text).ok()?;
-        serde_json::Deserializer::from_str(&text).into_iter::<Value>().next()?.ok()
-    };
-    let alive = |pid: &Value, start: &Value| {
-        let (Some(pid), Some(start)) = (pid.as_u64().and_then(|p| u32::try_from(p).ok()), start.as_str()) else {
-            return false;
+/// Every live process Claude's own records say holds a conversation now, read the way the Claude
+/// app's `CliLivenessRegistry` reads them: a `<config>/sessions/<pid>.json` whose pid is alive with
+/// the same `procStart` and whose `updatedAt` is under a day old, or a daemon worker in
+/// `<config>/daemon/roster.json` (a respawn names the new worker there before its record is
+/// written). Read once and asked per conversation: the liveness tick asks for every mirror.
+pub(super) struct Holders {
+    /// (conversation, pid, parked in a background job)
+    records: Vec<(String, u32, bool)>,
+    /// (conversation, worker pid, its Claude pid)
+    workers: Vec<(String, u32, Option<u32>)>,
+}
+
+impl Holders {
+    /// `config`: Claude's config dir, `CLAUDE_CONFIG_DIR` when set (`resume::claude_config`).
+    pub(super) fn read(config: &Path) -> Self {
+        #[cfg(test)]
+        tests::HOLDER_READS.with(|reads| reads.set(reads.get() + 1));
+        let leading = |path: &Path, limit: u64| -> Option<Value> {
+            let mut text = String::new();
+            confined_path(config, path).and_then(|p| secure_file(&p)).ok()?.take(limit).read_to_string(&mut text).ok()?;
+            serde_json::Deserializer::from_str(&text).into_iter::<Value>().next()?.ok()
         };
-        Some(pid) != except
-            && process(pid).is_ok_and(|p| proc_start(p.birth_micros).split_whitespace().eq(start.split_whitespace()))
-    };
-    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    let records = fs::read_dir(home.join(".claude/sessions")).into_iter().flatten().flatten();
-    let by_record = records.filter(|e| e.path().extension().is_some_and(|x| x == "json")).any(|entry| {
-        leading(&entry.path(), 64 * 1024).is_some_and(|row| {
-            row["sessionId"] == conversation
-                && (parked || row["parkedJobId"].as_str().is_none_or(str::is_empty))
-                && row["updatedAt"].as_u64().is_some_and(|at| now_ms.saturating_sub(at) < 24 * 3600 * 1000)
-                && alive(&row["pid"], &row["procStart"])
-        })
-    });
-    by_record
-        || leading(&home.join(".claude/daemon/roster.json"), 4 * 1024 * 1024).is_some_and(|roster| {
-            roster["workers"].as_object().is_some_and(|workers| {
-                workers.values().any(|w| {
-                    w["sessionId"] == conversation
-                        && except.is_none_or(|e| w["replPid"].as_u64() != Some(u64::from(e)))
-                        && alive(&w["pid"], &w["procStart"])
-                })
+        let alive = |pid: &Value, start: &Value| -> Option<u32> {
+            let pid = u32::try_from(pid.as_u64()?).ok()?;
+            let start = start.as_str()?;
+            process(pid)
+                .is_ok_and(|p| proc_start(p.birth_micros).split_whitespace().eq(start.split_whitespace()))
+                .then_some(pid)
+        };
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let records = fs::read_dir(config.join("sessions"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter_map(|entry| {
+                let row = leading(&entry.path(), 64 * 1024)?;
+                let conversation = row["sessionId"].as_str()?.to_owned();
+                row["updatedAt"].as_u64().filter(|at| now_ms.saturating_sub(*at) < 24 * 3600 * 1000)?;
+                let pid = alive(&row["pid"], &row["procStart"])?;
+                Some((conversation, pid, row["parkedJobId"].as_str().is_some_and(|j| !j.is_empty())))
             })
-        })
+            .collect();
+        let workers = leading(&config.join("daemon/roster.json"), 4 * 1024 * 1024)
+            .and_then(|roster| roster["workers"].as_object().cloned())
+            .into_iter()
+            .flatten()
+            .filter_map(|(_, w)| {
+                let conversation = w["sessionId"].as_str()?.to_owned();
+                let pid = alive(&w["pid"], &w["procStart"])?;
+                Some((conversation, pid, w["replPid"].as_u64().and_then(|p| u32::try_from(p).ok())))
+            })
+            .collect();
+        Self { records, workers }
+    }
+
+    /// Whether a live process holds `conversation`. `parked`: a terminal that moved it into a
+    /// background job (`parkedJobId`) counts too -- it does for Resume (a `--resume` of it is a second
+    /// branch), not for the row's life (the conversation went on as the job). `except`: a pid whose
+    /// own end is being decided, which does not count.
+    pub(super) fn holds(&self, conversation: &str, parked: bool, except: Option<u32>) -> bool {
+        self.records.iter().any(|(c, pid, p)| c == conversation && (parked || !p) && Some(*pid) != except)
+            || self
+                .workers
+                .iter()
+                .any(|(c, pid, repl)| c == conversation && Some(*pid) != except && (except.is_none() || *repl != except))
+    }
 }
 
 /// `verify_current_generation` found nothing this process wrote -- distinct from a
@@ -2828,9 +2854,15 @@ pub(in crate::local_sessions) mod tests {
 
 
     /// Claude's own record of this test process running `conversation`, as a live session writes it.
-    pub(in crate::local_sessions) fn live_record(home: &Path, conversation: &str, parked: Option<&str>) {
+    thread_local! {
+        /// How many times this test thread read Claude's records.
+        pub(in crate::local_sessions) static HOLDER_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// `config`: Claude's config dir (`<home>/.claude` unless `CLAUDE_CONFIG_DIR` says otherwise).
+    pub(in crate::local_sessions) fn live_record(config: &Path, conversation: &str, parked: Option<&str>) {
         let me = process(std::process::id()).unwrap();
-        let sessions = home.join(".claude/sessions");
+        let sessions = config.join("sessions");
         fs::create_dir_all(&sessions).unwrap();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
         let mut row = json!({"pid":me.pid,"sessionId":conversation,"procStart":proc_start(me.birth_micros),
@@ -2844,27 +2876,43 @@ pub(in crate::local_sessions) mod tests {
     #[test]
     fn local_sessions_claude_a_conversation_is_held_only_by_a_live_record_or_daemon_worker() {
         let home = tempfile::tempdir().unwrap();
+        let config = home.path().join(".claude");
         let conv = "65ebc88a-3620-4513-9b07-90cfe138dbaa";
-        assert!(!held_live(home.path(), conv, true, None), "nothing names it");
-        live_record(home.path(), conv, None);
-        assert!(held_live(home.path(), conv, false, None));
-        assert!(!held_live(home.path(), "11111111-1111-4111-8111-111111111111", true, None), "another conversation");
-        assert!(!held_live(home.path(), conv, false, Some(std::process::id())), "the pid whose end is decided");
+        let held = |conv: &str, parked: bool, except: Option<u32>| Holders::read(&config).holds(conv, parked, except);
+        assert!(!held(conv, true, None), "nothing names it");
+        live_record(&config, conv, None);
+        // One read answers for every conversation.
+        let index = Holders::read(&config);
+        assert!(index.holds(conv, false, None));
+        assert!(!index.holds("11111111-1111-4111-8111-111111111111", true, None), "another conversation");
+        assert!(!index.holds(conv, false, Some(std::process::id())), "the pid whose end is decided");
         // Parked in a background job: held for Resume, not for the row's life.
-        live_record(home.path(), conv, Some("251719c2"));
-        assert!(held_live(home.path(), conv, true, None) && !held_live(home.path(), conv, false, None));
+        live_record(&config, conv, Some("251719c2"));
+        assert!(held(conv, true, None) && !held(conv, false, None));
         // A leftover of a reused pid (another start) and one silent for a day are not live.
         let me = process(std::process::id()).unwrap();
-        let path = home.path().join(format!(".claude/sessions/{}.json", me.pid));
+        let path = config.join(format!("sessions/{}.json", me.pid));
         fs::write(&path, json!({"pid":me.pid,"sessionId":conv,"procStart":"Mon Oct 26 01:11:19 2026","updatedAt":u64::MAX / 2}).to_string()).unwrap();
-        assert!(!held_live(home.path(), conv, true, None), "another process's start");
+        assert!(!held(conv, true, None), "another process's start");
         fs::write(&path, json!({"pid":me.pid,"sessionId":conv,"procStart":proc_start(me.birth_micros),"updatedAt":1}).to_string()).unwrap();
-        assert!(!held_live(home.path(), conv, true, None), "silent for a day");
+        assert!(!held(conv, true, None), "silent for a day");
         // A respawn names the new worker in the daemon's roster before its record is written.
-        fs::create_dir_all(home.path().join(".claude/daemon")).unwrap();
-        fs::write(home.path().join(".claude/daemon/roster.json"), json!({"workers":{"65ebc88a":{
+        fs::create_dir_all(config.join("daemon")).unwrap();
+        fs::write(config.join("daemon/roster.json"), json!({"workers":{"65ebc88a":{
             "pid":me.pid,"procStart":proc_start(me.birth_micros),"sessionId":conv,"replPid":4242}}}).to_string()).unwrap();
-        assert!(held_live(home.path(), conv, false, None));
-        assert!(!held_live(home.path(), conv, false, Some(4242)), "the worker whose end is decided");
+        assert!(held(conv, false, None));
+        assert!(!held(conv, false, Some(4242)), "the worker whose end is decided");
+    }
+
+    #[test]
+    fn local_sessions_claude_holders_are_read_from_claudes_config_dir_wherever_it_is() {
+        // `CLAUDE_CONFIG_DIR` moves every record out of `~/.claude`: a Resume that looked only there
+        // would miss a live writer and start a second branch.
+        let root = tempfile::tempdir().unwrap();
+        let elsewhere = root.path().join("claude-config");
+        let conv = "65ebc88a-3620-4513-9b07-90cfe138dbaa";
+        live_record(&elsewhere, conv, None);
+        assert!(Holders::read(&elsewhere).holds(conv, true, None));
+        assert!(!Holders::read(&root.path().join(".claude")).holds(conv, true, None));
     }
 }

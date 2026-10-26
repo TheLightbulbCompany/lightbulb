@@ -55,6 +55,7 @@ export class ContainerStack extends cdk.Stack {
   public readonly ownerBedrockBasePolicy: iam.ManagedPolicy;
   public readonly ownerBedrockBoundary: iam.ManagedPolicy;
   public readonly workspaceMemory: bedrockagentcore.CfnMemory;
+  public readonly workspaceBrowser: bedrockagentcore.CfnBrowserCustom;
 
   constructor(scope: Construct, id: string, props: ContainerStackProps) {
     super(scope, id, props);
@@ -240,6 +241,37 @@ export class ContainerStack extends cdk.Stack {
     });
     this.workspaceMemory.applyRemovalPolicy(config.removalPolicy);
 
+    // The workspace browser. AWS's built-in `aws.browser.v1` leaves from a new AWS address every
+    // session (dev 2026-10-26: three sessions, three IPs), so a site that ties a sign-in to its
+    // address -- Google among them -- signs the workspace out after every Stop/Start even though
+    // the restore replays every cookie. In VPC mode the browser leaves through this VPC's NAT
+    // gateway: one fixed address per env (dev: same IP over 3 sessions, with profiles, extensions,
+    // Chrome policy, InvokeBrowser and live view all working, no execution role).
+    // Its own security group, out on 80/443 only: the browser runs pages from anywhere, and the
+    // runtime group's allow-all would let one reach Paperclip, a backend task's :8000 or Aurora.
+    // (The internal ALB still admits 80/443 from the VPC CIDR; that is the same API API Gateway
+    // serves, with the same auth.)
+    // Every property is create-only, so a change replaces the browser: sessions on the old one
+    // are orphaned until their timeout, and the backend starts new ones here.
+    const browserSecurityGroup = new ec2.SecurityGroup(this, "BrowserSecurityGroup", {
+      vpc: props.vpc,
+      description: `Lightbulb ${props.environment} AgentCore browser: web egress only`,
+      allowAllOutbound: false,
+    });
+    browserSecurityGroup.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), "HTTPS out");
+    browserSecurityGroup.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(80), "HTTP out");
+    this.workspaceBrowser = new bedrockagentcore.CfnBrowserCustom(this, "WorkspaceBrowser", {
+      name: `lightbulb_${props.environment}_workspace_browser`,
+      description: "Every workspace's browser: VPC mode, so it leaves from the NAT's fixed address.",
+      networkConfiguration: {
+        networkMode: "VPC",
+        vpcConfig: {
+          subnets: props.vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnetIds,
+          securityGroups: [browserSecurityGroup.securityGroupId],
+        },
+      },
+    });
+
     // Permissions boundary capping every backend-minted per-owner role to the
     // UNION of what it may ever hold: scoped Bedrock invoke (on inference
     // profiles + the 9 FM ARNs) + runtime logs + AgentCore. A backend that can
@@ -314,7 +346,9 @@ export class ContainerStack extends cdk.Stack {
           // BOTH resources carry StartBrowserSession: a start with profileConfiguration authorizes against
           // the PROFILE arn too (dev spike 2026-09-19 -- the 403 named browser-profile/<id>, not the browser).
           resources: [
+            // The built-in browser stays until no session is left on it (see WorkspaceBrowser).
             `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,
+            this.workspaceBrowser.attrBrowserArn,
             `arn:aws:bedrock-agentcore:${this.region}:${this.account}:browser-profile/*`,
           ],
         }),

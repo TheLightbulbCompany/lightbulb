@@ -93,6 +93,7 @@ function build(environment: "dev" | "prod"): {
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,
       workspaceMemoryId: container.workspaceMemory.attrMemoryId,
+      workspaceBrowserId: container.workspaceBrowser.attrBrowserId,
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",

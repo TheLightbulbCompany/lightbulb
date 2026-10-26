@@ -126,7 +126,7 @@ async def _owned(owner: str, row: dict, state: dict) -> dict | None:
 async def _stream(session_id: str, enabled: bool, token: str) -> None:
     await run_in_thread(
         browser_sessions._data_client().update_browser_stream,
-        browserIdentifier=browser_sessions.BUILTIN_BROWSER_ID,
+        browserIdentifier=browser_sessions.BROWSER_ID,
         sessionId=session_id,
         streamUpdate={"automationStreamUpdate": {"streamStatus": "ENABLED" if enabled else "DISABLED"}},
         clientToken=token,
@@ -399,7 +399,7 @@ async def _fail(owner: str, state: dict, message: str) -> None:
 async def _retire(session_id: str) -> None:
     await run_in_thread(
         browser_sessions._data_client().stop_browser_session,
-        browserIdentifier=browser_sessions.BUILTIN_BROWSER_ID,
+        browserIdentifier=browser_sessions.BROWSER_ID,
         sessionId=session_id,
     )
 
@@ -457,7 +457,7 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
             session_config = await browser_extensions.session_config(owner, helper_nonce)
             result = await run_in_thread(
                 browser_sessions._data_client().start_browser_session,
-                browserIdentifier=browser_sessions.BUILTIN_BROWSER_ID,
+                browserIdentifier=browser_sessions.BROWSER_ID,
                 profileConfiguration={"profileIdentifier": row["browser_profile_id"]},
                 name=f"workspace-{start_token[:16]}",
                 clientToken=start_token,

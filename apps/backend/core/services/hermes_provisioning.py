@@ -174,7 +174,7 @@ def build_hermes_runtime_env(
                 # Lockstep: the SAME constant the owner's IAM grant and the backend's own
                 # session calls use. Three independent literals here would fail silently
                 # and split (a 403 on start, or a permanently dead panel).
-                "AGENTCORE_BROWSER_ID": browser_sessions.BUILTIN_BROWSER_ID,
+                "AGENTCORE_BROWSER_ID": browser_sessions.BROWSER_ID,
                 "AGENTCORE_PROFILE_ID": browser_profile_id,
                 # The CLI's own default is 3600; a turn's session lives 4-15 s.
                 "AGENTCORE_SESSION_TIMEOUT": "900",

@@ -378,6 +378,9 @@ class Settings(BaseSettings):
     # The env's shared AgentCore Memory (CDK ContainerStack.workspaceMemory). Empty = no workspace
     # memory: no per-owner grant, no AGENTCORE_MEMORY_ID in the runtime env, no wipe.
     AGENTCORE_MEMORY_ID: str = ""
+    # The env's VPC-mode workspace browser (CDK: ContainerStack.workspaceBrowser), which leaves
+    # from the NAT's fixed address. Empty (local, tests) = AWS's built-in browser.
+    AGENTCORE_BROWSER_ID: str = ""
 
     # Provisioned agent email (set by CDK ServiceStack). This is the BASE
     # domain (e.g. "thelightbulb.company" in prod) — each company gets its own

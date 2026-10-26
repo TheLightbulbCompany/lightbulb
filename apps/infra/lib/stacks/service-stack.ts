@@ -173,6 +173,8 @@ export interface ServiceStackProps extends cdk.StackProps {
     /** The env's shared AgentCore Memory id (ContainerStack.workspaceMemory). One export, not two:
      *  the ARN is derived here, so the container stack pins as little as possible. */
     workspaceMemoryId: string;
+    /** The env's workspace browser id (ContainerStack.workspaceBrowser, VPC mode). */
+    workspaceBrowserId: string;
   };
   managementApiUrl: string;
   /** Public wss:// endpoint returned by /api/v1/desktop/pair so desktop clients
@@ -488,6 +490,13 @@ export class ServiceStack extends cdk.Stack {
 
     // AgentCore Browser: the backend mints/reads the per-workspace profile and owns the
     // session lifecycle; the session id lives on the workspace's browser row, so it lists none.
+    // Sessions start on the env's VPC browser (ContainerStack.workspaceBrowser); the built-in
+    // browser stays granted so a session started on it before the move can still be viewed and
+    // stopped.
+    const browserArns = [
+      agentcoreArn(`browser-custom/${props.container.workspaceBrowserId}`),
+      `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,
+    ];
     // Browser-profile state snapshots use the released agent-browser CLI; no
     // SaveBrowserSessionProfile grant.
     agentCorePolicy.addStatements(
@@ -511,18 +520,14 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:GetBrowserSession",
           "bedrock-agentcore:ConnectBrowserLiveViewStream",
         ],
-        resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
+        resources: browserArns,
       }),
     );
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreBrowserSessionStart",
         actions: ["bedrock-agentcore:StartBrowserSession"],
-        resources: [
-          agentcoreArn("browser/*"),
-          `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,
-          agentcoreArn("browser-profile/*"),
-        ],
+        resources: [...browserArns, agentcoreArn("browser-profile/*")],
       }),
     );
     agentCorePolicy.addStatements(
@@ -533,7 +538,7 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:UpdateBrowserStream",
           "bedrock-agentcore:ConnectBrowserAutomationStream",
         ],
-        resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
+        resources: browserArns,
       }),
     );
 
@@ -1505,6 +1510,8 @@ export class ServiceStack extends cdk.Stack {
       // Stamped into every runtime spec as AGENTCORE_MEMORY_ID; the image enables its memory
       // provider only when it is set (N-1 safe: an older image ignores it).
       AGENTCORE_MEMORY_ID: props.container.workspaceMemoryId,
+      // The browser every workspace session starts on (bedrock_aip.BROWSER_ID).
+      AGENTCORE_BROWSER_ID: props.container.workspaceBrowserId,
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,

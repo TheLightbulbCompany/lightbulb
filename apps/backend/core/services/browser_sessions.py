@@ -16,20 +16,20 @@ from botocore.exceptions import ClientError
 from botocore.session import get_session
 
 from core.billing import bedrock_aip
-from core.billing.bedrock_aip import BUILTIN_BROWSER_ID
+from core.billing.bedrock_aip import BROWSER_ID
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
-#: ``BUILTIN_BROWSER_ID`` ("aws.browser.v1") has ONE home, ``bedrock_aip`` — the owner's IAM
+#: ``BROWSER_ID`` (the env's VPC browser) has ONE home, ``bedrock_aip`` — the owner's IAM
 #: grant, this module's session calls and the runtime's ``AGENTCORE_BROWSER_ID`` env var must
 #: agree or the failure is silent and split: the runtime starts sessions on a browser the
 #: policy does not name (403), or the backend lists a browser the runtime is not using (a
 #: permanently dead panel). Re-exported here so ``hermes_provisioning`` reaches it through the
 #: module it already imports.
-__all__ = ["BUILTIN_BROWSER_ID", "delete_browser_profiles", "ensure_browser_profile", "owns_session"]
+__all__ = ["BROWSER_ID", "delete_browser_profiles", "ensure_browser_profile", "owns_session"]
 
 #: AWS hard-caps the live-view presigned URL at 300 s. Not a tunable.
 LIVE_VIEW_TTL_S = 300
@@ -160,7 +160,7 @@ async def delete_browser_profiles(owner_id: str) -> int:
 
 def _get_session(session_id: str) -> dict:
     """Sync — call via ``run_in_thread``."""
-    return _data_client().get_browser_session(browserIdentifier=BUILTIN_BROWSER_ID, sessionId=session_id)
+    return _data_client().get_browser_session(browserIdentifier=BROWSER_ID, sessionId=session_id)
 
 
 async def owns_session(
@@ -205,7 +205,7 @@ def _presign_stream(session_id: str, stream: str) -> str:
     request = AWSRequest(
         method="GET",
         url=f"https://bedrock-agentcore.{region}.amazonaws.com"
-        f"/browser-streams/{BUILTIN_BROWSER_ID}/sessions/{session_id}/{stream}",
+        f"/browser-streams/{BROWSER_ID}/sessions/{session_id}/{stream}",
     )
     SigV4QueryAuth(credentials.get_frozen_credentials(), "bedrock-agentcore", region, expires=LIVE_VIEW_TTL_S).add_auth(
         request

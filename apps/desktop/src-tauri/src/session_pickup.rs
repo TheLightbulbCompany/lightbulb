@@ -129,8 +129,6 @@ pub(crate) fn normalize_remote(raw: &str) -> Option<String> {
     let raw = raw.trim();
     let rest = match raw.split_once("://") {
         Some((_, rest)) => rest.to_string(),
-        // Already `host/org/repo`: what a manifest carries (the author's Mac normalised it).
-        None if !raw.contains(':') && !raw.starts_with('/') => raw.to_string(),
         None => {
             // scp form: [user@]host:org/repo
             let (host, path) = raw.split_once(':')?;
@@ -149,6 +147,12 @@ pub(crate) fn normalize_remote(raw: &str) -> Option<String> {
         .unwrap_or(path)
         .trim_end_matches('/');
     (!host.is_empty() && !path.is_empty()).then(|| format!("{host}/{path}"))
+}
+
+/// A ticket's remote: the author's Mac already reduced it to `host/org/repo`, which
+/// `normalize_remote` refuses (a bare path is a relative local origin there). Ticket-only.
+fn ticket_remote(raw: &str) -> Option<String> {
+    normalize_remote(raw).or_else(|| normalize_remote(&format!("https://{}", raw.trim())))
 }
 
 /// Presigned S3 URLs for the owner-state bucket, under the backend-only prefix. Anything
@@ -322,7 +326,7 @@ fn parse_ticket(value: Value) -> Result<Ticket, Failure> {
             .manifest
             .code
             .as_ref()
-            .is_some_and(|c| !hex_sha(&c.snapshot) || normalize_remote(&c.remote).is_none())
+            .is_some_and(|c| !hex_sha(&c.snapshot) || ticket_remote(&c.remote).is_none())
     {
         return Err(invalid("The pick-up ticket is malformed."));
     }
@@ -787,7 +791,7 @@ async fn pick_up(ticket: Value, folder: Option<String>, env: &Env) -> Result<Val
     // Ok(repo) for a code pick-up, Err(folder) for a conversation-only one.
     let target: Result<PathBuf, PathBuf> = match &manifest.code {
         Some(code) => {
-            let remote = normalize_remote(&code.remote).unwrap_or_default();
+            let remote = ticket_remote(&code.remote).unwrap_or_default();
             let found = candidates(&env.approved, &remote).await;
             Ok(match (chosen, found.len()) {
                 (_, 0) => {
@@ -1335,8 +1339,6 @@ mod tests {
             "https://user@GitHub.com/TheLightbulbCompany/lightbulb/",
             "ssh://git@github.com:22/TheLightbulbCompany/lightbulb.git",
             "git@github.com:TheLightbulbCompany/lightbulb.git",
-            // What a pick-up manifest carries: already normalised.
-            "github.com/TheLightbulbCompany/lightbulb",
         ] {
             assert_eq!(
                 normalize_remote(raw).as_deref(),
@@ -1345,6 +1347,20 @@ mod tests {
             );
         }
         assert_eq!(normalize_remote("/local/path"), None);
+        // A relative local origin is not a host path (Codex, #4383).
+        assert_eq!(normalize_remote("team/project"), None);
+        // What a pick-up ticket carries: the author's Mac already normalised it.
+        for raw in [
+            "github.com/TheLightbulbCompany/lightbulb",
+            "https://github.com/TheLightbulbCompany/lightbulb",
+        ] {
+            assert_eq!(
+                ticket_remote(raw).as_deref(),
+                Some("github.com/TheLightbulbCompany/lightbulb"),
+                "{raw}"
+            );
+        }
+        assert_eq!(ticket_remote("/local/path"), None);
     }
 
     #[test]

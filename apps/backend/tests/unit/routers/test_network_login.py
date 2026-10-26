@@ -333,3 +333,39 @@ def test_a_renewal_needs_a_live_account_and_fails_closed_when_clerk_cannot_say(e
     clerk_admin.get_user_strict.side_effect = None
     clerk_admin.get_user_strict.return_value = {"id": "user_ada"}
     assert refresh().status_code == 200
+
+
+def test_logout_signs_the_computer_out_everywhere_and_a_new_login_lifts_it(env, monkeypatch):
+    import asyncio
+
+    from core.services import network_route
+
+    client, *_ = env
+    closed, published = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(network_route, "sign_out", closed)
+    monkeypatch.setattr(network_member, "publish_sessions", published)
+    monkeypatch.setattr(clerk_admin, "list_user_organizations", AsyncMock(return_value=[{"id": ORG}]))
+    mac = Computer()
+    proof = _login(client, mac)["proof"]
+    published.assert_not_awaited()  # nothing to lift on a first login
+
+    def logout(token):
+        return client.post("/api/v1/network/proof/revoke", json={**mac.signed(client, "logout"), "proof": token})
+
+    # Another key's signature, or a login-purpose one, signs nobody out.
+    forged = {**Computer().signed(client, "logout"), "key": mac.key, "proof": proof}
+    assert client.post("/api/v1/network/proof/revoke", json=forged).status_code == 401
+    login_sig = {**mac.signed(client, "login"), "proof": proof}
+    assert client.post("/api/v1/network/proof/revoke", json=login_sig).status_code == 401
+    assert not asyncio.run(network_login.is_revoked("user_ada", mac.key))
+
+    assert logout(proof).json() == {"state": "signed_out"}
+    assert asyncio.run(network_login.revoked_keys(["user_ada"])) == [mac.key]
+    closed.assert_awaited_once_with("user_ada", mac.key)
+    published.assert_awaited_once_with(ORG)  # the workspace's engines refuse it now
+    assert logout(network_proof.mint(Computer().key, "user_ada")).status_code == 200  # another's proof
+    assert closed.await_count == 1
+
+    _login(client, mac)
+    assert not asyncio.run(network_login.is_revoked("user_ada", mac.key))
+    assert published.await_count == 2  # the lift is republished too

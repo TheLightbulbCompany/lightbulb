@@ -12,7 +12,8 @@ signed-in person confirms in the browser.
   ``members``. ``refresh`` (signed, no browser) renews a proof still in force.
 - ``agents``: a workspace admin, whose own computer this is (its proof names them), adds the
   workspace to that computer's network with the once ask link the computer minted.
-- logout is the computer's alone: it deletes its proof.
+- ``logout`` (signed, no browser) signs the computer out everywhere (``sign_out``) before it
+  deletes its proof; a later ``login`` of the same computer by the same person lifts that.
 
 Keys, codes, nonces, links and proofs are credentials or near enough: none is ever logged.
 """
@@ -194,6 +195,7 @@ async def approve(ctx: AuthContext, user_code: str) -> dict:
             "proof": network_proof.mint(row["computerKey"], ctx.user_id),
             "routeUrl": route_url(),
         }
+        await unrevoke(ctx.user_id, row["computerKey"])
     else:
         await network_member.join_network(owner_id, row["ticket"])
         result = {"workspaceName": await _workspace(owner_id)}
@@ -238,6 +240,44 @@ async def revoke(user_id: str, key: str) -> None:
         raise HTTPException(status_code=404, detail="No such computer of yours.")
     item = {**_revoked_key(user_id, key), "ttl": int(time.time()) + network_proof.LIFE_S}
     await run_in_thread(messaging_repo._table().put_item, Item=item)
+
+
+async def sign_out(user_id: str, key: str) -> None:
+    """Sign ``key`` out for ``user_id`` now: ``revoke``, close its route link, and republish
+    the ``revoked_keys`` of each of the person's workspaces (a warm engine refuses it at once)."""
+    from core.services import network_route
+
+    await revoke(user_id, key)
+    await network_route.sign_out(user_id, key)
+    await _republish(user_id)
+
+
+async def _republish(user_id: str) -> None:
+    from core.services import clerk_admin, network_member
+
+    for org in await clerk_admin.list_user_organizations(user_id, limit=100):
+        await network_member.publish_sessions(org["id"])  # never raises
+
+
+async def logout(key: str, nonce: str, sig: str, proof: str) -> dict:
+    """``lightbulb logout``: the computer, signed, signs itself out as the person its proof names
+    (``sign_out``). A proof that no longer checks out is refused nowhere it is not already."""
+    await _proven(key, "logout", nonce, sig)
+    claims = network_proof.verify(proof, key)
+    if claims is not None:
+        await sign_out(claims["sub"], key)
+    return {"state": "signed_out"}
+
+
+async def unrevoke(user_id: str, key: str) -> None:
+    """A fresh ``login`` of ``key`` by ``user_id`` lifts their sign-out of it, republished."""
+    from core.dynamodb import run_in_thread
+
+    gone = await run_in_thread(
+        messaging_repo._table().delete_item, Key=_revoked_key(user_id, key), ReturnValues="ALL_OLD"
+    )
+    if gone.get("Attributes"):
+        await _republish(user_id)
 
 
 async def is_revoked(user_id: str, key: str) -> bool:

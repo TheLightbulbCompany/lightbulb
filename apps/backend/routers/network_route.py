@@ -136,14 +136,11 @@ async def sign_out_computer(key: str, ctx: AuthContext = Depends(get_current_use
     """Sign one of this person's connected computers out from the website: its proof stops
     working everywhere (``network_login.revoke``), its route link closes now, and each of the
     person's workspaces republishes its engines' ``revoked_keys``."""
-    from core.services import clerk_admin, network_login, network_member
+    from core.services import network_login
 
     # Only a computer this person has online: a key of someone else's never enters revoked_keys.
     # ponytail: an offline computer cannot be signed out here; list keys from login if that matters
     if not any(r["key"] == key for r in await _computers(ctx)):
         raise HTTPException(404, detail="That computer is not connected as you.")
-    await network_login.revoke(ctx.user_id, key)
-    await network_route.sign_out(ctx.user_id, key)
-    for org in await clerk_admin.list_user_organizations(ctx.user_id, limit=100):
-        await network_member.publish_sessions(org["id"])  # never raises
+    await network_login.sign_out(ctx.user_id, key)
     return Response(status_code=204)

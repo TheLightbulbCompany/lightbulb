@@ -40,6 +40,12 @@ const VIEW_KEY = "lightbulb:session-view";
 const savedView = () => { try { return window.localStorage.getItem(VIEW_KEY) === "conversation"; } catch { return false; } };
 /** Between two keys of a question's answer: the picker reads one write as one key ("21" is not 2 then 1). */
 const KEY_GAP_MS = 350;
+/** The input route's refusals (`session_screen.type_into`) that it raises before anything is sent to the
+ *  Mac, so the key was never typed and may be sent again. Every other failure leaves unknown whether it
+ *  landed: LOCAL_SESSION_OFFLINE is also what a sent frame whose ack was lost reads as, and a timeout or a
+ *  lost connection has no answer at all. */
+const KEY_NOT_SENT = new Set(["LOCAL_SESSION_FORBIDDEN", "LOCAL_SESSION_NOT_FOUND", "LOCAL_SESSION_UNSUPPORTED", "RATE_LIMITED"]);
+const keyNotSent = (e: unknown) => e instanceof ApiError && KEY_NOT_SENT.has(String((e.body as { code?: unknown } | null)?.code));
 /** Distance from the bottom, in px, still counted as "at the bottom" (the phone's value). */
 const BOTTOM_SLACK = 80;
 /** Within this many pixels of the top, older output is fetched. */
@@ -482,9 +488,9 @@ function JoinRequests({ waiting, ids, line, decide: send, enabled, personName }:
  */
 function QuestionAnswer({ questions, keys }: { questions: SessionQuestion[]; keys: React.RefObject<((data: string) => Promise<unknown>) | null> }) {
   const [picks, setPicks] = useState<number[][]>(() => questions.map(() => []));
-  // "sent" only once the relay took every key. A key the server refused (a 4xx) was never written to the
-  // terminal: the rest is sent again from it ("failed"). A timeout, a lost connection or a 5xx leaves
-  // unknown whether it landed, and a key typed twice answers the next question or the composer: no retry ("stuck").
+  // "sent" only once the relay took every key. A key the server refused before sending (`KEY_NOT_SENT`) was
+  // never typed: the rest is sent again from it ("failed"). Any other failure leaves unknown whether it
+  // landed, and a key typed twice answers the next question or the composer: no retry ("stuck").
   const [state, setState] = useState<"idle" | "sending" | "sent" | "failed" | "stuck">("idle");
   const progress = useRef<{ keys: string[]; taken: number } | null>(null);
   const [taken, setTaken] = useState(0);
@@ -497,10 +503,10 @@ function QuestionAnswer({ questions, keys }: { questions: SessionQuestion[]; key
     for (let i = run.taken; i < run.keys.length; i++) {
       if (i > 0) await new Promise(done => setTimeout(done, KEY_GAP_MS));
       try {
-        if (!keys.current) throw new ApiError(409, null, "no terminal");
+        if (!keys.current) throw new ApiError(409, { code: "LOCAL_SESSION_UNSUPPORTED" }, "no terminal");
         await keys.current(run.keys[i]);
       } catch (e) {
-        setState(e instanceof ApiError && e.status >= 400 && e.status < 500 ? "failed" : "stuck");
+        setState(keyNotSent(e) ? "failed" : "stuck");
         return;
       }
       run.taken = i + 1; setTaken(run.taken);

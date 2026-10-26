@@ -7,12 +7,12 @@ import { LocalSessionPanel } from "../LocalSessionPanel";
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "alice", orgId: "org_1" }) }));
 // The terminal itself is tested in SessionTerminalView.test; here it just reports that it is live.
-const typing = vi.hoisted(() => ({ canType: true, admitted: undefined as boolean | undefined, kept: undefined as boolean | undefined, mounts: 0, typed: [] as string[], calls: 0, failOn: [] as number[], failWith: 409 }));
+const typing = vi.hoisted(() => ({ canType: true, admitted: undefined as boolean | undefined, kept: undefined as boolean | undefined, mounts: 0, typed: [] as string[], calls: 0, failOn: [] as number[], failWith: "RATE_LIMITED" as string | null }));
 vi.mock("../SessionTerminalView", async () => {
   const { useEffect } = await import("react");
   return { SessionTerminalView: ({ onLive, onCanType, admitted, kept, keys }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void; admitted?: boolean; kept?: boolean; keys?: { current: ((d: string) => Promise<unknown>) | null } }) => {
     typing.admitted = admitted; typing.kept = kept;
-    if (keys) keys.current = async (d) => { if (typing.failOn.includes(typing.calls++)) { const { ApiError } = await import("@lightbulb/shared"); throw typing.failWith ? new ApiError(typing.failWith, null, "refused") : new TypeError("Failed to fetch"); } typing.typed.push(d); };
+    if (keys) keys.current = async (d) => { if (typing.failOn.includes(typing.calls++)) { const { ApiError } = await import("@lightbulb/shared"); throw typing.failWith ? new ApiError(409, { code: typing.failWith }, "refused") : new TypeError("Failed to fetch"); } typing.typed.push(d); };
     useEffect(() => { typing.mounts += 1; }, []);
     useEffect(() => { onLive(true); onCanType?.(typing.canType); }, [onLive, onCanType]);
     return <div role="region" aria-label="Live terminal (view only)"><div className="session-terminal-scroll" /></div>;
@@ -563,17 +563,26 @@ describe("a question answered from Lightbulb", () => {
   });
 
   it("offers no retry when a key may have landed (lost connection), even a single-select digit", async () => {
-    typing.typed = []; typing.calls = 0; typing.failOn = [0]; typing.failWith = 0;
+    typing.typed = []; typing.calls = 0; typing.failOn = [0]; typing.failWith = null;
     client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea]) as never);
     render(<LocalSessionPanel {...props} session={waiting} />);
     fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
     expect(await screen.findByText("Couldn't send. Finish answering in the terminal.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Coffee" }).matches(":disabled")).toBe(true);
-    typing.failOn = []; typing.failWith = 409;
+    typing.failOn = []; typing.failWith = "RATE_LIMITED";
   });
 
-  it("offers no retry when a multi-select toggle timed out", async () => {
-    typing.typed = []; typing.calls = 0; typing.failOn = [1]; typing.failWith = 504;
+  it("offers no retry on LOCAL_SESSION_OFFLINE: a sent frame whose ack was lost reads the same", async () => {
+    typing.typed = []; typing.calls = 0; typing.failOn = [0]; typing.failWith = "LOCAL_SESSION_OFFLINE";
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
+    expect(await screen.findByText("Couldn't send. Finish answering in the terminal.")).toBeTruthy();
+    typing.failOn = []; typing.failWith = "RATE_LIMITED";
+  });
+
+  it("offers no retry when a multi-select toggle failed with an unknown answer", async () => {
+    typing.typed = []; typing.calls = 0; typing.failOn = [1]; typing.failWith = "LOCAL_SESSION_CONFLICT";
     client.listLocalSessionEvents.mockResolvedValueOnce(asking([{ question: "Add what?", multiSelect: true, options: [{ label: "Milk" }, { label: "Sugar" }, { label: "Honey" }] }]) as never);
     render(<LocalSessionPanel {...props} session={waiting} />);
     fireEvent.click(await screen.findByRole("button", { name: "Milk" }));
@@ -583,7 +592,7 @@ describe("a question answered from Lightbulb", () => {
     expect(screen.getByRole("button", { name: "Send answer" }).matches(":disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Milk" }).matches(":disabled")).toBe(true);
     expect(typing.typed).toEqual(["1"]);
-    typing.failOn = []; typing.failWith = 409;
+    typing.failOn = []; typing.failWith = "RATE_LIMITED";
   });
 
   it("types each pick, then Enter for the review screen, for two questions", async () => {

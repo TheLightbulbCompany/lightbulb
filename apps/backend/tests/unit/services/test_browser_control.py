@@ -1175,3 +1175,58 @@ async def test_sign_out_refuses_a_public_suffix_and_leaves_sibling_sites_alone(w
     after = json.loads(saved[workspace["browser_state"]["saved_key"]])
     assert [c["domain"] for c in after["cookies"]] == ["other.com.ph"]
     assert [o["origin"] for o in after["origins"]] == ["https://other.com.ph"]
+
+
+def _profile_round_trip(workspace, monkeypatch, save_error=None):
+    client = MagicMock()
+    client.start_browser_session.return_value = {"sessionId": "fresh"}
+    if save_error:
+        client.save_browser_session_profile.side_effect = save_error
+    monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
+    loads = []
+
+    async def rpc(owner, method, params, timeout_s=None):
+        if params["action"] == "load":
+            loads.append(params["cookies"])
+        return {"ok": True, "base": True}
+
+    monkeypatch.setattr(control.container_rpc, "call", rpc)
+    monkeypatch.setattr(control, "_state_url", lambda key, action: f"https://s3/{key}?{action}")
+    monkeypatch.setattr(control, "_save_extension_storage", AsyncMock())
+    monkeypatch.setattr(control, "_restore_extension_storage", AsyncMock())
+    monkeypatch.setattr(control, "_retire", AsyncMock())
+    return client, loads
+
+
+@pytest.mark.asyncio
+async def test_a_save_also_saves_the_agentcore_profile_and_the_next_start_never_loads_cookies_twice(
+    workspace, agent_tools, monkeypatch
+):
+    client, loads = _profile_round_trip(workspace, monkeypatch)
+    await control._save("org_browser", workspace["browser_state"], stop=True, reason="idle")
+    client.save_browser_session_profile.assert_called_once_with(
+        profileIdentifier="profile", browserIdentifier=control.browser_sessions.BUILTIN_BROWSER_ID, sessionId="session"
+    )
+    state = workspace["browser_state"]
+    assert state["profile_key"] == f"profile:{state['saved_key']}" and state["session_id"] is None
+
+    await control.acquire_agent("org_browser", "run-1")  # a new session, started from the profile
+    assert loads == [False]  # localStorage only: AWS restored the cookies
+
+    # A paired Mac publishes: the profile no longer matches the save, so its cookies load from S3.
+    await control.release_agent("org_browser", "run-1", workspace["browser_state"]["generation"])
+    await control._save("org_browser", workspace["browser_state"], stop=True, reason="idle")
+    workspace["browser_state"]["saved_key"] = "browser-state/org_browser/mac-1.json"
+    await control.acquire_agent("org_browser", "run-2")
+    assert loads == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_profile_save_keeps_the_s3_save_and_the_next_start_loads_its_cookies(
+    workspace, agent_tools, monkeypatch
+):
+    _, loads = _profile_round_trip(workspace, monkeypatch, save_error=RuntimeError("session is not active"))
+    await control._save("org_browser", workspace["browser_state"], stop=True, reason="idle")
+    assert workspace["browser_state"]["saved_key"] and workspace["browser_state"]["profile_key"] is None
+    await control.acquire_agent("org_browser", "run-1")
+    assert loads == [True]

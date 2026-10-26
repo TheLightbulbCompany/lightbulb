@@ -304,8 +304,11 @@ describe("hermes runtime wiring", () => {
           }),
           Match.objectLike({
             Sid: "AgentCoreBrowserSessionStart",
-            // CDK collapses a single action to a bare string.
-            Action: "bedrock-agentcore:StartBrowserSession",
+            // Start a session from the workspace profile, and save the session back into it.
+            Action: Match.arrayEquals([
+              "bedrock-agentcore:StartBrowserSession",
+              "bedrock-agentcore:SaveBrowserSessionProfile",
+            ]),
             Resource: Match.arrayEquals([
               "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser/*",
               "arn:aws:bedrock-agentcore:us-east-1:aws:browser/aws.browser.v1",
@@ -328,10 +331,6 @@ describe("hermes runtime wiring", () => {
       }),
     });
 
-    // Native SaveBrowserSessionProfile is deliberately absent: v2 persists via the released
-    // agent-browser state save/load path instead.
-    const doc = JSON.stringify([dev.serviceTemplate.findResources("AWS::IAM::Policy"), dev.serviceTemplate.findResources("AWS::IAM::ManagedPolicy")]);
-    expect(doc).not.toContain("bedrock-agentcore:SaveBrowserSessionProfile");
   });
 
   // Workspace memory (Track G). One shared resource per env; tenants are isolated by the per-owner

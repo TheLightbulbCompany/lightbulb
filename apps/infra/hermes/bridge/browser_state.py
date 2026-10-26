@@ -622,14 +622,17 @@ def checkpoint(params: dict, budget_s: float | None = None) -> dict:
                 return {"ok": True, "bytes": len(body)}
             if action == "load":
                 _run(env, "connect", cdp_url, deadline=deadline)
-                # agent-browser 0.38.1's state load only adds cookies when the file has any;
-                # an empty saved jar must still replace, rather than inherit, profile cookies.
-                _run(env, "cookies", "clear", deadline=deadline)
                 state = _valid_state(load_body or b"")
-                # The cookies (the sign-ins) first, on their own: no navigation, so no slow site
-                # can cost them.
-                Path(path).write_bytes(json.dumps({**state, "origins": []}, separators=(",", ":")).encode())
-                _run(env, "state", "load", path, deadline=deadline)
+                # ``cookies: False``: the session started from an AgentCore profile that already
+                # holds this save's cookies (the backend checks), so only localStorage loads here.
+                if params.get("cookies") is not False:
+                    # agent-browser 0.38.1's state load only adds cookies when the file has any;
+                    # an empty saved jar must still replace, rather than inherit, profile cookies.
+                    _run(env, "cookies", "clear", deadline=deadline)
+                    # The cookies (the sign-ins) first, on their own: no navigation, so no slow
+                    # site can cost them.
+                    Path(path).write_bytes(json.dumps({**state, "origins": []}, separators=(",", ":")).encode())
+                    _run(env, "state", "load", path, deadline=deadline)
                 # Then each saved origin, within ORIGINS_BUDGET_S: cleared first so an empty
                 # snapshot stays an authoritative logout, then its own localStorage loaded.
                 reached = set()

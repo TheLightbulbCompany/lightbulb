@@ -488,8 +488,9 @@ export class ServiceStack extends cdk.Stack {
 
     // AgentCore Browser: the backend mints/reads the per-workspace profile and owns the
     // session lifecycle; the session id lives on the workspace's browser row, so it lists none.
-    // Browser-profile state snapshots use the released agent-browser CLI; no
-    // SaveBrowserSessionProfile grant.
+    // Every save also writes the session's cookies into the AgentCore profile
+    // (SaveBrowserSessionProfile), which the next session starts with; localStorage still comes
+    // from the backend's S3 snapshot (a profile does not restore it -- dev probes 09-20, 10-26).
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreBrowserManage",
@@ -517,7 +518,7 @@ export class ServiceStack extends cdk.Stack {
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreBrowserSessionStart",
-        actions: ["bedrock-agentcore:StartBrowserSession"],
+        actions: ["bedrock-agentcore:StartBrowserSession", "bedrock-agentcore:SaveBrowserSessionProfile"],
         resources: [
           agentcoreArn("browser/*"),
           `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,

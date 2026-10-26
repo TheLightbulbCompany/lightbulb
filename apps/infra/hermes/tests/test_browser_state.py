@@ -116,6 +116,33 @@ def test_load_runs_state_load_then_reload_and_returns_no_state(monkeypatch):
     ]
 
 
+def test_a_load_onto_a_profile_that_holds_the_cookies_loads_only_localstorage(monkeypatch):
+    """The session started from an AgentCore profile with this save's cookies: never clear or
+    load them a second time."""
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self, *_args): return b'{"cookies":[],"origins":[{"origin":"https://example.com","localStorage":[]}]}'
+
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(lambda *_args, **_kwargs: Response())})())
+    assert browser_state.checkpoint(_params(action="load", cookies=False)) == {"ok": True, "bytes": 0}
+    actions = [c[3:] for c in calls]
+    assert ["cookies", "clear"] not in actions
+    assert actions[:4] == [
+        ["connect", _params()["cdpUrl"]],
+        ["open", "https://example.com"],
+        ["storage", "local", "clear"],
+        ["state", "load", calls[3][-1]],
+    ]
+
+
 def test_load_restores_the_rest_when_one_saved_site_does_not_load(monkeypatch):
     """A sleeping site timed out Page.navigate and failed every restore: the browser never
     started again (dev 2026-09-28). It is now left out of this restore; the rest loads."""

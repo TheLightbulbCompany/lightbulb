@@ -208,6 +208,8 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
         };
         let record = Link {

@@ -444,6 +444,7 @@ impl Host {
                 mirror.persist_durable(&path)?;
             }
         }
+        mirror.registration.sent_withheld = mirror.withheld();
         let mut frame = registration(mirror);
         if let Some(origin) = origin {
             frame["session"]["forkedFrom"] = json!(origin);
@@ -525,13 +526,27 @@ impl Host {
         let scope = self.dir.clone();
         for mut native in reconciled {
             let key = native_key(&native);
+            // A continuation is the same conversation under a new id: its earlier ids are its
+            // origin's, then the origin's own.
+            if let Some(origin) = native.forked_from.clone() {
+                let mut chain = self
+                    .mirrors
+                    .values()
+                    .find(|m| m.native.provider == native.provider && m.native.profile == native.profile && m.native.conversation == origin)
+                    .map(|m| m.native.aliases.clone())
+                    .unwrap_or_default();
+                chain.retain(|id| *id != origin && *id != native.conversation);
+                chain.push(origin);
+                native.aliases = chain;
+            }
             // Started with Lightbulb (it has a holder: `lightbulb claude|codex`, New session, a
-            // remote start, a resume, a pick-up), or moved to the background (←) out of a shared
-            // session its person used: shared from its start. Not out of one that never had a
-            // prompt (no transcript): Claude starts a job from an idle terminal to take another
-            // session's message, and that job was listed as a session nobody started (2026-10-26).
+            // remote start, a resume, a pick-up), or continued by its person (←, `/background`) out
+            // of a shared session they used: shared from its start. Not when a peer's message or
+            // another agent moved it on (Claude backgrounds an idle terminal to answer a peer):
+            // that job was listed as a session nobody started (2026-10-26). Not out of one that
+            // never had a prompt (no transcript) either.
             let ours = native.holder.is_some()
-                || native.forked_from.as_deref().is_some_and(|origin| {
+                || native.forked_by_person == Some(true) && native.forked_from.as_deref().is_some_and(|origin| {
                     self.mirrors.values().any(|m| {
                         m.shared
                             && m.native.transcript.is_some()
@@ -551,8 +566,17 @@ impl Host {
             if let Some(mirror) = self.mirrors.get_mut(&key) {
                 // Its holder or its lineage was found after its mirror was made. Never for a
                 // session the relay has heard of: its person stopped sharing it, and stays asked.
-                if ours && !mirror.shared && mirror.session_id.is_none() {
+                // Except a continuation: it stays private until its own first turn says who moved
+                // it on (an old human turn in its origin says nothing about a peer's background),
+                // and its person's turn shares it then, unless they stopped sharing it.
+                let decided = mirror.native.forked_by_person.is_none() && native.forked_by_person == Some(true);
+                let stopped = STOPPED_AT.lock().is_ok_and(|s| s.contains_key(&key));
+                if ours && !mirror.shared && (mirror.session_id.is_none() || decided && !stopped) {
                     mirror.shared = true;
+                    // A private register in flight, or one the relay holds: register again.
+                    if mirror.registration.pending || mirror.session_id.is_some() {
+                        invalidate = true;
+                    }
                 }
                 if mirror.ended_at.is_some() {
                     // The session is over: a hook or its own pid said so, and a
@@ -637,6 +661,13 @@ impl Host {
                 // `forkedFrom` on the next registration and lists the origin beside its fork.
                 if native.forked_from.is_none() && mirror.native.process == native.process {
                     native.forked_from.clone_from(&mirror.native.forked_from);
+                }
+                if native.forked_by_person.is_none() && mirror.native.process == native.process {
+                    native.forked_by_person = mirror.native.forked_by_person;
+                }
+                // Nor its earlier ids, once its origin's mirror is reaped.
+                if mirror.native.process == native.process && mirror.native.aliases.len() > native.aliases.len() {
+                    native.aliases.clone_from(&mirror.native.aliases);
                 }
                 // Discovery cannot read the last assistant message; only a Stop hook
                 // carries it, so a listing must not blank it.
@@ -2060,7 +2091,11 @@ impl Host {
                             // An ended mirror's draining register carries no start identity.
                             let current_start_id = start_links::linked(&self.dir, &mirror.native, &mirror.generation)
                                 .filter(|_| mirror.ended_at.is_none());
-                            if advanced || native_restriction != mirror.native.restriction || start_id != current_start_id {
+                            if advanced
+                                || native_restriction != mirror.native.restriction
+                                || start_id != current_start_id
+                                || mirror.registration.sent_withheld != mirror.withheld()
+                            {
                                 registered.remove(&key);
                             } else {
                                 registered.insert(key.clone());
@@ -3408,6 +3443,8 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
         }
     }
@@ -3508,12 +3545,37 @@ pub(super) mod tests {
         // ← out of a session that is shared, and out of one that is not.
         let mut fork = test_native("5eed0003-0000-4000-8000-000000000003");
         fork.forked_from = Some(held.conversation.clone());
+        fork.forked_by_person = Some(true);
         let mut private_fork = test_native("5eed0004-0000-4000-8000-000000000004");
         private_fork.forked_from = Some(outside.conversation.clone());
+        private_fork.forked_by_person = Some(true);
+        // A peer's message moved the shared session on (its continuation's first prompt is the peer's).
+        let mut peer_fork = test_native("5eed0007-0000-4000-8000-000000000007");
+        peer_fork.forked_from = Some(held.conversation.clone());
         host.observe(vec![outside.clone(), held.clone(), idle_held.clone()], &BTreeSet::new()).unwrap();
-        host.observe(vec![outside.clone(), held.clone(), idle_held.clone(), fork.clone(), private_fork.clone(), peer_job.clone()], &BTreeSet::new()).unwrap();
-        let shared: Vec<bool> = [&outside, &held, &fork, &private_fork, &peer_job].iter().map(|n| host.mirrors[&native_key(n)].shared).collect();
-        assert_eq!(shared, [false, true, true, false, false], "a job out of a terminal nobody prompted is not the person's");
+        host.observe(vec![outside.clone(), held.clone(), idle_held.clone(), fork.clone(), private_fork.clone(), peer_job.clone(), peer_fork.clone()], &BTreeSet::new()).unwrap();
+        let shared: Vec<bool> = [&outside, &held, &fork, &private_fork, &peer_job, &peer_fork].iter().map(|n| host.mirrors[&native_key(n)].shared).collect();
+        assert_eq!(shared, [false, true, true, false, false, false], "a job out of a terminal nobody prompted, or moved on by a peer, is not the person's");
+        // The continuation remembers the id it had before.
+        assert_eq!(host.mirrors[&native_key(&fork)].native.aliases, [held.conversation.clone()]);
+        // Undecided (no turn of its own yet) is private, also once the relay has heard of it; its
+        // person's first turn then shares it and registers it again. A peer's never does.
+        let peer_key = native_key(&peer_fork);
+        host.mirrors.get_mut(&peer_key).unwrap().session_id = Some("5eed0007-5e55-4000-8000-000000000007".into());
+        let mut by_person = peer_fork.clone();
+        by_person.forked_by_person = Some(true);
+        let invalidated = host.observe(vec![held.clone(), by_person], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&peer_key].shared && invalidated.contains(&peer_key));
+        // The same while its first, private register is still in flight (no id yet).
+        let mut late = test_native("5eed0008-0000-4000-8000-000000000008");
+        late.forked_from = Some(held.conversation.clone());
+        host.observe(vec![held.clone(), late.clone()], &BTreeSet::new()).unwrap();
+        let late_key = native_key(&late);
+        assert!(!host.mirrors[&late_key].shared);
+        host.mirrors.get_mut(&late_key).unwrap().registration.pending = true;
+        late.forked_by_person = Some(true);
+        let invalidated = host.observe(vec![held.clone(), late], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&late_key].shared && invalidated.contains(&late_key), "its private register must go again");
 
         // Only its person's and never shared: it registers, heartbeats and uploads nothing, and takes nothing.
         let key = native_key(&outside);
@@ -5779,6 +5841,8 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
         }
     }
@@ -6069,6 +6133,8 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
         };
         let key = native_key(&native);
@@ -6194,6 +6260,8 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
         };
         let mirror = Mirror {

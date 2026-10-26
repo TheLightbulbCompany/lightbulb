@@ -1303,9 +1303,18 @@ struct NativeSession {
     /// `claude attach` takes. None for every other session.
     #[serde(default)]
     job: Option<String>,
-    /// The conversation this background session was forked from (← in an interactive session).
+    /// The conversation this background session continues (←, `/background`, a peer reply): the
+    /// origin whose transcript ends `continued-in` → this one (`claude::continued_from`).
     #[serde(default)]
     forked_from: Option<String>,
+    /// Whether its person moved it on (its own first turn is theirs, not a peer's or another
+    /// agent's): only then is it shared like its origin. None until it has a turn of its own.
+    #[serde(default)]
+    forked_by_person: Option<bool>,
+    /// Every earlier id of this conversation, oldest first (Claude gives a continuation a new id):
+    /// a request naming any of them means this session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    aliases: Vec<String>,
     /// It runs inside an app, an IDE or an SDK, not in a terminal: there is never a live
     /// terminal to show, so a shared one is shared as its conversation.
     #[serde(default)]
@@ -1960,6 +1969,10 @@ struct RegistrationState {
     pending: bool,
     // At most one latest observation while the frozen transition/history drains.
     successor: Option<NativeSession>,
+    // Whether the last register sent said `shared:false`: an ACK of it does not settle a
+    // mirror shared since (its register must go again, or it stays private on the relay).
+    #[serde(default)]
+    sent_withheld: bool,
 }
 
 impl Mirror {
@@ -2348,6 +2361,8 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
         }
     }
@@ -2537,6 +2552,8 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
         };
         let mut workspace = workspace::State::default();
@@ -2603,6 +2620,8 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
         };
         journal.anchor(&cmd, &native, "unique".into(), None).unwrap();
@@ -2996,6 +3015,8 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
         };
         let mut sessions = vec![];
@@ -3100,6 +3121,8 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: None,
+                aliases: vec![],
                 app: true,
             },
             generation: "g".into(),
@@ -3189,6 +3212,8 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: None,
+                aliases: vec![],
                 app: true,
             },
             generation: "g".into(),
@@ -3277,6 +3302,8 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: None,
+                aliases: vec![],
                 app: true,
             },
             generation: "g".into(),
@@ -3380,6 +3407,8 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: None,
+                aliases: vec![],
                 app: true,
             },
             generation: "g".into(),
@@ -3448,6 +3477,8 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: None,
+                aliases: vec![],
                 app: true,
             },
             generation: "g".into(),

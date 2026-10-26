@@ -525,13 +525,27 @@ impl Host {
         let scope = self.dir.clone();
         for mut native in reconciled {
             let key = native_key(&native);
+            // A continuation is the same conversation under a new id: its earlier ids are its
+            // origin's, then the origin's own.
+            if let Some(origin) = native.forked_from.clone() {
+                let mut chain = self
+                    .mirrors
+                    .values()
+                    .find(|m| m.native.provider == native.provider && m.native.profile == native.profile && m.native.conversation == origin)
+                    .map(|m| m.native.aliases.clone())
+                    .unwrap_or_default();
+                chain.retain(|id| *id != origin && *id != native.conversation);
+                chain.push(origin);
+                native.aliases = chain;
+            }
             // Started with Lightbulb (it has a holder: `lightbulb claude|codex`, New session, a
-            // remote start, a resume, a pick-up), or moved to the background (←) out of a shared
-            // session its person used: shared from its start. Not out of one that never had a
-            // prompt (no transcript): Claude starts a job from an idle terminal to take another
-            // session's message, and that job was listed as a session nobody started (2026-10-26).
+            // remote start, a resume, a pick-up), or continued by its person (←, `/background`) out
+            // of a shared session they used: shared from its start. Not when a peer's message or
+            // another agent moved it on (Claude backgrounds an idle terminal to answer a peer):
+            // that job was listed as a session nobody started (2026-10-26). Not out of one that
+            // never had a prompt (no transcript) either.
             let ours = native.holder.is_some()
-                || native.forked_from.as_deref().is_some_and(|origin| {
+                || native.forked_by_person && native.forked_from.as_deref().is_some_and(|origin| {
                     self.mirrors.values().any(|m| {
                         m.shared
                             && m.native.transcript.is_some()
@@ -637,6 +651,11 @@ impl Host {
                 // `forkedFrom` on the next registration and lists the origin beside its fork.
                 if native.forked_from.is_none() && mirror.native.process == native.process {
                     native.forked_from.clone_from(&mirror.native.forked_from);
+                    native.forked_by_person = mirror.native.forked_by_person;
+                }
+                // Nor its earlier ids, once its origin's mirror is reaped.
+                if mirror.native.process == native.process && mirror.native.aliases.len() > native.aliases.len() {
+                    native.aliases.clone_from(&mirror.native.aliases);
                 }
                 // Discovery cannot read the last assistant message; only a Stop hook
                 // carries it, so a listing must not blank it.
@@ -3408,6 +3427,8 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: false,
+            aliases: vec![],
             app: true,
         }
     }
@@ -3508,12 +3529,19 @@ pub(super) mod tests {
         // ← out of a session that is shared, and out of one that is not.
         let mut fork = test_native("5eed0003-0000-4000-8000-000000000003");
         fork.forked_from = Some(held.conversation.clone());
+        fork.forked_by_person = true;
         let mut private_fork = test_native("5eed0004-0000-4000-8000-000000000004");
         private_fork.forked_from = Some(outside.conversation.clone());
+        private_fork.forked_by_person = true;
+        // A peer's message moved the shared session on (its continuation's first prompt is the peer's).
+        let mut peer_fork = test_native("5eed0007-0000-4000-8000-000000000007");
+        peer_fork.forked_from = Some(held.conversation.clone());
         host.observe(vec![outside.clone(), held.clone(), idle_held.clone()], &BTreeSet::new()).unwrap();
-        host.observe(vec![outside.clone(), held.clone(), idle_held.clone(), fork.clone(), private_fork.clone(), peer_job.clone()], &BTreeSet::new()).unwrap();
-        let shared: Vec<bool> = [&outside, &held, &fork, &private_fork, &peer_job].iter().map(|n| host.mirrors[&native_key(n)].shared).collect();
-        assert_eq!(shared, [false, true, true, false, false], "a job out of a terminal nobody prompted is not the person's");
+        host.observe(vec![outside.clone(), held.clone(), idle_held.clone(), fork.clone(), private_fork.clone(), peer_job.clone(), peer_fork.clone()], &BTreeSet::new()).unwrap();
+        let shared: Vec<bool> = [&outside, &held, &fork, &private_fork, &peer_job, &peer_fork].iter().map(|n| host.mirrors[&native_key(n)].shared).collect();
+        assert_eq!(shared, [false, true, true, false, false, false], "a job out of a terminal nobody prompted, or moved on by a peer, is not the person's");
+        // The continuation remembers the id it had before.
+        assert_eq!(host.mirrors[&native_key(&fork)].native.aliases, [held.conversation.clone()]);
 
         // Only its person's and never shared: it registers, heartbeats and uploads nothing, and takes nothing.
         let key = native_key(&outside);
@@ -5779,6 +5807,8 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: false,
+            aliases: vec![],
             app: true,
         }
     }
@@ -6069,6 +6099,8 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: false,
+            aliases: vec![],
             app: true,
         };
         let key = native_key(&native);
@@ -6194,6 +6226,8 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: false,
+            aliases: vec![],
             app: true,
         };
         let mirror = Mirror {

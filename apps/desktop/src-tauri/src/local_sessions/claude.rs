@@ -76,21 +76,28 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         ],
     )
     .await?;
-    // Up to 2 MiB of synchronous reads each, for the generation check and the title:
+    // A background session may continue another conversation (←, `/background`, a peer reply):
+    // the origin's `continued-in` row says which. The parked terminal (`parkedJobId`) only says
+    // which transcript to read first.
+    let hint = job.as_deref().filter(|_| background).and_then(|job| parked_origin(home, job));
+    // Up to 2 MiB of synchronous reads each, for the generation check, the lineage and the title:
     // off the async runtime's threads.
-    let (generation, title) = match transcript.clone() {
-        Some(path) => {
-            let (session, since) = (conversation.to_owned(), since.trim().to_owned());
-            tokio::task::spawn_blocking(move || {
-                (
-                    Some(verify_current_generation(&path, &session, &since)),
-                    latest_title(&path),
-                )
-            })
-            .await
-            .map_err(|_| "transcript unavailable")?
-        }
-        None => (None, None),
+    let (generation, lineage, title) = {
+        let (home, path, session, since) =
+            (home.to_owned(), transcript.clone(), conversation.to_owned(), since.trim().to_owned());
+        tokio::task::spawn_blocking(move || {
+            let lineage = background.then(|| continued_from(&home, path.as_deref(), &session, hint.as_deref())).flatten();
+            // A continuation is the same conversation: until it has a name of its own (its
+            // transcript is written on its first turn), it has the one it had before.
+            let before = lineage.as_ref().and_then(|l| latest_title(&l.transcript, false, None));
+            let Some(path) = path else {
+                return (None, lineage, before);
+            };
+            let title = latest_title(&path, lineage.is_some(), before.as_deref()).or(before);
+            (Some(verify_current_generation(&path, &session, &since)), lineage, title)
+        })
+        .await
+        .map_err(|_| "transcript unavailable")?
     };
     let observed = match generation {
         Some(Ok(runtime)) => Ok(runtime),
@@ -150,18 +157,6 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
     if socket_inode.is_none() {
         restriction = Some("endpoint-unavailable".into());
     }
-    // A session moved to the background with ← is a fork; its command line names the original.
-    // A job that claimed a pre-started spare (`claude bg-spare`) has no such command line: the
-    // terminal it left records the job as `parkedJobId` instead.
-    let forked_from = if background {
-        native_output(Path::new("/bin/ps"), &["-ww", "-o", "command=", "-p", &pid.to_string()])
-            .await
-            .ok()
-            .and_then(|command| fork_origin(&command))
-            .or_else(|| job.as_deref().and_then(|job| parked_origin(home, job)))
-    } else {
-        None
-    };
     if process(pid)? != execution {
         return Err("process changed during discovery".into());
     }
@@ -184,7 +179,9 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         last_assistant_message: None,
         holder: None,
         job,
-        forked_from,
+        forked_by_person: lineage.as_ref().is_some_and(|l| l.by_person),
+        forked_from: lineage.map(|l| l.origin),
+        aliases: vec![],
         app: !background && in_app(home, pid, conversation),
     })
 }
@@ -205,16 +202,142 @@ pub(super) fn find_transcript(home: &Path, conversation: &str) -> Result<Option<
     Ok((transcripts.len() == 1).then(|| transcripts.remove(0)))
 }
 
-/// The conversation a background session was forked from. Claude starts a session moved to the
-/// background (← in its terminal) as `… --fork-session --resume <dir>/<origin>.jsonl …` (2.1.289).
-pub(super) fn fork_origin(command: &str) -> Option<String> {
-    if !command.contains(" --fork-session") {
+/// What Claude records when it moves a conversation on under a new id (←, `/background`, a peer
+/// reply): a `continued-in` row at the origin's tail (2.1.289+).
+pub(super) struct Continuation {
+    pub to: String,
+    at: String,
+    /// Who the origin's last turn before it came from (`turn_by_person`).
+    by_person: Option<bool>,
+}
+
+/// The tail's last `continued-in`, unless a prompt or reply came after it: Claude's own superseded
+/// test (`/resume` hides such an origin). An origin its person kept using made the other a branch.
+pub(super) fn continuation(path: &Path) -> Option<Continuation> {
+    let len = fs::metadata(path).ok()?.len();
+    // The link is at the tail; the turn before it can be megabytes back (tool output, attachments).
+    // ponytail: 32 MiB at most; a turn further back than that reads as nobody's.
+    for window in [256 * 1024, 4 << 20, 32 << 20] {
+        let (mut found, mut by_person) = (None, None);
+        for row in tail_rows(path, window)? {
+            match row["type"].as_str() {
+                Some("continued-in") => {
+                    found = row["continuedInSessionId"]
+                        .as_str()
+                        .filter(|s| uuid::Uuid::parse_str(s).is_ok())
+                        .map(|to| Continuation {
+                            to: to.to_owned(),
+                            at: row["timestamp"].as_str().unwrap_or_default().to_owned(),
+                            by_person,
+                        })
+                }
+                Some("user" | "assistant") => {
+                    found = None;
+                    by_person = turn_by_person(&row).or(by_person);
+                }
+                _ => {}
+            }
+        }
+        if found.as_ref().is_none_or(|c: &Continuation| c.by_person.is_some()) || window >= len {
+            return found;
+        }
+    }
+    None
+}
+
+/// The rows written after `at`, from the tail: a continuation's own, after its copied history.
+fn rows_since(path: &Path, at: &str) -> Vec<Value> {
+    let len = fs::metadata(path).map_or(0, |m| m.len());
+    let after = |row: &Value| row["timestamp"].as_str().is_some_and(|ts| ts > at);
+    for window in [256 * 1024, 4 << 20, 32 << 20] {
+        let Some(rows) = tail_rows(path, window) else { return vec![] };
+        // The window reaches back past `at` (or holds the whole file): nothing newer is cut off.
+        if window >= len || rows.iter().any(|row| row["timestamp"].as_str().is_some_and(|ts| ts <= at)) {
+            return rows.into_iter().filter(after).collect();
+        }
+    }
+    vec![]
+}
+
+/// The conversation `conversation` continues as, when its transcript says it moved on.
+pub(super) fn continued_in(path: &Path) -> Option<String> {
+    continuation(path).map(|c| c.to)
+}
+
+/// Who a turn came from (2.1.30x labels every user row with `origin.kind` / `turnOrigin`): Some(true)
+/// its person, Some(false) a peer session or anyone else. None says nothing: an unlabelled row, or
+/// the session's own background task reporting back (`task-notification`).
+fn turn_by_person(row: &Value) -> Option<bool> {
+    if row["type"] != "user" {
         return None;
     }
-    let arg = command.split_once(" --resume ")?.1.split(" --").next()?.trim();
-    let stem = arg.strip_suffix(".jsonl").unwrap_or(arg);
-    let id = stem.get(stem.len().checked_sub(36)?..)?;
-    uuid::Uuid::parse_str(id).is_ok().then(|| id.to_owned())
+    match row["origin"]["kind"].as_str().or(row["turnOrigin"].as_str())? {
+        "human" => Some(true),
+        "task-notification" | "task_notification" => None,
+        _ => Some(false),
+    }
+}
+
+/// The JSON rows in a file's final `window` bytes (Claude re-appends its metadata rows at the tail).
+fn tail_rows(path: &Path, window: u64) -> Option<Vec<Value>> {
+    let mut file = secure_file(path).ok()?;
+    let from = file.metadata().ok()?.len().saturating_sub(window);
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut reader = BufReader::new(file);
+    if from > 0 {
+        reader.read_line(&mut String::new()).ok()?; // a partial row
+    }
+    Some(reader.lines().map_while(|l| l.ok()).filter_map(|l| serde_json::from_str(&l).ok()).collect())
+}
+
+/// Where a background session came from: the conversation it continues, and whether its person
+/// moved it on (only then is it shared like its origin).
+pub(super) struct Lineage {
+    pub origin: String,
+    pub by_person: bool,
+    /// The origin's transcript, which holds the name this conversation had there.
+    pub transcript: PathBuf,
+}
+
+/// The conversation `conversation` continues, from the durable link alone: the origin transcript
+/// whose tail is `continued-in` → it, which Claude keeps after its terminal leaves the agent view
+/// or closes. A job's command line is no evidence (a claimed spare's never names its origin), and
+/// `hint` (the parked terminal's `parkedJobId` conversation) only says which transcript to read
+/// first. Who moved it on: the continuation's first prompt of its own (a peer reply backgrounds an
+/// idle terminal and lands as one), else the origin's last turn; unlabelled is not a person.
+pub(super) fn continued_from(home: &Path, transcript: Option<&Path>, conversation: &str, hint: Option<&str>) -> Option<Lineage> {
+    let linked = |path: &Path| continuation(path).filter(|c| c.to == conversation);
+    let hinted = hint.and_then(|origin| {
+        let path = find_transcript(home, origin).ok()??;
+        Some((origin.to_owned(), linked(&path)?, path))
+    });
+    let (origin, link, origin_path) = hinted.or_else(|| {
+        let own = transcript?;
+        // An origin's continued-in row is its last row bar a few metadata rows (≤3 KiB observed).
+        let mentions = |path: &Path| -> Option<bool> {
+            let mut file = secure_file(path).ok()?;
+            file.seek(SeekFrom::Start(file.metadata().ok()?.len().saturating_sub(16 * 1024))).ok()?;
+            let mut tail = vec![];
+            file.read_to_end(&mut tail).ok()?;
+            Some(tail.windows(conversation.len()).any(|w| w == conversation.as_bytes()))
+        };
+        // ponytail: the 32 transcripts of this folder modified last. Claude re-appends to a parked
+        // origin, so a live continuation's origin is among them; an older one is kept by the mirror.
+        let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(own.parent()?)
+            .ok()?
+            .flatten()
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .filter(|(_, p)| p.extension().is_some_and(|x| x == "jsonl") && p.as_path() != own)
+            .collect();
+        candidates.sort_by(|a, b| b.0.cmp(&a.0));
+        candidates.into_iter().take(32).find_map(|(_, path)| {
+            let origin = path.file_stem()?.to_str().filter(|s| uuid::Uuid::parse_str(s).is_ok())?.to_owned();
+            mentions(&path)?.then_some(())?;
+            Some((origin, linked(&path)?, path))
+        })
+    })?;
+    let own_turn = transcript.and_then(|t| rows_since(t, &link.at).iter().find_map(turn_by_person));
+    Some(Lineage { origin, by_person: own_turn.or(link.by_person).unwrap_or(false), transcript: origin_path })
 }
 
 /// The conversation whose terminal moved into background job `job`: Claude writes `parkedJobId`
@@ -477,18 +600,28 @@ pub(super) fn listing_status(row: &Value) -> &'static str {
 }
 
 /// The conversation's name from the transcript's final 2 MiB: the last name its person gave it
-/// (`/rename` writes `custom-title`), else the last title Claude generated (`ai-title`) from this
-/// conversation's own prompts. Claude names a new session at launch, before any prompt, by
-/// copying another session's name in the same folder, and re-appends that name later on: an
-/// `ai-title` equal to the one written before the first prompt is not this session's title. No
-/// title is `None` (the clients show "New chat"); the listing's `name` is never used, since it
-/// is that same inherited name or the `<folder>-<hex>` placeholder.
-pub(super) fn latest_title(path: &Path) -> Option<String> {
+/// (`/rename` writes `custom-title`), else the last title Claude generated (`ai-title`). No title is
+/// `None` (the clients show "New chat"); the listing's `name` is never used: it is the registry's
+/// address (`<folder>-<hex>`, or "<name> (2)" after a clash), not a title.
+///
+/// Claude names a NEW session at launch, before any prompt, by copying another session's name in
+/// the same folder, and re-appends that name later on: an `ai-title` equal to the one written
+/// before the first prompt is not this session's title. A continuation (`continued`, ←) or a branch
+/// (`--fork-session`) is the other way round: its copied history starts with the conversation's
+/// real `ai-title` and keeps re-appending it, so there the inherited title IS its title. A branch
+/// is told by its history: prompts older than the file holding them.
+///
+/// A clash between live registry names (a continuation beside its still-live origin) makes Claude
+/// rename the later one "<name> (2)" and write THAT as a `custom-title` (prod 2026-10-26). One whose
+/// `<name>` is this conversation's own generated title, or `relative` (its origin's title), is that
+/// artifact, never a name its person chose.
+pub(super) fn latest_title(path: &Path, continued: bool, relative: Option<&str>) -> Option<String> {
     // The first prompt is in the first few KiB; the head is read apart from the tail window.
     const WINDOW: u64 = 2 * 1024 * 1024;
     const HEAD: u64 = 256 * 1024;
     let mut file = secure_file(path).ok()?;
-    let len = file.metadata().ok()?.len();
+    let meta = file.metadata().ok()?;
+    let len = meta.len();
     let offset = len.saturating_sub(WINDOW);
     let rows = |file: &mut fs::File, from: u64, limit: u64| -> Option<Vec<Value>> {
         file.seek(SeekFrom::Start(from)).ok()?;
@@ -503,29 +636,50 @@ pub(super) fn latest_title(path: &Path) -> Option<String> {
         row[field].as_str().filter(|t| !t.trim().is_empty()).map(|t| t.chars().take(120).collect())
     };
     let prompt = |row: &Value| row["type"] == "user" && row["isMeta"] != true;
-    // The launch name: the last `ai-title` before the first prompt. None at all while no prompt
-    // was written: every generated title is then the launch name.
     let head = rows(&mut file, 0, HEAD)?;
     let first_prompt = head.iter().position(prompt);
-    let inherited = head[..first_prompt.unwrap_or(head.len())]
-        .iter()
-        .filter(|row| row["type"] == "ai-title")
-        .filter_map(|row| text(row, "aiTitle"))
-        .last();
+    // Copied history: the first prompt is older than the file (by a minute, for clock rounding).
+    let copied = continued
+        || first_prompt.is_some_and(|i| {
+            let created = meta.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+            let created = created.and_then(|t| super::codex::utc_timestamp(t.as_secs().saturating_sub(60)));
+            matches!((created, head[i]["timestamp"].as_str()), (Some(c), Some(at)) if at < c.as_str())
+        });
+    // The launch name: the last `ai-title` before the first prompt. None at all while no prompt
+    // was written: every generated title is then the launch name.
+    let inherited = (!copied)
+        .then(|| {
+            head[..first_prompt.unwrap_or(head.len())]
+                .iter()
+                .filter(|row| row["type"] == "ai-title")
+                .filter_map(|row| text(row, "aiTitle"))
+                .last()
+        })
+        .flatten();
     // (A head that holds no prompt but is not the whole file is unusual: its titles still count.)
     let whole = len <= HEAD;
     let tail = if whole { head } else { rows(&mut file, offset, WINDOW)? };
-    let (mut custom, mut generated) = (None, None);
+    let (mut customs, mut generated, mut own_titles) = (vec![], None, BTreeSet::new());
     for row in &tail {
         match row["type"].as_str() {
-            Some("custom-title") => custom = text(row, "customTitle").or(custom),
-            Some("ai-title") if first_prompt.is_some() || !whole => {
-                generated = text(row, "aiTitle").filter(|t| Some(t) != inherited.as_ref()).or(generated);
+            Some("custom-title") => customs.extend(text(row, "customTitle")),
+            Some("ai-title") if copied || first_prompt.is_some() || !whole => {
+                if let Some(t) = text(row, "aiTitle").filter(|t| Some(t) != inherited.as_ref()) {
+                    own_titles.insert(t.clone());
+                    generated = Some(t);
+                }
             }
             _ => {}
         }
     }
-    custom.or(generated)
+    let clash = |t: &String| {
+        t.strip_suffix(')')
+            .and_then(|t| t.rsplit_once(" ("))
+            .is_some_and(|(base, n)| {
+                !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && (own_titles.contains(base) || relative == Some(base))
+            })
+    };
+    customs.into_iter().rev().find(|t| !clash(t)).or(generated)
 }
 
 fn basename(path: Option<&str>) -> Option<String> {
@@ -1375,15 +1529,120 @@ pub(super) fn configure_hooks(path: &Path, executable: &Path, enabled: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    const ORIGIN: &str = "8282f7ca-48a9-4dcb-aceb-01310814cca4";
+    const NEXT: &str = "251719c2-4e92-4060-8951-6cac2e9d2692";
+
+    fn prompt(kind: &str, ts: &str) -> String {
+        let turn = if kind == "task-notification" { "task_notification" } else { kind };
+        format!("{{\"type\":\"user\",\"origin\":{{\"kind\":\"{kind}\"}},\"turnOrigin\":\"{turn}\",\"timestamp\":\"{ts}\",\"message\":{{\"content\":\"x\"}}}}\n")
+    }
+
+    fn moved_on(from: &str, to: &str, ts: &str) -> String {
+        format!("{{\"type\":\"continued-in\",\"sessionId\":\"{from}\",\"continuedInSessionId\":\"{to}\",\"timestamp\":\"{ts}\"}}\n")
+    }
+
+    /// A home with one project folder holding `files` (`<id>.jsonl` → text).
+    fn project(files: &[(&str, String)]) -> (tempfile::TempDir, PathBuf) {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".claude/projects/-Users-a-repo");
+        fs::create_dir_all(&dir).unwrap();
+        for (id, text) in files {
+            fs::write(dir.join(format!("{id}.jsonl")), text).unwrap();
+        }
+        (home, dir)
+    }
+
     #[test]
-    fn local_sessions_claude_a_fork_names_the_session_it_continues() {
-        let origin = "4c028a82-f41e-4c14-bfbe-a3ecfef152e4";
-        // As Claude 2.1.289 starts a session moved to the background with ← (a path with a space too).
-        let moved = format!("/Users/a/.local/share/claude/versions/2.1.289 --session-id 8ed71738-8083-493a-96e0-e963fc33e794 --fork-session --resume /Users/a b/.claude/projects/-Users-a/{origin}.jsonl --allowed-tools x");
-        assert_eq!(fork_origin(&moved).as_deref(), Some(origin));
-        assert_eq!(fork_origin(&format!("claude --fork-session --resume {origin}")).as_deref(), Some(origin));
-        assert_eq!(fork_origin(&format!("claude --resume {origin}")), None, "a plain resume continues the same session");
-        assert_eq!(fork_origin("claude --fork-session --resume not-a-session"), None);
+    fn local_sessions_claude_continued_in_is_the_tail_link_nothing_came_after() {
+        let (_home, dir) = project(&[
+            (ORIGIN, prompt("human", "2026-10-26T02:56:00.000Z") + &moved_on(ORIGIN, NEXT, "2026-10-26T02:56:46.000Z") + "{\"type\":\"ai-title\",\"aiTitle\":\"t\"}\n"),
+        ]);
+        let origin = dir.join(format!("{ORIGIN}.jsonl"));
+        assert_eq!(continued_in(&origin).as_deref(), Some(NEXT), "metadata rows after it do not count");
+        // The person typed on in the origin: the other is a branch, and the origin is not superseded.
+        let mut file = fs::OpenOptions::new().append(true).open(&origin).unwrap();
+        write!(file, "{}", prompt("human", "2026-10-26T03:00:00.000Z")).unwrap();
+        assert_eq!(continued_in(&origin), None);
+    }
+
+    #[test]
+    fn local_sessions_claude_a_continuation_names_its_origin_from_continued_in_alone() {
+        let copied = prompt("human", "2026-10-26T02:56:00.000Z");
+        let link = moved_on(ORIGIN, NEXT, "2026-10-26T02:56:46.000Z");
+        // ← by its person: the continuation's own first prompt is theirs.
+        let (home, dir) = project(&[(ORIGIN, copied.clone() + &link), (NEXT, copied.clone() + &prompt("human", "2026-10-26T03:04:24.000Z"))]);
+        let own = dir.join(format!("{NEXT}.jsonl"));
+        // No `parkedJobId` (its terminal left the agent view) and no command line: the origin's tail says it.
+        let l = continued_from(home.path(), Some(&own), NEXT, None).unwrap();
+        assert_eq!((l.origin.as_str(), l.by_person), (ORIGIN, true));
+        assert!(continued_from(home.path(), Some(&own), NEXT, Some(ORIGIN)).is_some_and(|l| l.origin == ORIGIN), "the fast path");
+        // A stale hint is no evidence: the scan still finds the real origin.
+        assert!(continued_from(home.path(), Some(&own), NEXT, Some(NEXT)).is_some_and(|l| l.origin == ORIGIN));
+        // The turn before the link can be far back (a long reply, tool output): still its person's,
+        // in the origin and in the continuation (a long first reply before the human row is read).
+        let long = format!("{{\"type\":\"assistant\",\"timestamp\":\"2026-10-26T02:56:10.000Z\",\"message\":{{\"content\":\"{}\"}}}}\n", "x".repeat(600 * 1024));
+        fs::write(dir.join(format!("{ORIGIN}.jsonl")), copied.clone() + &long + &link).unwrap();
+        let late = format!("{{\"type\":\"assistant\",\"timestamp\":\"2026-10-26T03:05:00.000Z\",\"message\":{{\"content\":\"{}\"}}}}\n", "y".repeat(600 * 1024));
+        fs::write(&own, copied.clone() + &long + &prompt("human", "2026-10-26T03:04:24.000Z") + &late).unwrap();
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.by_person));
+        fs::write(&own, copied.clone() + &long + &prompt("peer", "2026-10-26T03:04:24.000Z") + &late).unwrap();
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| !l.by_person), "its own first turn, megabytes back");
+        // An origin that kept going after the link is a branch's parent, not a continuation's origin.
+        fs::write(dir.join(format!("{ORIGIN}.jsonl")), copied.clone() + &link + &prompt("human", "2026-10-26T03:00:00.000Z")).unwrap();
+        assert!(continued_from(home.path(), Some(&own), NEXT, Some(ORIGIN)).is_none());
+    }
+
+    #[test]
+    fn local_sessions_claude_a_peer_moved_continuation_is_not_its_persons() {
+        let copied = prompt("human", "2026-10-26T03:00:00.000Z");
+        let link = moved_on(ORIGIN, NEXT, "2026-10-26T03:05:45.000Z");
+        // Claude backgrounded an idle terminal to answer a peer: the peer's message is the first prompt.
+        let (home, dir) = project(&[
+            (ORIGIN, copied.clone() + &link),
+            (NEXT, copied.clone() + &prompt("task-notification", "2026-10-26T03:06:00.000Z") + &prompt("peer", "2026-10-26T03:12:05.000Z") + &prompt("human", "2026-10-26T03:20:00.000Z")),
+        ]);
+        let own = dir.join(format!("{NEXT}.jsonl"));
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.origin == ORIGIN && !l.by_person));
+        // Before it has a prompt of its own, the origin's last turn says who: a person's here...
+        fs::write(&own, copied.clone()).unwrap();
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| l.by_person));
+        // ...a peer's there, and an unlabelled one is nobody's.
+        fs::write(dir.join(format!("{ORIGIN}.jsonl")), prompt("peer", "2026-10-26T03:00:00.000Z") + &link).unwrap();
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| !l.by_person));
+        fs::write(dir.join(format!("{ORIGIN}.jsonl")), "{\"type\":\"user\"}\n".to_owned() + &link).unwrap();
+        assert!(continued_from(home.path(), Some(&own), NEXT, None).is_some_and(|l| !l.by_person));
+    }
+
+    #[test]
+    fn local_sessions_claude_a_continuation_keeps_its_inherited_title_and_drops_a_clash_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        // As ← writes a continuation: the conversation's real title first, then its copied history.
+        let title = "{\"type\":\"ai-title\",\"aiTitle\":\"Friday and Forge task visibility\"}\n";
+        fs::write(&path, format!("{title}{}{title}", prompt("human", "2026-10-26T02:56:00.000Z"))).unwrap();
+        assert_eq!(latest_title(&path, true, None).as_deref(), Some("Friday and Forge task visibility"));
+        // A branch (`--fork-session`, no link) is told by its history: prompts older than its file.
+        let branch = dir.path().join("b.jsonl");
+        fs::write(&branch, format!("{title}{}{title}", prompt("human", "2020-01-01T00:00:00.000Z"))).unwrap();
+        assert_eq!(latest_title(&branch, false, None).as_deref(), Some("Friday and Forge task visibility"));
+        // Its live origin held the name, so Claude renamed it "(2)" as a custom-title: not a name anyone chose.
+        let clash = "{\"type\":\"custom-title\",\"customTitle\":\"Friday and Forge task visibility (2)\"}\n";
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        write!(file, "{clash}{title}{clash}").unwrap();
+        assert_eq!(latest_title(&path, true, None).as_deref(), Some("Friday and Forge task visibility"));
+        // A name its person gave it (`/rename`) still wins, also after another clash row.
+        writeln!(file, "{{\"type\":\"custom-title\",\"customTitle\":\"Agent Network\"}}").unwrap();
+        write!(file, "{clash}").unwrap();
+        assert_eq!(latest_title(&path, true, None).as_deref(), Some("Agent Network"));
+        // As 2.1.310 writes a fresh ← job: only the clash rows, the name being its origin's.
+        let job = dir.path().join("j.jsonl");
+        let clash2 = "{\"type\":\"custom-title\",\"customTitle\":\"Agent Network (2)\"}\n";
+        fs::write(&job, format!("{clash2}{}{clash2}", prompt("human", "2026-10-26T05:50:10.931Z"))).unwrap();
+        assert_eq!(latest_title(&job, true, Some("Agent Network")), None, "not the clash name: the caller falls back to the origin's");
+        assert_eq!(latest_title(&job, true, None).as_deref(), Some("Agent Network (2)"), "no relative holds the base");
+        // "(2)" of some other name is a person's choice.
+        writeln!(file, "{{\"type\":\"custom-title\",\"customTitle\":\"Release (2)\"}}").unwrap();
+        assert_eq!(latest_title(&path, true, None).as_deref(), Some("Release (2)"));
     }
 
     #[test]
@@ -1815,6 +2074,8 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: false,
+            aliases: vec![],
             app: true,
         };
         let ingress = Ingress {
@@ -2084,14 +2345,14 @@ mod tests {
         let path = dir.path().join("t.jsonl");
         fs::write(&path, "{\"type\":\"ai-title\",\"aiTitle\":\"First\"}\n{\"type\":\"user\"}\n{\"type\":\"ai-title\",\"aiTitle\":\"Desktop and mobile notifications\"}\n").unwrap();
         assert_eq!(
-            latest_title(&path).as_deref(),
+            latest_title(&path, false, None).as_deref(),
             Some("Desktop and mobile notifications")
         );
         // A name the person gave it wins over any later generated title.
         let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(file, "{{\"type\":\"custom-title\",\"customTitle\":\"Release train\"}}").unwrap();
         writeln!(file, "{{\"type\":\"ai-title\",\"aiTitle\":\"Something newer\"}}").unwrap();
-        assert_eq!(latest_title(&path).as_deref(), Some("Release train"));
+        assert_eq!(latest_title(&path, false, None).as_deref(), Some("Release train"));
     }
 
     #[test]
@@ -2101,15 +2362,15 @@ mod tests {
         // Claude copies another session's name at launch and re-appends it after the prompt.
         let launch = "{\"type\":\"ai-title\",\"aiTitle\":\"Someone else's job\"}\n{\"type\":\"agent-name\",\"agentName\":\"Someone else's job\"}\n";
         fs::write(&path, launch).unwrap();
-        assert_eq!(latest_title(&path), None, "no prompt yet: New chat");
+        assert_eq!(latest_title(&path, false, None), None, "no prompt yet: New chat");
         let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(file, "{{\"type\":\"user\",\"isMeta\":true}}").unwrap();
         writeln!(file, "{{\"type\":\"user\",\"message\":{{\"content\":\"fix the login bug\"}}}}").unwrap();
         write!(file, "{launch}").unwrap();
-        assert_eq!(latest_title(&path), None, "the launch name re-appended is still not its title");
+        assert_eq!(latest_title(&path, false, None), None, "the launch name re-appended is still not its title");
         writeln!(file, "{{\"type\":\"ai-title\",\"aiTitle\":\"Login bug fix\"}}").unwrap();
         write!(file, "{launch}").unwrap();
-        assert_eq!(latest_title(&path).as_deref(), Some("Login bug fix"));
+        assert_eq!(latest_title(&path, false, None).as_deref(), Some("Login bug fix"));
     }
 
     #[test]

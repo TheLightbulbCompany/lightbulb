@@ -67,7 +67,17 @@ pub(super) fn channel() -> mpsc::Receiver<Vec<Wanted>> {
 pub(super) fn offer(resume: &Value, mirrors: &BTreeMap<String, Mirror>) {
     let config = claude_config(&home_dir());
     let wanted = tag(resume, |provider, conversation| {
-        let newest = latest(&config, provider, conversation);
+        let mut newest = latest(&config, provider, conversation);
+        // The transcripts say nothing more (an origin's tail unreadable or gone): a live session
+        // that remembers `conversation` as one of its earlier ids is still where it went.
+        if newest == conversation {
+            if let Some(m) = mirrors
+                .values()
+                .find(|m| m.ended_at.is_none() && m.native.provider == provider && m.native.aliases.iter().any(|a| a == conversation))
+            {
+                newest.clone_from(&m.native.conversation);
+            }
+        }
         let running = live(mirrors, provider, &newest);
         (newest, running)
     });
@@ -105,7 +115,7 @@ pub(crate) fn latest(config: &Path, provider: &str, conversation: &str) -> Strin
     }
     for _ in 0..8 {
         let next = super::snapshot::find_transcript(config, &id)
-            .and_then(|path| continued_in(&path))
+            .and_then(|path| super::claude::continued_in(&path))
             .filter(|next| *next != id && super::snapshot::find_transcript(config, next).is_some());
         match next {
             Some(next) => id = next,
@@ -113,30 +123,6 @@ pub(crate) fn latest(config: &Path, provider: &str, conversation: &str) -> Strin
         }
     }
     id
-}
-
-/// The `continuedInSessionId` of the last `continued-in` row in the transcript's final 256 KiB
-/// (Claude re-appends its metadata rows at the tail), unless a prompt or reply came after it.
-fn continued_in(path: &Path) -> Option<String> {
-    const TAIL: u64 = 256 * 1024;
-    let mut file = fs::File::open(path).ok()?;
-    let from = file.metadata().ok()?.len().saturating_sub(TAIL);
-    file.seek(SeekFrom::Start(from)).ok()?;
-    let mut reader = BufReader::new(file);
-    if from > 0 {
-        reader.read_line(&mut String::new()).ok()?; // a partial row
-    }
-    let mut next = None;
-    for row in reader.lines().map_while(|l| l.ok()).filter_map(|l| serde_json::from_str::<Value>(&l).ok()) {
-        match row["type"].as_str() {
-            Some("continued-in") => {
-                next = row["continuedInSessionId"].as_str().filter(|s| uuid::Uuid::parse_str(s).is_ok()).map(str::to_owned)
-            }
-            Some("user" | "assistant") => next = None,
-            _ => {}
-        }
-    }
-    next
 }
 
 /// `running` names the conversation a resume of `conversation` acts on (`latest`), and whether a

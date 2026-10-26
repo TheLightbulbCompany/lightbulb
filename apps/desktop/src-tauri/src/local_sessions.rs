@@ -1303,9 +1303,18 @@ struct NativeSession {
     /// `claude attach` takes. None for every other session.
     #[serde(default)]
     job: Option<String>,
-    /// The conversation this background session was forked from (← in an interactive session).
+    /// The conversation this background session continues (←, `/background`, a peer reply): the
+    /// origin whose transcript ends `continued-in` → this one (`claude::continued_from`).
     #[serde(default)]
     forked_from: Option<String>,
+    /// Its person moved it on (their own turn, not a peer's or another agent's): only then is it
+    /// shared like its origin.
+    #[serde(default)]
+    forked_by_person: bool,
+    /// Every earlier id of this conversation, oldest first (Claude gives a continuation a new id):
+    /// a request naming any of them means this session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    aliases: Vec<String>,
     /// It runs inside an app, an IDE or an SDK, not in a terminal: there is never a live
     /// terminal to show, so a shared one is shared as its conversation.
     #[serde(default)]
@@ -2348,6 +2357,8 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: false,
+            aliases: vec![],
             app: true,
         }
     }
@@ -2537,6 +2548,8 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: false,
+            aliases: vec![],
             app: true,
         };
         let mut workspace = workspace::State::default();
@@ -2603,6 +2616,8 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: false,
+            aliases: vec![],
             app: true,
         };
         journal.anchor(&cmd, &native, "unique".into(), None).unwrap();
@@ -2996,6 +3011,8 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: false,
+            aliases: vec![],
             app: true,
         };
         let mut sessions = vec![];
@@ -3100,6 +3117,8 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: false,
+                aliases: vec![],
                 app: true,
             },
             generation: "g".into(),
@@ -3189,6 +3208,8 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: false,
+                aliases: vec![],
                 app: true,
             },
             generation: "g".into(),
@@ -3277,6 +3298,8 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: false,
+                aliases: vec![],
                 app: true,
             },
             generation: "g".into(),
@@ -3380,6 +3403,8 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: false,
+                aliases: vec![],
                 app: true,
             },
             generation: "g".into(),
@@ -3448,6 +3473,8 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: false,
+                aliases: vec![],
                 app: true,
             },
             generation: "g".into(),

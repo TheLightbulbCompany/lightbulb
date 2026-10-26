@@ -2705,6 +2705,25 @@ def handler(event, context):
       description:
         "PAGE: OpenRouter refused managed requests as 'Key limit exceeded' for a key that still has allowance - the OpenRouter account is likely out of credits. Top it up at openrouter.ai/settings/credits; every managed workspace is silent until then.",
     });
+
+    // P35: a second engine holds a workspace's member key. The runtime's sidecar and
+    // an impostor supersede each other on every redial; the bridge
+    // (hermes/bridge/network.py) emits this after 4 `superseded` events in 10 min.
+    this.createAlarm({
+      id: "P35",
+      name: "network-member-key-contested",
+      metricName: "network.member_key_contested",
+      dimensions: { service: "hermes-bridge" },
+      periodMinutes: 10,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "page",
+      description:
+        "PAGE: a workspace's network member key is in use by a second engine (more than 3 superseded links in 10 min). First rule out a split session (two microVMs for one owner; see docs/runbooks/runtime-split-brain-detection.md). Otherwise treat the key as stolen: the owner reconnects the workspace (a new key and team; every computer pastes a new line).",
+    });
   }
 
   // =========================================================================

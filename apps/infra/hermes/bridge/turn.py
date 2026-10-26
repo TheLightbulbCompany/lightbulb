@@ -1023,7 +1023,8 @@ ROOM_EVENT_KINDS = ("user_request", "room_event")
 # agent_mail (Task 20) and paperclip_run (Task 21, fix round C3) carry no room: no
 # participants, no frame channel, no thread, no run block — only a target agent and
 # (optionally, see I1) a sessionKey. Both get the same non-room short-circuit below.
-NON_ROOM_KINDS = ("agent_mail", "paperclip_run")
+# network_message: an inbound network message, built in process by bridge.network (never HTTP).
+NON_ROOM_KINDS = ("agent_mail", "paperclip_run", "network_message")
 EVENT_KINDS = ROOM_EVENT_KINDS + NON_ROOM_KINDS
 
 
@@ -2045,6 +2046,12 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None, spo
         # paperclip_run (Task 21, fix round C3) carries no room either -- same "room #None"
         # bug the agent_mail branch already fixed, now generalised.
         identity = f"You are {name}, answering a Paperclip run trigger. Reply as yourself. {_repo_rule(agent_id)}\n{CHAT_STYLE}"
+    elif event_kind == "network_message":
+        from bridge import network  # the agent's name is its declared network session's title
+        name = next((s.get("title") for s in network.sessions() if s.get("agentId") == agent_id), None) or "an agent"
+        label = (body.get("message") or {}).get("label") or "someone on the network"
+        identity = (f"You are {name}, answering a network message from {label}. "
+                    f"Reply with lightbulb_network if a reply is needed. {_repo_rule(agent_id)}")
     elif spoken:
         room = ctx["room"]
         identity = (
@@ -2606,6 +2613,9 @@ def _resolve_session_key(agent_id: str, body: dict) -> str:
     identity itself) so a mail/paperclip turn and a room turn all agree on what session
     they're in — a mail turn used to fall back to f"{room.get('id')}:{agent_id}" ==
     "None:<agent>" for every thread, colliding them all into one Hermes session."""
+    if body.get("eventKind") == "network_message":
+        # One Hermes session per sender thread, never per event.
+        return f"agent:{agent_id}:lightbulb:network:{body['sessionKey']}"
     if body.get("sessionKey"):
         return body["sessionKey"]
     if body.get("eventKind") in NON_ROOM_KINDS:
@@ -2631,8 +2641,8 @@ def _turn_user_message(body: dict) -> str:
     event_kind = body.get("eventKind")
     if event_kind == "agent_mail":
         return f"{msg.get('fromAddress') or 'unknown sender'}: {text}"
-    if event_kind == "paperclip_run":
-        return text
+    if event_kind in ("paperclip_run", "network_message"):
+        return text  # a network record's `framed` text is already marked as peer input
     refs = "; ".join(f"{'Codex' if r.get('provider') == 'codex' else 'Claude Code'} · {r.get('title') or 'Session'} "
                      f"({r.get('status')}) [{r.get('sessionId')}]" for r in body.get("referencedSessions") or [])
     # A session chip is a reference: read it with lightbulb_local_sessions; it was not messaged.
@@ -4089,7 +4099,9 @@ def _remember_turn(session_key: str, info: dict) -> None:
             DELEGATION_TURN.setdefault(record["delegation_id"], info)
 
 
-def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, reserved: bool = False) -> None:
+def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, reserved: bool = False) -> str:
+    """Runs one turn; returns its outcome ("completed", "error", "aborted"). Never raises for an
+    in-turn failure: bridge.network reads the outcome to decide whether a message was read."""
     run = body.get("run") or {}
     run_id = run.get("runId")
     has_run = bool(run_id)  # agent_mail (Task 20) carries no run block: no callbacks, no frames
@@ -4250,3 +4262,4 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                  " silent" if error_kind == SILENT else "", took, len(reply))
     finally:
         _end_turn()
+    return outcome

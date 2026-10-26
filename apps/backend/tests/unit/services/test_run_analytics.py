@@ -217,13 +217,13 @@ async def test_renamed_trigger_label_inverts_to_null_provider():
 
 
 async def test_poll_automation_with_unlabeled_schedule_trigger_inverts_via_issue_title():
-    """gmail.poll's seeded schedule trigger carries NO label — the provider
+    """A seeded schedule trigger can carry NO label — the provider
     comes from the issue title (== the seed-rendered routine title)."""
     admin = _admin_stub(
         issue={
             "originKind": "routine_execution",
             "originId": "rt-1",
-            "title": "Google: New email (checked on a schedule)",
+            "title": "Google: Calendar changed",
         },
         routine={
             "recentRuns": [{**_dispatch_run("schedule"), "trigger": {"id": "tr-1", "kind": "schedule", "label": None}}]

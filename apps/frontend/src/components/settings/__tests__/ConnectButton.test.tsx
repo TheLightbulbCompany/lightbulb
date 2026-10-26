@@ -44,6 +44,16 @@ function renderButton(overrides: Partial<React.ComponentProps<typeof ConnectButt
 }
 
 describe("ConnectButton", () => {
+  it("renders Reconnect, not Connect, when the grant needs reconnecting", () => {
+    const startOAuth = vi.fn();
+    renderButton({ connection: { ...googleRow, status: "reconnect_required" }, startOAuth });
+
+    const button = screen.getByRole("button", { name: /reconnect google workspace/i });
+    expect(button).toHaveTextContent("Reconnect");
+    fireEvent.click(button);
+    expect(startOAuth).toHaveBeenCalled();
+  });
+
   it("renders Connect for an OAuth provider", () => {
     renderButton();
 

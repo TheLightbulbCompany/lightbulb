@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import logging
 import re
 import uuid
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 # ``reaction`` and ``agent_run`` arrive in a later PR (new writers, same shape).
 ActivityKind = Literal[
-    "mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session", "login", "extension"
+    "mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session", "login", "extension", "reconnect"
 ]
 ActorKind = Literal["human", "agent", "system"]
 LinkKind = Literal["issue", "room", "thread", "run", "approval", "session"]
@@ -163,6 +164,7 @@ class ActivityItem(ContractModel):
             "agent_ask",
             "login",
             "extension",
+            "reconnect",
         ]
         | None
     ) = None
@@ -748,6 +750,58 @@ def render_extension_request(row: dict, *, seen: str | None) -> ActivityItem:
     )
 
 
+def reconnect_item_id(provider: str) -> str:
+    # The cursor regex wants a 32-hex id after the kind, so the provider key is hashed.
+    return f"reconnect:{hashlib.sha256(provider.encode()).hexdigest()[:32]}"
+
+
+async def _render_reconnect_rows(owner_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
+    """An integration's grant went ``reconnect_required`` (``access_token._mark_reconnect``).
+    Open while the integration row still says so; a reconnect flips it back and the item
+    disappears. A provider that failed twice has two rows: only the newest renders."""
+    from core.repositories import integrations_repo
+    from core.services.credentials import registry
+
+    newest: dict[str, dict] = {}
+    for row in rows:
+        if row.get("kind") == "reconnect" and row.get("provider"):
+            if row["provider"] not in newest or row["createdAt"] > newest[row["provider"]]["createdAt"]:
+                newest[row["provider"]] = row
+    items = []
+    for provider, row in newest.items():
+        # consistent: the item is filed right after the flip, and a stale "connected" would hide it
+        integration = await integrations_repo.get(owner_id, provider, consistent=True)
+        if not integration or integration.get("status") != "reconnect_required":
+            continue
+        try:
+            name = registry.get_provider(provider).display_name
+        except KeyError:
+            continue
+        created = _when(row["createdAt"])
+        actor = ActivityActor(kind="system", id="", name="Lightbulb")
+        items.append(
+            ActivityItem(
+                id=reconnect_item_id(provider),
+                kind="reconnect",
+                subtype="reconnect",
+                actor=actor,
+                created_at=created,
+                state="open",
+                read=not _newer_than(created, seen),
+                summary=ActivitySummary(
+                    title=_clip(f"Reconnect {name}", TITLE_CHARS),
+                    requester=actor,
+                    reason=(
+                        f"{name} stopped working (its sign-in expired or was revoked), so your agents "
+                        "cannot use it. Open Settings, then Connections, and press Reconnect."
+                    ),
+                ),
+                actions=[],
+            )
+        )
+    return items
+
+
 async def _render_extension_rows(owner_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
     from core.services import browser_extensions
 
@@ -796,6 +850,71 @@ def render_webhook_agent_ask(row: dict, agent: dict, held: list[dict], *, seen: 
         if open_
         else [],
     )
+
+
+def render_network_hold(row: dict, *, seen: str | None) -> ActivityItem:
+    """A stranger's first message on the network, held for a person's Allow
+    (``network_member.hold_notice``). The notice carries no text, so the item has no preview."""
+    from core.services import network_member
+
+    label = str(row.get("label") or "Someone on the network")
+    target = str(row.get("target") or "")
+    app = network_member.app_target(target)
+    open_ = row.get("state") == "open"
+    created = _when(row["createdAt"])
+    actor = ActivityActor(kind="agent", id="", name=label)
+    return ActivityItem(
+        id=network_member.hold_item_id(row["holdId"]),
+        kind="session",
+        subtype="join_request",
+        actor=actor,
+        created_at=created,
+        state="open" if open_ else "resolved",
+        resolved_at=None if open_ else _when(row.get("resolvedAt") or row["createdAt"]),
+        read=not _newer_than(created, seen),
+        summary=ActivitySummary(
+            title=_clip(f"{label} wants to message {f'your {app[0]}' if app else target}", TITLE_CHARS),
+            requester=actor,
+            reason=WEBHOOK_ASK_REASON,
+            preview=None,
+            links=[],
+        ),
+        actions=[
+            ActivityAction(id="send", label="Send", style="primary"),
+            ActivityAction(id="decline", label="Decline"),
+            ActivityAction(id="allow", label="Always allow"),
+        ]
+        if open_
+        else [],
+    )
+
+
+async def _render_network_hold_rows(owner_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
+    from core.services import network_member
+
+    rows = [row for row in rows if row.get("kind") == "network_hold"]
+    found = await asyncio.gather(*(network_member.get_hold(owner_id, str(row.get("holdId"))) for row in rows))
+    return [render_network_hold(hold, seen=seen) for hold in found if hold]
+
+
+async def _run_network_hold_action(auth: AuthContext, hold_id: str, action_id: str) -> ActivityItem:
+    """Send / Decline / Always allow, for a person the hold was filed to."""
+    from core.services import network_member
+
+    owner_id = resolve_owner_id(auth)
+
+    async def current() -> ActivityItem:
+        hold = await network_member.get_hold(owner_id, hold_id)
+        if not hold or auth.user_id not in (hold.get("askedUserIds") or []):
+            raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
+        return render_network_hold(hold, seen=None)
+
+    item = await current()
+    if item.state != "open":
+        return item  # already answered (a retried tap, another person, or the engine closed it)
+    _require_action(item, action_id)
+    await network_member.decide_hold(auth, hold_id, action_id)
+    return await current()
 
 
 async def _webhook_ask(owner_id: str, user_id: str, row: dict, seen: str | None) -> ActivityItem | None:
@@ -850,14 +969,20 @@ async def _render_rows(
     *,
     admin: bool = False,
 ) -> list[ActivityItem]:
-    messages, sessions, logins, extensions, webhooks = await asyncio.gather(
+    messages, sessions, logins, extensions, webhooks, reconnects, holds = await asyncio.gather(
         _render_message_rows(owner_id, user_id, rows, seen, gates),
         _render_session_rows(owner_id, user_id, rows, seen),
         _render_login_rows(owner_id, rows, seen, admin),
         _render_extension_rows(owner_id, rows, seen),
         _render_webhook_agent_rows(owner_id, user_id, rows, seen),
+        _render_reconnect_rows(owner_id, rows, seen),
+        _render_network_hold_rows(owner_id, rows, seen),
     )
-    return sorted(messages + sessions + logins + extensions + webhooks, key=lambda i: i.created_at, reverse=True)
+    return sorted(
+        messages + sessions + logins + extensions + webhooks + reconnects + holds,
+        key=lambda i: i.created_at,
+        reverse=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1383,6 +1508,7 @@ _PINNED_ORDER = {
     "login": 1,
     "code": 1,
     "extension": 1,
+    "reconnect": 1,
     "failed_run": 2,
 }
 
@@ -1393,7 +1519,7 @@ def needs_you(item: ActivityItem) -> bool:
     shared sessions still waiting for your input."""
     if item.kind == "session":
         return item.state == "open" and item.subtype in ("waiting", "join_request", "agent_ask")
-    if item.kind in ("login", "extension"):
+    if item.kind in ("login", "extension", "reconnect"):
         return item.state == "open"
     return item.kind == "paperclip" and item.state == "open" and item.subtype in _PINNED_ORDER
 
@@ -1621,7 +1747,7 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
             1
             for item in pinned
             # A login ask badges only the people who can answer it (admins get its actions).
-            if item.kind == "session"
+            if item.kind in ("session", "reconnect")
             or (item.kind in ("login", "extension") and item.actions)
             or (item.kind not in ("login", "extension") and not _newer_than(item.created_at, seen))
         )
@@ -1971,6 +2097,8 @@ async def run_action(
         return await _run_login_action(auth, parts[1], action_id, body)
     if parts[0] == "extension" and len(parts) == 2:
         return await _run_extension_action(auth, parts[1], action_id)
+    if parts[0] == "nethold" and len(parts) == 2:
+        return await _run_network_hold_action(auth, parts[1], action_id)
     if parts[0] == "agenthook" and len(parts) == 4 and all(_ID_RE.match(x) for x in parts[1:]):
         return await _run_webhook_agent_action(auth, parts[1], parts[2], parts[3], action_id)
     if parts[0] in ("join", "pickup") and len(parts) == 4 and all(_ID_RE.match(x) for x in parts[1:]):

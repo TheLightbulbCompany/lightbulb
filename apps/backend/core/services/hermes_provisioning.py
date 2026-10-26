@@ -154,6 +154,12 @@ def build_hermes_runtime_env(
     # ignores it.
     if memory_id:
         env["AGENTCORE_MEMORY_ID"] = memory_id
+    # The network sidecar verifies members' sign-in proofs against this PUBLIC key (not a
+    # credential): ``<kid>:<base64url>``. Absent: the engine's baked-in keys only.
+    if settings.NETWORK_PROOF_KEY:
+        from core.services import network_proof
+
+        env["LIGHTBULB_ISSUER_KEY"] = network_proof.public_key()["env"]
     # The bridge's per-microVM turn cap; absent keeps the image default (4).
     if max_concurrent_turns:
         env["LIGHTBULB_MAX_CONCURRENT_TURNS"] = str(int(max_concurrent_turns))
@@ -739,16 +745,20 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
 
 
 async def _ensure_network_member(owner_id: str) -> None:
-    """Write ``sessions.json`` when it is absent, so every workspace is a member of the
-    ``lightbulb`` network from provision on. Best-effort: a network hiccup never fails a
-    provision, and the next reconcile (or a Settings connect) writes it. On a fresh provision the
-    roster is still empty here; ``write_profiles`` republishes it once the roster is seeded."""
+    """Write ``sessions.json``, so every workspace is a member of the ``lightbulb`` network from
+    provision on, and rewrite it when it exists so each provision, reconcile and roll carries the
+    current ``members`` (the people the workspace's agents answer; a file written before that
+    field existed would otherwise leave the gate off and hold every member's message).
+    Best-effort: a network hiccup never fails a provision. On a fresh provision the roster is
+    still empty here; ``write_profiles`` republishes it once the roster is seeded."""
     if not settings.OWNER_STATE_BUCKET:
         return
     from core.services import network_member
 
     try:
-        if not await network_member.sessions_exist(owner_id):
+        if await network_member.sessions_exist(owner_id):
+            await network_member.publish_sessions(owner_id)
+        else:
             await network_member.write_sessions(owner_id)
     except Exception:  # noqa: BLE001
         logger.warning("network sessions write failed for owner=%s", owner_id, exc_info=True)
@@ -1267,6 +1277,7 @@ async def write_profile_for_agent(
     soul_md_override: str | None = None,
     inputs: ProfileInputs | None = None,
     publish: bool = True,
+    roster_fan_out: bool = False,
 ) -> None:
     """The per-agent Hermes profile write (M6-R23): owner-level inputs (``resolve_profile_inputs``)
     plus this one agent's own Paperclip API key -> ``write_agent_profile`` -> ``upload_profile``.
@@ -1348,6 +1359,10 @@ async def write_profile_for_agent(
     if soul_md_override is not None:
         files.soul_md = soul_md_override
     await upload_profile(owner_id, agent_id, files)
+    if not roster_fan_out:  # ``write_profiles`` runs at provision, before any connect; every other writer comes later
+        from core.services.credentials import hermes_cli
+
+        await hermes_cli.seed_new_profile(owner_id, agent_id)  # never raises
     await _stage_owner_facts(owner_id, [agent_id], inputs, refresh_roster=lone_agent)
     if publish:  # ``write_profiles`` publishes once, after its whole fan-out
         from core.services import network_member
@@ -1472,7 +1487,9 @@ async def write_profiles(owner_id: str) -> None:
             else None
         )
         keep = current if current and not hermes_profiles.is_generated_soul(current) else None
-        await write_profile_for_agent(owner_id, agent, soul_md_override=keep, inputs=inputs, publish=False)
+        await write_profile_for_agent(
+            owner_id, agent, soul_md_override=keep, inputs=inputs, publish=False, roster_fan_out=True
+        )
 
     from core.services import network_member
 

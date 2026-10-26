@@ -76,6 +76,7 @@ from routers import (
     agent_keys as agent_keys_router,
     webhook_agents as webhook_agents_router,
     network as network_router,
+    network_route as network_route_router,
     settings_keys,
     setup_requests,
     slack_app,
@@ -917,7 +918,14 @@ app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 app.include_router(agent_keys_router.router, prefix="/api/v1/settings/agent-keys", tags=["settings"])
 app.include_router(webhook_agents_router.router, prefix="/api/v1/settings/webhook-agents", tags=["settings"])
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
-app.include_router(network_router.router, prefix="/api/v1/settings/network", tags=["settings"])
+# Under /internal/messaging: the bridge's `_post_backend` prefixes every callback with it.
+app.include_router(network_router.internal_router, prefix="/api/v1/internal/messaging/network", tags=["settings"])
+# `lightbulb login`/`logout`/`invite --agents` and the doorbell. The CLI's routes carry no Clerk
+# token (a signed challenge, or the doorbell's bearer, is the credential); the confirm is Clerk.
+app.include_router(network_router.router, prefix="/api/v1/network", tags=["network"])
+# Hosted apps on the free network: the computer route link (on the bv door's /gateway/ path),
+# its cross-task door, the wake-up page and the bridge's app-mail notice.
+app.include_router(network_route_router.router, prefix="/api/v1", tags=["network"])
 
 # Integrations (MCP servers, ClawHub)
 app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])

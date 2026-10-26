@@ -134,6 +134,7 @@ async def test_hosted_mcp_session_send_from_unallowed_person_is_held(monkeypatch
     sid = str(uuid.uuid4())
     target = {"sessionId": sid, "ownerId": OWNER, "humanUserId": ALICE.user_id, "generation": "g1"}
     monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: BOB)
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda *_scope: BOB)
     monkeypatch.setattr(hosted_mcp, "_mac", lambda: None)
     monkeypatch.setattr(
         hosted_mcp,
@@ -419,6 +420,7 @@ async def test_find_sessions_and_list_targets_offer_held_sends_and_say_they_wait
     )
     monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Someone"))
     monkeypatch.setattr(native_session_tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=[])))
+    monkeypatch.setattr("core.services.webhook_agents.targets", AsyncMock(return_value=[]))
 
     found = (await hosted_mcp.sessions_for(BOB))["sessions"]
     assert [(s["canSend"], s["needsOwnerOk"]) for s in found] == [

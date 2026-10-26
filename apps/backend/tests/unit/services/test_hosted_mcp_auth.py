@@ -60,6 +60,11 @@ async def test_oauth_verifier_binds_audience_org_and_revocation(monkeypatch):
     identity["org_id"] = "org_other"
     assert await verifier.verify_token("opaque-test") is None
     identity["org_id"] = "org_allowed"
+    # A free account (no workspace): a user-scoped grant, for the network tools only.
+    del identity["org_id"]
+    free = await verifier.verify_token("opaque-test")
+    assert free.subject == "user_test" and free.claims["org_id"] is None
+    identity["org_id"] = "org_allowed"
     grant["revoked"] = True
     assert await verifier.verify_token("opaque-test") is None
     assert await verifier.verify_token("jwt.part.signature") is None
@@ -70,6 +75,7 @@ async def test_send_resolves_thread_root_and_member_mentions(monkeypatch):
     room_id, reply_id, root_id = (str(uuid.uuid4()) for _ in range(3))
     agent_id, human_id = str(uuid.uuid4()), "user_teammate"
     monkeypatch.setattr(hosted_mcp, "_caller", lambda _scope: AuthContext(user_id="user_sender", org_id="org_test"))
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda *_: AuthContext(user_id="user_sender", org_id="org_test"))
     monkeypatch.setattr(
         hosted_mcp.messaging,
         "get_room",
@@ -125,6 +131,7 @@ async def test_room_target_search_does_not_offer_offline_queue(monkeypatch):
         shared=False,
     )
     monkeypatch.setattr(hosted_mcp, "_caller", lambda: AuthContext(user_id="user_sender", org_id="org_test"))
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda *_: AuthContext(user_id="user_sender", org_id="org_test"))
     monkeypatch.setattr(
         hosted_mcp.local_sessions,
         "list_workspace_sessions",
@@ -146,12 +153,17 @@ def test_client_identity_names_known_clients_and_falls_back_to_host():
         "cursor.example.com",
         "cursor.example.com",
     )
+    # The assistant apps' own metadata documents are named, never by their hostname.
+    assert hosted_mcp.client_identity("https://claude.ai/oauth/mcp-client-metadata") == ("claude", "Claude")
+    assert hosted_mcp.client_identity("https://claude.com/oauth/client.json") == ("claude", "Claude")
+    assert hosted_mcp.client_identity("https://chatgpt.com/oauth/cb1/client.json") == ("chatgpt", "ChatGPT")
 
 
 @pytest.mark.asyncio
 async def test_send_authors_as_the_client_on_the_humans_behalf(monkeypatch):
     room_id = str(uuid.uuid4())
     monkeypatch.setattr(hosted_mcp, "_caller", lambda _scope: AuthContext(user_id="user_sender", org_id="org_test"))
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda *_: AuthContext(user_id="user_sender", org_id="org_test"))
     monkeypatch.setattr(
         hosted_mcp,
         "get_access_token",
@@ -194,6 +206,7 @@ async def test_receipt_finds_the_client_authored_row_by_its_accountable_human(mo
 def _hosted_sender(monkeypatch):
     auth = AuthContext(user_id="user_sender", org_id="org_test")
     monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: auth)
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda *_scope: auth)
     monkeypatch.setattr(
         hosted_mcp,
         "get_access_token",
@@ -275,6 +288,7 @@ async def test_session_send_is_a_follow_up_under_the_persons_control_authority(m
 async def test_receipt_reads_the_pinned_destination(monkeypatch):
     auth = AuthContext(user_id="user_sender", org_id="org_test")
     monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: auth)
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda *_scope: auth)
     sid, room_id, request_id = str(uuid.uuid4()), str(uuid.uuid4()), uuid.uuid4()
     pins = {}
     monkeypatch.setattr(hosted_mcp.messaging_repo, "_get", AsyncMock(side_effect=lambda pk, sk: pins.get((pk, sk))))
@@ -483,6 +497,7 @@ async def test_pin_conflict_on_a_session_send_is_a_readable_tool_error(monkeypat
 async def test_receipt_reads_rejected_even_when_get_command_refuses_again(monkeypatch):
     auth = AuthContext(user_id="user_sender", org_id="org_test")
     monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: auth)
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda *_scope: auth)
     sid, request_id = str(uuid.uuid4()), uuid.uuid4()
     pin = {"destination": f"session:{sid}", "refusal": "LOCAL_SESSION_FORBIDDEN"}
     monkeypatch.setattr(hosted_mcp.messaging_repo, "_get", AsyncMock(return_value=pin))
@@ -498,6 +513,9 @@ async def test_use_browser_moves_a_session_its_caller_may_control(monkeypatch):
 
     sid = "11111111-1111-4111-8111-111111111111"
     monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: AuthContext(user_id="user_sender", org_id="org_test"))
+    monkeypatch.setattr(
+        hosted_mcp, "_net_caller", lambda *_scope: AuthContext(user_id="user_sender", org_id="org_test")
+    )
     authorize = AsyncMock(return_value=({"ownerId": "org_test", "sessionId": sid}, {}))
     monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", authorize)
     monkeypatch.setattr(

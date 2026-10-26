@@ -141,13 +141,6 @@ async def test_write_boot_secret_mints_once_and_reports_a_boot_change():
         assert await ar.write_boot_secret("org_m", **_CREDS) is False
         assert _boot(sm, "org_m")["networkKey"] == key
 
-        # Reconnect drops it (not a boot change); the next write mints a different one.
-        await ar.drop_network_key("org_m")
-        assert _boot(sm, "org_m") == {"hookToken": "h", "gatewayToken": "g", "bedrockBearer": "b"}
-        await ar.drop_network_key("org_absent")  # no secret: a no-op
-        assert await ar.write_boot_secret("org_m", **_CREDS) is True
-        assert _boot(sm, "org_m")["networkKey"] != key
-
 
 async def test_no_other_module_reads_network_key():
     from pathlib import Path

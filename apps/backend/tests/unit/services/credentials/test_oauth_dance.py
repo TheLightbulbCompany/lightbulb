@@ -12,7 +12,7 @@ from core.services.credentials import oauth_dance  # noqa: E402
 @patch("core.services.credentials.oauth_dance.oauth_app_store.get", new_callable=AsyncMock)
 async def test_oauth_client_uses_owner_byo_app(mock_byo_get):
     mock_byo_get.return_value = {"client_id": "owner_cid", "client_secret": "owner_sec"}
-    cid, sec = await oauth_dance._oauth_client("user_1", "google")
+    cid, sec = await oauth_dance._oauth_client("user_1", "x")
     assert (cid, sec) == ("owner_cid", "owner_sec")
 
 
@@ -21,7 +21,7 @@ async def test_oauth_client_uses_owner_byo_app(mock_byo_get):
 async def test_oauth_client_raises_when_no_byo_app(mock_byo_get):
     mock_byo_get.return_value = None
     with pytest.raises(ValueError):
-        await oauth_dance._oauth_client("user_1", "google")
+        await oauth_dance._oauth_client("user_1", "x")
 
 
 @pytest.mark.asyncio
@@ -40,7 +40,7 @@ async def test_oauth_client_allows_empty_secret_for_public_client(mock_byo_get):
 async def test_oauth_client_raises_when_client_id_missing(mock_byo_get):
     mock_byo_get.return_value = {"client_secret": "owner_sec"}
     with pytest.raises(ValueError):
-        await oauth_dance._oauth_client("user_1", "google")
+        await oauth_dance._oauth_client("user_1", "x")
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,9 @@ GATEWAY_TOKEN = os.environ.pop("GATEWAY_TOKEN", "")
 # credentials over the microVM metadata service). Read it as ``bridge.VAULT_TOKEN`` at call time.
 VAULT_TOKEN = ""
 S3_BUCKET = os.environ.get("S3_BUCKET", "")
+# The workspace's network member key (base64 of a 32-byte Ed25519 seed), from the boot secret
+# only. Module state, never os.environ: bridge.network writes it as the sidecar's identity.key.
+NETWORK_KEY = ""
 
 
 def default_s3_prefix(owner: str) -> str:
@@ -62,6 +65,7 @@ if _secret_id:
     _boot_secrets = _load_boot_secrets(_secret_id)
     HOOK_TOKEN = _boot_secrets.get("hookToken") or HOOK_TOKEN
     GATEWAY_TOKEN = _boot_secrets.get("gatewayToken") or GATEWAY_TOKEN
+    NETWORK_KEY = _boot_secrets.get("networkKey") or ""
     # M2-R12: a reader that is not turn-scoped has no per-turn context file to take a hook
     # token from and reads the process env directly, the same way this module's own
     # module-level defaults above do. Mirror the boot-fetched hook token into the process env so

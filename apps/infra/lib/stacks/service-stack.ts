@@ -107,6 +107,8 @@ export interface SecretNames {
    * the backend starts rejecting callers that lack the header.
    */
   wsInternalSecret: string;
+  /** Seed of the Ed25519 key that signs `lightbulb login` proofs (backend network_proof). */
+  networkProofKey: string;
   /**
    * Shared secret the SES-ingest Lambda (ses-inbound-stack.ts) attaches to
    * its POST /webhooks/ses-inbound calls. Created unconditionally in every
@@ -954,6 +956,11 @@ export class ServiceStack extends cdk.Stack {
         actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
         resources: [
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/hermes/*`,
+          // The workspace's network member (plan C phase 1): the backend writes
+          // <owner>/network/sessions.json, deletes state.db on connect/reconnect and the
+          // whole prefix on teardown. The runtime reads and writes the same prefix under its
+          // own per-owner role; nothing else of the owner's state is opened to the backend.
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/network/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/marketplace-installs/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/browser-state/*`,
         ],
@@ -1990,6 +1997,10 @@ export class ServiceStack extends cdk.Stack {
           "ImportWsInternalSecret",
           props.secretNames.wsInternalSecret,
         ),
+      ),
+      // Signs `lightbulb login` proofs (network_proof). Same CMK as the other auth secrets.
+      NETWORK_PROOF_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportNetworkProofKey", props.secretNames.networkProofKey),
       ),
       // Shared secret the SES-ingest Lambda attaches as X-Lightbulb-SES-Secret.
       // The backend compares it in constant time (routers/ses_inbound.py)

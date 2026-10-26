@@ -96,10 +96,11 @@ async def set_status(owner_id: str, provider: str, status: str) -> None:
     )
 
 
-async def get(owner_id: str, provider: str) -> dict | None:
+async def get(owner_id: str, provider: str, *, consistent: bool = False) -> dict | None:
     response = await run_in_thread(
         _table().get_item,
         Key={"owner_id": owner_id, "provider": provider},
+        ConsistentRead=consistent,
     )
     return response.get("Item")
 

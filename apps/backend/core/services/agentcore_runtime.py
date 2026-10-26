@@ -180,9 +180,7 @@ async def write_boot_secret(
 
     ``networkKey`` is the workspace's member key on the ``lightbulb`` network (read by the
     network sidecar, and by no backend module but this one). It is carried over from the prior
-    secret and minted only when absent, so a reconcile never rotates it; a mint is a boot change.
-    ``drop_network_key`` (Settings -> Reconnect) removes it, so the next write mints a new key,
-    which makes a new team."""
+    secret and minted only when absent, so a reconcile never rotates it; a mint is a boot change."""
     import boto3
 
     from core.secrets_manager import create_or_update_secret
@@ -207,22 +205,3 @@ async def write_boot_secret(
         return {k: (prior or {}).get(k) for k in payload} != payload
 
     return await run_in_thread(_converge)
-
-
-async def drop_network_key(owner_id: str) -> None:
-    """Rewrite the boot secret without its ``networkKey`` (Settings -> Reconnect), everything
-    else verbatim. A no-op when the secret or the key is absent. Not a boot change on its own:
-    the caller stops the session."""
-    import boto3
-
-    from core.secrets_manager import create_or_update_secret
-
-    name = boot_secret_name(owner_id)
-    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-
-    def _drop() -> None:
-        prior = _read_secret(sm, name)
-        if prior and prior.pop("networkKey", None) is not None:
-            create_or_update_secret(sm, name, json.dumps(prior))
-
-    await run_in_thread(_drop)

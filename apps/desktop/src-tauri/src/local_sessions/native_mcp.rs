@@ -113,10 +113,10 @@ fn configured(home: &Path, cli: &Path, provider: &str, name: &str) -> io::Result
         return Ok(None);
     }
     if entry["args"] != json!(["session-mcp"]) {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "MCP server name is already used",
-        ));
+        // Only the hosted HTTP entry is ours to replace; a local program's (the network engine's,
+        // say) is left alone, or two owners of one name replace each other on every launch.
+        let kind = if entry["url"].is_string() { io::ErrorKind::AlreadyExists } else { io::ErrorKind::Unsupported };
+        return Err(io::Error::new(kind, "MCP server name is already used"));
     }
     entry["command"]
         .as_str()
@@ -304,8 +304,17 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
         let (stale, foreign) = match current {
             _ if ours => (false, false),
             Ok(None) => (false, false),
-            Ok(Some(_)) => (true, false),
+            // Our `session-mcp` at an old app path; another program's `session-mcp` stays.
+            Ok(Some(c)) if Path::new(&c).file_name() == executable.file_name() => (true, false),
+            Ok(Some(_)) => {
+                notes.push(format!("{provider} has another program's {SERVER_NAME} server; left in place"));
+                continue;
+            }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (false, true),
+            Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                notes.push(format!("{provider} has another program's {SERVER_NAME} server; left in place"));
+                continue;
+            }
             Err(_) => {
                 notes.push(format!("{provider} MCP settings are unavailable"));
                 continue;
@@ -580,6 +589,23 @@ mod tests {
         std::fs::write(&config, "{\"mine\":2}").unwrap();
         edit(home.path(), &cli, "claude", "remove", SERVER_NAME, &[]).unwrap();
         assert_eq!(std::fs::read_to_string(home.path().join(".claude.json.lightbulb-backup")).unwrap(), "{\"mine\":1}");
+    }
+
+    #[test]
+    fn only_the_hosted_entry_counts_as_replaceable_never_another_programs() {
+        let home = tempfile::tempdir().unwrap();
+        let cli = Path::new("/nonexistent/claude");
+        let at = |entry: Value| {
+            std::fs::write(home.path().join(".claude.json"), json!({"mcpServers": {"lightbulb": entry}}).to_string()).unwrap();
+            configured(home.path(), cli, "claude", SERVER_NAME).map_err(|e| e.kind())
+        };
+        // The network engine's own server: left in place.
+        let engine = json!({"command": "/Users/x/.lightbulb/connect/bin/lightbulb", "args": ["mcp"]});
+        assert_eq!(at(engine), Err(io::ErrorKind::Unsupported));
+        // The hosted HTTP entry: replaced by this Mac's.
+        assert_eq!(at(json!({"type": "http", "url": "https://api.thelightbulb.company/mcp"})), Err(io::ErrorKind::AlreadyExists));
+        let app = json!({"command": "/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop", "args": ["session-mcp"]});
+        assert_eq!(at(app), Ok(Some("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop".into())));
     }
 
     #[test]

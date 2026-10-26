@@ -25,8 +25,8 @@ def test_tally_shaped_pipeline_classifies_each_dependency(tmp_path):
     d = {r.key: r.disposition for r in reqs}
     assert "llm-task" not in d  # engine-internal pipeline verb — suppressed, not a buyer dep
     assert d["slack"] == Disposition.CONNECT
-    # `gog` resolves to the byo-required google provider → BYO, keyed under "google".
-    assert d["google"] == Disposition.BYO
+    # `gog` resolves to the google platform-app provider → CONNECT, keyed under "google".
+    assert d["google"] == Disposition.CONNECT
     assert d["stripe-api"] == Disposition.UNAVAILABLE  # phantom skill
     assert d["plaid"] == Disposition.BYO
     assert d["perplexity"] == Disposition.BYO

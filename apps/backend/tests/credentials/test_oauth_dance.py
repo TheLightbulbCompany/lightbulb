@@ -97,9 +97,10 @@ async def test_start_builds_authorize_url(monkeypatch):
     assert q["state"] == [stored["state"]]
     # joined scopes (google uses space separator)
     assert q["scope"] == [
-        "https://www.googleapis.com/auth/gmail.modify"
-        " https://www.googleapis.com/auth/calendar"
-        " https://www.googleapis.com/auth/drive"
+        "openid email profile"
+        " https://www.googleapis.com/auth/gmail.send"
+        " https://www.googleapis.com/auth/calendar.events"
+        " https://www.googleapis.com/auth/drive.file"
     ]
     # google's extra authorize params
     assert q["access_type"] == ["offline"]
@@ -160,7 +161,8 @@ async def test_exchange_consumes_state_and_returns_credential(monkeypatch):
     assert credential["access_token"] == "at_tok"
     assert credential["refresh_token"] == "rt_tok"
     assert credential["client_id"] == "cid"
-    assert credential["client_secret"] == "secret"
+    # google is a platform app: its secret is posted but never kept in the credential.
+    assert credential["client_secret"] == ""
     # Materializers that persist the CLI's own app registration (xurl_cli) read
     # this off the credential. Dropping it here silently degrades them to a
     # derived fallback, so the contract is asserted rather than assumed.
@@ -585,11 +587,11 @@ async def test_exchange_includes_resource_for_mcp_remote_provider(monkeypatch, f
 
 @pytest.mark.asyncio
 async def test_exchange_omits_resource_for_byo_provider(monkeypatch, fake_app_store):
-    # google has no mcp_remote — the token POST must not carry a resource param.
-    fake_app_store[("org_1", "google")] = {"client_id": "cid", "client_secret": "secret"}
+    # x has no mcp_remote — the token POST must not carry a resource param.
+    fake_app_store[("org_1", "x")] = {"client_id": "cid", "client_secret": "secret"}
 
     async def _fake_consume(state):
-        return {"state": state, "owner_id": "org_1", "provider": "google", "verifier": "ver123"}
+        return {"state": state, "owner_id": "org_1", "provider": "x", "verifier": "ver123"}
 
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "consume", _fake_consume)
 
@@ -614,12 +616,12 @@ async def test_exchange_omits_resource_for_byo_provider(monkeypatch, fake_app_st
 
 @pytest.mark.asyncio
 async def test_exchange_byo_client_still_sends_secret(monkeypatch, fake_app_store):
-    # The google (BYO, confidential) path is unchanged: a stored secret is sent in
+    # The x (BYO, confidential) path is unchanged: a stored secret is sent in
     # the token POST and the credential's client_information is the minimal pair.
-    fake_app_store[("org_1", "google")] = {"client_id": "cid", "client_secret": "secret"}
+    fake_app_store[("org_1", "x")] = {"client_id": "cid", "client_secret": "secret"}
 
     async def _fake_consume(state):
-        return {"state": state, "owner_id": "org_1", "provider": "google", "verifier": "ver123"}
+        return {"state": state, "owner_id": "org_1", "provider": "x", "verifier": "ver123"}
 
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "consume", _fake_consume)
 
@@ -642,9 +644,8 @@ async def test_exchange_byo_client_still_sends_secret(monkeypatch, fake_app_stor
         await oauth_dance.oauth_state_repo.consume("st_1"), "code_abc", redirect_uri=REDIRECT
     )
 
-    # Confidential client: secret IS present in the token body.
-    assert posted["data"]["client_secret"] == "secret"
-    assert posted["data"]["client_id"] == "cid"
+    # x is client_secret_basic: the secret rides the Authorization header, not the body.
+    assert "client_secret" not in posted["data"]
     assert credential["client_id"] == "cid"
     assert credential["client_secret"] == "secret"
     # No cached client_information for a BYO app — synthesize the minimal shape.

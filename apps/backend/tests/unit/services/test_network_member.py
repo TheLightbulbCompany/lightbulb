@@ -1,5 +1,7 @@
 """The workspace as one computer on the lightbulb network: sessions.json and its publishing."""
 
+# ruff: noqa: F811 -- `table` is the repo suite's moto fixture, imported and then requested by name.
+
 import json
 from unittest.mock import AsyncMock
 
@@ -7,14 +9,16 @@ import pytest
 
 from core.services import network_member
 from core.services.messaging import ApiProblem
+from tests.unit.repositories.test_messaging_repo import table  # noqa: F401
 
 A1 = "11111111-1111-1111-1111-111111111111"
 A2 = "22222222-2222-2222-2222-222222222222"
 
 
 @pytest.fixture
-def store(monkeypatch):
-    """The owner-state bucket as a dict, plus an org name and a two-agent roster."""
+def store(monkeypatch, table):
+    """The owner-state bucket as a dict, plus an org name and a two-agent roster (and the
+    messaging table, which holds the doorbell's token hash)."""
     objects: dict[str, bytes] = {}
     monkeypatch.setattr(network_member.settings, "OWNER_STATE_BUCKET", "bucket")
     monkeypatch.setattr("core.services.hermes_profiles.put_owner_object", lambda k, b: objects.__setitem__(k, b))
@@ -25,6 +29,7 @@ def store(monkeypatch):
     monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value={"name": "Acme Builders"}))
     roster = [{"id": A1, "name": "Friday"}, {"id": A2, "name": "Ops Lead"}]
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=["user_1", "user_2"]))
     return objects
 
 
@@ -39,16 +44,41 @@ async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
     await network_member.write_sessions("org_a")  # apps=None keeps the earlier app entry
 
     assert network_member.sessions_key("org_a") == "org_a/network/sessions.json"
+    token = _doc(store)["wake"]["token"]
+    assert token.startswith("org_a.")
     assert _doc(store) == {
         "workspace": "Acme Builders",
         "sessions": [
-            {"name": "friday", "agent": "hermes", "title": "Friday", "agentId": A1},
-            {"name": "ops-lead", "agent": "hermes", "title": "Ops Lead", "agentId": A2},
+            {"name": "friday", "agent": "Friday", "title": "Friday", "agentId": A1},
+            {"name": "ops-lead", "agent": "Ops Lead", "title": "Ops Lead", "agentId": A2},
             app,
         ],
+        "wake": {"url": "http://localhost:8000/api/v1/network/wake", "token": token},
+        "members": ["user_1", "user_2"],
     }
     assert network_member.app_person("user_1") == network_member.app_person("user_1")
     assert len(network_member.app_person("user_1")) == 8
+
+
+@pytest.mark.asyncio
+async def test_agents_whose_names_and_id_prefixes_collide_get_distinct_names(store, monkeypatch):
+    ids = [f"abcd1111-0000-0000-0000-00000000000{i}" for i in range(4)]
+    roster = [{"id": i, "name": "Friday"} for i in ids]
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    await network_member.write_sessions("org_a", apps=[])
+    first = [s["name"] for s in _doc(store)["sessions"]]
+    assert first == ["friday", "friday-abcd", "friday-idabcd1111", f"friday-id{ids[3]}"]
+    assert not any(network_member.app_target(n) for n in first)  # an agent never reads as an app
+    await network_member.write_sessions("org_a", apps=[])  # deterministic for an unchanged roster
+    assert [s["name"] for s in _doc(store)["sessions"]] == first
+
+
+@pytest.mark.asyncio
+async def test_an_agent_named_like_an_app_address_gets_a_suffix(store, monkeypatch):
+    roster = [{"id": A1, "name": "Ops deadbeef"}]
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    await network_member.write_sessions("org_a", apps=[])
+    assert [s["name"] for s in _doc(store)["sessions"]] == ["ops-deadbeef-1111"]
 
 
 @pytest.mark.asyncio
@@ -173,6 +203,21 @@ async def test_agents_create_republishes_sessions(monkeypatch, published):
 
 
 @pytest.mark.asyncio
+async def test_cli_credentials_seed_every_writer_but_the_roster_fan_out(monkeypatch, published):
+    """A company-deploy agent arrives with ``inputs`` yet is created AFTER connects, so it is seeded;
+    only ``write_profiles`` (provision, before any connect) skips it."""
+    hp = _profile_write_stubs(monkeypatch)
+    seed = AsyncMock()
+    monkeypatch.setattr("core.services.credentials.hermes_cli.seed_new_profile", seed)
+    inputs = await hp.resolve_profile_inputs("org_a")
+    await hp.write_profile_for_agent("org_a", {"id": A1, "name": "Friday"}, inputs=inputs, publish=False)
+    seed.assert_awaited_once_with("org_a", A1)
+    seed.reset_mock()
+    await hp.write_profiles("org_a")
+    seed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_write_profiles_publishes_once_after_the_fan_out(monkeypatch, published):
     hp = _profile_write_stubs(monkeypatch)
     await hp.write_profiles("org_a")  # the two-agent roster from the store fixture's default
@@ -216,9 +261,8 @@ async def test_an_agent_delete_republishes_sessions(monkeypatch, published):
 
 
 @pytest.mark.asyncio
-async def test_connect_clears_a_stale_state_db_before_joining(monkeypatch):
+async def test_join_network_makes_a_new_member_first_then_asks_the_bridge(store, monkeypatch):
     order = []
-    monkeypatch.setattr(network_member, "sessions_exist", AsyncMock(return_value=False))
     monkeypatch.setattr(
         "core.services.hermes_provisioning._delete_prefixes", lambda prefixes: order.append(("delete", prefixes))
     )
@@ -226,6 +270,67 @@ async def test_connect_clears_a_stale_state_db_before_joining(monkeypatch):
         "core.services.hermes_provisioning.prepare_hermes_workspace",
         AsyncMock(side_effect=lambda o: order.append("prepare") or False),
     )
-    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"line": "l", "expires_at": "t"}))
-    await network_member.connect("org_a", "user_1", "Sam")
-    assert order == [("delete", ["org_a/network/state.db"]), "prepare"]
+
+    async def _rpc(owner_id, method, params=None, **kw):
+        order.append((method, params, network_member.sessions_key(owner_id) in store))
+        return {"state": "joining"}
+
+    monkeypatch.setattr(network_member.container_rpc, "call", _rpc)
+    assert await network_member.join_network("org_a", "TICKET") == {"state": "joining"}
+    assert order == [("delete", ["org_a/network/state.db"]), "prepare", ("network.join", {"ticket": "TICKET"}, True)]
+
+    order.clear()  # a member already: straight to the bridge
+    await network_member.join_network("org_a", "TICKET")
+    assert order == [("network.join", {"ticket": "TICKET"}, True)]
+
+
+@pytest.mark.asyncio
+async def test_join_network_maps_the_bridges_refusals(store, monkeypatch):
+    await network_member.write_sessions("org_a")
+    for code, problem in (("already_in_team", "NETWORK_ALREADY_JOINED"), ("UNAVAILABLE", "RUNTIME_UNAVAILABLE")):
+        error = RuntimeError(json.dumps({"code": code, "message": "x"}))
+        monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(side_effect=error))
+        with pytest.raises(ApiProblem) as raised:
+            await network_member.join_network("org_a", "TICKET")
+        assert raised.value.error.code == problem
+
+
+@pytest.mark.asyncio
+async def test_the_joined_mark_survives_rewrites_and_leave_clears_it(store, monkeypatch):
+    await network_member.write_sessions("org_a")
+    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"state": "joining"}))
+    await network_member.join_network("org_a", "TICKET")
+    assert _doc(store)["joined"] is True
+    await network_member.publish_sessions("org_a")
+    assert _doc(store)["joined"] is True
+    await network_member.leave_network("org_a")
+    assert "joined" not in _doc(store)
+    network_member.container_rpc.call.assert_awaited_with("org_a", "network.leave", {})
+
+
+@pytest.mark.asyncio
+async def test_a_write_with_no_prior_keeps_the_wake_token_and_hash(store, table):
+    await network_member.write_sessions("org_a", apps=[])
+    token = _doc(store)["wake"]["token"]
+    key = {"pk": "OWNER#org_a", "sk": "NETWAKE"}
+    hashed = table.get_item(Key=key)["Item"]["tokenHash"]
+
+    await network_member._write("org_a", [])  # a writer with no prior in hand
+    assert _doc(store)["wake"]["token"] == token
+    assert table.get_item(Key=key)["Item"]["tokenHash"] == hashed
+
+
+@pytest.mark.asyncio
+async def test_members_follow_the_workspace_on_join_and_leave(store, monkeypatch):
+    humans = AsyncMock(return_value=["user_1"])
+    monkeypatch.setattr("core.services.website_logins._humans_to_ask", humans)
+    await network_member.write_sessions("org_a")  # what a provision leaves behind
+    assert _doc(store)["members"] == ["user_1"]
+
+    humans.return_value = ["user_1", "user_3"]  # a join
+    await network_member.publish_sessions("org_a")
+    assert _doc(store)["members"] == ["user_1", "user_3"]
+
+    humans.return_value = ["user_3"]  # a leave
+    await network_member.publish_sessions("org_a")
+    assert _doc(store)["members"] == ["user_3"]

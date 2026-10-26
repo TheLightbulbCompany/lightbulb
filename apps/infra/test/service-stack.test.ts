@@ -71,6 +71,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       huddleWorkerSecret: `lightbulb/${environment}/huddle_worker_secret`,
       metronomeWebhookSecret: `lightbulb/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `lightbulb/${environment}/ws_internal_secret`,
+      networkProofKey: `lightbulb/${environment}/network_proof_key`,
       sesIngestSecret: `lightbulb/${environment}/ses_ingest_secret`,
     },
     kmsKeyArn: kmsKey.keyArn,
@@ -272,6 +273,17 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(grant.Effect).toBe("Allow");
     expect(grant.Action).toEqual(expect.arrayContaining(["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]));
     expect(grant.Resource).toContain("arn:aws:s3:::lightbulb-dev-openclaw-replicas/marketplace-installs/*");
+  });
+
+  test("backend can write the workspace member's network prefix (sessions.json, state.db cleanup)", () => {
+    // The first dev roll of h-2026.10.24-9566ac3 failed every sessions.json write with
+    // AccessDenied: the grant covered */hermes/* only, so no workspace member could start.
+    const statements = Object.values(template.findResources("AWS::IAM::Policy")).flatMap(
+      (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
+    );
+    const grant = statements.find((statement: any) => statement.Sid === "HermesProfilesRW");
+    expect(grant.Action).toEqual(expect.arrayContaining(["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]));
+    expect(grant.Resource).toContain("arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/network/*");
   });
 
   test("lets StartBrowserSession read workspace browser extensions with the backend's credentials", () => {

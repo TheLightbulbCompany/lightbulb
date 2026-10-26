@@ -17,7 +17,7 @@
 # caller keeps working and the next invocation retries.
 set -uo pipefail
 
-CRED="${IG_CREDENTIALS:-/home/node/.openclaw/skills/instagram/credentials.json}"
+CRED="${IG_CREDENTIALS:-$HERMES_HOME/skills/instagram/credentials.json}"
 WINDOW_SECONDS=$((30 * 24 * 3600))
 
 if [ ! -r "$CRED" ]; then

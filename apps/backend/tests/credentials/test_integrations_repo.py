@@ -26,7 +26,7 @@ def fake_table(monkeypatch):
         def put_item(self, Item):
             store[(Item["owner_id"], Item["provider"])] = Item
 
-        def get_item(self, Key):
+        def get_item(self, Key, ConsistentRead=False):
             it = store.get((Key["owner_id"], Key["provider"]))
             return {"Item": it} if it else {}
 

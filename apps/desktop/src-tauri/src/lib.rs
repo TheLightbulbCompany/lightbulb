@@ -2162,7 +2162,6 @@ end tell"#,
                     log(&format!("[cli] the lightbulb command is unavailable: {e}"));
                 }
                 tauri::async_runtime::spawn_blocking(cli::install_at_launch);
-                tauri::async_runtime::spawn_blocking(shell_integration::refresh_at_launch);
             }
 
             Ok(())

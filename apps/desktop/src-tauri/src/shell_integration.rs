@@ -28,14 +28,14 @@ fn all_rc_files() -> Vec<&'static str> {
 /// The block. Interactive shells only (bash reads ~/.bashrc for some non-interactive ones), and
 /// the real tool whenever stdin or stdout is not a terminal: Claude Code copies shell functions
 /// into its agents' shells, which have none. `function name {` so an alias of the same name is
-/// not expanded where the function is defined. Only the app's own link is used (it points at
-/// `…/Contents/MacOS/lightbulb-desktop`, see `cli::install`), never a `lightbulb` found on PATH:
-/// on 2026-10-23 the network CLI took that name and every `claude` printed "Unknown command".
-/// Anything else, or no link, runs the real tool.
+/// not expanded where the function is defined. It routes only when `lightbulb --help` names
+/// `lightbulb claude|codex` (the app's usage line does): on 2026-10-23 `lightbulb` became the
+/// network CLI, which has no `claude`, and every plain `claude` printed "Unknown command".
+/// Any other `lightbulb`, or none, runs the real tool.
 pub fn block() -> String {
     let function = |tool: &str| {
         format!(
-            "    function {tool} {{ if [ -t 0 ] && [ -t 1 ]; then local lb=\"$HOME/.local/bin/lightbulb\"; case \"$(readlink \"$lb\" 2>/dev/null)\" in */lightbulb-desktop) if [ -x \"$lb\" ]; then \"$lb\" {tool} \"$@\"; return; fi;; esac; fi; command {tool} \"$@\"; }}\n"
+            "    function {tool} {{ if [ -t 0 ] && [ -t 1 ]; then local lb=\"$HOME/.local/bin/lightbulb\"; [ -x \"$lb\" ] || lb=\"$(command -v lightbulb 2>/dev/null)\"; if [ -n \"$lb\" ] && \"$lb\" --help 2>&1 | command grep -q \"lightbulb {tool}\"; then \"$lb\" {tool} \"$@\"; return; fi; fi; command {tool} \"$@\"; }}\n"
         )
     };
     format!(
@@ -64,16 +64,6 @@ pub fn with_block(text: &str, on: bool) -> String {
         out.push_str(&block());
     }
     out
-}
-
-/// At launch: rewrite a block that is on, so an older block gets this version's text.
-pub fn refresh_at_launch() {
-    let Ok(home) = home() else { return };
-    if is_on(&home) {
-        if let Err(e) = set(&home, true) {
-            crate::log(&format!("[shell-integration] refresh: {e}"));
-        }
-    }
 }
 
 pub fn is_on(home: &Path) -> bool {
@@ -128,14 +118,14 @@ mod tests {
         assert!(b.starts_with(BEGIN) && b.trim_end().ends_with(END));
         assert!(b.contains("case $- in\n  *i*)"));
         // The shim by its install path first: ~/.local/bin is often not on PATH yet.
-        // Only the app's own link, by its install path (~/.local/bin is often not on PATH yet).
-        assert!(b.contains(r#"function claude { if [ -t 0 ] && [ -t 1 ]; then local lb="$HOME/.local/bin/lightbulb"; case "$(readlink "$lb" 2>/dev/null)" in */lightbulb-desktop) if [ -x "$lb" ]; then "$lb" claude "$@"; return; fi;; esac; fi; command claude "$@"; }"#));
-        assert!(b.contains(r#"then "$lb" codex "$@"; return; fi;; esac; fi; command codex "$@"; }"#));
-        assert!(!b.contains("command -v lightbulb"), "a lightbulb on PATH may be another program");
+        // The shim by its install path first (~/.local/bin is often not on PATH yet), and only a
+        // `lightbulb` whose help names the tool.
+        assert!(b.contains(r#"function claude { if [ -t 0 ] && [ -t 1 ]; then local lb="$HOME/.local/bin/lightbulb"; [ -x "$lb" ] || lb="$(command -v lightbulb 2>/dev/null)"; if [ -n "$lb" ] && "$lb" --help 2>&1 | command grep -q "lightbulb claude"; then "$lb" claude "$@"; return; fi; fi; command claude "$@"; }"#));
+        assert!(b.contains(r#"command grep -q "lightbulb codex"; then "$lb" codex "$@"; return; fi; fi; command codex "$@"; }"#));
     }
 
-    /// The block in a real zsh and bash: a link to another program, or none, runs the real
-    /// tool; the app's link routes. BSD `script` gives the shell a terminal so `-t 0/1` hold.
+    /// The block in a real zsh and bash: no `lightbulb`, or one without `claude` (the network
+    /// CLI), runs the real tool; one whose help names `lightbulb claude` (the app) routes. BSD `script` gives the shell a terminal so `-t 0/1` hold.
     #[cfg(target_os = "macos")]
     #[test]
     fn shell_block_falls_back_to_the_real_tool_unless_the_link_is_the_app() {
@@ -149,8 +139,8 @@ mod tests {
             std::fs::set_permissions(p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         };
         script(&bin.join("claude"), "echo real-claude \"$@\"");
-        script(&bin.join("network"), "echo network \"$@\"");
-        script(&bin.join("lightbulb-desktop"), "echo app \"$@\"");
+        script(&bin.join("network"), "[ \"$1\" = --help ] && echo 'Usage: lightbulb <command>'; echo \"Unknown command: $1\" >&2; exit 2");
+        script(&bin.join("lightbulb-desktop"), "if [ \"$1\" = --help ]; then echo 'Usage: lightbulb claude|codex' >&2; exit 2; fi; echo app \"$@\"");
         std::fs::write(h.join("rc"), block()).unwrap();
         let link = h.join(".local/bin/lightbulb");
         let run = |shell: &str| {
@@ -172,7 +162,7 @@ mod tests {
             let _ = std::fs::remove_file(&link);
             assert!(run(shell).contains("real-claude hi"), "{shell}: no link");
             std::os::unix::fs::symlink(bin.join("network"), &link).unwrap();
-            assert!(run(shell).contains("real-claude hi"), "{shell}: another program's link");
+            assert!(run(shell).contains("real-claude hi"), "{shell}: a lightbulb without claude");
             std::fs::remove_file(&link).unwrap();
             std::os::unix::fs::symlink(bin.join("lightbulb-desktop"), &link).unwrap();
             assert!(run(shell).contains("app claude hi"), "{shell}: the app's link");

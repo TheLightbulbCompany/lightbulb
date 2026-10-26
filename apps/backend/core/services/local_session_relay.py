@@ -396,13 +396,28 @@ def attention_copy(row: dict, state: str, subagent: str | None = None) -> tuple[
     tool = {"claude": "Claude", "codex": "Codex", "cursor": "Cursor", "grok": "Grok"}.get(
         row.get("provider", ""), "Session"
     )
-    where = copy.line(row.get("title"), 40) or row["sessionId"][:8]
+    # The clients' rule (sessionTitle): never an id.
+    where = copy.line(row.get("displayTitle") or row.get("title") or row.get("cwdName"), 40) or "New chat"
     if subagent:
         return copy.title(tool, where), copy.line(subagent)
     if state == "waiting":
-        return copy.title(tool, where), "Waiting for you: approve or answer it in your terminal"
+        return copy.title(tool, where), waiting_line(row.get("pendingApproval"))
     reply = copy.line(row.get("lastAssistantMessage"))
     return copy.title(tool, where), copy.line(f"Finished: {reply}") if reply else "Finished its turn"
+
+
+def waiting_line(prompt: dict | None) -> str:
+    """What the session waits on, named: the question, or the call it wants to make. Only an
+    answerable prompt reaches the row, so one that is not says where to answer it."""
+    from core.services.notification_copy import line
+
+    if not prompt:
+        return "Waiting for you: approve or answer it in your terminal"
+    tool, summary = prompt.get("tool") or "A tool", line(prompt.get("summary"), 60)
+    if tool == "AskUserQuestion":
+        return line(f"Has a question: {summary}") if summary else "Has a question for you"
+    ask = f'{tool} wants to run "{summary}"' if summary else f"{tool} wants your OK"
+    return ask if prompt.get("exact") or prompt.get("full") else f"{ask}: answer it in your terminal"
 
 
 async def notify_attention(row: dict, state: str, subagent: Event | None = None) -> None:

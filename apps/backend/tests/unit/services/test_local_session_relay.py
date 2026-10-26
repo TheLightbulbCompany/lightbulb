@@ -2594,3 +2594,29 @@ async def test_an_open_session_browser_shows_until_its_lease_and_survives_reregi
     row = await repo.get_session(OWNER, sid)
     assert row["browserOpen"]["where"] == "mac" and row["browserPlace"] == "cloud"
     assert service.browser_open(row, now=int(time.time()) + 61) is None
+
+
+def test_waiting_copy_names_the_prompt_and_never_an_id():
+    from core.services.local_session_relay import attention_copy
+
+    row = {"provider": "claude", "sessionId": "0123456789abcdef", "title": "Fix login", "displayTitle": "Login bug"}
+    permission = {"tool": "Bash", "summary": "npm test", "exact": True}
+    assert attention_copy({**row, "pendingApproval": permission}, "waiting") == (
+        "Claude · Login bug",
+        'Bash wants to run "npm test"',
+    )
+    # Not answerable from Lightbulb (cut or redacted): say where it is answered.
+    assert attention_copy({**row, "pendingApproval": {**permission, "exact": False}}, "waiting")[1] == (
+        'Bash wants to run "npm test": answer it in your terminal'
+    )
+    question = {"tool": "AskUserQuestion", "summary": "Tea or coffee? (Tea / Coffee)", "exact": True}
+    assert attention_copy({**row, "pendingApproval": question}, "waiting")[1] == (
+        "Has a question: Tea or coffee? (Tea / Coffee)"
+    )
+    # No title: the folder, then "New chat" -- never the id.
+    untitled = {"provider": "codex", "sessionId": "0123456789abcdef"}
+    assert attention_copy({**untitled, "cwdName": "lightbulb"}, "waiting")[0] == "Codex · lightbulb"
+    assert attention_copy(untitled, "waiting") == (
+        "Codex · New chat",
+        "Waiting for you: approve or answer it in your terminal",
+    )

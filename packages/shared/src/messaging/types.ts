@@ -416,6 +416,12 @@ export interface LocalSession {
   endedOnPurpose?: boolean;
   /** The session this one continues: a Claude session moved to the background (←) forks a new one. */
   forkedFrom?: string;
+  /** Live only, from a Mac that reports them: a background job whose turn is over (it may sit at its shell). */
+  done?: boolean;
+  /** Live only: why a prompt is open in its terminal ("permission prompt", "input needed"). */
+  waitingFor?: string;
+  /** Live only: a Claude job's hand-off note for its person ("run lightbulb login, then press Resume"). A message, never a prompt. */
+  note?: string;
   /** Harness-derived: Claude ai-title or listing name, Codex first prompt. */
   title?: string | null;
   /** Owner-chosen name shared by Lightbulb surfaces. Null uses the harness title. */

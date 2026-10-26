@@ -264,6 +264,7 @@ fn from_writer(
         // The header says who wrote it: the app's own conversations, never a TUI (the app's
         // bundled CLI run in a terminal writes `cli`).
         app: source == "vscode" && app_originator(&row["payload"]),
+        attention: Default::default(),
     })
 }
 

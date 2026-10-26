@@ -300,6 +300,12 @@ class LocalSession(ContractModel):
     ended_on_purpose: bool | None = None
     # The session this one continues: a Claude session moved to the background (<-) is a fork.
     forked_from: OpaqueId | None = None
+    # A live session only, from a Mac that reports them (`sessionAttention`): a background job whose
+    # turn is over, why a prompt is open in its terminal, and a job's hand-off note (a message for
+    # its person, never a prompt). Absent otherwise.
+    done: bool | None = None
+    waiting_for: Annotated[str, Field(max_length=120)] | None = None
+    note: Annotated[str, Field(max_length=300)] | None = None
     # False while the owner has paused sharing this one session: only they can see it.
     shared: bool = True
     # Where this running session's browser connection is open now: the Browser
@@ -377,6 +383,9 @@ class LocalSession(ContractModel):
                 "was_held",
                 "ended_on_purpose",
                 "forked_from",
+                "done",
+                "waiting_for",
+                "note",
                 "model",
                 "display_title",
                 "permission_mode",
@@ -812,6 +821,9 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     # A session inside an app never had a terminal: ended or offline, its panel is still its conversation.
     live = public["status"] not in ("ended", "offline")
     public["browser"] = browser_open(row) if live else None
+    if not live:
+        for key in ("done", "waitingFor", "note"):
+            public.pop(key, None)
     if public["terminal"] is None and reason and (live or reason not in ("plain", "no-daemon")):
         public["terminalReason"] = reason
     if not row["capabilitiesVerified"]:

@@ -1319,6 +1319,10 @@ struct NativeSession {
     /// terminal to show, so a shared one is shared as its conversation.
     #[serde(default)]
     app: bool,
+    /// What Claude says beyond `status`: a finished job, why a prompt is open, a job's hand-off
+    /// note (`claude::attention`). Default for every other provider.
+    #[serde(default)]
+    attention: claude::Attention,
 }
 
 impl NativeSession {
@@ -2364,6 +2368,7 @@ mod tests {
             forked_by_person: None,
             aliases: vec![],
             app: true,
+            attention: Default::default(),
         }
     }
 
@@ -2555,6 +2560,7 @@ mod tests {
             forked_by_person: None,
             aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         let mut workspace = workspace::State::default();
         workspace.observe(Ok((dir.path().into(), "before".into())), false);
@@ -2623,6 +2629,7 @@ mod tests {
             forked_by_person: None,
             aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         journal.anchor(&cmd, &native, "unique".into(), None).unwrap();
         let ingress = journal.reconcile("s1", "r1", "g1").unwrap().ingress.unwrap();
@@ -3018,6 +3025,7 @@ mod tests {
             forked_by_person: None,
             aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         let mut sessions = vec![];
         reconcile_sessions(&mut sessions, vec![native.clone(), native.clone()]);
@@ -3124,6 +3132,7 @@ mod tests {
                 forked_by_person: None,
                 aliases: vec![],
                 app: true,
+                attention: Default::default(),
             },
             generation: "g".into(),
             previous_generation: None,
@@ -3215,6 +3224,7 @@ mod tests {
                 forked_by_person: None,
                 aliases: vec![],
                 app: true,
+                attention: Default::default(),
             },
             generation: "g".into(),
             previous_generation: None,
@@ -3305,6 +3315,7 @@ mod tests {
                 forked_by_person: None,
                 aliases: vec![],
                 app: true,
+                attention: Default::default(),
             },
             generation: "g".into(),
             previous_generation: None,
@@ -3410,6 +3421,7 @@ mod tests {
                 forked_by_person: None,
                 aliases: vec![],
                 app: true,
+                attention: Default::default(),
             },
             generation: "g".into(),
             previous_generation: None,
@@ -3480,6 +3492,7 @@ mod tests {
                 forked_by_person: None,
                 aliases: vec![],
                 app: true,
+                attention: Default::default(),
             },
             generation: "g".into(),
             previous_generation: None,

@@ -1551,6 +1551,33 @@ async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_
 
 
 @pytest.mark.asyncio
+async def test_attention_registers_updates_on_heartbeat_clears_when_absent_and_hides_when_not_live(transport):
+    assert "sessionAttention" in importlib.import_module("core.services.local_session_relay").FEATURES
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport)
+    # An older desktop sends none of them: nothing is stored, nothing is listed.
+    sid = (await relay(transport).handle_message("conn-1", registration()))["sessionId"]
+    stored = await repo.get_session(OWNER, sid)
+    assert not {"done", "waitingFor", "note"} & stored.keys()
+    await relay(transport).handle_message("conn-1", registration(note="run lightbulb login, then press Resume"))
+    listed = (await service.list_resources(BOB, ROOM)).sessions[0]
+    assert (listed.note, listed.waiting_for, listed.done) == ("run lightbulb login, then press Resume", None, None)
+    assert "waitingFor" not in listed.model_dump(by_alias=True), "absent, never a null"
+    transport[4].clear()
+    await relay(transport).handle_message(
+        "conn-1", heartbeat(sid, status="waiting-approval", waitingFor="permission prompt")
+    )
+    stored = await repo.get_session(OWNER, sid)
+    assert stored["waitingFor"] == "permission prompt" and "note" not in stored, "each frame says all of it"
+    assert any(hint["channel"].endswith("/sessions") for hint in transport[4])
+    await relay(transport).handle_message("conn-1", heartbeat(sid, done=True))
+    stored = await repo.get_session(OWNER, sid)
+    assert stored["done"] is True and "waitingFor" not in stored
+    stored["onlineUntil"] = 0
+    assert service._session_public(stored).done is None, "an offline session is waiting on nothing"
+
+
+@pytest.mark.asyncio
 async def test_every_session_registers_and_a_holder_only_labels_it(transport):
     await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
     connect(transport)

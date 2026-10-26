@@ -29,6 +29,8 @@ static READS_IDLE_STOPPED: AtomicBool = AtomicBool::new(false);
 /// The relay lists `remoteResize`: it reads `remoteResize` on a heartbeat and may send a
 /// `local.session.input` with the app panel's `size` (owner ruling 2026-10-14).
 static READS_REMOTE_RESIZE: AtomicBool = AtomicBool::new(false);
+/// The relay lists `sessionAttention`: it reads `done`, `waitingFor` and `note`.
+static READS_ATTENTION: AtomicBool = AtomicBool::new(false);
 /// `DeviceHeartbeat.screens`' cap on the relay.
 const SCREENS_MAX: usize = 24;
 /// How often holders no mirror names are looked for.
@@ -124,6 +126,29 @@ pub(super) fn read_features(listed: &Value) {
     READS_ON_PURPOSE.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "endedOnPurpose")), SeqCst);
     READS_IDLE_STOPPED.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "endedIdleStopped")), SeqCst);
     READS_REMOTE_RESIZE.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "remoteResize")), SeqCst);
+    READS_ATTENTION.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "sessionAttention")), SeqCst);
+}
+
+/// What Claude says beyond `status` (`claude::Attention`), on a register or heartbeat entry, for a
+/// relay that reads it. Absent is "none": each frame says all of it.
+pub(super) fn add_attention(entry: &mut Value, native: &NativeSession) {
+    add_attention_if(READS_ATTENTION.load(SeqCst), entry, native);
+}
+
+fn add_attention_if(reads: bool, entry: &mut Value, native: &NativeSession) {
+    let a = &native.attention;
+    if !reads {
+        return;
+    }
+    if a.done {
+        entry["done"] = json!(true);
+    }
+    if let Some(reason) = &a.waiting_for {
+        entry["waitingFor"] = json!(reason);
+    }
+    if let Some(note) = &a.note {
+        entry["note"] = json!(note);
+    }
 }
 
 /// The relay this Mac talks to now reads `remoteResize`.
@@ -458,6 +483,19 @@ fn orphans(holders: &[HolderInfo], named: &BTreeSet<String>, unknown: &BTreeSet<
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn session_states_attention_travels_only_to_a_relay_that_reads_it() {
+        let mut native: NativeSession = serde_json::from_value(json!({"provider":"claude","conversation":"c","profile":"p",
+            "process":{"pid":1,"birth_micros":1,"executable":"/x"},"transcript":null,"socket":null,"socket_inode":null,"version":"2.1.310",
+            "restriction":null,"status":"idle"})).unwrap();
+        native.attention = super::super::claude::Attention { done: true, waiting_for: None, note: Some("press Resume".into()) };
+        let mut entry = json!({});
+        add_attention_if(false, &mut entry, &native);
+        assert_eq!(entry, json!({}));
+        add_attention_if(true, &mut entry, &native);
+        assert_eq!(entry, json!({"done": true, "note": "press Resume"}));
+    }
     use super::super::transport::tests::test_mirror;
     use super::*;
 

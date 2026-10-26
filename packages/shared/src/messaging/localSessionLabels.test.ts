@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSendToSession, endedWhy, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionAgentName, SESSION_AGENTS, sessionUnread, workspaceSections } from "./localSessionLabels";
+import { canSendToSession, endedWhy, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionState, sessionStateAction, sessionStateLabel, sessionStatus, sessionTitle, sessionWaitingLine, sessionToolName, sessionAgentName, SESSION_AGENTS, sessionUnread, workspaceSections } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
 const base = { capabilities: { sendMode: "queue" }, controlUnavailableReason: null, capabilitiesVerified: true } as unknown as LocalSession;
@@ -175,5 +175,33 @@ describe("sendBlockedReason wording", () => {
   it("never tells a person their own session is not verified (owner ruling 2026-10-04)", () => {
     const blocked = { ...base, controlUnavailableReason: "runtime-unverified" } as LocalSession;
     expect(sendBlockedReason(blocked)).toBe("Lightbulb can't send to this session. Use its terminal on the Mac; starting the session again there turns sending back on.");
+  });
+});
+
+describe("the sidebar state table (spec 2026-10-26 (e))", () => {
+  const live = (o: Partial<LocalSession>) => ({ ...base, provider: "claude", sessionId: "s", status: "idle", ...o } as LocalSession);
+  it.each([
+    [{ status: "busy" }, "here", "Working", "Open"],
+    [{ status: "idle", terminal: "held" }, "here", "Idle", "Open"],
+    [{ status: "busy", terminal: "attach" }, "background", "Running in background", "Attach"],
+    [{ status: "waiting-approval", terminal: "attach", waitingFor: "permission prompt" }, "waiting", "Waiting on you", "Attach"],
+    [{ status: "idle", terminal: "attach", note: "run lightbulb login, then press Resume" }, "waiting", "Waiting on you", "Attach"],
+    [{ status: "idle", terminal: "attach", done: true }, "done", "Done", "Attach"],
+    [{ status: "offline" }, "offline", "Offline", null],
+    [{ status: "ended", endedReason: "exited" }, "stopped", "Stopped", "Resume"],
+    [{ status: "ended", endedOnPurpose: true }, "hidden", "Ended", null],
+  ] as const)("%o is %s: %s, %s", (fields, state, label, action) => {
+    const s = live(fields as Partial<LocalSession>);
+    expect(sessionState(s)).toBe(state);
+    expect(sessionStateLabel(s)).toBe(label);
+    expect(sessionStateAction(s)).toBe(action);
+  });
+
+  it("previews an open prompt's reason, and a hand-off note as text, never as a prompt", () => {
+    expect(sessionWaitingLine({ status: "waiting-approval", waitingFor: "permission prompt" })).toBe("Waiting for input: permission prompt");
+    expect(sessionWaitingLine({ status: "waiting-approval" })).toBe("Waiting for input");
+    expect(sessionWaitingLine({ status: "idle", note: "run lightbulb login" })).toBe("run lightbulb login");
+    expect(sessionWaitingLine({ status: "idle" })).toBeNull();
+    expect(sessionWaitingLine({ status: "ended", note: "stale" })).toBeNull();
   });
 });

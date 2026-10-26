@@ -7,7 +7,7 @@ import { isDesktopApp } from "@/lib/desktopNotify";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
+  audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionLive, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
   CLI_ONLY, conversationOnly, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox, watchOnlyLine,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
@@ -201,7 +201,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const queuedOutbox = savedOutbox.filter(receipt => receipt.state !== "applied");
   const pendingText = usePendingPrompt(command.attempt, main);
   const blocked = sendBlockedReason(session);
-  const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? "" : null;
+  const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? session.waitingFor ?? "" : null;
   const target = sessionLabel(session);
   const { userId, orgId } = useAuth();
   // One row per session a person opens: whether anyone looks at a teammate's session is the
@@ -315,6 +315,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {own && !!session.pendingPickups?.length && <JoinRequests waiting={session.pendingPickups} ids={session.pendingPickupIds}
       line={pickupRequestLine} decide={(who, d, id) => client.decideLocalSessionPickup!(session.sessionId, who, d, id)}
       enabled={!!client.decideLocalSessionPickup} personName={personName} />}
+    {/* A Claude job's hand-off note: what it left its person, shown as text, never as a prompt. */}
+    {waitingOn === null && session.note && sessionLive(session) && <p role="status" className="session-ended-line">{session.note}</p>}
     {(session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
       {session.shared === false && <p role="status">Only you see this session. Sharing again shares the whole session.</p>}
       {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}

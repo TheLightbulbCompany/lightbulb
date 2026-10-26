@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Check, Radio, Terminal, type LucideIcon } from "lucide-react";
+import { Check, Radio, type LucideIcon } from "lucide-react";
 
 import { capture } from "@/lib/analytics";
 import {
@@ -9,6 +9,7 @@ import {
   DEFAULT_DESKTOP_PERMISSIONS,
   DesktopPermissionSet,
   readDesktopPermissionGrant,
+  restoreDesktopPermissionGrant,
   writeDesktopPermissionGrant,
   desktopErrorMessage,
 } from "@/lib/desktopPermissions";
@@ -57,6 +58,9 @@ export function DesktopPermissionsGate() {
   // stays disabled and nothing is written.
   const [stored, setStored] = useState<boolean | null>(null);
   const [storedFailed, setStoredFailed] = useState(false);
+  // A relaunch whose webview storage lost the grant: the Mac still holds the consent, so this
+  // dialog closes itself instead of asking again (2026-10-26, after a full disk).
+  useEffect(() => { if (shouldShowGate) void restoreDesktopPermissionGrant(); }, [shouldShowGate]);
   const [liveChoice, setLive] = useState<boolean | null>(null);
   const liveKnown = stored !== null;
   const live = liveChoice ?? stored ?? false;
@@ -77,7 +81,9 @@ export function DesktopPermissionsGate() {
     setDismissed(false); setChoice(null); setSaving(false); setSaveError(null);
     return () => { operation.current += 1; };
   }, [sharing.userId, sharing.orgId]);
-  const sessionChoice = choice ?? sharing.state?.enrollment?.enabled ?? true;
+  // One sharing choice here, "Share every new session". Allowing sharing at all shares nothing by
+  // itself, so Continue allows it and Basic only does not (it was a second switch, 2026-10-26).
+  const sessionChoice = choice ?? true;
   const checking = !sharing.state && !sharing.error;
 
   if ((!shouldShowGate && !saving && !saveError) || dismissed) return null;
@@ -150,10 +156,9 @@ export function DesktopPermissionsGate() {
       if (operation.current === current) setSaveError(desktopErrorMessage(error));
     } finally { if (operation.current === current) setSaving(false); }
   };
-  const items: Array<{key:keyof DesktopPermissionSet | "sessions" | "live";label:string;description:string;Icon:LucideIcon}> = [
+  const items: Array<{key:keyof DesktopPermissionSet | "live";label:string;description:string;Icon:LucideIcon}> = [
     ...DESKTOP_PERMISSION_ITEMS,
-    {key:"sessions",label:"Share coding sessions",description:"Lets you share Claude Code, Codex, Cursor and Grok CLI sessions from this Mac with your workspace. On its own this shares nothing.",Icon:Terminal},
-    ...(sessionChoice ? [{key:"live" as const,label:SHARE_LIVE_LABEL,description:SHARE_LIVE_DESCRIPTION,Icon:Radio}] : []),
+    {key:"live",label:SHARE_LIVE_LABEL,description:SHARE_LIVE_DESCRIPTION,Icon:Radio},
   ];
 
   return (
@@ -177,13 +182,13 @@ export function DesktopPermissionsGate() {
 
         <div className="grid gap-2">
           {items.map(({ key, label, description, Icon }) => {
-            const enabled = key === "sessions" ? sessionChoice : key === "live" ? live : permissions[key];
+            const enabled = key === "live" ? live : permissions[key];
             return (
               <button
                 key={key}
                 type="button"
-                disabled={saving || (key === "live" ? !liveKnown : key !== "sessions" && !shouldShowGate)}
-                onClick={() => key === "sessions" ? setChoice(!sessionChoice) : key === "live" ? setLive(!live) : toggle(key)}
+                disabled={saving || (key === "live" ? !liveKnown : !shouldShowGate)}
+                onClick={() => key === "live" ? setLive(!live) : toggle(key)}
                 className={[
                   "flex w-full items-center gap-3 rounded-md border p-3 text-left transition",
                   enabled

@@ -128,3 +128,24 @@ export async function readDesktopPermissionsFromDesktop(): Promise<DesktopPermis
     return null;
   }
 }
+
+/** The Mac keeps the consent given at pairing (`desktop_permissions.json`); this webview's
+ *  storage can lose its copy (a full disk, cleared site data). Copies the Mac's answer back so
+ *  a relaunch never asks again. True when the Mac had consented. */
+export async function restoreDesktopPermissionGrant(): Promise<boolean> {
+  const invoke = desktopInvoke();
+  if (!invoke) return false;
+  try {
+    const s = await invoke<DesktopPermissionSet & { consented?: boolean }>("desktop_permissions_get");
+    if (s?.consented !== true || readDesktopPermissionGrant() !== null) return false;
+    const permissions = { screen: s.screen, shell: s.shell, browser: s.browser, files: s.files, paperclip: s.paperclip };
+    window.localStorage.setItem(
+      DESKTOP_PERMISSIONS_STORAGE_KEY,
+      JSON.stringify({ version: 1, acceptedAt: new Date().toISOString(), permissions }),
+    );
+    window.dispatchEvent(new CustomEvent(DESKTOP_PERMISSIONS_CHANGED_EVENT));
+    return true;
+  } catch {
+    return false;
+  }
+}

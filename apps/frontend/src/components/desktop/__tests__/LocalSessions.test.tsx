@@ -26,7 +26,8 @@ it("offers sharing with the other permissions once and sends nothing until Conti
     return { enrollment:null, pairedWorkspaceId:"org", status:"paused" };
   });
   render(<DesktopPermissionsGate />);
-  expect(await screen.findByRole("button", {name:/Share coding sessions/})).toHaveAttribute("aria-pressed", "true");
+  expect(await screen.findByRole("button", {name:/Share every new session/})).toBeInTheDocument();
+  expect(screen.queryByRole("button", {name:/Share coding sessions/})).toBeNull();
   expect(screen.getByRole("alertdialog", {name:"Connect this Mac"})).toBeInTheDocument();
   expect(screen.getByRole("button", {name:/Browser/})).toBeInTheDocument();
   // Reads only: the two status commands change nothing.
@@ -38,8 +39,8 @@ it("offers sharing with the other permissions once and sends nothing until Conti
 it("keeps an initial off choice off after reopening without requesting a token", async () => {
   invoke.mockResolvedValue({ enrollment:null, pairedWorkspaceId:"org", status:"paused" });
   const view = render(<DesktopPermissionsGate />);
-  await userEvent.click(await screen.findByRole("button", {name:/Share coding sessions/}));
-  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
+  await waitFor(() => expect(screen.getByRole("button", {name:"Continue"})).toBeEnabled());
+  await userEvent.click(screen.getByRole("button", {name:"Basic only"}));
   await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"});
   expect(auth.getToken).not.toHaveBeenCalled();
@@ -96,6 +97,14 @@ it.each([true, false])("does not re-prompt or change saved enrollment on relaunc
   expect(screen.queryByRole("alertdialog")).toBeNull();
   expect(screen.queryByRole("button", {name:"Continue"})).toBeNull();
   expect(invoke.mock.calls.some(([command]) => String(command).startsWith("local_sessions_") && command !== "local_sessions_status")).toBe(false);
+});
+it("a relaunch whose storage lost the grant takes the Mac's consent and does not ask again", async () => {
+  invoke.mockImplementation(async (command) => command === "desktop_permissions_get"
+    ? {...DEFAULT_DESKTOP_PERMISSIONS, consented:true}
+    : {enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false}, pairedWorkspaceId:"org", status:"connected"});
+  render(<DesktopPermissionsGate />);
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(invoke.mock.calls.some(([command]) => command === "desktop_permissions_set" || command === "local_sessions_set")).toBe(false);
 });
 beforeEach(() => { invoke.mockReset();auth.getToken.mockReset().mockResolvedValue("jwt"); auth.userId="alice";auth.orgId="org";org.organization={id:"org",name:"Acme"};Object.assign(window,{__TAURI__:{core:{invoke}}}); });
 it("explains the full audience and requires an already connected Mac", async () => {

@@ -238,15 +238,12 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/frontend/src/components/desktop/DesktopPermissionsGate.tsx (live default).
   - Session status/title/id .. references/surfaces.md (sessions list: waiting-approval = waits for its person; title = person's name else conversation title; one conversation = one sessionId)
                               <- apps/frontend/src/components/messaging/{LocalSessionPanel,RoomDirectory,SessionTerminalView}.tsx.
-  - Session ask to join ..... references/surfaces.md ("Ask to join" paragraph)
-                              <- apps/backend/core/services/local_sessions.py (request_join / decide_join / remove_sender,
-                                 allowedSenders + joinRequests, may_control; ASK_AGAIN_AFTER_S = the ten-minute Ask again
-                                 window, mirrored by ASK_AGAIN_AFTER_MS + joinRequestView in
-                                 packages/shared/src/messaging/sessionControls.ts: no time-out, reminder, "closed before" from
-                                 closed_joins / joinClosed -> joinRequestClosed, said for JOIN_CLOSED_TTL_S); core/services/activity.py (join_request item,
-                                 Allow / Decline); core/services/local_session_relay.py (cleared on Ended and on a new
-                                 generation); apps/frontend/src/components/messaging/LocalSessionPanel.tsx (Ask to join /
-                                 Requested / declined line); SessionDetails.tsx (People you let in, Remove).
+  - Session teammates/control references/surfaces.md ("Teammates and control" + "Ask to join from the public page")
+                              <- apps/backend/core/services/local_sessions.py (may_control = owner, teamControl, allowedSenders;
+                                 request_join refuses members; decide_join / remove_sender); core/services/session_links.py
+                                 (ask_to_join, link viewers only, always on); core/services/native_session_tools.py (sendable);
+                                 apps/frontend/src/components/messaging/LocalSessionPanel.tsx ("Only <owner> can type" line);
+                                 SessionDetails.tsx (People you let in, Remove).
   - Session live terminal ... references/surfaces.md ("Live terminal" paragraph)
                               <- apps/frontend/src/components/messaging/{LocalSessionPanel,SessionTerminalView}.tsx
                                  (terminal in the panel, ended/offline/notice panels, no transcript, "<name> typing" + typist cursor, read-only for

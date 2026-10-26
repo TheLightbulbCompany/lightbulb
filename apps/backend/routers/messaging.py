@@ -418,7 +418,7 @@ async def set_local_session_team_control(
 
 @router.post("/messaging/sessions/{session_id}/join-requests", response_model=local_sessions.LocalSession)
 async def request_local_session_join(session_id: str, auth: AuthContext = Depends(get_current_user)):
-    """A teammate asks the owner to let them send; asking again while pending changes nothing."""
+    """Refused (owner ruling 2026-10-26): teammates type only while teammates control is on."""
     return await local_sessions.request_join(auth, session_id)
 
 
@@ -539,14 +539,6 @@ async def ask_to_join_session_link(
     """A signed-in viewer of an "Anyone" page asks the session's owner to let them in (D1). No
     workspace needed. Under /public/ for its throttle bucket; the Clerk session is still required."""
     return await session_links.ask_to_join(auth, body.token)
-
-
-@router.put("/messaging/sessions/{session_id}/ask-to-join", response_model=local_sessions.LocalSession)
-async def set_local_session_ask_to_join(
-    session_id: str, body: local_sessions.AskToJoinSwitch, auth: AuthContext = Depends(get_current_user)
-):
-    """Owner-only "Viewers can ask to join" for an "Anyone with the link" session (D2: on by default)."""
-    return await local_sessions.set_ask_to_join(auth, session_id, body.enabled)
 
 
 class SessionPickupSwitch(ContractModel):

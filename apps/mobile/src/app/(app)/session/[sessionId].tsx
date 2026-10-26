@@ -17,7 +17,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { ConversationHeader } from "../../../components/conversation/ConversationHeader";
 import { Avatar } from "../../../components/room/Avatar";
-import { AskToJoin, JoinRequests } from "../../../components/session/SessionJoin";
+import { JoinRequests, WatchOnly } from "../../../components/session/SessionJoin";
 import { SessionApprovalCard } from "../../../components/session/SessionApprovalCard";
 import { SessionOverview } from "../../../components/session/SessionOverview";
 import { ResumeDelivery, SessionResume } from "../../../components/session/SessionResume";
@@ -527,7 +527,7 @@ function SessionBody({
       {!ended && <ResumeDelivery flow={resume} />}
       {ended ? <SessionResume flow={resume} own={own} ownerName={ownerName} />
         : control ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
-        : <AskToJoin session={session} client={client} ownerName={ownerName} />}
+        : <WatchOnly ownerName={ownerName} />}
       <BottomSheet visible={detailsOpen} onClose={onCloseDetails} large>
         <View style={styles.sheetContent}>
           <View style={styles.sheetTextGroup}>

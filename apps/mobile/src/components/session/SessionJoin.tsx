@@ -1,4 +1,4 @@
-import { joinRequestView, pickupRequestLine, useSessionJoinRequest, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
+import { pickupRequestLine, watchOnlyLine, type LocalSession } from "@lightbulb/shared";
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -9,39 +9,16 @@ type Decide = (sessionId: string, userId: string, decision: "allow" | "decline",
 type JoinDecider = { decideLocalSessionJoin?: Decide; decideLocalSessionPickup?: Decide };
 
 /**
- * What a teammate sees under a session they cannot send to: who can, and a way
- * to ask. The ask reads "Requested" until the owner answers; after ten minutes it offers "Ask again".
+ * What a teammate sees under a session they cannot type into: who can. There is
+ * nothing to ask (owner ruling 2026-10-26): they type while the owner lets
+ * teammates control the session.
  */
-export function AskToJoin({ session, client, ownerName }: {
-  session: LocalSession;
-  client: SessionControlClient;
-  ownerName: string;
-}) {
+export function WatchOnly({ ownerName }: { ownerName: string }) {
   const palette = useChatPalette();
   const insets = useSafeAreaInsets();
-  const join = useSessionJoinRequest(client, session);
-  // The phone updates on merge and the backend on promotion, so this can run
-  // against a backend with no join routes yet. One that has them always
-  // sends `allowedSenders`; without it the button would only ever fail.
-  const canAsk = join.supported && session.allowedSenders !== undefined;
-  const { line, button, disabled } = joinRequestView(join, ownerName);
   return (
     <View style={[styles.ask, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
-      <Text style={[styles.line, { color: palette.fgMute }]}>
-        {line}
-      </Text>
-      {canAsk && (
-        <Pressable
-          onPress={() => void join.ask()}
-          disabled={disabled}
-          accessibilityRole="button"
-          accessibilityState={{ disabled }}
-          style={[styles.button, { borderColor: palette.edge, backgroundColor: palette.surface }, disabled && styles.dimmed]}
-        >
-          <Text style={[styles.buttonText, { color: palette.fg }]}>{button}</Text>
-        </Pressable>
-      )}
-      {join.error && <Text accessibilityRole="alert" style={[styles.line, { color: palette.alert }]}>{join.error}</Text>}
+      <Text style={[styles.line, { color: palette.fgMute }]}>{watchOnlyLine(ownerName)}</Text>
     </View>
   );
 }

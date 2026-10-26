@@ -299,8 +299,12 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
     // Never `--resume` a continued origin (a second live branch of it). Its continuation is its own
     // session: shown again when it runs here, and this request is refused so it settles.
     if w.continued {
+        // Settled only once the continuation is shown: a failed reattach is the refusal, and one
+        // that waits (not bound yet) is asked again.
         if let Some(hosted) = &w.hosted {
-            let _ = reattach(me, hosted, own).await;
+            if reattach(me, hosted, own).await?.is_none() && !hosted.shared {
+                return Ok(None);
+            }
         }
         return Err("CONTINUED");
     }

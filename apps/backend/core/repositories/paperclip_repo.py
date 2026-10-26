@@ -1037,11 +1037,17 @@ class PaperclipRepo:
             return
 
     async def add_agent_cost_remainder(self, org_id: str, key: str, delta: int, *, need: int = 0) -> dict | None:
-        """Atomically ADD ``delta`` microcents to ``agent_cost_remainder[key]``; return the whole map.
+        """Atomically add ``delta`` microcents to ``agent_cost_remainder[key]``; return the whole map.
 
         Internal sub-cent carry for Paperclip cost events (Paperclip owns the budget and stores
         integer cents). ``need`` > 0 makes the write conditional on the bucket holding at least
-        that much (the claim before a post). None when the row is missing or the condition fails.
+        that much (the claim before a post, with a negative ``delta``). None when the row is missing
+        or the condition fails.
+
+        Uses ``SET #k = if_not_exists(#k, :zero) + :d``, NOT ``ADD``: DynamoDB's ``ADD`` action does
+        not operate on a nested document path, so ``ADD agent_cost_remainder.#k`` throws a
+        ValidationException on real DynamoDB (moto does not enforce this). The SET form is the
+        supported atomic nested increment.
         """
         table = self._table()
         exc = table.meta.client.exceptions.ConditionalCheckFailedException
@@ -1056,7 +1062,7 @@ class PaperclipRepo:
         except exc:
             pass
         cond = "attribute_exists(user_id)"
-        values: dict = {":d": delta}
+        values: dict = {":d": delta, ":zero": 0}
         if need:
             cond += " AND agent_cost_remainder.#k >= :need"
             values[":need"] = need
@@ -1064,7 +1070,7 @@ class PaperclipRepo:
             resp = await run_in_thread(
                 table.update_item,
                 Key={"user_id": org_id},
-                UpdateExpression="ADD agent_cost_remainder.#k :d",
+                UpdateExpression="SET agent_cost_remainder.#k = if_not_exists(agent_cost_remainder.#k, :zero) + :d",
                 ConditionExpression=cond,
                 ExpressionAttributeNames={"#k": key},
                 ExpressionAttributeValues=values,

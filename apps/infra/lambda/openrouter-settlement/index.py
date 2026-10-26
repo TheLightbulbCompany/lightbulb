@@ -104,10 +104,13 @@ def settle_one(row, *, get_generation, ingest, commit, now, commit_free, release
         outcome = commit(row, event, amount, now)
     # Best effort, strictly AFTER the money truth is committed: a failure here never fails the
     # settle, and a retry sees a non-pending row, so a cost is reported at most once.
-    if (outcome == "settled" and report_cost and mode in ("paid", "capped")
-            and row.get("agent_id") and int(row.get("cost_microcents") or 0) > 0):
+    if outcome == "settled" and report_cost and mode in ("paid", "capped") and row.get("agent_id"):
         try:
-            report_cost(row, event["properties"]["model"], event["timestamp"])
+            # Prefer the gate's stamp; fall back to the settled /generation cost x markup when a cut
+            # stream left no stamp, so interrupted calls still reach Paperclip budgets (never a silent 0).
+            cost_micro = int(row.get("cost_microcents") or 0) or debit_microcents(amount)
+            if cost_micro > 0:
+                report_cost(row, event["properties"]["model"], event["timestamp"], cost_micro)
         except Exception as exc:
             print(json.dumps({"_aws": {"Timestamp": now * 1000, "CloudWatchMetrics": [{
                 "Namespace": "LightbulbAI", "Dimensions": [["env", "service"]],
@@ -370,7 +373,10 @@ class Store:
                 raise
             current = self.ddb.get_item(TableName=self.requests_table, Key={"request_id": {"S": request_id}}).get("Item", {})
             if current.get("state", {}).get("S") == "settled":
-                return "settled"
+                # Loser of a concurrent settle: the winning run (try path above) already committed
+                # and reports the cost. A distinct outcome keeps this run from re-reporting the same
+                # generation (double-count) while still counting as resolved.
+                return "settled_elsewhere"
             claim = self.ddb.get_item(TableName=self.requests_table, Key={"request_id": {"S": claim_key}}).get("Item", {})
             if not claim:
                 raise
@@ -421,7 +427,10 @@ class Store:
                 raise
             current = self.ddb.get_item(TableName=self.requests_table, Key={"request_id": {"S": request_id}}).get("Item", {})
             if current.get("state", {}).get("S") == "settled":
-                return "settled"
+                # Loser of a concurrent settle: the winning run (try path above) already committed
+                # and reports the cost. A distinct outcome keeps this run from re-reporting the same
+                # generation (double-count) while still counting as resolved.
+                return "settled_elsewhere"
             raise
 
     def release_unknown(self, row, now):
@@ -568,13 +577,16 @@ def _ingest(event):
         pass
 
 
-def _report_paperclip_cost(row, model, occurred_at):
-    """Tell the backend one managed call's real cost; it carries sub-cent remainders into Paperclip."""
+def _report_paperclip_cost(row, model, occurred_at, cost_micro):
+    """Tell the backend one managed call's real cost; it carries sub-cent remainders into Paperclip.
+
+    ``cost_micro`` is resolved by the caller: the gate's stamp, or the settled /generation cost x
+    markup when a cut stream left no stamp."""
     request = urllib.request.Request(
         f"{os.environ['BACKEND_INTERNAL_URL']}/api/v1/internal/paperclip/cost/{urllib.parse.quote(row['owner_id'], safe='')}",
         method="POST",
         data=json.dumps({"agentId": row["agent_id"], "generationId": row["generation_id"],
-                         "costMicrocents": int(row["cost_microcents"]), "model": model,
+                         "costMicrocents": int(cost_micro), "model": model,
                          "occurredAt": occurred_at}).encode(),
         headers={"x-lightbulb-ws-internal": _secret(os.environ["WS_INTERNAL_SECRET_ID"]),
                  "Content-Type": "application/json"},
@@ -666,7 +678,7 @@ def _audit(store, day, today):
 
 
 # Anything else (unknown_generation, expired_gap, an exception name, a new outcome) fails the run.
-RESOLVED = {"settled", "metadata_pending", "already_processed", "duplicate_generation", "deferred", "released_no_generation"}
+RESOLVED = {"settled", "settled_elsewhere", "metadata_pending", "already_processed", "duplicate_generation", "deferred", "released_no_generation"}
 
 
 def handler(event, context):

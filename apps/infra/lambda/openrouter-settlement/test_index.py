@@ -338,7 +338,9 @@ class SettlementTests(unittest.TestCase):
             def get_item(self, **kwargs):
                 return {"Item": {"state": {"S": "settled"}}}
         store = worker.Store(Ddb(), requests_table="requests", fast_table="fast")
-        self.assertEqual(store.commit(self.row, worker.event_for(self.row, self.generation), 12345678, 1_700_000_001), "settled")
+        # The loser of a concurrent settle (row already settled) resolves as "settled_elsewhere",
+        # distinct from the winner's "settled", so it will not re-report the cost.
+        self.assertEqual(store.commit(self.row, worker.event_for(self.row, self.generation), 12345678, 1_700_000_001), "settled_elsewhere")
 
     def test_pending_pages_past_stuck_old_requests(self):
         class Ddb:
@@ -664,9 +666,10 @@ class PaperclipCostReportTests(unittest.TestCase):
         self.generation = {"id": "gen-1", "total_cost": Decimal("0.0005"),
                            "created_at": "2023-11-14T22:13:20Z", "model": "m", "provider_name": "p"}
 
-    def _settle(self, row, report, *, commit=lambda *_: "settled", ingest=lambda *_: None):
+    def _settle(self, row, report, *, commit=lambda *_: "settled", ingest=lambda *_: None, generation=None):
         fail = lambda *_: self.fail("unexpected callback")
-        return worker.settle_one(row, get_generation=lambda *_: self.generation, ingest=ingest, commit=commit,
+        gen = self.generation if generation is None else generation
+        return worker.settle_one(row, get_generation=lambda *_: gen, ingest=ingest, commit=commit,
                                  commit_free=lambda *_: "settled", release_unknown=fail,
                                  release_stale_metadata=fail, now=1_700_000_001, report_cost=report)
 
@@ -676,25 +679,55 @@ class PaperclipCostReportTests(unittest.TestCase):
         self._settle(self.row, lambda *a: reports.append(a), ingest=lambda *_: order.append("ingest"),
                      commit=lambda *_: order.append("commit") or "settled")
         self.assertEqual(order, ["ingest", "commit"])
-        self.assertEqual(reports, [(self.row, "m", "2023-11-14T22:13:20Z")])
+        # Reports the gate stamp (600), after ingest+commit, with the fourth cost arg.
+        self.assertEqual(reports, [(self.row, "m", "2023-11-14T22:13:20Z", 600)])
 
     def test_capped_managed_row_also_reports(self):
         reports = []
         self._settle({**self.row, "billing_mode": "capped"}, lambda *a: reports.append(a))
         self.assertEqual(len(reports), 1)
 
-    def test_rows_without_agent_cost_or_managed_mode_report_nothing(self):
+    def test_cut_stream_falls_back_to_the_generation_cost(self):
+        # No gate stamp (stream cut before the usage chunk), but /generation has the real cost:
+        # report the settled cost x markup (0.0005 x 1.2 x 1e6 = 600), never a silent 0.
+        no_stamp = {k: v for k, v in self.row.items() if k != "cost_microcents"}
+        reports = []
+        self._settle(no_stamp, lambda *a: reports.append(a))
+        self.assertEqual([r[3] for r in reports], [600])
+
+    def test_a_loser_of_a_concurrent_settle_does_not_re_report(self):
+        # commit returns "settled_elsewhere" for the run that lost the generation claim; it must not
+        # report the cost the winning run already reported (no double-count).
+        reports = []
+        self.assertEqual(self._settle(self.row, lambda *a: reports.append(a),
+                                      commit=lambda *_: "settled_elsewhere"), "settled_elsewhere")
+        self.assertEqual(reports, [])
+
+    def test_rows_without_agent_or_managed_mode_report_nothing(self):
         no_agent = {k: v for k, v in self.row.items() if k != "agent_id"}
-        no_cost = {k: v for k, v in self.row.items() if k != "cost_microcents"}
-        zero_cost = {**self.row, "cost_microcents": Decimal("0")}
         byo = {**self.row, "billing_mode": "byo"}
-        for row in (no_agent, no_cost, zero_cost, byo):
+        for row in (no_agent, byo):
             with self.subTest(row=sorted(row)):
-                self._settle(row, lambda *_: self.fail("reported"))
+                reports = []
+                self._settle(row, lambda *a: reports.append(a))
+                self.assertEqual(reports, [])
+
+    def test_a_genuinely_zero_cost_call_reports_nothing(self):
+        # No stamp AND /generation reports 0: the fallback is 0, so nothing is posted.
+        no_stamp = {k: v for k, v in self.row.items() if k != "cost_microcents"}
+        reports = []
+        self._settle(no_stamp, lambda *a: reports.append(a),
+                     generation={"id": "gen-1", "total_cost": Decimal("0"), "created_at": "2023-11-14T22:13:20Z", "model": "m", "provider_name": "p"})
+        self.assertEqual(reports, [])
 
     def test_duplicate_or_already_processed_rows_report_nothing(self):
-        self._settle(self.row, lambda *_: self.fail("reported"), commit=lambda *_: "duplicate_generation")
-        self._settle({**self.row, "state": "settled"}, lambda *_: self.fail("reported"))
+        for commit in (lambda *_: "duplicate_generation", lambda *_: "already_processed"):
+            reports = []
+            self._settle(self.row, lambda *a: reports.append(a), commit=commit)
+            self.assertEqual(reports, [])
+        reports = []
+        self._settle({**self.row, "state": "settled"}, lambda *a: reports.append(a))
+        self.assertEqual(reports, [])
 
     def test_report_failure_does_not_fail_the_settle(self):
         def boom(*_):
@@ -715,7 +748,7 @@ class PaperclipCostReportTests(unittest.TestCase):
         env = {"BACKEND_INTERNAL_URL": "https://api.example", "WS_INTERNAL_SECRET_ID": "sec"}
         with patch.dict(os.environ, env), patch.object(worker, "_secret", return_value="s3cret"), \
                 patch.object(worker.urllib.request, "urlopen", fake_urlopen):
-            worker._report_paperclip_cost(self.row, "m", "2023-11-14T22:13:20Z")
+            worker._report_paperclip_cost(self.row, "m", "2023-11-14T22:13:20Z", 600)
         self.assertEqual(seen["url"], "https://api.example/api/v1/internal/paperclip/cost/owner-1")
         self.assertEqual(seen["headers"]["X-lightbulb-ws-internal"], "s3cret")
         self.assertEqual(seen["body"], {"agentId": "agent-1", "generationId": "gen-1", "costMicrocents": 600,

@@ -460,7 +460,9 @@ const RESUME_FAST_MS = 30_000;
 const RESUME_SLOW_MS = 30_000;
 
 const RESUME_REFUSED: Record<string, (mac: string, folder: string) => string> = {
-  ALREADY_RUNNING: mac => `it is already running on ${mac}`,
+  // Only a terminal Lightbulb cannot show (a private `claude --resume`, `codex --no-daemon`):
+  // a conversation the provider's own daemon hosts is shown again instead (resume.rs `reattach`).
+  ALREADY_RUNNING: mac => `it is still open in a terminal on ${mac} that Lightbulb did not start. Close that terminal, then resume`,
   FOLDER_NOT_APPROVED: (mac, folder) => `${folder} is no longer an approved folder on ${mac}`,
   FOLDER_MISSING: mac => `its folder is no longer on ${mac}`,
   TOOL_UNAVAILABLE: mac => `its CLI is no longer installed on ${mac}`,

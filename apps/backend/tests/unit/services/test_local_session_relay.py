@@ -2594,3 +2594,113 @@ async def test_an_open_session_browser_shows_until_its_lease_and_survives_reregi
     row = await repo.get_session(OWNER, sid)
     assert row["browserOpen"]["where"] == "mac" and row["browserPlace"] == "cloud"
     assert service.browser_open(row, now=int(time.time()) + 61) is None
+
+
+def test_waiting_copy_names_the_prompt_and_never_an_id():
+    from core.services.local_session_relay import attention_copy
+
+    row = {"provider": "claude", "sessionId": "0123456789abcdef", "title": "Fix login", "displayTitle": "Login bug"}
+    permission = {"tool": "Bash", "summary": "npm test", "exact": True}
+    assert attention_copy({**row, "pendingApproval": permission}, "waiting") == (
+        "Claude · Login bug",
+        'Bash wants to run "npm test"',
+    )
+    # Not answerable from Lightbulb (cut or redacted): say where it is answered.
+    assert attention_copy({**row, "pendingApproval": {**permission, "exact": False}}, "waiting")[1] == (
+        'Bash wants to run "npm test": answer it in your terminal'
+    )
+    question = {"tool": "AskUserQuestion", "summary": "Tea or coffee? (Tea / Coffee)", "exact": True}
+    assert attention_copy({**row, "pendingApproval": question}, "waiting")[1] == (
+        "Has a question: Tea or coffee? (Tea / Coffee)"
+    )
+    # No title: the folder, then "New chat" -- never the id.
+    untitled = {"provider": "codex", "sessionId": "0123456789abcdef"}
+    assert attention_copy({**untitled, "cwdName": "lightbulb"}, "waiting")[0] == "Codex · lightbulb"
+    assert attention_copy(untitled, "waiting") == (
+        "Codex · New chat",
+        "Waiting for you: approve or answer it in your terminal",
+    )
+
+
+@pytest.mark.asyncio
+async def test_waiting_on_a_question_names_it_from_the_prompt_row(transport):
+    # A question is never held, so it has no pendingApproval: its transcript row names it.
+    from core.services import local_session_relay as module
+
+    pushes = []
+
+    async def push(user_id, title, body, data=None):
+        pushes.append(body)
+
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    question = {"kind": "lifecycle", "role": "system", "text": "Tea or coffee? (Tea / Coffee)"}
+    question["lifecycle"] = "approval_pending"
+    batch = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "q1",
+        "afterSeq": 0,
+        "events": [question],
+    }
+    with patch("core.services.push_service.send_push_to_user", push):
+        for stamp, message in ((10010, batch), (10011, heartbeat(sid, status="waiting-approval"))):
+            with patch("time.time", return_value=stamp):
+                await relay(transport).handle_message("conn-1", message)
+                await asyncio.gather(*module._tasks)
+    assert pushes == ["Has a question: Tea or coffee? (Tea / Coffee)"]
+    # An unheld permission prompt keeps the desktop's wording and says where to answer it.
+    assert module.waiting_line(None, "Wants to run Bash(git push)") == (
+        "Wants to run Bash(git push): answer it in your terminal"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_new_wait_never_names_the_previous_prompt(transport):
+    from core.services import local_session_relay as module
+
+    pushes = []
+
+    async def push(user_id, title, body, data=None):
+        pushes.append(body)
+
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+
+    def prompt(text):
+        return {"kind": "lifecycle", "role": "system", "text": text, "lifecycle": "approval_pending"}
+
+    def batch(batch_id, after, events):
+        return {
+            "type": "local.session.events",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "batchId": batch_id,
+            "afterSeq": after,
+            "events": events,
+        }
+
+    answered = {"kind": "text", "role": "assistant", "text": "Tea it is."}
+    frames = [
+        (10010, batch("a", 0, [prompt("A? (Yes / No)")])),
+        (10011, heartbeat(sid, status="waiting-approval")),
+        (10012, heartbeat(sid, status="busy")),
+        (10013, batch("a2", 1, [answered])),  # prompt A is answered
+        # A new wait 10 s later: the heartbeat lands before prompt B's batch.
+        (10020, heartbeat(sid, status="waiting-approval")),
+        (10021, batch("b", 2, [prompt("B? (Tea / Coffee)")])),
+    ]
+    with patch("core.services.push_service.send_push_to_user", push):
+        for stamp, message in frames:
+            with patch("time.time", return_value=stamp):
+                await relay(transport).handle_message("conn-1", message)
+                await asyncio.gather(*module._tasks)
+    # Never A for the second wait: the generic line, once (one wait is one notification).
+    assert pushes == [
+        "Has a question: A? (Yes / No)",
+        "Waiting for you: approve or answer it in your terminal",
+    ]
+    # Once B's row is stored, the same wait reads as B.
+    row = await module.repo.get_session(OWNER, sid)
+    assert module.waiting_line(None, await module._waiting_text(row)) == "Has a question: B? (Tea / Coffee)"

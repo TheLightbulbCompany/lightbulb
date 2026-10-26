@@ -388,7 +388,7 @@ def _spawn(coro) -> None:
     task.add_done_callback(_tasks.discard)
 
 
-def attention_copy(row: dict, state: str, subagent: str | None = None) -> tuple[str, str]:
+def attention_copy(row: dict, state: str, subagent: str | None = None, prompt_text: str = "") -> tuple[str, str]:
     """ "Claude · <session title>" over "Waiting for you: …" / "Finished: <reply's first line>".
     ``subagent`` is a finished background subagent's own line ('Agent "…" finished'), which is the body."""
     from core.services import notification_copy as copy
@@ -396,13 +396,53 @@ def attention_copy(row: dict, state: str, subagent: str | None = None) -> tuple[
     tool = {"claude": "Claude", "codex": "Codex", "cursor": "Cursor", "grok": "Grok"}.get(
         row.get("provider", ""), "Session"
     )
-    where = copy.line(row.get("title"), 40) or row["sessionId"][:8]
+    # The clients' rule (sessionTitle): never an id.
+    where = copy.line(row.get("displayTitle") or row.get("title") or row.get("cwdName"), 40) or "New chat"
     if subagent:
         return copy.title(tool, where), copy.line(subagent)
     if state == "waiting":
-        return copy.title(tool, where), "Waiting for you: approve or answer it in your terminal"
+        return copy.title(tool, where), waiting_line(row.get("pendingApproval"), prompt_text)
     reply = copy.line(row.get("lastAssistantMessage"))
     return copy.title(tool, where), copy.line(f"Finished: {reply}") if reply else "Finished its turn"
+
+
+def waiting_line(prompt: dict | None, text: str = "") -> str:
+    """What the session waits on, named: the question, or the call it wants to make. Only an
+    answerable prompt reaches the row; any other is named by its transcript row's ``text``
+    ("Tea or coffee? (Tea / Coffee)", "Wants to run Bash(git push)") and answered in the terminal."""
+    from core.services.notification_copy import line
+
+    if not prompt:
+        text = line(text, 60)
+        if text.startswith("Wants to run"):
+            return f"{text}: answer it in your terminal"
+        if text:
+            return line(f"Has a question: {text}")
+        return "Waiting for you: approve or answer it in your terminal"
+    tool, summary = prompt.get("tool") or "A tool", line(prompt.get("summary"), 60)
+    if tool == "AskUserQuestion":
+        return line(f"Has a question: {summary}") if summary else "Has a question for you"
+    ask = f'{tool} wants to run "{summary}"' if summary else f"{tool} wants your OK"
+    return ask if prompt.get("exact") or prompt.get("full") else f"{ask}: answer it in your terminal"
+
+
+async def _waiting_text(row: dict) -> str:
+    """The text of the prompt this wait is about: the session's LAST stored row, when that row is a
+    prompt stored around the moment the wait began. Anything after a prompt (its tool result, a
+    reply, a new turn) means it was answered, so an older prompt is never named for a new wait.
+    Empty when the new prompt's batch has not landed yet (the Mac sends the status and the prompt
+    row separately) or the read fails -- the generic line covers it."""
+    try:
+        events, _ = await repo.list_events(row["ownerId"], row["sessionId"], max(0, row.get("eventSeq", 0) - 10), 10)
+    except Exception:
+        logger.warning("Waiting prompt read failed", exc_info=True)
+        return ""
+    # A held prompt's release re-states it with no text: still the same prompt.
+    rows = [e for e in events if not (e.get("lifecycle") == "approval_pending" and not e.get("text"))]
+    last = rows[-1] if rows else {}
+    if last.get("lifecycle") == "approval_pending" and last.get("createdAt", 0) >= row.get("waitingSince", 0) - 30:
+        return last["text"]
+    return ""
 
 
 async def notify_attention(row: dict, state: str, subagent: Event | None = None) -> None:
@@ -414,7 +454,8 @@ async def notify_attention(row: dict, state: str, subagent: Event | None = None)
 
     owner, human, sid = row["ownerId"], row["humanUserId"], row["sessionId"]
     line = (subagent.text.strip() or "A subagent finished.")[:180] if subagent else None
-    title, body = attention_copy(row, state, line)
+    prompt_text = await _waiting_text(row) if state == "waiting" and not row.get("pendingApproval") else ""
+    title, body = attention_copy(row, state, line, prompt_text)
     created = utc_now_iso()
     # A subagent ends once; its own id keeps a replayed batch to one notification.
     key = f"subagent|{subagent.subagent}" if subagent else row["revision"]

@@ -4,7 +4,9 @@
 //! The relay loop hands this task the `resume` list from a heartbeat acknowledgement. The backend
 //! decided who may resume and in which mode; this side checks what only this Mac knows: sharing is
 //! on, the CLI is installed, the session's folder still exists, and nothing already runs that
-//! conversation (two `claude --resume` processes would fork it). Anyone but this Mac's own human
+//! conversation (two `claude --resume` processes would fork it). A conversation the provider's own
+//! daemon still runs (a Claude background job, a Codex app-server thread) is shown again instead
+//! (`reattach`). Anyone but this Mac's own human
 //! gets plan mode whatever the request says. It starts the provider in a holder the way New
 //! session does. A refusal is reported to the backend once; it never touches a mirror.
 use super::transport::relay_log;
@@ -27,6 +29,27 @@ pub(super) struct Wanted {
     mode: String,
     /// A live mirror on this Mac already holds this conversation.
     running: bool,
+    /// That mirror, when the provider's own daemon hosts the conversation (a Claude background
+    /// job, a Codex app-server thread): Lightbulb shows it again instead of starting it twice.
+    hosted: Option<Hosted>,
+    /// The requested conversation continues as `conversation_id` (`latest`): another session's
+    /// row, which no run started here can settle this request on.
+    continued: bool,
+}
+
+/// A live mirror whose conversation runs in the provider's own daemon. Closing a held Claude
+/// terminal can move its conversation into a background job (`claude bg-spare`, prod 2026-10-26):
+/// it runs on, so Resume shares that mirror again and its attach holder shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Hosted {
+    key: String,
+    session_id: Option<String>,
+    /// The generation the relay last acknowledged: the one its row is at.
+    generation: String,
+    shared: bool,
+    /// Its run is not the one the relay has: its registration is a new process's, which is what
+    /// answers a waiting resume (`session_resume.on_register`). A same-generation one answers none.
+    fresh: bool,
 }
 
 // One sender per running relay host, as for pick-up snapshots: the relay loop only offers.
@@ -42,10 +65,11 @@ pub(super) fn channel() -> mpsc::Receiver<Vec<Wanted>> {
 
 /// Called from the relay loop with an acknowledgement's `resume` key (absent on an older backend).
 pub(super) fn offer(resume: &Value, mirrors: &BTreeMap<String, Mirror>) {
+    let config = claude_config(&home_dir());
     let wanted = tag(resume, |provider, conversation| {
-        mirrors
-            .values()
-            .any(|m| m.ended_at.is_none() && m.native.provider == provider && m.native.conversation == conversation)
+        let newest = latest(&config, provider, conversation);
+        let running = live(mirrors, provider, &newest);
+        (newest, running)
     });
     if wanted.is_empty() {
         return;
@@ -55,7 +79,69 @@ pub(super) fn offer(resume: &Value, mirrors: &BTreeMap<String, Mirror>) {
     }
 }
 
-fn tag(resume: &Value, running: impl Fn(&str, &str) -> bool) -> Vec<Wanted> {
+/// Whether a live mirror holds `conversation` (Some), and whether its provider's daemon hosts it.
+fn live(mirrors: &BTreeMap<String, Mirror>, provider: &str, conversation: &str) -> Option<Option<Hosted>> {
+    let (key, m) = mirrors
+        .iter()
+        .find(|(_, m)| m.ended_at.is_none() && m.native.provider == provider && m.native.conversation == conversation)?;
+    Some(m.native.job.is_some().then(|| Hosted {
+        key: key.clone(),
+        session_id: m.session_id.clone(),
+        generation: m.registration.acknowledged.clone().unwrap_or_else(|| m.generation.clone()),
+        shared: !m.withheld(),
+        fresh: m.registration.acknowledged.as_ref().is_some_and(|known| *known != m.generation),
+    }))
+}
+
+/// The newest conversation `conversation` continues as. ←, `/background` and a peer reply move a
+/// Claude conversation into a background job under a NEW id and write a `continued-in` row to the
+/// origin's transcript; `claude --resume` of that origin is allowed and starts a second live branch
+/// of it (how "ship-agent-network-phase-1 (2)" appeared). So Resume follows the chain as `/resume`
+/// does: to a continuation whose transcript exists, while nothing was typed in the origin after it.
+pub(crate) fn latest(config: &Path, provider: &str, conversation: &str) -> String {
+    let mut id = conversation.to_owned();
+    if provider != "claude" {
+        return id;
+    }
+    for _ in 0..8 {
+        let next = super::snapshot::find_transcript(config, &id)
+            .and_then(|path| continued_in(&path))
+            .filter(|next| *next != id && super::snapshot::find_transcript(config, next).is_some());
+        match next {
+            Some(next) => id = next,
+            None => break,
+        }
+    }
+    id
+}
+
+/// The `continuedInSessionId` of the last `continued-in` row in the transcript's final 256 KiB
+/// (Claude re-appends its metadata rows at the tail), unless a prompt or reply came after it.
+fn continued_in(path: &Path) -> Option<String> {
+    const TAIL: u64 = 256 * 1024;
+    let mut file = fs::File::open(path).ok()?;
+    let from = file.metadata().ok()?.len().saturating_sub(TAIL);
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut reader = BufReader::new(file);
+    if from > 0 {
+        reader.read_line(&mut String::new()).ok()?; // a partial row
+    }
+    let mut next = None;
+    for row in reader.lines().map_while(|l| l.ok()).filter_map(|l| serde_json::from_str::<Value>(&l).ok()) {
+        match row["type"].as_str() {
+            Some("continued-in") => {
+                next = row["continuedInSessionId"].as_str().filter(|s| uuid::Uuid::parse_str(s).is_ok()).map(str::to_owned)
+            }
+            Some("user" | "assistant") => next = None,
+            _ => {}
+        }
+    }
+    next
+}
+
+/// `running` names the conversation a resume of `conversation` acts on (`latest`), and whether a
+/// live mirror holds it.
+fn tag(resume: &Value, running: impl Fn(&str, &str) -> (String, Option<Option<Hosted>>)) -> Vec<Wanted> {
     let uuid = |v: &Value| v.as_str().filter(|s| uuid::Uuid::parse_str(s).is_ok()).map(str::to_owned);
     let text = |v: &Value, max: usize, or: &str| v.as_str().unwrap_or(or).chars().take(max).collect::<String>();
     resume
@@ -66,8 +152,9 @@ fn tag(resume: &Value, running: impl Fn(&str, &str) -> bool) -> Vec<Wanted> {
         .filter_map(|e| {
             let provider = e["provider"].as_str().filter(|p| matches!(*p, "claude" | "codex"))?.to_owned();
             // A UUID can never be read as a flag by the CLI it is handed to.
-            let conversation_id = uuid(&e["conversationId"])?;
-            let running = running(&provider, &conversation_id);
+            let requested = uuid(&e["conversationId"])?;
+            let (conversation_id, running) = running(&provider, &requested);
+            let continued = conversation_id != requested;
             Some(Wanted {
                 resume_id: uuid(&e["resumeId"])?,
                 session_id: uuid(&e["sessionId"])?,
@@ -77,7 +164,9 @@ fn tag(resume: &Value, running: impl Fn(&str, &str) -> bool) -> Vec<Wanted> {
                 mode: if e["mode"] == "default" { "default".into() } else { "plan".into() },
                 provider,
                 conversation_id,
-                running,
+                running: running.is_some(),
+                hosted: running.flatten(),
+                continued,
             })
         })
         .collect()
@@ -179,8 +268,12 @@ pub(super) async fn run(mut rx: mpsc::Receiver<Vec<Wanted>>, me: Resumer) {
             };
             let short = &wanted.session_id[..8];
             match start(dir.as_deref(), &wanted, &me).await {
-                Ok(true) => relay_log(&format!("{short} resumed")),
-                Ok(false) => relay_log(&format!("{short} already runs in a holder; its registration answers the resume")),
+                Ok(Some(true)) => relay_log(&format!("{short} resumed")),
+                Ok(Some(false)) => relay_log(&format!("{short} already runs; its registration answers the resume")),
+                // Nothing will answer it yet: the next acknowledgement asks again.
+                Ok(None) => {
+                    handled.remove(&wanted.resume_id);
+                }
                 Err(code) => {
                     relay_log(&format!("{short} resume refused: {code}"));
                     if let Err(e) = report(&me, &wanted, code).await {
@@ -197,17 +290,33 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
-async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Result<bool, &'static str> {
+/// Some(true): started or shown again. Some(false): a registration answers it. None: ask again.
+async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Result<Option<bool>, &'static str> {
     if !dir.is_some_and(super::enrollment::sharing_on) {
         return Err("SHARING_OFF");
     }
     let own = w.by_user_id == me.human;
+    // Never `--resume` a continued origin (a second live branch of it). Its continuation is its own
+    // session: shown again when it runs here, and this request is refused so it settles.
+    if w.continued {
+        // Settled only once the continuation is shown: a failed reattach is the refusal, and one
+        // that waits (not bound yet) is asked again.
+        if let Some(hosted) = &w.hosted {
+            if reattach(me, hosted, own).await?.is_none() && !hosted.shared {
+                return Ok(None);
+            }
+        }
+        return Err("CONTINUED");
+    }
+    if let Some(hosted) = &w.hosted {
+        return reattach(me, hosted, own).await;
+    }
     let want = w.clone();
     let Some((folder, argv)) = tauri::async_runtime::spawn_blocking(move || prepare(&want, own, &home_dir()))
         .await
         .map_err(|_| "LAUNCH_FAILED")??
     else {
-        return Ok(false);
+        return Ok(Some(false));
     };
     // `running` only knows held sessions: a private `claude --resume` / `codex resume` of the same
     // conversation is invisible to the mirrors. Two writers on one transcript fork it, so a resume
@@ -231,7 +340,32 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
         None,
     )
     .await;
-    Ok(true)
+    Ok(Some(true))
+}
+
+/// The conversation runs on in its provider's daemon: share its mirror again, and the relay loop
+/// registers its run (that registration answers the resume) and starts an attach holder for
+/// whoever watches. A run its person paused is unpaused first, as the share skill does: its
+/// register carries `unshared` over. Only this Mac's own human may undo their own pause.
+async fn reattach(me: &Resumer, hosted: &Hosted, own: bool) -> std::result::Result<Option<bool>, &'static str> {
+    if hosted.shared {
+        return Ok(hosted.fresh.then_some(false));
+    }
+    if !own {
+        return Err("SHARING_OFF");
+    }
+    // A mirror the relay has not bound yet cannot be unpaused, and sharing it would let its first
+    // registration settle the resume with the row still paused: wait until it is bound.
+    let Some(sid) = &hosted.session_id else {
+        return Ok(None);
+    };
+    let unpause = json!({"sessionId": sid, "generation": hosted.generation, "decision": "unpause"});
+    post(me, "/api/v1/messaging/native-session-decisions", &unpause).await.map_err(|e| {
+        relay_log(&format!("{} unpause for resume failed: {e}", &sid[..sid.len().min(8)]));
+        "LAUNCH_FAILED"
+    })?;
+    super::transport::ask_share(&hosted.key, true);
+    Ok(hosted.fresh.then_some(true))
 }
 
 /// Every conversation a local `provider` process runs now, held or private: the provider's own
@@ -313,13 +447,18 @@ pub(crate) fn approved_folder(folder: &Path, approved: &[PathBuf]) -> std::resul
 }
 
 async fn report(me: &Resumer, w: &Wanted, code: &str) -> Result<()> {
+    let path = format!("/api/v1/desktop/session-resume/{}/failed", w.session_id);
+    post(me, &path, &json!({"resumeId": w.resume_id, "code": code})).await
+}
+
+async fn post(me: &Resumer, path: &str, body: &Value) -> Result<()> {
     let token = crate::device_token::mint_device_token(
         &me.key_pem,
         &me.device,
         &me.owner,
         crate::device_token::DEVICE_TOKEN_LIFETIME_SECS,
     )?;
-    let url = format!("{}/api/v1/desktop/session-resume/{}/failed", me.api.trim_end_matches('/'), w.session_id);
+    let url = format!("{}{path}", me.api.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
@@ -328,16 +467,16 @@ async fn report(me: &Resumer, w: &Wanted, code: &str) -> Result<()> {
     let status = client
         .post(url)
         .bearer_auth(token)
-        .json(&json!({"resumeId": w.resume_id, "code": code}))
+        .json(body)
         .send()
         .await
-        .map_err(|_| "resume report failed")?
+        .map_err(|_| "request failed")?
         .status()
         .as_u16();
     if (200..300).contains(&status) {
         Ok(())
     } else {
-        Err(format!("resume report returned {status}"))
+        Err(format!("{path} returned {status}"))
     }
 }
 
@@ -360,24 +499,26 @@ mod tests {
             title: "Fix login".into(),
             mode: mode.into(),
             running: false,
+            hosted: None,
+            continued: false,
         }
     }
 
     #[test]
     fn resume_offer_reads_the_relay_entry_and_sees_a_running_conversation() {
         let ack: Value = serde_json::from_str(ACK).unwrap();
-        assert_eq!(tag(&ack["resume"], |_, _| false), vec![wanted("claude", "plan")]);
-        let held = tag(&ack["resume"], |provider, conversation| provider == "claude" && conversation == CONV);
+        assert_eq!(tag(&ack["resume"], |_, c| (c.to_owned(), None)), vec![wanted("claude", "plan")]);
+        let held = tag(&ack["resume"], |provider, conversation| (conversation.to_owned(), (provider == "claude" && conversation == CONV).then_some(None)));
         assert!(held[0].running);
         let mut odd = ack["resume"].clone();
         odd[0]["conversationId"] = json!("--dangerously-skip-permissions");
-        assert!(tag(&odd, |_, _| false).is_empty(), "a conversation id that is not a UUID is refused");
+        assert!(tag(&odd, |_, c| (c.to_owned(), None)).is_empty(), "a conversation id that is not a UUID is refused");
         let mut shell = ack["resume"].clone();
         shell[0]["provider"] = json!("bash");
-        assert!(tag(&shell, |_, _| false).is_empty());
+        assert!(tag(&shell, |_, c| (c.to_owned(), None)).is_empty());
         let mut loose = ack["resume"].clone();
         loose[0]["mode"] = json!("bypassPermissions");
-        assert_eq!(tag(&loose, |_, _| false)[0].mode, "plan", "anything but default reads as plan");
+        assert_eq!(tag(&loose, |_, c| (c.to_owned(), None))[0].mode, "plan", "anything but default reads as plan");
     }
 
     #[test]
@@ -461,6 +602,87 @@ mod tests {
 
     #[test]
     fn resume_prepare_refuses_a_conversation_another_run_already_holds() {
+        let mut w = wanted("claude", "plan");
+        w.running = true;
+        assert_eq!(prepare(&w, true, Path::new("/nonexistent")), Err("ALREADY_RUNNING"));
+    }
+
+    fn hosted_mirrors(job: Option<&str>, shared: bool) -> BTreeMap<String, Mirror> {
+        let mut m = super::super::transport::tests::test_mirror(CONV, "gen-2");
+        m.native.provider = "claude".into();
+        m.native.job = job.map(str::to_owned);
+        m.session_id = Some("bbbbbbbb-2222-4222-8222-222222222222".into());
+        m.registration.acknowledged = Some("gen-1".into());
+        m.shared = shared;
+        BTreeMap::from([("k".repeat(64), m)])
+    }
+
+    /// Prod 2026-10-26: the held terminal closed, Claude moved the conversation into background
+    /// job 70f755ac, and Resume answered "already running on your Mac" with no way back.
+    #[test]
+    fn resume_sees_a_conversation_its_providers_daemon_hosts() {
+        let job = hosted_mirrors(Some("70f755ac"), false);
+        assert_eq!(
+            live(&job, "claude", CONV),
+            Some(Some(Hosted { key: "k".repeat(64), session_id: Some("bbbbbbbb-2222-4222-8222-222222222222".into()), generation: "gen-1".into(), shared: false, fresh: true })),
+            "the run the relay knows, at the generation its row is at"
+        );
+        // A Codex app-server thread is hosted the same way (its job is the thread id).
+        let mut codex = hosted_mirrors(Some(CONV), true);
+        codex.values_mut().for_each(|m| m.native.provider = "codex".into());
+        assert!(live(&codex, "codex", CONV).flatten().is_some_and(|h| h.shared));
+        // A private terminal (`claude --resume`, `codex --no-daemon`): running, nothing to attach.
+        assert_eq!(live(&hosted_mirrors(None, true), "claude", CONV), Some(None));
+        let mut ended = hosted_mirrors(Some("70f755ac"), true);
+        ended.values_mut().for_each(|m| m.ended_at = Some(1));
+        assert_eq!(live(&ended, "claude", CONV), None);
+    }
+
+    /// 70f755ac continued in ae0e0fa4 (←): resuming 70f755ac with `claude --resume` would start
+    /// a second live branch of it, so a resume acts on ae0e0fa4.
+    #[test]
+    fn resume_follows_a_continued_conversation_to_its_newest_continuation() {
+        let config = tempfile::tempdir().unwrap();
+        let project = config.path().join("projects/-work");
+        fs::create_dir_all(&project).unwrap();
+        let (a, b, c) = (CONV, "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333");
+        let row = |from: &str, to: &str| format!("{{\"type\":\"continued-in\",\"sessionId\":\"{from}\",\"continuedInSessionId\":\"{to}\"}}\n");
+        fs::write(project.join(format!("{a}.jsonl")), format!("{{\"type\":\"user\"}}\n{}", row(a, b))).unwrap();
+        fs::write(project.join(format!("{b}.jsonl")), format!("{{\"type\":\"assistant\"}}\n{}{{\"type\":\"ai-title\"}}\n", row(b, c))).unwrap();
+        assert_eq!(latest(config.path(), "claude", a), b, "a continuation whose transcript is missing is not followed");
+        fs::write(project.join(format!("{c}.jsonl")), "{\"type\":\"user\"}\n").unwrap();
+        assert_eq!(latest(config.path(), "claude", a), c, "the whole chain");
+        assert_eq!(latest(config.path(), "codex", a), a, "a Codex thread keeps one id for life");
+        // Typed in after the continuation: the origin is a real branch of its own.
+        fs::write(project.join(format!("{a}.jsonl")), format!("{}{{\"type\":\"user\"}}\n", row(a, b))).unwrap();
+        assert_eq!(latest(config.path(), "claude", a), a);
+    }
+
+    #[tokio::test]
+    async fn resume_reattaches_a_daemon_hosted_conversation_instead_of_refusing_it() {
+        let me = Resumer { api: "http://127.0.0.1:9".into(), key_pem: String::new(), device: "d".into(), owner: "o".into(), human: "user_bob".into() };
+        let hosted = |shared: bool, sid: Option<&str>| Hosted { key: format!("{}{}{}", "e".repeat(62), u8::from(shared), u8::from(sid.is_some())), session_id: sid.map(str::to_owned), generation: "gen-1".into(), shared, fresh: true };
+        // Shared already: its registration answers the resume; nothing starts.
+        assert_eq!(reattach(&me, &hosted(true, Some("s")), true).await, Ok(Some(false)));
+        // Its run is the one the relay has: no registration answers the resume, so it is asked again.
+        assert_eq!(reattach(&me, &Hosted { fresh: false, ..hosted(true, Some("s")) }, true).await, Ok(None));
+        // Paused by its person: only that person's own Resume shares it again.
+        assert_eq!(reattach(&me, &hosted(false, Some("s")), false).await, Err("SHARING_OFF"));
+        let unbound = hosted(false, None);
+        assert_eq!(reattach(&me, &unbound, true).await, Ok(None), "not bound yet: asked again, nothing shared");
+        assert_eq!(super::super::transport::asked(&unbound.key), None);
+        // A run the relay has, paused: the unpause must land first, or nothing is shared.
+        assert_eq!(reattach(&me, &hosted(false, Some("s")), true).await, Err("LAUNCH_FAILED"));
+        assert_eq!(super::super::transport::asked(&hosted(false, Some("s")).key), None);
+        // A continued origin is never started again: its request settles as CONTINUED.
+        let continued = Wanted { continued: true, ..wanted("claude", "plan") };
+        assert_eq!(start(Some(Path::new("/nonexistent")), &continued, &me).await, Err("SHARING_OFF"), "sharing is checked first");
+        let ack: Value = serde_json::from_str(ACK).unwrap();
+        let next = "22222222-2222-4222-8222-222222222222";
+        let tagged = tag(&ack["resume"], |_, _| (next.to_owned(), None));
+        assert!(tagged[0].continued && tagged[0].conversation_id == next, "it acts on the continuation, and knows it");
+        assert!(!tag(&ack["resume"], |_, c| (c.to_owned(), None))[0].continued);
+        // With no daemon to attach to, a running conversation is still refused.
         let mut w = wanted("claude", "plan");
         w.running = true;
         assert_eq!(prepare(&w, true, Path::new("/nonexistent")), Err("ALREADY_RUNNING"));

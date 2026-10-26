@@ -41,6 +41,8 @@ const BOTTOM_SLACK = 80;
 /** The header's status line, as a sentence: "Working on your Mac", "Leo’s Mac is offline". */
 function sessionWhere(session: LocalSession, own: boolean, ownerName: string): string {
   const mac = own ? "your Mac" : `${ownerName}’s Mac`;
+  // A paused session is never heartbeated, so it reads offline whether or not its Mac is on.
+  if (session.status === "offline" && session.shared === false) return `Paused on ${mac}`;
   if (session.status === "offline") return `${mac[0].toUpperCase()}${mac.slice(1)} is offline`;
   const why = endedWhy(session, mac, "’");
   if (why) return `Ended · ${why}`;

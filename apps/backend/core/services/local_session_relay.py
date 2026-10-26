@@ -388,7 +388,7 @@ def _spawn(coro) -> None:
     task.add_done_callback(_tasks.discard)
 
 
-def attention_copy(row: dict, state: str, subagent: str | None = None) -> tuple[str, str]:
+def attention_copy(row: dict, state: str, subagent: str | None = None, prompt_text: str = "") -> tuple[str, str]:
     """ "Claude · <session title>" over "Waiting for you: …" / "Finished: <reply's first line>".
     ``subagent`` is a finished background subagent's own line ('Agent "…" finished'), which is the body."""
     from core.services import notification_copy as copy
@@ -401,23 +401,45 @@ def attention_copy(row: dict, state: str, subagent: str | None = None) -> tuple[
     if subagent:
         return copy.title(tool, where), copy.line(subagent)
     if state == "waiting":
-        return copy.title(tool, where), waiting_line(row.get("pendingApproval"))
+        return copy.title(tool, where), waiting_line(row.get("pendingApproval"), prompt_text)
     reply = copy.line(row.get("lastAssistantMessage"))
     return copy.title(tool, where), copy.line(f"Finished: {reply}") if reply else "Finished its turn"
 
 
-def waiting_line(prompt: dict | None) -> str:
+def waiting_line(prompt: dict | None, text: str = "") -> str:
     """What the session waits on, named: the question, or the call it wants to make. Only an
-    answerable prompt reaches the row, so one that is not says where to answer it."""
+    answerable prompt reaches the row; any other is named by its transcript row's ``text``
+    ("Tea or coffee? (Tea / Coffee)", "Wants to run Bash(git push)") and answered in the terminal."""
     from core.services.notification_copy import line
 
     if not prompt:
+        text = line(text, 60)
+        if text.startswith("Wants to run"):
+            return f"{text}: answer it in your terminal"
+        if text:
+            return line(f"Has a question: {text}")
         return "Waiting for you: approve or answer it in your terminal"
     tool, summary = prompt.get("tool") or "A tool", line(prompt.get("summary"), 60)
     if tool == "AskUserQuestion":
         return line(f"Has a question: {summary}") if summary else "Has a question for you"
     ask = f'{tool} wants to run "{summary}"' if summary else f"{tool} wants your OK"
     return ask if prompt.get("exact") or prompt.get("full") else f"{ask}: answer it in your terminal"
+
+
+async def _waiting_text(row: dict) -> str:
+    """The text of the prompt this wait is about: the newest ``approval_pending`` row stored around
+    the moment the session started waiting. Empty when its batch has not landed yet (the Mac sends
+    the status and the prompt row separately) or the read fails -- the generic line covers it."""
+    try:
+        events, _ = await repo.list_events(row["ownerId"], row["sessionId"], max(0, row.get("eventSeq", 0) - 10), 10)
+    except Exception:
+        logger.warning("Waiting prompt read failed", exc_info=True)
+        return ""
+    since = row.get("waitingSince", 0) - 30  # an older prompt from earlier in the session is not this wait
+    for event in reversed(events):
+        if event.get("lifecycle") == "approval_pending" and event.get("text") and event.get("createdAt", 0) >= since:
+            return event["text"]
+    return ""
 
 
 async def notify_attention(row: dict, state: str, subagent: Event | None = None) -> None:
@@ -429,7 +451,8 @@ async def notify_attention(row: dict, state: str, subagent: Event | None = None)
 
     owner, human, sid = row["ownerId"], row["humanUserId"], row["sessionId"]
     line = (subagent.text.strip() or "A subagent finished.")[:180] if subagent else None
-    title, body = attention_copy(row, state, line)
+    prompt_text = await _waiting_text(row) if state == "waiting" and not row.get("pendingApproval") else ""
+    title, body = attention_copy(row, state, line, prompt_text)
     created = utc_now_iso()
     # A subagent ends once; its own id keeps a replayed batch to one notification.
     key = f"subagent|{subagent.subagent}" if subagent else row["revision"]

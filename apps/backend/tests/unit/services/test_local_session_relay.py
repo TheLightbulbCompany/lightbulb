@@ -2620,3 +2620,37 @@ def test_waiting_copy_names_the_prompt_and_never_an_id():
         "Codex · New chat",
         "Waiting for you: approve or answer it in your terminal",
     )
+
+
+@pytest.mark.asyncio
+async def test_waiting_on_a_question_names_it_from_the_prompt_row(transport):
+    # A question is never held, so it has no pendingApproval: its transcript row names it.
+    from core.services import local_session_relay as module
+
+    pushes = []
+
+    async def push(user_id, title, body, data=None):
+        pushes.append(body)
+
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    question = {"kind": "lifecycle", "role": "system", "text": "Tea or coffee? (Tea / Coffee)"}
+    question["lifecycle"] = "approval_pending"
+    batch = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "q1",
+        "afterSeq": 0,
+        "events": [question],
+    }
+    with patch("core.services.push_service.send_push_to_user", push):
+        for stamp, message in ((10010, batch), (10011, heartbeat(sid, status="waiting-approval"))):
+            with patch("time.time", return_value=stamp):
+                await relay(transport).handle_message("conn-1", message)
+                await asyncio.gather(*module._tasks)
+    assert pushes == ["Has a question: Tea or coffee? (Tea / Coffee)"]
+    # An unheld permission prompt keeps the desktop's wording and says where to answer it.
+    assert module.waiting_line(None, "Wants to run Bash(git push)") == (
+        "Wants to run Bash(git push): answer it in your terminal"
+    )

@@ -110,7 +110,7 @@ pub fn install_headless() {
     macos::install(None);
 }
 
-/// `lightbulb join`: raise the macOS prompt once, waiting up to `wait` for the answer. A no-op
+/// `lightbulb pair`: raise the macOS prompt once, waiting up to `wait` for the answer. A no-op
 /// once someone has answered it, and outside an app bundle.
 pub fn ask_once(wait: std::time::Duration) {
     #[cfg(target_os = "macos")]

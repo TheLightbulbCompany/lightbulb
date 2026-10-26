@@ -328,9 +328,9 @@ pub(crate) async fn join_at(
     let mut timed_out = false;
     let expired = |timed_out: bool| -> String {
         if timed_out {
-            "Approval may have gone through. Run `lightbulb join` again to finish.".into()
+            "Approval may have gone through. Run `lightbulb pair` again to finish.".into()
         } else {
-            "The code expired. Run `lightbulb join` again.".into()
+            "The code expired. Run `lightbulb pair` again.".into()
         }
     };
     let result = loop {
@@ -357,12 +357,12 @@ pub(crate) async fn join_at(
         Some(crate::pair_client::DesktopPermissions { screen: false, shell: false, browser: false, files: false }),
     );
     if !state.matches_identities(&mac.public_key_pem, &cli.public_key_pem) {
-        return Err("The server paired other keys than this Mac's. Run `lightbulb join` again.".into());
+        return Err("The server paired other keys than this Mac's. Run `lightbulb pair` again.".into());
     }
     let e = &result["enrollment"];
     let human = e["humanUserId"].as_str().or(result["humanUserId"].as_str()).unwrap_or_default();
     if e["ownerId"] != pair.owner_id || e["deviceId"] != pair.device_id_mac || e["enabled"] != true || human.is_empty() {
-        return Err("Unexpected enrollment reply. Run `lightbulb join` again.".into());
+        return Err("Unexpected enrollment reply. Run `lightbulb pair` again.".into());
     }
     let enrollment = crate::local_sessions::Enrollment {
         owner_id: pair.owner_id.clone(),
@@ -395,7 +395,7 @@ fn home_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
-/// `lightbulb join`: pair this Mac from the browser, then install everything the window's
+/// `lightbulb pair`: pair this Mac from the browser, then install everything the window's
 /// enable does and start the service. The only headless path that creates Keychain keys.
 pub fn join() -> i32 {
     let run = || -> Result<(), String> {
@@ -410,6 +410,8 @@ pub fn join() -> i32 {
         setup_at(&local_state_dir(&data)?, &exe);
         let home = home_dir();
         crate::shell_integration::set(&home, true)?;
+        // The `lightbulb` command is the engine's: a Mac paired over SSH gets it here.
+        crate::engine::ensure();
         match crate::cli::link_command(&exe, &home) {
             Ok(Some(path_line)) => println!("Add ~/.local/bin to your PATH: {path_line}"),
             Ok(None) => {}

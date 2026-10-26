@@ -268,7 +268,7 @@ pub struct Ask {
 
 const USAGE: &str = "Usage: lightbulb claude|codex [any claude or codex arguments]\n\
        lightbulb continue '<link>'\n\
-       lightbulb join | setup | share on|off | leave\n\
+       lightbulb share on|off | pair\n\
 Starts a session in the Lightbulb app on this Mac, with its live terminal there too, or continues\n\
 a shared session from its link in your own Claude Code.";
 
@@ -524,7 +524,8 @@ fn attach(socket: &Path, (cols, rows): (u16, u16), signals: libc::sigset_t) -> i
 /// `lightbulb …`: the process exit code.
 pub fn main(args: &[String]) -> i32 {
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["join"] => return crate::headless::join(),
+        // `join` is the old name, kept for scripts; the engine owns `lightbulb join` now.
+        ["pair"] | ["join"] => return crate::headless::join(),
         ["setup"] => return crate::headless::setup(),
         ["leave"] => return crate::headless::leave(),
         ["share", "on"] => return crate::headless::share(true),

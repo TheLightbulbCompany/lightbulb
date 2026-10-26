@@ -287,7 +287,7 @@ impl Controller {
         self.serves(data)
     }
 
-    /// `lightbulb join` installed the launch agent while the window runs the service: stop our
+    /// `lightbulb pair` installed the launch agent while the window runs the service: stop our
     /// run first, then let go of `serve.lock` so `serve` takes it. True when it handed over.
     pub(crate) async fn hand_over_to_agent(&self, data: &Path, agent: &Path) -> bool {
         if !agent.exists() || !self.service.lock().is_ok_and(|held| held.is_some()) {
@@ -606,7 +606,7 @@ pub(crate) fn launch_scope(state_dir: &Path) -> Result<String> {
 pub(crate) fn session_scope(state_dir: &Path) -> Result<PathBuf> {
     Ok(state_dir.join(launch_scope(state_dir)?))
 }
-/// `lightbulb join`'s write: the same private enrollment.json the window's enable writes.
+/// `lightbulb pair`'s write: the same private enrollment.json the window's enable writes.
 pub(crate) fn save_enrollment(state_dir: &Path, enrollment: &Enrollment) -> Result<()> {
     private_write(&state_dir.join("enrollment.json"), enrollment)
 }
@@ -1573,7 +1573,7 @@ mod tests {
         assert!(window.window_serves(data.path(), &agent).unwrap(), "no agent yet: the window serves");
         assert!(!tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)));
         assert!(crate::headless::service_lock(data.path()).unwrap().is_none(), "still the window's");
-        fs::write(&agent, "plist").unwrap(); // `lightbulb join` installs it
+        fs::write(&agent, "plist").unwrap(); // `lightbulb pair` installs it
         assert!(tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)));
         assert!(window.running.lock().unwrap().is_none(), "stopped before the lock was let go");
         assert_eq!(*window.status.lock().unwrap(), "Local sharing runs in lightbulb-desktop serve.");

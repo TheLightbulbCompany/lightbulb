@@ -7,16 +7,16 @@ import { Suspense, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ApiError, useApi } from "@/lib/api";
 
-// `lightbulb join` opens this page with the code it shows in the terminal. Approving pairs
+// `lightbulb pair` opens this page with the code it shows in the terminal. Approving pairs
 // and enrolls that Mac server-side as the signed-in person, in their selected workspace.
 
 function errorText(err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.status === 410) return "This code expired. Run `lightbulb join` again.";
+    if (err.status === 410) return "This code expired. Run `lightbulb pair` again.";
     if (err.status === 409) {
       const detail = (err.body as { detail?: { code?: string } } | null)?.detail;
       if (detail?.code === "workspace_required") return "Choose a workspace first.";
-      return "Someone else already connected this Mac. Run `lightbulb join` again.";
+      return "Someone else already connected this Mac. Run `lightbulb pair` again.";
     }
   }
   return "Could not connect this Mac. Try again.";
@@ -29,7 +29,7 @@ function ConnectMachine() {
   const api = useApi();
   const [state, setState] = useState<"idle" | "busy" | "done">("idle");
   const [error, setError] = useState<string | null>(null);
-  // The name the Mac reported at `lightbulb join`. A phished link names a Mac the person
+  // The name the Mac reported at `lightbulb pair`. A phished link names a Mac the person
   // does not recognise, which is the point of showing it.
   const [machineName, setMachineName] = useState<string | null>(null);
 
@@ -66,7 +66,7 @@ function ConnectMachine() {
 
   let body: React.ReactNode;
   if (!code) {
-    body = <p className="text-sm text-muted-foreground">This link has no code. Run `lightbulb join` again.</p>;
+    body = <p className="text-sm text-muted-foreground">This link has no code. Run `lightbulb pair` again.</p>;
   } else if (state === "done") {
     body = <h1 className="text-xl font-semibold">Connected. You can close this tab.</h1>;
   } else if (!organization) {
@@ -84,7 +84,7 @@ function ConnectMachine() {
         </h1>
         <p className="font-mono text-3xl tracking-widest my-3">{code}</p>
         <p className="text-sm text-muted-foreground mb-4 max-w-sm">
-          Only continue if you just ran `lightbulb join` on this Mac and the code matches what your
+          Only continue if you just ran `lightbulb pair` on this Mac and the code matches what your
           terminal shows.
         </p>
         <Button onClick={approve} disabled={state === "busy" || machineName === null}>

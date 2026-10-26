@@ -2122,7 +2122,13 @@ end tell"#,
             let sharing_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // The engine first: sharing's MCP reconcile then finds its `lightbulb` entry.
-                let _ = tauri::async_runtime::spawn_blocking(engine::ensure).await;
+                // Then the PATH line: the engine's setup may have just made ~/.local/bin/lightbulb.
+                let _ = tauri::async_runtime::spawn_blocking(|| {
+                    engine::ensure();
+                    #[cfg(unix)]
+                    cli::install_at_launch();
+                })
+                .await;
                 if let Err(e) = sharing_app.state::<local_sessions::enrollment::Controller>().restore(&sharing_app).await {
                     log(&format!("[local-sessions] sharing restore unavailable; check Desktop settings: {e}"));
                 }
@@ -2158,13 +2164,12 @@ end tell"#,
                 }
             });
 
-            // The `lightbulb` command: its request socket, and its link in ~/.local/bin.
+            // The `lightbulb` command: its request socket.
             #[cfg(unix)]
             {
                 if let Err(e) = cli::serve(app.handle().clone()) {
                     log(&format!("[cli] the lightbulb command is unavailable: {e}"));
                 }
-                tauri::async_runtime::spawn_blocking(cli::install_at_launch);
                 tauri::async_runtime::spawn_blocking(shell_integration::refresh_at_launch);
             }
 

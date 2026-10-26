@@ -44,7 +44,7 @@ describe("connect this Mac", () => {
     expect(await screen.findByText("Connect Ada's MacBook to Acme?")).toBeInTheDocument();
     expect(screen.getByText("ABCD-EFGH")).toBeInTheDocument();
     expect(
-      screen.getByText(/Only continue if you just ran `lightbulb join` on this Mac and the code matches/),
+      screen.getByText(/Only continue if you just ran `lightbulb pair` on this Mac and the code matches/),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Connect this Mac" }));
     expect(await screen.findByText("Connected. You can close this tab.")).toBeInTheDocument();
@@ -55,7 +55,7 @@ describe("connect this Mac", () => {
     const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
     s.post.mockRejectedValue(new ApiError(410, { detail: "expired" }));
     render(<ConnectMachinePage />);
-    expect(await screen.findByText("This code expired. Run `lightbulb join` again.")).toBeInTheDocument();
+    expect(await screen.findByText("This code expired. Run `lightbulb pair` again.")).toBeInTheDocument();
   });
 
   it("with no workspace selected asks for one and offers no button", () => {

@@ -1969,6 +1969,10 @@ struct RegistrationState {
     pending: bool,
     // At most one latest observation while the frozen transition/history drains.
     successor: Option<NativeSession>,
+    // Whether the last register sent said `shared:false`: an ACK of it does not settle a
+    // mirror shared since (its register must go again, or it stays private on the relay).
+    #[serde(default)]
+    sent_withheld: bool,
 }
 
 impl Mirror {

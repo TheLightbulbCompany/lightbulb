@@ -444,6 +444,7 @@ impl Host {
                 mirror.persist_durable(&path)?;
             }
         }
+        mirror.registration.sent_withheld = mirror.withheld();
         let mut frame = registration(mirror);
         if let Some(origin) = origin {
             frame["session"]["forkedFrom"] = json!(origin);
@@ -565,17 +566,17 @@ impl Host {
             if let Some(mirror) = self.mirrors.get_mut(&key) {
                 // Its holder or its lineage was found after its mirror was made. Never for a
                 // session the relay has heard of: its person stopped sharing it, and stays asked.
-                if ours && !mirror.shared && mirror.session_id.is_none() {
-                    mirror.shared = true;
-                }
-                // A continuation stays private until its own first turn says who moved it on
-                // (an old human turn in its origin says nothing about a peer's background). Its
-                // person's turn shares it then, registered or not, unless they stopped sharing it.
+                // Except a continuation: it stays private until its own first turn says who moved
+                // it on (an old human turn in its origin says nothing about a peer's background),
+                // and its person's turn shares it then, unless they stopped sharing it.
                 let decided = mirror.native.forked_by_person.is_none() && native.forked_by_person == Some(true);
                 let stopped = STOPPED_AT.lock().is_ok_and(|s| s.contains_key(&key));
-                if ours && !mirror.shared && decided && !stopped {
+                if ours && !mirror.shared && (mirror.session_id.is_none() || decided && !stopped) {
                     mirror.shared = true;
-                    invalidate = true;
+                    // A private register in flight, or one the relay holds: register again.
+                    if mirror.registration.pending || mirror.session_id.is_some() {
+                        invalidate = true;
+                    }
                 }
                 if mirror.ended_at.is_some() {
                     // The session is over: a hook or its own pid said so, and a
@@ -2090,7 +2091,11 @@ impl Host {
                             // An ended mirror's draining register carries no start identity.
                             let current_start_id = start_links::linked(&self.dir, &mirror.native, &mirror.generation)
                                 .filter(|_| mirror.ended_at.is_none());
-                            if advanced || native_restriction != mirror.native.restriction || start_id != current_start_id {
+                            if advanced
+                                || native_restriction != mirror.native.restriction
+                                || start_id != current_start_id
+                                || mirror.registration.sent_withheld != mirror.withheld()
+                            {
                                 registered.remove(&key);
                             } else {
                                 registered.insert(key.clone());
@@ -3561,6 +3566,16 @@ pub(super) mod tests {
         by_person.forked_by_person = Some(true);
         let invalidated = host.observe(vec![held.clone(), by_person], &BTreeSet::new()).unwrap();
         assert!(host.mirrors[&peer_key].shared && invalidated.contains(&peer_key));
+        // The same while its first, private register is still in flight (no id yet).
+        let mut late = test_native("5eed0008-0000-4000-8000-000000000008");
+        late.forked_from = Some(held.conversation.clone());
+        host.observe(vec![held.clone(), late.clone()], &BTreeSet::new()).unwrap();
+        let late_key = native_key(&late);
+        assert!(!host.mirrors[&late_key].shared);
+        host.mirrors.get_mut(&late_key).unwrap().registration.pending = true;
+        late.forked_by_person = Some(true);
+        let invalidated = host.observe(vec![held.clone(), late], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&late_key].shared && invalidated.contains(&late_key), "its private register must go again");
 
         // Only its person's and never shared: it registers, heartbeats and uploads nothing, and takes nothing.
         let key = native_key(&outside);

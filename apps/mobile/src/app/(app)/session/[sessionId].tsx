@@ -381,7 +381,7 @@ function SessionBody({
   const queuedOutbox = savedOutbox.filter(receipt => receipt.state !== "applied");
   const pendingText = usePendingPrompt(command.attempt, events);
   const pendingShown = !!pendingText && !history.hasNewer;
-  const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
+  const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? session.waitingFor ?? "" : null;
   const remoteApproval = !!session.pendingApproval && session.provider === "claude" && waitingOn !== null;
   const last = events.at(-1);
   const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";

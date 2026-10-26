@@ -81,6 +81,13 @@ class Descriptor(ContractModel):
     # False: its person stopped sharing it on the Mac, which still registers it so the owner keeps
     # it in their own list as "Only you" (2026-10-26). Absent leaves the row's sharing as it is.
     shared: bool | None = None
+    # What Claude says beyond `status` (spec 2026-10-26 (e)): a background job's turn is over
+    # (`done`), why a prompt is open in its terminal (`waitingFor`), its hand-off note (`note`,
+    # Claude's `needs`: a message for its person, never a prompt). Sent only once FEATURES lists
+    # sessionAttention; absent is none (an older desktop never sends them).
+    done: bool | None = None
+    waiting_for: Annotated[str, Field(max_length=120)] | None = None
+    note: Annotated[str, Field(max_length=300)] | None = None
 
 
 class Register(ContractModel):
@@ -118,6 +125,13 @@ class HeartbeatSession(ContractModel):
     # holder an older build started keeps running after the Mac updates and ignores it. Sent only
     # once FEATURES lists remoteResize.
     terminal_resize: bool = False
+    # What Claude says beyond `status` (spec 2026-10-26 (e)): a background job's turn is over
+    # (`done`), why a prompt is open in its terminal (`waitingFor`), its hand-off note (`note`,
+    # Claude's `needs`: a message for its person, never a prompt). Sent only once FEATURES lists
+    # sessionAttention; absent is none (an older desktop never sends them).
+    done: bool | None = None
+    waiting_for: Annotated[str, Field(max_length=120)] | None = None
+    note: Annotated[str, Field(max_length=300)] | None = None
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
@@ -141,6 +155,8 @@ FEATURES = [
     "endedIdleStopped",
     # The Mac advertises remoteResize (its holders take the app panel's size) only once this is listed.
     "remoteResize",
+    # The Mac sends `done`, `waitingFor` and `note` only once this is listed.
+    "sessionAttention",
 ]
 
 
@@ -349,7 +365,17 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
 
 
 #: Heartbeat fields whose change counts as the user doing something (stamps lastEventAt).
-_PUBLIC_FIELDS = ("status", "activeTurnId", "title", "cwdName", "lastAssistantMessage", "controlUnavailableReason")
+#: What Claude says beyond `status`; each frame from a Mac that sends them says all of them.
+ATTENTION_FIELDS = ("done", "waitingFor", "note")
+_PUBLIC_FIELDS = (
+    "status",
+    "activeTurnId",
+    "title",
+    "cwdName",
+    "lastAssistantMessage",
+    "controlUnavailableReason",
+    *ATTENTION_FIELDS,
+)
 
 
 #: A session "in a turn": working, or paused on an approval inside that turn.
@@ -695,8 +721,8 @@ class LocalSessionRelay:
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
                     # Absent, never a stored null.
-                    for key in ("holderId", "forkedFrom"):
-                        if row.get(key) is None:
+                    for key in ("holderId", "forkedFrom", *ATTENTION_FIELDS):
+                        if not row.get(key):
                             row.pop(key, None)
                     # The hidden `background` kind is gone (Phase 3); a row that still has it is listed now.
                     row.pop("kind", None)
@@ -964,6 +990,11 @@ class LocalSessionRelay:
                         **labels,
                     )
                     updated["terminalResize"] = item.terminal_resize
+                    for key, value in zip(ATTENTION_FIELDS, (item.done, item.waiting_for, item.note), strict=True):
+                        if value:
+                            updated[key] = value
+                        else:
+                            updated.pop(key, None)
                     if item.terminal is not None:
                         updated["terminal"] = item.terminal
                         if item.terminal == "none" and item.terminal_reason is not None:

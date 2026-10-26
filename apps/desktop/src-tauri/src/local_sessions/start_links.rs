@@ -222,6 +222,7 @@ mod tests {
             forked_by_person: None,
             aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         let record = Link {
             start_id: "11111111-1111-4111-8111-111111111111".into(),

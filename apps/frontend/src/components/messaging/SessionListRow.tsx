@@ -1,7 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { endedWhy, sessionEndable, sessionLabel, sessionLive, sessionStatus, sessionTitle } from "@lightbulb/shared";
+import { endedWhy, sessionEndable, sessionLabel, sessionLive, sessionState, sessionStateLabel, sessionTitle, sessionWaitingLine } from "@lightbulb/shared";
 import { SessionToolIcon } from "./SessionToolIcon";
 import { SessionRenameButton } from "./SessionRenameButton";
 import { SessionRemoveButton } from "./SessionRemoveButton";
@@ -51,12 +51,14 @@ export function SessionListRow({ entry: { session, ownerName, own, owner, unread
   const who = own ? "your session" : ownerName;
   const news = unread === "finished" ? ", finished since you looked" : unread ? ", new output" : "";
   const chat = session.chatUnread ? `, ${session.chatUnread} unread in chat` : "";
-  const waiting = live && session.status === "waiting-approval";
+  // An open prompt or a job's hand-off note (spec 2026-10-26 (e)): the dot, and the note as its preview.
+  const waiting = sessionState(session) === "waiting";
+  const waitLine = sessionWaitingLine(session);
   const where = why ?? (session.cwdName ? `in ${session.cwdName}` : null);
-  const second = oneLine ? "" : [own ? null : ownerName, why ?? session.cwdName].filter(Boolean).join(" · ");
+  const second = oneLine ? "" : [own ? null : ownerName, why ?? waitLine ?? session.cwdName].filter(Boolean).join(" · ");
   return <li className={`room-directory-row room-directory-row--roster session-row${live ? "" : " session-row--gone"}`}>
     <button type="button" className="room-directory-entry" aria-current={current ? "page" : undefined}
-      aria-label={`Open ${label}, ${who}${where ? `, ${where}` : ""}, ${sessionStatus[session.status]}${news}${chat}`} onClick={() => onSelect?.(session.sessionId)}>
+      aria-label={`Open ${label}, ${who}${where ? `, ${where}` : ""}, ${sessionStateLabel(session)}${waitLine && waitLine !== sessionStateLabel(session) ? `, ${waitLine}` : ""}${news}${chat}`} onClick={() => onSelect?.(session.sessionId)}>
       <span className="session-owner-face">
         <ParticipantAvatar participant={owner} size="sm" showPresence={false} />
         <span className="session-tool-badge session-tool-badge--corner" aria-hidden="true"><SessionToolIcon provider={session.provider} /></span>

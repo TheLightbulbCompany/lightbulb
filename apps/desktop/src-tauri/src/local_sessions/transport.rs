@@ -2916,6 +2916,7 @@ fn registration(mirror: &Mirror) -> Value {
     if mirror.withheld() {
         body["session"]["shared"] = json!(false);
     }
+    super::session_states::add_attention(&mut body["session"], &mirror.native);
     if let Some(previous) = &mirror.previous_generation {
         body["previousGeneration"] = json!(previous);
     }
@@ -3160,6 +3161,7 @@ fn device_heartbeats_with_controls(
             entry["terminal"] = json!(m.native.terminal());
             super::session_states::add_reason(&mut entry, &m.native);
         }
+        super::session_states::add_attention(&mut entry, &m.native);
         // This session's own holder takes the app panel's size (its HELLO said so): a holder an
         // older build started does not, though this Mac advertises remoteResize. Only to a relay
         // that lists remoteResize.
@@ -3500,6 +3502,7 @@ pub(super) mod tests {
             forked_by_person: None,
             aliases: vec![],
             app: true,
+            attention: Default::default(),
         }
     }
 
@@ -6066,6 +6069,7 @@ pub(super) mod tests {
             forked_by_person: None,
             aliases: vec![],
             app: true,
+            attention: Default::default(),
         }
     }
     #[tokio::test]
@@ -6359,6 +6363,7 @@ pub(super) mod tests {
             forked_by_person: None,
             aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         let key = native_key(&native);
         let mirror = Mirror {
@@ -6486,6 +6491,7 @@ pub(super) mod tests {
             forked_by_person: None,
             aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         let mirror = Mirror {
             workspace: workspace::State::default(),

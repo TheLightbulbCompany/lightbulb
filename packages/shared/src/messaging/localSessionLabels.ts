@@ -28,6 +28,49 @@ export const sessionStatus: Record<LocalSession["status"], string> = {
   idle: "Idle", busy: "Working", "waiting-approval": "Waiting for input", unknown: "Online", offline: "Offline", ended: "Ended",
 };
 
+/**
+ * The sidebar's one state per session (spec 2026-10-26 (e), "Lifecycle states and what the sidebar
+ * shows"), shared by web and mobile. A parked origin, a superseded origin, a subagent and a spare
+ * never reach a client as a row (the Mac and the server drop them), so they have no state here.
+ *  - `here`: running in a terminal on its Mac (or a Lightbulb holder): Open.
+ *  - `background`: a Claude background job (`claude attach`): Attach.
+ *  - `waiting`: a prompt is open in its terminal, or its job left its person a hand-off note.
+ *  - `done`: a background job whose turn is over; it may still sit at its shell.
+ *  - `offline`: its Mac is not heard from.
+ *  - `stopped`: it ended, not on purpose: Resume.
+ *  - `hidden`: its person ended it on purpose (owner ruling 2026-10-08): no list shows it.
+ */
+export type SessionState = "here" | "background" | "waiting" | "done" | "offline" | "stopped" | "hidden";
+
+export function sessionState(s: Pick<LocalSession, "status" | "endedOnPurpose" | "note" | "done" | "terminal">): SessionState {
+  if (s.status === "ended") return s.endedOnPurpose ? "hidden" : "stopped";
+  if (s.status === "offline") return "offline";
+  if (s.status === "waiting-approval" || s.note) return "waiting";
+  if (s.done) return "done";
+  return s.terminal === "attach" ? "background" : "here";
+}
+
+/** One label per state. A running one says what it does now (`sessionStatus`): "Working", "Idle". */
+export const sessionStateLabel = (s: LocalSession): string => {
+  const state = sessionState(s);
+  return state === "here" ? sessionStatus[s.status]
+    : { background: "Running in background", waiting: "Waiting on you", done: "Done", offline: "Offline", stopped: "Stopped", hidden: "Ended" }[state];
+};
+
+/** The state's primary action: Open its terminal, Attach to the job, Resume what stopped; none while its Mac is offline. */
+export const sessionStateAction = (s: LocalSession): "Open" | "Attach" | "Resume" | null => {
+  const state = sessionState(s);
+  if (state === "stopped") return "Resume";
+  if (state === "offline" || state === "hidden") return null;
+  return s.terminal === "attach" ? "Attach" : "Open";
+};
+
+/** What a waiting session waits on, as its row's preview: the open prompt's reason, else its job's
+ *  note. A note is shown as text, never as a prompt. Null when it waits on nothing. */
+export const sessionWaitingLine = (s: Pick<LocalSession, "status" | "waitingFor" | "note">): string | null =>
+  s.status === "waiting-approval" ? `${sessionStatus["waiting-approval"]}${s.waitingFor ? `: ${s.waitingFor}` : ""}`
+    : s.status === "ended" || s.status === "offline" ? null : s.note?.trim() || null;
+
 /** Why an ended session ended, when it is not the ordinary leave. `mac` is "your Mac" or "Leo's Mac"; the phone passes its curly ’ as `apostrophe`.
  *  "stopped while idle": the Mac stopped it after an idle hour with nobody on it (sooner when short of memory), as Claude's background sessions; Resume continues it. */
 export const endedWhy = (s: Pick<LocalSession, "status" | "endedReason">, mac: string, apostrophe = "'"): string | null => {

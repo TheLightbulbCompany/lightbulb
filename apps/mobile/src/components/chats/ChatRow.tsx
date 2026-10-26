@@ -5,7 +5,7 @@ import {
   sessionLabel,
   sessionPreview,
   sessionRingState,
-  sessionStatus,
+  sessionStateLabel,
   sessionTitle,
   type AvatarRing,
   type LocalSession,
@@ -294,7 +294,7 @@ export function SessionChatRow({
   const preview = busy
     ? `${own ? "" : `${ownerName} · `}working…`
     : `${own ? "" : `${ownerName}: `}${sessionPreview(session)}`;
-  const rowLabel = `${voiceOverLabel}, ${sessionStatus[session.status]}${unread ? ", new output" : ""}${own ? "" : `, ${ownerName}`}`;
+  const rowLabel = `${voiceOverLabel}, ${sessionStateLabel(session)}${unread ? ", new output" : ""}${own ? "" : `, ${ownerName}`}`;
   const commit = (swipe: SwipeableMethods, action: Extract<ChatRowAction, "markRead" | "archive" | "rename">) => {
     swipe.close();
     hapticSelection();

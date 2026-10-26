@@ -7,7 +7,7 @@ import { isDesktopApp } from "@/lib/desktopNotify";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, pendingQuestion, questionKeys, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionLive, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
+  audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, pendingQuestion, questionSteps, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionLive, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
   CLI_ONLY, conversationOnly, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox, watchOnlyLine,
   type LocalSession, type SessionControlClient, type SessionQuestion, type SessionSource,
 } from "@lightbulb/shared";
@@ -482,19 +482,26 @@ function JoinRequests({ waiting, ids, line, decide: send, enabled, personName }:
  */
 function QuestionAnswer({ questions, keys }: { questions: SessionQuestion[]; keys: React.RefObject<((data: string) => Promise<unknown>) | null> }) {
   const [picks, setPicks] = useState<number[][]>(() => questions.map(() => []));
-  // "sent" only once the relay took every key; a failure leaves the buttons on to try again.
-  const [state, setState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
-  const sent = state === "sending" || state === "sent";
+  // "sent" only once the relay took every key. After a failure: `taken` keys went through, and the rest is
+  // sent again from there ("failed"), unless the failed key cannot be resent safely ("stuck").
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "failed" | "stuck">("idle");
+  const progress = useRef<{ steps: { key: string; retry: boolean }[]; taken: number } | null>(null);
+  const [taken, setTaken] = useState(0);
+  const sent = state === "sending" || state === "sent" || state === "stuck";
   const send = async (answer: number[][]) => {
+    // A retry after a partial send resumes the same keys; with nothing taken yet it starts over with this answer.
+    const run = progress.current && progress.current.taken > 0 ? progress.current : { steps: questionSteps(questions, answer), taken: 0 };
+    progress.current = run;
     setState("sending");
-    try {
-      for (const [i, key] of questionKeys(questions, answer).entries()) {
-        if (i) await new Promise(done => setTimeout(done, KEY_GAP_MS));
+    for (let i = run.taken; i < run.steps.length; i++) {
+      if (i > 0) await new Promise(done => setTimeout(done, KEY_GAP_MS));
+      try {
         if (!keys.current) throw new Error("no terminal");
-        await keys.current(key);
-      }
-      setState("sent");
-    } catch { setState("failed"); }
+        await keys.current(run.steps[i].key);
+      } catch { setState(run.steps[i].retry ? "failed" : "stuck"); return; }
+      run.taken = i + 1; setTaken(run.taken);
+    }
+    setState("sent");
   };
   // One single-select question: a click is the answer.
   const oneClick = questions.length === 1 && !questions[0].multiSelect;
@@ -504,15 +511,16 @@ function QuestionAnswer({ questions, keys }: { questions: SessionQuestion[]; key
   };
   const ready = picks.every((p, i) => p.length > 0 || questions[i].multiSelect);
   return <div className="local-session-question">
-    {questions.map((q, qi) => <fieldset key={qi} disabled={sent}>
+    {questions.map((q, qi) => <fieldset key={qi} disabled={sent || taken > 0}>
       <legend className="local-session-waiting-reason">{q.question}</legend>
       <div className="local-session-actions">
         {q.options.map((label, oi) => <Button key={oi} type="button" size="sm" variant={picks[qi].includes(oi) ? "default" : "outline"}
           aria-pressed={oneClick ? undefined : picks[qi].includes(oi)} onClick={() => pick(qi, oi)}>{label}</Button>)}
       </div>
     </fieldset>)}
-    {!oneClick && <Button type="button" size="sm" disabled={sent || !ready} onClick={() => void send(picks)}>Send answer</Button>}
+    {(!oneClick || taken > 0) && <Button type="button" size="sm" disabled={sent || !ready} onClick={() => void send(picks)}>{state === "failed" ? "Try again" : "Send answer"}</Button>}
     {state === "sent" && <p role="status" className="text-ui text-muted-foreground">Sent to the terminal.</p>}
     {state === "failed" && <p role="alert" className="text-ui text-warn">Couldn&apos;t send, try again.</p>}
+    {state === "stuck" && <p role="alert" className="text-ui text-warn">Couldn&apos;t send. Finish answering in the terminal.</p>}
   </div>;
 }

@@ -4,12 +4,10 @@
 
 import logging
 import time
-from unittest.mock import AsyncMock
 
 import pytest
 from boto3.dynamodb.conditions import Key
 
-from core.repositories import messaging_repo
 from core.services import network_member
 from tests.unit.repositories.test_messaging_repo import OWNER, table  # noqa: F401
 
@@ -79,12 +77,3 @@ async def test_the_token_never_appears_in_logs(wake, unauthenticated_async_clien
     for r in caplog.records:
         text = r.getMessage()
         assert secret not in text and token not in text and f"Bearer {token}" not in text
-
-
-async def test_reconnect_deletes_the_netwake_row(wake, monkeypatch):
-    await network_member._wake(OWNER, {})
-    monkeypatch.setattr("core.services.agentcore_runtime.drop_network_key", AsyncMock())
-    monkeypatch.setattr(network_member, "_runtime_arn", AsyncMock(return_value=None))
-    monkeypatch.setattr("core.services.hermes_provisioning._delete_prefixes", lambda prefixes: None)
-    await network_member.reconnect(OWNER)
-    assert await messaging_repo._get(messaging_repo.owner_pk(OWNER), messaging_repo.netwake_sk()) is None

@@ -3,9 +3,12 @@
 The network engine runs as a sidecar in the workspace's AgentCore microVM. The backend owns two
 inputs it reads: the member key (in the boot secret, written only by
 ``agentcore_runtime.write_boot_secret``) and ``<owner>/network/sessions.json``, the addresses
-this workspace answers on -- one per agent, plus any app entries the sidecar added.
+this workspace answers on -- one per agent, plus any app entries the sidecar added -- and
+``members``, the workspace's people: the sidecar answers only a computer whose sign-in proof
+(``network_proof``, shown in its hello) names one of them.
 
-The invite line ``connect`` returns is a credential: it is never logged or stored here.
+A workspace never invites: it joins one network when an admin runs ``lightbulb invite
+--agents`` (``join_network``). The once link it joins with is a credential: never logged here.
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ import re
 import secrets
 import time
 import uuid
-from typing import Any
 
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
@@ -99,14 +101,18 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
         # `agent` is what a teammate's screen calls the sender ("From The Lightbulb Company's Friday").
         sessions.append({"name": name, "agent": agent["name"] or name, "title": agent["name"], "agentId": agent["id"]})
 
-    # The wake token survives every writer: with no prior in hand, read the current file.
-    wake = await _wake(owner_id, prior if prior is not None else (await _read_sessions(owner_id) or {}))
+    # The wake token and the joined mark survive every writer: with no prior in hand, read the file.
+    prior = prior if prior is not None else (await _read_sessions(owner_id) or {})
+    wake = await _wake(owner_id, prior)
     doc = {
         "workspace": (org or {}).get("name") or owner_id,
         "sessions": sessions + apps,
         "wake": wake,
+        # The sidecar's gate: only computers whose sign-in proof names one of these people.
         "members": members,
     }
+    if prior.get("joined"):
+        doc["joined"] = True  # on a network an admin added it to (``join_network``)
     await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
     return doc
 
@@ -133,18 +139,14 @@ async def _write_and_ping(owner_id: str, apps: list[dict]) -> None:
         await container_rpc.call(owner_id, "network.sessions", {})
 
 
-async def _declare(owner_id: str, user_id: str, slug: str, client: str, doc: dict) -> None:
-    """Write (or rewrite, with a fresh title) this person's app entry, then tell a warm sidecar."""
+async def app_title(user_id: str, client: str) -> str:
+    """What the network calls a person's app session: ``"<client> via <first name>"``."""
     from core.services.messaging import human_display_name
 
-    person = app_person(user_id)
-    name = f"{slug}-{person}"
     resolved = (await human_display_name(user_id)).strip()
     # The lookup answers the user id when Clerk cannot say: never publish an id on the network.
     first = resolved.split()[0] if resolved and resolved != user_id else "a teammate"
-    entry = {"name": name, "agent": slug, "title": f"{client} via {first}"[:256], "app": slug, "person": person}
-    apps = [s for s in _app_entries(doc) if s.get("name") != name]
-    await _write_and_ping(owner_id, [*apps, entry])
+    return f"{client} via {first}"[:256]
 
 
 def rpc_error(exc: RuntimeError) -> dict:
@@ -154,29 +156,6 @@ def rpc_error(exc: RuntimeError) -> dict:
     except ValueError:
         return {}
     return error if isinstance(error, dict) else {}
-
-
-async def app_call(auth, slug: str, client: str, op: str, **fields) -> Any:
-    """One ``network.app`` call as ``<client> via <person>``: the person's app session is declared
-    in ``sessions.json`` first (and published when new). The member holds the key, not us."""
-    from core.auth import resolve_owner_id
-
-    owner_id = resolve_owner_id(auth)
-    person = app_person(auth.user_id)
-    doc = await _read_sessions(owner_id)
-    if doc is None:  # never write sessions.json for a workspace that is not a member
-        raise ApiProblem("NETWORK_NOT_CONNECTED", "This workspace is not on a network yet. Connect it in Settings.")
-    if not any(s.get("name") == f"{slug}-{person}" for s in _app_entries(doc)):
-        await _declare(owner_id, auth.user_id, slug, client, doc)
-    params = {"op": op, "app": slug, "person": person, **fields}
-    try:
-        return await container_rpc.call(owner_id, "network.app", params)
-    except RuntimeError as exc:
-        # The sidecar never learned the entry (a lost ping, a stale warm estimate): declare once more.
-        if rpc_error(exc).get("reason") != "not_declared":
-            raise
-    await _declare(owner_id, auth.user_id, slug, client, await _read_sessions(owner_id) or doc)
-    return await container_rpc.call(owner_id, "network.app", params)
 
 
 async def _session_is_warm(owner_id: str) -> bool:
@@ -194,47 +173,64 @@ async def _runtime_arn(owner_id: str) -> str | None:
     return ((await container_repo.get_by_owner_id(owner_id)) or {}).get("agentcore_runtime_arn")
 
 
-async def connect(owner_id: str, user_id: str, name: str) -> dict:
-    """An invite line for one person. A workspace that is not a member yet (not rolled, or just
-    reconnected) gets its key and ``sessions.json`` first, and a restart if the key is new."""
+async def join_network(owner_id: str, ticket: str) -> dict:
+    """Join the network ``ticket`` (an admin computer's once ask link) is for. A workspace that is
+    not a member yet gets its key and ``sessions.json`` first, and a restart if the key is new.
+    The bridge answers at once (``{state: "joining"}``); the admin's computer then asks Allow."""
     from core.services.hermes_provisioning import prepare_hermes_workspace, stop_runtime_session
 
     if not await sessions_exist(owner_id):
         from core.services.hermes_provisioning import _delete_prefixes
 
-        # A SIGTERM save from the session reconnect stopped can land after reconnect's delete;
-        # a stale state.db under the new key is a KEY_MISMATCH, so clear it once more first.
+        # A stale state.db under a new key is a KEY_MISMATCH: clear it first.
         await run_in_thread(_delete_prefixes, [f"{network_prefix(owner_id)}state.db"])
         if await prepare_hermes_workspace(owner_id):
             arn = await _runtime_arn(owner_id)
             if arn:
                 await stop_runtime_session(owner_id, arn)
+        await write_sessions(owner_id)
     try:
-        return await container_rpc.call(owner_id, "network.invite", {"for": user_id, "name": name})
+        answer = await container_rpc.call(owner_id, "network.join", {"ticket": ticket})
+        await _mark_joined(owner_id, True)
+        return answer
     except RuntimeError as exc:
+        error = rpc_error(exc)
         # The bridge answers UNAVAILABLE while its network sidecar is off or starting (a fresh
-        # microVM): a retryable 503 the Settings page waits on, not a bare 500 (dev, 2026-10-24).
-        if rpc_error(exc).get("code") in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
+        # microVM): a retryable 503 the confirm page waits on, not a bare 500.
+        if error.get("code") in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
             raise container_rpc._unavailable() from exc
+        if error.get("code") == "already_in_team":
+            raise ApiProblem(
+                "NETWORK_ALREADY_JOINED", "This workspace's agents are already on another network."
+            ) from exc
         raise
 
 
-async def reconnect(owner_id: str) -> None:
-    """Leave the current team: drop the member key, stop the session, delete the network state.
-    The next ``connect`` (or reconcile) mints a new key, which makes a new team.
+async def _mark_joined(owner_id: str, joined: bool) -> None:
+    """``sessions.json``'s ``joined``: the hosted MCP routes a member's apps through this
+    workspace only while it is on a network an admin added it to."""
+    from core.services.hermes_profiles import put_owner_object
 
-    Order matters: the key goes first so a cold start in between cannot read it; the stop comes
-    before the delete so a warm session cannot save network state back after it."""
-    from core.repositories import messaging_repo
-    from core.services.agentcore_runtime import drop_network_key
-    from core.services.hermes_provisioning import _delete_prefixes, stop_runtime_session
+    doc = await _read_sessions(owner_id)
+    if doc is None or bool(doc.get("joined")) == joined:
+        return
+    doc = {k: v for k, v in doc.items() if k != "joined"} | ({"joined": True} if joined else {})
+    await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
 
-    await drop_network_key(owner_id)
-    arn = await _runtime_arn(owner_id)
-    if arn:
-        await stop_runtime_session(owner_id, arn)
-    await run_in_thread(_delete_prefixes, [network_prefix(owner_id)])
-    await run_in_thread(messaging_repo._table().delete_item, Key=_netwake_key(owner_id))  # a new token next time
+
+async def leave_network(owner_id: str) -> dict:
+    """An admin takes the workspace off its network (``team.leave``), so ``invite --agents``
+    can add it to another. A workspace that is not a member is NETWORK_NOT_CONNECTED."""
+    if not await sessions_exist(owner_id):
+        raise ApiProblem("NETWORK_NOT_CONNECTED", "This workspace is not on a network.")
+    try:
+        answer = await container_rpc.call(owner_id, "network.leave", {})
+    except RuntimeError as exc:
+        if rpc_error(exc).get("code") in ("UNAVAILABLE", "RUNTIME_UNAVAILABLE"):
+            raise container_rpc._unavailable() from exc
+        raise
+    await _mark_joined(owner_id, False)
+    return answer
 
 
 # ---------------------------------------------------------------------------
@@ -442,8 +438,6 @@ async def ring(token: str) -> bool:
     """False when the token is not a workspace's doorbell (the route answers 404, nothing written).
     True otherwise; at most one wake per workspace per ``WAKE_WINDOW_S`` reaches the work queue.
     The token is a credential: never logged."""
-    from botocore.exceptions import ClientError
-
     from core.repositories import messaging_repo
 
     owner_id, dot, _ = token.partition(".")
@@ -455,6 +449,17 @@ async def ring(token: str) -> bool:
     digest = _token_hash(token)
     if not row or not hmac.compare_digest(str(row.get("tokenHash") or ""), digest):
         return _refused()
+    await _queue_wake(owner_id, digest)
+    return True
+
+
+async def _queue_wake(owner_id: str, digest: str) -> None:
+    """At most one ``network_wake`` per workspace per ``WAKE_WINDOW_S`` reaches the work queue."""
+    from botocore.exceptions import ClientError
+
+    from core.repositories import messaging_repo
+
+    key = _netwake_key(owner_id)
     now = int(time.time())
     ulid = f"{now * 1000:012x}{uuid.uuid4().hex[:20]}"
     table_name = messaging_repo._table().name
@@ -492,6 +497,5 @@ async def ring(token: str) -> bool:
         if not messaging_repo.is_cancelled(exc):
             raise
         logger.info("network wake skipped (within %ss) owner=%s", WAKE_WINDOW_S, owner_id)
-        return True
+        return
     logger.info("network wake queued owner=%s", owner_id)
-    return True

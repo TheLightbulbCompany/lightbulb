@@ -95,6 +95,7 @@ function build(environment: "dev" | "prod"): {
       huddleWorkerSecret: `lightbulb/${environment}/huddle_worker_secret`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
+      networkProofKey: `isol8/${environment}/network_proof_key`,
       sesIngestSecret: `isol8/${environment}/ses_ingest_secret`,
     },
     kmsKeyArn: kmsKey.keyArn,

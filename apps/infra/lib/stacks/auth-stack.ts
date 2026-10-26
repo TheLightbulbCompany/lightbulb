@@ -35,6 +35,7 @@ export class AuthStack extends cdk.Stack {
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
   public readonly paperclipEventsWebhookSecret: secretsmanager.Secret;
   public readonly wsInternalSecret: secretsmanager.Secret;
+  public readonly networkProofKey: secretsmanager.Secret;
   public readonly paperclipAdminCredentials: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
   public readonly cloudflareWarpEnrollment: secretsmanager.Secret;
@@ -168,6 +169,16 @@ export class AuthStack extends cdk.Stack {
       "ws_internal_secret",
       { passwordLength: 64, excludePunctuation: true },
       "Shared secret the WebSocket Lambdas attach so the backend /ws/* endpoints can distinguish them from forged public-gateway callers.",
+    );
+
+    // Seeds the Ed25519 key that signs `lightbulb login` proofs (backend network_proof: the
+    // SHA-256 of this string is the private key). Its PUBLIC half is baked into the engine and
+    // handed to each runtime; rotating it signs every computer out (they run lightbulb login).
+    this.networkProofKey = createSecret(
+      "NetworkProofKey",
+      "network_proof_key",
+      { passwordLength: 64, excludePunctuation: true },
+      "Seed of the Ed25519 key that signs lightbulb login proofs. Rotating it signs every computer out.",
     );
 
     // Metronome API key, shared by the backend's lifecycle + gating modules

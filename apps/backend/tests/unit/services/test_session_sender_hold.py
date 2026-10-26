@@ -134,6 +134,7 @@ async def test_hosted_mcp_session_send_from_unallowed_person_is_held(monkeypatch
     sid = str(uuid.uuid4())
     target = {"sessionId": sid, "ownerId": OWNER, "humanUserId": ALICE.user_id, "generation": "g1"}
     monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: BOB)
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda *_scope: BOB)
     monkeypatch.setattr(hosted_mcp, "_mac", lambda: None)
     monkeypatch.setattr(
         hosted_mcp,

@@ -71,6 +71,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       huddleWorkerSecret: `lightbulb/${environment}/huddle_worker_secret`,
       metronomeWebhookSecret: `lightbulb/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `lightbulb/${environment}/ws_internal_secret`,
+      networkProofKey: `lightbulb/${environment}/network_proof_key`,
       sesIngestSecret: `lightbulb/${environment}/ses_ingest_secret`,
     },
     kmsKeyArn: kmsKey.keyArn,

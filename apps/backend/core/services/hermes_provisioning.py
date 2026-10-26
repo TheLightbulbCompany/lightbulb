@@ -154,6 +154,12 @@ def build_hermes_runtime_env(
     # ignores it.
     if memory_id:
         env["AGENTCORE_MEMORY_ID"] = memory_id
+    # The network sidecar verifies members' sign-in proofs against this PUBLIC key (not a
+    # credential): ``<kid>:<base64url>``. Absent: the engine's baked-in keys only.
+    if settings.NETWORK_PROOF_KEY:
+        from core.services import network_proof
+
+        env["LIGHTBULB_ISSUER_KEY"] = network_proof.public_key()["env"]
     # The bridge's per-microVM turn cap; absent keeps the image default (4).
     if max_concurrent_turns:
         env["LIGHTBULB_MAX_CONCURRENT_TURNS"] = str(int(max_concurrent_turns))

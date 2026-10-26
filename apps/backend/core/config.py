@@ -196,6 +196,8 @@ class Settings(BaseSettings):
     # confirm the header is arriving, then flip enforcement on. Enforcement is a
     # no-op until WS_ENFORCE_INTERNAL_SECRET is true AND a secret is configured.
     WS_INTERNAL_SECRET: str = ""
+    # Seeds the Ed25519 key that signs lightbulb login proofs (network_proof).
+    NETWORK_PROOF_KEY: str = ""
     WS_ENFORCE_INTERNAL_SECRET: bool = False
 
     # OAuth tables (set by CDK)

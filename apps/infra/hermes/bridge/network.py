@@ -17,6 +17,7 @@ another writer: the sidecar stops and the network stays off for this process. ``
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -283,12 +284,53 @@ def reload_sessions() -> int:
         raise NetworkOff("sessions.json is gone")
     raw, data = fetched
     params = {"sessions": data.get("sessions") or []}
-    if "members" in data:  # the engine keeps its gate when the key is absent, so pass it only when written
+    # The engine keeps its gate when `members` is absent, so pass it only when written: it
+    # answers only computers whose sign-in proof names one of these people.
+    if "members" in data:
         params["members"] = data["members"]
     ask("cloud.sessions.set", params)
     _sessions = data
     SESSIONS_FILE.write_bytes(raw)
     return len(data.get("sessions") or [])
+
+
+#: How long a join waits for the inviting admin's Allow (the engine's own wait is 600 s).
+JOIN_WAIT_S = 660.0
+
+
+#: Each once link this process joined with (its SHA-256, never the link): ``joining`` while the
+#: join waits for Allow, ``joined`` after. A retried ``network.join`` (an API Gateway 504, a lost
+#: answer) with the same link is that join, not a second one; a failed join can be tried again.
+_joins: dict[str, str] = {}
+
+
+def _link_id(ticket: str) -> str:
+    return hashlib.sha256(ticket.encode()).hexdigest()
+
+
+def join_known(ticket: str) -> bool:
+    return _joins.get(_link_id(ticket)) in ("joining", "joined")
+
+
+def join_in_background(ticket: str) -> None:
+    """``team.join`` with an admin computer's once link, off the RPC thread: the join waits for
+    that admin's Allow. Logs the outcome's state and reason, never the link."""
+    link = _link_id(ticket)
+    if _joins.get(link) in ("joining", "joined"):
+        return
+    _joins[link] = "joining"
+
+    def _join() -> None:
+        try:
+            r = ask("team.join", {"ticket": ticket, "name": str(_sessions.get("workspace") or "")},
+                    timeout_s=JOIN_WAIT_S)
+            log.info("network.join state=%s reason=%s", r.get("state"), r.get("reason"))
+            _joins[link] = "joined" if r.get("state") == "admitted" else "failed"
+        except Exception as exc:  # noqa: BLE001 -- the admin's computer shows nothing; the log says why
+            _joins[link] = "failed"
+            log.warning("network.join failed (%s)", type(exc).__name__)
+
+    _spawn(_join, "network-join")
 
 
 def sessions() -> list[dict]:

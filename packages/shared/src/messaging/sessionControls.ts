@@ -467,6 +467,8 @@ const RESUME_REFUSED: Record<string, (mac: string, folder: string) => string> = 
   FOLDER_MISSING: mac => `its folder is no longer on ${mac}`,
   TOOL_UNAVAILABLE: mac => `its CLI is no longer installed on ${mac}`,
   SHARING_OFF: mac => `session sharing is off on ${mac}`,
+  // Claude continued it under a new id (←, /background): resuming this one would branch it.
+  CONTINUED: mac => `it continues as a newer session on ${mac}. Open that session instead`,
 };
 
 /** One line about a resume already asked for (waiting, or refused by the Mac), or null. */

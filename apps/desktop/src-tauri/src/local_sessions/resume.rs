@@ -32,6 +32,9 @@ pub(super) struct Wanted {
     /// That mirror, when the provider's own daemon hosts the conversation (a Claude background
     /// job, a Codex app-server thread): Lightbulb shows it again instead of starting it twice.
     hosted: Option<Hosted>,
+    /// The requested conversation continues as `conversation_id` (`latest`): another session's
+    /// row, which no run started here can settle this request on.
+    continued: bool,
 }
 
 /// A live mirror whose conversation runs in the provider's own daemon. Closing a held Claude
@@ -149,7 +152,9 @@ fn tag(resume: &Value, running: impl Fn(&str, &str) -> (String, Option<Option<Ho
         .filter_map(|e| {
             let provider = e["provider"].as_str().filter(|p| matches!(*p, "claude" | "codex"))?.to_owned();
             // A UUID can never be read as a flag by the CLI it is handed to.
-            let (conversation_id, running) = running(&provider, &uuid(&e["conversationId"])?);
+            let requested = uuid(&e["conversationId"])?;
+            let (conversation_id, running) = running(&provider, &requested);
+            let continued = conversation_id != requested;
             Some(Wanted {
                 resume_id: uuid(&e["resumeId"])?,
                 session_id: uuid(&e["sessionId"])?,
@@ -161,6 +166,7 @@ fn tag(resume: &Value, running: impl Fn(&str, &str) -> (String, Option<Option<Ho
                 conversation_id,
                 running: running.is_some(),
                 hosted: running.flatten(),
+                continued,
             })
         })
         .collect()
@@ -290,6 +296,14 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
         return Err("SHARING_OFF");
     }
     let own = w.by_user_id == me.human;
+    // Never `--resume` a continued origin (a second live branch of it). Its continuation is its own
+    // session: shown again when it runs here, and this request is refused so it settles.
+    if w.continued {
+        if let Some(hosted) = &w.hosted {
+            let _ = reattach(me, hosted, own).await;
+        }
+        return Err("CONTINUED");
+    }
     if let Some(hosted) = &w.hosted {
         return reattach(me, hosted, own).await;
     }
@@ -336,13 +350,16 @@ async fn reattach(me: &Resumer, hosted: &Hosted, own: bool) -> std::result::Resu
     if !own {
         return Err("SHARING_OFF");
     }
-    if let Some(sid) = &hosted.session_id {
-        let unpause = json!({"sessionId": sid, "generation": hosted.generation, "decision": "unpause"});
-        post(me, "/api/v1/messaging/native-session-decisions", &unpause).await.map_err(|e| {
-            relay_log(&format!("{} unpause for resume failed: {e}", &sid[..sid.len().min(8)]));
-            "LAUNCH_FAILED"
-        })?;
-    }
+    // A mirror the relay has not bound yet cannot be unpaused, and sharing it would let its first
+    // registration settle the resume with the row still paused: wait until it is bound.
+    let Some(sid) = &hosted.session_id else {
+        return Ok(None);
+    };
+    let unpause = json!({"sessionId": sid, "generation": hosted.generation, "decision": "unpause"});
+    post(me, "/api/v1/messaging/native-session-decisions", &unpause).await.map_err(|e| {
+        relay_log(&format!("{} unpause for resume failed: {e}", &sid[..sid.len().min(8)]));
+        "LAUNCH_FAILED"
+    })?;
     super::transport::ask_share(&hosted.key, true);
     Ok(hosted.fresh.then_some(true))
 }
@@ -479,6 +496,7 @@ mod tests {
             mode: mode.into(),
             running: false,
             hosted: None,
+            continued: false,
         }
     }
 
@@ -646,12 +664,20 @@ mod tests {
         assert_eq!(reattach(&me, &Hosted { fresh: false, ..hosted(true, Some("s")) }, true).await, Ok(None));
         // Paused by its person: only that person's own Resume shares it again.
         assert_eq!(reattach(&me, &hosted(false, Some("s")), false).await, Err("SHARING_OFF"));
-        let mine = hosted(false, None);
-        assert_eq!(reattach(&me, &mine, true).await, Ok(Some(true)));
-        assert_eq!(super::super::transport::asked(&mine.key), Some((true, false)), "shared again, from this Mac");
+        let unbound = hosted(false, None);
+        assert_eq!(reattach(&me, &unbound, true).await, Ok(None), "not bound yet: asked again, nothing shared");
+        assert_eq!(super::super::transport::asked(&unbound.key), None);
         // A run the relay has, paused: the unpause must land first, or nothing is shared.
         assert_eq!(reattach(&me, &hosted(false, Some("s")), true).await, Err("LAUNCH_FAILED"));
         assert_eq!(super::super::transport::asked(&hosted(false, Some("s")).key), None);
+        // A continued origin is never started again: its request settles as CONTINUED.
+        let continued = Wanted { continued: true, ..wanted("claude", "plan") };
+        assert_eq!(start(Some(Path::new("/nonexistent")), &continued, &me).await, Err("SHARING_OFF"), "sharing is checked first");
+        let ack: Value = serde_json::from_str(ACK).unwrap();
+        let next = "22222222-2222-4222-8222-222222222222";
+        let tagged = tag(&ack["resume"], |_, _| (next.to_owned(), None));
+        assert!(tagged[0].continued && tagged[0].conversation_id == next, "it acts on the continuation, and knows it");
+        assert!(!tag(&ack["resume"], |_, c| (c.to_owned(), None))[0].continued);
         // With no daemon to attach to, a running conversation is still refused.
         let mut w = wanted("claude", "plan");
         w.running = true;

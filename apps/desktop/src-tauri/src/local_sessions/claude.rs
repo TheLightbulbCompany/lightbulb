@@ -528,6 +528,18 @@ pub(super) async fn running_conversations(home: &Path) -> Result<Vec<String>> {
     Ok(listed(&listing(&program).await?).0.into_iter().collect())
 }
 
+/// The background job Claude lists for `conversation`, live or not (a job whose process the
+/// daemon retired is still listed while it was working or blocked). None when nothing lists it or
+/// the listing is unreadable.
+pub(super) async fn background_job(home: &Path, conversation: &str) -> Option<String> {
+    let rows = listing(&provider_program(home, "claude")?).await.ok()?;
+    job_of(&rows, conversation)
+}
+
+pub(super) fn job_of(rows: &[Value], conversation: &str) -> Option<String> {
+    rows.iter().filter(|r| r["sessionId"] == conversation).find_map(job_id)
+}
+
 /// The ids a listing names, captured or not: (conversations, background jobs). Liveness reads
 /// these, never the captured sessions, since a row whose capture failed is still running.
 pub(super) fn listed(rows: &[Value]) -> (BTreeSet<String>, BTreeSet<String>) {

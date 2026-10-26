@@ -18,11 +18,9 @@
 //! itself accepts a request from an app that is switched off and then presents
 //! it as nothing, so the permission is checked before every request.
 //!
-//! A held message or an agent's ask (Task 7b) is a notification of the `REQUEST_CATEGORY`
-//! that carries its whole decision in `userInfo`. Whichever process macOS hands the Allow or
-//! Decline to, the window or `serve`, sends that decision itself
-//! (`local_sessions::held_notice::on_action`): nothing is forwarded between processes. That
-//! core needs no Tauri: `serve` installs it with `install_headless`.
+//! `REQUEST_CATEGORY` (Allow and Decline) is kept for a `Center` that posts requests; nothing
+//! posts one now (held sends and agent asks are gone: agents message through the engine), so
+//! a press on an old banner decides nothing. `serve` installs the delegate with `install_headless`.
 
 use std::collections::BTreeMap;
 use tauri::AppHandle;
@@ -87,14 +85,14 @@ impl Center for Native {
     }
 }
 
-/// A press on a request notification: Allow or Decline is answered from this process, with
-/// the decision the notification carries. Anything else (a plain click) is not a decision.
+/// A press on a request notification's Allow or Decline: taken, and it decides nothing. Anything
+/// else (a plain click) is not a decision.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn act(id: String, action: &str, title: String, info: BTreeMap<String, String>) -> bool {
     if action != ALLOW && action != DECLINE {
         return false;
     }
-    crate::local_sessions::held_notice::on_action(Notice { id, title, body: String::new(), info }, action.to_owned());
+    let _ = (id, title, info);
     true
 }
 
@@ -475,8 +473,7 @@ mod macos {
 mod tests {
     use super::*;
 
-    /// Only Allow and Decline are decisions (an Allow here would send one, so tests never press
-    /// it: `held_notice` covers that path against a stub server).
+    /// Only Allow and Decline are decisions.
     #[test]
     fn notify_a_plain_click_is_not_a_decision() {
         let info = BTreeMap::new();

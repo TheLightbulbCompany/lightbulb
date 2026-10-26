@@ -4,6 +4,7 @@ pub mod bootstrap;
 pub mod claude_export;
 #[cfg(test)]
 mod core_boundary;
+mod engine;
 pub mod file_access;
 // Core's held sessions plus the app's panel terminal.
 #[cfg(unix)]
@@ -2120,6 +2121,8 @@ end tell"#,
             local_sessions::enrollment::Controller::watch_launch_agent(app.handle().clone());
             let sharing_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                // The engine first: sharing's MCP reconcile then finds its `lightbulb` entry.
+                let _ = tauri::async_runtime::spawn_blocking(engine::ensure).await;
                 if let Err(e) = sharing_app.state::<local_sessions::enrollment::Controller>().restore(&sharing_app).await {
                     log(&format!("[local-sessions] sharing restore unavailable; check Desktop settings: {e}"));
                 }

@@ -43,8 +43,6 @@ pub fn serve() -> ! {
         crate::notify::install_headless();
         std::thread::spawn(|| {
             let code = tauri::async_runtime::block_on(run(&app_data_dir()));
-            // No banner outlives the process that put it up.
-            crate::local_sessions::held_notice::withdraw_all();
             std::process::exit(code)
         });
         extern "C" {

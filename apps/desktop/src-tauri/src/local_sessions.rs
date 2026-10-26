@@ -9,9 +9,7 @@ mod native_mcp;
 mod native_tools;
 mod mod_socket;
 pub(crate) mod plugin;
-pub(crate) mod held_notice;
 mod presence;
-pub use native_mcp::serve_mcp;
 
 /// The shared session a browser connection comes from (session_browser), or why not.
 pub(crate) fn shared_session_for(scope: &Path, ancestors: &[u32]) -> Result<String> {

@@ -41,7 +41,8 @@
       "bin/lightbulb-browser-service-*",
       "bin/node-*",
       "bin/openclaw-host-*/**/*",
-      "bin/chrome-devtools-mcp/**/*"
+      "bin/chrome-devtools-mcp/**/*",
+      "bin/lightbulb"
     ],
     "macOS": {
       "entitlements": "entitlements.plist",

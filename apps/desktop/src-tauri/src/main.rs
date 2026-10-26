@@ -15,10 +15,6 @@ fn main() {
     if argv.get(1).map(String::as_str) == Some("serve") {
         lightbulb_desktop::headless::serve();
     }
-    if argv.get(1).map(String::as_str) == Some("session-mcp") {
-        lightbulb_desktop::local_sessions::serve_mcp();
-        return;
-    }
     if argv.get(1).map(String::as_str) == Some("local-session-hook") {
         // argv is untrusted: only the providers we install hooks for.
         let provider = match argv.get(2).map(String::as_str) {

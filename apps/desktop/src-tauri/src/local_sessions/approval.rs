@@ -97,20 +97,6 @@ pub(crate) fn display_summary(tool: &str, input: &Value, cwd: Option<&str>, home
     if matches!(tool, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb__send_message" | "mcp__lightbulb__message_receipt") {
         return "Lightbulb message".into();
     }
-    if tool == "mcp__lightbulb_native_sessions__receipt" {
-        return input["requestId"]
-            .as_str()
-            .filter(|id| super::native_mcp::allowed("receipt", input) && uuid::Uuid::parse_str(id).is_ok())
-            .map(|id| format!("receipt {id}"))
-            .unwrap_or_else(|| "Lightbulb message".into());
-    }
-    if let Some(name @ ("find_rooms" | "find_sessions" | "read_messages")) = tool.strip_prefix("mcp__lightbulb__") {
-        if super::native_mcp::internal(name, input).is_some() {
-            return serde_json::to_string(&lifecycle::canonical(input))
-                .map(|args| format!("{name} {args}"))
-                .unwrap_or_default();
-        }
-    }
     claude::summary(tool, input, cwd, home)
 }
 
@@ -125,31 +111,6 @@ pub(crate) fn exact(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&
             && redact(text) == text
             && text.bytes().all(|b| (0x20..0x7f).contains(&b))
     };
-    // Native sends are exact only when their full arguments reach the private
-    // approval path. The shared summary remains generic.
-    if let Some(name) = tool.strip_prefix("mcp__lightbulb_native_sessions__") {
-        if name == "send" {
-            return private_send_args(input);
-        }
-        if name == "receipt" {
-            return super::native_mcp::allowed(name, input)
-                && input["requestId"].as_str().is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
-                && shown(&display_summary(tool, input, cwd, home));
-        }
-        return false;
-    }
-    if let Some(name @ ("find_rooms" | "find_sessions" | "read_messages")) = tool.strip_prefix("mcp__lightbulb__") {
-        return super::native_mcp::internal(name, input).is_some()
-            && input.as_object().is_some_and(|args| {
-                args.values().all(|value| {
-                    value.is_u64()
-                        || value.as_str().is_some_and(|text| {
-                            text.bytes().all(|b| (0x20..0x7f).contains(&b)) && redact(text) == text
-                        })
-                })
-            })
-            && shown(&display_summary(tool, input, cwd, home));
-    }
     match tool {
         "Bash" => input["command"].as_str().is_some_and(shown),
         // A path is shown relative to the checkout or home; anywhere else only its
@@ -218,7 +179,8 @@ pub(crate) fn shown_input(tool: &str, raw: &Value) -> (Value, bool) {
 }
 
 fn private_send_args(input: &Value) -> bool {
-    if !super::native_mcp::allowed("send", input) {
+    // The retired app MCP's internal send shape: exactly destination, text and requestId.
+    if !input.as_object().is_some_and(|args| args.len() == 3) {
         return false;
     }
     let destination = input["destination"].as_str().unwrap_or("");
@@ -610,50 +572,15 @@ mod tests {
     }
 
     #[test]
-    fn local_sessions_approval_shows_complete_native_mcp_arguments() {
-        let list = "mcp__lightbulb__find_rooms";
-        let send = "mcp__lightbulb_native_sessions__send";
-        let receipt = "mcp__lightbulb_native_sessions__receipt";
-        assert!(exact(list, &json!({})));
-        assert_eq!(display_summary(list, &json!({}), None, None), "find_rooms {}");
-        assert!(exact(list, &json!({"query":"design","limit":5})));
-        assert!(!exact(list, &json!({"scope":"all"})));
-        let read = "mcp__lightbulb__read_messages";
-        assert_eq!(display_summary(read, &json!({"room_id":"r1","after_seq":4}), None, None), r#"read_messages {"after_seq":4,"room_id":"r1"}"#);
-        // An unmapped public send never shows its text.
-        assert_eq!(display_summary("mcp__lightbulb__send_message", &json!({"text":"secret","request_id":"x"}), None, None), "Lightbulb message");
-        assert!(!exact("mcp__lightbulb__send_message", &json!({"text":"secret","request_id":"x"})));
-
-        let args = json!({"destination":"room:demo","text":"check","requestId":"e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"});
-        assert!(exact(send, &args), "a bounded send can use the private approval path");
-        assert!(!exact(send, &json!({"destination":"room:demo","text":"check","requestId":"req-1"})));
-        for input in [args.clone(), json!({"text":"check","requestId":"e12fd3e8-32ca-4b65-8eaf-ab979e3c9449","destination":"room:demo"})] {
-            assert_eq!(display_summary(send, &input, None, None), "Lightbulb message");
-            assert_eq!(claude::summary(send, &input, None, None), "Lightbulb message");
-            let stdin = json!({"hook_event_name":"PermissionRequest","session_id":"s","tool_name":send,"tool_input":input});
-            let held = Held { id: format!("appr-{}", uuid::Uuid::new_v4().simple()), input_digest: digest(&input),
-                reply: "/private/approval.sock".into(), exact: true, modes: vec![], full: false };
-            let reported: Value = serde_json::from_slice(&lifecycle::build_held_datagram("claude", &stdin, &held)).unwrap();
-            assert_eq!(reported["waitingText"], "Lightbulb message");
-            assert!(!reported.to_string().contains("check"));
-            let unheld: Value = serde_json::from_slice(&lifecycle::build_datagram("claude", &stdin)).unwrap();
-            assert_eq!(unheld["waitingText"], "Lightbulb message");
-        }
-        let receipt_args = json!({"requestId":"e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"});
-        assert!(exact(receipt, &receipt_args));
-        assert_eq!(display_summary(receipt, &receipt_args, None, None), "receipt e12fd3e8-32ca-4b65-8eaf-ab979e3c9449");
-        assert!(!exact(receipt, &json!({"requestId":"req-1"})));
-        assert!(!exact(receipt, &json!({"requestId":"req-1","extra":"hidden"})));
-        assert!(!exact("mcp__lightbulb_native_sessions__send_more", &args));
-        assert!(!exact(receipt, &json!({"requestId":"line 1\nline 2"})));
-        assert!(!exact(receipt, &json!({"requestId":"caf\u{e9}"})));
-        assert!(!exact(receipt, &json!({"requestId":"sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"})));
-        assert!(!exact(receipt, &json!({"requestId":"x".repeat(201)})));
-        assert!(modes(
-            send,
-            &json!([{"type":"setMode","mode":"acceptEdits","destination":"session"}])
-        )
-        .is_empty());
+    fn local_sessions_approval_keeps_engine_tool_arguments_off_the_shared_prompt() {
+        // The engine's `lightbulb` tools: a send never shows its text, and none is relayed as exact.
+        let send = "mcp__lightbulb__send_message";
+        let args = json!({"text":"secret","request_id":"x","room_id":"r1"});
+        assert_eq!(display_summary(send, &args, None, None), "Lightbulb message");
+        assert!(!exact(send, &args));
+        assert!(!exact("mcp__lightbulb__find_rooms", &json!({})));
+        assert!(!exact("mcp__lightbulb_native_sessions__send", &json!({"destination":"room:demo","text":"check","requestId":"e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"})));
+        assert!(modes(send, &json!([{"type":"setMode","mode":"acceptEdits","destination":"session"}])).is_empty());
     }
 
     #[test]

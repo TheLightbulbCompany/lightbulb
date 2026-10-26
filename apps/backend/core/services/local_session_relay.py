@@ -78,6 +78,9 @@ class Descriptor(ContractModel):
     # this names the session it continues, so a listing shows one session, not two.
     forked_from: sessions.OpaqueId | None = None
     start_id: sessions.OpaqueId | None = None
+    # False: its person stopped sharing it on the Mac, which still registers it so the owner keeps
+    # it in their own list as "Only you" (2026-10-26). Absent leaves the row's sharing as it is.
+    shared: bool | None = None
 
 
 class Register(ContractModel):
@@ -660,7 +663,7 @@ class LocalSessionRelay:
                     compatible = descriptor.control_unavailable_reason is None
                     row = _revised(
                         previous or {},
-                        **descriptor.model_dump(by_alias=True),
+                        **descriptor.model_dump(by_alias=True, exclude={"shared"}),
                         pk=repo.session_pk(owner, sid),
                         sk="META",
                         ownerId=owner,
@@ -685,6 +688,12 @@ class LocalSessionRelay:
                     # have one, does not inherit its "Anyone with the link".
                     if previous and sessions.conversation_only(previous):
                         sessions.narrow_link(row)
+                    # Paused on the Mac: what `set_sharing(False)` writes, so it reads as "Only you".
+                    if descriptor.shared is False and not row.get("unshared"):
+                        row["unshared"] = True
+                        sessions.narrow_link(row)
+                        row.pop("pendingApproval", None)
+                        row.pop("privateSendApproval", None)
                     # Absent, never a stored null.
                     for key in ("holderId", "forkedFrom"):
                         if row.get(key) is None:

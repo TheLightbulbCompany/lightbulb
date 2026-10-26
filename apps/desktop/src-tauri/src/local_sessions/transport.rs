@@ -200,6 +200,13 @@ pub(super) fn stopped(key: &str, mirror: &Mirror) -> bool {
     asked(key).is_some_and(|(shared, _)| !shared) || mirror.withheld()
 }
 
+/// Shared once and then stopped (Only me) on this Mac: it still registers and heartbeats, as
+/// `shared: false`, so it stays in its owner's own list as "Only you" while it runs. Nothing of
+/// it is uploaded and it takes nothing. A session never shared registers nothing (2026-10-26).
+fn paused(mirror: &Mirror) -> bool {
+    mirror.withheld() && mirror.session_id.is_some()
+}
+
 type Verify = fn(PathBuf, NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>>;
 
 /// A reconciliation the journal alone cannot answer: the native process has to be checked
@@ -427,8 +434,15 @@ impl Host {
         if !mirror.registration.pending || mirror.dirty || reset_end {
             mirror.registration.pending = true;
             // Durable before the first send: retry this exact generation/CAS
-            // predecessor until ACK, even when discovery has already found C.
-            mirror.persist(&self.dir.join(format!("{key}.json")))?;
+            // predecessor until ACK, even when discovery has already found C. A generation the
+            // relay already acknowledged risks nothing on a lost write, so a full disk never keeps
+            // a reconnect's sessions off the relay.
+            let path = self.dir.join(format!("{key}.json"));
+            if !reset_end && mirror.registration.acknowledged.as_ref() == Some(&mirror.generation) {
+                mirror.persist(&path)?;
+            } else {
+                mirror.persist_durable(&path)?;
+            }
         }
         let mut frame = registration(mirror);
         if let Some(origin) = origin {
@@ -513,10 +527,17 @@ impl Host {
             let key = native_key(&native);
             // Started with Lightbulb (it has a holder: `lightbulb claude|codex`, New session, a
             // remote start, a resume, a pick-up), or moved to the background (←) out of a shared
-            // session: shared from its start.
+            // session its person used: shared from its start. Not out of one that never had a
+            // prompt (no transcript): Claude starts a job from an idle terminal to take another
+            // session's message, and that job was listed as a session nobody started (2026-10-26).
             let ours = native.holder.is_some()
                 || native.forked_from.as_deref().is_some_and(|origin| {
-                    self.mirrors.values().any(|m| m.shared && m.native.provider == native.provider && m.native.conversation == origin)
+                    self.mirrors.values().any(|m| {
+                        m.shared
+                            && m.native.transcript.is_some()
+                            && m.native.provider == native.provider
+                            && m.native.conversation == origin
+                    })
                 });
             let before = self
                 .mirrors
@@ -1751,10 +1772,19 @@ impl Host {
                 ) {
                     let sent = Instant::now();
                     let wall = SystemTime::now();
-                    let body = if recovering_ended.contains(&key) {
-                        self.begin_ended_recovery(&key)?
+                    let begun = if recovering_ended.contains(&key) {
+                        self.begin_ended_recovery(&key)
                     } else {
-                        self.begin_registration(&key)?
+                        self.begin_registration(&key)
+                    };
+                    // Not saved (a full disk): this session waits, the connection and every
+                    // other session stay.
+                    let body = match begun {
+                        Ok(body) => body,
+                        Err(error) => {
+                            quarantine(&mut quarantined, &mut registered, &mut sent_batches, &key, &error);
+                            continue;
+                        }
                     };
                     // Ended recovery overrides the wire reason without changing the
                     // native verdict; only a changed native verdict needs another register.
@@ -2794,6 +2824,9 @@ fn registration(mirror: &Mirror) -> Value {
         "providerVersion":mirror.native.version,"status":mirror.native.status,"activeTurnId":mirror.native.active_turn,"controlUnavailableReason":mirror.native.control_unavailable_reason(),
         "title":mirror.native.title,"cwdName":mirror.native.cwd_name,"holderId":mirror.native.holder,
         "workspace":mirror.workspace.summary()}});
+    if mirror.withheld() {
+        body["session"]["shared"] = json!(false);
+    }
     if let Some(previous) = &mirror.previous_generation {
         body["previousGeneration"] = json!(previous);
     }
@@ -2909,7 +2942,7 @@ fn registration_due_with_recovery(
         .find(|(key, mirror)| {
             (mirror.ended_at.is_none() || recovering_ended.contains(*key))
                 // A withheld session registers nothing, whatever it still waits on.
-                && !stopped(key, mirror)
+                && (!stopped(key, mirror) || paused(mirror))
                 && !registered.contains(*key)
                 && !quarantine_active(quarantined, key)
         })
@@ -3014,13 +3047,13 @@ fn device_heartbeats_with_controls(
     let mut frames = vec![];
     let mut sessions: Vec<Value> = vec![];
     for (key, m) in mirrors.iter().filter(|(key, m)| {
-        registered.contains(*key) && m.ended_at.is_none() && !stopped(key, m) && m.session_id.is_some()
+        registered.contains(*key) && m.ended_at.is_none() && (!stopped(key, m) || paused(m)) && m.session_id.is_some()
     }) {
         let entry = json!({"sessionId":m.session_id,"generation":m.generation,
             "status":m.native.status,"activeTurnId":m.native.active_turn,
             "controlUnavailableReason":m.native.control_unavailable_reason(),
             "title":m.native.title,"cwdName":m.native.cwd_name,
-            "lastAssistantMessage":m.native.last_assistant_message,
+            "lastAssistantMessage":if m.withheld() { None } else { m.native.last_assistant_message.as_deref() },
             "workspace":m.workspace.summary()});
         // Only to a relay that said it reads them: an older one rejects the whole frame.
         let mut entry = entry;
@@ -3466,17 +3499,23 @@ pub(super) mod tests {
         let outside = test_native("5eed0001-0000-4000-8000-000000000001");
         let mut held = test_native("5eed0002-0000-4000-8000-000000000002");
         held.holder = Some("ab12cd34".into());
+        held.transcript = Some(dir.path().join("held.jsonl"));
+        // A held terminal nobody prompted: Claude starts a job from it to take another session's message.
+        let mut idle_held = test_native("5eed0005-0000-4000-8000-000000000005");
+        idle_held.holder = Some("ab12cd35".into());
+        let mut peer_job = test_native("5eed0006-0000-4000-8000-000000000006");
+        peer_job.forked_from = Some(idle_held.conversation.clone());
         // ← out of a session that is shared, and out of one that is not.
         let mut fork = test_native("5eed0003-0000-4000-8000-000000000003");
         fork.forked_from = Some(held.conversation.clone());
         let mut private_fork = test_native("5eed0004-0000-4000-8000-000000000004");
         private_fork.forked_from = Some(outside.conversation.clone());
-        host.observe(vec![outside.clone(), held.clone()], &BTreeSet::new()).unwrap();
-        host.observe(vec![outside.clone(), held.clone(), fork.clone(), private_fork.clone()], &BTreeSet::new()).unwrap();
-        let shared: Vec<bool> = [&outside, &held, &fork, &private_fork].iter().map(|n| host.mirrors[&native_key(n)].shared).collect();
-        assert_eq!(shared, [false, true, true, false]);
+        host.observe(vec![outside.clone(), held.clone(), idle_held.clone()], &BTreeSet::new()).unwrap();
+        host.observe(vec![outside.clone(), held.clone(), idle_held.clone(), fork.clone(), private_fork.clone(), peer_job.clone()], &BTreeSet::new()).unwrap();
+        let shared: Vec<bool> = [&outside, &held, &fork, &private_fork, &peer_job].iter().map(|n| host.mirrors[&native_key(n)].shared).collect();
+        assert_eq!(shared, [false, true, true, false, false], "a job out of a terminal nobody prompted is not the person's");
 
-        // Only its person's: it registers, heartbeats and uploads nothing, and takes nothing.
+        // Only its person's and never shared: it registers, heartbeats and uploads nothing, and takes nothing.
         let key = native_key(&outside);
         let sid = "5eed0001-5e55-4000-8000-000000000001";
         let shared_keys: BTreeSet<String> = host.mirrors.iter().filter(|(_, m)| m.shared).map(|(k, _)| k.clone()).collect();
@@ -3490,7 +3529,11 @@ pub(super) mod tests {
         let listed = |host: &Host| {
             device_heartbeats(&host.mirrors, &every, false).unwrap().iter().any(|f| f["sessions"].as_array().is_some_and(|s| s.iter().any(|e| e["sessionId"] == sid)))
         };
-        assert!(!listed(&host));
+        // Known to the relay (shared once): it stays in its owner's list as Only you, with no text.
+        let entry = |host: &Host| device_heartbeats(&host.mirrors, &every, false).unwrap()[0]["sessions"].as_array().unwrap().iter().find(|e| e["sessionId"] == sid).cloned();
+        assert!(entry(&host).is_some_and(|e| e["lastAssistantMessage"].is_null()));
+        assert_eq!(registration(&host.mirrors[&key])["session"]["shared"], false);
+        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()).as_deref(), Some(key.as_str()));
         assert!(host.refuses_frame(&json!({"sessionId": sid})), "no terminal frame, watch or typed input");
 
         // Its person shares it: the whole session, from its start. It registers again.
@@ -3500,13 +3543,14 @@ pub(super) mod tests {
         assert_eq!(asked(&key), None);
         assert!(host.mirrors[&key].shared && host.mirrors[&key].cursor.offset == 0);
         assert!(listed(&host) && !host.refuses_frame(&json!({"sessionId": sid})));
+        assert!(registration(&host.mirrors[&key])["session"].get("shared").is_none(), "absent: the owner's own choice stands");
         assert!(host.mirrors.get_mut(&key).unwrap().next_batch().unwrap().is_some());
         assert!(private_read::<Mirror>(&dir.path().join(format!("{key}.json"))).unwrap().shared, "durable");
 
         // And stops: at once, and a holder found for it later does not undo that.
         ask_share(&key, false);
         assert!(host.share_tick().is_empty());
-        assert!(host.mirrors[&key].withheld() && !listed(&host));
+        assert!(host.mirrors[&key].withheld() && listed(&host), "paused: still its owner's, as Only you");
         let mut found = outside.clone();
         found.holder = Some("cd34ab12".into());
         host.observe(vec![found], &BTreeSet::new()).unwrap();
@@ -3719,7 +3763,9 @@ pub(super) mod tests {
         mirror.shared = false;
         mirror.pending = None;
         assert!(mirror.next_batch().unwrap().is_none());
-        assert_eq!(due(&mirrors), None);
+        // It still registers, as Only you, so its owner keeps it in their list.
+        assert_eq!(due(&mirrors), Some("plain".to_string()));
+        assert_eq!(registration(&mirrors["plain"])["session"]["shared"], false);
     }
 
     #[test]

@@ -872,8 +872,8 @@ its own palette), `lib/clerkAppearance.ts` (`var()` tokens with brand fallbacks,
 `*Brand.ts` vendor marks, and tests (`__tests__/`, `*.test.*`, which hold
 literals as fixtures) —
 `src/__tests__/brandTokens.test.ts` enforces it,
-`node scripts/brand-tokens-scan.mjs` lists offenders. Fonts: Source Sans 3 (UI) /
-Lora (prose) / mono for code only.
+`node scripts/brand-tokens-scan.mjs` lists offenders. Fonts: Satoshi (headers, navigation, UI
+accents) / Inter (message bodies, prose) / mono for code only (#4375).
 
 **`packages/shared` (`@lightbulb/shared`) is load-bearing:** the framework-neutral
 API client (`createApiClient`), the dependency-free AppSync live-event client

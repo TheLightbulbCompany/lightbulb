@@ -179,9 +179,9 @@ async def _checkpoint(owner: str, state: dict) -> dict:
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise BrowserError("Could not save browser state. Try Done again.")
     await _save_extension_storage(owner, state, key)
+    await _save_profile(owner, state)
     return {
         "saved_key": key,
-        "profile_key": await _save_profile(owner, state, key),
         "saved_at": datetime.now(timezone.utc).isoformat(),
         # An image without the three-way merge writes no base: its next save starts from none.
         "base_key": base_out if result.get("base") is True else None,
@@ -192,25 +192,17 @@ async def _checkpoint(owner: str, state: dict) -> dict:
     }
 
 
-def _profile_tag(profile_id: str, key: str) -> str:
-    return f"{profile_id}:{key}"
-
-
-async def _save_profile(owner: str, state: dict, key: str) -> str | None:
+async def _save_profile(owner: str, state: dict) -> None:
     """Also save the live session into the workspace's AgentCore profile, which the next session
-    starts with (``profileConfiguration``): AWS restores its cookies, httpOnly and session cookies
-    included, before anything connects (dev probe 2026-10-26). It does not restore localStorage
-    (probes 2026-09-20 and 10-26), so the S3 snapshot keeps carrying that, and stays the store a
-    paired Mac merges with. Returns the tag of the S3 save the profile now matches, or None: a
-    stale session (a Mac published what it has not loaded) differs from the merged save, and a
-    failed save (AWS saves only from a live session) leaves the profile older. With None the next
-    restore loads the cookies from S3, as before."""
-    if _stale(state):
-        return None
+    starts with (``profileConfiguration``). Best effort, and never trusted on restore: page
+    actions and sites' own cookie rotation change cookies with no save in between, so nothing can
+    say a profile still matches an S3 save. Every restore clears the cookies and loads the S3
+    save's, as before (Codex on #4382). The profile does not carry localStorage either (dev
+    probes 2026-09-20, 10-26)."""
     row = await container_repo.get_by_owner_id(owner, consistent=True)
     profile_id = (row or {}).get("browser_profile_id")
     if not profile_id:
-        return None
+        return
     try:
         await run_in_thread(
             browser_sessions._data_client().save_browser_session_profile,
@@ -220,8 +212,6 @@ async def _save_profile(owner: str, state: dict, key: str) -> str | None:
         )
     except Exception as exc:  # noqa: BLE001 -- the S3 save stands; the next restore uses it
         logger.warning("browser profile save failed for %s: %s", owner, type(exc).__name__)
-        return None
-    return _profile_tag(profile_id, key)
 
 
 # ---- each installed extension's own chrome.storage ------------------------------------------
@@ -377,12 +367,10 @@ async def _commit_checkpoint(owner: str, state: dict, saved: dict) -> dict:
     return next_state
 
 
-async def _restore(owner: str, state: dict, profile_id: str | None = None) -> str | None:
+async def _restore(owner: str, state: dict) -> str | None:
     """Load the last save into the new session; return the key of its merge base (the
     session's own export right after the load, which an image with the three-way merge
-    writes), or None when there was nothing to load or the image wrote no base. When the
-    workspace profile (``profile_id``) holds exactly this save, the session already started
-    with its cookies: only localStorage is loaded, never the cookies a second time."""
+    writes), or None when there was nothing to load or the image wrote no base."""
     key = state.get("saved_key")
     base = _base_key(owner, state)
     if not key:
@@ -414,8 +402,6 @@ async def _restore(owner: str, state: dict, profile_id: str | None = None) -> st
             "cdpUrl": await _cdp(state["session_id"]),
             "stateUrl": await run_in_thread(_state_url, key, "get_object"),
             "baseOutUrl": await run_in_thread(_state_url, base, "put_object"),
-            # An older image ignores it and loads the same cookies again.
-            "cookies": not (profile_id and state.get("profile_key") == _profile_tag(profile_id, key)),
         },
         timeout_s=180,
     )
@@ -512,10 +498,7 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
             )
             if not await _owned(owner, row, state):
                 raise BrowserError("Browser is still starting. Try again shortly.")
-            restored = {
-                "base_key": await _restore(owner, state, row["browser_profile_id"]),
-                "live_key": state.get("saved_key"),
-            }
+            restored = {"base_key": await _restore(owner, state), "live_key": state.get("saved_key")}
         else:
             restored = {}
         # Always on: a person's input goes through the live view whether or not an agent is
@@ -532,10 +515,7 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
                 await _discard_uncommitted(owner, state)
                 restored = {"live_key": None}
             else:
-                restored = {
-                    "base_key": await _restore(owner, state, row["browser_profile_id"]),
-                    "live_key": state["saved_key"],
-                }
+                restored = {"base_key": await _restore(owner, state), "live_key": state["saved_key"]}
         if run_id:
             nxt = {
                 **_free(state),

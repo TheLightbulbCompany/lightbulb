@@ -932,10 +932,10 @@ that will mislead you otherwise:
   CDP address, which the bridge serves to agent-browser on loopback. Saved state
   lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
   the existing containers table at `__browser__#<owner>` (survives reprovision).
-  Every save also writes the session into the workspace's AgentCore Browser Profile, which the
-  next session starts with: when it holds the latest save, AWS restores the cookies and the restore
-  loads only localStorage (a
-  profile does not carry it). The S3 snapshot stays the merge store a paired Mac reads and writes.
+  Every save also writes the session into the workspace's AgentCore Browser Profile (best
+  effort), which the next session starts with. The restore still clears the cookies and loads
+  the S3 save's: nothing can prove the profile matches that save, since cookies change between
+  saves with no save. S3 stays the truth and the merge store a paired Mac reads and writes.
   It does not use the retired OpenClaw live-view WS or
   `routers/browser_view.py`. See `docs/architecture/current-system.md`.
 - **`/admin`** only resolves on allowed admin hosts (`admin.thelightbulb.company`,

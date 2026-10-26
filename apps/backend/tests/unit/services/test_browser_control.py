@@ -1175,3 +1175,16 @@ async def test_sign_out_refuses_a_public_suffix_and_leaves_sibling_sites_alone(w
     after = json.loads(saved[workspace["browser_state"]["saved_key"]])
     assert [c["domain"] for c in after["cookies"]] == ["other.com.ph"]
     assert [o["origin"] for o in after["origins"]] == ["https://other.com.ph"]
+
+
+@pytest.mark.asyncio
+async def test_the_owner_role_is_granted_the_vpc_browser_once_before_a_session_starts(monkeypatch):
+    """Codex on #4391: computer use calls InvokeBrowser under the owner's role, which names only
+    the built-in browser until it is rewritten."""
+    monkeypatch.setattr(control.bedrock_aip, "BROWSER_ID", "lightbulb_dev_workspace_browser-Ab12Cd34Ef")
+    monkeypatch.setattr(control, "_GRANTED", set())
+    grant = AsyncMock()
+    monkeypatch.setattr(control.bedrock_aip, "ensure_owner_browser_policy", grant)
+    await control._grant_browser("org_browser", "profile")
+    await control._grant_browser("org_browser", "profile")
+    grant.assert_awaited_once_with("org_browser", "profile")

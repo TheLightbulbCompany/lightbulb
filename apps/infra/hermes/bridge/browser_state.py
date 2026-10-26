@@ -56,7 +56,9 @@ SAME_SITE = {"Strict", "Lax", "None"}
 COOKIE_KEYS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite", "partitionKey")
 #: More loaded domains than this vanishing at once from a Mac is a reset profile, not sign-outs.
 MASS_SIGNOUT_MIN = 5
-_CDP_PATH = re.compile(r"^/browser-streams/aws\.browser\.v1/sessions/[A-Za-z0-9]+/automation$")
+#: Any AgentCore browser: the built-in ``aws.browser.v1`` or the env's VPC-mode custom browser
+#: (``lightbulb_<env>_workspace_browser-<id>``). The host check above keeps it on AWS.
+_CDP_PATH = re.compile(r"^/browser-streams/[A-Za-z0-9._-]+/sessions/[A-Za-z0-9]+/automation$")
 
 
 def _valid_url(value: object, scheme: str) -> str:

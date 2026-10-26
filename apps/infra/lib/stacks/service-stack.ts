@@ -173,6 +173,8 @@ export interface ServiceStackProps extends cdk.StackProps {
     /** The env's shared AgentCore Memory id (ContainerStack.workspaceMemory). One export, not two:
      *  the ARN is derived here, so the container stack pins as little as possible. */
     workspaceMemoryId: string;
+    /** The env's workspace browser id (ContainerStack.workspaceBrowser, VPC mode). */
+    workspaceBrowserId: string;
   };
   managementApiUrl: string;
   /** Public wss:// endpoint returned by /api/v1/desktop/pair so desktop clients
@@ -271,6 +273,10 @@ export interface ServiceStackProps extends cdk.StackProps {
  * in one deploy.
  */
 const MANAGED_BY_ACCEPTED = ["lightbulb-backend"];
+
+/** Envs whose workspace sessions run on the VPC-mode AgentCore browser (fixed egress address).
+ *  Add an env only after its runtimes are rolled onto an image built from #4391 or later. */
+const VPC_BROWSER_ENVS = new Set<string>([]);
 
 export class ServiceStack extends cdk.Stack {
   public readonly service: ecs.FargateService;
@@ -488,6 +494,13 @@ export class ServiceStack extends cdk.Stack {
 
     // AgentCore Browser: the backend mints/reads the per-workspace profile and owns the
     // session lifecycle; the session id lives on the workspace's browser row, so it lists none.
+    // Sessions start on the env's VPC browser (ContainerStack.workspaceBrowser); the built-in
+    // browser stays granted so a session started on it before the move can still be viewed and
+    // stopped.
+    const browserArns = [
+      agentcoreArn(`browser-custom/${props.container.workspaceBrowserId}`),
+      `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,
+    ];
     // Browser-profile state snapshots use the released agent-browser CLI; no
     // SaveBrowserSessionProfile grant.
     agentCorePolicy.addStatements(
@@ -511,18 +524,14 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:GetBrowserSession",
           "bedrock-agentcore:ConnectBrowserLiveViewStream",
         ],
-        resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
+        resources: browserArns,
       }),
     );
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreBrowserSessionStart",
         actions: ["bedrock-agentcore:StartBrowserSession"],
-        resources: [
-          agentcoreArn("browser/*"),
-          `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,
-          agentcoreArn("browser-profile/*"),
-        ],
+        resources: [...browserArns, agentcoreArn("browser-profile/*")],
       }),
     );
     agentCorePolicy.addStatements(
@@ -533,7 +542,7 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:UpdateBrowserStream",
           "bedrock-agentcore:ConnectBrowserAutomationStream",
         ],
-        resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
+        resources: browserArns,
       }),
     );
 
@@ -1505,6 +1514,10 @@ export class ServiceStack extends cdk.Stack {
       // Stamped into every runtime spec as AGENTCORE_MEMORY_ID; the image enables its memory
       // provider only when it is set (N-1 safe: an older image ignores it).
       AGENTCORE_MEMORY_ID: props.container.workspaceMemoryId,
+      // The browser every workspace session starts on (bedrock_aip.BROWSER_ID); unset = the
+      // built-in one. Per env, and only once every runtime there runs a bridge that accepts a
+      // custom browser's CDP URL (#4391): an older bridge refuses it and the browser fails.
+      ...(VPC_BROWSER_ENVS.has(env) ? { AGENTCORE_BROWSER_ID: props.container.workspaceBrowserId } : {}),
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,

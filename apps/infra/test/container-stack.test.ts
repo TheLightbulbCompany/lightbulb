@@ -76,11 +76,11 @@ describe("ContainerStack — dev", () => {
 
   test("declares none of the retired per-user resources", () => {
     // The EFS filesystem, its security group, the two per-user ECS roles and the
-    // per-user Cloud Map service went with the runtime. One security group is
-    // left (ContainerSecurityGroup, asserted above) and one Cloud Map resource
-    // (the namespace Paperclip registers into).
+    // per-user Cloud Map service went with the runtime. Two security groups are
+    // left (ContainerSecurityGroup, asserted above, and the workspace browser's) and
+    // one Cloud Map resource (the namespace Paperclip registers into).
     template.resourceCountIs("AWS::EFS::FileSystem", 0);
-    template.resourceCountIs("AWS::EC2::SecurityGroup", 1);
+    template.resourceCountIs("AWS::EC2::SecurityGroup", 2);
     template.resourceCountIs("AWS::ServiceDiscovery::Service", 0);
     const roleNames = Object.values(template.findResources("AWS::IAM::Role")).map(
       (r: any) => r.Properties?.RoleName,
@@ -344,7 +344,7 @@ describe("ContainerStack — prod", () => {
     // PR's dispatch. Precondition for the prod deploy of THIS PR: `cdk diff`
     // renders fs-07640461cc0f09b14 as `destroy`, never `orphan`. See Rollout.
     template.resourceCountIs("AWS::EFS::FileSystem", 0);
-    template.resourceCountIs("AWS::EC2::SecurityGroup", 1);
+    template.resourceCountIs("AWS::EC2::SecurityGroup", 2); // ContainerSecurityGroup + the workspace browser's
     template.resourceCountIs("AWS::ServiceDiscovery::Service", 0);
     const roleNames = Object.values(template.findResources("AWS::IAM::Role")).map(
       (r: any) => r.Properties?.RoleName,
@@ -398,7 +398,7 @@ describe("ContainerStack — CFN exports", () => {
     template = Template.fromStack(containerStack!);
   });
 
-  test("publishes exactly the seven exports its live consumers import", () => {
+  test("publishes exactly the eight exports its live consumers import", () => {
     // The eight transitional `exportValue` pins are gone, together with the EFS
     // filesystem, the EFS security group, the two per-user ECS roles and the
     // per-user Cloud Map service they named. What is left is exactly what
@@ -416,6 +416,8 @@ describe("ContainerStack — CFN exports", () => {
       "lightbulb-dev-container:ExportsOutputFnGetAttClusterEB0386A7Arn2F2E3C3F",
       "lightbulb-dev-container:ExportsOutputFnGetAttContainerSecurityGroup38DC7A88GroupId12565082",
       "lightbulb-dev-container:ExportsOutputFnGetAttNamespaceV2A3FDDFD9Id65EAD270",
+      // The workspace browser (VPC mode): -service names it in the backend env and the grants.
+      "lightbulb-dev-container:ExportsOutputFnGetAttWorkspaceBrowserBrowserId09016DCA",
       // Workspace memory (Track G): -service stamps the id into the backend env and derives the
       // wipe grant's ARN from it -- one export, not two.
       "lightbulb-dev-container:ExportsOutputFnGetAttWorkspaceMemoryMemoryIdFA6E3207",

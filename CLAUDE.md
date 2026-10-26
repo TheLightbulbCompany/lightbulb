@@ -929,7 +929,12 @@ that will mislead you otherwise:
   viewer and refuses the next at authentication, so the page holds exactly one DCV client
   (`panels/sharedLiveView.tsx`): the panel shows the real display, previews a `captureStream()`
   copy, and a refused viewer says "Being watched elsewhere" instead of retrying. The backend owns sessions and hands each run a signed
-  CDP address, which the bridge serves to agent-browser on loopback. Saved state
+  CDP address, which the bridge serves to agent-browser on loopback. Each env has a VPC-mode
+  AgentCore browser (`ContainerStack.workspaceBrowser`; its own security group, out on 80/443
+  only) that leaves from the NAT's fixed address; the built-in `aws.browser.v1` leaves from a new
+  AWS address every session, and sites such as Google sign a moved session out. An env uses it
+  once it is in `service-stack.ts`'s `VPC_BROWSER_ENVS` (which sets `AGENTCORE_BROWSER_ID`), and
+  only after its runtimes are rolled onto a bridge that accepts a custom browser's CDP URL. Saved state
   lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
   the existing containers table at `__browser__#<owner>` (survives reprovision).
   It does not use the retired OpenClaw live-view WS or

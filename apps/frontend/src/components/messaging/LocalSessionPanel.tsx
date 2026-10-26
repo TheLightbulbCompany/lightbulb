@@ -151,7 +151,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const showBrowser = browserTab && browserFor === session.sessionId;
   const pickView = (conversation: boolean) => { setConvoView(conversation); try { window.localStorage.setItem(VIEW_KEY, conversation ? "conversation" : "terminal"); } catch { /* storage blocked: this visit only */ } };
   // Keys typed into the live terminal from outside it (a question's answer).
-  const keys = useRef<((data: string) => void) | null>(null);
+  const keys = useRef<((data: string) => Promise<unknown>) | null>(null);
   const [screenLive, setScreenLive] = useState(false);
   // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
   const [termCanType, setTermCanType] = useState(true);
@@ -480,15 +480,21 @@ function JoinRequests({ waiting, ids, line, decide: send, enabled, personName }:
  * toggles by digit and moves on with →; two or more questions, or any multi-select, end on a review
  * screen that takes Enter). "Type something" stays in the terminal.
  */
-function QuestionAnswer({ questions, keys }: { questions: SessionQuestion[]; keys: React.RefObject<((data: string) => void) | null> }) {
+function QuestionAnswer({ questions, keys }: { questions: SessionQuestion[]; keys: React.RefObject<((data: string) => Promise<unknown>) | null> }) {
   const [picks, setPicks] = useState<number[][]>(() => questions.map(() => []));
-  const [sent, setSent] = useState(false);
+  // "sent" only once the relay took every key; a failure leaves the buttons on to try again.
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const sent = state === "sending" || state === "sent";
   const send = async (answer: number[][]) => {
-    setSent(true);
-    for (const [i, key] of questionKeys(questions, answer).entries()) {
-      if (i) await new Promise(done => setTimeout(done, KEY_GAP_MS));
-      keys.current?.(key);
-    }
+    setState("sending");
+    try {
+      for (const [i, key] of questionKeys(questions, answer).entries()) {
+        if (i) await new Promise(done => setTimeout(done, KEY_GAP_MS));
+        if (!keys.current) throw new Error("no terminal");
+        await keys.current(key);
+      }
+      setState("sent");
+    } catch { setState("failed"); }
   };
   // One single-select question: a click is the answer.
   const oneClick = questions.length === 1 && !questions[0].multiSelect;
@@ -506,6 +512,7 @@ function QuestionAnswer({ questions, keys }: { questions: SessionQuestion[]; key
       </div>
     </fieldset>)}
     {!oneClick && <Button type="button" size="sm" disabled={sent || !ready} onClick={() => void send(picks)}>Send answer</Button>}
-    {sent && <p role="status" className="text-ui text-muted-foreground">Sent to the terminal.</p>}
+    {state === "sent" && <p role="status" className="text-ui text-muted-foreground">Sent to the terminal.</p>}
+    {state === "failed" && <p role="alert" className="text-ui text-warn">Couldn&apos;t send, try again.</p>}
   </div>;
 }

@@ -7,12 +7,12 @@ import { LocalSessionPanel } from "../LocalSessionPanel";
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "alice", orgId: "org_1" }) }));
 // The terminal itself is tested in SessionTerminalView.test; here it just reports that it is live.
-const typing = vi.hoisted(() => ({ canType: true, admitted: undefined as boolean | undefined, kept: undefined as boolean | undefined, mounts: 0, typed: [] as string[] }));
+const typing = vi.hoisted(() => ({ canType: true, admitted: undefined as boolean | undefined, kept: undefined as boolean | undefined, mounts: 0, typed: [] as string[], failKeys: 0 }));
 vi.mock("../SessionTerminalView", async () => {
   const { useEffect } = await import("react");
-  return { SessionTerminalView: ({ onLive, onCanType, admitted, kept, keys }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void; admitted?: boolean; kept?: boolean; keys?: { current: ((d: string) => void) | null } }) => {
+  return { SessionTerminalView: ({ onLive, onCanType, admitted, kept, keys }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void; admitted?: boolean; kept?: boolean; keys?: { current: ((d: string) => Promise<unknown>) | null } }) => {
     typing.admitted = admitted; typing.kept = kept;
-    if (keys) keys.current = (d) => { typing.typed.push(d); };
+    if (keys) keys.current = async (d) => { if (typing.failKeys > 0) { typing.failKeys -= 1; throw new Error("relay 502"); } typing.typed.push(d); };
     useEffect(() => { typing.mounts += 1; }, []);
     useEffect(() => { onLive(true); onCanType?.(typing.canType); }, [onLive, onCanType]);
     return <div role="region" aria-label="Live terminal (view only)"><div className="session-terminal-scroll" /></div>;
@@ -532,7 +532,19 @@ describe("a question answered from Lightbulb", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
     await waitFor(() => expect(typing.typed).toEqual(["2"]));
     expect(screen.queryByText("Answer it in the live terminal below.")).toBeNull();
-    expect(screen.getByText("Sent to the terminal.")).toBeTruthy();
+    expect(await screen.findByText("Sent to the terminal.")).toBeTruthy();
+  });
+
+  it("says it could not send, and keeps the buttons, when the relay fails a key", async () => {
+    typing.typed = []; typing.failKeys = 1;
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
+    expect(await screen.findByText("Couldn't send, try again.")).toBeTruthy();
+    expect(screen.queryByText("Sent to the terminal.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Coffee" }));
+    expect(await screen.findByText("Sent to the terminal.")).toBeTruthy();
+    expect(typing.typed).toEqual(["2"]);
   });
 
   it("types each pick, then Enter for the review screen, for two questions", async () => {

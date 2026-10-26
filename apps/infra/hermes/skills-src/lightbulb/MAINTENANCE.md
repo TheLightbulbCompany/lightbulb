@@ -122,7 +122,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/backend/core/services/browser_sessions.py; apps/backend/core/services/browser_control.py; apps/infra/hermes/Dockerfile (agent-browser pin);
                                  apps/infra/hermes/bridge/browser_control.py (shared-screen yield; one lease for
                                  the bridge, released ~30 s after the last run browses) + bridge/cdp_mux.py (one
-                                 AWS connection, each run its own tab, the run's tabs closed at its end).
+                                 AWS connection, each run its own tab, the run's tabs closed at its end except a
+                                 sign-in page: cdp_mux._SIGN_IN).
                                  The shared-screen facts (no take-control/Done, autosave, fresh snapshot after a
                                  person's input, sign-in by the person or the vault) must match both.
   - New session (small form with Start, no first message, web and desktop only; iPhone still asks) ... references/surfaces.md ("New session" paragraph)

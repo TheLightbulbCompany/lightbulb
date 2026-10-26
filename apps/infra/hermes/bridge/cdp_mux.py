@@ -50,6 +50,7 @@ import itertools
 import json
 import logging
 import os
+import re
 import threading
 import time
 from urllib.parse import urlparse
@@ -83,6 +84,13 @@ KEYS = {"Enter": (13, "\r"), "Backspace": (8, ""), "Tab": (9, ""), "Escape": (27
 #: The one AWS automation connection every run shares. Named upstreams (paired Macs) are additional,
 #: independent entries in ``_UPS`` alongside this one.
 CLOUD = "cloud"
+#: A tab on a sign-in page (a login, a 2-step check, an approval prompt) outlives its run: a person
+#: may still be approving it on their phone or typing a code into the live view, and closing it
+#: throws the approved sign-in away (prod 2026-10-26: Google's "Verify it's you" closed at turn
+#: end, every approval since 10-19 landed on a closed tab). It is left to the person, in the shared
+#: cookie jar every agent uses; the browser's own stop closes it.
+_SIGN_IN = re.compile(r"(?:^|[./_-])(?:sign-?in|log-?in|challenge|verify|verification|mfa|2fa|two-?factor|otp|sso"
+                      r"|oauth2?|authorize|authenticate|auth)(?:$|[./_-])", re.I)
 #: Raw bytes per ``Lightbulb.stageFile``: ~11 MB of base64, under the relay's 16 MiB CDP frame.
 STAGE_CHUNK = 8 * 1024 * 1024
 #: One setFileInputFiles' staged files, together (the desktop caps each file at the same).
@@ -205,7 +213,8 @@ def set_upstream(url: str, generation, upstream: str = CLOUD) -> None:
 
 def close_run(run_id: str, upstream: str | None = None) -> None:
     """The run ended: close its tabs and its clients on ``upstream`` (None: every upstream the run
-    is registered on). agent-browser's `close` leaves tabs open."""
+    is registered on), except a tab on a sign-in page (``_SIGN_IN``). agent-browser's `close`
+    leaves tabs open."""
     if _loop is not None:
         _run(_close_run_everywhere(run_id, upstream))
 
@@ -551,7 +560,15 @@ async def _close_run(state: _State, key: str) -> None:
     state.stale.discard(key)
     state.want.pop(key, None)
     await _stop_cast(state, key)
-    for target in state.tabs.pop(key, []):
+    tabs = state.tabs.pop(key, [])
+    signing_in: set = set()
+    if tabs and state.up is not None:
+        with contextlib.suppress(Exception):  # unreadable: close them all, as before
+            infos = (await _call(state, "Target.getTargets", timeout=3.0)).get("targetInfos") or []
+            signing_in = {t.get("targetId") for t in infos if signing_in_url(t.get("url"))}
+    for target in tabs:
+        if target in signing_in:
+            continue
         if state.up is not None:
             uid = next(state.ids)  # fire and forget: nobody waits on a closing tab
             with contextlib.suppress(Exception):
@@ -562,6 +579,14 @@ async def _close_run(state: _State, key: str) -> None:
             with contextlib.suppress(Exception):
                 await client.close()
     _KEYS.pop(key, None)
+
+
+def signing_in_url(url) -> bool:
+    """An http(s) page whose host or path names a sign-in step (never its query)."""
+    if not isinstance(url, str):
+        return False
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(_SIGN_IN.search(parsed.netloc + parsed.path))
 
 
 def _forget(state: _State, client) -> None:

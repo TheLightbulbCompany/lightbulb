@@ -68,9 +68,10 @@ pub(super) fn offer(resume: &Value, mirrors: &BTreeMap<String, Mirror>) {
     let config = claude_config(&home_dir());
     let wanted = tag(resume, |provider, conversation| {
         let mut newest = latest(&config, provider, conversation);
-        // The transcripts say nothing more (an origin's tail unreadable or gone): a live session
-        // that remembers `conversation` as one of its earlier ids is still where it went.
-        if newest == conversation {
+        // Only while the transcript cannot say (it is gone): a readable one that did not move on
+        // means its person kept using it, and the continuation is a branch beside it. Then a live
+        // session that remembers `conversation` as one of its earlier ids is where it went.
+        if newest == conversation && provider == "claude" && super::snapshot::find_transcript(&config, conversation).is_none() {
             if let Some(m) = mirrors
                 .values()
                 .find(|m| m.ended_at.is_none() && m.native.provider == provider && m.native.aliases.iter().any(|a| a == conversation))

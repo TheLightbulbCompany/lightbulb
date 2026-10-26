@@ -689,7 +689,11 @@ class LocalSessionRelay:
                     if previous and sessions.conversation_only(previous):
                         sessions.narrow_link(row)
                     # Paused on the Mac: what `set_sharing(False)` writes, so it reads as "Only you".
-                    if descriptor.shared is False and not row.get("unshared"):
+                    # Only for a new run: the same run reconnecting may carry a pause its owner has
+                    # since lifted from the web while the Mac was offline, and the Mac takes that
+                    # from presence. Its own pauses reach us as `set_sharing` (the band, a stop owed).
+                    new_run = previous is None or previous["generation"] != descriptor.generation
+                    if descriptor.shared is False and new_run and not row.get("unshared"):
                         row["unshared"] = True
                         sessions.narrow_link(row)
                         row.pop("pendingApproval", None)

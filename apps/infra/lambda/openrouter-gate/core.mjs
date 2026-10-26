@@ -3,8 +3,8 @@ import { reserve, release, recordFree, releaseFree } from './ledger.mjs';
 import { forward } from './forward.mjs';
 
 class GateError extends Error {
-  constructor(status, message, code) { super(message); this.status = status; this.code = code; }
-  body() { return JSON.stringify({ error: { message: this.message, type: 'gate_error', ...(this.code ? { code: this.code } : {}) } }); }
+  constructor(status, message, code, extra) { super(message); this.status = status; this.code = code; this.extra = extra; }
+  body() { return JSON.stringify({ error: { message: this.message, type: 'gate_error', ...(this.code ? { code: this.code } : {}), ...this.extra } }); }
 }
 // Mirrors bedrock-gate/errors.mjs trialCap: the code the limit card keys on.
 const dailyCap = () => new GateError(429, 'Lightbulb: daily limit reached — resets at midnight UTC', 'trial_daily_cap');
@@ -27,14 +27,15 @@ async function keyIsSpent(key, keyInfoImpl) {
 }
 
 // Shared by chat and the models-list probe: same bearer -> owner_id -> denied check.
-async function authenticateOwner(event, ddb, env) {
+// Returns {ownerId, agentId}; agentId is null for a legacy owner-level bearer (a mid-roll runtime).
+export async function authenticateOwner(event, ddb, env) {
   const bearer = /^(?:Bearer)\s+(\S+)$/i.exec(event.headers?.authorization ?? event.headers?.Authorization ?? '')?.[1];
   if (!bearer) fail(401, 'Invalid gateway token');
   const hash = createHash('sha256').update(bearer).digest('hex');
   const token = (await ddb.getItem({ TableName: env.TOKENS_TABLE, Key: { token_hash: { S: hash } }, ConsistentRead: true }))?.Item;
   const ownerId = S(token, 'owner_id');
   if (!ownerId || token?.denied?.BOOL) fail(token?.denied?.BOOL ? 403 : 401, 'Invalid gateway token');
-  return ownerId;
+  return { ownerId, agentId: S(token, 'agent_id') || null };
 }
 const routeFields = ['models', 'plugins', 'provider', 'route', 'user', 'metadata', 'trace', 'debug', 'service_tier', 'modalities', 'audio', 'prediction'];
 const isTextPart = part => part?.type === 'text' && typeof part.text === 'string' && Object.keys(part).every(key => key === 'type' || key === 'text');
@@ -119,7 +120,7 @@ export function prepareBody(input, policy, ownerId, env) {
 }
 
 export async function handleRequest(event, responder, { ddb, secrets, env, forwardImpl = forward, keyInfoImpl = keyInfo, log = console.log }) {
-  let ownerId, estimate, requestId, model;
+  let ownerId, agentId, estimate, requestId, model;
   try {
     const method = event.requestContext?.http?.method ?? event.httpMethod;
     // Hermes's OpenAI-compatible "custom" provider resolves context length for a base_url it
@@ -127,7 +128,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     // when base_url already ends in "/v1", the stripped "<host>/models" too (agent/model_metadata.py
     // fetch_endpoint_model_metadata) -- both land here as pre-auth 404s. Answer them instead.
     if (method === 'GET' && (event.rawPath === '/v1/models' || event.rawPath === '/models')) {
-      ownerId = await authenticateOwner(event, ddb, env);
+      ({ ownerId, agentId } = await authenticateOwner(event, ddb, env));
       const policy = JSON.parse(env.MODEL_POLICY_JSON);
       const data = (policy.models ?? []).map(id => ({ id, object: 'model', owned_by: 'lightbulb' }));
       responder.writeHead(200, { 'content-type': 'application/json' });
@@ -136,7 +137,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       return;
     }
     if (method !== 'POST' || event.rawPath !== '/v1/chat/completions') fail(404, 'Unknown route');
-    ownerId = await authenticateOwner(event, ddb, env);
+    ({ ownerId, agentId } = await authenticateOwner(event, ddb, env));
     const billing = (await ddb.getItem({ TableName: env.BILLING_TABLE, Key: { owner_id: { S: ownerId } }, ConsistentRead: true }))?.Item;
     const status = S(billing, 'subscription_status');
     // Capped traffic costs real money now: an EXPIRED trial and a lapsed Base are refused
@@ -175,7 +176,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     requestId = randomUUID();
     estimate = billingMode === 'paid' ? reservationFor(body, policy, env.OPENROUTER_MARKUP) : 0;
     if (billingMode === 'paid' && (!S(billing, 'metronome_customer_id') || !S(billing, 'metronome_contract_id'))) fail(429, 'Credit ledger unavailable');
-    const outbox = { request_id: { S: requestId }, owner_id: { S: ownerId }, key_hash: { S: S(keyRow, 'key_hash') }, secret_name: { S: S(keyRow, 'secret_name') }, model: { S: body.model }, policy_revision: { S: String(policy.revision) }, billing_mode: { S: billingMode }, reservation_microcents: { N: String(estimate) }, state: { S: 'pending' }, created_at: { N: String(Math.floor(Date.now() / 1000)) } };
+    const outbox = { request_id: { S: requestId }, owner_id: { S: ownerId }, ...(agentId ? { agent_id: { S: agentId } } : {}), key_hash: { S: S(keyRow, 'key_hash') }, secret_name: { S: S(keyRow, 'secret_name') }, model: { S: body.model }, policy_revision: { S: String(policy.revision) }, billing_mode: { S: billingMode }, reservation_microcents: { N: String(estimate) }, state: { S: 'pending' }, created_at: { N: String(Math.floor(Date.now() / 1000)) } };
     const admitted = billingMode === 'paid' ? await reserve(ddb, env, ownerId, estimate, outbox) : await recordFree(ddb, env, outbox);
     if (!admitted) fail(429, 'Credit balance exhausted');
     // Owner question: do paying customers draw on the cheap-model budget?
@@ -225,6 +226,18 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       }
     }
     if (result.generationId) await onGenerationId(result.generationId);
+    // The model that actually answered (openrouter/auto picks one): kept on the ledger row so a downgrade is visible.
+    if (result.model && result.generationId) {
+      try { await ddb.updateItem({ TableName: env.REQUESTS_TABLE, Key: { request_id: { S: requestId } }, UpdateExpression: 'SET resolved_model = :model', ConditionExpression: 'attribute_exists(request_id)', ExpressionAttributeValues: { ':model': { S: String(result.model) } } }); } catch (error) { console.error('resolved model stamp failed', error?.name); }
+    }
+    // Real cost x markup, in the reservation's own unit (ceilPricedTokens; settlement's debit_microcents:
+    // nanodollars x markup / 1000). Absent on a cut stream: settlement's /generation fallback fills it.
+    if (result.cost != null && result.generationId) {
+      try {
+        const costMicrocents = (ceilPricedTokens(Math.round(result.cost * 1e9), env.OPENROUTER_MARKUP) + 999n) / 1000n;
+        await ddb.updateItem({ TableName: env.REQUESTS_TABLE, Key: { request_id: { S: requestId } }, UpdateExpression: 'SET cost_microcents = :cost', ConditionExpression: 'attribute_exists(request_id)', ExpressionAttributeValues: { ':cost': { N: String(costMicrocents) } } });
+      } catch (error) { console.error('cost stamp failed', error?.name); }
+    }
     if (result.preGeneration === true && !persistedId) {
       if (billingMode === 'paid') await release(ddb, env, ownerId, estimate, requestId);
       else await releaseFree(ddb, env, requestId);
@@ -238,7 +251,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     }
   } catch (error) {
     const gateError = error instanceof GateError ? error : new GateError(502, 'Inference gateway unavailable');
-    log(JSON.stringify({ status: gateError.status, code: gateError.code ?? null, message: gateError.message, owner_id: ownerId ?? null, model: model ?? null, request_id: requestId ?? null, cause: error instanceof GateError ? null : String(error?.name ?? 'Error') }));
+    log(JSON.stringify({ status: gateError.status, code: gateError.code ?? null, message: gateError.message, owner_id: ownerId ?? null, agent_id: agentId ?? null, model: model ?? null, request_id: requestId ?? null, cause: error instanceof GateError ? null : String(error?.name ?? 'Error') }));
     if (!responder.headersSent()) responder.error(gateError);
     else responder.end();
   }

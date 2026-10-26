@@ -67,6 +67,9 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
       { id: "billing", name: "Billing", icon: "billing", panel: "billing" },
       // Admin-gated: hidden from non-admin org members via ADMIN_ONLY_PANELS.
       { id: "usage", name: "Usage", icon: "usage", panel: "usage" },
+      // Paperclip-backed spend vs monthly budget. Readable by every member;
+      // only admins see the set-budget control, so it is NOT in ADMIN_ONLY_PANELS.
+      { id: "budgets", name: "Budgets", icon: "usage", panel: "budgets" },
     ],
   },
   {

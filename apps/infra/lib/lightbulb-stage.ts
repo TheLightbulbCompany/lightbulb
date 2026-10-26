@@ -372,6 +372,8 @@ export class LightbulbStage extends cdk.Stage {
     const openrouterGate = new OpenRouterGateStack(this, `lightbulb-${env}-openrouter-gate`, {
       stackName: `lightbulb-${env}-openrouter-gate`,
       environment: env,
+      apiDomain: env === "prod" ? `api.${rootDomain}` : `api-${env}.${rootDomain}`,
+      wsInternalSecretName: auth.wsInternalSecret.secretName,
     });
     openrouterGate.addDependency(database);
 

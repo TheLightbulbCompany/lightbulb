@@ -11,6 +11,8 @@ test("managed OpenRouter owner claims have a durable, encrypted table", () => {
   const stack = new DatabaseStack(app, "Database", {
     env,
     environment: "prod",
+    apiDomain: "api.example.test",
+    wsInternalSecretName: "lightbulb/prod/ws_internal_secret",
     kmsKey: new kms.Key(support, "Key"),
     vpc: new ec2.Vpc(support, "Vpc", { maxAzs: 2 }),
   });

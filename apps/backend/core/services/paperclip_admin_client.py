@@ -905,6 +905,58 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def get_budgets_overview(self, *, session_cookie: str, company_id: str) -> dict:
+        """``GET /api/companies/{id}/budgets/overview`` — policies + spend per scope."""
+        return await self._get(f"/api/companies/{quote(company_id, safe='')}/budgets/overview", session_cookie)
+
+    async def get_costs_summary(
+        self, *, session_cookie: str, company_id: str, params: Optional[dict[str, Any]] = None
+    ) -> dict:
+        """``GET /api/companies/{id}/costs/summary`` (``from``/``to`` date range)."""
+        return await self._get(
+            f"/api/companies/{quote(company_id, safe='')}/costs/summary", session_cookie, params=params or None
+        )
+
+    async def update_company_budget(self, *, session_cookie: str, company_id: str, budget_monthly_cents: int) -> dict:
+        """``PATCH /api/companies/{id}/budgets``."""
+        return await self._patch(
+            f"/api/companies/{quote(company_id, safe='')}/budgets",
+            {"budgetMonthlyCents": budget_monthly_cents},
+            session_cookie,
+        )
+
+    async def update_agent_budget(self, *, session_cookie: str, agent_id: str, budget_monthly_cents: int) -> dict:
+        """``PATCH /api/agents/{id}/budgets``."""
+        return await self._patch(
+            f"/api/agents/{quote(agent_id, safe='')}/budgets",
+            {"budgetMonthlyCents": budget_monthly_cents},
+            session_cookie,
+        )
+
+    async def post_cost_event(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        agent_id: str,
+        model: str,
+        cost_cents: int,
+        occurred_at: str,
+        provider: str = "openrouter",
+    ) -> dict:
+        """POST an agent-scoped priced cost event (whole cents; fork ``createCostEventSchema``)."""
+        return await self._post(
+            f"/api/companies/{quote(company_id, safe='')}/cost-events",
+            {
+                "agentId": agent_id,
+                "provider": provider,
+                "model": model,
+                "costCents": cost_cents,
+                "occurredAt": occurred_at,
+            },
+            session_cookie,
+        )
+
     async def pause_agent(self, *, session_cookie: str, agent_id: str) -> dict:
         """Pause an agent (stops it running on events).
 

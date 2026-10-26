@@ -420,6 +420,7 @@ def build_profile_env(
     env_vars: dict[str, str],
     byo_provider: str | None = None,
     byo_api_key: str | None = None,
+    gate_bearer: str | None = None,
 ) -> dict[str, str]:
     """The profile's ``.env`` — per-profile secret VALUES only (see the module docstring's scope
     table). Never the gate endpoint, region, or a Secrets Manager REFERENCE name: the gate bearer
@@ -437,6 +438,8 @@ def build_profile_env(
     same rail ``openclaw.json``'s ``env.vars`` used.
     """
     env = {"PAPERCLIP_API_KEY": paperclip_api_key}
+    if gate_bearer:  # this agent's own openrouter-gate bearer; the bridge prefers it to the boot one
+        env["LIGHTBULB_AGENT_GATE_BEARER"] = gate_bearer
     if byo_api_key:
         env[_BYO_ENV_KEY[byo_provider or "anthropic"]] = byo_api_key
     env.update(env_vars or {})
@@ -782,6 +785,7 @@ def write_agent_profile(
     byo_api_key: str | None = None,
     soul_md_override: str | None = None,
     front_desk_number: str | None = None,
+    gate_bearer: str | None = None,
 ) -> ProfileFiles:
     """The three files that ARE one agent's Hermes profile (fix round 1, I5 dropped the fourth,
     ``managed_overlay`` — the baked ``/etc/hermes/config.yaml`` is the sole enforcement point and
@@ -819,6 +823,7 @@ def write_agent_profile(
         env_vars={**mcp_secrets, **(env_vars or {})},
         byo_provider=byo_provider,
         byo_api_key=byo_api_key,
+        gate_bearer=gate_bearer,
     )
     env.update(paperclip_identity_env(agent))
     return ProfileFiles(

@@ -420,8 +420,8 @@ pub(super) struct Attention {
 /// listing leaves `needs` out).
 fn attention(home: &Path, row: &Value, job: Option<&str>) -> Attention {
     let line = |v: &Value, max: usize| v.as_str().map(str::trim).filter(|t| !t.is_empty()).map(|t| t.chars().take(max).collect::<String>());
-    // Only `status: waiting` is a prompt open in the terminal; a blocked job is not (#4414).
-    let waiting = row["status"] == "waiting";
+    // `listing_status` is the one rule for an open prompt: a blocked job is not one (#4414).
+    let waiting = listing_status(row) == "waiting-approval";
     let note = (row["state"] == "blocked" && !waiting)
         .then_some(job)
         .flatten()

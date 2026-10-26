@@ -633,7 +633,7 @@ pub(crate) fn strip_nofollow(exe: &Path) -> PathBuf {
 
 /// The path to link to, if `exe` is an installed app. macOS can report the running app as
 /// `/.nofollow/Applications/...` (and `canonicalize` keeps that), so the prefix is dropped first.
-fn installed_exe(exe: &Path, home: &Path) -> Option<PathBuf> {
+pub(crate) fn installed_exe(exe: &Path, home: &Path) -> Option<PathBuf> {
     let exe = strip_nofollow(exe);
     (exe.starts_with("/Applications") || exe.starts_with(home.join("Applications"))).then_some(exe)
 }

@@ -339,7 +339,7 @@ async def test_a_transport_timeout_is_transient_too():
     times out is `transport_error` — safe to re-READ, never to re-POST."""
     with patch.object(mod, "_raw", MagicMock(side_effect=TimeoutError())):
         with pytest.raises(mod.TransientProvisioningError) as exc:
-            await mod.create_deep_link("acct_1", provider="prvdr_1")
+            await mod.create_project("acct_1", name="n")
     assert exc.value.code == "transport_error"
 
 
@@ -428,66 +428,12 @@ async def test_a_paginated_failure_logs_the_bare_path_not_the_page_token():
     assert "limit=100" not in emitted and "?" not in emitted
 
 
-@pytest.mark.asyncio
-async def test_charges_passes_limit_and_page_and_is_not_a_v2_list():
-    raw = MagicMock(
-        return_value={"usage": [], "next_page_url": "https://api.stripe.com/v2/provisioning/charges?page=P"}
-    )
-    with patch.object(mod, "_raw", raw):
-        out = await mod.charges("acct_1", start_time="t0", end_time="t1", livemode=True, limit=50, page="P")
-    url = raw.call_args.args[1]
-    assert "limit=50" in url and "page=P" in url and "livemode=true" in url
-    # `usage`, not `data` — which is why paginate() is not used here.
-    assert "data" not in out
-
-
-@pytest.mark.asyncio
-async def test_charges_usage_walks_usage_rows_that_paginate_would_miss():
-    pages = [
-        {"usage": [{"id": "u1"}], "next_page_url": "https://api.stripe.com/v2/provisioning/charges?page=OPAQUE"},
-        {"usage": [{"id": "u2"}]},
-    ]
-    raw = MagicMock(side_effect=pages)
-    with patch.object(mod, "_raw", raw):
-        rows, truncated = await mod.charges_usage("acct_1", start_time="t0", end_time="t1", livemode=True)
-    assert [r["id"] for r in rows] == ["u1", "u2"]
-    assert truncated is False
-    # The RETURNED url verbatim (path + query), never a page value we built.
-    assert raw.call_args_list[1].args[1].endswith("/v2/provisioning/charges?page=OPAQUE")
-
-
-@pytest.mark.asyncio
-async def test_paginate_collects_nothing_from_a_usage_response():
-    """Why charges_usage exists: paginate reads `data`, /charges answers `usage`."""
-    with patch.object(mod, "_raw", MagicMock(return_value={"usage": [{"id": "u1"}]})):
-        assert await mod.paginate("acct_1", "/v2/provisioning/charges") == []
-
-
-@pytest.mark.asyncio
-async def test_charges_usage_reports_a_walk_it_had_to_cut_short():
-    endless = {"usage": [{"id": "u"}], "next_page_url": "https://api.stripe.com/v2/provisioning/charges?page=P"}
-    with patch.object(mod, "_raw", MagicMock(return_value=endless)):
-        rows, truncated = await mod.charges_usage(
-            "acct_1", start_time="t0", end_time="t1", livemode=True, limit_pages=3
-        )
-    assert len(rows) == 3
-    assert truncated is True
-
-
 def test_livemode_follows_the_platform_key_not_the_catalog(monkeypatch):
     monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_CATALOG", "prod")
     monkeypatch.setattr(mod.settings, "STRIPE_SECRET_KEY", "sk_test_sandbox")
     assert mod.is_livemode() is False
     monkeypatch.setattr(mod.settings, "STRIPE_SECRET_KEY", "sk_live_platform")
     assert mod.is_livemode() is True
-
-
-@pytest.mark.asyncio
-async def test_deep_link_can_select_the_catalog_partition():
-    raw = MagicMock(return_value={"purpose": "dashboard", "url": "https://p", "expires_time": "t"})
-    with patch.object(mod, "_raw", raw):
-        await mod.create_deep_link("acct_1", provider="prvdr_1", catalog="testing")
-    assert raw.call_args.args[3]["catalog"] == "testing"
 
 
 @pytest.mark.asyncio
@@ -532,3 +478,42 @@ async def test_catalog_no_fallback_when_filtered_read_has_rows():
         rows = await mod.catalog_services("acct_x")
     assert rows == [{"id": "prvsvc_filtered"}]
     assert pg.call_count == 1
+
+
+# The 21 endpoints of the 2026-09-30.preview reference (index in
+# ~/Downloads/stripe-provisioning-reference-2026-09-30.md), path only.
+_REFERENCE_PATHS = {
+    "eligibility",
+    "catalog/providers",
+    "catalog/services",
+    "payment_profile/update_limit",
+    "payment_profile",
+    "payment_method_requests",
+    "projects",
+    "provider_connections",
+    "provider_connections/:id/unlink",
+    "provider_connection_requests",
+    "provider_connection_requests/:id",
+    "provider_connection_requests/:id/submit_information",
+    "resources",
+    "resources/:id",
+    "resources/link",
+    "resources/:id/remove",
+    "resources/:id/rotate_credentials",
+    "resources/:id/submit_information",
+    "resources/:id/unlink",
+    "resources/:id/reveal_access_configuration",
+}
+
+
+def test_every_path_the_client_speaks_is_in_the_reference():
+    """Contract guard: no function may call an endpoint the reference lacks
+    (that is how identity, project/resource lists, deep links and charges
+    shipped as 404s)."""
+    import inspect
+    import re
+
+    used = {re.sub(r"\{[^}]+\}", ":id", m) for m in re.findall(r'f"\{BASE\}/([^"?]+)"', inspect.getsource(mod))}
+    assert used and used <= _REFERENCE_PATHS, sorted(used - _REFERENCE_PATHS)
+    for gone in ("identity", "charges", "deep_links", "list_projects", "list_resources", "charges_usage"):
+        assert not hasattr(mod, gone), gone

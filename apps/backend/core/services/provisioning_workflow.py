@@ -54,9 +54,9 @@ DEADLINE_S = 900  # 15 minutes, then requires_review with the ids kept.
 USER_ACTION_DEADLINE_S = 7 * 24 * 3600
 
 # How long one reader may hold a row while it takes its step. Sized to the
-# WORST step, not the average: `connecting_provider` can chain six Stripe calls
-# (`list_provider_connections`, `list_projects`, `create_project`,
-# `create_provider_connection_request`, `list_resources`, `create_resource`), each bounded
+# WORST step, not the average: `connecting_provider` can chain four Stripe calls
+# (`list_provider_connections`, `create_project`,
+# `create_provider_connection_request`, `create_resource`), each bounded
 # at `stripe_provisioning.TIMEOUT_S + 5` = 50s. Under that, a live step would
 # lose its claim mid-way and a second reader would create the resource twice —
 # which costs money, where an over-long claim only costs a reader its turn.
@@ -721,13 +721,12 @@ async def _project_for(account_id: str, row: dict) -> tuple:
 
     The id lives on the BILLING row, not the workflow: credentials are
     scoped by project, so a second Project would split one company's
-    credentials across two. Order is read → adopt → create → store, because a
+    credentials across two. Order is read stored → create → store, because a
     crash between the create and the store leaves a Project we own but never
-    recorded ("retrieve known objects and reconcile").
+    recorded; there is no list endpoint to find it again.
 
-    READS and the CREATE are handled differently on purpose: a failed read is
-    simply retried on the next tick, and only the create has an outcome we
-    cannot know, which is the one case worth parking the row for.
+    Only the create has an outcome we cannot know, which is the one case worth
+    parking the row for.
     """
     if (row.get("approval") or {}).get("scope") != "project":
         return None, None
@@ -736,21 +735,17 @@ async def _project_for(account_id: str, row: dict) -> tuple:
         return stored, None
     from core.services.company_stripe import resolve_company_name
 
+    # The API has no project LIST (only create), so "adopt" is gone: the stored
+    # id is the only memory. A crash between the create and the store leaves an
+    # inert, resource-less Project that the next pass does not find.
     name = await resolve_company_name(row["owner_id"])
-    known, refused = await _read_or_park(row, api.list_projects(account_id))
-    if refused is not None:
-        return None, refused
-    mine = next((p for p in known if p.get("name") == name), None)
-    if mine:
-        project_id = mine["id"]
-    else:
-        try:
-            project = await api.create_project(account_id, name=name, catalog=settings.STRIPE_PROJECTS_CATALOG)
-        except ProvisioningError as e:
-            if is_transient(e):
-                return None, await _requires_review(row, "uncertain_write")
-            return None, await _fail(row, e.code, e.message)
-        project_id = project["id"]
+    try:
+        project = await api.create_project(account_id, name=name, catalog=settings.STRIPE_PROJECTS_CATALOG)
+    except ProvisioningError as e:
+        if is_transient(e):
+            return None, await _requires_review(row, "uncertain_write")
+        return None, await _fail(row, e.code, e.message)
+    project_id = project["id"]
     if await billing_repo.set_company_stripe_project_id(row["owner_id"], project_id=project_id) is None:
         # Lost the conditional write: another worker stored first, so THEIRS is
         # the company's Project. Strongly consistent — this reads back a write
@@ -904,45 +899,29 @@ async def _create_resource(account_id: str, row: dict) -> dict:
     if refused is not None:
         return refused
     name = resource_name_for(row)
-    # "Retrieve known objects, and reconcile before issuing another create": a
-    # create whose response we never saw may have made the resource, and the
-    # name is unique to this workflow, so it is what identifies ours.
-    known, refused = await _read_or_park(row, api.list_resources(account_id, project=project_id))
-    if refused is not None:
-        return refused
-    resource = next(
-        (
-            r
-            for r in known
-            if r.get("name") == name
-            and r.get("service_ref") in (None, row["service_ref"])
-            # `removed`/`errored` are terminal: adopting one would bind an
-            # owner to a resource that no longer exists. Create a fresh one.
-            and r.get("status") not in ("removed", "errored")
-        ),
-        None,
-    )
-    if resource is None:
-        try:
-            resource = await api.create_resource(
-                account_id,
-                service_ref=row["service_ref"],
-                provider=row["provider_id"],
-                project=project_id,
-                name=name,
-                configuration=row.get("configuration") or {},
-                # Never omitted: Stripe's default is LIVE.
-                livemode=api.is_livemode(),
-                catalog=settings.STRIPE_PROJECTS_CATALOG,
-            )
-        except ProvisioningError as e:
-            if is_transient(e):
-                return await _requires_review(row, "uncertain_write")
-            if e.code == "provider_reauth_required":
-                return await _reauth(row)
-            if e.code == "payment_method_required":
-                return await _requires_review(row, "payment_method_required")
-            return await _fail(row, e.code, e.message)
+    # There is no list endpoint to reconcile a lost create by name: the row's
+    # `resource_id` (checked above) and the park-on-uncertain-write below are
+    # the whole defence against a second billable resource.
+    try:
+        resource = await api.create_resource(
+            account_id,
+            service_ref=row["service_ref"],
+            provider=row["provider_id"],
+            project=project_id,
+            name=name,
+            configuration=row.get("configuration") or {},
+            # Never omitted: Stripe's default is LIVE.
+            livemode=api.is_livemode(),
+            catalog=settings.STRIPE_PROJECTS_CATALOG,
+        )
+    except ProvisioningError as e:
+        if is_transient(e):
+            return await _requires_review(row, "uncertain_write")
+        if e.code == "provider_reauth_required":
+            return await _reauth(row)
+        if e.code == "payment_method_required":
+            return await _requires_review(row, "payment_method_required")
+        return await _fail(row, e.code, e.message)
     deadline = (datetime.now(timezone.utc) + timedelta(seconds=DEADLINE_S)).isoformat()
     await repo.patch(row["workflow_id"], {"resource_id": resource["id"], "deadline_at": deadline})
     moved = await repo.transition(

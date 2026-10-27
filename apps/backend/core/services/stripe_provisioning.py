@@ -247,15 +247,11 @@ async def paginate(account_id: str, path: str, *, params: dict | None = None, li
     return rows
 
 
-# --- 4.1 Projects, identity, access ----------------------------------------
+# --- 4.1 Eligibility, projects ---------------------------------------------
 
 
 async def eligibility(account_id: str) -> dict:
     return await request(account_id, "get", f"{BASE}/eligibility")
-
-
-async def identity(account_id: str, *, project: str | None = None) -> dict:
-    return await request(account_id, "get", f"{BASE}/identity", params={"project": project})
 
 
 async def create_project(account_id: str, *, name: str, catalog: str | None = None) -> dict:
@@ -264,10 +260,6 @@ async def create_project(account_id: str, *, name: str, catalog: str | None = No
     if catalog:
         body["catalog"] = catalog
     return await request(account_id, "post", f"{BASE}/projects", body=body)
-
-
-async def list_projects(account_id: str) -> list[dict]:
-    return await paginate(account_id, f"{BASE}/projects", params={"limit": 100})
 
 
 # --- 4.2 Catalog (account context) -----------------------------------------
@@ -397,10 +389,6 @@ async def submit_resource_information(account_id: str, resource_id: str, *, subm
     )
 
 
-async def list_resources(account_id: str, *, project: str | None = None) -> list[dict]:
-    return await paginate(account_id, f"{BASE}/resources", params={"project": project, "limit": 100})
-
-
 async def remove_resource(account_id: str, resource_id: str) -> dict:
     """Asks the Provider to deprovision the underlying infrastructure. Only
     ever reached from the owner's own separately confirmed click (spec §3.6)."""
@@ -459,58 +447,7 @@ async def create_payment_method_request(
     )
 
 
-# --- 4.7 Deep links + usage -------------------------------------------------
-
-
-async def create_deep_link(
-    account_id: str,
-    *,
-    provider: str,
-    project: str | None = None,
-    purpose: str = "dashboard",
-    catalog: str | None = None,
-) -> dict:
-    """Short-lived and pre-authenticated: "Present it immediately and do not
-    persist, cache, or log it." Only call it for a purpose the Provider
-    advertises in `deep_link_purposes`."""
-    body: dict = {"purpose": purpose, "provider": provider}
-    if project:
-        body["project"] = project
-    if catalog:
-        body["catalog"] = catalog
-    return await request(account_id, "post", f"{BASE}/deep_links", body=body)
-
-
-async def charges(
-    account_id: str,
-    *,
-    start_time: str,
-    end_time: str,
-    livemode: bool,
-    project: str | None = None,
-    limit: int | None = None,
-    page: str | None = None,
-) -> dict:
-    """`start_time`, `end_time` and `livemode` are non-optional current proto
-    fields (spec.txt 4.7).
-
-    NOT walkable with `paginate`: this endpoint answers `usage[]`, not the
-    `v2.list` `data[]` every other list route returns, so `paginate` would
-    collect nothing. Pass `page` from the response's `next_page_url` — or add
-    a usage-shaped walker the day a fleet outgrows one page."""
-    return await request(
-        account_id,
-        "get",
-        f"{BASE}/charges",
-        params={
-            "start_time": start_time,
-            "end_time": end_time,
-            "livemode": livemode,
-            "project": project,
-            "limit": limit,
-            "page": page,
-        },
-    )
+# --- 4.7 Mode -------------------------------------------------
 
 
 def is_livemode() -> bool:
@@ -522,29 +459,3 @@ def is_livemode() -> bool:
     guide is explicit that a TESTING catalog can still make real charges.
     """
     return settings.STRIPE_SECRET_KEY.startswith(("sk_live_", "rk_live_"))
-
-
-async def charges_usage(
-    account_id: str,
-    *,
-    start_time: str,
-    end_time: str,
-    livemode: bool,
-    project: str | None = None,
-    limit_pages: int = 5,
-) -> tuple[list[dict], bool]:
-    """Every ``usage`` row in the window, and whether the walk stopped early.
-
-    The usage-shaped walker ``charges`` promises: ``paginate`` collects nothing
-    here because this endpoint answers ``usage[]`` rather than ``data[]``.
-    Pages are followed by ``next_page_url`` verbatim, never constructed.
-    """
-    page = await charges(account_id, start_time=start_time, end_time=end_time, livemode=livemode, project=project)
-    rows: list[dict] = list(page.get("usage") or [])
-    for _ in range(limit_pages - 1):
-        nxt = page.get("next_page_url")
-        if not nxt:
-            return rows, False
-        page = await request(account_id, "get", _relative(nxt))
-        rows.extend(page.get("usage") or [])
-    return rows, bool(page.get("next_page_url"))

@@ -34,7 +34,7 @@ from core.services.provisioning_workflow import WorkflowRefused, is_offerable, i
 from core.services.stripe_provisioning import ProvisioningError
 from core.services.container_auth import _require_hook_token
 from routers.company_board import file_card
-from routers.company_money import day_after, day_range
+from routers.company_money import day_range
 from routers.teams._guards import require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
@@ -150,12 +150,9 @@ async def charges(owner_id: Owner, start: str | None = None, end: str | None = N
     (``/company/rollup``'s revenue column, which moves the other way — hence
     the explicit ``direction``). Every amount here is money OUT.
 
-    This is near-universally EMPTY today: it needs both a bound company Stripe
-    account and provisioned providers, which almost no owner has. So empty and
-    broken must not look alike — ``provisioning_available`` is false with a
-    ``reason`` when a precondition is missing (and Stripe is never called),
-    true with an empty ``charges`` list when the owner really has no spend, and
-    a Stripe refusal is a 502/503, never an empty list.
+    Always ``provisioning_available: false`` today: the 2026-09-30.preview
+    Provisioning API has no charges/usage endpoint, so Stripe is never called
+    and the ``reason`` says why.
     """
     start_day, end_day = day_range(start, end)
     unavailable = {
@@ -167,38 +164,13 @@ async def charges(owner_id: Owner, start: str | None = None, end: str | None = N
         "direction": "out",
     }
     try:
-        account_id = await provisioning_workflow.account_id_for(owner_id)
+        await provisioning_workflow.account_id_for(owner_id)
     except WorkflowRefused as e:
         return {**unavailable, "reason": e.code}
-    # An owner with no provisioned resources has nothing to be charged for, so
-    # the preview API is not worth asking. (provisioning_summary swallows a DDB
-    # read failure to [] — same honest-empty contract GET /resources runs on.)
-    if not await provisioning_landing.provisioning_summary(owner_id):
-        return {**unavailable, "reason": "no_provisioned_resources"}
-
-    try:
-        rows, truncated = await api.charges_usage(
-            account_id,
-            # start_time/end_time/livemode are non-optional on this endpoint,
-            # and the window is exclusive at the end like every other range we
-            # send Stripe.
-            start_time=f"{start_day}T00:00:00Z",
-            end_time=f"{day_after(end_day)}T00:00:00Z",
-            livemode=api.is_livemode(),
-        )
-    except ProvisioningError as e:
-        raise _stripe_failure(e) from e
-    return {
-        **unavailable,
-        "provisioning_available": True,
-        "reason": None,
-        # Rows pass through: their shape is a preview contract that can change
-        # under us, and an allowlist guessed against it would blank real spend
-        # into a convincing zero. `redact` drops the secret-shaped keys §6
-        # names, which is the only filter that can be written honestly here.
-        "charges": [api.redact(row) for row in rows],
-        "truncated": truncated,
-    }
+    # The 2026-09-30.preview API has no usage or charges endpoint, so there is
+    # nothing to ask Stripe. Kept as an honest "not available" so Spend's second
+    # source degrades instead of 404ing.
+    return {**unavailable, "reason": "usage_unavailable"}
 
 
 @router.post("/resources/{provider}/{resource_id}/revoke")
@@ -871,33 +843,12 @@ async def connect_link(workflow_id: str, owner_id: Owner):
 
 @router.post("/resources/{provider}/{resource_id}/dashboard-link")
 async def dashboard_link(provider: str, resource_id: str, owner_id: Owner):
-    """Short-lived, pre-authenticated, minted per click. Never persisted.
-
-    Only offered for a purpose the provider itself advertises: "Show an Open
-    Provider dashboard action only if the Provider advertises the requested
-    deep_link_purposes value."
-    """
+    """No deep-link endpoint exists on 2026-09-30.preview, so this answers a
+    null url (the card says to open the provider's own site)."""
     await _owned_resource(owner_id, provider, resource_id)
-    try:
-        account_id = await provisioning_workflow.account_id_for(owner_id)
-        entry = next((p for p in await api.catalog_providers(account_id) if p.get("name") == provider), None)
-    except WorkflowRefused as e:
-        raise _refusal(e) from e
-    except ProvisioningError as e:
-        raise _stripe_failure(e) from e
-    if entry is None or "dashboard" not in (entry.get("deep_link_purposes") or []):
-        raise _conflict("deep_link_unsupported", "This provider does not offer a dashboard link")
-    try:
-        link = await api.create_deep_link(
-            account_id,
-            provider=entry["id"],
-            project=await _company_project_id(owner_id),
-            purpose="dashboard",
-            catalog=settings.STRIPE_PROJECTS_CATALOG,
-        )
-    except ProvisioningError as e:
-        raise _stripe_failure(e) from e
-    return {"url": link.get("url"), "expires_time": link.get("expires_time")}
+    # The 2026-09-30.preview API has no deep-link endpoint. The card already
+    # treats a null url as "open it from the provider's own site".
+    return {"url": None, "expires_time": None}
 
 
 @router.post("/resources/{provider}/{resource_id}/remove")

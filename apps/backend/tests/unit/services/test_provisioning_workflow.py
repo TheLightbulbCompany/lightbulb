@@ -121,8 +121,6 @@ def no_network(monkeypatch):
     monkeypatch.setattr(mod.repo, "list_for_owner", AsyncMock(return_value=[]))
     monkeypatch.setattr(mod.repo, "patch", AsyncMock(return_value=None))
     monkeypatch.setattr(mod.api, "payment_profile", AsyncMock(side_effect=ProvisioningError("not_found", "no profile")))
-    monkeypatch.setattr(mod.api, "list_projects", AsyncMock(return_value=[]))
-    monkeypatch.setattr(mod.api, "list_resources", AsyncMock(return_value=[]))
     monkeypatch.setattr(mod.work_products, "register", AsyncMock(return_value="wp_1"))
 
 
@@ -986,11 +984,9 @@ async def test_no_secret_reaches_the_log(caplog):
 async def test_the_company_project_is_read_from_the_billing_row():
     """One Project per COMPANY: a second workflow must not mint a second one."""
     with (
-        patch.object(mod.api, "list_projects", AsyncMock()) as listed,
         patch.object(mod.api, "create_project", AsyncMock()) as created,
     ):
         assert await mod._project_for("acct_1", _approved()) == ("proj_1", None)
-    listed.assert_not_awaited()
     created.assert_not_awaited()
 
 
@@ -1000,57 +996,6 @@ async def test_an_account_scoped_service_needs_no_project():
     with patch.object(mod.api, "create_project", AsyncMock()) as created:
         assert await mod._project_for("acct_1", account_scoped) == (None, None)
     created.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_a_transient_project_LIST_is_retried_not_parked(monkeypatch):
-    """Only the CREATE has an unknown outcome. A failed read is just a read."""
-    monkeypatch.setattr(
-        mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_account_id": "acct_1"})
-    )
-    row = _approved(state="connecting_provider")
-    with (
-        patch("core.services.company_stripe.resolve_company_name", AsyncMock(return_value="Northwind")),
-        patch.object(
-            mod.api,
-            "list_projects",
-            AsyncMock(side_effect=mod.api.TransientProvisioningError("rate_limit", "slow", http_status=429)),
-        ),
-        patch.object(mod.api, "create_project", AsyncMock()) as created,
-        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
-        patch.object(mod.repo, "transition", AsyncMock()) as move,
-    ):
-        project_id, refused = await mod._project_for("acct_1", row)
-    assert project_id is None
-    assert refused["state"] == "connecting_provider"
-    assert patched.await_args.args[1]["attempts"] == 1
-    created.assert_not_awaited()
-    move.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_an_unrecorded_project_is_adopted_by_name(monkeypatch):
-    """A crash between `create_project` and the billing write leaves a Project
-    we own but never recorded: "retrieve known objects and reconcile"."""
-    monkeypatch.setattr(
-        mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_account_id": "acct_1"})
-    )
-    store = AsyncMock(return_value={"company_stripe_project_id": "proj_9"})
-    monkeypatch.setattr(mod.billing_repo, "set_company_stripe_project_id", store)
-    with (
-        patch("core.services.company_stripe.resolve_company_name", AsyncMock(return_value="Northwind")),
-        patch.object(
-            mod.api,
-            "list_projects",
-            AsyncMock(
-                return_value=[{"id": "proj_other", "name": "Someone Else"}, {"id": "proj_9", "name": "Northwind"}]
-            ),
-        ),
-        patch.object(mod.api, "create_project", AsyncMock()) as created,
-    ):
-        assert await mod._project_for("acct_1", _approved()) == ("proj_9", None)
-    created.assert_not_awaited()
-    assert store.await_args.kwargs["project_id"] == "proj_9"
 
 
 @pytest.mark.asyncio
@@ -1137,29 +1082,6 @@ async def test_an_uncertain_project_create_parks_the_row(monkeypatch):
 
 
 # --- reconcile, races and scope ---------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_a_resource_from_an_uncertain_create_is_adopted_not_created_again():
-    """ "Retrieve known objects, and reconcile before issuing another create."
-    The workflow-unique name is what identifies ours."""
-    row = _row(state="connecting_provider", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
-    mine = {"id": "res_1", "name": mod.resource_name_for(row), "service_ref": "svc_analytics", "status": "pending"}
-    with (
-        patch.object(
-            mod.api, "list_provider_connections", AsyncMock(return_value=[{"provider": "prvdr_1", "status": "active"}])
-        ),
-        patch.object(
-            mod.api, "list_resources", AsyncMock(return_value=[{"id": "res_other", "name": "someone-else"}, mine])
-        ),
-        patch.object(mod.api, "create_resource", AsyncMock()) as create,
-        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
-        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="provisioning", resource_id="res_1"))),
-    ):
-        out = await mod.advance(row)
-    assert out["state"] == "provisioning"
-    create.assert_not_awaited()
-    assert patched.await_args_list[0].args[1]["resource_id"] == "res_1"
 
 
 @pytest.mark.asyncio
@@ -1503,29 +1425,6 @@ async def test_the_information_leg_still_goes_stale_after_a_week():
         out = await mod.advance(row)
     assert out["state"] == "stale"
     assert move.await_args.kwargs["to_state"] == "stale"
-
-
-@pytest.mark.asyncio
-async def test_a_removed_namesake_is_never_adopted():
-    """`removed` and `errored` are terminal: adopting one would bind the owner
-    to a resource that no longer exists."""
-    row = _approved(state="connecting_provider")
-    dead = {"id": "res_dead", "name": mod.resource_name_for(row), "service_ref": "svc_analytics", "status": "removed"}
-    with (
-        patch.object(
-            mod.api, "list_provider_connections", AsyncMock(return_value=[{"provider": "prvdr_1", "status": "active"}])
-        ),
-        patch.object(mod.api, "list_resources", AsyncMock(return_value=[dead])),
-        patch.object(
-            mod.api, "create_resource", AsyncMock(return_value={"id": "res_new", "status": "pending"})
-        ) as create,
-        patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
-        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="provisioning", resource_id="res_new"))),
-    ):
-        out = await mod.advance(row)
-    assert out["state"] == "provisioning"
-    create.assert_awaited_once()
-    assert patched.await_args_list[0].args[1]["resource_id"] == "res_new"
 
 
 # --- re-asking after an uncertain write -------------------------------------

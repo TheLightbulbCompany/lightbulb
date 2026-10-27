@@ -119,98 +119,46 @@ def test_revoke_is_org_admin_only(member_client):
 
 
 # --- GET /charges — Spend's second source ---------------------------------
-# Near-universally empty today (it needs a bound company Stripe account AND
-# provisioned providers), so every test here is about empty not looking broken.
+# The 2026-09-30.preview API has no charges endpoint, so the route only ever
+# says "unavailable" and never calls Stripe.
 
 CHARGES = "/api/v1/company/provisioning/charges"
 
 
-def _charges(client, *, resources=(RES,), account="acct_1", usage=([], False), **params):
+def _charges(client, *, account="acct_1", **params):
     account_mock = (
         AsyncMock(return_value=account)
         if account
         else AsyncMock(side_effect=mod.WorkflowRefused("no_company_stripe_account", "connect Stripe"))
     )
-    walker = AsyncMock(return_value=usage) if not isinstance(usage, Exception) else AsyncMock(side_effect=usage)
     with (
         patch.object(mod.provisioning_workflow, "account_id_for", account_mock),
-        patch.object(mod.provisioning_landing, "provisioning_summary", AsyncMock(return_value=list(resources))),
-        patch.object(mod.api, "charges_usage", walker),
+        patch.object(mod.api, "request", AsyncMock()) as stripe_call,
     ):
         resp = client.get(CHARGES, params=params)
-    return resp, walker
+    stripe_call.assert_not_awaited()
+    return resp
 
 
 def test_charges_says_unavailable_with_a_reason_when_stripe_is_unbound(client):
-    resp, walker = _charges(client, account=None)
-    assert resp.status_code == 200
-    body = resp.json()
+    body = _charges(client, account=None).json()
     assert body["provisioning_available"] is False
     assert body["reason"] == "no_company_stripe_account"
     assert body["charges"] == []
-    walker.assert_not_awaited()
 
 
-def test_charges_says_unavailable_when_nothing_is_provisioned(client):
-    resp, walker = _charges(client, resources=[])
-    assert resp.json()["reason"] == "no_provisioned_resources"
-    assert resp.json()["provisioning_available"] is False
-    walker.assert_not_awaited()
-
-
-def test_charges_available_and_empty_is_distinguishable_from_unavailable(client):
-    resp, _ = _charges(client, usage=([], False))
-    body = resp.json()
-    assert body["provisioning_available"] is True and body["reason"] is None
-    assert body["charges"] == []
-
-
-def test_charges_sends_the_three_required_fields_and_an_exclusive_end(client):
-    resp, walker = _charges(
-        client,
-        usage=([{"id": "u1", "amount": 120}], False),
-        start="2026-08-01",
-        end="2026-08-30",
-    )
-    assert resp.status_code == 200
-    kwargs = walker.await_args.kwargs
-    assert kwargs["start_time"] == "2026-08-01T00:00:00Z"
-    assert kwargs["end_time"] == "2026-08-31T00:00:00Z"  # end is inclusive, the bound is not
-    assert isinstance(kwargs["livemode"], bool)
-    assert resp.json()["charges"] == [{"id": "u1", "amount": 120}]
-
-
-def test_charges_are_money_out_and_say_so(client):
-    resp, _ = _charges(client)
-    assert resp.json()["direction"] == "out"
-
-
-def test_charges_redacts_the_secret_shaped_keys(client):
-    resp, _ = _charges(client, usage=([{"id": "u1", "url": "https://preauthed"}], False))
-    assert resp.json()["charges"][0]["url"] == "[redacted]"
-
-
-def test_charges_reports_a_truncated_walk(client):
-    resp, _ = _charges(client, usage=([{"id": "u1"}], True))
-    assert resp.json()["truncated"] is True
-
-
-def test_charges_surfaces_a_stripe_refusal_not_an_empty_list(client):
-    resp, _ = _charges(client, usage=mod.ProvisioningError("provider_failure", "nope"))
-    assert resp.status_code == 502
-    assert resp.json()["detail"]["code"] == "stripe_error"
+def test_charges_is_unavailable_because_the_api_has_no_usage_endpoint(client):
+    body = _charges(client).json()
+    assert body["provisioning_available"] is False and body["reason"] == "usage_unavailable"
+    assert body["direction"] == "out"
 
 
 def test_charges_rejects_a_bad_window(client):
-    resp, walker = _charges(client, start="not-a-date")
-    assert resp.status_code == 422
-    walker.assert_not_awaited()
+    assert _charges(client, start="not-a-date").status_code == 422
 
 
 def test_charges_rejects_an_unbounded_span(client):
-    resp, walker = _charges(client, start="2020-01-01", end="2026-08-30")
-    assert resp.status_code == 422
-    walker.assert_not_awaited()
+    assert _charges(client, start="2020-01-01", end="2026-08-30").status_code == 422
 
 
 def test_charges_is_org_admin_only(member_client):
@@ -917,52 +865,14 @@ def test_connect_link_409s_when_the_row_is_not_waiting_on_a_connection(client):
 POINTER = {"resource_id": "res_1", "provider": "posthog", "service": "analytics", "resource_name": "analytics-abc123"}
 
 
-def test_dashboard_link_is_minted_on_click_and_never_stored(client):
+def test_dashboard_link_answers_no_url_because_the_api_has_no_deep_links(client):
     with (
         patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[POINTER])),
-        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(
-            mod.api,
-            "catalog_providers",
-            AsyncMock(return_value=[{"id": "prvdr_1", "name": "posthog", "deep_link_purposes": ["dashboard"]}]),
-        ),
-        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_project_id": "p_1"})),
-        patch.object(
-            mod.api,
-            "create_deep_link",
-            AsyncMock(
-                return_value={
-                    "purpose": "dashboard",
-                    "url": "https://app.posthog.com/x",
-                    "expires_time": "2026-08-29T12:00:00Z",
-                }
-            ),
-        ) as deep,
-        patch.object(mod.integrations_repo, "record_provider_resource", AsyncMock()) as recorded,
+        patch.object(mod.api, "request", AsyncMock()) as stripe_call,
     ):
         resp = client.post("/api/v1/company/provisioning/resources/posthog/res_1/dashboard-link")
-    assert resp.json() == {"url": "https://app.posthog.com/x", "expires_time": "2026-08-29T12:00:00Z"}
-    # The provider ID, not the name, and the company's own project.
-    assert deep.await_args.kwargs["provider"] == "prvdr_1"
-    assert deep.await_args.kwargs["project"] == "p_1"
-    assert deep.await_args.kwargs["purpose"] == "dashboard"
-    recorded.assert_not_awaited()
-
-
-def test_dashboard_link_refuses_a_purpose_the_provider_does_not_advertise(client):
-    with (
-        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[POINTER])),
-        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(
-            mod.api,
-            "catalog_providers",
-            AsyncMock(return_value=[{"id": "prvdr_1", "name": "posthog", "deep_link_purposes": []}]),
-        ),
-        patch.object(mod.api, "create_deep_link", AsyncMock()) as deep,
-    ):
-        resp = client.post("/api/v1/company/provisioning/resources/posthog/res_1/dashboard-link")
-    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "deep_link_unsupported"
-    deep.assert_not_awaited()
+    assert resp.json() == {"url": None, "expires_time": None}
+    stripe_call.assert_not_awaited()
 
 
 # --- remove ----------------------------------------------------------------

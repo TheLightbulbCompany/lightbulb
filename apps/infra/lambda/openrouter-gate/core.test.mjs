@@ -123,8 +123,16 @@ test('prepareBody passes the policy provider routing through and keeps deny', ()
   assert.deepEqual(prepareBody(dsBody(), deepseek, 'owner-1', env).provider, { max_price: deepseek.max_price, data_collection: 'deny' });
   for (const provider of [{ order: 'deepinfra' }, { ignore: [1] }, { allow_fallbacks: 'yes' }, { data_collection: 'allow' }]) assert.throws(() => prepareBody(dsBody(), { ...deepseek, provider }, 'owner-1', env), e => e.status === 503);
 });
+const upstream402 = (keyInfoImpl) => f => { f.deps.keyInfoImpl = keyInfoImpl; f.deps.forwardImpl = async p => { p.writeHead(402, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":"insufficient credits"}')); p.end(); return { status: 402, preGeneration: true }; }; };
+test('a capped 402 on an empty account (the key has money left) is the paging 503, never a day-long cap', async () => {
+  const f = await runDs(cappedOwners.trial, dsBody(), upstream402(async () => ({ limit: 0.25, limit_remaining: 0.25, usage_daily: 0 })));
+  assert.equal(f.calls.head.status, 503);
+  assert.equal(JSON.parse(Buffer.concat(f.calls.chunks).toString()).error.code, 'provider_unavailable');
+  assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
+  assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1));
+});
 test('an upstream 402 for a capped owner stamps the capped day and returns the daily-cap 429', async () => {
-  const f = await runDs(cappedOwners.base, dsBody(), f => { f.deps.forwardImpl = async p => { p.writeHead(402, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":"key limit"}')); p.end(); return { status: 402, preGeneration: true }; }; });
+  const f = await runDs(cappedOwners.base, dsBody(), f => { f.deps.keyInfoImpl = async () => ({ limit: 0.25, limit_remaining: 0.001 }); f.deps.forwardImpl = async p => { p.writeHead(402, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":"key limit"}')); p.end(); return { status: 402, preGeneration: true }; }; });
   assert.equal(f.calls.head.status, 429);
   const error = JSON.parse(Buffer.concat(f.calls.chunks).toString());
   assert.equal(error.error.code, 'trial_daily_cap');

@@ -191,21 +191,23 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       await ddb.updateItem({ TableName: env.REQUESTS_TABLE, Key: { request_id: { S: requestId } }, UpdateExpression: 'SET generation_id = :id', ConditionExpression: '#state = :pending', ExpressionAttributeNames: { '#state': 'state' }, ExpressionAttributeValues: { ':id': { S: id }, ':pending': { S: 'pending' } } });
       persistedId = id;
     };
-    // A capped owner's per-key daily limit: OpenRouter answers 403 "Key limit exceeded"
-    // (402 kept for safety). Answer with the daily-cap 429 the limit card renders. Every 403
-    // is held until its body says why: a disabled key must surface as itself, not a cap, and
-    // "Key limit exceeded" on a key with money left (any owner) means the account is empty.
-    let capHit = false, held403 = null, keyLimit = false;
+    // A capped owner's per-key daily limit: OpenRouter answers 403 "Key limit exceeded".
+    // Answer with the daily-cap 429 the limit card renders. Every 403 is held until its body
+    // says why: a disabled key must surface as itself, not a cap, and "Key limit exceeded" on a
+    // key with money left (any owner) means the account is empty. A capped 402 is what an EMPTY
+    // ACCOUNT answers, so it gets the same key check — it used to be taken as the cap outright,
+    // which stamped every trial capped for the day and never paged (2026-10-26, $0.0005 left).
+    let capHit = false, held403 = null, held402 = false, keyLimit = false;
     const result = await forwardImpl({ body, key: secret,
       writeHead: (upstreamStatus, headers) => {
-        if (capped && upstreamStatus === 402) { capHit = true; return responder.writeHead(429, { 'content-type': 'application/json' }); }
+        if (capped && upstreamStatus === 402) { held403 = []; held402 = true; return; }
         if (upstreamStatus === 403) { held403 = []; return; }
         return responder.writeHead(upstreamStatus, { 'content-type': headers['content-type']?.includes('text/event-stream') ? 'text/event-stream' : 'application/json' });
       },
       write: chunk => capHit || (held403 ? held403.push(chunk) > 0 : responder.write(chunk)),
       waitForDrain: () => { if (!responder.waitForDrain) throw new Error('Client drain unavailable'); return responder.waitForDrain(); }, onGenerationId,
       end: (upstreamBody = '') => {
-        if (held403 && /key limit exceeded/i.test(upstreamBody)) { keyLimit = true; return; } // answered below, once the key's spend is read
+        if (held403 && (held402 || /key limit exceeded/i.test(upstreamBody))) { keyLimit = true; return; } // answered below, once the key's spend is read
         else if (held403) { responder.writeHead(403, { 'content-type': 'application/json' }); held403.forEach(chunk => responder.write(chunk)); }
         if (capHit) responder.write(dailyCap().body());
         responder.end();

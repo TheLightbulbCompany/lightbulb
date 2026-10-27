@@ -79,3 +79,30 @@ def test_a_room_send_takes_the_engines_request_id_format():
     assert str(hosted_mcp._uuid_request_id(auth, given)) == given
     with pytest.raises(ToolError):
         hosted_mcp._uuid_request_id(auth, "not ok!")
+
+
+@pytest.mark.asyncio
+async def test_every_tool_declares_openais_three_hints():
+    """OpenAI's plugin review needs explicit readOnly/destructive/openWorld booleans on every tool.
+    openWorld is true where a call leaves the bounded workspace: a message other people (or their
+    sessions) act on, a browser on the public web, a webhook at any URL."""
+    hints = {
+        t.name: (t.annotations.read_only_hint, t.annotations.destructive_hint, t.annotations.open_world_hint)
+        for t in await hosted_mcp.mcp.list_tools()
+    }
+    reads = {
+        "find_sessions",
+        "message_receipt",
+        "check_inbox",
+        "find_rooms",
+        "read_messages",
+        "find_tasks",
+        "read_task",
+    }
+    assert hints == {
+        **{name: (True, False, False) for name in reads},
+        "send_message": (False, True, True),  # cannot be unsent
+        "update_task": (False, False, False),
+        "use_browser": (False, False, True),
+        "wake_me": (False, False, True),
+    }

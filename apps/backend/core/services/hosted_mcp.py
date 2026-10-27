@@ -43,11 +43,14 @@ from core.services import (
 
 logger = logging.getLogger(__name__)
 
-# The same hints the Mac's own list carried: Codex and Claude Code read them to decide
-# which calls ask first. Only send_message is destructive.
+# Codex and Claude Code read these to decide which calls ask first; OpenAI's plugin review needs all
+# three explicit on every tool. Only send_message is destructive (a sent message cannot be unsent).
+# openWorld: a call that leaves the bounded workspace (other people act on it, or any URL / the web).
+# They live here, not in network_tools.json: the engine serves that file byte for byte without hints.
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
-SEND = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
+OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
+SEND = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True)
 
 READ_SCOPE = "lightbulb:messages:read"
 WRITE_SCOPE = "lightbulb:messages:write"
@@ -421,7 +424,7 @@ async def update_task(
     return await _board(task_board.update_task(_caller(WRITE_SCOPE), task, status, priority, append_note))
 
 
-@mcp.tool(annotations=WRITE, description=SPEC["use_browser"]["description"])
+@mcp.tool(annotations=OPEN, description=SPEC["use_browser"]["description"])
 @_noted
 async def use_browser(where: Literal["mac", "cloud"]) -> dict:
     _caller(WRITE_SCOPE)
@@ -815,7 +818,7 @@ async def check_inbox(wait_secs: int = 0) -> dict:
 _ACK_MAX = 100  # the engine's app.ack limit; the rest wait for the next call
 
 
-@mcp.tool(annotations=WRITE)
+@mcp.tool(annotations=OPEN)
 @_noted
 async def wake_me(webhook_url: str) -> dict:
     """For a bot that cannot keep calling check_inbox (a Grok routine, a Muse agent): give the https URL of the webhook that starts you, and Lightbulb POSTs it when new network mail arrives for this client (content-free: you then call check_inbox). Its key is never given here: your person pastes it on the Lightbulb page this answer names. Calling it again replaces the URL (and needs the key again)."""

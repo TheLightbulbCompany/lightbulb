@@ -1539,6 +1539,8 @@ export class ServiceStack extends cdk.Stack {
       // existing receipts remain readable/cancellable in the backend.
       DESKTOP_EXECUTION_ENABLED: desktopOwner ? "true" : "false",
       DESKTOP_EXECUTION_OWNER_ALLOWLIST: desktopOwner,
+      // OpenAI's plugin-portal domain token (public by design). Unset = the path 404s.
+      OPENAI_APPS_CHALLENGE_TOKEN: process.env[`OPENAI_APPS_CHALLENGE_TOKEN_${env.toUpperCase()}`] ?? "",
       // Platform admin (/admin, /ops, marketplace review, workspace wipe) is
       // this reviewed list of Clerk USER IDS per env, never an email domain.
       // Empty ⇒ nobody is admin. Comma-separated.

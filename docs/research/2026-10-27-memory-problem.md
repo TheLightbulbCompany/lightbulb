@@ -106,3 +106,15 @@ So supersession works when the slot name comes out the same and fails when extra
 **Ranking ignores currency.** For "What Postgres version is production on?" the superseded 14 was ranked first and the current 16 third; for latency the stale 420 ms was first. Superseded claims carry a flag, but ranking is by match to the query, not by whether the claim is current. Whether an agent reads the flag is up to the agent.
 
 **Summary of the mechanism, from both probes and their BEAM data.** Extraction turns each statement into several memories with an LLM-chosen slot name. Supersession is an exact-slot match across data points. When the slot name drifts (latency vs response time; evaluation vs setup), or the contradiction is a negation on a different attribute (Docker), or the update is inside one data point, nothing is superseded, both values stay current, and recall ranks by similarity, so the older, more often repeated value tends to win. When the slot name matches, recency decides, including between two people who disagree.
+
+## 7. Why the open systems score lower: their own per-question data
+
+Full analysis: `docs/research/2026-10-27-oss-beam-failures.md`. Hindsight, Honcho and Mem0 publish per-question BEAM results; Exabase, Supermemory and the BEAM paper do not.
+
+1. **The published numbers are not comparable.** Four answer models, three judges, three context budgets. Hindsight's answerer read 17–27K tokens per question against past.dev's 8K and still scored lower.
+2. **Two of the three runs lost the conversation dates.** Hindsight's published run stamped every memory with its ingest date (March 2026), and some answers compute from it ("723 days … to March 27, 2026"); its own later commits fix this, with no new results published. Honcho passed no dates. Mem0 passed one date per batch, not per turn, and its 10M answers show year errors. Temporal reasoning, event ordering and knowledge update are where all three trail past.dev most, and a run without dates cannot answer those.
+3. **Judges move scores by tens of points.** At 1M, 44 of Hindsight's 49 temporal "misses" contain the correct duration and were scored 0.5; Honcho and Mem0 score near-correct abstentions as 0 when the answer adds related facts.
+4. **Where dates and judging are not the cause, the misses look like past.dev's**: stale or duplicated values winning (five copies of "8,000 TRY" against one "7,500"), aggregation across sessions incomplete, plain retrieval misses. At 10M multi-session reasoning is low for every system (16–28%).
+5. **Answer keys have noise**: Honcho ships three BEAM questions it considers wrong (past.dev scored two of them 0); Mem0's run has an 11-versus-12-day key error.
+
+What is not established: how much of past.dev's lead survives a run with per-turn dates and one shared judge. The leaderboard compares harnesses as much as memory systems. The failure that survives every harness is the same one both probes reproduced: when the same fact appears several times and changes once, the repeated old value tends to win.

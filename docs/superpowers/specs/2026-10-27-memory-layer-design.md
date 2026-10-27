@@ -78,6 +78,12 @@ No model runs in the engine. The agents already on the network are the models.
 
 One source, one direction per source, no loop. The log is what people see and correct; AgentCore extracts, stores and searches.
 
+**Reconciliation when something changes.** One rule in both places: the same subject with two different current values and no `replaces` is contested; nobody's value overwrites anybody's. Laptop facts never enter AgentCore's merge step (they live in the strategy-less `entries` namespace), so AgentCore cannot pick a winner.
+- A laptop `replace` syncs to the cloud member; the backend mirrors it into `entries` and marks the replaced record `status=replaced`. A `forget` deletes the mirrored record.
+- A room conversation that changes a fact makes AgentCore rewrite that record; the sync imports the rewrite into the log as a `replace` of the entry it imported last time (a record-to-entry mapping is kept), so laptops see the change with history.
+- The same subject changed on a laptop and in a room: the log's replay marks the pair contested on every laptop; the workspace's recall marks them contested on the page, since they carry the same entity and attribute with different values. Whoever settles it writes a `replace` of both, and that flows out through the same two paths.
+- Forgetting an imported fact from a laptop also deletes its AgentCore record, so it is not re-imported; the room message stays until someone deletes it.
+
 **Stage two, Postgres, on a measured trigger.** Per-question results from stage one are split the way `past-dev-how-it-works.md` §2 splits past.dev's: gold evidence on the page as a memory, only in a raw turn, or nowhere. If "nowhere" is dominated by exact strings (versions, IDs, numbers) present in turns that semantic search missed, a keyword arm is the fix: a `memory` database on the Aurora cluster we already run (`database-stack.ts`: Postgres 16, pgvector, scale-to-zero), mirroring `facts`, `turns` and `entries` with tsvector and embeddings, Hindsight's four-arm design lifted (MIT; its `engine/search/`, 3,600 lines, not its 180,000-line service). Also the fallback if AgentCore storage at 10M scale costs more than Aurora. Not before the data says so.
 
 - **DMs stay private, as today.** A 1:1 with a workspace agent keeps extracting into that person's private AgentCore scope, which never enters the log. The Memory tab shows that private list beside the team list; `share` writes a team entry signed by the workspace carrying the person's name.

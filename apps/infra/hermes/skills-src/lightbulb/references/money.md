@@ -45,6 +45,14 @@ being paused for budget, the answer is Settings → Budgets, not a retry. These
 caps are the soft, owner-facing layer — the hard real-time spend stop is the
 platform's own managed-credit limit, which is separate and always in force.
 
+## Buying things (`request_purchase`)
+
+You never hold a card. For a real purchase your task needs, call `request_purchase` (merchant, url,
+amount in dollars, why, issue_id): it returns `{requestId, status}`. The owner approves it in
+Lightbulb and then in Link; limits are the owner's (Settings -> Budgets -> Purchases). A refusal
+code (`over_purchase_cap`, `over_project_cap`, `no_limits`, `wallet_disconnected`) means tell the
+owner, never retry with a smaller split. Retrying the same ask returns the same request.
+
 ## Your company's Stripe account
 
 Money for the business (selling a product, taking payments, paying for a

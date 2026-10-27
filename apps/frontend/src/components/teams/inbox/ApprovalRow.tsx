@@ -19,6 +19,7 @@ import {
   isProviderConnectApproval,
   isProviderConsentApproval,
   isProviderInformationApproval,
+  isPurchaseRequestApproval,
   payloadString,
 } from "@/components/teams/inbox/lib/approvalLabel";
 import {
@@ -267,6 +268,31 @@ export function ApprovalRow({
                 </EditorialButton>
                 <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
                   Approve
+                </EditorialButton>
+              </>
+            ) : isPurchaseRequestApproval(approval) ? (
+              <>
+                <span className="text-ui text-[var(--midnight-muted)]">
+                  {payloadString(approval.payload, "amount_display")} · {payloadString(approval.payload, "merchant")}
+                </span>
+                <EditorialButton
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    // The Link URL is minted for THIS click; the card never carries one.
+                    openMintedUrl(
+                      async () =>
+                        (
+                          (await api.post(
+                            `/company/link-wallet/purchases/${payloadString(approval.payload, "request_id")}/approval-link`,
+                            {},
+                          )) as { approvalUrl?: string | null }
+                        ).approvalUrl,
+                      false,
+                    )
+                  }
+                >
+                  Approve in Link
                 </EditorialButton>
               </>
             ) : isPaymentSetupApproval(approval) ? (

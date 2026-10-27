@@ -451,6 +451,14 @@ class Settings(BaseSettings):
     # v1 Money surface (company_stripe_reads) does not depend on this.
     STRIPE_PROVISIONING_ENABLED: bool = False
 
+    # Stripe Link Agent Wallet (agent purchases). OFF by default: every route 404s and the
+    # UI hides while false. CLIENT_ID/SECRET come from Link's OAuth client application;
+    # PUBLISHABLE_KEY is the Stripe pk that Link's /auth and /auth/token require.
+    LINK_WALLET_ENABLED: bool = False
+    LINK_CLIENT_ID: str = ""
+    LINK_CLIENT_SECRET: str = ""
+    LINK_PUBLISHABLE_KEY: str = ""
+
     # Marketplace webhook signing secrets. TWO Stripe endpoint registrations
     # deliver to POST /webhooks/stripe-marketplace, each with its own secret:
     # a platform-scoped one for checkout/refund events (they originate on the

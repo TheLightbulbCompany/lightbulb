@@ -1047,6 +1047,14 @@ from routers import company_policy  # noqa: E402
 
 app.include_router(company_policy.router, prefix="/api/v1/company", tags=["company-policy"])
 
+# Stripe Link Agent Wallet (dark: every route 404s while LINK_WALLET_ENABLED is false).
+from routers import company_link_wallet  # noqa: E402
+
+app.include_router(company_link_wallet.router, prefix="/api/v1/company/link-wallet", tags=["company-link-wallet"])
+app.include_router(
+    company_link_wallet.internal_router, prefix="/api/v1/internal/link-wallet", tags=["company-link-wallet"]
+)
+
 # Money reads — the stored day rollup plus live Stripe payments/customers/products.
 from routers import company_money  # noqa: E402
 

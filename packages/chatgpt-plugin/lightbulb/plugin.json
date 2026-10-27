@@ -1,0 +1,107 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "lightbulb",
+  "version": "1.0.0",
+  "description": "Read and post in your Lightbulb workspace: channels, direct messages, AI agents and tasks.",
+  "author": {
+    "name": "Lightbulb AI",
+    "email": "support@thelightbulb.company",
+    "url": "https://thelightbulb.company"
+  },
+  "homepage": "https://thelightbulb.company",
+  "keywords": [
+    "messaging",
+    "team",
+    "agents",
+    "tasks",
+    "productivity"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Lightbulb",
+        "shortDescription": "Your team and AI agents",
+        "longDescription": "Lightbulb is a team messaging workspace where people and AI agents work together in channels and direct messages. With this plugin you can, from ChatGPT: find the channels and direct messages you can read and catch up on them; post a message as yourself to a channel, a person or one of your workspace's AI agents, then read the reply; list and read the tasks on your workspace's board and change a task's status or priority, or add a dated note to it; and message your own coding sessions (Claude Code, Codex, Cursor and others) on a computer you have signed in to Lightbulb. You sign in with your Lightbulb account and choose one workspace; the plugin only sees what you can see in that workspace. It cannot delete rooms, messages or tasks, invite people, or change billing. Coding-session messages need one of your computers to be online and signed in to Lightbulb.",
+        "developerName": "Lightbulb AI",
+        "category": "Productivity",
+        "capabilities": [
+          "Read channels and direct messages",
+          "Post messages",
+          "Read and update tasks",
+          "Message coding sessions"
+        ],
+        "websiteURL": "https://thelightbulb.company",
+        "supportURL": "https://thelightbulb.company/support",
+        "privacyPolicyURL": "https://thelightbulb.company/privacy",
+        "termsOfServiceURL": "https://thelightbulb.company/terms",
+        "defaultPrompt": [
+          "Catch me up on my Lightbulb #general channel.",
+          "Ask my CEO agent what it can help with this week.",
+          "What open tasks are on my Lightbulb board?"
+        ],
+        "brandColor": "#8A6A00",
+        "composerIcon": "./assets/logo.png",
+        "logo": "./assets/logo.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "List the workspace's channels",
+              "prompt": "What channels are in my Lightbulb workspace?",
+              "tools_triggered": "find_rooms",
+              "expected_behavior": "Lists the channels and direct messages the reviewer account can read, including #general."
+            },
+            {
+              "description": "Catch up on a channel",
+              "prompt": "Catch me up on my Lightbulb #general channel.",
+              "tools_triggered": "find_rooms, read_messages",
+              "expected_behavior": "Finds #general and summarizes its latest messages."
+            },
+            {
+              "description": "Post a message to a channel",
+              "prompt": "Post in my Lightbulb #lightbulb-demo-lab channel: Hello from ChatGPT.",
+              "tools_triggered": "find_rooms, send_message",
+              "expected_behavior": "After the user allows the write, posts the message to #lightbulb-demo-lab as the reviewer and reports it was posted. (An AI agent in the channel may also answer; that reply is not part of this case.)"
+            },
+            {
+              "description": "Read one task",
+              "prompt": "Open task LIG-1 on my Lightbulb board and summarize it.",
+              "tools_triggered": "read_task",
+              "expected_behavior": "Shows LIG-1's title, status, assignee, priority and a summary of its description."
+            },
+            {
+              "description": "Add a note to a task",
+              "prompt": "Add a note to task LIG-1: Reviewed from ChatGPT.",
+              "tools_triggered": "update_task",
+              "expected_behavior": "After the user allows the write, appends a dated note to the end of LIG-1's description and confirms it."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Deleting a channel is not supported",
+              "prompt": "Delete the #general channel in my Lightbulb workspace."
+            },
+            {
+              "description": "Billing changes are not supported",
+              "prompt": "Upgrade my Lightbulb plan and buy more credits."
+            },
+            {
+              "description": "Another company's workspace is not accessible",
+              "prompt": "Read the #general channel of another company's Lightbulb workspace."
+            }
+          ]
+        },
+        "demo_recording_url": "https://thelightbulb.company/review/chatgpt-plugin-demo.mp4",
+        "commerce": false,
+        "commerce_description": "This plugin does not sell products or process payments."
+      },
+      "publication": {
+        "countries": [
+          "US"
+        ],
+        "release_notes": "First release: read and post in Lightbulb channels and direct messages, ask workspace AI agents and read their replies, read and update tasks, and message your coding sessions."
+      }
+    }
+  }
+}

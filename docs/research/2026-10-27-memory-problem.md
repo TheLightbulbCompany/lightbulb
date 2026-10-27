@@ -81,3 +81,28 @@ These are the decisions the design has to make. Each has evidence on both sides 
 - Per-question data for an open system (Hindsight publishes at agentmemorybenchmark.ai) to check the inference in §2 rather than state it.
 - How our own Hermes agents use the five injected facts today: whether recalled facts are cited in replies (the agent-context doc says the recall query is polluted by routing JSON, so the answer may be "rarely").
 - What our users want, which no file here answers. Five conversations with current workspace teams about a time an agent did not know something a teammate knew would tell us more than any of this.
+
+## 6. Second probe: their real session format, clean contradictions, clean rephrased updates
+
+Run the same day, same account (`docs/research/2026-10-27-past-dev-probe2.py`): three Claude Code sittings rendered exactly as their plugin renders them (`# Claude Code session — <project> (<branch>)`, `## Developer · <time>` / `## Claude · <time>` turns, one data point per sitting, label `Claude Code · <project> · <branch>`); two clean contradictions; three rephrased updates; eight recalls with the plugin's ten-result block. 59 memories from 13 data points; settled in 72 seconds; 18.8 credits.
+
+**Coding sessions in their real format.** The earlier "lessons are not extracted" finding does not hold. A four-turn sitting produced twelve memories: observations of each action ("Claude changed webhooks.ts to select the secret by NODE_ENV and added a startup warning…"), claims, a mention of the decision, and the lesson as a `rule` ("When signatures fail only locally, check which mode's secret is loaded before touching the verification code"). The Redis sitting produced "Redis price cache adoption: no Redis cache for prices" and the decision as an observation. Recall for a prompt-shaped query ("stripe webhook signature verification failing in dev again, can you look at it?") put the problem, the full sitting and the rule in the top three. Two weaknesses remain inside a sitting: conditions get flattened (two open claims, "webhook secret: STRIPE_WEBHOOK_SECRET_TEST" and "webhook secret: the live one", with the NODE_ENV condition lost), and a before/after measurement in one sitting becomes two open claims on one slot ("pricing endpoint p95 latency: 820ms" and "…: 140ms", neither superseded, because supersession runs across data points, not within one).
+
+**The ten-result block a developer's agent would receive** is about 850–1,200 tokens of mixed copies: for the webhook question, the issue appears as an observation, two mentions, the source sitting, the earlier summary source and a temporal anchor ("Stripe webhook local failure (when): locally"). For the Redis question, places 9 and 10 are unrelated (the webhook queue change; the API latency). This is the §2 duplication, now in the context window every prompt.
+
+**Clean contradictions.**
+- Two people, no reply, no authority cue (Ana in #launch: "March 3"; Ben in #marketing five hours later: "March 10"): Ana's claim was closed at Ben's time and flagged superseded on recall. **The disagreement is resolved by recency, silently.** No claim is marked contested.
+- One person contradicting themselves a week apart ("I containerized the API with Docker last week" / "I've never used Docker on this project"): **nothing was superseded and nothing was flagged**. The two statements became different slots ("API deployment setup: compose" and "project Docker usage: not Docker"), both open; recall returned both sides near the top, so an answering model can notice, but the memory layer does not know they conflict.
+
+**Clean rephrased updates.**
+| Update | Slots | Superseded? |
+|---|---|---|
+| "We run Postgres 14 in production" → "Finished the database upgrade last night, production is on 16 now" | "production database version: Postgres 14" → "…: 16" | **Yes**, closed at 15 Sep |
+| "API p95 latency is 420ms" → "response time at the 95th percentile dropped to 300ms" | "API p95 latency" vs "API 95th-percentile response time" | **No**, both open |
+| "evaluating Milvus 2.2.0" → "I need help with the Milvus 2.3.1 setup" | "Milvus version under evaluation" vs "Milvus setup version" | **No**, both open (this time a claim, not just a mention, but on a different slot) |
+
+So supersession works when the slot name comes out the same and fails when extraction names the attribute differently; that is the knowledge-update and information-extraction loss mechanism from §2, reproduced on clean data.
+
+**Ranking ignores currency.** For "What Postgres version is production on?" the superseded 14 was ranked first and the current 16 third; for latency the stale 420 ms was first. Superseded claims carry a flag, but ranking is by match to the query, not by whether the claim is current. Whether an agent reads the flag is up to the agent.
+
+**Summary of the mechanism, from both probes and their BEAM data.** Extraction turns each statement into several memories with an LLM-chosen slot name. Supersession is an exact-slot match across data points. When the slot name drifts (latency vs response time; evaluation vs setup), or the contradiction is a negation on a different attribute (Docker), or the update is inside one data point, nothing is superseded, both values stay current, and recall ranks by similarity, so the older, more often repeated value tends to win. When the slot name matches, recency decides, including between two people who disagree.

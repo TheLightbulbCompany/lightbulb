@@ -25,7 +25,7 @@ From the CLI source (v0.6.5):
 - **One tool spec for every harness.** `network_tools.json` feeds the engine's MCP server (wired by `setup` into Claude Code, Codex, Cursor, Grok CLI and OpenCode) and the hosted MCP.
 - **Hooks at session start and end** for all five harnesses (`src/hook.rs`).
 - **Local SQLite** (`state.db`, 0700), already holding the roster.
-- **The workspace is a member.** The cloud member embeds the same engine (`src/embed.rs`) inside the workspace runtime through the Hermes bridge, so it receives what members receive and never sleeps.
+- **The workspace is a member.** The cloud member is the same engine running as a sidecar in the workspace's AgentCore Runtime microVM (`apps/infra/hermes/bridge/network.py`). Its `state.db` is already snapshotted to S3 per workspace one second after any change and restored on start. It runs while the runtime is up; an idle runtime parks after 15 minutes (`IDLE_TIMEOUT_S`) and syncs again when it next starts.
 
 So team memory is a second log beside the roster, synced the same way, read and written through two new tools. No new service, no server holding free users' data.
 
@@ -67,10 +67,19 @@ No model runs in the engine. The agents already on the network are the models.
 | One developer, no account | Personal memory across Claude Code, Codex and every session on their computers |
 | Two people on one free network | Team memory: one person's agent learns it, the other's knows it, with a name and date on it |
 | `lightbulb memory` | list, show (history and who), forget, export, `team off` |
-| A workspace | The cloud member holds a copy and is always online, so a fact reaches a teammate whose computer was asleep when it was written. Room agents use the same tools through the bridge. The Memory tab reads the cloud member's copy: source, history, contested, edit and forget |
-| Room conversations | Interim: AgentCore Memory with the v2 overrides (contested and history rules in the consolidation instructions) keeps extracting room facts as today. End state: the room agents write to the log like any other agent, and AgentCore's long-term memory is retired once the harness shows the log at least as good |
+| A workspace | The cloud member holds a copy, persisted by the S3 snapshot it already has. While its runtime is up it relays facts between teammates who are never online at the same time. Room agents use the same tools through the bridge. The Memory tab reads the cloud member's copy: source, history, contested, edit and forget |
+| Room conversations | Room agents write with `remember` like any other agent (at the end of each task they finish, and when asked) |
 
-### 4.5 Privacy
+### 4.5 Alongside AgentCore
+
+| AgentCore part | Role after this |
+|---|---|
+| Runtime | Unchanged. It hosts the workspace agents and the cloud member, so it hosts the workspace's copy of the memory log |
+| Memory, long-term records (`workspace_facts` semantic strategy) | Retired. Two stores of team facts would disagree the first time someone corrects one. Cutover: import every existing record once into the log as a `remember` from "workspace (imported)", with its date; turn off the strategy; the Hermes memory plugin's prefetch and search tool call `recall` instead |
+| Memory, short-term events (`CreateEvent` every turn, 7-day expiry) | Nothing reads them except long-term extraction, so they stop with it |
+| Memory as an extractor, if needed | If room facts are missed because agents do not write them (measured: what AgentCore would have extracted that the log lacks, over two weeks on our own workspace), turn the strategy back on with the v2 overrides as an extractor only: the cloud member writes its new records into the log (`ListMemoryRecords` filtered by `updatedAt AFTER` the last sync). The log stays the one store either way |
+
+### 4.6 Privacy
 
 The same promise as messages, because it is the same transport. Free memory lives on members' computers and moves only between them, encrypted end to end. We never see it. In a workspace the cloud member holds a copy, as it already holds the workspace's messages. `redact_for_egress`-style secret scrubbing runs before `remember` stores anything. `forget` removes the content from every copy that comes online. The privacy page and the network security doc say this before it ships.
 
@@ -95,7 +104,7 @@ The same promise as messages, because it is the same transport. Free memory live
 ## 6. Cost
 
 - **Free network: $0 to us.** The person's own agent writes, their computer stores and searches, the network carries it.
-- **Workspace:** the cloud member's copy is a few MB in SQLite. Room facts through AgentCore in the interim: ~$6 a month per workspace (v2's numbers: overrides storage $0.25 per 1,000 records, retrieval $0.50 per 1,000, Haiku-class extraction ~$1.50), going to roughly zero when AgentCore long-term memory is retired.
+- **Workspace:** the cloud member's copy is a few MB inside a `state.db` already in S3, so effectively nothing. Retiring AgentCore long-term memory removes today's AgentCore Memory bill (built-in storage $0.75 per 1,000 records, $0.50 per 1,000 retrievals, short-term $1 per GB). If the extractor fallback is ever turned on: ~$2 a month per workspace (overrides storage plus Haiku-class extraction), and no retrieval charges since reading is local.
 - **Benchmarks:** the agent stand-in runs a small model over each session: 155M tokens for the full suite, ~$50 at Haiku 5.5 list price, plus answer and judge (~$80 for 2,000 questions). ~$15–20 per 100K tuning iteration; ~$500 with tuning. Bedrock and OpenRouter prices are checked before the first run.
 - **People's tokens:** a few hundred at session end and ~400 at session start, against 850–1,200 before every prompt with past.dev's plugin (measured).
 
@@ -108,7 +117,7 @@ Working days with agents; tuning is the only open-ended part, so it has a timebo
 | 0. Harness | 2 | Fork; adapter with the agent stand-in; baselines on 100K (past.dev rerun, AgentCore built-in, judge ×3) |
 | 1. Memory log in the engine | 5 | Entries, signing and replay on the roster's pattern; `memory` heads in `hello` and a paged `Memory` frame; FTS5; `remember` and `recall` in `network_tools.json`; session-start and Stop hook text; `lightbulb memory` commands; tests including two-computer sync |
 | 2. Tuning | timebox 10 | Hook instruction, tool text, page format, FTS5 vs embeddings, on 100K and the probes; done when we beat our past.dev rerun by more than the judge's spread, or we stop and report |
-| 3. Workspace | 3 | Cloud member holds the copy; room agents get the tools through the bridge; Memory tab reads it; AgentCore overrides for room facts in the interim |
+| 3. Workspace | 3 | Cloud member holds the copy; room agents get the tools through the bridge; Memory tab reads it; one-time import of AgentCore records; strategy off |
 | 4. Release and publish | 3 | CLI release; privacy and security docs; one run of 500K, 1M, 10M and LongMemEval_S; results repo |
 
 About four weeks. Step 1 ships to users before tuning finishes: memory that works is useful before it is benchmarked.
@@ -117,7 +126,7 @@ About four weeks. Step 1 ships to users before tuning finishes: memory that work
 
 1. Memory is part of the free network, peer to peer, no account.
 2. Agents share to the team by default when the fact is about shared work, say so when they do, and the person can turn it off. The alternative is personal by default with an explicit "share".
-3. AgentCore long-term memory is interim for room facts and retired when the log matches it.
+3. AgentCore Runtime stays; AgentCore Memory is retired at the workspace cutover, with its records imported, and comes back only as an extractor feeding the log if room facts are measurably missed.
 4. Publish the harness and results even if a split comes out below past.dev.
 
 ## Sources

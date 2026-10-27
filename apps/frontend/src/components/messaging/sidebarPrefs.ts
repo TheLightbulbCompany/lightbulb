@@ -31,7 +31,8 @@ export function writeSidebarPrefs(scope: string, prefs: SidebarPrefs): void {
 
 const SESSION_SEEN_KEY_PREFIX = "lightbulb.messaging.sessionSeen.";
 
-/** Per-viewer "last seen seq" per shared session, for the sidebar's unread dot. */
+/** Per-viewer "last seen seq" per shared session, for the sidebar's unread dot. `scope` is
+ *  `<userId>:<workspace>`, so people sharing a browser profile do not share it. */
 export function readSessionSeen(scope: string): Record<string, number> {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(`${SESSION_SEEN_KEY_PREFIX}${scope}`) ?? "{}");

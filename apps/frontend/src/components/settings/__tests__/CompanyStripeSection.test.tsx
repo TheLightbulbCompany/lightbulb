@@ -71,6 +71,22 @@ describe("CompanyStripeSection", () => {
     expect(screen.getByText("Connect existing Stripe")).toBeInTheDocument();
   });
 
+  it("shows Finish Stripe setup when the projects capability is not active yet", async () => {
+    // Charges are on, so the plain "Finish onboarding" would hide — but the
+    // account cannot provision until Stripe activates `projects`.
+    get.mockResolvedValue({ ...BOUND, projects_ready: false });
+    renderSection(true);
+    expect(await screen.findByText("Finish Stripe setup")).toBeInTheDocument();
+    expect(screen.queryByText("Finish onboarding")).not.toBeInTheDocument();
+  });
+
+  it("hides Finish Stripe setup once projects is ready", async () => {
+    get.mockResolvedValue({ ...BOUND, projects_ready: true });
+    renderSection(true);
+    await screen.findByText("Open Stripe Dashboard");
+    expect(screen.queryByText("Finish Stripe setup")).not.toBeInTheDocument();
+  });
+
   it("offers ONLY the API-key door while provisioning is off", async () => {
     // Connect exists for provisioning. With that rail off, the OAuth doors
     // would ask for a read_write grant to power a read-only tab a pasted key

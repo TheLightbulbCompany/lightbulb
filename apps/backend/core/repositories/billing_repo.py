@@ -1331,7 +1331,7 @@ _COMPANY_STRIPE_FIELDS = (
     "company_stripe_account_id",
     # The ONE Stripe Provisioning Project for this company. It lives here and
     # not on a provisioning workflow row because every workflow must land in
-    # the SAME Project — `environment_info` is scoped by project, so a second
+    # the SAME Project — credentials are scoped by project, so a second
     # Project splits the company's credentials in two.
     "company_stripe_project_id",
     "company_stripe_source",

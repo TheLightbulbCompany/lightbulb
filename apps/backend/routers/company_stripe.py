@@ -77,7 +77,7 @@ async def _sync_status(owner_id: str, account_id: str) -> None:
     await billing_repo.set_company_stripe_status(owner_id, account_id=account_id, **status)
 
 
-def _status_payload(row: dict | None) -> dict:
+def _status_payload(row: dict | None, projects_ready: bool | None = None) -> dict:
     row = row or {}
     account_id = row.get("company_stripe_account_id")
     return {
@@ -97,6 +97,10 @@ def _status_payload(row: dict | None) -> dict:
         # it is the one thing an OAuth grant does that a pasted key cannot.
         # While off, the card offers the api_key path alone.
         "provisioning_enabled": bool(settings.STRIPE_PROVISIONING_ENABLED),
+        # None = not asked (rail off, or not an account we created). False
+        # shows "Finish Stripe setup": no workflow can start before Stripe
+        # activates the account's `projects` capability.
+        "projects_ready": projects_ready,
     }
 
 
@@ -109,7 +113,20 @@ async def status(auth: Annotated[AuthContext, Depends(get_current_user)]):
         # flags only ever reflect bind time. Refresh them on read; best-effort,
         # a Stripe hiccup serves the stored copy rather than a 502.
         row = await _refresh_api_key_status(row) or row
-    return _status_payload(row)
+    return _status_payload(row, await _projects_ready(row))
+
+
+async def _projects_ready(row: dict | None) -> bool | None:
+    """One Stripe read per status load, only where it can matter. Best-effort:
+    a hiccup answers None (card shows nothing extra), never a 502."""
+    row = row or {}
+    if not (settings.STRIPE_PROVISIONING_ENABLED and row.get("company_stripe_source") == "created"):
+        return None
+    try:
+        return await company_stripe.projects_ready(account_id=row["company_stripe_account_id"])
+    except Exception:  # noqa: BLE001 — a read-time probe must never break the card
+        logger.warning("company_stripe: projects_ready read failed owner_id=%s", row.get("owner_id"))
+        return None
 
 
 async def _refresh_api_key_status(row: dict) -> dict | None:
@@ -268,7 +285,10 @@ async def onboarding_link(auth: Annotated[AuthContext, Depends(get_current_user)
     if not account_id or row.get("company_stripe_source") != "created":
         raise HTTPException(status_code=409, detail="No created Stripe account to onboard")
     try:
-        url = await company_stripe.create_company_onboarding_link(account_id=account_id)
+        # Already onboarded once => this is a correction, not a first onboarding.
+        url = await company_stripe.create_company_onboarding_link(
+            account_id=account_id, update=bool(row.get("company_stripe_details_submitted"))
+        )
     except stripe.error.StripeError as e:
         raise _stripe_failure(e) from e
     return {"onboarding_url": url}

@@ -377,3 +377,31 @@ async def test_release_and_unbind_for_an_api_key_row_keeps_the_binding_when_the_
         released = await company_stripe.release_and_unbind(owner_id="org_a", account_id="acct_x", source="api_key")
     assert released is False
     clear.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_onboarded_account_gets_the_account_update_link():
+    from core.services import company_stripe as mod
+
+    client = MagicMock()
+    client.v2.core.account_links.create = MagicMock(return_value=SimpleNamespace(url="https://x"))
+    with patch.object(mod, "_client", return_value=client):
+        await mod.create_company_onboarding_link(account_id="acct_1", update=True)
+    use_case = client.v2.core.account_links.create.call_args.args[0]["use_case"]
+    assert use_case["type"] == "account_update"
+    assert set(use_case["account_update"]) == {"refresh_url", "return_url"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,ready", [("active", True), ("restricted", False), (None, False)])
+async def test_projects_ready_reads_the_developer_capability(status, ready):
+    from core.services import company_stripe as mod
+
+    caps = {"projects": {"status": status}} if status else {}
+    client = MagicMock()
+    client.v2.core.accounts.retrieve = MagicMock(return_value={"configuration": {"developer": {"capabilities": caps}}})
+    with patch.object(mod, "_client", return_value=client):
+        assert await mod.projects_ready(account_id="acct_1") is ready
+    assert client.v2.core.accounts.retrieve.call_args.args[1] == {
+        "include": ["configuration.developer", "requirements"]
+    }

@@ -35,14 +35,26 @@ async def test_request_sends_context_and_preview_version():
 @pytest.mark.asyncio
 async def test_query_params_are_encoded_into_the_url_not_the_body():
     """A V2 GET carries its filters in the URL; encoding them ourselves keeps
-    the transport swappable and the `reveal`/`scope` booleans explicit."""
-    raw = MagicMock(return_value={"resource_access_configurations": []})
+    the transport swappable and the booleans explicit (`livemode=false`, not
+    Python's `False`)."""
+    raw = MagicMock(return_value={"object": "v2.list", "data": []})
     with patch.object(mod, "_raw", raw):
-        await mod.environment_info("acct_1", project="proj_1", provider="prvdr_1", service="svc_1", reveal=True)
-    _method, url, _options, _body = raw.call_args.args
-    assert url.startswith("/v2/provisioning/environment_info?")
-    assert "reveal=true" in url and "scope=SERVICE" in url
-    assert "project=proj_1" in url and "provider=prvdr_1" in url and "service=svc_1" in url
+        await mod.paginate("acct_1", "/v2/provisioning/resources", params={"project": "proj_1", "limit": 100})
+        await mod.payment_profile("acct_1")
+    assert "project=proj_1" in raw.call_args_list[0].args[1]
+    # sk_test_platform (the fixture key) is test mode.
+    assert raw.call_args_list[1].args[1] == "/v2/provisioning/payment_profile?livemode=false"
+
+
+@pytest.mark.asyncio
+async def test_reveal_access_configuration_is_a_bodyless_post():
+    raw = MagicMock(return_value={"resource": "res_1", "configuration": {"K": "v"}})
+    with patch.object(mod, "_raw", raw):
+        out = await mod.reveal_access_configuration("acct_1", "res_1")
+    method, url, _options, body = raw.call_args.args
+    assert (method, url) == ("post", "/v2/provisioning/resources/res_1/reveal_access_configuration")
+    assert body is None
+    assert out["configuration"] == {"K": "v"}
 
 
 @pytest.mark.asyncio
@@ -84,7 +96,13 @@ async def test_stripe_error_becomes_a_typed_provisioning_error():
     with patch.object(mod, "_raw", MagicMock(side_effect=err)):
         with pytest.raises(mod.ProvisioningError) as exc:
             await mod.create_resource(
-                "acct_1", service_ref="svc", provider="prvdr", project="proj", name="n", configuration={}
+                "acct_1",
+                service_ref="svc",
+                provider="prvdr",
+                project="proj",
+                name="n",
+                configuration={},
+                livemode=False,
             )
     assert exc.value.code == "payment_method_required"
     assert exc.value.request_id == "req_123"
@@ -111,13 +129,9 @@ async def test_unknown_failures_get_a_stable_code_not_a_raw_message():
 
 @pytest.mark.asyncio
 async def test_logs_carry_no_secret_bearing_field(caplog):
-    revealed = {
-        "resource_access_configurations": [
-            {"resource_id": "res_1", "access_configuration_keys": ["K"], "access_configuration": {"K": "sk_live_LEAK"}}
-        ]
-    }
+    revealed = {"resource": "res_1", "configuration": {"K": "sk_live_LEAK"}}
     with patch.object(mod, "_raw", MagicMock(return_value=revealed)), caplog.at_level("DEBUG"):
-        await mod.environment_info("acct_1", project="proj_1", provider="prvdr_1", service="svc_1", reveal=True)
+        await mod.reveal_access_configuration("acct_1", "res_1")
     # A revealed credential is the most sensitive response this API returns, so
     # the contract is stronger than "no secret in the text": a success logs
     # nothing at all, which is the only version of this that cannot rot.
@@ -186,18 +200,26 @@ async def test_create_resource_sends_the_current_field_names():
             project="proj_1",
             name="analytics",
             configuration={"region": "us"},
+            livemode=False,
         )
     _m, url, _o, body = raw.call_args.args
     assert url == "/v2/provisioning/resources"
-    # `project`, not the deprecated `project_id` (spec.txt 4.4 + guide's
-    # "current exception is Account request project_id").
+    # `livemode` is always on the wire: Stripe's default for an omitted one is
+    # TRUE, i.e. real infrastructure and real charges.
     assert body == {
         "service_ref": "svc_1",
         "provider": "prvdr_1",
         "project": "proj_1",
         "name": "analytics",
         "configuration": {"region": "us"},
+        "livemode": False,
     }
+
+
+def test_create_resource_cannot_omit_livemode():
+    import inspect
+
+    assert inspect.signature(mod.create_resource).parameters["livemode"].default is inspect.Parameter.empty
 
 
 @pytest.mark.asyncio
@@ -209,7 +231,14 @@ async def test_the_catalog_partition_is_configuration_on_every_catalog_read(monk
         await mod.catalog_services("acct_1", provider_name="posthog")
         await mod.catalog_providers("acct_1")
         await mod.create_resource(
-            "acct_1", service_ref="s", provider="p", project="proj_1", name="n", configuration={}, catalog="testing"
+            "acct_1",
+            service_ref="s",
+            provider="p",
+            project="proj_1",
+            name="n",
+            configuration={},
+            livemode=False,
+            catalog="testing",
         )
     # Each catalog read filters by the configured partition first; because the
     # fake returns no rows, the unfiltered fallback follows each filtered read
@@ -222,13 +251,45 @@ async def test_the_catalog_partition_is_configuration_on_every_catalog_read(monk
 
 
 @pytest.mark.asyncio
-async def test_account_request_uses_project_id_the_documented_exception():
-    raw = MagicMock(return_value={"id": "ar_1", "status": "requested"})
+async def test_provider_connection_request_names_its_project():
+    raw = MagicMock(return_value={"id": "pcr_1", "status": "complete"})
     with patch.object(mod, "_raw", raw):
-        await mod.create_account_request("acct_1", provider="prvdr_1", project_id="proj_1")
+        await mod.create_provider_connection_request("acct_1", provider="prvdr_1", project="proj_1")
     _m, url, _o, body = raw.call_args.args
-    assert url == "/v2/provisioning/account_requests"
-    assert body == {"provider": "prvdr_1", "configuration": {}, "project_id": "proj_1"}
+    assert url == "/v2/provisioning/provider_connection_requests"
+    assert body == {"provider": "prvdr_1", "configuration": {}, "project": "proj_1"}
+
+
+def test_the_retired_provisioning_paths_are_gone():
+    """Contract guard: these paths 404 (or were renamed) on 2026-09-30.preview.
+    The only module that speaks /v2/provisioning must not mention them, and the
+    Accounts v2 calls live in company_stripe, never here."""
+    import pathlib
+
+    root = pathlib.Path(mod.__file__).resolve().parents[2]
+    callers = [root / "core/services/stripe_provisioning.py", root / "core/services/provisioning_workflow.py"]
+    callers.append(root / "routers/company_provisioning.py")
+    for path in callers:
+        source = path.read_text()
+        for dead in ("account_requests", "environment_info", "/accounts", "account_links", "create_account_request"):
+            assert dead not in source, f"{path.name} still mentions {dead}"
+
+
+def test_teardown_cannot_reveal_credentials():
+    """`remove` is the owner route's alone (test_wipe_never_deprovisions); the
+    credential reveal is the workflow's bind step's alone. Teardown reaches neither."""
+    import pathlib
+
+    root = pathlib.Path(mod.__file__).resolve().parents[2]
+    for name in ("account_wipe", "workspace_wipe"):
+        assert "reveal_access_configuration" not in (root / f"core/services/{name}.py").read_text()
+    users = sorted(
+        str(p.relative_to(root))
+        for d in ("core", "routers", "scripts")
+        for p in (root / d).rglob("*.py")
+        if "reveal_access_configuration(" in p.read_text() and p.name != "stripe_provisioning.py"
+    )
+    assert users == ["core/services/provisioning_workflow.py"], users
 
 
 @pytest.mark.asyncio
@@ -242,7 +303,8 @@ async def test_payment_method_request_is_hosted_collection_with_no_source_fields
         )
     _m, url, _o, body = raw.call_args.args
     assert url == "/v2/provisioning/payment_method_requests"
-    assert set(body) == {"usage_limits"}  # no payment_method_owner, no source_*
+    assert set(body) == {"livemode", "usage_limits"}  # no payment_method_owner, no source_*
+    assert body["livemode"] is False
     assert out["checkout_session_url"] == "https://c"
 
 

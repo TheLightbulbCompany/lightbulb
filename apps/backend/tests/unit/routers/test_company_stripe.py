@@ -95,6 +95,7 @@ def test_status_unbound(client):
         "dashboard_url": None,
         "connect_configured": True,
         "provisioning_enabled": False,
+        "projects_ready": None,
     }
 
 
@@ -870,3 +871,43 @@ def test_the_paywall_copy_names_stripe_not_scheduled_routines(client, monkeypatc
     assert resp.status_code == 402
     message = resp.json()["detail"]["message"]
     assert "Stripe" in message and "Scheduled routines" not in message
+
+
+def test_status_reports_projects_ready_for_a_created_account_only_while_the_rail_is_on(client, monkeypatch):
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}
+    ready = AsyncMock(return_value=False)
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "projects_ready", ready),
+    ):
+        assert client.get("/api/v1/company/stripe/status").json()["projects_ready"] is None
+        ready.assert_not_awaited()
+        monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
+        assert client.get("/api/v1/company/stripe/status").json()["projects_ready"] is False
+
+
+def test_a_projects_ready_read_failure_never_breaks_the_card(client, monkeypatch):
+    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "projects_ready", AsyncMock(side_effect=RuntimeError("stripe down"))),
+    ):
+        resp = client.get("/api/v1/company/stripe/status")
+    assert resp.status_code == 200 and resp.json()["projects_ready"] is None
+
+
+def test_onboarding_link_is_an_account_update_once_details_were_submitted(client):
+    row = {
+        "owner_id": "org_a",
+        "company_stripe_account_id": "acct_x",
+        "company_stripe_source": "created",
+        "company_stripe_details_submitted": True,
+    }
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "create_company_onboarding_link", AsyncMock(return_value="https://x")) as link,
+    ):
+        resp = client.post("/api/v1/company/stripe/onboarding-link")
+    assert resp.status_code == 200
+    link.assert_awaited_once_with(account_id="acct_x", update=True)

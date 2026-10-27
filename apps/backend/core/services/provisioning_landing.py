@@ -1,5 +1,5 @@
 """Where a provisioned credential goes once ``provisioning_workflow._bind`` has
-read it out of ``environment_info``. Three writes, in this order and for these
+read it out of ``reveal_access_configuration``. Three writes, in this order and for these
 reasons:
 
 1. **Secrets Manager** — ``lightbulb/{env}/integrations/{owner}/projects/{provider}``,

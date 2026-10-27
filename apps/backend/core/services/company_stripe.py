@@ -128,25 +128,43 @@ async def create_company_account(*, owner_id: str, email: str, company_name: str
     return account.id
 
 
-async def create_company_onboarding_link(*, account_id: str) -> str:
-    """Single-use, ~10-minute hosted onboarding link (v2). Mint per request."""
+async def create_company_onboarding_link(*, account_id: str, update: bool = False) -> str:
+    """Single-use, ~10-minute hosted link (v2). Mint per request.
+
+    ``update`` is for an account that already finished onboarding once: the
+    guide's ``account_update`` use case is "subsequent corrections", and it
+    takes no ``configurations`` list."""
     client = _client()
+    urls = {"refresh_url": settings.STRIPE_COMPANY_REFRESH_URL, "return_url": settings.STRIPE_COMPANY_RETURN_URL}
+    use_case = (
+        {"type": "account_update", "account_update": urls}
+        if update
+        else {
+            "type": "account_onboarding",
+            "account_onboarding": {"configurations": onboarding_configurations(), **urls},
+        }
+    )
     link = await asyncio.to_thread(
         client.v2.core.account_links.create,
-        {
-            "account": account_id,
-            "use_case": {
-                "type": "account_onboarding",
-                "account_onboarding": {
-                    "configurations": onboarding_configurations(),
-                    "refresh_url": settings.STRIPE_COMPANY_REFRESH_URL,
-                    "return_url": settings.STRIPE_COMPANY_RETURN_URL,
-                },
-            },
-        },
+        {"account": account_id, "use_case": use_case},
         options=accounts_v2_options(),
     )
     return link.url
+
+
+async def projects_ready(*, account_id: str) -> bool:
+    """The `projects` capability is active — the guide's gate to provisioning
+    ("Don't treat the Account Link redirect alone as proof of completion").
+    Outstanding requirements are not read here: the workflow's eligibility
+    read refuses on those, and this answers the one thing the card can fix."""
+    account = await asyncio.to_thread(
+        _client().v2.core.accounts.retrieve,
+        account_id,
+        {"include": ["configuration.developer", "requirements"]},
+        options=accounts_v2_options(),
+    )
+    caps = ((account.get("configuration") or {}).get("developer") or {}).get("capabilities") or {}
+    return (caps.get("projects") or {}).get("status") == "active"
 
 
 def build_connect_authorize_url(*, state: str) -> str:

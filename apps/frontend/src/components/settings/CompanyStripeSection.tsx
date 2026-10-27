@@ -32,6 +32,9 @@ export type CompanyStripeStatus = {
   /** Connect is only offered while the provisioning rail is live — it is the
    *  one thing an OAuth grant does that a pasted key cannot. */
   provisioning_enabled: boolean;
+  /** false = the account exists but Stripe has not activated its `projects`
+   *  capability yet (the owner owes onboarding); null = not asked. */
+  projects_ready?: boolean | null;
 };
 
 /** The six read permissions the Money surface needs — shown so nobody has to
@@ -317,14 +320,14 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                   Open Stripe Dashboard
                 </a>
               )}
-              {canManage && data.source === "created" && !data.charges_enabled && (
+              {canManage && data.source === "created" && (!data.charges_enabled || data.projects_ready === false) && (
                 <EditorialButton
                   type="button"
                   size="sm"
                   disabled={busy}
                   onClick={() => openWith(async () => (await onboardingLink()).onboarding_url)}
                 >
-                  Finish onboarding
+                  {data.projects_ready === false ? "Finish Stripe setup" : "Finish onboarding"}
                 </EditorialButton>
               )}
               {canManage && (

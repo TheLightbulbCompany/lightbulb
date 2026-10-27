@@ -2,10 +2,10 @@
 
 Allowlisted private preview; every request carries
 ``Stripe-Version: 2026-09-30.preview`` and "the contract can change"
-(spec.txt header; guide's Private preview note). Docs check 2026-10-16:
-docs.stripe.com/provisioning still says private preview, allowlisted, and now
-names ``2026-09-30.preview`` (not ``unsafe-development``); docs.stripe.com/projects
-is the CLI page and carries no version or date. The platform key acts on every
+(guide's Private preview note: tolerate new response fields, use returned enum
+values). Docs check 2026-10-27: docs.stripe.com/provisioning is the contract
+this module follows (provider connection requests, ``livemode`` on resources
+and payment, ``reveal_access_configuration``). The platform key acts on every
 connected account by changing one header, so it never leaves this process and
 this module is the ONLY place that speaks to ``/v2/provisioning``.
 
@@ -109,7 +109,7 @@ class TransientProvisioningError(ProvisioningError):
     """The call may not have been decided: a 5xx from the preview, a 429, or a
     transport timeout with the request possibly in flight.
 
-    A caller may re-READ (poll the resource / account request / payment
+    A caller may re-READ (poll the resource / provider connection request / payment
     profile) but must NEVER re-POST — a retried create is a second resource the
     owner pays for. Subclasses ProvisioningError so `except ProvisioningError`
     still catches everything.
@@ -328,26 +328,28 @@ async def list_provider_connections(account_id: str) -> list[dict]:
     return await paginate(account_id, f"{BASE}/provider_connections", params={"limit": 100})
 
 
-async def create_account_request(account_id: str, *, provider: str, project_id: str | None = None) -> dict:
-    """`provider` is the current field; `project_id` is the documented
-    exception where a `_id` suffix is still current (spec.txt 4.3: "project_id
-    is the current Account-request field"). PKCE fields are omitted: "Use PKCE
-    fields only if your integration owns the OAuth callback"."""
+async def create_provider_connection_request(account_id: str, *, provider: str, project: str | None = None) -> dict:
+    """`provider` is the catalog provider id. `status` comes back as
+    `requested | pending_auth | needs_information | complete | error`, and
+    `complete` can arrive on this very response (an immediate connect, no
+    redirect). PKCE fields are omitted: the platform takes no callback."""
     body: dict = {"provider": provider, "configuration": {}}
-    if project_id:
-        body["project_id"] = project_id
-    return await request(account_id, "post", f"{BASE}/account_requests", body=body)
+    if project:
+        body["project"] = project
+    return await request(account_id, "post", f"{BASE}/provider_connection_requests", body=body)
 
 
-async def get_account_request(account_id: str, request_id_: str) -> dict:
-    return await request(account_id, "get", f"{BASE}/account_requests/{request_id_}")
+async def get_provider_connection_request(account_id: str, request_id_: str) -> dict:
+    return await request(account_id, "get", f"{BASE}/provider_connection_requests/{request_id_}")
 
 
-async def submit_account_request_information(account_id: str, request_id_: str, *, information: dict) -> dict:
+async def submit_provider_connection_request_information(
+    account_id: str, request_id_: str, *, information: dict
+) -> dict:
     return await request(
         account_id,
         "post",
-        f"{BASE}/account_requests/{request_id_}/submit_information",
+        f"{BASE}/provider_connection_requests/{request_id_}/submit_information",
         body={"information": information},
     )
 
@@ -363,13 +365,17 @@ async def create_resource(
     project: str | None,
     name: str,
     configuration: dict,
+    livemode: bool,
     catalog: str | None = None,
 ) -> dict:
+    """`livemode` is required and always sent: Stripe defaults an omitted one to
+    TRUE, which creates live provider infrastructure and real charges."""
     body: dict = {
         "service_ref": service_ref,
         "provider": provider,
         "name": name,
         "configuration": configuration,
+        "livemode": livemode,
     }
     if project:
         body["project"] = project
@@ -412,30 +418,21 @@ async def rotate_credentials(account_id: str, resource_id: str) -> dict:
 # --- 4.5 Credentials --------------------------------------------------------
 
 
-async def environment_info(account_id: str, *, project: str, provider: str, service: str, reveal: bool) -> dict:
-    """`reveal` and `scope` are non-optional proto fields, so both are always
-    sent. Scope is SERVICE: the API "can scope by all, Provider, or Service,
-    but not by one Resource", so the caller still selects by `resource_id`."""
-    return await request(
-        account_id,
-        "get",
-        f"{BASE}/environment_info",
-        params={
-            "reveal": reveal,
-            "scope": "SERVICE",
-            "project": project,
-            "provider": provider,
-            "service": service,
-        },
-    )
+async def reveal_access_configuration(account_id: str, resource_id: str) -> dict:
+    """The resource's current provider-issued credentials (`configuration`).
+    A SECRET: no body, never logged (request logs carry no bodies), and only
+    reached from the workflow's bind step. Not a rotation."""
+    return await request(account_id, "post", f"{BASE}/resources/{resource_id}/reveal_access_configuration")
 
 
 # --- 4.6 Payment ------------------------------------------------------------
 
 
 async def payment_profile(account_id: str) -> dict:
-    """A missing profile returns `not_found` (spec.txt 4.6)."""
-    return await request(account_id, "get", f"{BASE}/payment_profile")
+    """A missing profile returns `not_found`. `livemode` is a query parameter
+    on every read: a test-mode profile 404s without it, so a successful write
+    looks like it silently failed."""
+    return await request(account_id, "get", f"{BASE}/payment_profile", params={"livemode": is_livemode()})
 
 
 def _usage_limits(max_amount: int, currency: str, recurring_interval: str) -> dict:
@@ -458,7 +455,7 @@ async def create_payment_method_request(
         account_id,
         "post",
         f"{BASE}/payment_method_requests",
-        body={"usage_limits": _usage_limits(max_amount, currency, recurring_interval)},
+        body={"livemode": is_livemode(), "usage_limits": _usage_limits(max_amount, currency, recurring_interval)},
     )
 
 

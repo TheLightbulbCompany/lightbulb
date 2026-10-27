@@ -305,7 +305,7 @@ def _safe_service(service: dict, provider: dict) -> dict:
 def _safe_workflow(row: dict) -> dict:
     """The ONE serializer for a workflow row, on every door — container or
     browser. Allowlisted, never a filtered copy of the row: the row carries the
-    account request id, the resource id, the project id and the approval
+    provider connection request id, the resource id, the project id and the approval
     snapshot, and a blocklist would leak the next field somebody adds."""
     return {
         "workflow_id": row.get("workflow_id"),
@@ -526,7 +526,7 @@ async def container_cancel_request(owner_id: str, workflow_id: str, request: Req
     chat, she asked for the wrong service.
 
     "Withdraw the ask", never "undo the infrastructure": `cancel` refuses the
-    moment an account request or a resource exists, because there is no
+    moment a provider connection request or a resource exists, because there is no
     idempotency contract to lean on and closing our row would orphan an object
     on the owner's own Stripe account.
     """
@@ -729,7 +729,7 @@ async def submit_information(workflow_id: str, body: InformationBody, owner_id: 
     """
     row = await _owned(owner_id, workflow_id)
     target = row.get("information_target")
-    target_id = row.get("account_request_id") if target == "account_request" else row.get("resource_id")
+    target_id = provisioning_workflow.request_id_of(row) if target == "account_request" else row.get("resource_id")
     if row.get("awaiting") != "provider_information" or target not in ("account_request", "resource") or not target_id:
         raise _conflict("no_information_pending", "This request is not waiting for information")
     if len(body.information) > _MAX_CONFIG_KEYS:
@@ -762,7 +762,9 @@ async def submit_information(workflow_id: str, body: InformationBody, owner_id: 
     try:
         account_id = await provisioning_workflow.account_id_for(owner_id)
         if target == "account_request":
-            await api.submit_account_request_information(account_id, target_id, information=body.information)
+            await api.submit_provider_connection_request_information(
+                account_id, target_id, information=body.information
+            )
             to_state = "connecting_provider"
         else:
             await api.submit_resource_information(account_id, target_id, submitted_information=body.information)
@@ -822,10 +824,10 @@ async def payment_link(workflow_id: str, owner_id: Owner):
 async def connect_link(workflow_id: str, owner_id: Owner):
     """Mint the provider OAuth URL for THIS click.
 
-    Never served from the card: the account request may have completed,
-    errored or vanished since it was filed. Re-read it, and create a fresh one
-    when the old one is unusable ("Create a new Account request and ask the
-    user to reconnect").
+    Never served from the card: the provider connection request may have
+    completed, errored or vanished since it was filed. Re-read it, and create a
+    fresh one when the old one is unusable ("Create a new Provider connection
+    request and ask the user to reconnect").
     """
     row = await _owned(owner_id, workflow_id)
     if row.get("state") in workflow_repo.TERMINAL_STATES or row.get("awaiting") != "provider_connect":
@@ -833,9 +835,11 @@ async def connect_link(workflow_id: str, owner_id: Owner):
     try:
         account_id = await provisioning_workflow.account_id_for(owner_id)
         request_ = None
-        if row.get("account_request_id"):
+        if provisioning_workflow.request_id_of(row):
             try:
-                request_ = await api.get_account_request(account_id, row["account_request_id"])
+                request_ = await api.get_provider_connection_request(
+                    account_id, provisioning_workflow.request_id_of(row)
+                )
             except ProvisioningError as e:
                 # Gone, or the connection behind it expired: both are "make a
                 # new one", not "fail the click".
@@ -845,14 +849,14 @@ async def connect_link(workflow_id: str, owner_id: Owner):
                 request_ = None
         if request_ is None:
             scope = (row.get("approval") or {}).get("scope")
-            request_ = await api.create_account_request(
+            request_ = await api.create_provider_connection_request(
                 account_id,
                 provider=row["provider_id"],
-                project_id=await _company_project_id(owner_id) if scope == "project" else None,
+                project=await _company_project_id(owner_id) if scope == "project" else None,
             )
-            # Persisted BEFORE the URL is handed over: an account request
-            # carries no name, so an id lost here is unreconcilable.
-            await workflow_repo.patch(workflow_id, {"account_request_id": request_["id"]})
+            # Persisted BEFORE the URL is handed over: a request carries no
+            # name, so an id lost here is unreconcilable.
+            await workflow_repo.patch(workflow_id, {"provider_connection_request_id": request_["id"]})
     except WorkflowRefused as e:
         raise _refusal(e) from e
     except ProvisioningError as e:

@@ -547,7 +547,7 @@ AR_INFO = {
     "awaiting": "provider_information",
     "information_schema": _SCHEMA,
     "information_target": "account_request",
-    "account_request_id": "ar_1",
+    "provider_connection_request_id": "ar_1",
     "resource_id": "res_1",
 }
 RES_INFO = {**AR_INFO, "information_target": "resource"}
@@ -558,7 +558,7 @@ def test_information_submits_to_the_resource_endpoint_for_that_target(client):
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=RES_INFO)),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
         patch.object(mod.api, "submit_resource_information", AsyncMock(return_value={"id": "res_1"})) as submit,
-        patch.object(mod.api, "submit_account_request_information", AsyncMock()) as other,
+        patch.object(mod.api, "submit_provider_connection_request_information", AsyncMock()) as other,
         patch.object(
             mod.workflow_repo, "transition", AsyncMock(return_value={**RES_INFO, "state": "provisioning"})
         ) as move,
@@ -586,7 +586,9 @@ def test_information_submits_to_the_account_request_endpoint_for_that_target(cli
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=AR_INFO)),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(mod.api, "submit_account_request_information", AsyncMock(return_value={"id": "ar_1"})) as submit,
+        patch.object(
+            mod.api, "submit_provider_connection_request_information", AsyncMock(return_value={"id": "ar_1"})
+        ) as submit,
         patch.object(mod.api, "submit_resource_information", AsyncMock()) as other,
         patch.object(
             mod.workflow_repo, "transition", AsyncMock(return_value={**AR_INFO, "state": "connecting_provider"})
@@ -738,11 +740,11 @@ def test_a_withdrawn_request_can_never_mint_a_link(client, path, code):
     or by any other terminal move — must not mint one either."""
     row = {**PAYING, "state": "cancelled", "awaiting": "payment_setup"}
     if path == "connect-link":
-        row = {**row, "awaiting": "provider_connect", "account_request_id": "ar_1"}
+        row = {**row, "awaiting": "provider_connect", "provider_connection_request_id": "ar_1"}
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
         patch.object(mod.api, "create_payment_method_request", AsyncMock()) as paid,
-        patch.object(mod.api, "get_account_request", AsyncMock()) as read,
+        patch.object(mod.api, "get_provider_connection_request", AsyncMock()) as read,
     ):
         resp = client.post(f"/api/v1/company/provisioning/workflows/pwf_1/{path}")
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == code
@@ -772,7 +774,7 @@ CONNECTING = {
     **WF,
     "state": "awaiting_user_action",
     "awaiting": "provider_connect",
-    "account_request_id": "ar_1",
+    "provider_connection_request_id": "ar_1",
 }
 
 
@@ -782,7 +784,7 @@ def test_connect_link_reuses_a_live_account_request(client):
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
         patch.object(
             mod.api,
-            "get_account_request",
+            "get_provider_connection_request",
             AsyncMock(
                 return_value={
                     "id": "ar_1",
@@ -791,7 +793,7 @@ def test_connect_link_reuses_a_live_account_request(client):
                 }
             ),
         ),
-        patch.object(mod.api, "create_account_request", AsyncMock()) as created,
+        patch.object(mod.api, "create_provider_connection_request", AsyncMock()) as created,
         patch.object(mod.workflow_repo, "patch", AsyncMock()) as patched,
         patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
@@ -808,12 +810,16 @@ def test_connect_link_reuses_a_live_account_request(client):
 
 def test_connect_link_mints_a_new_account_request_when_the_old_one_errored(client):
     with (
-        patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**CONNECTING, "account_request_id": "ar_old"})),
+        patch.object(
+            mod.workflow_repo, "get", AsyncMock(return_value={**CONNECTING, "provider_connection_request_id": "ar_old"})
+        ),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(mod.api, "get_account_request", AsyncMock(return_value={"id": "ar_old", "status": "error"})),
+        patch.object(
+            mod.api, "get_provider_connection_request", AsyncMock(return_value={"id": "ar_old", "status": "error"})
+        ),
         patch.object(
             mod.api,
-            "create_account_request",
+            "create_provider_connection_request",
             AsyncMock(
                 return_value={
                     "id": "ar_new",
@@ -828,10 +834,10 @@ def test_connect_link_mints_a_new_account_request_when_the_old_one_errored(clien
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
     assert resp.json()["redirect_url"] == "https://provider.example/oauth?new"
-    assert created.await_args.kwargs == {"provider": "prvdr_1", "project_id": "p_1"}
+    assert created.await_args.kwargs == {"provider": "prvdr_1", "project": "p_1"}
     # Persisted before the URL is handed over — an account request has no name
     # to reconcile a lost id by.
-    assert patched.await_args.args[1] == {"account_request_id": "ar_new"}
+    assert patched.await_args.args[1] == {"provider_connection_request_id": "ar_new"}
 
 
 def test_connect_link_mints_a_new_one_when_the_old_id_is_gone(client):
@@ -839,10 +845,10 @@ def test_connect_link_mints_a_new_one_when_the_old_id_is_gone(client):
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=CONNECTING)),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(mod.api, "get_account_request", AsyncMock(side_effect=gone)),
+        patch.object(mod.api, "get_provider_connection_request", AsyncMock(side_effect=gone)),
         patch.object(
             mod.api,
-            "create_account_request",
+            "create_provider_connection_request",
             AsyncMock(return_value={"id": "ar_new", "status": "pending_auth", "redirect_url": "https://p.example/x"}),
         ) as created,
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={})),
@@ -862,7 +868,7 @@ def test_connect_link_un_stales_the_row_so_the_next_read_is_not_a_no_op(client):
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
         patch.object(
             mod.api,
-            "get_account_request",
+            "get_provider_connection_request",
             AsyncMock(return_value={"id": "ar_1", "status": "pending_auth", "redirect_url": "https://p.example/x"}),
         ),
         patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
@@ -882,8 +888,10 @@ def test_connect_link_409s_when_the_connection_needs_no_browser_step(client):
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=CONNECTING)),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(mod.api, "get_account_request", AsyncMock(return_value={"id": "ar_1", "status": "complete"})),
-        patch.object(mod.api, "create_account_request", AsyncMock()) as created,
+        patch.object(
+            mod.api, "get_provider_connection_request", AsyncMock(return_value={"id": "ar_1", "status": "complete"})
+        ),
+        patch.object(mod.api, "create_provider_connection_request", AsyncMock()) as created,
         patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
@@ -897,7 +905,7 @@ def test_connect_link_409s_when_the_connection_needs_no_browser_step(client):
 def test_connect_link_409s_when_the_row_is_not_waiting_on_a_connection(client):
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
-        patch.object(mod.api, "get_account_request", AsyncMock()) as read,
+        patch.object(mod.api, "get_provider_connection_request", AsyncMock()) as read,
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "no_connect_pending"

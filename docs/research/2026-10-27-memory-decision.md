@@ -82,6 +82,8 @@ Each phase ships on its own and is measurable. Nothing here is specced yet; the 
 
 ## 6. Decisions for the founder
 
+0. **Build or buy the recall.** `2026-10-27-past-dev.md` (same day) makes the case for past.dev behind our existing memory-provider seam for the cloud tiers, with a two-week pilot on our own workspace first, and for keeping the no-account tier to messaging and local capture. If agreed, phases 0 and 1 below collapse into "hooks ingest under the person's identity" and phase 2 starts now.
+
 1. **Is memory on the free network the right line?** The alternative is memory only in the workspace (the 27 Oct framing read literally). My recommendation is personal memory free, team memory paid, for the reasons in §4; if the founder wants memory wholly in the paid head, phase 0 still ships but only for signed-in computers.
 2. **AgentCore's future.** Keep it as the fact store for rooms and add lessons beside it, or retire it once team lessons exist. Cost today is unmeasured (AWS list: $0.75 per 1,000 records a month plus $0.50 per 1,000 retrievals); the recall query is known to be polluted by routing JSON. I lean towards retiring it in phase 2 and would want a cost read first.
 3. **Capture.** Confirm "lessons cross, traces do not" as a rule we publish, or leave the door open to opt-in local capture.

@@ -3,7 +3,7 @@
  * session, as ONE list sorted by last activity, plus the row's preview line and
  * the avatar's state ring. Pure: no React, no DOM, no react-native.
  */
-import { sessionArchived, sessionStatus, sessionWaitingLine } from "./localSessionLabels";
+import { sessionArchived, sessionArchivedByViewer, sessionState, sessionStatus, sessionWaitingLine } from "./localSessionLabels";
 import type { LocalSession, RoomSummary } from "./types";
 
 export type ChatEntry =
@@ -30,7 +30,7 @@ export interface MergeChatsOptions {
 
 /**
  * Rooms (minus deleted ones) and sessions — ended ones included, they are
- * ordinary chats (owner ruling 2026-09-26) — minus three-day-offline and
+ * ordinary chats (owner ruling 2026-09-26) — minus ended-on-purpose, three-day-offline and
  * locally archived ones — an archived session comes back once it has new
  * output), newest activity first; equal times order by key so the list never
  * shuffles between renders.
@@ -46,9 +46,7 @@ export function mergeChats(
     entries.push({ kind: "room", key: `room:${room.roomId}`, at: roomActivityAt(room), room });
   }
   for (const session of sessions) {
-    if (sessionArchived(session, now)) continue;
-    const archivedAt = archivedSessions[session.sessionId];
-    if (archivedAt !== undefined && (session.latestEventSeq ?? 0) <= archivedAt) continue;
+    if (sessionState(session) === "hidden" || sessionArchived(session, now) || sessionArchivedByViewer(session, archivedSessions)) continue;
     entries.push({ kind: "session", key: `session:${session.sessionId}`, at: sessionActivityAt(session), session });
   }
   return entries.sort((a, b) => b.at - a.at || a.key.localeCompare(b.key));

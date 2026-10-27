@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { canChangeListenMode, cardReplyRequest, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionsNeedingYou, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionsNeedingYou, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -405,15 +405,18 @@ export function MessagingWorkspaceProvider({
     .map((session) => session.humanUserId)), [workspaceSessions.sessions]);
   // The unread dot: this viewer's last-seen seq per session, on this device.
   // ponytail: entries are never pruned (one number per session ever listed); prune if it ever matters.
-  const [sessionSeen, setSessionSeen] = useState(() => ({ scope, seen: readSessionSeen(scope) }));
-  const seen = sessionSeen.scope === scope ? sessionSeen.seen : readSessionSeen(scope);
+  // Per person AND workspace (as the sidebar's pins and archives): two members on one browser profile
+  // keep their own unread dots, and Mark unread/read moves only the signed-in person's.
+  const seenScope = `${userId ?? ""}:${scope}`;
+  const [sessionSeen, setSessionSeen] = useState(() => ({ scope: seenScope, seen: readSessionSeen(seenScope) }));
+  const seen = sessionSeen.scope === seenScope ? sessionSeen.seen : readSessionSeen(seenScope);
   const openSessionId = sessionFocus?.sessionId ?? null;
   useEffect(() => {
     const next = markSessionsSeen(seen, workspaceSessions.sessions, openSessionId);
-    if (next === seen && sessionSeen.scope === scope) return;
-    setSessionSeen({ scope, seen: next });
-    writeSessionSeen(scope, next);
-  }, [seen, workspaceSessions.sessions, openSessionId, scope, sessionSeen.scope]);
+    if (next === seen && sessionSeen.scope === seenScope) return;
+    setSessionSeen({ scope: seenScope, seen: next });
+    writeSessionSeen(seenScope, next);
+  }, [seen, workspaceSessions.sessions, openSessionId, seenScope, sessionSeen.scope]);
   // A room member's online/sharing (human) or agentActivity (agent) decoration --
   // the same ternary every member list below applies to its own room-member array.
   const decorate = useCallback((member: RoomMember): RoomParticipant => member.kind === "agent"
@@ -896,6 +899,13 @@ export function MessagingWorkspaceProvider({
     onRemoveEndedSessions: async () => {
       try { await rooms.resourceSource.client.removeEndedLocalSessions(); }
       finally { await workspaceSessions.refresh(); }
+    },
+    onMarkSessionUnread: (sessionId, unread) => {
+      const session = workspaceSessions.sessions.find((candidate) => candidate.sessionId === sessionId);
+      if (!session) return;
+      const next = (unread ? markSessionUnread : markSessionRead)(seen, session);
+      setSessionSeen({ scope: seenScope, seen: next });
+      writeSessionSeen(seenScope, next);
     },
     currentSessionId: sessionFocus?.sessionId ?? null,
     onOpenAllSessions: openAllSessions,

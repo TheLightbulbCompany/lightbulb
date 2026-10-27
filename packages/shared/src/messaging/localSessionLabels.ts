@@ -183,8 +183,38 @@ export const sessionLive = (session: LocalSession): boolean => session.status !=
 export const sessionEndable = (session: LocalSession): boolean => sessionLive(session)
   && (session.terminal === "held" || (session.provider === "claude" && session.kind !== "background"));
 
-/** How many live sessions the sidebar shows before "+N more". */
+/** How many sessions the sidebar shows before "+N more" (pinned ones and the open one always show). */
 export const SIDEBAR_SESSION_CAP = 5;
+
+/** Per viewer, on this device (a convenience, not state): rows pinned to the top, and rows archived
+ *  off the list with the `latestEventSeq` they had then. Nothing changes server-side. */
+export interface SessionMarks { pinned: readonly string[]; archived: Readonly<Record<string, number>> }
+
+/** Archived by the viewer and nothing new since: new output brings it back (the phone's rule, `mergeChats`). */
+export const sessionArchivedByViewer = (s: Pick<LocalSession, "sessionId" | "latestEventSeq">, archived: Readonly<Record<string, number>>): boolean => {
+  const at = archived[s.sessionId];
+  return at !== undefined && (s.latestEventSeq ?? 0) <= at;
+};
+
+/**
+ * The web sidebar's sessions (owner decision 2026-10-27: ended ones stay until archived, as on the
+ * phone and in both vendor apps; supersedes the 2026-10-13 live-only ruling). Pinned first, then
+ * live, then the rest (ended, offline) newest activity first. Pinned and live keep the order they
+ * came in (`workspaceSections`: mine first). Never listed: one ended on purpose (ruling 2026-10-08)
+ * or offline for days. `archived` is what the viewer archived, for the "Archived" group.
+ */
+export function sidebarSessionList<T extends { session: LocalSession }>(entries: readonly T[], marks: SessionMarks, now = Date.now()): { list: T[]; archived: T[] } {
+  const list: T[] = [];
+  const archived: T[] = [];
+  for (const entry of entries) {
+    if (sessionState(entry.session) === "hidden" || sessionArchived(entry.session, now)) continue;
+    (sessionArchivedByViewer(entry.session, marks.archived) ? archived : list).push(entry);
+  }
+  const rank = (s: LocalSession) => marks.pinned.includes(s.sessionId) ? 0 : sessionLive(s) ? 1 : 2;
+  const at = (s: LocalSession) => Date.parse(s.lastEventAt ?? s.endedAt ?? "") || 0;
+  list.sort((a, b) => rank(a.session) - rank(b.session) || (rank(a.session) === 2 ? at(b.session) - at(a.session) : 0));
+  return { list, archived };
+}
 
 export interface SessionDayGroup { key: "today" | "yesterday" | "week" | "earlier"; title: string; data: LocalSession[] }
 
@@ -236,6 +266,14 @@ export function markSessionsSeen(seen: SessionSeen, sessions: readonly LocalSess
   }
   return next ?? seen;
 }
+
+/** Mark unread: the viewer's baseline drops below the session's latest output, so the dot shows. */
+export const markSessionUnread = (seen: SessionSeen, s: Pick<LocalSession, "sessionId" | "latestEventSeq">): SessionSeen =>
+  ({ ...seen, [s.sessionId]: (s.latestEventSeq ?? 0) - 1 });
+
+/** Mark read: the baseline catches up with the session's latest output. */
+export const markSessionRead = (seen: SessionSeen, s: Pick<LocalSession, "sessionId" | "latestEventSeq">): SessionSeen =>
+  ({ ...seen, [s.sessionId]: s.latestEventSeq ?? 0 });
 
 /** The sidebar/mobile filter: title, folder, tool or owner, case-insensitive. */
 export function sessionMatches(session: LocalSession, query: string, ownerName = ""): boolean {

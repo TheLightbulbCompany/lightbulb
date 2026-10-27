@@ -65,7 +65,7 @@ For each new claim:
 
 Where the extraction runs:
 - **Laptop, free:** the agent itself. At the end of a session (the Stop/SessionEnd hooks we already install for five agents) the agent is asked what the next session should know, and calls `remember`. `remember` returns the neighbours ("existing: production database version = Postgres 14, current; is this an update?"), and the agent answers with `replaces` or `conflicts`. The developer's own agent does the extraction and the linking, so it costs us nothing and nothing leaves the computer. The agent also calls `remember` whenever the person says "remember that".
-- **Cloud, rooms and DMs:** AgentCore's self-managed strategy delivers batches of conversation to our pipeline (SNS → our worker), which runs steps 1–4 with a small model and writes records back with `BatchCreateMemoryRecords` / `BatchUpdateMemoryRecords`, our fields in record metadata.
+- **Cloud, rooms and DMs:** serverless end to end. AgentCore's self-managed strategy writes a batch of conversation to S3 and notifies SNS (every ~6 messages or when a session goes idle); a Python Lambda, the same pattern as our SES inbound stack, runs steps 1–4 with a small model and writes records back with `BatchCreateMemoryRecords` / `BatchUpdateMemoryRecords`, our fields in record metadata. Nothing runs between batches. Reading needs no new compute: the Hermes plugin (already running in the workspace runtime) and the backend (already running on Fargate) call AgentCore and build the page.
 - **Benchmarks:** the cloud pipeline, nothing special.
 
 ### 3.3 Reading: a page of state, not a pile of passages
@@ -97,12 +97,12 @@ This page format is also what we want inside a developer's context in the produc
 | Same developer, signed in | Same, on all their computers | Personal records sync between their own computers over the network, end-to-end encrypted, never stored by us |
 | Team member's agent on a laptop | Session start includes team facts for this repo; `recall` covers team scope | Team facts carry who and where; contested facts are marked |
 | Workspace agents in rooms | Before each turn, the page for the message (fixing today's bug where the query is routing JSON); `recall` tool | — |
-| The room | A contested team fact posts a card: "Ana said 3 March, Ben said 10 March. Which is right?" One tap resolves it, and the answer becomes the current value with both histories kept | |
+| The two people who disagree | A contested team fact goes to the "needs you" list of the people whose statements conflict (not to a room: a fact from two laptops belongs to no room): "You said 3 March, Ben said 10 March. Which is right?" One tap picks the current value and both histories are kept. Until then, any agent that recalls it says it is contested | |
 | Anyone, Memory tab | — | Each fact with source, history, status; edit, replace, delete, confirm; a filter for contested |
 
-**Making something team memory.** `share` (or "share this with the team" to an agent) posts an approval card in the room, like plans and spend today. Approved, it becomes a team record. Facts extracted from rooms are team facts already, since the room is shared. Nothing from a laptop becomes team memory without a person approving it.
+**Making something team memory.** The person shares it, and it is team memory at once: `lightbulb memory share <id>`, or telling the agent "share that with the team". No approval step and no room: a laptop fact has no room to post in, and the person sharing it is the one vouching for it. Every team fact carries the sharer's name, any member can correct or delete it (history kept), and a disagreement becomes `contested`. Facts extracted from rooms are team facts already, since the room is shared. Nothing from a laptop becomes team memory unless its owner shares it.
 
-Compared with what people use today: past.dev decides everything and shows ten memories every prompt; Beacon makes the person review every lesson; we let the agent write, let the room decide what is shared, and show state only at the start and when asked.
+Compared with what people use today: past.dev shares everything in the project by default and shows ten memories every prompt; Beacon makes the person review every lesson; we let the agent write, let the person decide what is shared, and show state only at the start and when asked.
 
 ### 3.5 AgentCore: what we use and what we own
 
@@ -171,7 +171,10 @@ Assumptions (the same sketch as `2026-10-27-past-dev.md` §5, to be measured): 5
 | Record storage | 2,000 × $0.25/1,000 (self-managed) | $0.50 | $0.50 |
 | Retrieval | 3,000 turns × 2 scopes × ~1.3 lookups + 400 laptop session starts = ~8,200 × $0.50/1,000 | ~$4 | ~$4 |
 | Short-term events | a few MB at $1/GB | <$0.10 | <$0.10 |
+| Lambda, S3, SNS | ~500 batches × ~15 s at 512 MB ≈ 3,750 GB-s; S3 and SNS requests in the hundreds | ~$0.10 | ~$0.10 |
 | **Total** | | **~$6** | **~$37** |
+
+Where the numbers come from: AgentCore's published price list (storage per record, retrieval per call, events per GB), Claude's per-token list price, and Lambda's per-GB-second price, times the usage assumptions above. Every line is pay-per-use; an idle workspace costs only its stored records. The two numbers that could move the total are the model price on Bedrock and retrievals per turn, and both are measured in phase 0.
 
 Haiku keeps us at about 12% of the $50 plan; Sonnet does not fit the goal. So the extraction model is decided by the harness: if Haiku is within the judge's noise of Sonnet on the 100K split, Haiku ships.
 
@@ -210,24 +213,26 @@ Answer and judge costs assume `gpt-5.6-luna` near Sonnet 5.5 prices through Open
 
 ## 8. Plan and time
 
-One engineer working with agents; weeks are elapsed time with founder review between phases.
+Built with agents, in working days. Most of this is known work in code we already have; the one open-ended part is tuning the engine against the benchmark, so it gets a timebox instead of an estimate.
 
-| Phase | Weeks | What | Done when |
+| Phase | Days | What | Done when |
 |---|---|---|---|
-| 0. Harness and baseline | 1 | Fork past.dev's harness; adapters for AgentCore built-in, past.dev, ours; 100K split for past.dev and AgentCore; judge run 3×; Bedrock prices and metadata filters checked | We know our starting line and the judge's noise |
-| 1. Engine in the cloud | 2–4 | Self-managed strategy; record schema; link-before-store; contested; query planning; page builder; probe cases as tests; tune on 100K; Haiku vs Sonnet | 100K beats our past.dev rerun by more than the judge's spread |
-| 2. Rooms switch over | 4–5 | Hermes plugin reads the new page (fixing the routing-JSON query); Memory tab shows source, history, contested; contested → room card; built-in strategy retired | Our own workspace runs on it for a week |
-| 3. Free network | 5–7 | `remember` and `recall` in the shared tool spec; SQLite store; session-start block; Stop-hook prompt; `lightbulb memory` commands; sync between own computers | A fresh install remembers across sessions with nothing configured |
-| 4. Team over the network | 7–9 | `share` → approval card; laptop and hosted recall of team scope through the backend boundary | A fact one person's agent learned reaches a teammate's agent with a name on it |
-| 5. Publish | 9–10 | One untouched run of 500K, 1M, 10M; LongMemEval_S; team eval; results repo with `verify.py`; /network page | Numbers anyone can rerun |
+| 0. Harness and baseline | 2–3 | Fork past.dev's harness; adapters for AgentCore built-in, past.dev, ours; 100K split for past.dev and AgentCore; judge run 3×; Bedrock prices and metadata filters checked | We know our starting line and the judge's noise |
+| 1a. Engine in the cloud | 4–5 | Self-managed strategy, S3/SNS/Lambda (CDK, copying the SES stack); record schema; link-before-store; contested; query planning; page builder; probe cases as tests | Probe cases pass; 100K runs end to end |
+| 1b. Tuning | timebox 10 | Iterate on 100K (each run is hours of ingest, ~$15–20); Haiku vs Sonnet | 100K beats our past.dev rerun by more than the judge's spread, or we stop and report where it stands |
+| 2. Rooms switch over | 3–4 | Hermes plugin reads the new page (fixing the routing-JSON query); Memory tab shows source, history, contested; contested → "needs you"; built-in strategy retired | Our own workspace runs on it for a week (runs alongside 3) |
+| 3. Free network | 5 | `remember` and `recall` in the shared tool spec; SQLite store; session-start block; Stop-hook prompt; `lightbulb memory` commands; sync between own computers; a CLI release | A fresh install remembers across sessions with nothing configured (can start alongside 1b) |
+| 4. Team over the network | 3–4 | `share`; laptop and hosted recall of team scope through the backend boundary | A fact one person's agent learned reaches a teammate's agent with a name on it |
+| 5. Publish | 2–3 | One untouched run of 500K, 1M, 10M (the 10M ingest alone takes hours); LongMemEval_S; results repo with `verify.py`; /network page | Numbers anyone can rerun |
 
-Phases 0–1 change nothing in production. Each later phase ships on its own.
+About five weeks end to end, four if phase 3 runs alongside tuning. The risk is 1b: if the engine does not clear past.dev inside the timebox, phases 2–4 still ship (they are product work and do not depend on the score), and the benchmark claim waits. Phases 0–1 change nothing in production.
 
 ## 9. Decisions for the founder
 
 1. **Personal memory free on the network, team memory paid.** My call in this design; the alternative puts all memory behind sign-in.
 2. **The agent writes laptop memory at session end, no review for personal records.** A wrong personal fact costs only that person; a review step on every lesson is what Beacon asks and what people skip.
-3. **Contested facts post a card in the room.** This is new noise in rooms; the alternative is a filter in the Memory tab only.
+3. **Contested facts go to the "needs you" list of the people who disagree.** The alternative is a filter in the Memory tab only, which nobody checks.
+3a. **Sharing to the team is immediate, with the sharer's name on it, and no approval.** The alternative (an admin approves shared facts) slows every share for a risk the name and the edit history already cover.
 4. **Retire AgentCore's built-in facts when ours beats them in the harness**, migrating confirmed facts as records.
 5. **Publish the harness and results** even if a split comes out below past.dev.
 

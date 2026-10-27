@@ -175,9 +175,18 @@ async def test_accounts_v2_version_is_pinned_only_when_configured(monkeypatch):
     client.v2.core.accounts.create = MagicMock(return_value=SimpleNamespace(id="acct_1"))
     with patch.object(mod, "_client", return_value=client):
         monkeypatch.setattr(mod.settings, "STRIPE_ACCOUNTS_V2_VERSION", "")
+        monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", False)
+        monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_DEVELOPER_CONFIG", False)
         await mod.create_company_account(owner_id="org_a", email="f@example.com", company_name="N")
         options = client.v2.core.accounts.create.call_args.kwargs["options"]
         assert "stripe_version" not in options
+
+        # The developer configuration exists only in the provisioning preview: the SDK
+        # default answered "configuration.developer: Unknown field" in the dev sandbox.
+        monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
+        await mod.create_company_account(owner_id="org_a", email="f@example.com", company_name="N")
+        options = client.v2.core.accounts.create.call_args.kwargs["options"]
+        assert options["stripe_version"] == mod.PROVISIONING_VERSION
         assert options["idempotency_key"].startswith("company_account_create:")
 
         monkeypatch.setattr(mod.settings, "STRIPE_ACCOUNTS_V2_VERSION", "2026-08-26.dahlia")

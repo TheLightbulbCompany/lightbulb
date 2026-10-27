@@ -26,6 +26,7 @@ import stripe
 from stripe import StripeClient
 
 from core.config import settings
+from core.services.stripe_provisioning import PROVISIONING_VERSION
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -77,10 +78,16 @@ def onboarding_configurations() -> list[str]:
 
 def accounts_v2_options(**extra) -> dict:
     """Per-request options for the Accounts v2 calls. Pins `Stripe-Version`
-    only when configured, so an unset value keeps the SDK default."""
+    when configured. The `developer` configuration (the `projects` capability)
+    exists only in the provisioning preview, so with it on and no explicit
+    version the calls pin the provisioning preview: the SDK default rejects it
+    as "configuration.developer: Unknown field" (dev sandbox, 2026-10-27)."""
     options = dict(extra)
-    if settings.STRIPE_ACCOUNTS_V2_VERSION:
-        options["stripe_version"] = settings.STRIPE_ACCOUNTS_V2_VERSION
+    version = settings.STRIPE_ACCOUNTS_V2_VERSION
+    if not version and developer_config_on():
+        version = PROVISIONING_VERSION
+    if version:
+        options["stripe_version"] = version
     return options
 
 

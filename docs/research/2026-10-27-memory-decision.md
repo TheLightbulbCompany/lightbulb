@@ -30,22 +30,42 @@ The part that produces value is small: an agent drafts a lesson at the end of a 
 5. **A review gate, but ours is the room.** Beacon's gate is a CLI command plus a scoring API. Ours is a person saying yes in a room, which the workspace already does for plans and spend ("Needs you").
 6. **Publish numbers.** Beacon publishes none. The nine targets in the Beacon pass §5 are measurable from events we already emit or can add in a week.
 
+**Take, but in our form, not theirs** (revised the same day after the founder's read: capture, an evaluator, a cloud default and the security facts are all worth having)
+
+1. **Session capture.** Yes, and locally first. Claude Code's hooks already hand us the transcript path and every tool call; Codex, Cursor and Grok CLI write session stores to disk; OpenCode has a plugin seam. Recording what a session did is the raw material for lessons, for "where did the tokens go", and later for "this handoff repeated four times" (the recommendation feature). The rule to publish: the record is written on the person's computer; it leaves only when the person signs in and chooses what to send (full, or metadata-only), and it goes to Lightbulb, never to a third party. Beacon's form (cloud preselected, 30-day backfill, research use unless opted out) is the part to leave.
+2. **An evaluator.** Yes, and ours. Beacon sends a redacted 80-event slice to TypeSafe or SubQ for three probabilities. We run managed inference behind our own gate; a cheap model reads an uploaded session and drafts the lesson, the skill or the finding, and a person approves it in the room. First-party, metered, and the draft carries the evidence (which events) instead of a score.
+3. **Cloud by default.** Yes, as a suggestion at install, not as a silent default. `lightbulb login` already exists and is free. The wizard offers sign-in first ("your sessions and memory follow you across computers; the Claude app and ChatGPT can reach your agents") with local-only one keypress away, exactly as Beacon's wizard does, minus the backfill and the training clause. The network keeps working without an account, which is what the homepage promises.
+4. **Security facts, not security positioning.** Publish everything (`/security` already does; the four-step "what leaves your machine" band is open): keys never leave, relays see ciphertext, nothing is captured off the machine without sign-in, approvals before spend. Do not sell to the CISO; Beacon's press calls it runtime security while its launch calls it memory, and the two audiences do not meet. Our buyer is the founder of a 3–15 person team; the security page is what lets that founder say yes.
+
 **Leave**
 
-1. **Thirty-nine harness integrations.** Five agents cover our buyer; Beacon spent a day on sixty rule fixes for breadth.
-2. **Full-trace capture.** Prompts, tool calls and edits recorded to disk are the privacy objection we win on today ("never files or the agent's conversation"). Lessons cross; traces do not. If lessons prove too thin, local-only capture is a later, opt-in step.
-3. **A third-party evaluator.** Two constants with one anecdote, and every evaluated trace leaves the machine. The agent writes the lesson; the person reviews.
-4. **Cloud by default.** Beacon preselects Cloud, backfills 30 days and trains on data unless opted out. Ours stays on the computer until a person shares; what crosses the network is ciphertext.
-5. **Security and SIEM positioning, blocking, the token leaderboard.** Not our buyer, not our page.
+1. Thirty-nine harness integrations. Five agents cover our buyer; Beacon spent a day on sixty rule fixes for breadth.
+2. The third-party scorer and the trace egress that comes with it.
+3. Research and training use of customer sessions.
+4. SIEM packs, detection rules, blocking as a product. If an enterprise asks, the audit export is a query over rows we already keep.
+5. The public token leaderboard (below).
 
-## 4. The product line this draws
+**Why Beacon has a token leaderboard if it is for solo developers.** It is a launch-growth mechanic, not a product feature: public profiles ranked by lifetime tokens ("#1: 385.6B"), with a share button, meant to make Cloud sign-ups visible on X and to seed the "Discover" marketplace of public traces. It ties to the free Cloud line "See where your token spend goes." Six days after launch it has nine profiles, three of them staff, and three public traces, all by the CEO. The lesson for us is the opposite feature: a private spend view per agent, person and room inside the workspace (the finance layer, PRs #4432/#4433), not a public ranking.
 
-The founder's framing on 27 Oct: the network is messaging with nothing to open; the workspace is the head (a room people read, memory, agents that stay on, a lead agent). Memory splits along the same line:
+## 4. Free network versus cloud: the honest ladder
 
-- **On the network, free: memory that follows the person.** A lesson written by Claude Code on one laptop is there for Codex on the other. Stored on the person's computers, served by the engine, shared with nobody unless the person shares it. This is exactly Beacon's free offer, without the account, the cloud default or the scorer, and it makes the network something you keep installed after the first message. It costs nothing to serve.
-- **In the workspace, paid: memory the team shares, with the head.** A lesson shared to the team goes through the room (an approval card, the same as spend), appears in the Memory tab with its provenance, is recalled by every agent the team admits (Hermes agents in rooms, laptop sessions on the network, the hosted apps), and can be confirmed, corrected or deleted by any member. The cloud member is one more peer on the network and the always-on holder of the team's memory, so a lesson shared at 23:00 is there at 09:00 whether or not the sharer's laptop is open.
+Beacon's own ladder, from its pricing page (27 Oct): Open Source $0 (local, "nothing leaves your machine") → Beacon Cloud $0 (every agent and machine in one timeline, token spend, 50 findings, session search over MCP, share a session by link) → Pro $20/mo (unlimited findings, **memories over MCP**, skills from sessions, evidence trail, alerts) → Enterprise (block or approve, org-wide findings, fleet rollout, SSO, own bucket). Note where memory sits: local memory is free in the CLI; cloud memory is paid.
 
-Two-person networks without a workspace: they can message each other's agents and each keeps their own memory. Sharing a lesson across people is the workspace. This is the free/paid line the plan already draws (a single person has something to do on day one; the second person is the activation event) and it keeps the network out of the race to zero (docs/marketing/26: don't sell the network).
+Lightbulb's ladder, proposed:
+
+| Tier | Price | What it holds | Why it sits there |
+|---|---|---|---|
+| **Network, no account** | $0 | Messaging between your agents and your teammates' agents; local capture of your own sessions (`lightbulb sessions` to browse them on your disk); personal lessons and recall on this computer; the hooks for five agents | This is the install that spreads. It must work with nothing leaving the machine, or the trust story is gone. Costs us nothing to serve |
+| **Cloud, free account** (`lightbulb login`) | $0 | Your sessions and lessons follow you across your computers; one timeline of every agent and machine; tokens per agent and computer; the Claude app, ChatGPT, Muse and Grok Bot reach your agents (already shipped); share a session by link; a capped number of drafted lessons per month from your uploaded sessions (the evaluator) | The on-ramp to a team: an account is what an invite attaches to. Storage and a capped evaluator are cheap; uncapped drafting is not, so the cap is the paid line, as it is for Beacon's 50 findings |
+| **Workspace** | $50/mo up to 5 people, $20 a member after (from `getPricing()`) | The head: rooms people read; agents that stay on; team memory with approval cards and provenance in the Memory tab, recalled by every agent the team admits (rooms, laptops, hosted apps); unlimited drafted lessons and skills shared across the team; spend budgets and meters per room and agent; later, recommended automations from the record | Everything that needs a second person or a server that never sleeps. This is where the plan puts revenue (ten teams with a card by 4 January) |
+| **Enterprise** (later) | custom | SSO, own bucket and region, org-wide policy and audit export, procurement | The 21 Oct note's warning stands: the trust stack (SOC 2 Type II, SAML, SCIM) costs months, not features. Not before the ten teams |
+
+Two honest tensions the founder should see:
+
+- **Solo developers get a lot for free** (capture, personal memory, sync across computers, hosted-app reach). Beacon charges $20 for cloud memory; we would not. The reason is the plan: the ICP is the team, and a solo developer with everything working is the person who invites a cofounder. If solo cloud costs more than we expect (storage, evaluator), the lever is the drafting cap, not a solo paywall.
+- **Capture changes the homepage promise.** Today the network page can say "never files or the agent's conversation". With local capture that stays true for teammates (they still see presence, not transcripts), but the privacy page must say plainly that sessions are recorded on your own disk and what sign-in sends. The Termly rewrite (open, founder signs) has to carry this before capture ships.
+
+**On reading Beacon's cloud app with REA.** Beacon Cloud has a free tier. I cannot create the account (that is a line I do not cross), but if the founder signs up, an hour with the bundle analyser on the web app would map its client routes and feature flags, which is how we confirmed Ramp Glass's Router, limits and automations. The two things worth learning: whether any team or org memory exists in the client (the founder's HN claim), and what the "dreaming" findings flow actually shows. It is worth that hour only if the answer would change the ladder above; today it would not, so it is optional.
 
 ## 5. What to build, in order
 

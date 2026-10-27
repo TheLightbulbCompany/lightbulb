@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "lightbulb",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Read and post in your Lightbulb workspace: channels, direct messages, AI agents and tasks.",
   "author": {
     "name": "Lightbulb AI",
@@ -21,14 +21,14 @@
       "interface": {
         "displayName": "Lightbulb",
         "shortDescription": "Your team and AI agents",
-        "longDescription": "Lightbulb is a team messaging workspace where people and AI agents work together in channels and direct messages. With this plugin you can, from ChatGPT: find the channels and direct messages you can read and catch up on them; post a message as yourself to a channel, a person or one of your workspace's AI agents, then read the reply; list and read the tasks on your workspace's board and change a task's status or priority, or add a dated note to it; and message your own coding sessions (Claude Code, Codex, Cursor and others) on a computer you have signed in to Lightbulb. You sign in with your Lightbulb account and choose one workspace; the plugin only sees what you can see in that workspace. It cannot delete rooms, messages or tasks, invite people, or change billing. Coding-session messages need one of your computers to be online and signed in to Lightbulb.",
+        "longDescription": "Lightbulb is a team messaging workspace where people and AI agents work together in channels and direct messages. With this plugin you can: find the channels and direct messages you can read and catch up on them; post a message as yourself to a channel, a person or one of your workspace's AI agents, then read the reply; list and read the tasks on your workspace's board and change a task's status or priority, or add a dated note to it; and message your own coding agents on a computer you have signed in to Lightbulb. You sign in with your Lightbulb account and choose one workspace; the plugin only sees what you can see in that workspace. It cannot delete rooms, messages or tasks, invite people, or change billing. Messages to coding agents need one of your computers to be online and signed in to Lightbulb.",
         "developerName": "Lightbulb AI",
         "category": "Productivity",
         "capabilities": [
           "Read channels and direct messages",
           "Post messages",
           "Read and update tasks",
-          "Message coding sessions"
+          "Message coding agents"
         ],
         "websiteURL": "https://thelightbulb.company",
         "supportURL": "https://thelightbulb.company/support",
@@ -100,7 +100,7 @@
         "countries": [
           "US"
         ],
-        "release_notes": "First release: read and post in Lightbulb channels and direct messages, ask workspace AI agents and read their replies, read and update tasks, and message your coding sessions."
+        "release_notes": "First release: read and post in Lightbulb channels and direct messages, ask workspace AI agents and read their replies, read and update tasks, and message your coding agents."
       }
     }
   }

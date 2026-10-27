@@ -11,6 +11,13 @@ import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
 import { logGroupPath } from "../table-names";
 
+/** Dev ECS services run on Fargate Spot only (on-demand weight 0: never placed while Spot has
+ *  capacity). The cluster enables both providers. Prod stays on on-demand Fargate. */
+export const DEV_SPOT: ecs.CapacityProviderStrategy[] = [
+  { capacityProvider: "FARGATE_SPOT", weight: 1 },
+  { capacityProvider: "FARGATE", weight: 0 },
+];
+
 /**
  * What the name no longer means: nothing per-user runs on ECS. Every workspace
  * is a Bedrock AgentCore runtime running the Hermes bridge image, so this stack

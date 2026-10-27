@@ -871,7 +871,11 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       service: new ec2.InterfaceVpcEndpointService(`com.amazonaws.${this.region}.aoss-data`, 443),
       privateDnsEnabled: true,
-      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      // Dev: one AZ ($7.30/mo an AZ; cross-AZ callers still resolve it). Prod keeps every AZ.
+      subnets: {
+        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+        ...(env === "prod" ? {} : { availabilityZones: [props.vpc.availabilityZones[0]] }),
+      },
       securityGroups: [endpointSg],
       open: false,
     });
@@ -1642,8 +1646,12 @@ def handler(event, context):
         messageId: "$context.messageId",
       }),
     };
+    // ERROR, not INFO: INFO wrote ~1.8 GB/mo of execution logs into API Gateway's own
+    // `/aws/apigateway/<id>/<stage>` group, which CloudFormation does not own and so has no
+    // retention. Integration errors still log at ERROR, and the access log keeps
+    // integrationError for every request.
     wsCfnStage.defaultRouteSettings = {
-      loggingLevel: "INFO",
+      loggingLevel: "ERROR",
       dataTraceEnabled: false,
       detailedMetricsEnabled: true,
     };

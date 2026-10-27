@@ -29,6 +29,7 @@ import {
   tablePrefix,
 } from "../table-names";
 import { Construct } from "constructs";
+import { DEV_SPOT } from "./container-stack";
 import { LAUNCH_DOMAIN, LEGACY_MAIL_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
 
 // hermes-version.json is the per-env promotion tag for the Hermes bridge image (M4-R34),
@@ -2419,8 +2420,11 @@ export class ServiceStack extends cdk.Stack {
 
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
       family: `lightbulb-${env}-backend`,
-      cpu: env === "prod" ? 2048 : 1024,
-      memoryLimitMiB: env === "prod" ? 4096 : 2048,
+      // Sized from 30-day CloudWatch (2026-10-27 cost review): prod peaked at 0.52 GB of 4 GB
+      // and 0.9 vCPU hourly-average of 2; dev peaked at 1 GB once (p99 0.35 GB). 2 GB is 4x
+      // prod's and 2x dev's high-water; CPU bursts are what autoscaling (2-4 / 1-4) is for.
+      cpu: env === "prod" ? 1024 : 512,
+      memoryLimitMiB: 2048,
       taskRole: this.taskRole,
       executionRole: taskExecutionRole,
     });
@@ -2469,7 +2473,10 @@ export class ServiceStack extends cdk.Stack {
       serviceName: `lightbulb-${env}-backend`,
       cluster: props.container.cluster,
       taskDefinition: taskDef,
-      desiredCount: 2,
+      // Dev runs one task on Spot (no HA to keep; a Spot reclaim is a brief dev gap). With
+      // one task, min 100 / max 200 still starts the new task before stopping the old one.
+      desiredCount: env === "prod" ? 2 : 1,
+      ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
       // Rolling deploy as a clean handoff: keeping 100% healthy forces ECS to
       // bring new tasks to healthy BEFORE stopping old ones, and 200% gives
       // the headroom to run both generations at once. So a deploy has no
@@ -2496,7 +2503,7 @@ export class ServiceStack extends cdk.Stack {
     // DynamoDB (TTL presence rows, claim leases) — see CLAUDE.md's
     // WebSocket Architecture section. 2-4 tasks, scaling on CPU.
     this.service
-      .autoScaleTaskCount({ minCapacity: 2, maxCapacity: 4 })
+      .autoScaleTaskCount({ minCapacity: env === "prod" ? 2 : 1, maxCapacity: 4 })
       .scaleOnCpuUtilization("Cpu", { targetUtilizationPercent: 60 });
 
     // -------------------------------------------------------------------------

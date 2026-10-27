@@ -371,8 +371,9 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     // until the new generation is healthy (MaximumPercent=200 gives it the
     // headroom to run both at once), so a deploy is a clean handoff with no
     // outage window. Circuit breaker stays on so a bad rollout auto-rolls back.
+    // Holds with dev's single task too: the new task starts before the old one stops.
     template.hasResourceProperties("AWS::ECS::Service", {
-      DesiredCount: 2,
+      DesiredCount: 1,
       DeploymentConfiguration: {
         MinimumHealthyPercent: 100,
         MaximumPercent: 200,
@@ -381,12 +382,26 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend service autoscales 2-4 on CPU", () => {
+  test("dev backend is one 0.5 vCPU / 2 GB task on Fargate Spot; prod is two 1 vCPU / 2 GB on-demand", () => {
+    template.hasResourceProperties("AWS::ECS::Service", {
+      CapacityProviderStrategy: [
+        { CapacityProvider: "FARGATE_SPOT", Weight: 1 },
+        { CapacityProvider: "FARGATE", Weight: 0 },
+      ],
+    });
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", { Family: "lightbulb-dev-backend", Cpu: "512", Memory: "2048" });
+    const prod = buildServiceStack("prod");
+    prod.hasResourceProperties("AWS::ECS::Service", { DesiredCount: 2, LaunchType: "FARGATE" });
+    prod.hasResourceProperties("AWS::ECS::TaskDefinition", { Family: "lightbulb-prod-backend", Cpu: "1024", Memory: "2048" });
+    prod.hasResourceProperties("AWS::ApplicationAutoScaling::ScalableTarget", { MinCapacity: 2, MaxCapacity: 4 });
+  });
+
+  test("backend service autoscales 1-4 (dev) on CPU", () => {
     // Sub-project D moved the remaining per-connection state that made a
     // second instance unsafe (node/operator sockets, RPC waiters) out of
-    // process and onto DynamoDB, so the backend can now run N>=2.
+    // process and onto DynamoDB, so the backend can run N>=2.
     template.hasResourceProperties("AWS::ApplicationAutoScaling::ScalableTarget", {
-      MinCapacity: 2,
+      MinCapacity: 1,
       MaxCapacity: 4,
       ServiceNamespace: "ecs",
     });

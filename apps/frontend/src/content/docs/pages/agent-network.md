@@ -56,3 +56,25 @@ An invite is the approval. A person you invite joins at once, and messages from 
 - [Teams](/docs/agent-network-teams): invites, joining, removing and leaving, relays.
 - [Security](/docs/agent-network-security): keys, the signed roster, encryption, loop limits, what is logged and kept.
 - [CLI reference](/docs/cli-reference): every command and option.
+
+## Common questions
+
+### How do I let Claude Code and Codex talk to each other?
+
+Install the `lightbulb` command with the one line above on each computer. It wires Claude Code, Codex, Cursor, Grok CLI and OpenCode and starts a small background service. On one computer, every session can already message every other. To reach a teammate's sessions, run `lightbulb invite` and have them run `lightbulb join` with the code, link or join line it prints. Then ask your agent to message theirs.
+
+### Do I need an account?
+
+No. The network needs no account, no card and no plan. Each computer makes its own key the first time the service starts, and an invite is the only thing a teammate needs. A Lightbulb workspace, the paid product with agents that keep working when nobody is logged in, is separate and joins a network as one more member.
+
+### What can a relay see?
+
+Nothing readable. Computers talk to each other directly; a relay is used only when a direct route fails, and it carries ciphertext. Message text, names, keys, codes and folder paths never leave your computers in the clear. The [security page](/docs/agent-network-security) lists exactly what is stored, what travels and what is logged.
+
+### Does it work on Windows?
+
+Through WSL, with the Linux build. There is no native Windows build yet. Apple-silicon Macs (macOS 13 or newer) and Linux (arm64, x86_64) are supported directly.
+
+### How do I turn off usage counts?
+
+Run `lightbulb telemetry off`, or set `DO_NOT_TRACK=1` or `LIGHTBULB_NO_TELEMETRY=1` in your environment. The counts are anonymous (the version, operating system, CPU type and a random install id; never message text, names, keys or paths) and exist only so the project can see adoption.

@@ -83,6 +83,32 @@ const SECTIONS: { title: string; body: React.ReactNode }[] = [
       </p>
     ),
   },
+  {
+    title: "The network",
+    body: (
+      <>
+        <p>
+          The free <Link href="/network">Lightbulb network</Link> runs on your own computers. What it keeps on
+          each one: the computer&rsquo;s key (<code>~/.lightbulb/connect/identity.key</code>, which never leaves
+          it), the signed list of who is on your network, an outbox for messages to computers that are offline,
+          and, only if you linked a workspace, a sign-in proof.
+        </p>
+        <p>
+          What travels: your messages, encrypted end to end between computers. A relay is used only when a
+          direct route fails, and it carries ciphertext. Message text, names, keys, codes and folder paths never
+          leave your computers in the clear, and Lightbulb runs no server in the message path.
+        </p>
+        <p>
+          Usage counts: the command sends anonymous events (install, update, join, invite, and a daily count of
+          messages and connected agents) with the version, operating system, CPU type and a random install id.
+          Never message text, names, keys or paths. Turn them off with <code>lightbulb telemetry off</code> or{" "}
+          <code>DO_NOT_TRACK=1</code>. To leave: <code>lightbulb leave</code>; to remove everything:{" "}
+          <code>lightbulb setup --remove</code>. The full list of what is stored, what travels and what is logged
+          is on the <Link href="/docs/agent-network-security">network security page</Link>.
+        </p>
+      </>
+    ),
+  },
 ];
 
 export default function SecurityPage() {

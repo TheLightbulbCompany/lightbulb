@@ -127,6 +127,7 @@ export type AnalyticsEvent =
   // First-run funnel
   | "first_run_brief_submitted"
   // Landing
+  | "install_line_copied"
   | "landing_download_clicked"
   | "landing_viewed"
   | "setup_cta_clicked"

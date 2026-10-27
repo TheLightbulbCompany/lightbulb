@@ -1,10 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
 
-import { register } from "@/lib/analytics";
-import { headlineVariantProps, type HeadlineVariant } from "@/lib/headlineVariant";
 import { captureSignupCta } from "@/lib/signupFlow";
 
 import { Arrow } from "./Arrow";
@@ -13,16 +10,11 @@ const TRUST = ["30-day free trial", "No credit card required", "2 minute setup"]
 
 /**
  * The hero's doors: self-serve is the one primary action, guided setup a quieter
- * second, and the trust row sits right under them. The cookie is set by Hero's
- * inline script; this re-registers it as a backstop.
+ * second, and the trust row sits right under them.
  */
-export function HeroCtas({ variant }: { variant: HeadlineVariant }) {
-  useEffect(() => {
-    register({ headline_variant: variant, ...headlineVariantProps() });
-  }, [variant]);
-
+export function HeroCtas() {
   const track = (ctaId: string, label: string, destination: string) => () =>
-    captureSignupCta({ ctaId, label, surface: "hero", destination, properties: { headline_variant: variant } });
+    captureSignupCta({ ctaId, label, surface: "hero", destination });
 
   return (
     <>

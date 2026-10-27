@@ -17,8 +17,6 @@ import {
   Strikethrough,
 } from "lucide-react";
 
-import { HEADLINES, headlineCookieScript, type HeadlineVariant } from "@/lib/headlineVariant";
-
 import { HeroCtas } from "./HeroCtas";
 
 /**
@@ -35,28 +33,21 @@ import { HeroCtas } from "./HeroCtas";
  * the hero teardown found the dark art pulled the eye off the copy and buttons.
  * Keep it in step with the app's chrome when that changes.
  */
-export function Hero({ variant = "A" }: { variant?: HeadlineVariant }) {
+export function Hero() {
   return (
     <header className="lb-hero">
-      <script dangerouslySetInnerHTML={{ __html: headlineCookieScript(variant) }} />
       <div className="lb-hero-copy">
         <div>
           <h1>
-            {variant === "A" ? (
-              <>
-                Your team and your AI employees,{" "}
-                <br className="lb-brk" />
-                in one place.
-              </>
-            ) : (
-              HEADLINES.C
-            )}
+            Your team and your AI employees,{" "}
+            <br className="lb-brk" />
+            in one place.
           </h1>
           <p className="lb-sub">
             Six AI employees in your team&rsquo;s channels. Mention one and the work comes back for everyone to
             see.
           </p>
-          <HeroCtas variant={variant} />
+          <HeroCtas />
         </div>
       </div>
 

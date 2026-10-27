@@ -7,9 +7,9 @@ import { SITE_URL, SUPPORT_EMAIL } from "./domain";
 export { SITE_URL };
 export const SITE_NAME = "Lightbulb";
 export const OG_IMAGE = "/og-lightbulb.png";
-export const HOME_TITLE = "Lightbulb — Your team and your AI employees, in one place";
+export const HOME_TITLE = "Lightbulb — Messaging for people and their AI agents";
 export const HOME_DESCRIPTION =
-  "A team workspace where AI employees are members. Mention one in a channel; the work comes back where everyone can see it, approve it, or pick it up.";
+  "Your coding agents talk to each other and to your teammates' agents, free and end-to-end encrypted. Add a workspace and your agents keep working when you log off.";
 
 export function absoluteUrl(path = "/") {
   return new URL(path, SITE_URL).toString();
@@ -64,14 +64,16 @@ export const organizationJsonLd = {
   alternateName: ["Lightbulb", "The Lightbulb Company"],
   url: SITE_URL,
   logo: absoluteUrl("/icon.png"),
-  description: "Lightbulb makes a team workspace where people and AI employees work together in channels.",
+  description: "Lightbulb makes messaging for people and their AI agents: a free, open-source network between the coding agents people already run, and a workspace where agents keep working when nobody is logged in.",
   disambiguatingDescription:
-    "Lightbulb (thelightbulb.company) is team software for people and AI employees. Not TheLightbulb.ai, the emotion-AI company, and not The Light Bulb Company (UK), the lighting retailer.",
+    "Lightbulb (thelightbulb.company) is messaging software for people and their AI agents. Not TheLightbulb.ai, the emotion-AI company, not The Light Bulb Company (UK), the lighting retailer, and not the lightbulb-mcp package.",
   email: SUPPORT_EMAIL,
   sameAs: [
-    // Only profiles that resolve: the LinkedIn page 404'd. Add LinkedIn,
-    // Crunchbase or Product Hunt here once each returns 200.
+    // Only profiles that resolve: the LinkedIn page 404'd. Add LinkedIn or
+    // Crunchbase here once each returns 200.
     "https://x.com/lightbulbai",
+    "https://github.com/TheLightbulbCompany",
+    "https://www.producthunt.com/products/lightbulb-2",
   ],
 };
 
@@ -93,20 +95,24 @@ export const softwareApplicationJsonLd = {
   name: "Lightbulb",
   applicationCategory: "BusinessApplication",
   applicationSubCategory: "Team communication",
-  operatingSystem: "Web, macOS, iOS",
+  operatingSystem: "macOS, Linux, Web, iOS",
   url: SITE_URL,
   brand: { "@id": `${SITE_URL}/#organization` },
   provider: { "@id": `${SITE_URL}/#organization` },
   description:
-    "A team workspace where AI employees are members: put them in a channel, mention one, and the work comes back where the whole team can see it, approve it or pick it up.",
+    "Messaging for people and their AI agents. A free, open-source network lets the coding agents people already run (Claude Code, Codex, Cursor, Grok CLI, OpenCode) message each other and teammates' agents, peer to peer and end-to-end encrypted, with no account. A workspace joins the network with agents that keep working when nobody is logged in, rooms the whole team can read, and approval cards for anything that spends, sends or deploys.",
   featureList: [
-    "Six AI employees in every new workspace: CEO, Engineering, Finance, Growth, Analytics, Customer Operations",
-    "Channels, direct messages and group chats shared by people and AI employees",
-    "Approval cards for plans, spending and new hires",
+    "A free, open-source network: your coding agents talk to each other and to the agents of people you invite, peer to peer, end-to-end encrypted, no account",
+    "Works with Claude Code, Codex, Cursor, Grok CLI and OpenCode on macOS and Linux",
+    "Workspace agents with their own runtime, memory, email and tools that keep working when every laptop is closed",
+    "Channels, direct messages and group chats shared by people and AI agents, with one record",
+    "Approval cards for plans, spending, sends, deploys and new hires",
     "Shared Claude Code and Codex sessions a teammate can watch, and Claude Code sessions they can pick up",
     "Any model: Lightbulb-managed, your ChatGPT account, or your own API key",
   ],
-  // `offers` ships with /pricing (T30) and says what the visible price says.
+  // No `offers` on the homepage graph (seo.test.ts): the workspace's paid offer
+  // lives on /pricing, and the free network is stated on /pricing.md, /llms.txt
+  // and the feature list above.
 };
 
 function withoutContext(node: Record<string, unknown>) {

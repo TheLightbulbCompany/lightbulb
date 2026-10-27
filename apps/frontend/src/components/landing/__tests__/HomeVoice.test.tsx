@@ -26,7 +26,7 @@ describe("homepage voice", () => {
   it("uses none of the banned words or internal names, and names a price only in the founding line", () => {
     const { container } = render(
       <>
-        <Hero variant="A" />
+        <Hero />
         <ProblemBand />
         <HowItWorks />
         <WorkspaceBand />

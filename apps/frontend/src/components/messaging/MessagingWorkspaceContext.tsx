@@ -37,7 +37,8 @@ export interface MessagingWorkspaceValue {
   selectAgentDm: (agentId: string, explicit?: boolean) => Promise<string | null>;
   openMessage: (roomId: string, messageId: string | null) => void;
   openNotificationTarget: (roomId: string, threadId: string | null, messageId?: string) => void;
-  openSession: (sessionId: string, chat?: boolean) => void;
+  /** `seq`: open the session's conversation at that turn. */
+  openSession: (sessionId: string, chat?: boolean, seq?: number) => void;
   /** Open or close the focused session's chat column. */
   setSessionChat: (open: boolean) => void;
   /** The chat room on screen beside a session (SessionChat reports it), or null. */
@@ -778,15 +779,15 @@ export function MessagingWorkspaceProvider({
    * SessionFocus owns the wait ("Opening session…") and the unknown id ("no longer shared").
    * Returns false for such an early link: it is the URL's replay, not a pick.
    */
-  const applySession = useCallback((sessionId: string, chat = false) => {
+  const applySession = useCallback((sessionId: string, chat = false, seq?: number) => {
     setThreadId(null);
     setTarget(null);
-    setSessionFocus(chat ? { sessionId, chat } : { sessionId });
+    setSessionFocus({ sessionId, ...(chat ? { chat } : {}), ...(seq ? { seq } : {}) });
     return !(workspaceSessions.loading && !workspaceSessions.sessions.some((candidate) => candidate.sessionId === sessionId));
   }, [workspaceSessions.sessions, workspaceSessions.loading]);
   // A person's open is a pick; a link applied before the list lands is not.
-  const openSession = useCallback((sessionId: string, chat = false) => {
-    if (applySession(sessionId, chat)) bumpPick();
+  const openSession = useCallback((sessionId: string, chat = false, seq?: number) => {
+    if (applySession(sessionId, chat, seq)) bumpPick();
   }, [applySession, bumpPick]);
   const setSessionChat = useCallback((open: boolean) => {
     setSessionFocus((current) => current?.sessionId ? { ...current, chat: open } : current);

@@ -84,11 +84,14 @@ describe("ChatPanel", () => {
     const props = makeProps();
     props.params = { sessionId: "s1", sessionIntent: "1" };
     const view = render(<Harness props={props} />);
-    expect(openSession).toHaveBeenLastCalledWith("s1");
+    expect(openSession).toHaveBeenLastCalledWith("s1", false, undefined);
     view.rerender(<Harness props={props} />);
     expect(openSession).toHaveBeenCalledTimes(1);
     act(() => props.api.updateParameters({ sessionId: "s1", sessionIntent: "2" }));
     expect(openSession).toHaveBeenCalledTimes(2);
+    // A session search hit opens the same session at a turn.
+    act(() => props.api.updateParameters({ sessionId: "s1", seq: "42", sessionIntent: "3" }));
+    expect(openSession).toHaveBeenLastCalledWith("s1", false, 42);
     expect(selectAgentDm).not.toHaveBeenCalled();
     expect(openMessage).not.toHaveBeenCalled();
   });
@@ -99,7 +102,7 @@ describe("ChatPanel", () => {
     const view = render(<Harness props={props} />);
     expect(openSession).not.toHaveBeenCalled();
     view.rerender(<Harness props={props} params={{ sessionId: "s-reload", sessionIntent: "1" }} />);
-    expect(openSession).toHaveBeenLastCalledWith("s-reload");
+    expect(openSession).toHaveBeenLastCalledWith("s-reload", false, undefined);
   });
 
   it("resolves the sentinel when the default roster arrives", () => {

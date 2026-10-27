@@ -54,10 +54,12 @@ def _enqueue_search_index(item: dict[str, Any], meta: dict[str, Any], queue_url:
     owner_id = meta.get("ownerId")
     if not isinstance(owner_id, str) or not owner_id:
         raise ValueError("room metadata has no owner")
-    _sqs().send_message(
-        QueueUrl=queue_url,
-        MessageBody=json.dumps({"ownerId": owner_id, "roomId": item["roomId"], "sk": item["sk"]}, separators=(",", ":")),
-    )
+    _enqueue_job({"ownerId": owner_id, "roomId": item["roomId"], "sk": item["sk"]}, queue_url)
+
+
+def _enqueue_job(job: dict[str, Any], queue_url: str) -> None:
+    if queue_url:
+        _sqs().send_message(QueueUrl=queue_url, MessageBody=json.dumps(job, separators=(",", ":")))
 
 # Markdown -> one plain line for a push body, which iOS renders raw. Mirrors the web
 # toast's ``plainPreview`` (apps/frontend/src/lib/plainPreview.ts); keep them together.
@@ -984,6 +986,30 @@ def _enqueue_search_index_on_insert(item: dict[str, Any], meta: dict[str, Any]) 
         _emit_metric("messaging.projector.search_enqueue.failed", 1, "Count", {})
 
 
+def _session_search_job(record_name: str, image: dict[str, Any], sk: str) -> Callable[[], None]:
+    """A coding session's row, for session search: a new EVENT goes to the batch queue
+    (best-effort, like a new message; scripts/reindex_sessions.py repairs a miss), a
+    removal (META with ``removedAt``) to the immediate queue and raises on failure, since a
+    missed delete would leave a removed session's text searchable."""
+    pk = (image.get("pk") or {}).get("S", "")
+    owner_id, _, session_id = pk.removeprefix("LOCALSESSION#").rpartition("#")
+    if not owner_id or not session_id:
+        return _noop
+    job = {"ownerId": owner_id, "sessionId": session_id, "sk": sk}
+    if sk.startswith("EVENT#") and record_name == "INSERT":
+        def enqueue_event() -> None:
+            try:
+                _enqueue_job(job, SEARCH_INDEX_BATCH_QUEUE_URL or SEARCH_INDEX_QUEUE_URL)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("session search enqueue failed error_type=%s", type(exc).__name__)
+                _emit_metric("messaging.projector.search_enqueue.failed", 1, "Count", {})
+        return enqueue_event
+    if sk == "META" and "removedAt" in image:
+        job["eventSeq"] = int((image.get("eventSeq") or {}).get("N", "0"))
+        return lambda: _enqueue_job(job, SEARCH_INDEX_QUEUE_URL)
+    return _noop
+
+
 def _project_message_update(item: dict[str, Any]) -> None:
     room_id = _require_uuid(item.get("roomId"), "roomId")
     message_id = _require_uuid(item.get("messageId"), "messageId")
@@ -1121,6 +1147,8 @@ def prepare_record(record: dict[str, Any]) -> Callable[[], None]:
     if not isinstance(sk_value, dict) or not isinstance(sk_value.get("S"), str):
         raise ValueError("INSERT record has no string sort key")
     sk = sk_value["S"]
+    if ((image.get("pk") or {}).get("S") or "").startswith("LOCALSESSION#"):
+        return _session_search_job(record["eventName"], image, sk)
     if not sk.startswith(("MSG#", "LIVE#")):
         return _noop
     item = _deserialize_map(image)

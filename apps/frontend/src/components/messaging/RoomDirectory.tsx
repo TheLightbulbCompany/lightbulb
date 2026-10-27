@@ -16,6 +16,7 @@ import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { groupRooms, type RoomGroup, type SidebarSession, type SidebarSort } from "./roomSections";
 import { SessionListRow } from "./SessionListRow";
+import { SessionSearch } from "./SessionSearch";
 import { StartSessionDialog } from "./StartSessionDialog";
 import { readSessionMarks, readSidebarPrefs, writeSessionMarks, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
@@ -416,7 +417,7 @@ function DirectoryContent({
     return <section aria-label="Sessions">
       {groupHeader({
         id: "sessions", label: "Sessions", listId, collapsed,
-        badge: collapsed && live.length > 0 && <span className="room-count" aria-label={`${live.length} live session${live.length === 1 ? "" : "s"}`}>{live.length}</span>,
+        badge: <>{collapsed && live.length > 0 && <span className="room-count" aria-label={`${live.length} live session${live.length === 1 ? "" : "s"}`}>{live.length}</span>}<SessionSearch /></>,
       })}
       {!collapsed && <div id={listId}>
         {list.length === 0

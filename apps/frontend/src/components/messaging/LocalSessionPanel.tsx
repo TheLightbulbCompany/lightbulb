@@ -62,7 +62,9 @@ type Client = SessionSource["client"] & SessionControlClient & PickupClient & Pa
  * as on the phone. What the session is running, what it changed and who may do
  * what with it live behind Details.
  */
-export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf, onEvent }: {
+export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf, onEvent, focusSeq }: {
+  /** A turn to open the conversation at (a session search hit): its row is scrolled to and marked. */
+  focusSeq?: number;
   /** Live events, for watching a running session's terminal from another machine. */
   onEvent?: SessionSource["onEvent"];
   session: LocalSession; ownerName: string; own: boolean; client: Client;
@@ -112,6 +114,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // An offline session still probes this Mac's holder: "offline" is the relay's view (sharing off, a reconnect), not the Mac's.
   // Terminal | Conversation while the session has a live terminal: the same conversation an ended one shows.
   const [convoView, setConvoView] = useState(savedView);
+  // A search hit opens the conversation, not the terminal (this visit only: the saved pick stays).
+  useEffect(() => { if (focusSeq) setConvoView(true); }, [focusSeq]);
   const local = useLocalTerminal(session.status === "ended" || convo || (running && !hasTerminal) ? null : { sessionId: session.sessionId }, slot, details === null);
   // Until then the panel does not say the screen is gone; the timer redraws it when the wait is over.
   // (`wasHeld`: the server sends no `terminal` for an ended session until its screen is reported.)
@@ -168,7 +172,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const notStarted = running && !hasTerminal;
   // No terminal here: the conversation, as on the phone (owner ruling 2026-10-11). Workspace members
   // only by construction: /s never mounts this panel and the events route 404s outside the workspace.
-  const conversation = notStarted;
+  // An ended or offline session shows its conversation when a search hit opened it.
+  const conversation = notStarted || (!!focusSeq && !running && !convo);
   const toBottom = useCallback(() => { const node = scroller.current; if (node) node.scrollTop = node.scrollHeight; }, []);
   useLayoutEffect(() => {
     const node = scroller.current;
@@ -183,6 +188,25 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     observer.observe(node);
     return () => observer.disconnect();
   }, [toBottom, conversation, showConvo]);
+  // The hit's turn: the last prompt or reply row at or before it, once older pages hold it.
+  const scrolledTo = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!focusSeq || scrolledTo.current === focusSeq || history.error) return;
+    const box = document.querySelector('[aria-label="Native session history"], [aria-label="Session conversation"]');
+    const rows = [...(box?.querySelectorAll<HTMLElement>("[data-seq]") ?? [])];
+    const first = rows.length ? Number(rows[0].dataset.seq) : Infinity;
+    if (first > focusSeq && history.hasOlder) {
+      if (!history.loading) void history.load("older");
+      return;
+    }
+    const row = rows.filter(node => Number(node.dataset.seq) <= focusSeq).at(-1) ?? rows[0];
+    if (!row) return;
+    scrolledTo.current = focusSeq;
+    atBottomRef.current = false;
+    box?.querySelector("[data-search-hit]")?.removeAttribute("data-search-hit");
+    row.setAttribute("data-search-hit", "");
+    row.scrollIntoView({ block: "center" });
+  }, [focusSeq, history]);
   const onScroll = () => {
     const node = scroller.current;
     if (!node) return;

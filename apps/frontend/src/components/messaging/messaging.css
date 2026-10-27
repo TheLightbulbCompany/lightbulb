@@ -772,3 +772,6 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 /* A Claude question answered from the session view: one fieldset per question. */
 .local-session-question { display: grid; gap: 8px; }
 .local-session-question fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+
+/* A session search hit's turn (LocalSessionPanel focusSeq). */
+.native-session-row[data-search-hit] { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 6px; }

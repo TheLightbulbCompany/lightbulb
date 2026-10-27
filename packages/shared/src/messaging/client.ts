@@ -16,6 +16,7 @@ import type {
   MemberPrefsRequest,
   MessagePage,
   MessageSearchResponse,
+  SessionSearchResponse,
   PatchRoomRequest,
   ReadCursorRequest,
   ReadCursorResponse,
@@ -165,6 +166,8 @@ export interface MessagingClient {
   deleteRoom(roomId: string): Promise<void>;
   searchMessages(query: string, options?: { roomId?: string; limit?: number }): Promise<MessageSearchResponse>;
   warmSearch(): Promise<void>;
+  /** What was said in the coding sessions the caller may read. */
+  searchSessions(query: string, options?: { limit?: number }): Promise<SessionSearchResponse>;
   setPin(roomId: string, messageId: string, pinned: boolean): Promise<RoomDetail>;
   setTyping(request: TypingRequest): Promise<void>;
   abortRun(runId: string): Promise<AbortRunResponse>;
@@ -316,6 +319,10 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     async warmSearch() {
       await api.post("/messaging/search/warm", {});
     },
+    searchSessions: (query, options) => api.post("/messaging/sessions/search", {
+      q: query,
+      ...(options?.limit ? { limit: options.limit } : {}),
+    }) as Promise<SessionSearchResponse>,
     setPin: (roomId, messageId, pinned) => (pinned
       ? api.put(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`, {})
       : api.del(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`)) as Promise<RoomDetail>,

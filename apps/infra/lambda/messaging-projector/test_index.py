@@ -1534,6 +1534,7 @@ class ThreadRootModifyTests(unittest.TestCase):
 
 IMMEDIATE_URL = "https://sqs.us-east-1.amazonaws.com/1/search"
 BATCH_URL = "https://sqs.us-east-1.amazonaws.com/1/search-batch"
+SESSION_ID = "44444444-4444-4444-8444-444444444444"
 
 
 class SearchEnqueueTests(unittest.TestCase):
@@ -1647,6 +1648,38 @@ class SearchEnqueueTests(unittest.TestCase):
         record = stream_record({**message_item(), "reactionRevision": 1})
         record["eventName"] = "MODIFY"
         index.process_record(record)
+        index._sqs_client.send_message.assert_not_called()
+
+    def _session(self, sk, event_name="INSERT", **extra):
+        record = stream_record({"pk": "LOCALSESSION#org_room_owner#" + SESSION_ID, "sk": sk, **extra})
+        record["eventName"] = event_name
+        return record
+
+    @patch("index._publish")
+    def test_a_session_event_goes_to_the_batch_queue_and_publishes_nothing(self, publish):
+        index.process_record(self._session("EVENT#00000000000000000003", seq=3, kind="text", role="user", text="hi"))
+        self.assertEqual(self._queue_url(), BATCH_URL)
+        self.assertEqual(self._body(), {"ownerId": "org_room_owner", "sessionId": SESSION_ID, "sk": "EVENT#00000000000000000003"})
+        publish.assert_not_called()
+
+    def test_a_failed_session_event_enqueue_does_not_stall_the_shard(self):
+        index._sqs_client.send_message.side_effect = RuntimeError("sqs down")
+        with patch("index._emit_metric") as metric:
+            index.process_record(self._session("EVENT#00000000000000000003"))
+        self.assertIn("messaging.projector.search_enqueue.failed", [c.args[0] for c in metric.call_args_list])
+
+    def test_a_removed_session_is_deleted_at_once_and_a_failure_retries(self):
+        index.process_record(self._session("META", "MODIFY", removedAt=1790000000, eventSeq=42))
+        self.assertEqual(self._queue_url(), IMMEDIATE_URL)
+        self.assertEqual(self._body()["eventSeq"], 42)
+        index._sqs_client.send_message.side_effect = RuntimeError("sqs down")
+        with self.assertRaises(RuntimeError):
+            index.process_record(self._session("META", "MODIFY", removedAt=1790000000, eventSeq=42))
+
+    def test_other_session_rows_enqueue_nothing(self):
+        for record in (self._session("META", "MODIFY", eventSeq=4), self._session("COMMAND#r1"),
+                       self._session("EVENT#00000000000000000003", "MODIFY")):
+            index.process_record(record)
         index._sqs_client.send_message.assert_not_called()
 
     @patch("index._publish")

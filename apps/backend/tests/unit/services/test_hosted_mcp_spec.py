@@ -30,8 +30,9 @@ def _shape(schema: dict) -> dict:
 @pytest.mark.asyncio
 async def test_hosted_mcp_tools_match_network_tools_json():
     tools = {t.name: t for t in await hosted_mcp.mcp.list_tools()}
-    assert set(tools) == {t["name"] for t in SPEC} | {"wake_me"}
-    for spec in SPEC:
+    # use_browser moves a coding session's browser: engine only.
+    assert set(tools) == {t["name"] for t in SPEC if t["name"] != "use_browser"} | {"wake_me"}
+    for spec in (t for t in SPEC if t["name"] != "use_browser"):
         tool = tools[spec["name"]]
         assert tool.description == spec["description"], spec["name"]
         assert _shape(tool.input_schema) == _shape(spec["inputSchema"]), spec["name"]
@@ -61,13 +62,6 @@ async def test_find_sessions_is_network_only(monkeypatch):
     found = [{"session_id": "ab12cd34/claude-5", "is_this_session": False}]
     monkeypatch.setattr(hosted_mcp, "_network_sessions", AsyncMock(return_value=found))
     assert await hosted_mcp.find_sessions.__wrapped__() == {"sessions": found, "total": 1}
-
-
-@pytest.mark.asyncio
-async def test_hosted_use_browser_says_to_call_it_from_the_session(monkeypatch):
-    monkeypatch.setattr(hosted_mcp, "_caller", lambda *_: AuthContext(user_id="user_a", org_id="org_1"))
-    with pytest.raises(ToolError, match="from that session"):
-        await hosted_mcp.use_browser.__wrapped__("cloud")
 
 
 def test_a_room_send_takes_the_engines_request_id_format():
@@ -101,8 +95,7 @@ async def test_every_tool_declares_openais_three_hints():
     }
     assert hints == {
         **{name: (True, False, False) for name in reads},
-        "send_message": (False, True, True),  # cannot be unsent
+        "send_message": (False, False, True),  # deletes and overwrites nothing (owner, 10-27)
         "update_task": (False, False, False),
-        "use_browser": (False, False, True),
         "wake_me": (False, False, True),
     }

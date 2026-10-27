@@ -12,7 +12,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import time
 import uuid
-from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
@@ -50,7 +49,7 @@ logger = logging.getLogger(__name__)
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
-SEND = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True)
+SEND = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
 
 READ_SCOPE = "lightbulb:messages:read"
 WRITE_SCOPE = "lightbulb:messages:write"
@@ -424,15 +423,7 @@ async def update_task(
     return await _board(task_board.update_task(_caller(WRITE_SCOPE), task, status, priority, append_note))
 
 
-@mcp.tool(annotations=OPEN, description=SPEC["use_browser"]["description"])
-@_noted
-async def use_browser(where: Literal["mac", "cloud"]) -> dict:
-    _caller(WRITE_SCOPE)
-    # A hosted client is not a coding session: there is no session of its own to move.
-    raise ToolError(
-        "INVALID_REQUEST: use_browser moves the calling coding session's browser. Call it from that "
-        "session, whose computer is signed in to Lightbulb (lightbulb login)."
-    )
+# `use_browser` is left out: it moves a coding session's browser, and a hosted app has none.
 
 
 _CLIENTS = {

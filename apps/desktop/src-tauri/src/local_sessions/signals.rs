@@ -47,14 +47,26 @@ struct Entry {
     /// Tracked files already deleted when this Mac first saw the session: deleted before it, not by
     /// it (`deleted_before`). None until that first look ends.
     gone: Option<BTreeSet<String>>,
+    /// The last PR read failed (gh timed out, the network, an unreadable answer): `pr` is the last
+    /// known one, and it is asked again on the slow cadence.
+    pr_unknown: bool,
+}
+
+/// What a read said about the PR: Some(answer) replaces the last one (Some(None): no PR); None
+/// (the read failed) keeps it and asks again later.
+fn take_pr(entry: &mut Entry, read: Option<Option<Value>>) {
+    entry.pr_unknown = read.is_none();
+    if let Some(pr) = read {
+        entry.pr = pr;
+    }
 }
 
 /// Due for a read: never read, busy for 30 s, a turn just ended, or idle with its PR's checks
-/// still running (else "checks running" would stand after CI finished).
+/// still running (else "checks running" would stand after CI finished) or its last PR read failed.
 fn due(entry: &Entry, busy: bool, turn_ended: bool) -> bool {
     let checks_running = entry.pr.as_ref().is_some_and(|pr| pr["state"] == "open" && pr["checks"] == "pending");
     entry.at.is_none_or(|at| {
-        (busy && at.elapsed() >= BUSY_EVERY) || (checks_running && at.elapsed() >= PENDING_EVERY)
+        (busy && at.elapsed() >= BUSY_EVERY) || ((checks_running || entry.pr_unknown) && at.elapsed() >= PENDING_EVERY)
     }) || turn_ended
         || entry.again
 }
@@ -100,11 +112,11 @@ pub(super) fn tick(mirrors: &BTreeMap<String, Mirror>, home: &Path) {
                         Err(_) => BTreeSet::new(),
                     },
                 };
-                let Ok(root) = root else { return (None, None, gone) };
+                let Ok(root) = root else { return (None, None::<Option<Value>>, gone) };
                 let changes = changes(&root, since, &gone).await.ok();
                 let pr = match gh_program() {
                     Some(gh) => pr(&gh, &root, &home).await,
-                    None => None,
+                    None => Some(None),
                 };
                 (changes, pr, gone)
             })
@@ -114,7 +126,8 @@ pub(super) fn tick(mirrors: &BTreeMap<String, Mirror>, home: &Path) {
             if let Ok(mut entries) = ENTRIES.lock() {
                 if let Some(entry) = entries.get_mut(&key) {
                     let (changes, pr, gone) = read;
-                    (entry.changes, entry.pr) = (changes, pr);
+                    entry.changes = changes;
+                    take_pr(entry, pr);
                     if entry.gone.is_none() {
                         entry.gone = Some(gone);
                     }
@@ -218,7 +231,7 @@ fn epoch_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-/// The tracked files deleted from the working tree (`git ls-files -d`, repository-relative) when the
+/// The tracked files deleted (from the working tree or staged, repository-relative) when the
 /// session is first seen at `now`. Empty when that is long after the session started (it may have
 /// deleted them itself) or git cannot say: every deletion then counts.
 async fn deleted_before(cwd: &Path, since: i64, now: i64) -> BTreeSet<String> {
@@ -226,31 +239,44 @@ async fn deleted_before(cwd: &Path, since: i64, now: i64) -> BTreeSet<String> {
         return BTreeSet::new();
     }
     let Ok(top) = toplevel(cwd).await else { return BTreeSet::new() };
-    let Ok(listed) = workspace::git(&top, &["ls-files", "-d", "-z"]).await else { return BTreeSet::new() };
-    listed
+    // Deleted in the working tree (`ls-files -d`) and deleted with `git rm` (staged, so no longer in
+    // the index `ls-files` reads: the diff against HEAD names it).
+    let Ok(unstaged) = workspace::git(&top, &["ls-files", "-d", "-z"]).await else { return BTreeSet::new() };
+    let staged = workspace::git(&top, &["diff", "--name-only", "-z", "--no-renames", "--diff-filter=D", "HEAD", "--"]).await.unwrap_or_default();
+    unstaged
         .split(|b| *b == 0)
+        .chain(staged.split(|b| *b == 0))
         .filter(|n| !n.is_empty())
         .filter_map(|n| std::str::from_utf8(n).ok().map(str::to_owned))
         .collect()
 }
 
+/// `git hash-object -t tree /dev/null`.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 /// The commit HEAD was on at `since`: the newest reflog entry no later than it, else the oldest one
 /// (the repository's HEAD moved first after the session started), else HEAD now.
 async fn start_commit(top: &Path, since: i64) -> Option<String> {
-    let log = workspace::git(top, &["log", "-g", "--format=%H %gd", "--date=unix", "-n", "500", "HEAD"]).await.ok();
-    let entries: Vec<(&str, i64)> = log
+    let log = workspace::git(top, &["log", "-g", "--format=%H %gd %gs", "--date=unix", "-n", "500", "HEAD"]).await.ok();
+    let entries: Vec<(&str, i64, &str)> = log
         .as_deref()
         .and_then(|bytes| std::str::from_utf8(bytes).ok())
         .into_iter()
         .flat_map(str::lines)
         .filter_map(|line| {
-            let (hash, selector) = line.split_once(' ')?;
+            let (hash, rest) = line.split_once(' ')?;
+            let (selector, subject) = rest.split_once(' ').unwrap_or((rest, ""));
             let at = selector.strip_prefix("HEAD@{")?.strip_suffix('}')?.parse().ok()?;
-            Some((hash, at))
+            Some((hash, at, subject))
         })
         .collect();
-    if let Some((hash, _)) = entries.iter().find(|(_, at)| *at <= since).or(entries.last()) {
+    if let Some((hash, _, _)) = entries.iter().find(|(_, at, _)| *at <= since) {
         return Some((*hash).to_owned());
+    }
+    // The repository's first commit came after the session started: there was no commit then, and
+    // everything since is the session's (git's empty tree).
+    if let Some((hash, _, subject)) = entries.last() {
+        return Some(if subject.starts_with("commit (initial)") { EMPTY_TREE.to_owned() } else { (*hash).to_owned() });
     }
     let head = workspace::git(top, &["rev-parse", "--verify", "-q", "HEAD"]).await.ok()?;
     Some(String::from_utf8(head).ok()?.trim().to_owned()).filter(|h| !h.is_empty())
@@ -292,29 +318,30 @@ fn gh_program() -> Option<PathBuf> {
     ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"].into_iter().map(PathBuf::from).find(|p| p.is_file())
 }
 
-/// The PR of the branch checked out in `root` (`gh pr view`), cached a minute per branch. None:
-/// no PR, a detached HEAD, `gh` not signed in, or anything else; it never prompts.
-async fn pr(gh: &Path, root: &Path, home: &Path) -> Option<Value> {
+/// The PR of the branch checked out in `root` (`gh pr view`), an answer cached a minute per branch;
+/// it never prompts. Some(None): no PR, or a detached HEAD. None: it could not tell (gh signed out,
+/// timed out, offline, an unreadable answer); the caller keeps what it knew.
+async fn pr(gh: &Path, root: &Path, home: &Path) -> Option<Option<Value>> {
     let branch = String::from_utf8(workspace::git(root, &["rev-parse", "--abbrev-ref", "HEAD"]).await.ok()?).ok()?;
     let branch = branch.trim().to_owned();
     if branch.is_empty() || branch == "HEAD" {
-        return None;
+        return Some(None);
     }
     let cache = (root.to_path_buf(), branch);
     if let Some((at, pr)) = PRS.lock().ok()?.get(&cache) {
         if at.elapsed() < PR_EVERY {
-            return pr.clone();
+            return Some(pr.clone());
         }
     }
-    let answer = gh_pr_view(gh, root, home).await;
+    let answer = gh_pr_view(gh, root, home).await?;
     if let Ok(mut prs) = PRS.lock() {
         prs.retain(|_, (at, _)| at.elapsed() < PR_EVERY);
         prs.insert(cache, (Instant::now(), answer.clone()));
     }
-    answer
+    Some(answer)
 }
 
-async fn gh_pr_view(gh: &Path, root: &Path, home: &Path) -> Option<Value> {
+async fn gh_pr_view(gh: &Path, root: &Path, home: &Path) -> Option<Option<Value>> {
     let run = tokio::process::Command::new(gh)
         .args(["pr", "view", "--json", "number,state,url,statusCheckRollup"])
         .current_dir(root)
@@ -325,14 +352,19 @@ async fn gh_pr_view(gh: &Path, root: &Path, home: &Path) -> Option<Value> {
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("NO_COLOR", "1")
         .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .output();
     let out = tokio::time::timeout(Duration::from_secs(10), run).await.ok()?.ok()?;
-    if !out.status.success() || out.stdout.len() > 512 * 1024 {
+    if !out.status.success() {
+        // gh's own words for a branch with no PR; any other failure says nothing.
+        let said = String::from_utf8_lossy(&out.stderr[..out.stderr.len().min(4096)]).to_lowercase();
+        return said.contains("no pull requests found").then_some(None);
+    }
+    if out.stdout.len() > 512 * 1024 {
         return None;
     }
-    pr_wire(&serde_json::from_slice(&out.stdout).ok()?)
+    Some(Some(pr_wire(&serde_json::from_slice(&out.stdout).ok()?)?))
 }
 
 /// `{number, state, url, checks?}`: open, merged or closed, and the checks' verdict (failing when
@@ -444,6 +476,50 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_signals_a_failed_pr_read_keeps_the_last_pr_and_asks_again() {
+        let known = json!({"number": 7, "state": "open", "url": "https://x", "checks": "passing"});
+        let mut entry = Entry { pr: Some(known.clone()), at: Some(Instant::now() - Duration::from_secs(150)), ..Default::default() };
+        assert!(!due(&entry, false, false), "settled checks: an idle session is left alone");
+        take_pr(&mut entry, None);
+        assert_eq!(entry.pr, Some(known), "a failure does not erase the PR");
+        assert!(due(&entry, false, false), "and is asked again on the slow cadence");
+        take_pr(&mut entry, Some(None));
+        assert_eq!(entry.pr, None, "gh said there is no PR");
+        assert!(!due(&entry, false, false));
+    }
+
+    #[tokio::test]
+    async fn local_sessions_signals_a_repo_with_no_commit_at_the_start_counts_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]).await;
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 1;
+        fs::write(root.join("first.txt"), "a\nb\n").unwrap();
+        git(&root, &["add", "."]).await;
+        git(&root, &["commit", "-qm", "first"]).await;
+        assert_eq!(start_commit(&root, since).await.as_deref(), Some(EMPTY_TREE));
+        assert_eq!(changes(&root, since, &BTreeSet::new()).await.unwrap(), Changes { files: 1, additions: 2, deletions: 0 });
+    }
+
+    #[tokio::test]
+    async fn local_sessions_signals_a_deletion_staged_before_the_session_is_its_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]).await;
+        for name in ["staged.txt", "worktree.txt"] {
+            fs::write(root.join(name), "a\n").unwrap();
+        }
+        git(&root, &["add", "."]).await;
+        git(&root, &["commit", "-qm", "start"]).await;
+        git(&root, &["rm", "-q", "staged.txt"]).await;
+        fs::remove_file(root.join("worktree.txt")).unwrap();
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 1;
+        let gone = deleted_before(&root, since, since + 1).await;
+        assert_eq!(gone, BTreeSet::from(["staged.txt".to_owned(), "worktree.txt".to_owned()]));
+        assert_eq!(changes(&root, since, &gone).await.unwrap(), Changes::default());
+    }
+
+    #[test]
     fn local_sessions_signals_pr_says_state_and_the_checks_verdict() {
         let pr = |state: &str, checks: Value| pr_wire(&json!({"number": 123, "state": state, "url": "https://github.com/o/r/pull/123", "statusCheckRollup": checks}));
         let run = |conclusion: &str, status: &str| json!({"__typename":"CheckRun","conclusion":conclusion,"status":status});
@@ -469,16 +545,23 @@ mod tests {
             calls.display()
         )).unwrap();
         fs::set_permissions(&gh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        let want = Some(json!({"number":7,"state":"open","url":"https://github.com/o/r/pull/7"}));
+        let want = Some(Some(json!({"number":7,"state":"open","url":"https://github.com/o/r/pull/7"})));
         assert_eq!(pr(&gh, &root, &root).await, want);
         assert_eq!(pr(&gh, &root, &root).await, want, "cached");
         assert_eq!(fs::read_to_string(&calls).unwrap().lines().count(), 1);
-        // A failing gh (signed out, no PR) is no PR.
-        let failing = root.join("gh-fails");
-        fs::write(&failing, "#!/bin/sh\nexit 1\n").unwrap();
-        fs::set_permissions(&failing, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        // gh says the branch has no PR: that is an answer.
+        let none = root.join("gh-none");
+        fs::write(&none, "#!/bin/sh\necho 'no pull requests found for branch \"feat/y\"' >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&none, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         git(&root, &["checkout", "-q", "-b", "feat/y"]).await;
+        assert_eq!(pr(&none, &root, &root).await, Some(None));
+        // Any other failure (signed out, offline) is no answer, and is not cached.
+        let failing = root.join("gh-fails");
+        fs::write(&failing, "#!/bin/sh\necho 'error connecting to api.github.com' >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&failing, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        git(&root, &["checkout", "-q", "-b", "feat/z"]).await;
         assert_eq!(pr(&failing, &root, &root).await, None);
+        assert_eq!(pr(&gh, &root, &root).await, want, "the failure was not cached");
     }
 
     #[test]

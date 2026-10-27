@@ -391,8 +391,17 @@ _tasks: set[asyncio.Task] = set()
 FINISHED_COLLAPSE_S = 30
 
 
-def _attention(row: dict, status: str, now: int) -> Literal["waiting", "finished"] | None:
-    """The owner-facing state change a heartbeat carries, if any."""
+def _attention(row: dict, status: str, now: int, note: str | None = None) -> list[str]:
+    """The owner-facing state changes a heartbeat carries: "waiting" or "finished", and
+    "attention" for a new hand-off ``note`` (a job can finish and leave one in the same frame;
+    each is told by its own setting)."""
+    changes = [state] if (state := _status_attention(row, status, now)) else []
+    if note and note != row.get("note"):
+        changes.append("attention")
+    return changes
+
+
+def _status_attention(row: dict, status: str, now: int) -> Literal["waiting", "finished"] | None:
     if status == "waiting-approval" and row["status"] != "waiting-approval":
         return "waiting"
     busy_since = row.get("busySince")
@@ -428,6 +437,8 @@ def attention_copy(row: dict, state: str, subagent: str | None = None, prompt_te
         return copy.title(tool, where), copy.line(subagent)
     if state == "waiting":
         return copy.title(tool, where), waiting_line(row.get("pendingApproval"), prompt_text)
+    if state == "attention":
+        return copy.title(tool, where), copy.line(row.get("note")) or "Left you a note"
     reply = copy.line(row.get("lastAssistantMessage"))
     return copy.title(tool, where), copy.line(f"Finished: {reply}") if reply else "Finished its turn"
 
@@ -475,45 +486,64 @@ async def notify_attention(row: dict, state: str, subagent: Event | None = None)
     """Tell the session's OWNER (sessions have no watchers): an Activity row, a live
     event for desktop/web notifications, and a phone push. Best effort, each on its own.
     ``subagent`` is a background subagent's end event; it notifies as its parent would."""
+    from core.repositories import user_repo
     from core.services.live_events import get_live_event_publisher
     from core.services.push_service import send_push_to_user
 
     owner, human, sid = row["ownerId"], row["humanUserId"], row["sessionId"]
+    try:
+        prefs = user_repo.session_notifications(await user_repo.get(human))
+    except Exception:
+        # Fail closed: an unread opt-out must not be overridden, so this notice is badge-only.
+        logger.warning("Session notification prefs read failed; no banner", exc_info=True)
+        prefs = {**user_repo.session_notifications(None), "waiting": "badge", "finished": "badge", "attention": "badge"}
+    # "off" and "badge" never banner; a note is no Activity row (the row's own text is the record).
+    level = prefs[state]
+    if state == "attention" and level != "banner":
+        return
     line = (subagent.text.strip() or "A subagent finished.")[:180] if subagent else None
     prompt_text = await _waiting_text(row) if state == "waiting" and not row.get("pendingApproval") else ""
     title, body = attention_copy(row, state, line, prompt_text)
     created = utc_now_iso()
     # A subagent ends once; its own id keeps a replayed batch to one notification.
+    # A note's notice shares its frame's revision with a "finished": its own key keeps both.
     key = f"subagent|{subagent.subagent}" if subagent else row["revision"]
+    key = f"attention|{key}" if state == "attention" else key
     event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-attention|{sid}|{key}"))
     try:
-        await store.put_activity_row(
-            {
-                "pk": store.activity_pk(owner, human),
-                "sk": store.activity_sk(created, f"session:{event_id}"),
-                "kind": "session",
-                "subtype": state,
-                "sessionId": sid,
-                **({"waitingSince": row["waitingSince"]} if state == "waiting" else {}),
-                **({"subagent": line} if line else {}),
-                "createdAt": created,
-                "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
-            }
-        )
+        if state != "attention":
+            await store.put_activity_row(
+                {
+                    "pk": store.activity_pk(owner, human),
+                    "sk": store.activity_sk(created, f"session:{event_id}"),
+                    "kind": "session",
+                    "subtype": state,
+                    "sessionId": sid,
+                    **({"waitingSince": row["waitingSince"]} if state == "waiting" else {}),
+                    **({"subagent": line} if line else {}),
+                    "createdAt": created,
+                    "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
+                }
+            )
     except Exception:
         logger.warning("Session attention activity row failed", exc_info=True)
     push = {"title": title, "body": body, "data": {"source": "session", "sessionId": sid}}
+    # The clients banner only at "banner", with these two prefs; "badge" is the Dock count alone.
+    notice = {"level": level, "sound": prefs["sound"], "onlyUnfocused": prefs["onlyUnfocused"]}
     try:
         await get_live_event_publisher().publish_user(
             owner,
             human,
             make_live_event(
-                "workspace.session.attention", {"sessionId": sid, "state": state, "push": push}, event_id=event_id
+                "workspace.session.attention",
+                {"sessionId": sid, "state": state, "push": push, **notice},
+                event_id=event_id,
             ),
         )
     except Exception:
         logger.warning("Session attention live event failed")
-    await send_push_to_user(human, title, body, push["data"])
+    if level == "banner":
+        await send_push_to_user(human, title, body, push["data"], sound=prefs["sound"])
 
 
 _NO_PROMPT = object()
@@ -1017,10 +1047,10 @@ class LocalSessionRelay:
                         )
                     if item.status in _TURN_STATUSES and row["status"] not in _TURN_STATUSES:
                         updated["busySince"] = now
-                    attention = _attention(row, item.status, now)
-                    if attention == "waiting":
+                    attention = _attention(row, item.status, now, item.note)
+                    if "waiting" in attention:
                         updated["waitingSince"] = now  # which wait an Activity item is about
-                    if attention == "finished":
+                    if "finished" in attention:
                         updated["finishedNotifiedAt"] = now
                     if item.status not in _TURN_STATUSES:
                         updated.pop("subagentEnded", None)
@@ -1064,7 +1094,8 @@ class LocalSessionRelay:
                     if attention:
                         # The write above is revision-fenced, so exactly one frame wins a transition:
                         # one state change is one notification, retries included.
-                        _spawn(notify_attention(updated, attention))
+                        for state in attention:
+                            _spawn(notify_attention(updated, state))
                     # A workspace scan is worth a refetch but is not the user doing something,
                     # so it hints without stamping lastEventAt. A lapsed lease reads as
                     # offline, so recovery must reach the room even when nothing else moved;

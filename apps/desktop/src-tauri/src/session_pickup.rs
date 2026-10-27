@@ -877,7 +877,7 @@ async fn pick_up(ticket: Value, folder: Option<String>, env: &Env) -> Result<Val
         .await
         .map_err(|e| fail("LAUNCH_FAILED", &format!("The session didn't start: {e}")))?;
     // Started with no window: tell the owner at this Mac (spec §5.2).
-    let _ = crate::notify::native_notify(
+    let _ = crate::notify::show(
         format!(
             "Picked up {}",
             ticket

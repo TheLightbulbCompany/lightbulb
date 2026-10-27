@@ -333,6 +333,7 @@ class TestPrefs:
         mock_repo.daily_summary_on = real_user_repo.daily_summary_on
         mock_repo.chat_theme_of = real_user_repo.chat_theme_of
         mock_repo.sessions_reachable_from_background_work = real_user_repo.sessions_reachable_from_background_work
+        mock_repo.session_notifications = real_user_repo.session_notifications
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
@@ -380,6 +381,7 @@ class TestPrefs:
             away_email=None,
             chat_theme="dark",
             sessions_reachable_from_background_work=None,
+            session_notifications=None,
         )
 
     @pytest.mark.asyncio
@@ -411,6 +413,7 @@ class TestPrefs:
             away_email=None,
             chat_theme=None,
             sessions_reachable_from_background_work=None,
+            session_notifications=None,
         )
         # The mocked row already carries chat_theme=dark, so the response still
         # reflects it even though this PUT didn't touch it.
@@ -441,6 +444,34 @@ class TestPrefs:
         assert response.json()["sessionsReachableFromBackgroundWork"] is True
         kwargs = mock_repo.set_prefs.await_args.kwargs
         assert kwargs["sessions_reachable_from_background_work"] is True
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_session_notifications_default_to_todays_behaviour_and_round_trip(self, mock_repo, async_client):
+        self._wire_real_helpers(mock_repo)
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
+        mock_repo.set_prefs = AsyncMock(return_value=None)
+
+        body = (await async_client.get("/api/v1/users/me/prefs")).json()
+        assert body["sessionNotifications"] == {
+            "waiting": "banner",
+            "finished": "banner",
+            "attention": "badge",
+            "onlyUnfocused": False,
+            "sound": True,
+        }
+
+        stored = {"waiting": "badge", "finished": "off", "attention": "banner", "onlyUnfocused": True, "sound": False}
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123", "session_notifications": stored})
+        response = await async_client.put("/api/v1/users/me/prefs", json={"sessionNotifications": stored})
+        assert response.status_code == 200 and response.json()["sessionNotifications"] == stored
+        assert mock_repo.set_prefs.await_args.kwargs["session_notifications"] == stored
+
+        # A level the server does not know is refused, and a stored one reads as its default.
+        bad = await async_client.put("/api/v1/users/me/prefs", json={"sessionNotifications": {"waiting": "loud"}})
+        assert bad.status_code == 422
+        mock_repo.get = AsyncMock(return_value={"user_id": "u", "session_notifications": {"waiting": "loud"}})
+        assert (await async_client.get("/api/v1/users/me/prefs")).json()["sessionNotifications"]["waiting"] == "banner"
 
 
 class TestDeleteMyAccount:

@@ -14,6 +14,7 @@ import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
 import { DailySummaryCard } from "@/components/settings/DailySummaryCard";
+import { SessionNotificationsCard } from "@/components/settings/SessionNotificationsCard";
 import { DesktopSettings } from "@/components/desktop/DesktopSettings";
 import { LocalMcpServers } from "@/components/desktop/LocalMcpServers";
 import { HandlePicker } from "@/components/marketplace/HandlePicker";
@@ -272,6 +273,8 @@ function ProfilePanel() {
       </div>
 
       <DailySummaryCard />
+
+      <SessionNotificationsCard />
 
       <WorkspaceExportCard />
 

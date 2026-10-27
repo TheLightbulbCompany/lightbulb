@@ -70,6 +70,19 @@ class DeviceRegisterResponse(BaseModel):
     status: str = Field(..., description="'registered'")
 
 
+NotifyLevel = Literal["off", "badge", "banner"]
+
+
+class SessionNotifications(BaseModel):
+    """Session notifications per kind: off / badge (Dock count and dot, no banner) / banner."""
+
+    waiting: NotifyLevel = Field(default="banner", description="A permission prompt or a question")
+    finished: NotifyLevel = Field(default="banner", description="A turn of a minute or more ended")
+    attention: NotifyLevel = Field(default="badge", description="A job left a hand-off note")
+    onlyUnfocused: bool = Field(default=False, description="No banner while Lightbulb is the focused app")
+    sound: bool = True
+
+
 class UserPrefs(BaseModel):
     """GET/PUT /api/v1/users/me/prefs response."""
 
@@ -86,6 +99,7 @@ class UserPrefs(BaseModel):
         default=True,
         description="Paperclip runs, heartbeats and routines may reach this person's shared sessions; default on",
     )
+    sessionNotifications: SessionNotifications = Field(default_factory=SessionNotifications)
 
 
 class UserPrefsUpdate(BaseModel):
@@ -96,6 +110,8 @@ class UserPrefsUpdate(BaseModel):
     awayEmail: bool | None = None
     chatTheme: Literal["light", "dark"] | None = None
     sessionsReachableFromBackgroundWork: bool | None = None
+    #: The whole object; a client sends every field it shows.
+    sessionNotifications: SessionNotifications | None = None
 
     @field_validator("timezone")
     @classmethod

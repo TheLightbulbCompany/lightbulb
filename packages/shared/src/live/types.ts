@@ -221,15 +221,21 @@ export type SessionAttention = {
   sessionId: string;
   /** join_request: a teammate asked to join one of your sessions. join_allowed / join_declined:
    *  the owner answered YOUR request to join theirs. */
-  state: "waiting" | "finished" | "join_request" | "join_allowed" | "join_declined";
+  /** attention: a job left a hand-off note (sent only to someone who chose a banner for it). */
+  state: "waiting" | "finished" | "attention" | "join_request" | "join_allowed" | "join_declined";
   push: { title: string; body: string; data: { source: "session"; sessionId: string } };
+  /** The owner's choice for this kind: only "banner" shows one. Absent (older server) = banner. */
+  level?: "off" | "badge" | "banner";
+  sound?: boolean;
+  /** No banner while Lightbulb is the focused app. */
+  onlyUnfocused?: boolean;
   /** A held session send: the session's Mac posts its own notification, with Allow and Decline. */
   held?: boolean;
   /** For a held send: the device id of the Mac that hosts the session. */
   hostDeviceId?: string;
 };
 const SCREEN_KINDS = new Set<string>(["snapshot", "output", "history"]);
-const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "join_request", "join_allowed", "join_declined"]);
+const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "attention", "join_request", "join_allowed", "join_declined"]);
 /** One piece of a running session's live terminal, for a person watching it (spec §5.2). `epoch`
  *  is one relay run on the Mac and `seq` orders frames within it; a "snapshot" redraws the
  *  screen, "history" is the holder's recent output sent before a snapshot, "ping" (no data, no

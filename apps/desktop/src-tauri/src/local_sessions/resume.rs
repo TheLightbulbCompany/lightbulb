@@ -382,7 +382,7 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
     } else {
         "In plan mode. End it from its panel in Lightbulb."
     };
-    let _ = crate::notify::native_notify(
+    let _ = crate::notify::show(
         format!("{who} resumed {}", w.title),
         Some(how.into()),
         Some(format!("resume-{}", w.resume_id)),

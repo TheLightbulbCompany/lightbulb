@@ -2365,7 +2365,7 @@ async def test_waiting_and_long_turn_finish_notify_the_owner_once(transport):
 
     pushes = []
 
-    async def push(user_id, title, body, data=None):
+    async def push(user_id, title, body, data=None, **_):
         pushes.append((user_id, title, body, data))
 
     with patch("time.time", return_value=10000):
@@ -2411,6 +2411,105 @@ async def test_waiting_and_long_turn_finish_notify_the_owner_once(transport):
     assert not [i for i in bob.items if i.kind == "session"]
 
 
+@pytest.mark.asyncio
+async def test_session_notification_prefs_choose_banner_badge_or_nothing_per_kind(transport):
+    from core.repositories import user_repo
+    from core.services import local_session_relay as module
+
+    pushes = []
+
+    async def push(user_id, title, body, data=None, **kwargs):
+        pushes.append((body, kwargs))
+
+    await user_repo.put(ALICE.user_id, "alice@example.com")
+    prefs = {"waiting": "badge", "finished": "off", "attention": "banner", "onlyUnfocused": True, "sound": False}
+    await user_repo.set_prefs(ALICE.user_id, session_notifications=prefs)
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    frames = [
+        (10010, {"status": "waiting-approval", "title": "Fix login"}),  # badge: no push
+        (10030, {"status": "busy"}),
+        (10100, {"status": "idle"}),  # a long turn, off: no push
+        (10110, {"status": "idle", "note": "run lightbulb login, then press Resume"}),  # banner
+        (10120, {"status": "idle", "note": "run lightbulb login, then press Resume"}),  # same note: once
+    ]
+    with patch("core.services.push_service.send_push_to_user", push):
+        for stamp, change in frames:
+            with patch("time.time", return_value=stamp):
+                await relay(transport).handle_message("conn-1", heartbeat(sid, **change))
+                await asyncio.gather(*module._tasks)
+    assert pushes == [("run lightbulb login, then press Resume", {"sound": False})]
+    events = [json.loads(h["events"][0]) for h in transport[4]]
+    notices = [e["payload"] for e in events if e["type"] == "workspace.session.attention"]
+    assert [(n["state"], n["level"], n["sound"], n["onlyUnfocused"]) for n in notices] == [
+        ("waiting", "badge", False, True),
+        ("finished", "off", False, True),
+        ("attention", "banner", False, True),
+    ]
+
+    # The defaults are the old behaviour: a note is never a banner, nor even a live notice.
+    await user_repo.set_prefs(ALICE.user_id, session_notifications=dict(user_repo.SESSION_NOTIFICATION_DEFAULTS))
+    pushes.clear()
+    with patch("core.services.push_service.send_push_to_user", push), patch("time.time", return_value=10200):
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", note="a new note"))
+        await asyncio.gather(*module._tasks)
+    assert pushes == []
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_ends_with_a_new_note_tells_both_by_their_own_settings(transport):
+    from core.repositories import user_repo
+    from core.services import local_session_relay as module
+
+    pushes = []
+
+    async def push(user_id, title, body, data=None, **kwargs):
+        pushes.append(body)
+
+    await user_repo.put(ALICE.user_id, "alice@example.com")
+    prefs = {**user_repo.SESSION_NOTIFICATION_DEFAULTS, "finished": "off", "attention": "banner"}
+    await user_repo.set_prefs(ALICE.user_id, session_notifications=prefs)
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    with patch("core.services.push_service.send_push_to_user", push), patch("time.time", return_value=10100):
+        # One frame: a 100 s turn ends AND the job leaves a note.
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", note="run lightbulb login"))
+        await asyncio.gather(*module._tasks)
+    assert pushes == ["run lightbulb login"]
+    notices = [json.loads(h["events"][0]) for h in transport[4]]
+    notices = [n for n in notices if n["type"] == "workspace.session.attention"]
+    assert sorted((n["payload"]["state"], n["payload"]["level"]) for n in notices) == [
+        ("attention", "banner"),
+        ("finished", "off"),
+    ]
+    assert len({n["eventId"] for n in notices}) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_prefs_read_failure_sends_no_banner(transport):
+    from core.repositories import user_repo
+    from core.services import local_session_relay as module
+
+    pushes = []
+
+    async def push(user_id, title, body, data=None, **kwargs):
+        pushes.append(body)
+
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    with (
+        patch("core.services.push_service.send_push_to_user", push),
+        patch.object(user_repo, "get", AsyncMock(side_effect=RuntimeError("ddb down"))),
+        patch("time.time", return_value=10010),
+    ):
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="waiting-approval"))
+        await asyncio.gather(*module._tasks)
+    assert pushes == []
+    notices = [json.loads(h["events"][0]) for h in transport[4]]
+    levels = [n["payload"]["level"] for n in notices if n["type"] == "workspace.session.attention"]
+    assert levels == ["badge"]
+
+
 async def test_subagent_events_round_trip_and_a_long_background_end_notifies_once(transport):
     from core.services import activity, local_session_relay as module
 
@@ -2419,7 +2518,7 @@ async def test_subagent_events_round_trip_and_a_long_background_end_notifies_onc
     assert "approvalInput" in module.FEATURES
     pushes = []
 
-    async def push(user_id, title, body, data=None):
+    async def push(user_id, title, body, data=None, **_):
         pushes.append((user_id, title, body, data))
 
     def end(agent, status, **result):
@@ -2665,7 +2764,7 @@ async def test_waiting_on_a_question_names_it_from_the_prompt_row(transport):
 
     pushes = []
 
-    async def push(user_id, title, body, data=None):
+    async def push(user_id, title, body, data=None, **_):
         pushes.append(body)
 
     with patch("time.time", return_value=10000):
@@ -2698,7 +2797,7 @@ async def test_a_new_wait_never_names_the_previous_prompt(transport):
 
     pushes = []
 
-    async def push(user_id, title, body, data=None):
+    async def push(user_id, title, body, data=None, **_):
         pushes.append(body)
 
     with patch("time.time", return_value=10000):

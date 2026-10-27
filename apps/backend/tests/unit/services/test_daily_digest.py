@@ -308,8 +308,13 @@ async def test_prefs_default_on_new_york_and_round_trip(users_table, async_clien
         "awayEmail": True,
         "chatTheme": None,
         "sessionsReachableFromBackgroundWork": True,  # on by default since #4378
+        "sessionNotifications": user_repo.SESSION_NOTIFICATION_DEFAULTS,
     }
-    off = {"sessionsReachableFromBackgroundWork": True, "awayEmail": True}
+    off = {
+        "sessionsReachableFromBackgroundWork": True,
+        "awayEmail": True,
+        "sessionNotifications": user_repo.SESSION_NOTIFICATION_DEFAULTS,
+    }
     resp = await async_client.put("/api/v1/users/me/prefs", json={"timezone": "Europe/Paris"})
     assert resp.json() == {"timezone": "Europe/Paris", "dailySummary": True, "chatTheme": None, **off}
     resp = await async_client.put("/api/v1/users/me/prefs", json={"dailySummary": False})
@@ -318,6 +323,13 @@ async def test_prefs_default_on_new_york_and_round_trip(users_table, async_clien
     assert resp.json() == {"timezone": "Europe/Paris", "dailySummary": False, "chatTheme": "dark", **off}
     assert (await async_client.put("/api/v1/users/me/prefs", json={"timezone": "Mars/Base"})).status_code == 422
     assert await user_repo.get_timezone("user_test_123") == "Europe/Paris"
+    # Session notifications: stored whole, read back whole; a partial body fills in the defaults.
+    quiet = {"waiting": "badge", "finished": "off", "attention": "banner", "onlyUnfocused": True, "sound": False}
+    resp = await async_client.put("/api/v1/users/me/prefs", json={"sessionNotifications": quiet})
+    assert resp.json()["sessionNotifications"] == quiet
+    assert (await async_client.get("/api/v1/users/me/prefs")).json()["sessionNotifications"] == quiet
+    resp = await async_client.put("/api/v1/users/me/prefs", json={"sessionNotifications": {"finished": "badge"}})
+    assert resp.json()["sessionNotifications"] == {**user_repo.SESSION_NOTIFICATION_DEFAULTS, "finished": "badge"}
     assert await user_repo.get_timezone("nobody") == "America/New_York"
 
 

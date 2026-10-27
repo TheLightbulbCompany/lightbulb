@@ -136,6 +136,7 @@ def _prefs(row: dict | None) -> UserPrefs:
         awayEmail=user_repo.away_email_on(row),
         chatTheme=user_repo.chat_theme_of(row),
         sessionsReachableFromBackgroundWork=user_repo.sessions_reachable_from_background_work(row),
+        sessionNotifications=user_repo.session_notifications(row),
     )
 
 
@@ -160,6 +161,7 @@ async def update_my_prefs(body: UserPrefsUpdate, auth: AuthContext = Depends(get
         away_email=body.awayEmail,
         chat_theme=body.chatTheme,
         sessions_reachable_from_background_work=body.sessionsReachableFromBackgroundWork,
+        session_notifications=body.sessionNotifications.model_dump() if body.sessionNotifications else None,
     )
     return _prefs(await user_repo.get(auth.user_id))
 

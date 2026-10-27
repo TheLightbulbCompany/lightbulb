@@ -43,12 +43,12 @@ from core.services import (
 logger = logging.getLogger(__name__)
 
 # Codex and Claude Code read these to decide which calls ask first; OpenAI's plugin review needs all
-# three explicit on every tool. Only send_message is destructive (a sent message cannot be unsent).
+# three explicit on every tool. Only wake_me is destructive: calling it again replaces the stored webhook.
 # openWorld: a call that leaves the bounded workspace (other people act on it, or any URL / the web).
 # They live here, not in network_tools.json: the engine serves that file byte for byte without hints.
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
-OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
+OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True)
 SEND = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
 
 READ_SCOPE = "lightbulb:messages:read"

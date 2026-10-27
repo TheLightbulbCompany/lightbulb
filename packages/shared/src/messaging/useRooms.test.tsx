@@ -141,6 +141,27 @@ describe("useRooms platform seams", () => {
     await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(feed.roomId));
   });
 
+  it("hides and refuses a DM with no recipient while preserving valid DMs", async () => {
+    const recipient = {
+      kind: "human" as const, id: "user-b", displayName: "Bob", mentionHandle: null,
+      role: "member" as const, listenMode: null, joinedAt: "2026-09-11T00:00:00Z", joinedSeq: 0,
+    };
+    const phantom = { ...room, roomId: "dm-phantom", name: null, kind: "dm" as const };
+    const valid = { ...phantom, roomId: "dm-valid", members: [...room.members, recipient] };
+    messaging.listRooms.mockResolvedValue({ rooms: [phantom, valid], sections: [] });
+    messaging.getRoom.mockImplementation(async (roomId) => roomId === valid.roomId ? valid : phantom);
+
+    const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+    await waitFor(() => expect(result.current.rooms.map((entry) => entry.roomId)).toEqual([valid.roomId]));
+
+    act(() => result.current.selectRoom(phantom.roomId));
+    expect(result.current.activeRoomId).toBeNull();
+    expect(messaging.getRoom).not.toHaveBeenCalledWith(phantom.roomId);
+
+    act(() => result.current.selectRoom(valid.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(valid.roomId));
+  });
+
   it("opens a room the list does not carry (a hidden session chat) through its detail", async () => {
     messaging.listRooms.mockResolvedValue({ rooms: [], sections: [] });
     const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });

@@ -283,26 +283,19 @@ async def test_a_live_session_whose_mac_is_offline_is_not_removed(transport, s3)
 
 
 @pytest.mark.asyncio
-async def test_a_session_ended_on_purpose_leaves_the_lists_and_stays_readable_by_id(transport, s3):
-    """Owner ruling 2026-10-08. A list-only hide: the panel open on it keeps reading it."""
+async def test_a_session_ended_on_purpose_stays_listed_until_removed(transport, s3):
+    """Owner ruling 2026-10-27 (superseding 2026-10-08's hide): End leaves the row in Recent,
+    marked as ended on purpose, until its owner removes it."""
     sid = await claude_session(transport)
     await end(transport, sid, reason="on-purpose")
     assert (await repo.get_session(OWNER, sid))["endedReason"] == "on-purpose"
-    assert await listed(ALICE) == [] and await listed(BOB) == []
-    assert (await service.list_resources(BOB, ROOM, include_ended=True)).sessions == []
+    assert await listed(ALICE) == [sid] and await listed(BOB) == [sid]
     members = [{"id": ALICE.user_id, "kind": "human"}, {"id": BOB.user_id, "kind": "human"}]
-    assert await service.referenced_sessions(OWNER, members, [sid]) == []
+    assert [s["sessionId"] for s in await service.referenced_sessions(OWNER, members, [sid])] == [sid]
     for auth in (ALICE, BOB):
         seen = await http(auth, "GET", f"/{sid}")
         assert seen.status_code == 200 and seen.json()["status"] == "ended" and seen.json()["endedOnPurpose"] is True
-    assert seen.json()["resumable"] is True, "the open panel offers Resume as before"
-    # A new run of it (a resume) is listed again.
-    connect(transport, cid="conn-2", stamp="1001")
-    frame = registration(provider="claude", nativeConversationId=pickup_tests.CONVERSATION, providerVersion="2.1.283")
-    frame["session"]["generation"] = "generation-2"
-    await relay(transport).handle_message("conn-2", frame)
-    assert await listed(BOB) == [sid]
-    assert "endedOnPurpose" not in (await http(BOB, "GET", f"/{sid}")).json()
+    assert seen.json()["resumable"] is True
 
 
 @pytest.mark.asyncio
@@ -321,8 +314,8 @@ async def test_a_session_that_ended_any_other_way_stays_listed(transport, s3, re
 @pytest.mark.parametrize(
     ("state", "stored", "shown"),
     [
-        ("dispatched", "on-purpose", False),
-        ("applied", "on-purpose", False),
+        ("dispatched", "on-purpose", True),
+        ("applied", "on-purpose", True),
         ("rejected", "exited", True),
         ("pending", "exited", True),
     ],

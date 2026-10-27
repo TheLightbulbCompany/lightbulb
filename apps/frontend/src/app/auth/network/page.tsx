@@ -102,7 +102,7 @@ function ConfirmComputer() {
     body = (
       <h1 className="text-xl font-semibold">
         {agents
-          ? `Done. Allow ${organization?.name ?? "your workspace"} on ${computer} when it asks.`
+          ? `Done. ${organization?.name ?? "Your workspace"} is joining the network on ${computer}.`
           : "This computer is signed in. You can close this tab."}
       </h1>
     );

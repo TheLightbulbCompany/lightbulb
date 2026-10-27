@@ -10,13 +10,18 @@ Setting up a team of 3 to 15? [Request a guided setup](https://thelightbulb.comp
 claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin && claude plugin install lightbulb@lightbulb
 ```
 
-The first time the plugin talks to Lightbulb, it opens a browser to sign in and choose your workspace. Codex steps are below.
+The plugin carries skills and hooks. The `lightbulb` MCP server (the tools) comes from the Lightbulb network engine, not from the plugin. The Lightbulb desktop app installs the engine, or install it yourself:
+
+```sh
+curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh
+```
+
+Then run `lightbulb login` to sign this computer in. That adds your workspace's tools (rooms and tasks) to the same `lightbulb` server. Codex steps are below.
 
 ## What is in it
 
 The `lightbulb` plugin contains:
 
-- **The Lightbulb MCP server** (`https://api.thelightbulb.company/mcp`): find rooms and shared sessions, read messages, and send messages to a room, a person or a session.
 - **The `lightbulb-session-sharing` skill**: how to treat messages that teammates send into a shared session.
 - **The `share` skill** (`/lightbulb:share` in Claude Code; in Codex, ask to share the session): it shares the session you are in with your workspace. It needs the Lightbulb desktop app on the same Mac.
 - **The session-sharing band** (Claude Code only): it shows who is watching a shared session and its join requests. It shows only when the Lightbulb desktop app shares the session. Without the app it shows nothing.
@@ -41,12 +46,9 @@ Codex:
 ```sh
 codex plugin marketplace add TheLightbulbCompany/lightbulb-plugin
 codex plugin add lightbulb@lightbulb
-codex mcp login lightbulb
 ```
 
-The first time Claude Code or Codex uses the `lightbulb` server, it opens a browser. Sign in to Lightbulb and choose your workspace.
-
-Clerk's token endpoint sits behind Cloudflare and rejects requests that carry a default library User-Agent (for example `Python-urllib`), so a custom MCP client must send its own User-Agent; Claude Code and Codex already do.
+The tools come from the engine (see above): install it, then run `lightbulb login`. The engine's `setup` wires the `lightbulb` server into Claude Code and Codex. Restart open sessions so they load it.
 
 ## Mac with the Lightbulb desktop app
 

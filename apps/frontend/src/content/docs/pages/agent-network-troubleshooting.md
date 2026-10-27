@@ -33,7 +33,7 @@ Joins on the same Wi-Fi still work while it is blocked, because the invite carri
 
 ### An agent: `not connected` or `hooks only — tools missing (run setup)`
 
-The line is named after the agent (`Claude Code`, `Codex`, `Cursor`, `Grok CLI`). `not installed` is fine: that agent's folder does not exist.
+The line is named after the agent (`Claude Code`, `Codex`, `Cursor`, `Grok CLI`, `OpenCode`). `not installed` is fine: that agent's folder does not exist.
 
 - `hooks only — tools missing (run setup)`: the hooks are there, but the `lightbulb` tool server entry is not. Fix: `lightbulb setup`.
 - `not connected`: the hooks are not there. Fix: `lightbulb setup`. If setup prints `<agent>: not connected — <file>: <error>`, that config file could not be read (for example, it is not valid JSON or TOML). Fix the file, then run `setup` again. The backup is beside it as `<file>.lightbulb-backup`.
@@ -50,7 +50,7 @@ If the line reads `~/.local/bin/lightbulb is another program's; put ~/.lightbulb
 
 ### `Relay`
 
-This line is never red. It shows the relay in use: `default` (the iroh project's public relays), `yours <url>`, `team <url>`, `lightbulb <url>` (from the signed list), or `none`.
+This line is never red. It shows the relay in use: `default` (the iroh project's public relays), `yours <url>`, `team <url>`, or `none`.
 
 ## Other problems
 
@@ -73,7 +73,7 @@ After `brew upgrade` or `npm i -g lightbulb-cli@latest`, run `lightbulb setup`, 
 "$(npm prefix -g)/bin/lightbulb" setup     # npm
 ```
 
-The curl install line, and `lightbulb update` in a later release, always replace the copy in `~/.lightbulb/connect/bin`.
+The curl install line and `lightbulb update` always replace the copy in `~/.lightbulb/connect/bin`.
 
 ### `The background service did not answer in 10 s`
 
@@ -91,8 +91,6 @@ Only one service can use the state folder; a second one waits and touches nothin
 
 `doctor` has no relay check. Signs that your computers cannot reach each other: `lightbulb team` shows them `· offline`, and receipts stay `queued` (`Not delivered yet: <computer> is offline.`). `~/.lightbulb/connect/daemon.log` has a line like `net: dial <key>: failed` (logged once, when a dial starts failing). See the [relay outage runbook](https://github.com/TheLightbulbCompany/cli/blob/main/docs/runbooks.md#relay-outage).
 
-`lightbulb relay` may print `Our relay list was refused: …`. That is about Lightbulb's optional signed relay list; the relays shown above it are still the ones in use.
-
 ## A teammate's message did not arrive
 
 Ask the sender to run `lightbulb receipt <id>` (the id is in what `send` printed). An agent can call `message_receipt`. What the answer means:
@@ -101,11 +99,8 @@ Ask the sender to run `lightbulb receipt <id>` (the id is in what `send` printed
 |---|---|---|
 | `Not delivered yet: <computer> is offline. Lightbulb keeps trying until <time>.` | The other Mac is asleep or unreachable. | Wake it. Lightbulb retries for 24 hours. |
 | `… has not confirmed it yet` | It was sent; the other Mac has not answered. | Wait, or check the relay (above). |
-| `Sent. <person> has to allow it first (they see a prompt).` | Held: the receiver has not allowed you yet. | The receiver runs `lightbulb held`, then `approve H<n>`. |
 | `Sent. Stored on <computer>.` | On their Mac, waiting for the session. | The session reads it at its next step; an idle session when someone next types to it. See [how a message reaches a session](https://github.com/TheLightbulbCompany/cli/blob/main/docs/agents.md#how-a-message-reaches-a-session). |
 | `Delivered …` / `Read …` | The session got it. | Nothing. |
-| `Not sent: they declined it.` | The receiver clicked Decline. | Ask them. |
-| `Not sent: they do not take messages from you.` | Their policy refuses you. | They run `lightbulb policy <you> accept`. |
 | `Not sent: loop limit: …` / `paused after … agent replies` | A loop limit (see [security](/docs/agent-network-security)). | A person sends the next message, or waits 10 minutes. |
 | `Not sent: that computer is not in your team.` | The address is not a member. | Check `lightbulb team`. |
 | `Not delivered: the other computer could not be reached for 24 hours.` | Expired. | Send it again. |
@@ -118,11 +113,9 @@ If the receiver cannot see the sender's session at all, check `lightbulb who --a
 |---|---|---|
 | `This invite link does not work. Ask for a new one.` | The line was cut or changed when pasted; or the invite was replaced (`invite --new`), ended by a `remove`, or was a one-time invite already used. | Ask for a fresh line (`lightbulb invite`), and paste it whole, in single quotes. |
 | `This invite link has expired. Ask for a new one.` | One-time invites last 24 hours, others 7 days. | Ask for a fresh line. |
-| `No one from this network is online right now. …` | Neither the inviter nor the founder or admins listed on it are reachable. | Ask them to open their laptop, then run the same command again. |
-| `No one has answered yet. Run the same command again to keep asking.` | The person did not click Allow in 10 minutes. | Run it again, and tell them to look for the dialog or run `lightbulb held`. |
+| `No one from this network is online right now. …` | None of the members listed on it are reachable. | Ask them to open their laptop, then run the same command again. |
 | `The name "sam" is already used in this network. …` | Another member has that name. | Use the name it suggests, or another `--name`. |
 | `You are in "<team>". Leave it first: lightbulb leave` | This computer is already in a team. | `lightbulb leave`, then join. |
-| `Your request to join was declined.` | They clicked Decline. | Ask them. |
 | `That name has characters Lightbulb cannot show. …` | The name or computer name has control characters. | Use a plain name. |
 
 ## Reporting an issue

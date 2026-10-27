@@ -5,6 +5,8 @@ import path from "path";
 import { LAUNCH_HOSTS, PRODUCT_DOMAINS, ROOT_DOMAIN, SITE_URL } from "./src/lib/domain";
 import { AWS_REGION } from "./src/lib/aws";
 
+const ENGINE_INSTALLER = "https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh";
+
 // AgentCore Browser's DCV live view: the presigned URL the backend mints is
 // fetched over https and then upgraded to wss on the SAME host, so connect-src
 // needs both schemes. Region from the app's own env-backed constant — never a
@@ -197,13 +199,6 @@ const nextConfig: NextConfig = {
         source: "/.well-known/apple-app-site-association",
         headers: [{ key: "Content-Type", value: "application/json" }],
       },
-      // `curl -fsSL <site>/install | sh` (public/install.sh, via the rewrite
-      // below). Plain text so a browser shows the script for reading instead
-      // of downloading it.
-      ...["/install", "/install.sh"].map((source) => ({
-        source,
-        headers: [{ key: "Content-Type", value: "text/plain; charset=utf-8" }],
-      })),
     ];
   },
 
@@ -220,6 +215,13 @@ const nextConfig: NextConfig = {
         permanent: true,
       })),
       ...RETIRED_PAGE_REDIRECTS.map((r) => ({ ...r, permanent: true })),
+      // `curl -fsSL <site>/install | sh` installs the network engine: the
+      // engine repo's own installer (curl -L follows the redirect).
+      ...["/install", "/install.sh"].map((source) => ({
+        source,
+        destination: ENGINE_INSTALLER,
+        permanent: false,
+      })),
     ];
   },
 
@@ -281,7 +283,6 @@ const nextConfig: NextConfig = {
       })),
       afterFiles: [
         ...localDevApiProxy,
-        { source: "/install", destination: "/install.sh" },
         // DCV 1.14 resolves its worker base relative to the /chat document,
         // even though BrowserLiveView supplies a leading slash. Keep decoder
         // requests on the copied SDK assets instead of returning the app 404.

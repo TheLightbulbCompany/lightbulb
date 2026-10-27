@@ -53,6 +53,7 @@ export function Footer() {
               <h4>Product</h4>
               <Link href="/#workspace">The workspace</Link>
               <Link href="/marketplace">Marketplace</Link>
+              <Link href="/network">Free agent network</Link>
               <Link href="/docs">Docs</Link>
               <Link href="/compare">Compare</Link>
               <Link href="/pricing">Pricing</Link>

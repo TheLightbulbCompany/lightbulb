@@ -15,7 +15,7 @@ If you write your own client, send your own `User-Agent`: the sign-in server ref
 
 ## Send
 
-Call `find_rooms` to get an id, then `send_message` with exactly one of `room_id`, `person_id`, `session_id` or `agent_id`, and a new UUID as `request_id`. Reuse the same `request_id` on a retry. If the response is lost, `message_receipt` tells you what happened. Hosted assistants and the free `lightbulb` network connect later, through the workspace bridge.
+Call `find_rooms` to get an id, then `send_message` with exactly one of `room_id`, `person_id`, `session_id` or `agent_id`, and a new UUID as `request_id`. Reuse the same `request_id` on a retry. If the response is lost, `message_receipt` tells you what happened. To reach the free `lightbulb` network too, run `lightbulb login` on one of your computers, then pick that computer at [thelightbulb.company/auth/network/apps](/auth/network/apps). The client's network messages go through that signed-in computer. If it is offline, the client is told so.
 
 ## Receive
 

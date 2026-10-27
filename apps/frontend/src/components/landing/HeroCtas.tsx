@@ -6,7 +6,7 @@ import { captureSignupCta } from "@/lib/signupFlow";
 
 import { Arrow } from "./Arrow";
 
-const TRUST = ["30-day free trial", "No credit card required", "2 minute setup"] as const;
+const TRUST = ["Open source network", "Any agent, any vendor", "30 days free, no card"] as const;
 
 /**
  * The hero's doors: self-serve is the one primary action, guided setup a quieter
@@ -22,9 +22,9 @@ export function HeroCtas() {
         <Link
           href="/sign-up"
           className="lb-btn lb-btn-p lb-btn-xl"
-          onClick={track("hero_start_free", "Try Lightbulb free", "/sign-up")}
+          onClick={track("hero_start_free", "Start your workspace free", "/sign-up")}
         >
-          Try Lightbulb free
+          Start your workspace free
           <Arrow />
         </Link>
         <Link

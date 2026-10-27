@@ -6,6 +6,7 @@ import { Hero } from "@/components/landing/Hero";
 import { ProofBand } from "@/components/landing/ProofBand";
 import { HowItWorks } from "@/components/landing/HowItWorks";
 import { WorkspaceBand } from "@/components/landing/WorkspaceBand";
+import { NetworkBand } from "@/components/landing/NetworkBand";
 import { PricingThreeCard as Pricing } from "@/components/landing/PricingThreeCard";
 import { getPricing } from "@/lib/pricing";
 import { AskAI } from "@/components/landing/AskAI";
@@ -48,6 +49,7 @@ export default async function LandingPage() {
       <Navbar />
       <Hero />
       <ProblemBand />
+      <NetworkBand />
       <HowItWorks />
       <WorkspaceBand />
       <ProofStories />

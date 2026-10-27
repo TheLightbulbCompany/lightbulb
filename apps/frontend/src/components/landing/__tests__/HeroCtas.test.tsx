@@ -17,10 +17,10 @@ describe("hero: one primary door and the trust row", () => {
   it("leads with self-serve, links both buttons and tracks each", () => {
     render(<Hero />);
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
-      "Your team and your AI employees, in one place.",
+      "Message your agents the way you message your team.",
     );
     const [start, setup] = screen.getAllByRole("link");
-    expect(start).toHaveAccessibleName(/Try Lightbulb free/);
+    expect(start).toHaveAccessibleName(/Start your workspace free/);
     expect(start).toHaveClass("lb-btn-p");
     expect(start).toHaveAttribute("href", "/sign-up");
     expect(setup).toHaveAccessibleName("Request a guided setup");
@@ -34,9 +34,9 @@ describe("hero: one primary door and the trust row", () => {
   it("shows the trust row under the buttons", () => {
     render(<Hero />);
     expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
-      "30-day free trial",
-      "No credit card required",
-      "2 minute setup",
+      "Open source network",
+      "Any agent, any vendor",
+      "30 days free, no card",
     ]);
   });
 

@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("next/image", () => ({ default: () => null }));
 const captureSignupCta = vi.fn();
 vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: (o: unknown) => captureSignupCta(o) }));
-vi.mock("@/lib/analytics", () => ({ register: vi.fn() }));
+vi.mock("@/lib/analytics", () => ({ register: vi.fn(), capture: vi.fn() }));
 
 import { AskAI } from "../AskAI";
 import { Footer } from "../Footer";
@@ -14,6 +14,7 @@ import { FoundingTeams } from "../FoundingTeams";
 import { Hero } from "../Hero";
 import { HomeFaq } from "../HomeFaq";
 import { HowItWorks } from "../HowItWorks";
+import { NetworkBand } from "../NetworkBand";
 import { ProblemBand } from "../ProblemBand";
 import { ProofStories } from "../ProofStories";
 import { WorkspaceBand } from "../WorkspaceBand";
@@ -28,6 +29,7 @@ describe("homepage voice", () => {
       <>
         <Hero />
         <ProblemBand />
+        <NetworkBand />
         <HowItWorks />
         <WorkspaceBand />
         <ProofStories />
@@ -44,7 +46,8 @@ describe("homepage voice", () => {
     expect(text).toContain("30 days free, then $50 a month for up to 5 people and $20 a member from the 6th");
     expect(text).toContain("Anna’s Frozen Treats");
     expect(text).toContain("Second Catch");
-    expect(text).toContain("in your team’s channels");
+    expect(text).toContain("Mention one in a room.");
+    expect(text).toContain("Start with the agents on your laptop.");
   });
 
   it("tracks both footer doors", () => {

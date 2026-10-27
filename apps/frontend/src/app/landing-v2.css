@@ -451,3 +451,27 @@
 .ld-page .lb-faq-item dt { font-weight: 600; color: var(--lb-ink); }
 .ld-page .lb-faq-item dd { margin: 0.4rem 0 0; line-height: 1.65; color: var(--lb-ink-soft); }
 .ld-page .lb-faq-item dd a { text-decoration: underline; }
+
+/* ---- SPIKE: network band (27 Oct 2026) ---- */
+.ld-page .lb-install { margin: 1.6rem auto 0; max-width: 640px; }
+.ld-page .lb-install pre { background: var(--cream-deeper, #efe9da); border-color: var(--rule); white-space: pre-wrap; word-break: break-all; padding-right: 92px; text-align: left; }
+
+/* ---- SPIKE: direction A hero (27 Oct 2026) ---- */
+.ld-page .lb-hero h1 { text-wrap: balance; }
+
+/* Two layers: the network card and the workspace card. */
+.ld-page .lb-layers { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(16px,1.6vw,26px); margin-top: clamp(36px,4vw,60px); text-align: left; }
+@media (max-width: 880px) { .ld-page .lb-layers { grid-template-columns: 1fr; max-width: 520px; margin-inline: auto; } }
+.ld-page .lb-layer { background: var(--cream); border: 1px solid var(--rule); border-radius: 16px; padding: 1.6rem 1.5rem 1.7rem; box-shadow: 0 18px 40px -32px rgba(15,26,43,0.5); display: flex; flex-direction: column; gap: 0.9rem; }
+.ld-page .lb-layer-k { margin: 0; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.02em; color: var(--lb-ink-faint); }
+.ld-page .lb-layer h3 { margin: 0; font-family: var(--font-lora-serif), Georgia, serif; font-weight: 500; font-size: 1.3rem; letter-spacing: -0.003em; }
+.ld-page .lb-layer ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.55rem; }
+.ld-page .lb-layer li { font-size: 0.95rem; line-height: 1.55; color: var(--lb-ink-soft); padding-left: 1rem; position: relative; }
+.ld-page .lb-layer li::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 5px; height: 5px; border-radius: 50%; background: var(--brass, #B68235); }
+.ld-page .lb-layer .lb-install { margin: 0; max-width: none; }
+.ld-page .lb-layer .lb-price-free { margin: 0; text-align: left; }
+.ld-page .lb-layer .lb-btn { align-self: flex-start; margin-top: auto; }
+.ld-page .lb-install pre { text-transform: none; letter-spacing: 0; font-size: 0.82rem; line-height: 1.6; }
+.ld-page .lb-install button { text-transform: none; letter-spacing: 0.04em; }
+.ld-page .lb-layer .lb-price-free a { display: inline-flex; align-items: center; gap: 0.4rem; }
+.ld-page .lb-layer-p { margin: 0; font-size: 0.98rem; line-height: 1.6; color: var(--lb-ink-soft); }

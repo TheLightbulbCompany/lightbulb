@@ -117,6 +117,9 @@ export function Navbar() {
         <Link href="/blog" data-section="blog" className={initialActive("blog")}>
           Blog
         </Link>
+        <Link href="/network" data-section="network" className={initialActive("network")}>
+          Network
+        </Link>
         <Link href="/pricing" data-section="pricing" className={initialActive("pricing")}>
           Pricing
         </Link>

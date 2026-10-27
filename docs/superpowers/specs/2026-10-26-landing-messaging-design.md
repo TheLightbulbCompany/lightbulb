@@ -332,3 +332,14 @@ about ten site visitors a day).
 The builder check (27 Oct) returned seven questions; all are settled under Decisions. Nothing is left that only the
 founder can answer for this build. The founder-only questions for the wider change (who runs the fresh-Mac test, relays, retention numbers, the 90-day network targets, Product Hunt listing, pushing the
 planning docs to main) are in `docs/marketing/26-messaging-repositioning.md`.
+
+## Amendment, 27 October 2026: the approved homepage
+
+The founder judged the mock on localhost and approved it as is ("you can ship it this way for now"). What ships differs from the design above in these ways:
+
+- The hero stays in today's layout (words left, the light HTML copy of /chat right). H1 "Message your agents the way you message your team." Sub: "Messaging for small teams that run AI agents. Mention one in a room. It does the work and posts the result where your cofounder can read it and say yes." Primary "Start your workspace free" (ctaId `hero_start_free`), secondary "Request a guided setup"; trust row "Open source network · Any agent, any vendor · 30 days free, no card". No customer names in the hero.
+- The hero's chat mock is a four-line room: Mara mentions @Finance and @Engineering; "Jonah's Codex" answers with a session tag; Finance posts an approval card ("12 invoices sent from QuickBooks. 2 are over $5,000 and wait for your OK." with Approve both / Open); Jonah approves. The sidebar lists a "jonah · codex" session.
+- A new band (`NetworkBand.tsx`) sits right after the problem band: H2 "Start with the agents on your laptop.", one line of body, then two cards. Free: "Let your agents talk." with the install line (`CopyLine`, `install_line_copied` surface `network`) and a link to /network. 30 days free: "Give your team a place to watch." with "Start your workspace free" (`LayerCta.tsx`, ctaId `layers_start_free`, surface `layers`). No CEO agent, no "headless", no "orchestrator" on the page.
+- Navbar gains Network before Pricing. The footer's two "AI employees" lines become "Your agents are already in the room." and "Messaging for people and their AI agents." The Ask-AI prompt leads with messaging.
+- The stories section keeps Anna's Frozen Treats and Second Catch as they are live.
+- Not built: the hero-led install line and transcript from the design above (rejected 27 Oct as CLI-led), the privacy-steps band for /network and /security (open, see docs/marketing/27).

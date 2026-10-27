@@ -50,6 +50,28 @@ export function sessionState(s: Pick<LocalSession, "status" | "endedOnPurpose" |
   return s.terminal === "attach" ? "background" : "here";
 }
 
+/** Session notifications per kind (GET/PUT /users/me/prefs `sessionNotifications`). */
+export type NotifyLevel = "off" | "badge" | "banner";
+export type SessionNotifications = {
+  waiting: NotifyLevel; finished: NotifyLevel; attention: NotifyLevel; onlyUnfocused: boolean; sound: boolean;
+};
+export const SESSION_NOTIFICATION_DEFAULTS: SessionNotifications = {
+  waiting: "banner", finished: "banner", attention: "badge", onlyUnfocused: false, sound: true,
+};
+
+/** The Dock / tab count: your own sessions waiting on a prompt or holding a hand-off note, each
+ *  counted unless that kind is off. */
+export function sessionsNeedingYou(
+  sessions: readonly Pick<LocalSession, "humanUserId" | "status" | "note">[],
+  userId: string | null | undefined,
+  prefs: SessionNotifications = SESSION_NOTIFICATION_DEFAULTS,
+): number {
+  return sessions.filter((s) => s.humanUserId === userId && (
+    s.status === "waiting-approval" ? prefs.waiting !== "off"
+      : s.status !== "ended" && s.status !== "offline" && Boolean(s.note?.trim()) && prefs.attention !== "off"
+  )).length;
+}
+
 /** One label per state. A running one says what it does now (`sessionStatus`): "Working", "Idle". */
 export const sessionStateLabel = (s: LocalSession): string => {
   const state = sessionState(s);

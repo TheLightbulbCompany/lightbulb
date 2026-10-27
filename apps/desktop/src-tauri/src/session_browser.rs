@@ -226,7 +226,7 @@ async fn bind_or_report(port: u16, report: impl FnOnce(String)) -> Option<TcpLis
 pub async fn serve(app: tauri::AppHandle) {
     let Some(listener) = bind_or_report(PORT, |text| {
         tauri::async_runtime::spawn(async move {
-            crate::notify::native_notify("Lightbulb".into(), Some(text), None, None, None).await;
+            crate::notify::show("Lightbulb".into(), Some(text), None, None, None).await;
         });
     })
     .await

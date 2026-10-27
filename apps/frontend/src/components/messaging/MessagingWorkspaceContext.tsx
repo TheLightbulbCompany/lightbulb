@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { canChangeListenMode, cardReplyRequest, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, cardReplyRequest, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionsNeedingYou, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -14,6 +14,7 @@ import { resolveCeoAgentId } from "@/components/getstarted/getStartedFirstTask";
 import { activateMessagesPanel, getWorkspaceSnapshot, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
 import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
+import { useSessionNotificationPrefs } from "@/components/settings/SessionNotificationsCard";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { capture } from "@/lib/analytics";
 import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
@@ -1034,6 +1035,9 @@ export function MessagingWorkspaceProvider({
   }, [openNotificationTarget, openSession]);
 
   const unreadTotal = useMemo(() => rooms.rooms.reduce((sum, room) => sum + (room.muted ? 0 : room.unreadCount), 0), [rooms.rooms]);
+  // The Dock and tab count also carry your own sessions waiting on you (gap 8).
+  const { prefs: notifyPrefs } = useSessionNotificationPrefs();
+  const needingYou = useMemo(() => sessionsNeedingYou(workspaceSessions.sessions, userId, notifyPrefs), [workspaceSessions.sessions, userId, notifyPrefs]);
 
   return <MessagingWorkspaceContext.Provider value={{
     activeRoomId: rooms.activeRoomId,
@@ -1056,7 +1060,7 @@ export function MessagingWorkspaceProvider({
     explicitPickCount,
   }}><MessageNotifications activeRoomId={sessionChatRoomId ?? rooms.activeRoomId} threadId={threadId} roomVisible={sessionChatRoomId ? true : roomVisible} repliesInline={!!sessionChatRoomId} rooms={rooms.rooms}
     onOpen={openNotificationTarget} activeSessionId={sessionFocus?.sessionId ?? null}
-    onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}
+    onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal + needingYou} />{children}
     {selectRoomError && <div role="alert" className="px-4 py-2 text-ui text-err">{selectRoomError}{" "}
       <button type="button" className="underline underline-offset-4" onClick={() => setSelectErrorDismissed(rooms.selectRoomError)}>Dismiss</button>
     </div>}</MessagingWorkspaceContext.Provider>;

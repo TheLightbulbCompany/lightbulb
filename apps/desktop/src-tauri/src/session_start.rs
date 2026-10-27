@@ -374,7 +374,7 @@ pub async fn start(
             .map_err(|e| ("LAUNCH_FAILED", format!("The session didn't start: {e}")))?;
         // Started from elsewhere with no window: tell the owner at this Mac (spec §5.2).
         let label = if tool == "codex" { "Codex" } else { "Claude Code" };
-        let _ = crate::notify::native_notify(
+        let _ = crate::notify::show(
             format!("{label} started in {place}"),
             Some("End it from its panel in Lightbulb.".into()),
             Some(format!("start-{start_id}")),

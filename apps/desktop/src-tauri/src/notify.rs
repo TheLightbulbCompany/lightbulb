@@ -125,18 +125,59 @@ pub fn ask_once(wait: std::time::Duration) {
     let _ = wait;
 }
 
-/// Shows a native notification; `true` once the OS accepted it with permission
-/// to show it. `tag` is the request identifier (a repeat replaces the earlier
-/// banner, like the browser API) and comes back on `notification:clicked`.
-/// `subtitle` and `thread_id` mirror the phone push: the conversation kind line,
-/// and the key macOS groups one conversation's banners under.
+/// The "only when Lightbulb isn't focused" setting: the banner is held back while one of the
+/// app's windows is focused.
+pub(crate) fn held_for_focus(only_unfocused: bool, app_focused: bool) -> bool {
+    only_unfocused && app_focused
+}
+
+/// The webview's banner: `post`, unless `only_unfocused` (the person's "only when Lightbulb isn't
+/// focused") and one of the app's windows is focused. A held-back banner answers `true` — handled
+/// on purpose — so the webview does not fall back to a toast. `sound` false is a silent banner; an
+/// older webview sends neither new field and gets today's banner with sound.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn native_notify(
+    app: AppHandle,
     title: String,
     body: Option<String>,
     tag: Option<String>,
     subtitle: Option<String>,
     thread_id: Option<String>,
+    sound: Option<bool>,
+    only_unfocused: Option<bool>,
+) -> bool {
+    use tauri::Manager;
+    let focused = app.windows().values().any(|window| window.is_focused().unwrap_or(false));
+    if held_for_focus(only_unfocused.unwrap_or(false), focused) {
+        return true;
+    }
+    post(title, body, tag, subtitle, thread_id, sound.unwrap_or(true)).await
+}
+
+/// A banner this process posts itself (pickup, start, resume, agent Chrome), always with sound.
+pub async fn show(
+    title: String,
+    body: Option<String>,
+    tag: Option<String>,
+    subtitle: Option<String>,
+    thread_id: Option<String>,
+) -> bool {
+    post(title, body, tag, subtitle, thread_id, true).await
+}
+
+/// Shows a native notification; `true` once the OS accepted it with permission
+/// to show it. `tag` is the request identifier (a repeat replaces the earlier
+/// banner, like the browser API) and comes back on `notification:clicked`.
+/// `subtitle` and `thread_id` mirror the phone push: the conversation kind line,
+/// and the key macOS groups one conversation's banners under.
+async fn post(
+    title: String,
+    body: Option<String>,
+    tag: Option<String>,
+    subtitle: Option<String>,
+    thread_id: Option<String>,
+    sound: bool,
 ) -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -151,7 +192,7 @@ pub async fn native_notify(
             thread_id.as_deref(),
             &identifier,
             None,
-            true,
+            sound,
         ) {
             Some(accepted) => accepted.await.unwrap_or(false),
             None => false,
@@ -159,7 +200,7 @@ pub async fn native_notify(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (title, body, tag, subtitle, thread_id);
+        let _ = (title, body, tag, subtitle, thread_id, sound);
         false
     }
 }
@@ -485,6 +526,15 @@ mod tests {
         assert_eq!(session_click("message-123", &with_session), None);
         assert!(!act("lightbulb.request.r1".into(), "com.apple.UNNotificationDismissActionIdentifier", String::new(), info));
         assert_eq!((REQUEST_CATEGORY, ALLOW, DECLINE), ("lightbulb.request", "allow", "decline"));
+    }
+
+    /// "Only when Lightbulb isn't focused" holds a banner back only while the app is focused.
+    #[test]
+    fn notify_focus_gate() {
+        assert!(held_for_focus(true, true));
+        assert!(!held_for_focus(true, false));
+        assert!(!held_for_focus(false, true));
+        assert!(!held_for_focus(false, false));
     }
 
     #[cfg(target_os = "macos")]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSendToSession, endedWhy, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionState, sessionStateAction, sessionStateLabel, sessionStatus, sessionTitle, sessionWaitingLine, sessionToolName, sessionAgentName, SESSION_AGENTS, sessionUnread, workspaceSections } from "./localSessionLabels";
+import { canSendToSession, endedWhy, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionState, sessionStateAction, sessionStateLabel, sessionStatus, sessionTitle, sessionWaitingLine, sessionsNeedingYou, SESSION_NOTIFICATION_DEFAULTS, sessionToolName, sessionAgentName, SESSION_AGENTS, sessionUnread, workspaceSections } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
 const base = { capabilities: { sendMode: "queue" }, controlUnavailableReason: null, capabilitiesVerified: true } as unknown as LocalSession;
@@ -203,5 +203,24 @@ describe("the sidebar state table (spec 2026-10-26 (e))", () => {
     expect(sessionWaitingLine({ status: "idle", note: "run lightbulb login" })).toBe("run lightbulb login");
     expect(sessionWaitingLine({ status: "idle" })).toBeNull();
     expect(sessionWaitingLine({ status: "ended", note: "stale" })).toBeNull();
+  });
+});
+
+describe("sessionsNeedingYou", () => {
+  const row = (humanUserId: string, status: LocalSession["status"], note?: string) => ({ humanUserId, status, note });
+  const rows = [
+    row("me", "waiting-approval"),
+    row("me", "idle", "run lightbulb login"),
+    row("me", "busy"),
+    row("me", "ended", "a stale note"),
+    row("other", "waiting-approval"),
+  ];
+  it("counts your own prompts and notes, not a teammate's or an ended one", () => {
+    expect(sessionsNeedingYou(rows, "me")).toBe(2);
+    expect(sessionsNeedingYou(rows, null)).toBe(0);
+  });
+  it("leaves out a kind turned off; badge-only still counts", () => {
+    expect(sessionsNeedingYou(rows, "me", { ...SESSION_NOTIFICATION_DEFAULTS, waiting: "off" })).toBe(1);
+    expect(sessionsNeedingYou(rows, "me", { ...SESSION_NOTIFICATION_DEFAULTS, waiting: "badge", attention: "off" })).toBe(1);
   });
 });

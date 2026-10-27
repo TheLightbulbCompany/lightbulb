@@ -202,6 +202,22 @@ describe("shared session attention", () => {
     await act(async () => { emit(attention); });
     expect(mocks.nativeNotify).not.toHaveBeenCalled();
   });
+
+  it("follows the owner's prefs: no banner below Banner; only-unfocused holds it while focused", async () => {
+    const at = (eventId: string, extra: object) =>
+      ({ ...attention, eventId, payload: { ...attention.payload, ...extra } }) as LiveEvent;
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
+    await act(async () => {
+      emit(at("a", { level: "badge" }));
+      emit(at("b", { level: "off" }));
+      emit(at("c", { level: "banner", onlyUnfocused: true }));
+    });
+    expect(mocks.nativeNotify).not.toHaveBeenCalled();
+    expect(mocks.notifySuccess).not.toHaveBeenCalled();
+    await act(async () => { emit(at("d", { level: "banner", sound: false, onlyUnfocused: false })); });
+    expect(mocks.nativeNotify.mock.calls[0][2]).toMatchObject({ tag: "d", sound: false, onlyUnfocused: false });
+  });
 });
 
 it("a click on a Mac request notification opens the session it is about", () => {

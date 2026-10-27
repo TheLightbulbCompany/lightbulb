@@ -1,28 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
 
-import { register } from "@/lib/analytics";
-import { headlineVariantProps, type HeadlineVariant } from "@/lib/headlineVariant";
 import { captureSignupCta } from "@/lib/signupFlow";
 
 import { Arrow } from "./Arrow";
 
-const TRUST = ["30-day free trial", "No credit card required", "2 minute setup"] as const;
+const TRUST = ["Open source network", "Any agent, any vendor", "30 days free, no card"] as const;
 
 /**
  * The hero's doors: self-serve is the one primary action, guided setup a quieter
- * second, and the trust row sits right under them. The cookie is set by Hero's
- * inline script; this re-registers it as a backstop.
+ * second, and the trust row sits right under them.
  */
-export function HeroCtas({ variant }: { variant: HeadlineVariant }) {
-  useEffect(() => {
-    register({ headline_variant: variant, ...headlineVariantProps() });
-  }, [variant]);
-
+export function HeroCtas() {
   const track = (ctaId: string, label: string, destination: string) => () =>
-    captureSignupCta({ ctaId, label, surface: "hero", destination, properties: { headline_variant: variant } });
+    captureSignupCta({ ctaId, label, surface: "hero", destination });
 
   return (
     <>
@@ -30,9 +22,9 @@ export function HeroCtas({ variant }: { variant: HeadlineVariant }) {
         <Link
           href="/sign-up"
           className="lb-btn lb-btn-p lb-btn-xl"
-          onClick={track("hero_start_free", "Try Lightbulb free", "/sign-up")}
+          onClick={track("hero_start_free", "Start your workspace free", "/sign-up")}
         >
-          Try Lightbulb free
+          Start your workspace free
           <Arrow />
         </Link>
         <Link

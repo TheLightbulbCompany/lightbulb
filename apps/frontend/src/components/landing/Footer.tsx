@@ -20,7 +20,7 @@ export function Footer() {
         <div className="lb-foot-top">
           <div className="lb-foot-cta">
             <h2>
-              Bring your team. <em>Your AI employees are already in the room.</em>
+              Bring your team. <em>Your agents are already in the room.</em>
             </h2>
             <div className="lb-foot-btns">
               <Link
@@ -86,7 +86,7 @@ export function Footer() {
           <span>
             © {new Date().getFullYear()} Isol8 Inc., doing business as Lightbulb AI. All rights reserved.
           </span>
-          <span>Your team and your AI employees, in one place.</span>
+          <span>Messaging for people and their AI agents.</span>
         </div>
       </div>
     </footer>

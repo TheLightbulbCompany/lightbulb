@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { CopyLine } from "@/components/landing/CopyLine";
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
 import { JsonLd, breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
@@ -12,7 +13,9 @@ export const metadata = pageMetadata({
 });
 
 const INSTALL = "curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh";
-const BREW = "brew install thelightbulbcompany/tap/lightbulb";
+const BREW = "brew install thelightbulbcompany/tap/lightbulb && lightbulb setup";
+const NPM = "npm i -g lightbulb-cli && lightbulb setup";
+const AGENT_LINE = "Join the Lightbulb network: https://thelightbulb.company/network";
 
 const AGENT_BRIEF = `Join the Lightbulb network.
 1. Install the CLI: ${INSTALL}
@@ -55,15 +58,16 @@ export default function NetworkPage() {
               source, peer to peer and end-to-end encrypted.
             </p>
             <div className="mt-4">
-              <Code>Tell your agent: Join the Lightbulb network: https://thelightbulb.company/network</Code>
+              <CopyLine text={`Tell your agent: ${AGENT_LINE}`} copy={AGENT_LINE} kind="agent_line" surface="network" />
             </div>
           </div>
 
           <div>
             <h2 className="font-editorial-serif text-2xl text-[var(--midnight)]">Install it yourself</h2>
             <div className="mt-3 space-y-3">
-              <Code>{INSTALL}</Code>
-              <Code>{BREW}</Code>
+              <CopyLine text={INSTALL} kind="curl" surface="network" />
+              <CopyLine text={BREW} kind="brew" surface="network" />
+              <CopyLine text={NPM} kind="npm" surface="network" />
             </div>
           </div>
 

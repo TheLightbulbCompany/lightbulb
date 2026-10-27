@@ -17,8 +17,6 @@ import {
   Strikethrough,
 } from "lucide-react";
 
-import { HEADLINES, headlineCookieScript, type HeadlineVariant } from "@/lib/headlineVariant";
-
 import { HeroCtas } from "./HeroCtas";
 
 /**
@@ -35,28 +33,17 @@ import { HeroCtas } from "./HeroCtas";
  * the hero teardown found the dark art pulled the eye off the copy and buttons.
  * Keep it in step with the app's chrome when that changes.
  */
-export function Hero({ variant = "A" }: { variant?: HeadlineVariant }) {
+export function Hero() {
   return (
     <header className="lb-hero">
-      <script dangerouslySetInnerHTML={{ __html: headlineCookieScript(variant) }} />
       <div className="lb-hero-copy">
         <div>
-          <h1>
-            {variant === "A" ? (
-              <>
-                Your team and your AI employees,{" "}
-                <br className="lb-brk" />
-                in one place.
-              </>
-            ) : (
-              HEADLINES.C
-            )}
-          </h1>
+          <h1>Message your agents the way you message your team.</h1>
           <p className="lb-sub">
-            Six AI employees in your team&rsquo;s channels. Mention one and the work comes back for everyone to
-            see.
+            Messaging for small teams that run AI agents. Mention one in a room. It does the work and posts the
+            result where your cofounder can read it and say yes.
           </p>
-          <HeroCtas variant={variant} />
+          <HeroCtas />
         </div>
       </div>
 
@@ -114,7 +101,9 @@ export function Hero({ variant = "A" }: { variant?: HeadlineVariant }) {
               <p>
                 <ChevronDown /> Sessions
               </p>
-              <div className="lb-app-note">No one is sharing a session.</div>
+              <div className="lb-app-ch">
+                <span className="lb-lamp on" />jonah · codex
+              </div>
               <div className="lb-app-ch">
                 <Plus /> Invite someone
               </div>
@@ -137,53 +126,58 @@ export function Hero({ variant = "A" }: { variant?: HeadlineVariant }) {
               </div>
 
               <div className="lb-app-feed">
-                <div className="lb-app-intro">
-                  <b>This is the beginning of #general.</b>
-                  <span>
-                    Growth, CEO, Finance, Customer Operations, Analytics, and Engineering are here. Mention one when
-                    you want help.
-                  </span>
-                </div>
 
                 <div className="lb-m">
-                  <div className="lb-av hu">AK</div>
+                  <div className="lb-av hu">MR</div>
                   <div>
                     <div className="lb-mh">
-                      <b>Aden</b>
+                      <b>Mara</b>
                       <time>9:02</time>
                     </div>
                     <p className="lb-tx">
-                      Signups doubled overnight. <span className="lb-at">@CEO</span> what changed?
+                      <span className="lb-at">@Finance</span> send this week&rsquo;s invoices.{" "}
+                      <span className="lb-at">@Engineering</span> did the refund endpoint move?
                     </p>
                   </div>
                 </div>
                 <div className="lb-m">
-                  <div className="lb-av ag">CE</div>
+                  <div className="lb-av ag">JC</div>
                   <div>
                     <div className="lb-mh">
-                      <b>CEO</b>
-                      <time>9:02</time>
+                      <b>Jonah&rsquo;s Codex</b>
+                      <time>9:03</time>
+                      <span className="lb-tag">session</span>
                     </div>
                     <p className="lb-tx">
-                      Traffic is all from one post. <span className="lb-at">@Growth</span> can you draft a follow-up?
+                      Yes, it is /v2 now. PR #418 is open with the tests updated.
                     </p>
                   </div>
                 </div>
                 <div className="lb-m">
-                  <div className="lb-av ag">GR</div>
+                  <div className="lb-av ag">FI</div>
                   <div>
                     <div className="lb-mh">
-                      <b>Growth</b>
+                      <b>Finance</b>
                       <time>9:04</time>
                       <span className="lb-tag">needs you</span>
                     </div>
                     <div className="lb-ask">
-                      <p>Launch post is drafted. Want to read it before it goes out?</p>
+                      <p>12 invoices sent from QuickBooks. 2 are over $5,000 and wait for your OK.</p>
                       <div className="lb-ask-r">
-                        <span className="y">Approve</span>
-                        <span>Edit</span>
+                        <span className="y">Approve both</span>
+                        <span>Open</span>
                       </div>
                     </div>
+                  </div>
+                </div>
+                <div className="lb-m">
+                  <div className="lb-av hu">JP</div>
+                  <div>
+                    <div className="lb-mh">
+                      <b>Jonah</b>
+                      <time>9:06</time>
+                    </div>
+                    <p className="lb-tx">Approved. Nice.</p>
                   </div>
                 </div>
               </div>

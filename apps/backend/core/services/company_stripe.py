@@ -148,16 +148,23 @@ async def create_company_onboarding_link(*, account_id: str, update: bool = Fals
 
     ``update`` is for an account that already finished onboarding once: the
     guide's ``account_update`` use case is "subsequent corrections", and it
-    takes no ``configurations`` list."""
+    takes no ``configurations`` list.
+
+    With the developer configuration on, the call runs on the provisioning
+    preview, which REJECTS ``configurations`` ("Unknown field", dev sandbox
+    2026-10-27) and collects what the account's own configurations require; the
+    provisioning guide sends ``collection_options`` instead."""
     client = _client()
     urls = {"refresh_url": settings.STRIPE_COMPANY_REFRESH_URL, "return_url": settings.STRIPE_COMPANY_RETURN_URL}
+    onboarding = (
+        {"collection_options": {"fields": "currently_due"}, **urls}
+        if developer_config_on()
+        else {"configurations": onboarding_configurations(), **urls}
+    )
     use_case = (
         {"type": "account_update", "account_update": urls}
         if update
-        else {
-            "type": "account_onboarding",
-            "account_onboarding": {"configurations": onboarding_configurations(), **urls},
-        }
+        else {"type": "account_onboarding", "account_onboarding": onboarding}
     )
     link = await asyncio.to_thread(
         client.v2.core.account_links.create,

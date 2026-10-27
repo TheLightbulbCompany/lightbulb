@@ -838,16 +838,17 @@ def test_disconnect_api_key_row_needs_no_client_id(client, facts, monkeypatch):
     facts.assert_awaited_once_with("org_a")
 
 
-def test_status_reports_the_key_mode_so_the_card_can_label_test_data():
+def test_status_reports_the_key_mode_so_the_card_can_label_test_data(monkeypatch):
     """An api_key row bound with an rk_test_ key says livemode=False; a
-    Connect row (mode follows the platform) and an unbound row do not
-    pretend to know."""
+    Connect/created row follows the platform key's mode (a dev sandbox
+    account is not live); an unbound row does not pretend to know."""
     row = {"company_stripe_account_id": "acct_t", "company_stripe_source": "api_key", "company_stripe_livemode": False}
     assert mod._status_payload(row)["livemode"] is False
-    assert (
-        mod._status_payload({"company_stripe_account_id": "acct_c", "company_stripe_source": "connected"})["livemode"]
-        is True
-    )
+    connect = {"company_stripe_account_id": "acct_c", "company_stripe_source": "connected"}
+    monkeypatch.setattr(mod.settings, "STRIPE_SECRET_KEY", "sk_live_" + "x" * 24)
+    assert mod._status_payload(connect)["livemode"] is True
+    monkeypatch.setattr(mod.settings, "STRIPE_SECRET_KEY", "sk_test_" + "x" * 24)
+    assert mod._status_payload(connect)["livemode"] is False
     assert mod._status_payload({})["livemode"] is None
 
 

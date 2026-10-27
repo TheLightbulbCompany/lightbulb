@@ -116,7 +116,7 @@ git add benchmarks/beam/memory/agentcore.py benchmarks/beam/tests/test_agentcore
 - Test: `benchmarks/beam/tests/test_lightbulb_adapter.py`
 
 **Interfaces:**
-- Consumes: `MemoryApi`; the backend's benchmark endpoints from the engine plan Task 9: `POST /api/v1/memory/benchmark/projects {name}` → `{workspace_id}`; `POST /api/v1/memory/benchmark/ingest {workspace_id, idempotency_key, items}` → `{ingestion_id}`; `GET /api/v1/memory/benchmark/ingest/{ingestion_id}` → `{status, settled}`; `POST /api/v1/memory/recall {workspace_id, question, as_of, budget_tokens, limit}` → page. Header `Authorization: Bearer $LIGHTBULB_ADMIN_TOKEN`.
+- Consumes: `MemoryApi`; the backend's benchmark endpoints from the engine plan Task 9: `POST /api/v1/memory/benchmark/projects {name}` → `{workspace_id}`; `POST /api/v1/memory/benchmark/ingest {workspace_id, idempotency_key, items}` → `{ingestion_id}`; `GET /api/v1/memory/benchmark/ingest/{ingestion_id}` → `{status, settled}`; `POST /api/v1/memory/benchmark/recall {workspace_id, question, as_of, budget_tokens, limit}` → page. Header `Authorization: Bearer $LIGHTBULB_ADMIN_TOKEN`.
 - Produces: `class LightbulbApi(MemoryApi)` constructed with `(base_url: str, token: str)`.
 
 - [ ] **Step 1: Write the failing tests (`respx` to mock httpx)**

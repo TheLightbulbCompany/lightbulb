@@ -965,7 +965,8 @@ export class ApiStack extends cdk.Stack {
       type: "data",
       policy: cdk.Stack.of(this).toJsonString([
         {
-          Rules: [{ ResourceType: "index", Resource: indexes, Permission: ["aoss:CreateIndex", "aoss:DescribeIndex", "aoss:WriteDocument"] }],
+          // UpdateIndex: session search adds its fields to an existing index (PUT _mapping).
+          Rules: [{ ResourceType: "index", Resource: indexes, Permission: ["aoss:CreateIndex", "aoss:DescribeIndex", "aoss:UpdateIndex", "aoss:WriteDocument"] }],
           Principal: [indexer.role!.roleArn],
         },
         {

@@ -1147,3 +1147,59 @@ async def test_paused_automation_record_survives_a_whole_item_put_and_clears_per
     # Never resurrects a deleted row.
     assert not await repo.record_paused_automation("org_gone", agent_ids=["a"], routine_ids=[], token="t")
     assert await repo.get_workspace("org_gone") is None
+
+
+# ---------------------------------------------------------------------------
+# Per-agent Paperclip API keys (agent_keys map, Fernet)
+# ---------------------------------------------------------------------------
+
+
+async def test_agent_key_round_trip_is_encrypted_at_rest(repo):
+    await repo.put_workspace(_make_company("org_k"))
+
+    assert await repo.get_agent_key("org_k", "a1") is None
+    assert await repo.put_agent_key("org_k", "a1", "pcp_live_1") == "pcp_live_1"
+    assert await repo.get_agent_key("org_k", "a1") == "pcp_live_1"
+
+    raw = repo._table().get_item(Key={"user_id": "org_k"})["Item"]["agent_keys"]["a1"]
+    assert "pcp_live_1" not in raw
+
+    await repo.delete_agent_key("org_k", "a1")
+    assert await repo.get_agent_key("org_k", "a1") is None
+    await repo.delete_agent_key("org_k", "a1")  # idempotent
+
+
+async def test_put_agent_key_is_create_only_and_returns_the_winner(repo):
+    await repo.put_workspace(_make_company("org_k"))
+    await repo.put_agent_key("org_k", "a1", "first")
+
+    assert await repo.put_agent_key("org_k", "a1", "second") == "first"
+    assert await repo.get_agent_key("org_k", "a1") == "first"
+
+
+async def test_put_agent_key_overwrites_an_undecryptable_key(repo):
+    await repo.put_workspace(_make_company("org_k"))
+    repo._table().update_item(
+        Key={"user_id": "org_k"},
+        UpdateExpression="SET agent_keys = :m",
+        ExpressionAttributeValues={":m": {"a1": "not-a-fernet-token"}},
+    )
+
+    assert await repo.get_agent_key("org_k", "a1") is None
+    assert await repo.put_agent_key("org_k", "a1", "fresh") == "fresh"
+    assert await repo.get_agent_key("org_k", "a1") == "fresh"
+
+
+async def test_put_agent_key_without_a_workspace_row_writes_nothing(repo):
+    assert await repo.put_agent_key("org_none", "a1", "k") is None
+    assert "Item" not in repo._table().get_item(Key={"user_id": "org_none"})
+
+
+async def test_put_workspace_carries_agent_keys_forward(repo):
+    await repo.put_workspace(_make_company("org_k"))
+    await repo.put_agent_key("org_k", "a1", "k1")
+
+    ws = await repo.get_workspace("org_k")
+    await repo.put_workspace(ws)
+
+    assert await repo.get_agent_key("org_k", "a1") == "k1"

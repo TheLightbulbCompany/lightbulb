@@ -38,6 +38,7 @@ from typing import Literal, Optional
 from boto3.dynamodb.conditions import Key
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.encryption import decrypt, encrypt
 from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
@@ -225,6 +226,11 @@ class PaperclipWorkspace:
     """Set only after a pause's Paperclip PATCHes ALL landed; every new pause removes it
     first. The expired-trial sweep re-runs the (idempotent) pause until this is set."""
 
+    agent_keys: Optional[dict[str, str]] = None
+    """Paperclip agent id -> Fernet ciphertext of that agent's Paperclip API key
+    (``paperclip_api_key``). Written per agent by ``put_agent_key``; carried here
+    only so a whole-item ``put_workspace`` does not drop the map."""
+
 
 @dataclass
 class PaperclipIdentity:
@@ -273,6 +279,7 @@ _WORKSPACE_PLAIN_FIELDS = (
     "automation_pause_complete_at",
     "automation_paused_routine_versions",
     "automation_pause_token",
+    "agent_keys",
 )
 
 
@@ -400,6 +407,7 @@ class PaperclipRepo:
             if "automation_paused_routine_versions" in item
             else None,
             automation_pause_token=item.get("automation_pause_token"),
+            agent_keys=dict(item["agent_keys"]) if "agent_keys" in item else None,
             automation_paused_agent_ids=set(item["automation_paused_agent_ids"])
             if item.get("automation_paused_agent_ids")
             else None,
@@ -1032,6 +1040,84 @@ class PaperclipRepo:
                 ConditionExpression="starter_agent_ids.#starter_key = :agent_id",
                 ExpressionAttributeNames={"#starter_key": starter_key},
                 ExpressionAttributeValues={":agent_id": agent_id},
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return
+
+    async def get_agent_key(self, org_id: str, agent_id: str) -> str | None:
+        """The plaintext Paperclip API key stored for ``agent_id``, or None when
+        absent or undecryptable (an ``ENCRYPTION_KEY`` change; the key is re-mintable)."""
+        resp = await run_in_thread(
+            self._table().get_item,
+            Key={"user_id": org_id},
+            ProjectionExpression="agent_keys.#a",
+            ExpressionAttributeNames={"#a": agent_id},
+            ConsistentRead=True,
+        )
+        token = ((resp.get("Item") or {}).get("agent_keys") or {}).get(agent_id)
+        if not token:
+            return None
+        try:
+            return decrypt(token)
+        except ValueError:
+            logger.warning("paperclip_repo.get_agent_key: undecryptable key org=%s agent=%s", org_id, agent_id)
+            return None
+
+    async def put_agent_key(self, org_id: str, agent_id: str, plaintext: str) -> str | None:
+        """Store ``agent_id``'s key, create-only, and return the key that is stored.
+
+        A concurrent writer who stored first wins and its key is returned (the
+        caller revokes its own duplicate). An undecryptable stored key is
+        overwritten. None when ``org_id`` has no workspace row: a key with no
+        row to live on is never written anywhere else.
+        """
+        table = self._table()
+        exc = table.meta.client.exceptions.ConditionalCheckFailedException
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": org_id},
+                UpdateExpression="SET agent_keys = :empty",
+                ConditionExpression="attribute_exists(#s) AND attribute_not_exists(agent_keys)",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":empty": {}},
+            )
+        except exc:
+            pass
+        kwargs = {
+            "Key": {"user_id": org_id},
+            "UpdateExpression": "SET agent_keys.#a = :v",
+            "ExpressionAttributeNames": {"#s": "status", "#a": agent_id},
+            "ExpressionAttributeValues": {":v": encrypt(plaintext)},
+        }
+        try:
+            await run_in_thread(
+                table.update_item,
+                ConditionExpression="attribute_exists(#s) AND attribute_not_exists(agent_keys.#a)",
+                **kwargs,
+            )
+            return plaintext
+        except exc:
+            winner = await self.get_agent_key(org_id, agent_id)
+            if winner is not None:
+                return winner
+        # The stored key is undecryptable (overwrite it) or there is no row (this fails too).
+        try:
+            await run_in_thread(table.update_item, ConditionExpression="attribute_exists(#s)", **kwargs)
+            return plaintext
+        except exc:
+            return None
+
+    async def delete_agent_key(self, org_id: str, agent_id: str) -> None:
+        """Drop ``agent_id``'s stored key (agent delete). Idempotent."""
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": org_id},
+                UpdateExpression="REMOVE agent_keys.#a",
+                ConditionExpression="attribute_exists(agent_keys)",
+                ExpressionAttributeNames={"#a": agent_id},
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return

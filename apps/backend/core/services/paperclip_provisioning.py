@@ -646,6 +646,8 @@ class PaperclipProvisioning:
                 member_user_ids=(set(ws.member_user_ids) if ws is not None else set()) | {owner_user_id},
                 seeded_agent_ids=(ws.seeded_agent_ids if reconciling_company else None),
                 starter_agent_ids=starter_agent_ids,
+                # Whole-item put: carry the per-agent Paperclip keys or every profile re-mints.
+                agent_keys=(ws.agent_keys if ws is not None else None),
                 last_error=(
                     None
                     if seed_ok

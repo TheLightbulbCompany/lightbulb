@@ -94,6 +94,7 @@ async def test_replacement_falls_back_to_first_surviving_agent(monkeypatch):
 async def test_paperclip_delete_conditionally_removes_starter_uuid(monkeypatch):
     repo = MagicMock()
     repo.remove_starter_agent_id = AsyncMock(return_value=None)
+    repo.delete_agent_key = AsyncMock(return_value=None)
     monkeypatch.setattr(lifecycle, "PaperclipRepo", lambda table_name: repo)
     monkeypatch.setattr(lifecycle, "resolve_company_id_for_owner", AsyncMock(return_value="company"))
     admin = MagicMock()
@@ -112,6 +113,8 @@ async def test_paperclip_delete_conditionally_removes_starter_uuid(monkeypatch):
         call("owner", "starter-uuid"),
         call("owner", "starter-uuid"),
     ]
+    # The deleted agent's Paperclip API key leaves the workspace row with it.
+    assert repo.delete_agent_key.await_args_list == repo.remove_starter_agent_id.await_args_list
 
 
 # ---------------------------------------------------------------------------

@@ -572,6 +572,7 @@ async def delete_paperclip_for_chat(
             agent_id=agent_id,
         )
         await repo.remove_starter_agent_id(owner_id, agent_id)
+        await repo.delete_agent_key(owner_id, agent_id)
     finally:
         await http.aclose()
 

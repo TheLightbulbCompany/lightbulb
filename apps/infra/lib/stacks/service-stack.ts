@@ -907,10 +907,11 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // Per-agent Paperclip API keys (credential-layer redesign): minted by the
-    // backend and stored under isol8/{env}/paperclip-agent-keys/* so Friday's
-    // openclaw.json MCP block can authenticate to Paperclip. Replaces the old
-    // encrypted-in-DynamoDB api-keys storage. Same tight prefix scoping.
+    // LEGACY per-agent Paperclip API keys. New keys live Fernet-encrypted on the
+    // owner's paperclip-companies row (paperclip_api_key.py); this prefix is only
+    // read as a fallback, swept by the wipes, and migrated + scheduled for deletion
+    // by scripts/migrate_agent_keys_to_rows.py (needs Get + Delete). Remove this
+    // statement, the fallback and the wipe sweeps once the prefix is empty.
     secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "PaperclipAgentKeysRW",

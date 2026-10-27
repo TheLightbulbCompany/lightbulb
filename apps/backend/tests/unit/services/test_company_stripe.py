@@ -159,10 +159,14 @@ async def test_onboarding_configurations_follow_the_flag(monkeypatch):
         body = client.v2.core.account_links.create.call_args.args[0]
         assert body["use_case"]["account_onboarding"]["configurations"] == ["merchant"]
 
+        # On the provisioning preview `configurations` is an unknown field; the
+        # guide's collection_options shape is what the sandbox accepts.
         monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_DEVELOPER_CONFIG", True)
         await mod.create_company_onboarding_link(account_id="acct_1")
         body = client.v2.core.account_links.create.call_args.args[0]
-        assert body["use_case"]["account_onboarding"]["configurations"] == ["merchant", "developer"]
+        onboarding = body["use_case"]["account_onboarding"]
+        assert "configurations" not in onboarding
+        assert onboarding["collection_options"] == {"fields": "currently_due"}
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,9 @@ const PR_EVERY: Duration = Duration::from_secs(60);
 const AGENT_QUIET: Duration = Duration::from_secs(600);
 /// An idle session whose PR's checks are still running is read again this often, until they settle.
 const PENDING_EVERY: Duration = Duration::from_secs(120);
+/// A session first seen later than this after its process started may already have deleted files:
+/// nothing counts as deleted before it (an over-count beats a deletion never shown).
+const FIRST_SEEN_FRESH: Duration = Duration::from_secs(120);
 
 pub(super) fn read_features(listed: &Value) {
     READS.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "sessionSignals")), SeqCst);
@@ -41,8 +44,8 @@ struct Entry {
     running: bool,
     /// A turn ended while a read was running: read once more after it.
     again: bool,
-    /// Tracked files already gone at the first read: deleted before the session, not by it. None
-    /// until that read.
+    /// Tracked files already deleted when this Mac first saw the session: deleted before it, not by
+    /// it (`deleted_before`). None until that first look ends.
     gone: Option<BTreeSet<String>>,
 }
 
@@ -84,14 +87,21 @@ pub(super) fn tick(mirrors: &BTreeMap<String, Mirror>, home: &Path) {
         entry.running = true;
         entry.again = false;
         let (key, native, home, gone) = (key.clone(), m.native.clone(), home.to_path_buf(), entry.gone.clone());
+        let since = (native.process.birth_micros / 1_000_000) as i64;
         tokio::spawn(async move {
             let read = tokio::time::timeout(Duration::from_secs(30), async {
-                let Ok(root) = workspace::session_root(&native, &home).await else { return (None, None, None) };
-                let since = (native.process.birth_micros / 1_000_000) as i64;
-                let (changes, gone) = match changes(&root, since, gone.as_ref()).await {
-                    Ok((changes, gone)) => (Some(changes), Some(gone)),
-                    Err(_) => (None, None),
+                let root = workspace::session_root(&native, &home).await;
+                // The first look at a session is its first read, whatever else fails after: the files
+                // already deleted then are the session's baseline, recorded once.
+                let gone = match gone {
+                    Some(gone) => gone,
+                    None => match &root {
+                        Ok(root) => deleted_before(root, since, epoch_now()).await,
+                        Err(_) => BTreeSet::new(),
+                    },
                 };
+                let Ok(root) = root else { return (None, None, gone) };
+                let changes = changes(&root, since, &gone).await.ok();
                 let pr = match gh_program() {
                     Some(gh) => pr(&gh, &root, &home).await,
                     None => None,
@@ -99,13 +109,14 @@ pub(super) fn tick(mirrors: &BTreeMap<String, Mirror>, home: &Path) {
                 (changes, pr, gone)
             })
             .await
-            .unwrap_or((None, None, None));
+            // A look that stalled knows no baseline: count every deletion.
+            .unwrap_or((None, None, BTreeSet::new()));
             if let Ok(mut entries) = ENTRIES.lock() {
                 if let Some(entry) = entries.get_mut(&key) {
                     let (changes, pr, gone) = read;
                     (entry.changes, entry.pr) = (changes, pr);
                     if entry.gone.is_none() {
-                        entry.gone = gone;
+                        entry.gone = Some(gone);
                     }
                     entry.at = Some(Instant::now());
                     entry.running = false;
@@ -160,18 +171,12 @@ fn running_agents(m: &Mirror) -> u32 {
 /// What changed in the session's repository since the session started: the diff against the commit
 /// HEAD was on then (the reflog), counting only files written since (an older dirty file is not the
 /// session's), plus the untracked files it created. A tracked file that is gone counts unless it was
-/// gone at the first read (`gone`; None: this is the first read, and every absent file was gone
-/// before). Returns the absent files too. Err: not a repository, or too big to read.
+/// already gone when the session was first seen (`gone`). Err: not a repository, or too big to read.
 // ponytail: a file dirty before the session and edited during it counts its whole diff; record a
 // baseline tree at the start if that ever matters.
-async fn changes(cwd: &Path, since: i64, gone: Option<&BTreeSet<String>>) -> Result<(Changes, BTreeSet<String>)> {
-    let top = PathBuf::from(
-        String::from_utf8(workspace::git(cwd, &["rev-parse", "--show-toplevel"]).await?)
-            .map_err(|_| "workspace unavailable")?
-            .trim(),
-    );
+async fn changes(cwd: &Path, since: i64, gone: &BTreeSet<String>) -> Result<Changes> {
+    let top = toplevel(cwd).await?;
     let mut changes = Changes::default();
-    let mut absent = BTreeSet::new();
     if let Some(base) = start_commit(&top, since).await {
         let numstat = workspace::git(&top, &["diff", "--numstat", "--no-renames", "-z", &base, "--"]).await?;
         for record in numstat.split(|b| *b == 0).filter(|r| !r.is_empty()) {
@@ -180,8 +185,7 @@ async fn changes(cwd: &Path, since: i64, gone: Option<&BTreeSet<String>>) -> Res
             let (Some(added), Some(removed), Some(path)) = (fields.next(), fields.next(), fields.next()) else { continue };
             let file = top.join(path);
             if fs::symlink_metadata(&file).is_err() {
-                absent.insert(path.to_owned());
-                if gone.is_none_or(|g| g.contains(path)) {
+                if gone.contains(path) {
                     continue;
                 }
             } else if !written_since(&file, since) {
@@ -199,7 +203,35 @@ async fn changes(cwd: &Path, since: i64, gone: Option<&BTreeSet<String>>) -> Res
         .map_err(|_| "workspace unavailable")?;
     changes.files += new.0;
     changes.additions += new.1;
-    Ok((changes, absent))
+    Ok(changes)
+}
+
+async fn toplevel(cwd: &Path) -> Result<PathBuf> {
+    Ok(PathBuf::from(
+        String::from_utf8(workspace::git(cwd, &["rev-parse", "--show-toplevel"]).await?)
+            .map_err(|_| "workspace unavailable")?
+            .trim(),
+    ))
+}
+
+fn epoch_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+/// The tracked files deleted from the working tree (`git ls-files -d`, repository-relative) when the
+/// session is first seen at `now`. Empty when that is long after the session started (it may have
+/// deleted them itself) or git cannot say: every deletion then counts.
+async fn deleted_before(cwd: &Path, since: i64, now: i64) -> BTreeSet<String> {
+    if now - since > FIRST_SEEN_FRESH.as_secs() as i64 {
+        return BTreeSet::new();
+    }
+    let Ok(top) = toplevel(cwd).await else { return BTreeSet::new() };
+    let Ok(listed) = workspace::git(&top, &["ls-files", "-d", "-z"]).await else { return BTreeSet::new() };
+    listed
+        .split(|b| *b == 0)
+        .filter(|n| !n.is_empty())
+        .filter_map(|n| std::str::from_utf8(n).ok().map(str::to_owned))
+        .collect()
 }
 
 /// The commit HEAD was on at `since`: the newest reflog entry no later than it, else the oldest one
@@ -362,15 +394,15 @@ mod tests {
             fs::File::options().write(true).open(root.join(name)).unwrap().set_modified(old).unwrap();
         }
         let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 1;
-        assert_eq!(changes(&root, since, None).await.unwrap().0, Changes::default());
+        assert_eq!(changes(&root, since, &BTreeSet::new()).await.unwrap(), Changes::default());
         // The session edits by shell (no edit event), commits, then creates a file.
         fs::write(root.join("old.txt"), "one\n2\nthree\nfour\n").unwrap();
         git(&root, &["commit", "-qam", "session"]).await;
         fs::write(root.join("new.txt"), "n1\nn2\nn3").unwrap();
-        assert_eq!(changes(&root, since, Some(&BTreeSet::new())).await.unwrap().0, Changes { files: 2, additions: 2 + 3, deletions: 1 });
+        assert_eq!(changes(&root, since, &BTreeSet::new()).await.unwrap(), Changes { files: 2, additions: 2 + 3, deletions: 1 });
         // Not a repository: no answer, the event count stands.
         let plain = tempfile::tempdir().unwrap();
-        assert!(changes(&fs::canonicalize(plain.path()).unwrap(), since, None).await.is_err());
+        assert!(changes(&fs::canonicalize(plain.path()).unwrap(), since, &BTreeSet::new()).await.is_err());
     }
 
     #[tokio::test]
@@ -385,14 +417,15 @@ mod tests {
         git(&root, &["commit", "-qm", "start"]).await;
         fs::remove_file(root.join("before.txt")).unwrap();
         let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 1;
-        // The first read is the baseline: what is gone already was gone before the session.
-        let (first, gone) = changes(&root, since, None).await.unwrap();
-        assert_eq!(first, Changes::default());
+        // Deleted before the session was first seen: the baseline, never its change.
+        let gone = deleted_before(&root, since, since + 1).await;
         assert_eq!(gone, BTreeSet::from(["before.txt".to_owned()]));
-        // The session deletes another: that one counts, the earlier one still does not.
+        assert_eq!(changes(&root, since, &gone).await.unwrap(), Changes::default());
+        // Deleted by the session after it was first seen but before any scan: it counts.
         fs::remove_file(root.join("during.txt")).unwrap();
-        let (later, _) = changes(&root, since, Some(&gone)).await.unwrap();
-        assert_eq!(later, Changes { files: 1, additions: 0, deletions: 2 });
+        assert_eq!(changes(&root, since, &gone).await.unwrap(), Changes { files: 1, additions: 0, deletions: 2 });
+        // First seen long after it started: it may have deleted them itself, so every deletion counts.
+        assert_eq!(deleted_before(&root, since, since + 600).await, BTreeSet::new());
     }
 
     #[test]

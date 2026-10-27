@@ -17,8 +17,8 @@ async function openDetails() {
   return screen.findByRole("dialog", { name: "Load test" });
 }
 
-function focus(entry: { session: LocalSession; ownerName: string; own: boolean } | null, { onClose = vi.fn(), loading = false, getLocalSession, events = [], submit, onMessageOwner, participants, join, decide, askPickup, decidePickup }: {
-  onClose?: () => void; loading?: boolean; getLocalSession?: SessionSource["client"]["getLocalSession"];
+function focus(entry: { session: LocalSession; ownerName: string; own: boolean } | null, { onClose = vi.fn(), getLocalSession, events = [], submit, onMessageOwner, participants, join, decide, askPickup, decidePickup }: {
+  onClose?: () => void; getLocalSession?: SessionSource["client"]["getLocalSession"];
   events?: unknown[]; submit?: SessionSource["client"]["submitLocalSessionCommand"];
   onMessageOwner?: (id: string, name: string) => void; participants?: { kind: "human" | "agent"; id: string; displayName: string }[];
   join?: (sessionId: string) => Promise<LocalSession>;
@@ -38,7 +38,7 @@ function focus(entry: { session: LocalSession; ownerName: string; own: boolean }
     ...(askPickup ? { requestLocalSessionPickupAccess: askPickup } : {}),
     ...(decidePickup ? { decideLocalSessionPickup: decidePickup } : {}),
   } as unknown as SessionSource["client"];
-  return render(<SessionFocus focus={{ sessionId: "s1" }} entries={entry ? [entry] : []} loading={loading} hintRevision={0} client={client}
+  return render(<SessionFocus focus={{ sessionId: "s1" }} entries={entry ? [entry] : []} hintRevision={0} client={client}
     resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} onMessageOwner={onMessageOwner} participants={participants} />);
 }
 
@@ -65,11 +65,11 @@ it("falls back to a direct fetch when the workspace list lacks the session, and 
   expect(await screen.findByText("This session is no longer shared.")).toBeInTheDocument();
 });
 
-it("shows 'Opening session…' while the workspace list has not yet settled, without fetching directly", () => {
-  const getLocalSession = vi.fn();
-  focus(null, { loading: true, getLocalSession });
+it("reads the session by id at once, without waiting for the workspace list (prod 2026-10-27: 2.6-3.8 s)", () => {
+  const getLocalSession = vi.fn(() => new Promise<LocalSession>(() => {}));
+  focus(null, { getLocalSession });
   expect(screen.getByText("Opening session…")).toBeInTheDocument();
-  expect(getLocalSession).not.toHaveBeenCalled();
+  expect(getLocalSession).toHaveBeenCalledWith("s1");
 });
 
 it("falls back to a direct fetch and renders an ended session as the Ended panel, with Resume and no follow-up box", async () => {
@@ -196,7 +196,7 @@ it("opens a live origin, not a fork copied from it", async () => {
     { session: { ...session, sessionId: "s2", forkedFrom: "s1", title: "The fork" }, ownerName: "Alice", own: false },
     { session, ownerName: "Alice", own: false },
   ];
-  render(<SessionFocus focus={{ sessionId: "s1" }} entries={entries} loading={false} hintRevision={0} client={client}
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={entries} hintRevision={0} client={client}
     resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} />);
   expect(await screen.findByRole("heading", { name: "Claude Load test" })).toBeInTheDocument();
 });
@@ -257,7 +257,7 @@ function chatFocus(chatOpen: boolean, chatUnread?: number) {
   const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn() } as unknown as SessionSource["client"];
   render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, chatUnread, chatRoomId: "chat-1" }, ownerName: "Alice", own: false }]}
-    loading={false} hintRevision={0} client={client} resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()}
+    hintRevision={0} client={client} resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()}
     chatOpen={chatOpen} onChatOpenChange={onChatOpenChange} />);
   return onChatOpenChange;
 }
@@ -284,7 +284,7 @@ it("shows the server's chat unread count and never adds live arrivals on top (th
   const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn() } as unknown as SessionSource["client"];
   const view = (chatUnread: number) => <SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, chatRoomId: "chat-1", chatUnread }, ownerName: "Alice", own: false }]}
-    loading={false} hintRevision={0} client={client} onEvent={onEvent} resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} chatOpen={false} onChatOpenChange={vi.fn()} />;
+    hintRevision={0} client={client} onEvent={onEvent} resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} chatOpen={false} onChatOpenChange={vi.fn()} />;
   const { rerender } = render(view(1));
   await screen.findByRole("button", { name: "Chat, 1 unread" });
   act(() => emit({ type: "room.message.available", payload: { roomId: "chat-1", threadRootMessageId: null } }));
@@ -297,7 +297,7 @@ it("refreshes the session list when the chat opens, so a first open's room is kn
   const onAccessLost = vi.fn();
   const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn(async () => ({ roomId: "chat-1" })) } as unknown as SessionSource["client"];
-  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session, ownerName: "Alice", own: false }]} loading={false} hintRevision={0} client={client}
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session, ownerName: "Alice", own: false }]} hintRevision={0} client={client}
     resolveSessionOwner={resolveSessionOwner} onAccessLost={onAccessLost} onClose={vi.fn()} chatOpen onChatOpenChange={vi.fn()} />);
   await userEvent.click(await screen.findByRole("button", { name: "Open door" }));
   expect(client.openSessionChat).toHaveBeenCalledWith("s1");
@@ -308,7 +308,7 @@ it("refreshes the session list when the open chat is read, so the header and the
   const onAccessLost = vi.fn();
   const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn() } as unknown as SessionSource["client"];
-  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, chatRoomId: "chat-1", chatUnread: 1 }, ownerName: "Alice", own: false }]} loading={false} hintRevision={0} client={client}
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, chatRoomId: "chat-1", chatUnread: 1 }, ownerName: "Alice", own: false }]} hintRevision={0} client={client}
     resolveSessionOwner={resolveSessionOwner} onAccessLost={onAccessLost} onClose={vi.fn()} chatOpen onChatOpenChange={vi.fn()} />);
   await userEvent.click(await screen.findByRole("button", { name: "Read" }));
   expect(onAccessLost).toHaveBeenCalledTimes(1);
@@ -333,7 +333,7 @@ function measured(panelWidth: number) {
   // An ended session: its body is the state panel, between the status line and the resume strip.
   const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), openSessionChat: vi.fn() } as unknown as SessionSource["client"];
-  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, status: "ended", endedAt: "2026-10-07T10:00:00Z" }, ownerName: "Alice", own: false }]} loading={false} hintRevision={0} client={client}
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: { ...session, status: "ended", endedAt: "2026-10-07T10:00:00Z" }, ownerName: "Alice", own: false }]} hintRevision={0} client={client}
     resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} chatOpen onChatOpenChange={vi.fn()} />);
   return document.querySelector<HTMLElement>(".room-session-focus")!;
 }
@@ -358,7 +358,7 @@ it("keeps the same panel mounted when its session leaves the list, until the rea
   const client = { listWorkspaceSessions: vi.fn(), getLocalSession, listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), requestLocalSessionPickup: vi.fn() } as unknown as SessionSource["client"];
   const view = (entries: { session: LocalSession; ownerName: string; own: boolean }[]) =>
-    <SessionFocus focus={{ sessionId: "s1" }} entries={entries} loading={false} hintRevision={0} client={client}
+    <SessionFocus focus={{ sessionId: "s1" }} entries={entries} hintRevision={0} client={client}
       resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} />;
   const { rerender } = render(view([{ session, ownerName: "Alice", own: false }]));
   await screen.findByRole("heading", { name: /Load test/ });
@@ -381,7 +381,7 @@ it("lets the owner remove an ended session from the list, after a confirmation",
   const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), requestLocalSessionPickup: vi.fn() } as unknown as SessionSource["client"];
   const view = (entry: { session: LocalSession; ownerName: string; own: boolean }) =>
-    <SessionFocus focus={{ sessionId: "s1" }} entries={[entry]} loading={false} hintRevision={0} client={client}
+    <SessionFocus focus={{ sessionId: "s1" }} entries={[entry]} hintRevision={0} client={client}
       resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} onRemove={onRemove} />;
   // Not on someone else's, running or ended.
   const { rerender } = render(view({ session, ownerName: "Alice", own: false }));
@@ -403,7 +403,7 @@ it("lets the owner end and remove a running session in one confirmed action, and
   const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), requestLocalSessionPickup: vi.fn() } as unknown as SessionSource["client"];
   const view = (shown: LocalSession) =>
-    <SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: shown, ownerName: "You", own: true }]} loading={false} hintRevision={0} client={client}
+    <SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: shown, ownerName: "You", own: true }]} hintRevision={0} client={client}
       resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} onRemove={onRemove} />;
   // Not one End cannot stop: an offline Mac, or a Codex thread its app hosts.
   const { rerender } = render(view({ ...session, status: "offline" }));
@@ -436,7 +436,7 @@ it("keeps the panel open on a session its owner ended on purpose, though it left
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), requestLocalSessionPickup: vi.fn(),
     requestLocalSessionResume: vi.fn() } as unknown as SessionSource["client"];
   const view = (entries: { session: LocalSession; ownerName: string; own: boolean }[], hint = 0) =>
-    <SessionFocus focus={{ sessionId: "s1" }} entries={entries} loading={false} hintRevision={hint} client={client}
+    <SessionFocus focus={{ sessionId: "s1" }} entries={entries} hintRevision={hint} client={client}
       resolveSessionOwner={() => ({ ownerName: "You", own: true })} onAccessLost={vi.fn()} onClose={onClose} onRemove={vi.fn()} />;
   const { rerender } = render(view([{ session, ownerName: "You", own: true }]));
   await screen.findByRole("heading", { name: /Load test/ });
@@ -466,7 +466,7 @@ it("closes after a removal succeeded, never before, and for a displayed fork too
   const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
     submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), requestLocalSessionPickup: vi.fn() } as unknown as SessionSource["client"];
   render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: origin, ownerName: "You", own: true }, { session: fork, ownerName: "You", own: true }]}
-    loading={false} hintRevision={0} client={client} resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} onRemove={onRemove} />);
+    hintRevision={0} client={client} resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} onRemove={onRemove} />);
   await userEvent.click(screen.getByRole("button", { name: "Remove Load test from the list" }));
   const confirm = screen.getByRole("dialog", { name: "Remove “Load test” from the list?" });
   await userEvent.click(within(confirm).getByRole("button", { name: "Remove" }));
@@ -484,7 +484,7 @@ it("names a prompt sent by one of your own sessions as that session, not a teamm
   const claude: LocalSession = { ...session, terminal: undefined, terminalReason: "plain", humanUserId: "alice", latestEventSeq: 1 };
   const events = [{ seq: 1, ts: "2026-10-22T10:00:00.000Z", kind: "text", role: "user", text: "ping from cursor", actor: { agentId: "cursor-1" } }];
   const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events, nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() } as unknown as SessionSource["client"];
-  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: claude, ownerName: "Alice", own: true }, { session: cursor, ownerName: "Alice", own: true }]} loading={false} hintRevision={0} client={client}
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: claude, ownerName: "Alice", own: true }, { session: cursor, ownerName: "Alice", own: true }]} hintRevision={0} client={client}
     resolveSessionOwner={() => ({ ownerName: "Alice", own: true })} onAccessLost={vi.fn()} onClose={vi.fn()} />);
   expect(await screen.findByText(/Your Cursor/)).toBeInTheDocument();
   expect(screen.queryByText(/Teammate/)).toBeNull();

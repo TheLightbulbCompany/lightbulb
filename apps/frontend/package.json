@@ -31,6 +31,8 @@
     "@mdxeditor/editor": "4.3.3",
     "@openuidev/react-lang": "1.0.1",
     "@vercel/analytics": "^2.0.1",
+    "@xterm/addon-unicode11": "0.8.0",
+    "@xterm/addon-webgl": "0.18.0",
     "@xterm/xterm": "^5.5.0",
     "bedrock-agentcore": "0.4.4",
     "class-variance-authority": "^0.7.1",

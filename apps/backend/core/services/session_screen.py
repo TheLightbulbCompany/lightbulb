@@ -183,7 +183,7 @@ async def _screen_gone(row: dict) -> None:
         )
     except ClientError:
         return  # renewed meanwhile, or another ping already told them
-    await local_session_relay.publish_resources_changed(row["ownerId"], row["humanUserId"])
+    await local_session_relay.publish_resources_changed(row["ownerId"], row["humanUserId"], session_id=row["sessionId"])
 
 
 async def _nudge(row: dict, since: int) -> None:
@@ -292,7 +292,7 @@ async def keep_screens(owner: str, human: str, device: str, cid: str, sids: list
                 watched = await watch_on_register(row)
                 if watched and "liveTerminal" in row.get("deviceFeatures", ()):
                     await _nudge({**row, "screenConnectionId": cid}, watched["since"])
-                await publish_resources_changed(owner, human)
+                await publish_resources_changed(owner, human, session_id=sid)
         except Exception as exc:  # noqa: BLE001 -- see docstring
             logger.info("ended screen not kept error=%s", type(exc).__name__)
 

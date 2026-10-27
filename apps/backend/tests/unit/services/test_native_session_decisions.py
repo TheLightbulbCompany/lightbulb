@@ -127,7 +127,7 @@ async def test_allow_and_pause_run_as_the_owner(monkeypatch):
     assert await tools.decide(_decision_device(), pause) == "paused"
     assert set_sharing.await_args.args[1:] == (str(_SID), False)
     assert set_sharing.await_args.kwargs == {"generation": "g1"}
-    publish.assert_awaited_once_with("org_a", "user_a")
+    publish.assert_awaited_once_with("org_a", "user_a", session_id=str(_SID))
 
 
 @pytest.mark.parametrize(

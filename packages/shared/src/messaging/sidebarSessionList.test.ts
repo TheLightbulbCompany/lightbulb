@@ -21,13 +21,13 @@ describe("sidebarSessionList", () => {
     expect(ids(sidebarSessionList(entries, none, NOW).list)).toEqual(["live-old", "live-new", "ended-new", "ended-old"]);
   });
 
-  it("never lists a session ended on purpose, or one offline for days", () => {
+  it("lists a session ended on purpose like any ended one, and never one offline for days", () => {
     const { list, archived } = sidebarSessionList([
       ...entries,
       { session: s("on-purpose", "ended", "2026-10-27T11:59:00Z", { endedOnPurpose: true }) },
       { session: s("lost", "offline", "2026-10-20T11:59:00Z") },
-    ], { pinned: [], archived: { "on-purpose": 0 } }, NOW);
-    expect(ids(list)).not.toContain("on-purpose");
+    ], none, NOW);
+    expect(ids(list)).toContain("on-purpose");
     expect(ids(list)).not.toContain("lost");
     expect(ids(archived)).toEqual([]);
   });
@@ -58,8 +58,8 @@ describe("mark unread / read", () => {
 });
 
 describe("mergeChats", () => {
-  it("drops a session ended on purpose", () => {
+  it("keeps a session ended on purpose, as any ended one (desktop #4453)", () => {
     const chats = mergeChats([], [s("x", "ended", "2026-10-27T11:00:00Z", { endedOnPurpose: true }), s("y", "ended", "2026-10-27T11:00:00Z")], { now: NOW });
-    expect(chats.map((c) => c.key)).toEqual(["session:y"]);
+    expect(chats.map((c) => c.key).sort()).toEqual(["session:x", "session:y"]);
   });
 });

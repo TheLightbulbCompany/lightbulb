@@ -14,7 +14,7 @@ const session: LocalSession = { sessionId: "session", deviceId: "mac", humanUser
 const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), setLocalSessionSharing: vi.fn() };
 function view() {
   const cache = new Map();
-  const tree = () => <SWRConfig value={{ provider: () => cache }}><SessionFocus focus={{ sessionId: "session" }} entries={[{ session, ownerName: "Alice", own: false }]} loading={false}
+  const tree = () => <SWRConfig value={{ provider: () => cache }}><SessionFocus focus={{ sessionId: "session" }} entries={[{ session, ownerName: "Alice", own: false }]}
     hintRevision={1} client={client} resolveSessionOwner={() => ({ ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 } })} onAccessLost={() => {}} onClose={() => {}} /></SWRConfig>;
   return { ...render(tree()), tree };
 }

@@ -830,7 +830,7 @@ it("caps the live list at five with +N more that expands in place", async () => 
 
 const aliceFace = { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 };
 
-it("never lists a session its person ended on purpose", () => {
+it("lists a session its person ended on purpose like any ended one, until removed (desktop #4453)", () => {
   render(<RoomDirectory ownerScopeId="org-purpose" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
     onSelectSession={vi.fn()} sessions={[
       { session: makeSession("a", "Stopped by a crash", "ended"), ownerName: "Alice", own: false, owner: aliceFace },
@@ -838,7 +838,7 @@ it("never lists a session its person ended on purpose", () => {
     ]} />);
   const section = screen.getByRole("region", { name: "Sessions" });
   expect(within(section).getByRole("button", { name: /^Open .*Stopped by a crash/ })).toBeInTheDocument();
-  expect(within(section).queryByRole("button", { name: /Ended with End/ })).not.toBeInTheDocument();
+  expect(within(section).getByRole("button", { name: /^Open .*Ended with End/ })).toBeInTheDocument();
 });
 
 it("pins, archives, unarchives and marks a session unread from its row menu, kept on this browser", async () => {

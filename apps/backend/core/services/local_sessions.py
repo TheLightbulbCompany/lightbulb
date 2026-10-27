@@ -1585,7 +1585,7 @@ async def set_display_title(auth: AuthContext, session_id: str, title: str | Non
             await session_chat.follow_session(owner, row["sessionId"])
         except Exception:  # the next chat open names it too (session_chat._follow_lifecycle)
             logger.warning("session chat rename failed for %s", row["sessionId"], exc_info=True)
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return _session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -1849,7 +1849,7 @@ async def submit_command(
             if offline_send:
                 from core.services.local_session_relay import publish_resources_changed
 
-                await publish_resources_changed(owner, row["humanUserId"])
+                await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
             return _public(CommandReceipt, receipt)
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc):
@@ -2000,7 +2000,7 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This follow-up cannot be cancelled.")
         if row.get("cancelledAt"):
             if session:
-                await publish_resources_changed(owner, session["humanUserId"])
+                await publish_resources_changed(owner, session["humanUserId"], session_id=session_id)
             return _public(CommandReceipt, row)
         if row["state"] != "pending" or row["deliverBy"] <= int(time.time()):
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "This follow-up has already left the queue.")
@@ -2018,7 +2018,7 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
             )
             await _capture_offline_terminal(owner, session_id, updated, "cancelled")
             if session:
-                await publish_resources_changed(owner, session["humanUserId"])
+                await publish_resources_changed(owner, session["humanUserId"], session_id=session_id)
             return _public(CommandReceipt, updated)
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc):
@@ -2189,7 +2189,7 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         capture_session_event(
             updated, "local_session_team_control_changed", updated["revision"], state="on" if enabled else "off"
         )
@@ -2282,7 +2282,7 @@ async def _change_session(
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return updated, audit
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -2643,7 +2643,7 @@ async def set_usage_sharing(auth: AuthContext, session_id: str, enabled: bool) -
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return _session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -2817,7 +2817,7 @@ async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> 
             await _push_presence(updated)
         if not link:
             _capture_growth(row, "share_link_created", auth.user_id, audience=new["audience"])
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         link = new
         break
     else:
@@ -2877,7 +2877,7 @@ async def delete_link(auth: AuthContext, session_id: str, *, removed_only: bool 
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -2977,7 +2977,7 @@ async def finish_removal(auth: AuthContext, session_id: str, *, hint: bool = Tru
         await session_chat.silence(row["ownerId"], row["sessionId"], keep=row["humanUserId"])
     await session_chat.follow_session(row["ownerId"], row["sessionId"])
     if hint:
-        await publish_resources_changed(row["ownerId"], row["humanUserId"])
+        await publish_resources_changed(row["ownerId"], row["humanUserId"], session_id=row["sessionId"])
 
 
 REMOVE_ENDED_CAP = 100

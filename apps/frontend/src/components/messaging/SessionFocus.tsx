@@ -5,6 +5,7 @@ import { MessageSquare, X } from "lucide-react";
 import { ApiError, sessionAgentName, sessionEndable, sessionTitle, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { LocalSessionPanel } from "./LocalSessionPanel";
+import { preloadTerminal } from "./SessionTerminalView";
 import { SessionChat } from "./SessionChat";
 import { SessionToolIcon } from "./SessionToolIcon";
 import { SessionRenameButton } from "./SessionRenameButton";
@@ -39,14 +40,14 @@ const SESSION_BODY = ".session-terminal-scroll, .session-terminal-wait, .local-s
  * Focus placement: a shared session lives in the workspace, not in a room
  * (owner ruling 2026-09-24), so it fills the middle of the Messages panel on
  * its own. The workspace session list is the one source of what is shared,
- * but it excludes ended sessions -- one missing from it (once the list has
- * settled) is fetched directly, so an ended session (or one opened before the
- * list has ever loaded) still opens with its real status. "No longer shared"
+ * but it excludes ended sessions -- one missing from it is fetched directly, at
+ * once (not after the list settles), so a link opens on its own row and an ended
+ * session still opens with its real status. "No longer shared"
  * is reserved for a genuine 404.
  */
-export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner, onEvent, chatOpen = false, onChatOpenChange, onChatRoom, onRemove }: {
+export function SessionFocus({ focus, entries, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner, onEvent, chatOpen = false, onChatOpenChange, onChatRoom, onRemove }: {
   onEvent?: SessionSource["onEvent"];
-  focus: { sessionId: string; seq?: number }; entries: readonly Omit<SidebarSession, "owner">[]; loading: boolean; hintRevision: number;
+  focus: { sessionId: string; seq?: number }; entries: readonly Omit<SidebarSession, "owner">[]; hintRevision: number;
   client: SessionSource["client"]; resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean };
   onAccessLost: () => void; onClose: () => void;
   /** Workspace humans and agents, for naming prompt authors and receipts. */
@@ -66,7 +67,6 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   const entry = (exact && exact.session.status !== "ended" ? exact : undefined)
     ?? entries.find((candidate) => candidate.session.forkedFrom === focus.sessionId)
     ?? exact;
-  const coldLoading = loading && entries.length === 0;
   const hasListedSession = Boolean(entry);
   const [retryRevision, setRetryRevision] = useState(0);
   const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean; error: boolean } | null>(null);
@@ -130,9 +130,13 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
     };
     return () => { alive = false; clearTimeout(timer); revalidate.current = null; };
   }, [hasListedSession, client, focus.sessionId]);
+  // Read by id at once, not after the list: the whole workspace list took 1.7-2.5 s and the terminal
+  // waited for it (prod 2026-10-27). Whichever answers first draws the panel; the list's row then wins.
   useEffect(() => {
-    if (!hasListedSession && !coldLoading) revalidate.current?.(fallbackHintRevision, retryRevision);
-  }, [hasListedSession, coldLoading, client, focus.sessionId, fallbackHintRevision, retryRevision]);
+    if (!hasListedSession) revalidate.current?.(fallbackHintRevision, retryRevision);
+  }, [hasListedSession, client, focus.sessionId, fallbackHintRevision, retryRevision]);
+  // The terminal's code too, while the session is read: it was its own dynamic import after the row.
+  useEffect(() => { void preloadTerminal().catch(() => { /* the view loads it again itself */ }); }, []);
   const retryFallback = () => {
     setFallback(current => current?.session ? { ...current, error: false } : null);
     setRetryRevision(v => v + 1);

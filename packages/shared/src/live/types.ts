@@ -332,7 +332,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.browser.frame", RoomBrowserFrame>
   | LiveEventEnvelope<"room.subagent.event", RoomSubagentEvent>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
-  | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
+  | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true; sessionId?: string }>
   /** You were removed from this workspace: drop its live subscriptions (user channel only). */
   | LiveEventEnvelope<"workspace.access.removed", { workspaceId: string }>
   | LiveEventEnvelope<"workspace.session.attention", SessionAttention>
@@ -441,8 +441,10 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.workspaceId) && Object.keys(payload).length === 1;
     case "workspace.sessions.changed":
       // `transcript: true` marks a streaming batch: open panes refetch, the sidebar list does not.
+      // `sessionId` names the one session that changed: the list re-reads that row, not the whole list.
       return str(payload.humanUserId) && (payload.transcript === undefined || payload.transcript === true)
-        && Object.keys(payload).every((key) => key === "humanUserId" || key === "transcript");
+        && (payload.sessionId === undefined || str(payload.sessionId))
+        && Object.keys(payload).every((key) => key === "humanUserId" || key === "transcript" || key === "sessionId");
     case "workspace.session.screen":
       if (payload.kind === "image") {
         return str(payload.sessionId) && str(payload.data) && num(payload.w) && num(payload.h)

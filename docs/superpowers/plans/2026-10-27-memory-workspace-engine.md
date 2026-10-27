@@ -1,330 +1,177 @@
-# Memory Workspace Engine Implementation Plan
+# Memory Workspace Engine Implementation Plan (stage one, AgentCore only)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Workspace memory that extracts on AgentCore, indexes in Postgres on the existing Aurora cluster, and recalls through five stages (expand, four-arm search, fuse, rerank, compose) from one backend function used by room agents, hosted tools, the Memory tab and the BEAM harness.
+**Goal:** Workspace memory that extracts, stores and searches on AgentCore Memory under our instructions and metadata, with a five-stage recall (expand, search, fuse, rerank, compose) in one backend function used by room agents, hosted tools, the Memory tab and the benchmark runner.
 
-**Architecture:** AgentCore's semantic strategy, with override instructions and a metadata schema, turns room turns into typed, dated records. A backend sync pulls those records and the raw turns into a `memory` database (pgvector + tsvector). `memory_recall.recall()` runs the five stages in SQL plus two Bedrock calls (embeddings, rerank) and returns a page in past.dev's shape. The Hermes plugin and the hosted MCP tools call the backend; nothing outside the backend and the runtime holds credentials.
+**Architecture:** The existing semantic strategy gets override instructions and a metadata schema. Two strategy-less namespaces hold raw room turns and the mirrored log. `memory_recall.recall()` calls AgentCore several ways per sub-question, fuses, reranks through Bedrock and composes a page in past.dev's shape. `memory_sync` moves extracted facts into the log through the cloud member and log entries into AgentCore. No new database or service.
 
-**Tech Stack:** Python 3.12 backend (FastAPI, pytest asyncio_mode=auto, uv), asyncpg + pgvector, boto3 (`bedrock-agentcore`, `bedrock-runtime` for embeddings, `bedrock-agent-runtime` for `Rerank`), CDK TypeScript (`database-stack.ts`, `service-stack.ts`, `container-stack.ts`), Hermes plugin in `apps/infra/hermes/plugins/memory/agentcore/`.
+**Tech Stack:** Python 3.12 backend (FastAPI, pytest asyncio_mode=auto, uv), boto3 (`bedrock-agentcore`, `bedrock-agentcore-control`, `bedrock-agent-runtime` for `Rerank`), CDK TypeScript (`container-stack.ts`), Hermes plugin `apps/infra/hermes/plugins/memory/agentcore/`.
 
-**Spec:** `docs/superpowers/specs/2026-10-27-memory-layer-design.md` §5–§8.
+**Spec:** `docs/superpowers/specs/2026-10-27-memory-layer-design.md` §5, §8, §10.
 
 ## Global Constraints
 
 - Branch from clean `origin/main` in a fresh worktree (CLAUDE.md).
-- Database: a new `memory` database on `paperclipDbCluster` (Postgres 16, pgvector). Backend ingress to 5432 from the backend security group only. Credentials from the cluster secret, read the way Paperclip reads it (`paperclip-stack.ts:332`).
-- Embeddings: `amazon.titan-embed-text-v2:0` (1024 dims) by default; `cohere.embed-english-v3` behind `MEMORY_EMBED_MODEL`. Rerank: `cohere.rerank-v3-5:0` in `us-east-1` via `bedrock-agent-runtime` `Rerank` (Amazon Rerank 1.0 is not offered in us-east-1). ≤100 documents per rerank call.
-- Recall defaults: `budget_tokens=8000`, `limit=100`, RRF `k=60`, expansion only when the question has more than one part (the expansion model returns 1 sub-question → skip).
-- Tokens counted with `tiktoken` `o200k_base` (same as the harness).
-- Page shape (what every consumer gets): `{"asOf": iso, "usedEvidenceTokens": int, "results": [{"rank": int, "kind": "claim|observation|rule|mention|anchor|turn", "content": str, "occurredAt": iso, "status": "current|contested|replaced", "history": [{"value": str, "speaker": str, "occurredAt": iso}], "sources": [{"sourceId": str, "occurredAt": iso, "speaker": str, "excerpt": str}]}]}`.
-- Tests needing Postgres use `MEMORY_TEST_DATABASE_URL` (local: `docker run -d -p 5433:5432 -e POSTGRES_PASSWORD=test pgvector/pgvector:pg16`, URL `postgresql://postgres:test@localhost:5433/postgres`) and are marked `@pytest.mark.db`; they skip when the variable is unset. Bedrock and AgentCore are stubbed with `botocore.stub.Stubber` in unit tests.
-- Secrets: scrub before storing turns with the existing `redact_for_egress` in the plugin (already applied to events); the backend stores what the plugin sent.
-- No new public API without auth: workspace endpoints use the existing member auth dependency in `routers/memory.py`; benchmark endpoints require the admin token and `MEMORY_BENCHMARK_ENABLED=true`, which is never set in prod.
+- Namespaces per workspace owner `<o>`: facts `/owners/<o>/` (unchanged), turns `/owners/<o>/turns/`, entries `/owners/<o>/entries/`; private DM scope `/owners/<o>:<user>/` unchanged. Benchmark: `/beam/<workspace_id>/…` on `BenchmarkMemory` (dev only).
+- Metadata keys (indexed): `kind` STRING ∈ {claim, observation, rule, mention, anchor}; `entity` STRING; `attribute` STRING; `status` STRING ∈ {current, contested}; `validFrom` NUMBER; `validTo` NUMBER (epoch seconds). Up to 5 filters per query.
+- Rerank: `cohere.rerank-v3-5:0`, `us-east-1`, ≤100 documents per call; on any error fall back to RRF order.
+- Recall defaults: `budget_tokens=8000`, `limit=100`, RRF `k=60`; expansion only when the model returns more than one line.
+- Tokens counted with `tiktoken` `o200k_base`.
+- Page shape: `{"asOf": iso, "usedEvidenceTokens": int, "results": [{"rank": int, "kind": "claim|observation|rule|mention|anchor|turn|entry", "content": str, "occurredAt": iso, "status": "current|contested|replaced", "history": [{"value": str, "speaker": str, "occurredAt": iso}], "sources": [{"sourceId": str, "occurredAt": iso, "speaker": str, "excerpt": str}]}]}`.
+- AgentCore and Bedrock are stubbed with `botocore.stub.Stubber` in unit tests; no test calls AWS.
+- Auth: workspace endpoints use the member auth dependency already in `routers/memory.py`; the plugin uses the runtime's existing backend credentials; benchmark endpoints require the admin token and `MEMORY_BENCHMARK_ENABLED=true`, never set in prod.
+- `RetrieveMemoryRecords` counts by `searchCriteria.topK`, not `maxResults` (plugin comment, prod audit 24 Sep).
 
 ## Review Focus
 
-1. A question with no matching memory must return an empty page quickly, not an exception or a page of unrelated turns above a floor (set the floor: RRF score of the 100th candidate when fewer than 5 candidates exceed 0.0 after rerank → return the top 5 only). (Task 6: `test_recall_empty_workspace_returns_empty_page`, `test_recall_unrelated_question_returns_few_results`.)
-2. Two workspaces must never see each other's rows: every query is scoped by `workspace_id` and the tests assert cross-workspace isolation. (Task 4: `test_workspace_isolation`; Task 6: `test_recall_never_crosses_workspace`.)
-3. A replaced value must never outrank the current one for the same entity+attribute; contested records must come first. (Task 6: `test_compose_orders_contested_then_current`.)
-4. Rerank failure (throttle, region) must degrade to RRF order, logged, not fail the recall. (Task 3: `test_rerank_failure_returns_none`; Task 6: `test_recall_without_rerank_uses_rrf_order`.)
-5. A wipe must remove every row of the workspace or member across all four tables and the AgentCore namespaces, and a later recall must return nothing. (Task 4: `test_wipe_workspace_removes_all_tables`; Task 10.)
+1. A question with no matching memory returns an empty page quickly, not an exception or unrelated turns: when fewer than 5 candidates score above 0 after rerank, return at most those. (Task 4: `test_recall_empty_namespace_returns_empty_page`.)
+2. Two workspaces never see each other's records: every call carries the workspace's namespaces and the tests assert no cross-namespace call is made. (Task 4: `test_recall_only_queries_own_namespaces`.)
+3. A replaced value never outranks the current one for the same entity+attribute; contested records come first. (Task 3: `test_compose_orders_contested_then_current`.)
+4. Rerank failure degrades to RRF order, logged. (Task 2: `test_rerank_failure_returns_none`; Task 4: `test_recall_without_rerank_uses_rrf_order`.)
+5. A wipe removes every record in the three namespaces and the private scope, and a later recall returns nothing. (Task 8: `test_owner_wipe_covers_three_namespaces`.)
 
 ---
 
-### Task 1: Infrastructure: database, ingress, model permissions
+### Task 1: AgentCore strategy overrides, metadata schema, namespaces, benchmark memory
 
 **Files:**
-- Modify: `apps/infra/lib/stacks/database-stack.ts` (export the cluster's security group and secret for the backend)
-- Modify: `apps/infra/lib/stacks/service-stack.ts` (ingress 5432 from the backend SG; env `MEMORY_DATABASE_SECRET_ARN`, `MEMORY_DATABASE_HOST`, `MEMORY_EMBED_MODEL`; task role: `bedrock:InvokeModel` on the two embedding model ARNs and `bedrock:Rerank` on `cohere.rerank-v3-5:0`; secret read)
-- Test: `apps/infra/test/service-stack.test.ts` (existing CDK assertion tests pattern)
+- Modify: `apps/infra/lib/stacks/container-stack.ts:236-249` (`CfnMemory`): `indexedKeys` for the six keys; on `workspace_facts`, `memoryRecordSchema.metadataSchema` with definitions, `allowedValues` and `LATEST_VALUE` for `status`; override configuration with extraction and consolidation instructions from the prompt files and model `MEMORY_EXTRACT_MODEL` (default a Haiku-class Bedrock id); a `BenchmarkMemory` with the same strategy, dev only
+- Create: `apps/infra/prompts/memory-extraction.md`, `apps/infra/prompts/memory-consolidation.md` (append to AWS's defaults; the consolidation text carries one-record-per-slot, current-then-history and contested from spec §5; the extraction text carries the shapes: speaker prefix, `entity attribute: value`, resolved dates, rules with "applies to")
+- Create: `apps/infra/scripts/memory-strategy-apply.ts` (fallback through `UpdateMemory` if `CfnMemory` rejects any field)
+- Modify: `apps/infra/lib/stacks/service-stack.ts` (backend task role: `bedrock:Rerank` on `cohere.rerank-v3-5:0`; `bedrock-agentcore:BatchCreateMemoryRecords|BatchDeleteMemoryRecords|ListMemoryRecords|RetrieveMemoryRecords` on both memories; env `MEMORY_BENCHMARK_MEMORY_ID` in dev)
+- Test: `apps/infra/test/container-stack.test.ts`, `apps/infra/test/service-stack.test.ts`
 
 **Interfaces:**
-- Produces: backend env vars named above; `MEMORY_DATABASE_NAME=memory`.
+- Produces: metadata keys exactly as Task 5 reads them; env `AGENTCORE_MEMORY_ID` (exists), `MEMORY_BENCHMARK_MEMORY_ID`.
 
-- [ ] **Step 1: Write the failing CDK assertions**
+- [ ] **Step 1: Write the failing CDK assertions** — `workspace memory declares the six indexed keys` (`Match.arrayWith([Match.objectLike({ Key: "validFrom", Type: "NUMBER" })])`); `backend task role can rerank`
+- [ ] **Step 2: Run → FAIL** — `cd apps/infra && npx jest test/container-stack.test.ts test/service-stack.test.ts -t "indexed keys|rerank"`
+- [ ] **Step 3: Implement; if `cdk synth` rejects override or schema properties, keep `indexedKeys` in CDK and apply the rest in `memory-strategy-apply.ts` from the deploy workflow**
+- [ ] **Step 4: Run → PASS; `npx cdk synth`; deploy dev; `aws bedrock-agentcore-control get-memory` shows the strategy with overrides**
+- [ ] **Step 5: Probe the open question** — send probe 2's two contradictions and three rephrased updates as events to the dev memory; after extraction, `list-memory-records` shows one record per slot with history in the text and `status=contested` on the Ana/Ben case. Record the answer ("merging can/cannot set metadata on the rewritten record") in `docs/research/2026-10-28-beam-baselines.md`; if it cannot, open the self-managed fallback as a follow-up plan and continue.
+- [ ] **Step 6: Commit** — `git commit -m "infra(memory): overrides, metadata schema, namespaces, benchmark memory, rerank permission"`
 
-```ts
-test("backend may reach the Paperclip cluster on 5432", () => { template.hasResourceProperties("AWS::EC2::SecurityGroupIngress", { FromPort: 5432, ToPort: 5432 }); });
-test("backend task role can embed and rerank", () => { template.hasResourceProperties("AWS::IAM::Policy", Match.objectLike({ PolicyDocument: Match.objectLike({ Statement: Match.arrayWith([Match.objectLike({ Action: Match.arrayWith(["bedrock:Rerank"]) })]) }) })); });
-```
-
-- [ ] **Step 2: Run → FAIL**
-
-Run: `cd apps/infra && npx jest test/service-stack.test.ts -t "5432|rerank"`
-
-- [ ] **Step 3: Implement the stack changes**
-- [ ] **Step 4: Run → PASS; `npx cdk synth` clean**
-- [ ] **Step 5: Commit**
-
-```bash
-git add apps/infra && git commit -m "infra(memory): backend reaches the Aurora cluster; embed and rerank permissions"
-```
-
-### Task 2: Schema and migration
+### Task 2: Rerank and expansion clients
 
 **Files:**
-- Create: `apps/backend/core/services/memory_schema.sql`
-- Create: `apps/backend/scripts/memory_migrate.py`
-- Create: `apps/backend/core/services/memory_db.py`
-- Test: `apps/backend/tests/unit/services/test_memory_schema.py`
+- Create: `apps/backend/core/services/memory_models.py`
+- Test: `apps/backend/tests/unit/services/test_memory_models.py`
 
 **Interfaces:**
-- Produces: `memory_db.pool() -> asyncpg.Pool` (lazy, from `MEMORY_DATABASE_*` or `MEMORY_TEST_DATABASE_URL`); `memory_migrate.migrate(dsn: str) -> None` (idempotent: `CREATE EXTENSION IF NOT EXISTS vector`, `CREATE TABLE IF NOT EXISTS …`).
-- Tables (all with `workspace_id text not null` first and an index on it):
-  - `records(id text pk, workspace_id, scope text check (scope in ('team','private')), member_id text, kind text, entity text, attribute text, value text, content text not null, speaker text, status text check (status in ('current','contested','replaced')), valid_from timestamptz, valid_to timestamptz, replaces text[], source_ids text[], agentcore_record_id text, embedding vector(1024), tsv tsvector generated always as (to_tsvector('english', content)) stored, updated_at timestamptz default now())`
-  - `turns(id text pk, workspace_id, room_id text, speaker text, role text, content text, occurred_at timestamptz, embedding vector(1024), tsv tsvector generated …)`
-  - `links(workspace_id, entity text, record_id text references records(id) on delete cascade, primary key (workspace_id, entity, record_id))`
-  - `entries(id text pk, workspace_id, author text, seq bigint, scope text, kind text, subject text, fact text, replaces text[], occurred_at timestamptz, source jsonb, tombstone boolean default false)`
-  - `sync_state(workspace_id text pk, records_after timestamptz, events_after timestamptz)`
-  - Indexes: HNSW on both `embedding` columns (`vector_cosine_ops`), GIN on both `tsv`, btree `(workspace_id, entity, attribute)` on records, `(workspace_id, occurred_at)` on turns.
+- Produces: `async def rerank(query: str, documents: list[str], top_n: int) -> list[tuple[int, float]] | None` (index into `documents`, score; `None` on any `ClientError`, logged at warning; extra documents beyond 100 dropped from the tail); `async def expand(question: str) -> list[str]` (one Haiku call through the backend's existing Bedrock inference path with `EXPANSION_PROMPT`; returns the non-empty lines; `[question]` when ≤1 line or on error); `EXPANSION_PROMPT: str` ("List the separate facts this question needs, one per line, at most 5; if it needs one, write the question itself").
 
-- [ ] **Step 1: Write the failing test (`@pytest.mark.db`)**
-
-```python
-async def test_migrate_creates_tables_and_is_idempotent(dsn):
-    await migrate(dsn); await migrate(dsn)
-    names = {r["tablename"] for r in await conn.fetch("select tablename from pg_tables where schemaname='public'")}
-    assert {"records","turns","links","entries","sync_state"} <= names
-```
-
-- [ ] **Step 2: Run → FAIL**
-
-Run: `cd apps/backend && MEMORY_TEST_DATABASE_URL=… uv run pytest tests/unit/services/test_memory_schema.py -v`
-
-- [ ] **Step 3: Write the SQL, `migrate`, and `pool`**
-- [ ] **Step 4: Run → PASS**
-- [ ] **Step 5: Commit**
-
-```bash
-git add apps/backend/core/services/memory_schema.sql apps/backend/scripts/memory_migrate.py apps/backend/core/services/memory_db.py apps/backend/tests/unit/services/test_memory_schema.py && git commit -m "feat(memory): Postgres schema and migration"
-```
-
-### Task 3: Embeddings and rerank
-
-**Files:**
-- Create: `apps/backend/core/services/memory_embed.py`
-- Test: `apps/backend/tests/unit/services/test_memory_embed.py`
-
-**Interfaces:**
-- Produces: `async def embed(texts: list[str]) -> list[list[float]]` (batches of 32; Titan or Cohere by `MEMORY_EMBED_MODEL`; truncates each text to 8,000 characters); `async def rerank(query: str, documents: list[str], top_n: int) -> list[tuple[int, float]] | None` (index into `documents`, score; `None` on any `ClientError`, logged at warning; ≤100 documents, extra are dropped from the tail before the call).
-
-- [ ] **Step 1: Write the failing tests (Stubber)**
-
-```python
-async def test_embed_batches_of_32(stub): ...   # 70 texts -> 3 InvokeModel calls
-async def test_rerank_returns_indices_sorted_by_score(stub): ...
-async def test_rerank_failure_returns_none(stub): ...   # ThrottlingException -> None
-async def test_rerank_caps_documents_at_100(stub): ...
-```
-
-- [ ] **Step 2: Run → FAIL** (`uv run pytest tests/unit/services/test_memory_embed.py -v`)
+- [ ] **Step 1: Write the failing tests** — `test_rerank_returns_indices_sorted_by_score`, `test_rerank_failure_returns_none`, `test_rerank_caps_documents_at_100`, `test_expand_single_line_returns_original`, `test_expand_error_returns_original`
+- [ ] **Step 2: Run → FAIL** — `cd apps/backend && uv run pytest tests/unit/services/test_memory_models.py -v`
 - [ ] **Step 3: Implement**
 - [ ] **Step 4: Run → PASS**
-- [ ] **Step 5: Commit** — `git commit -m "feat(memory): Bedrock embeddings and rerank"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(memory): Bedrock rerank and question expansion"`
 
-### Task 4: Index writes
-
-**Files:**
-- Create: `apps/backend/core/services/memory_index.py`
-- Test: `apps/backend/tests/unit/services/test_memory_index.py` (`@pytest.mark.db`, embeddings patched to a deterministic hash vector)
-
-**Interfaces:**
-- Produces, all taking `workspace_id: str` first:
-  - `async def upsert_records(workspace_id, records: list[Record]) -> int` where `Record` is a dataclass with the `records` columns minus embedding/tsv; embeds `content`; refreshes `links` from `entity`.
-  - `async def upsert_turns(workspace_id, turns: list[Turn]) -> int`
-  - `async def delete_record(workspace_id, record_id: str) -> bool`
-  - `async def wipe_workspace(workspace_id) -> dict[str, int]` (rows deleted per table)
-  - `async def wipe_member(workspace_id, member_id: str) -> dict[str, int]` (records with `scope='private' and member_id`, entries with `author=member_id` tombstoned)
-
-- [ ] **Step 1: Write the failing tests**
-
-```python
-async def test_upsert_records_is_idempotent(db): ...          # same id twice -> one row, updated content
-async def test_links_follow_entity(db): ...                   # record with entity "shop-api" -> one links row
-async def test_workspace_isolation(db): ...                   # rows for ws A invisible when querying ws B
-async def test_wipe_workspace_removes_all_tables(db): ...     # counts >0 before, all 0 after
-```
-
-- [ ] **Step 2: Run → FAIL**
-- [ ] **Step 3: Implement**
-- [ ] **Step 4: Run → PASS**
-- [ ] **Step 5: Commit** — `git commit -m "feat(memory): index writes, links, wipes"`
-
-### Task 5: Pure stages: expansion parsing, RRF, composition
+### Task 3: Pure stages: RRF, composition, time windows
 
 **Files:**
 - Create: `apps/backend/core/services/memory_stages.py`
-- Test: `apps/backend/tests/unit/services/test_memory_stages.py` (no DB, no AWS)
+- Test: `apps/backend/tests/unit/services/test_memory_stages.py`
 
 **Interfaces:**
 - Produces:
-  - `def rrf(rankings: list[list[str]], k: int = 60) -> list[tuple[str, float]]` (ids sorted by fused score desc)
-  - `def compose(candidates: list[Candidate], budget_tokens: int, as_of: datetime) -> Page` where `Candidate` carries the record/turn fields plus `fused: float`; order: `status == "contested"` first, then `current` claims/observations/rules/anchors by `fused`, then turns by `fused`, then `replaced` as `history` attached to their current record (not as separate results); stops at the budget; `usedEvidenceTokens` counted on the serialised page.
-  - `def parse_subquestions(model_text: str, original: str) -> list[str]` (one per line; if ≤1 non-empty line → `[original]`)
-  - `def time_window(question: str, as_of: datetime) -> tuple[datetime | None, datetime | None]` (month names, "last week", "in 2024", ISO dates; `dateparser` is already a transitive dependency? if not, `python-dateutil` only; unknown → `(None, None)`)
-  - `EXPANSION_PROMPT: str` (asks for one sub-question per line, at most 5, or the question itself if it has one part)
+  - `@dataclass class Candidate: id: str; kind: str; content: str; occurred_at: datetime; status: str; speaker: str | None; entity: str | None; attribute: str | None; valid_from: datetime | None; valid_to: datetime | None; source_id: str | None; fused: float = 0.0`
+  - `def from_record(summary: dict, kind_default: str) -> Candidate` (maps a `memoryRecordSummaries` item: `content.text`, `metadata`, `timestamp`)
+  - `def rrf(rankings: list[list[str]], k: int = 60) -> list[tuple[str, float]]`
+  - `def compose(candidates: list[Candidate], budget_tokens: int, as_of: datetime) -> dict` (the page; order: contested, then current claims/observations/rules/anchors by `fused`, then turns and entries by `fused`; history parsed from the record text's "was X (who, when)" tail into `history`; stop at the budget; `usedEvidenceTokens` counted on the serialised page)
+  - `def time_window(question: str, as_of: datetime) -> tuple[datetime | None, datetime | None]` (month names, "last week", years, ISO dates via `python-dateutil`; unknown → `(None, None)`)
 
-- [ ] **Step 1: Write the failing tests**
-
-```python
-def test_rrf_k60_matches_hand_computation(): ...       # two rankings of 3 ids -> scores 1/61+1/62 etc.
-def test_compose_orders_contested_then_current(): ...   # contested record first; replaced value appears only in history
-def test_compose_stops_at_budget(): ...                 # 50 candidates × 300 tokens, budget 8000 -> usedEvidenceTokens <= 8000
-def test_parse_subquestions_single_line_returns_original(): ...
-def test_time_window_month_and_year(): ...              # "in March 2024" -> (2024-03-01, 2024-03-31 23:59:59)
-```
-
+- [ ] **Step 1: Write the failing tests** — `test_rrf_k60_matches_hand_computation`, `test_compose_orders_contested_then_current`, `test_compose_stops_at_budget`, `test_compose_parses_history_tail`, `test_time_window_month_and_year`
 - [ ] **Step 2: Run → FAIL**
 - [ ] **Step 3: Implement**
 - [ ] **Step 4: Run → PASS**
-- [ ] **Step 5: Commit** — `git commit -m "feat(memory): RRF, composition, expansion parsing, time windows"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(memory): RRF, composition, time windows"`
 
-### Task 6: Recall
+### Task 4: Recall over AgentCore
 
 **Files:**
 - Create: `apps/backend/core/services/memory_recall.py`
-- Test: `apps/backend/tests/unit/services/test_memory_recall.py` (`@pytest.mark.db`; Bedrock stubbed; expansion model stubbed)
+- Modify: `apps/backend/core/services/workspace_memory.py` (export `_client()`; add `namespaces_for(owner_id, user_id | None) -> dict[str, str]` returning `facts`, `turns`, `entries`, `private`)
+- Test: `apps/backend/tests/unit/services/test_memory_recall.py` (Stubber on `bedrock-agentcore`; Task 2 functions patched)
 
 **Interfaces:**
-- Consumes: Tasks 3, 4, 5.
-- Produces: `async def recall(workspace_id: str, question: str, *, as_of: datetime | None = None, budget_tokens: int = 8000, limit: int = 100, scopes: tuple[str, ...] = ("team",), member_id: str | None = None, rerank: bool = True, expand: bool = True) -> Page`.
-  Stages: (1) `expand`: one Haiku call with `EXPANSION_PROMPT` (through the existing Bedrock inference path the backend uses) → `parse_subquestions`; (2) per sub-question, four arms, each returning up to `limit` ids: cosine over `records` and `turns` (one query each, `<=>`), `ts_rank_cd` over both, `links` lookup by entities named in the sub-question (entities = distinct `entity` values whose name appears in the text, case-insensitive), time window filter applied as a fifth ranking (records/turns inside the window ordered by closeness to `as_of`); all arms scoped by `workspace_id`, `scope in scopes` (private rows only when `member_id` matches), and `valid_from <= as_of and (valid_to is null or valid_to > as_of)` when `as_of` is given; (3) `rrf` over all arms of all sub-questions; (4) `rerank` on the top 100 by `content` (fallback: RRF order when `None`); (5) `compose`. Also records a `recall_log` row? No: YAGNI; log at info with stage timings (expansionMs, searchMs, fuseMs, rerankMs, composeMs).
+- Produces: `async def recall(*, memory_id: str, namespaces: dict[str, str], question: str, as_of: datetime | None = None, budget_tokens: int = 8000, limit: int = 100, include_private: bool = False, use_rerank: bool = True, use_expand: bool = True) -> dict`.
+  Stages: (1) `expand`; (2) per part, with `asyncio.gather`: `RetrieveMemoryRecords(namespace=facts, topK=limit, metadataFilters=[status EQUALS_TO current] + as-of filters)`, the same with `status EQUALS_TO contested`, `namespace=turns`, `namespace=entries`, `private` when `include_private`; `ListMemoryRecords(namespace=facts, metadataFilters=[entity EQUALS_TO e])` for each entity `e` whose name (from a `ListMemoryRecords` of distinct entities cached 60 s per workspace) appears in the part; as-of filters when `as_of`: `validFrom LESS_THAN_OR_EQUALS as_of` and (`validTo NOT_EXISTS` or `validTo GREATER_THAN as_of`, two calls merged); `time_window` → `x-amz-agentcore-memory-createdAt` is ingest time, so apply the window to `occurredAt` after fetch instead; (3) `rrf` over every ranking; (4) `rerank` on the top 100 contents, fallback RRF; (5) `compose`. Log stage timings at info.
 
-- [ ] **Step 1: Write the failing tests**
-
-```python
-async def test_recall_empty_workspace_returns_empty_page(db): ...
-async def test_recall_never_crosses_workspace(db): ...
-async def test_recall_as_of_excludes_later_facts(db): ...            # record valid_from after as_of is absent
-async def test_recall_prefers_current_over_replaced(db): ...         # Postgres 14 (replaced) only in history of the 16 record
-async def test_recall_without_rerank_uses_rrf_order(db, stub_rerank_none): ...
-async def test_recall_multi_part_question_expands(db, stub_expansion): ...   # expansion returns 2 lines -> both entities' records on the page
-async def test_recall_unrelated_question_returns_few_results(db): ...
-```
-
+- [ ] **Step 1: Write the failing tests** — `test_recall_empty_namespace_returns_empty_page`, `test_recall_only_queries_own_namespaces`, `test_recall_as_of_filters_are_sent`, `test_recall_prefers_current_over_replaced`, `test_recall_without_rerank_uses_rrf_order`, `test_recall_multi_part_question_queries_each_part`, `test_recall_entity_listing_adds_all_records_for_entity`
 - [ ] **Step 2: Run → FAIL**
-- [ ] **Step 3: Implement `recall`** (SQL in the module; one `asyncpg` connection per call; arms run with `asyncio.gather`)
+- [ ] **Step 3: Implement**
 - [ ] **Step 4: Run → PASS**
-- [ ] **Step 5: Commit** — `git commit -m "feat(memory): five-stage recall"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(memory): five-stage recall over AgentCore"`
 
-### Task 7: Sync from AgentCore into the index
+### Task 5: Sync between AgentCore and the log
 
 **Files:**
 - Create: `apps/backend/core/services/memory_sync.py`
-- Modify: `apps/backend/core/services/workspace_memory.py` (export `_client()` and namespace helpers; no behaviour change)
-- Test: `apps/backend/tests/unit/services/test_memory_sync.py` (Stubber for `bedrock-agentcore`; `@pytest.mark.db`)
+- Modify: `apps/backend/core/services/network_member.py` (expose `call_op(owner_id, op, params, timeout) -> dict | None` returning `None` when the runtime is parked, and `queue_op(owner_id, op, params)` persisted in DynamoDB and drained on the runtime's next start)
+- Test: `apps/backend/tests/unit/services/test_memory_sync.py`
 
 **Interfaces:**
-- Consumes: Task 4.
-- Produces: `async def sync_workspace(workspace_id: str, *, memory_id: str, namespace: str, actor_id: str, cloud_member: bool = True) -> dict` → `{"records": n, "turns": n, "entries": n}`. For a real workspace the caller passes the workspace memory id, `/owners/<owner>/` and the owner actor; the benchmark passes `BenchmarkMemory` and its own namespace and actor. Reads `sync_state`; `ListMemoryRecords` on `namespace` with filter `x-amz-agentcore-memory-updatedAt AFTER records_after` (paged), maps each record to a `Record` (`kind`, `entity`, `attribute`, `status`, `valid_from`, `valid_to` from metadata; `content` from text; `speaker` parsed from the leading `Name:` prefix; `source_ids` from metadata `sources` if present); `ListEvents` for `actor_id` after `events_after` → `Turn`s (`redact` already applied upstream); when `cloud_member` and the workspace runtime is up, `network_member` op `memory.list {since_seq}` (log plan Task 6) → `entries` rows, and new room-fact records → op `memory.import` so they enter the log; writes all; advances `sync_state`. Private namespaces are not synced (DMs stay in AgentCore, spec §5). Also `async def sync_if_stale(workspace_id, …, max_age_s: int = 60) -> None` used by recall.
+- Consumes: cloud member ops from the log plan Task 6: `memory.import {entries}`, `memory.list {since_seq}`, `memory.remember {...}`.
+- Produces: `async def sync_workspace(owner_id: str, *, memory_id: str, namespaces: dict[str, str], cloud_member: bool = True) -> dict` → `{"imported": n, "mirrored": n}`: `ListMemoryRecords(facts, updatedAt AFTER watermark)` → `memory.import` entries (author "workspace", kind from metadata, `subject = f"{entity} {attribute}"`, `fact = value`, `when = validFrom`) when the runtime is up, else left for next time; `memory.list {since_seq}` → `BatchCreateMemoryRecords` into `entries` (record id = entry id; tombstones → `BatchDeleteMemoryRecords`); watermarks in DynamoDB under the owner. `async def sync_if_stale(owner_id, …, max_age_s: int = 60) -> None`.
 
-- [ ] **Step 1: Write the failing tests**
-
-```python
-async def test_sync_maps_metadata_to_record_columns(db, stub): ...   # one record with kind/entity/attribute/status/validFrom -> row columns set
-async def test_sync_advances_watermarks(db, stub): ...
-async def test_sync_skips_private_namespaces(db, stub): ...
-async def test_sync_if_stale_noop_within_max_age(db, stub): ...
-```
-
+- [ ] **Step 1: Write the failing tests** — `test_sync_imports_new_facts_as_entries`, `test_sync_mirrors_entries_and_tombstones`, `test_sync_skips_private_namespace`, `test_sync_if_stale_noop_within_max_age`, `test_sync_when_parked_leaves_watermark`
 - [ ] **Step 2: Run → FAIL**
 - [ ] **Step 3: Implement**
 - [ ] **Step 4: Run → PASS**
-- [ ] **Step 5: Commit** — `git commit -m "feat(memory): sync AgentCore records and events into Postgres"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(memory): sync extracted facts into the log and log entries into AgentCore"`
 
-### Task 8: AgentCore strategy overrides and metadata schema
-
-**Files:**
-- Modify: `apps/infra/lib/stacks/container-stack.ts:236-249` (the `CfnMemory`): add `indexedKeys` (`kind`, `entity`, `attribute`, `status` STRING; `validFrom`, `validTo` NUMBER) and, on `workspace_facts`, `memoryRecordSchema.metadataSchema` with definitions and `allowedValues` (`kind`: claim, observation, rule, mention, anchor; `status`: current, contested) and the override configuration (`extraction` and `consolidation` instructions from the two prompt files, model `MEMORY_EXTRACT_MODEL` default a Haiku-class Bedrock id), plus a second `CfnMemory` `BenchmarkMemory` with the same strategy in dev only
-- Create: `apps/infra/prompts/memory-extraction.md`, `apps/infra/prompts/memory-consolidation.md` (ours; they append to AWS's defaults per the override docs; the consolidation text carries the one-record-per-slot, current-then-history and contested rules from spec §5)
-- Create: `apps/infra/scripts/memory-strategy-apply.ts` (fallback: applies the same via `UpdateMemory` through the SDK if `CfnMemory` rejects any of the fields; the test below decides which path)
-- Test: `apps/infra/test/container-stack.test.ts`
-
-**Interfaces:**
-- Produces: metadata keys exactly as Task 7 reads them.
-
-- [ ] **Step 1: Write the failing CDK assertion**
-
-```ts
-test("workspace memory declares the six indexed keys", () => { template.hasResourceProperties("AWS::BedrockAgentCore::Memory", Match.objectLike({ IndexedKeys: Match.arrayWith([Match.objectLike({ Key: "validFrom", Type: "NUMBER" })]) })); });
-```
-
-- [ ] **Step 2: Run → FAIL**
-- [ ] **Step 3: Implement; if `cdk synth` rejects override or schema properties, keep `indexedKeys` in CDK and put the rest in `memory-strategy-apply.ts`, run from the deploy workflow after the stack**
-- [ ] **Step 4: Run tests; `cdk synth`; deploy to dev; `aws bedrock-agentcore-control get-memory` shows the strategy with overrides**
-- [ ] **Step 5: Probe the open question** — send the two probe-2 contradiction cases and the three rephrased updates as events to the dev memory; after extraction, `list-memory-records` shows: one record per slot with history in the text, `status=contested` on the Ana/Ben case; record the answer in `docs/research/2026-10-28-beam-baselines.md` ("consolidation can/cannot set metadata on the rewritten record"). If it cannot, open the fallback (self-managed strategy) as a follow-up plan; this plan continues either way.
-- [ ] **Step 6: Commit** — `git commit -m "infra(memory): extraction and consolidation overrides, metadata schema, benchmark memory"`
-
-### Task 9: Router: recall, remember, benchmark endpoints
+### Task 6: Router: recall, remember, list, benchmark endpoints, tool specs
 
 **Files:**
 - Modify: `apps/backend/routers/memory.py`
-- Modify: `apps/backend/core/services/network_tools.json` (add `recall` and `remember` tool specs; the same file is mirrored into the CLI by the log plan)
-- Modify: `apps/backend/core/services/hosted_mcp.py` (map the two tools to the endpoints)
+- Modify: `apps/backend/core/services/network_tools.json` (`recall`, `remember` tool specs; mirrored into the CLI by the log plan Task 3)
+- Modify: `apps/backend/core/services/hosted_mcp.py` (map the two tools)
 - Test: `apps/backend/tests/unit/routers/test_memory_recall_routes.py`
 
 **Interfaces:**
-- Consumes: Task 6 `recall`, Task 7 `sync_if_stale`, Task 4 writes.
 - Produces:
-  - `POST /api/v1/memory/recall {question, as_of?, budget_tokens?=8000, limit?=100}` → page; member auth; `scopes=("team","private")` with `member_id` = caller; calls `sync_if_stale` first.
-  - `POST /api/v1/memory/remember {subject, fact, kind, scope="me"|"team", replaces?: [id]}` → `{"queued": bool, "neighbours": [...]}`: returns the current records on the subject (from `records` + `entries`) and forwards the write to the cloud member's `memory.remember` op through `network_member` (queued when parked; `queued=true`).
-  - Benchmark, gated by admin token and `MEMORY_BENCHMARK_ENABLED`: `POST /benchmark/projects {name}` → `{workspace_id}` (`beam-<name>`); `POST /benchmark/ingest {workspace_id, idempotency_key, items}` → writes `CreateEvent` per item into `BenchmarkMemory` under actor `workspace_id`, upserts `turns`, returns `{ingestion_id}` (= idempotency key; a repeated key returns the same id without re-ingesting, tracked in `sync_state`); `GET /benchmark/ingest/{id}` → polls record count stable for 300 s, then runs `sync_workspace(…, cloud_member=False)`, returns `{status:"completed", settled:true}`; `POST /benchmark/recall {workspace_id, question, as_of, budget_tokens, limit}` → `recall(workspace_id, …, scopes=("team",))` with no sync (the harness has already settled); `DELETE /benchmark/projects/{workspace_id}` → `wipe_workspace` + AgentCore namespace delete.
-  - Tool specs: `recall(question: str) -> page` ("Call when a task starts or you need something a teammate may know"); `remember(subject, fact, kind, scope?, replaces?)` ("Returns what is already known on the subject; call again with `replaces` if yours is a change").
+  - `POST /api/v1/memory/recall {question, as_of?, budget_tokens?=8000, limit?=100}` → page; member auth; `include_private=True` for the caller; `sync_if_stale` first.
+  - `POST /api/v1/memory/remember {subject, fact, kind, scope="me"|"team", replaces?}` → `{"queued": bool, "neighbours": [...]}`: neighbours from a `RetrieveMemoryRecords` on `facts` and `entries` by subject; the write forwarded as `memory.remember` (`call_op`, else `queue_op`, `queued=true`).
+  - `GET /api/v1/memory` (existing list) adds `status`, `history`, `speaker`, `source` from the record metadata and text; the private list unchanged; `DELETE /{id}` also deletes the `entries` mirror and forwards `forget` to the cloud member.
+  - Benchmark (admin token + `MEMORY_BENCHMARK_ENABLED`): `POST /benchmark/projects {name}` → `{workspace_id}`; `POST /benchmark/ingest {workspace_id, idempotency_key, items}` → `CreateEvent` per item on `BenchmarkMemory` (actor `workspace_id`, session = item's BEAM session, `eventTimestamp` = item timestamp, text `f"{author}: {content}"`) and `BatchCreateMemoryRecords` of each item into `/beam/<workspace_id>/turns/` (record id = item id, `timestamp` = item timestamp); repeated key → same `ingestion_id`, nothing re-sent (keys kept in DynamoDB); `GET /benchmark/ingest/{id}` → record count in `facts` stable for 300 s → `{status:"completed", settled:true}`; `POST /benchmark/recall {workspace_id, question, as_of, budget_tokens, limit, extraction: "full"|"none"}` → `recall(...)` with `namespaces` of the benchmark workspace (`extraction="none"` queries `turns` only); `DELETE /benchmark/projects/{workspace_id}` → delete all records in the three namespaces and the actor's events.
+  - Tool specs: `recall(question: str)` ("Call when a task starts or you need something a teammate may know"); `remember(subject, fact, kind, scope?, replaces?)` ("Returns what is already known on the subject; call again with `replaces` if yours is a change. Personal unless the person says to share").
 
-- [ ] **Step 1: Write the failing route tests (TestClient; services patched)**
-
-```python
-def test_recall_requires_member(client): ...                 # 401 without auth
-def test_recall_calls_sync_then_recall(client, patched): ...
-def test_remember_returns_neighbours_and_queues(client, patched): ...
-def test_benchmark_routes_404_when_disabled(client, monkeypatch): ...
-def test_benchmark_ingest_idempotent(client, patched): ...
-```
-
+- [ ] **Step 1: Write the failing route tests** — `test_recall_requires_member`, `test_recall_calls_sync_then_recall`, `test_remember_returns_neighbours_and_queues_when_parked`, `test_benchmark_routes_404_when_disabled`, `test_benchmark_ingest_idempotent`, `test_benchmark_recall_extraction_none_queries_turns_only`
 - [ ] **Step 2: Run → FAIL**
 - [ ] **Step 3: Implement**
 - [ ] **Step 4: Run → PASS**
-- [ ] **Step 5: Commit** — `git commit -m "feat(memory): recall and remember endpoints, benchmark endpoints, tool specs"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(memory): recall, remember, list, benchmark endpoints, tool specs"`
 
-### Task 10: Hermes plugin and wipes
+### Task 7: Hermes plugin
 
 **Files:**
-- Modify: `apps/infra/hermes/plugins/memory/agentcore/__init__.py` (`prefetch`, `_search`, `handle_tool_call`: call the backend's `/api/v1/memory/recall` with the runtime's existing backend credentials instead of `RetrieveMemoryRecords`; the query is the user's text only, never the turn-context JSON; `sync_turn` unchanged)
-- Modify: `apps/backend/core/services/workspace_memory.py` (`delete_owner_memory`, `delete_member_memory` also call `memory_index.wipe_workspace` / `wipe_member`)
-- Test: `apps/infra/hermes/tests/test_memory_plugin_recall.py`, `apps/backend/tests/unit/services/test_workspace_memory.py` (extend)
+- Modify: `apps/infra/hermes/plugins/memory/agentcore/__init__.py`: `sync_turn` adds the speaker name to the event text and writes the turn as a record into `turns` (`BatchCreateMemoryRecords`, id = `<session>:<turn>`); `prefetch`, `_search` and `handle_tool_call` call `POST /api/v1/memory/recall` with the user's text only (strip the turn-context JSON prefix); a `remember` tool schema forwarding to `POST /api/v1/memory/remember`
+- Test: `apps/infra/hermes/tests/test_memory_plugin_recall.py`
 
-- [ ] **Step 1: Write the failing tests**
-
-```python
-def test_prefetch_query_is_user_text_only(monkeypatch): ...     # turn-context JSON prefix stripped before the request
-def test_prefetch_injects_page_lines_under_budget(monkeypatch): ...
-async def test_owner_wipe_calls_index_wipe(patched): ...
-```
-
-- [ ] **Step 2: Run → FAIL** (`cd apps/infra/hermes && pytest tests/test_memory_plugin_recall.py -v`; backend as before)
+- [ ] **Step 1: Write the failing tests** — `test_prefetch_query_is_user_text_only`, `test_prefetch_injects_page_lines_under_budget`, `test_sync_turn_writes_turn_record_with_speaker`, `test_remember_tool_forwards`
+- [ ] **Step 2: Run → FAIL** — `cd apps/infra/hermes && pytest tests/test_memory_plugin_recall.py -v`
 - [ ] **Step 3: Implement**
 - [ ] **Step 4: Run → PASS**
-- [ ] **Step 5: Commit** — `git commit -m "feat(memory): room agents recall through the backend; wipes cover the index"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(memory): room agents recall through the backend; turns mirrored"`
 
-### Task 11: Memory tab and one-time import
+### Task 8: Wipes, import, Memory tab
 
 **Files:**
-- Modify: `apps/backend/routers/memory.py` (`GET /api/v1/memory` lists team records from `records` and `entries` with `status`, `history`, `speaker`, plus the private AgentCore scope as today; `POST /{id}/share`, `/confirm`, `DELETE /{id}` route to the right store by id prefix)
-- Create: `apps/backend/scripts/memory_import.py` (`import_workspace(owner_id) -> int`: AgentCore team records → `records` + a `memory.import` op to the cloud member with author "workspace (imported)")
-- Modify: `apps/frontend/src/components/control/panels/AgentMemoryTab.tsx` (status badge "contested", a history line "was … (who, when)", a contested filter; nothing else)
-- Test: `apps/backend/tests/unit/routers/test_memory_list.py`, `apps/frontend/src/__tests__/components/control/AgentMemoryTab.test.tsx`
+- Modify: `apps/backend/core/services/workspace_memory.py` (`delete_owner_memory` covers `turns` and `entries`; `delete_member_memory` forwards `memory.forget_author` to the cloud member (log plan Task 6))
+- Create: `apps/backend/scripts/memory_import.py` (`import_workspace(owner_id) -> int`: existing `facts` records → `memory.import` with author "workspace (imported)")
+- Modify: `apps/frontend/src/components/control/panels/AgentMemoryTab.tsx` (contested badge, history line, contested filter, "pending" state for queued writes)
+- Test: `apps/backend/tests/unit/services/test_workspace_memory.py` (extend), `apps/frontend/src/__tests__/components/control/AgentMemoryTab.test.tsx`
 
-- [ ] **Step 1: Write the failing tests** (`test_list_merges_records_and_entries_with_status`, `renders contested badge and history line`)
+- [ ] **Step 1: Write the failing tests** — `test_owner_wipe_covers_three_namespaces`, `test_member_wipe_forwards_forget_author`, `test_import_sends_entries_in_batches`, `renders contested badge and history line`
 - [ ] **Step 2: Run → FAIL**
 - [ ] **Step 3: Implement**
 - [ ] **Step 4: Run → PASS**
-- [ ] **Step 5: Commit** — `git commit -m "feat(memory): Memory tab shows status and history; one-time import"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(memory): wipes cover the namespaces; one-time import; Memory tab status and history"`
 
-### Task 12: Deploy to dev and run our own workspace on it
+### Task 9: Deploy to dev and run our own workspace on it
 
-- [ ] **Step 1: Deploy** (`gh workflow run deploy.yml` for dev; the founder runs prod deploys)
-- [ ] **Step 2: Migrate** — `uv run scripts/memory_migrate.py` against dev
-- [ ] **Step 3: Import our workspace** — `uv run scripts/memory_import.py <owner>`
-- [ ] **Step 4: Smoke** — a room agent answers a question from a fact a laptop `remember`ed; the Memory tab shows it with the sharer's name; the harness's Lightbulb arm runs on 100K (harness plan Task 5)
-- [ ] **Step 5: Record stage timings and costs for a day in `docs/research/2026-10-28-beam-baselines.md`**
+- [ ] **Step 1: Deploy dev** (`gh workflow run deploy.yml`; the founder runs prod)
+- [ ] **Step 2: Import our workspace** — `uv run scripts/memory_import.py <owner>`
+- [ ] **Step 3: Smoke** — a room agent answers from a fact a laptop `remember`ed; the Memory tab shows it with the sharer's name; the runner's Lightbulb arm runs on 100K (runner plan Task 5)
+- [ ] **Step 4: Record stage timings, AgentCore extraction throughput and costs for a day in `docs/research/2026-10-28-beam-baselines.md`**

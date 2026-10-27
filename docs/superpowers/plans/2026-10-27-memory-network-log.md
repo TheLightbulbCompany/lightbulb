@@ -170,7 +170,20 @@ Run: `cargo test --test memory_store`
 - [ ] **Step 4: Run → PASS**
 - [ ] **Step 5: Commit** — `git commit -m "memory: cloud member ops for the workspace"`
 
-### Task 7: Mixed-version test and release
+### Task 7: Setup suggests sign-in
+
+**Files:**
+- Modify: `src/setup/` (the wizard's first screen: "Sign in (free): your memory and sessions follow you across computers; the Claude app reaches your agents; the evaluator can read sessions you upload. Or stay local." with local-only one keypress away; the capture upload choice asked right after sign-in, default off)
+- Modify: `docs/usage.md`
+- Test: `tests/cli.rs` (extend)
+
+- [ ] **Step 1: Write the failing tests** — `setup_offers_sign_in_first_with_local_one_key_away`, `setup_without_sign_in_sets_upload_off`
+- [ ] **Step 2: Run → FAIL**
+- [ ] **Step 3: Implement**
+- [ ] **Step 4: Run → PASS**
+- [ ] **Step 5: Commit** — `git commit -m "setup: suggest the free sign-in, local-only one key away"`
+
+### Task 8: Mixed-version test and release
 
 - [ ] **Step 1: Run the two-Mac acceptance from `docs/acceptance-two-mac.md` with one Mac on v0.6.5 and one on this build: messaging works both ways; memory syncs only between new builds**
 - [ ] **Step 2: Add the memory rows to `docs/acceptance-public.md`**

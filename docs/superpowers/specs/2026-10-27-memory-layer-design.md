@@ -57,40 +57,42 @@ No model runs in the engine. The agents already on the network are the models.
 - **Several facts:** the agent calls `recall` again with narrower questions, as agents already do.
 - **`lightbulb memory`**: list, show (history and who), forget, export, share, `last` (what was injected last time).
 
-## 5. The workspace: AgentCore alongside the log
+## 5. The workspace engine: extraction on AgentCore, retrieval on Postgres, five stages in our code
 
-AgentCore Runtime hosts the workspace agents and the cloud member (`apps/infra/hermes/bridge/network.py`), so it hosts the workspace's copy of the log with no new work. AgentCore Memory does two jobs the log cannot do for free, and nothing else:
+The target is past.dev's 10M split (85.03), not just the easy splits. `2026-10-27-past-dev-how-it-works.md` shows what that takes: typed, dated memories plus searchable raw turns, retrieved by several strategies, fused, reranked and composed to a budget. AgentCore Memory's search is one strategy (semantic over records, top 100, metadata filters) with no keyword arm, no reranker and no control over fusion, so it cannot be the whole pipeline. Hindsight (MIT) implements exactly this pipeline, but as a 180,000-line service with 94 dependencies; its `engine/search/` (3,600 lines: fusion, reranking, temporal extraction, keyword term selection, fact budget) is the reference we lift algorithms from, not a service we run.
 
-| Source | Direction | Mechanism |
+| Part | What | Where |
 |---|---|---|
-| Room conversation | AgentCore → log | The semantic strategy keeps extracting from the room events the Hermes plugin already writes, with override instructions (one fact per attribute; speaker and date in the text; a change rewrites current-then-history; two people's different values become one record marked contested, never a pick). The cloud member polls new and updated records (`ListMemoryRecords`, `updatedAt AFTER` last sync) and writes them as `team` entries signed "workspace" |
-| Every log entry | log → AgentCore | The cloud member mirrors each entry as a record in its own namespace with `BatchCreateMemoryRecords`, no strategy on that namespace, so nothing merges it. Workspace recall (room agents, hosted apps, Memory tab) runs `RetrieveMemoryRecords` over the mirror for search by meaning, then builds the same page as §4.3 |
+| Extraction and consolidation | AgentCore semantic strategy with override instructions and a metadata schema: `kind` (claim/observation/rule/mention/anchor), `entity`, `attribute`, `status` (current/contested) model-filled with allowed values; `validFrom`/`validTo` as NUMBER (epoch seconds). Consolidation rule: one record per entity+attribute, current value first, history after; two people's different values become one `contested` record naming both; never a pick | AgentCore Memory (existing resource, `UpdateMemory`), managed and billed per record |
+| Fallback extraction | If consolidation cannot set `validTo`/`status` on the record it rewrites, or cannot ingest 100M tokens in a day, the same prompts run in AgentCore's self-managed strategy (its batches → our worker → `BatchCreate/UpdateMemoryRecords`) | Lambda, CDK pattern from `ses-inbound-stack.ts` |
+| Index | A `memory` database on the existing Aurora Serverless v2 cluster (`database-stack.ts`: Postgres 16, pgvector, scale-to-zero, 0–4 ACU). Tables: `records` (text, kind, entity, attribute, value, speaker, valid_from, valid_to, status, replaces, source ids, embedding, tsvector), `turns` (raw room turns, embedding, tsvector), `links` (entity ↔ record), `entries` (the log, mirrored). Embeddings from Bedrock (Titan Text Embeddings V2 or Cohere Embed; chosen in week 1 on price and the 100K score) | Aurora, new database; backend gets security-group ingress like Paperclip has |
+| Recall (five stages) | 1 expand: one Haiku call splits a multi-part question into sub-questions (skipped for single-part); 2 search, per sub-question, four arms in SQL: cosine over `records` and `turns`, `ts_rank` keyword, entity links, time window from the question; 3 fuse: reciprocal rank fusion, k=60; 4 rerank: Bedrock `Rerank` with `cohere.rerank-v3-5:0` over ≤100 candidates ($2 per 1,000 queries); 5 compose to the token budget: contested first, current claims, raw turns with excerpts, history | `apps/backend/core/services/memory_recall.py`, one function, called by the Hermes plugin, the hosted tools and the harness |
+| Writers into the index | The cloud member: polls new and updated AgentCore records (`ListMemoryRecords`, `updatedAt AFTER` last sync) into `records` and, for room facts, into the log as `team` entries signed "workspace"; mirrors every log entry into `entries`; mirrors room turns into `turns` as the plugin writes them | `apps/infra/hermes/bridge/network.py` (poll), plugin `sync_turn` (turns) |
 
-One source, two indexes, one direction per source: no loop. The log is what people see and correct; AgentCore is an extractor and a search index over it.
+One source, two indexes, one direction per source: no loop. The log is what people see and correct; AgentCore extracts; Postgres is searched. AgentCore's own search is not used by the product once Postgres is live (it stays for the Memory tab's private DM scope, below).
 
 - **DMs stay private, as today.** A 1:1 with a workspace agent keeps extracting into that person's private AgentCore scope (`/owners/<owner>:<user>/`), which never enters the log. The Memory tab shows that private list beside the team list from the log, and `share` writes a team entry signed by the workspace carrying the person's name. Anything else would make a DM a team fact, which is a privacy regression.
-- **`forget`** deletes the log entry everywhere and the mirror record by the id we created. An extracted record's log entry can be forgotten the same way; the room message it came from stays until the person deletes it, as today. Any workspace member can forget a team entry, as any member can delete a team fact today.
-- **Wipe:** a member wipe deletes their private scope and tombstones every entry they signed; an owner wipe does that for everyone plus the mirror and extraction namespaces.
-- **When the runtime is parked:** the Memory tab reads the cloud member's `state.db` snapshot in S3 (the backend already reads from S3 rather than cold-start a parked runtime, ~55 s); the page query is plain SQLite. Writes from the tab (forget, share) queue and apply when the cloud member next runs, shown as pending until then.
-- **Cutover:** import today's team records once as `team` entries signed "workspace (imported)"; private scopes are untouched; the Hermes plugin's prefetch and search tool read the mirror (fixing today's defect where the search text is routing JSON).
-- **Hard boundary:** laptop and hosted tools never call AgentCore. They read the log. Only the cloud member and the runtime touch AgentCore, under the workspace's role, as today.
+- **`forget`** deletes the log entry everywhere and its row in `entries`; a record's row in `records` and its AgentCore record go with it. The room message it came from stays until the person deletes it, as today. Any workspace member can forget a team entry, as any member can delete a team fact today.
+- **Wipe:** a member wipe deletes their private scope and tombstones every entry they signed; an owner wipe does that for everyone plus the workspace's rows in every table and its AgentCore namespaces.
+- **When the runtime is parked:** the Memory tab reads Postgres and the cloud member's `state.db` snapshot in S3 (the backend already reads from S3 rather than cold-start a parked runtime, ~55 s). Writes from the tab (forget, share) queue and apply when the cloud member next runs, shown as pending until then.
+- **Cutover:** import today's team records once as `team` entries signed "workspace (imported)" and into `records`; private scopes are untouched; the Hermes plugin's prefetch and search tool call the backend's recall (fixing today's defect where the search text is routing JSON).
+- **Hard boundary:** laptop and hosted tools never touch AgentCore or Postgres directly. Laptops read the log; hosted tools and the plugin call the backend's recall, which checks the member against the workspace. Only the runtime and the backend hold AgentCore and database credentials.
 
-## 6. Measurement: what we will and will not claim
+## 6. Measurement: the 10M target
 
-We do not expect to beat past.dev's 90 on BEAM; their score took a team a year and their losses are in the four hardest abilities. We measure anyway, honestly, because a number anyone can rerun is worth more than a claim.
+The target is past.dev's published 10M result (85.03 overall; multi-session 28.2, information extraction 68.8, contradiction 73.1, knowledge update 92.5, the other six 93–100), on their harness, so the comparison is direct. We do not promise it; we build toward it and publish what we get.
 
-1. **Same harness.** Fork past.dev's MIT-licensed BEAM harness and replace only the memory calls. ExaBase's prompts hash-checked, same answer and judge model, 8,000-token budget, each question once.
-2. **Four arms on the 100K split** (~$80 total): past.dev rerun (our ~149,900 free credits cover it), AgentCore built-in as today, AgentCore with the §5 overrides, and the log with model-driven extraction standing in for the agent. Judge each three times to see the noise.
-3. **What the arms decide:** which extraction the workspace uses (built-in or overrides), and how much keyword search costs against search by meaning. Both have a price per workspace beside the score.
-4. **Tuning** is a two-week timebox on the leading arm. One untouched run of 500K, 1M, 10M and LongMemEval_S at the end. Publish results, prompts, harness commit, cost and variance, whatever they show.
-5. **The number we lead with** is the one nobody else runs: a team-memory set from our own rooms (with consent, anonymised), scored on whether one person's agent answers from what another person said, names the source, and surfaces disagreements instead of resolving them. The public line is about that and about where the data lives, never a competitor's name.
-6. **The parity path**, from `docs/research/2026-10-27-past-dev-how-it-works.md`: their page is 80% raw turns found by search plus 20% typed, dated memories, and the hard abilities are carried by the memory layer (knowledge update scores 0.93 when the current value is a claim on the page, 0.71 when it is only in a raw turn, 0.38 when missing). To match: mirror raw room turns as searchable records; extract in their shapes (speaker, `entity attribute: value`, resolved dates, rules); one record per slot with history (which fixes the two leaks their pages show: duplicate current claims on 62 of 700 pages, and the replacement absent for 133 of 170 superseded claims); sub-question expansion; a reranker; composition that fills the budget. Each stage measured on 100K against the judge's spread, in the tuning timebox.
+1. **Same harness.** Fork past.dev's MIT-licensed BEAM harness and replace only the memory calls with an adapter that ingests through AgentCore events (per-turn `eventTimestamp`) and recalls through §5's five stages. ExaBase's prompts hash-checked, same answer and judge model, 100 results within 8,000 tokens, each question once, `queryTimestamp` honoured through `valid_from`/`valid_to`.
+2. **Baselines on 100K** (~$100): past.dev rerun (our ~149,900 free credits), AgentCore built-in as today, ours. Judge each three times to see the noise. Optional fourth arm: Hindsight's Docker image behind the same adapter, to see what a Hindsight-class pipeline scores with correct dates.
+3. **Where the points are**, from `2026-10-27-past-dev-how-it-works.md`: their page is 80% raw turns plus 20% typed memories; the hard abilities are carried by the memory layer (knowledge update 0.93 with the current value as a claim on the page, 0.71 in a raw turn only, 0.38 missing). Their leaks: duplicate current claims on 62 of 700 pages; the replacement absent for 133 of 170 superseded claims; aggregation across sessions. Ours fixes the first two by construction and attacks the third with expansion plus exhaustive listing by entity (`links`), which a top-k search cannot do.
+4. **Tuning** on 100K and 1M, two-week timebox, each stage measured against the judge's spread: no expansion vs expansion; RRF vs RRF+rerank; memories-first vs mixed composition; Titan vs Cohere embeddings; built-in vs override extraction. 10M is run only on the tuned configuration (hours per run, ~$150), untouched during tuning.
+5. **Publish** results, prompts, harness commit, cost and variance, whatever they show. The number we lead with publicly is still the team-memory set from our own rooms (with consent, anonymised): one person's agent answering from what another said, naming the source, surfacing disagreements. The public line is about that and where the data lives, never a competitor's name.
 
 ## 7. Cost
 
 - **Free network: $0 to us.** The person's agent writes, their computer stores and searches, the network carries it.
-- **Workspace, per month, 5 people, 3,000 room messages, ~2,000 records (assumptions to measure):** extraction with overrides on a Haiku-class Bedrock model ~$1.50; records $0.25 per 1,000 with overrides ($0.50); mirror records the same (~$0.50); retrievals $0.50 per 1,000 × ~3,000 room turns × 2 namespaces (~$3); short-term events <$0.10. **About $6, 12% of the plan.** Laptop recall is local and free. Bedrock's model price and retrievals per turn are measured in week 1.
-- **Benchmarks:** ~$80 for the four baselines, ~$15–20 per tuning run, ~$150 for the final full run; ~$500 all in.
+- **Workspace, per month, 5 people, 3,000 room messages, ~2,000 records (assumptions to measure):** extraction with overrides on a Haiku-class Bedrock model ~$1.50; AgentCore records $0.25 per 1,000 (~$0.50); embeddings for 3,000 turns and 2,000 records (<$0.10 at Cohere's $0.10 per million tokens; Titan is cheaper); Aurora: the cluster already exists and scales to zero, a workspace's queries add well under 1 ACU-hour a day (~$4 at $0.12 per ACU-hour, shared across all workspaces); rerank $2 per 1,000 recalls × ~3,000 room turns (~$6); short-term events <$0.10. **About $8–12 per workspace, under a quarter of the plan**, and the rerank line is the lever if it must come down (rerank only multi-part questions). Laptop recall is local and free. Bedrock prices are confirmed in week 1.
+- **Benchmarks:** ~$100 for the baselines; ~$15–20 per 100K tuning run, ~$60 per 1M run; a 10M run ≈ 100M tokens: extraction ~$50 on Haiku, embeddings ~$10, AgentCore records (~400K, deleted after) ~$100 for the month, Aurora at 4 ACU for a day ~$12, answer and judge ~$20: **~$200 per 10M run**; ~$800 all in.
 - **People's tokens:** ~400 at session start, plus whatever `remember` and `recall` calls the agent chooses to make.
 
 ## 8. Privacy
@@ -104,18 +106,19 @@ Working days with agents. Memory ships to users before anything is benchmarked.
 | Step | Days | What | Done when |
 |---|---|---|---|
 | 1. The log | 5–6 | Signed per-author entries and tombstones; `memory` capability in `hello` and paged sync; FTS5; `remember`/`recall` in the shared tool spec with the secret check; session-start block; `lightbulb memory`; two-computer and mixed-version tests; CLI release; privacy and security docs | A fresh install on two computers shares a fact with a name on it; an old build keeps messaging |
-| 2. Harness and baselines (parallel) | 3 | Fork; four adapters; 100K ×4, judge ×3; Bedrock price check | We know where each arm stands and what the judge's noise is |
-| 3. Workspace | 5–6 | Cloud member imports and mirrors; override instructions on room extraction only; plugin reads the mirror; Memory tab reads the snapshot and queues writes; one-time import; wipes and tombstones | Our own workspace runs on it for a week |
-| 4. Tuning | timebox 10 | Leading arm only; probe cases every run | Improvement beyond the judge's spread, or stop and report |
+| 2. Harness and baselines (parallel) | 3 | Fork; adapters for past.dev, AgentCore built-in and ours; 100K ×3, judge ×3; Bedrock prices, consolidation metadata behaviour and AgentCore throughput checked | We know where each arm stands, the judge's noise, and whether the fallback extractor is needed |
+| 3. Engine | 8 | `memory` database and migrations on the Aurora cluster; backend ingress; embeddings and rerank permissions; override instructions and metadata schema on a test memory resource; cloud member polling into `records` and the log; turns mirror; the five-stage recall; plugin and hosted tools call it; Memory tab; one-time import; wipes | Our own workspace runs on it for a week; the harness runs end to end on 100K |
+| 4. Tuning | timebox 10 | Stage-by-stage on 100K and 1M; probe cases every run; then one 10M run | 10M result in hand, whatever it is |
 | 5. Publish | 3 | Final runs; team-memory set; results repo; /network page | Numbers anyone can rerun |
 
-About four to five weeks; user-visible memory at the end of week one.
+About five to six weeks; user-visible memory at the end of week one.
 
 ## 10. Decisions for the founder
 
 1. Memory is part of the free network, peer to peer, no account, including team memory between members. Without an account, personal memory is per computer; the free account syncs your own computers. (The alternative is a pairing command for people who never sign in: a new roster entry type and CLI command in step 1.)
 2. Personal by default; sharing to the team needs the person's yes.
-3. AgentCore Memory stays in workspaces as extractor and search index over the log, never as a second store people edit.
+3. AgentCore Memory stays as the workspace's extractor; retrieval moves to Postgres on the cluster we already run, with the five stages in our code. AgentCore's own search is not used by the product. (The alternative, AgentCore search alone, cannot reach the 10M target: one strategy, no keyword arm, no reranker.)
+5. The 10M split is the target and we spend ~$200 a run on it, after tuning on the small splits only.
 4. We publish benchmark numbers with cost and variance even when they are below the leader, and the public line is about team memory and where data lives.
 
 ## 11. Calls I made (check these while reading)
@@ -129,6 +132,8 @@ About four to five weeks; user-visible memory at the end of week one.
 - `remember` refuses entries that match a secret pattern instead of scrubbing them.
 - DMs keep today's private AgentCore scope and never enter the log.
 - The Memory tab reads the S3 snapshot when the runtime is parked and queues its writes.
+- Hindsight's retrieval algorithms are lifted (MIT), not its service: 180,000 lines and 94 dependencies for 3,600 lines of search code we need.
+- Rerank through Bedrock's managed Cohere model rather than a local cross-encoder, so no torch in the backend image.
 
 Settled with a builder check (seven questions from a reviewer who could not ask the author); the one question that was the founder's is in §10.
 

@@ -1195,11 +1195,25 @@ async def test_put_agent_key_without_a_workspace_row_writes_nothing(repo):
     assert "Item" not in repo._table().get_item(Key={"user_id": "org_none"})
 
 
-async def test_put_workspace_carries_agent_keys_forward(repo):
+async def test_a_concurrent_agent_key_survives_a_put_workspace_from_an_older_snapshot(repo):
+    """A reconcile reads the row, a hire stores a key, then the reconcile writes its snapshot:
+    the key must survive (put_workspace never writes agent_keys)."""
     await repo.put_workspace(_make_company("org_k"))
+    await repo.put_agent_key("org_k", "a0", "k0")
+    snapshot = await repo.get_workspace("org_k")
+
     await repo.put_agent_key("org_k", "a1", "k1")
+    snapshot.last_error = "reconciled"
+    await repo.put_workspace(snapshot)
 
-    ws = await repo.get_workspace("org_k")
-    await repo.put_workspace(ws)
-
+    assert await repo.get_agent_key("org_k", "a0") == "k0"
     assert await repo.get_agent_key("org_k", "a1") == "k1"
+    assert (await repo.get_workspace("org_k")).last_error == "reconciled"
+
+
+async def test_put_workspace_still_clears_fields_the_snapshot_does_not_carry(repo):
+    await repo.put_workspace(_make_company("org_k", funnel_state="submitted"))
+    await repo.put_workspace(_make_company("org_k"))
+
+    item = repo._table().get_item(Key={"user_id": "org_k"})["Item"]
+    assert "funnel_state" not in item

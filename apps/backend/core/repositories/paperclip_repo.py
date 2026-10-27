@@ -226,11 +226,6 @@ class PaperclipWorkspace:
     """Set only after a pause's Paperclip PATCHes ALL landed; every new pause removes it
     first. The expired-trial sweep re-runs the (idempotent) pause until this is set."""
 
-    agent_keys: Optional[dict[str, str]] = None
-    """Paperclip agent id -> Fernet ciphertext of that agent's Paperclip API key
-    (``paperclip_api_key``). Written per agent by ``put_agent_key``; carried here
-    only so a whole-item ``put_workspace`` does not drop the map."""
-
 
 @dataclass
 class PaperclipIdentity:
@@ -279,7 +274,15 @@ _WORKSPACE_PLAIN_FIELDS = (
     "automation_pause_complete_at",
     "automation_paused_routine_versions",
     "automation_pause_token",
-    "agent_keys",
+)
+_WORKSPACE_OPTIONAL_FIELDS = (
+    "company_id",
+    "provisioner_user_id",
+    "member_user_ids",
+    "seeded_agent_ids",
+    "starter_agent_ids",
+    *_WORKSPACE_PLAIN_FIELDS,
+    *_WORKSPACE_ISO_FIELDS,
 )
 
 
@@ -309,12 +312,19 @@ class PaperclipRepo:
         condition: str | None = None,
         condition_values: dict | None = None,
     ) -> None:
-        """Whole-item put of a workspace row — replaces the row entirely.
+        """Write every ``PaperclipWorkspace`` field of a workspace row.
 
-        ⚠️ WRITER-SAFETY: this is a raw ``PutItem`` — any field NOT set on
-        ``ws`` is ABSENT from the new item, which silently WIPES a previously
-        written value (``onboarding_generation``, ``funnel_state``, members,
-        ...). Every caller MUST carry forward the row's existing fields unless
+        One ``UpdateItem`` that SETs each field ``ws`` carries and REMOVEs each
+        one it does not, so it replaces the dataclass's fields exactly like a
+        whole-item put did. Attributes the dataclass does not model (the
+        per-agent ``agent_keys`` map, ``agent_cost_remainder``) are never
+        written here: they change only through their own nested
+        ``SET``/``REMOVE`` paths, so a stale snapshot cannot erase a concurrent
+        write to them.
+
+        ⚠️ WRITER-SAFETY: any dataclass field NOT set on ``ws`` is REMOVED,
+        which silently WIPES a previously written value
+        (``onboarding_generation``, ``funnel_state``, members, ...). Every caller MUST carry forward the row's existing fields unless
         it is deliberately establishing them fresh (the G2 mint site in
         ``paperclip_provisioning.provision_org``). Prefer the conditional
         ``UpdateItem`` methods below for any single-field write.
@@ -351,12 +361,23 @@ class PaperclipRepo:
             value = getattr(ws, name)
             if value is not None:
                 item[name] = value.isoformat()
-        put_kwargs: dict = {"Item": item}
+        del item["user_id"]
+        names = {f"#f{i}": k for i, k in enumerate(item)}
+        values = {f":f{i}": v for i, v in enumerate(item.values())}
+        expr = "SET " + ", ".join(f"#f{i} = :f{i}" for i in range(len(item)))
+        absent = [k for k in _WORKSPACE_OPTIONAL_FIELDS if k not in item]
+        if absent:
+            names.update({f"#r{i}": k for i, k in enumerate(absent)})
+            expr += " REMOVE " + ", ".join(f"#r{i}" for i in range(len(absent)))
+        kwargs: dict = {
+            "Key": {"user_id": ws.org_id},
+            "UpdateExpression": expr,
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": {**values, **(condition_values or {})},
+        }
         if condition:
-            put_kwargs["ConditionExpression"] = condition
-            if condition_values:
-                put_kwargs["ExpressionAttributeValues"] = condition_values
-        await run_in_thread(self._table().put_item, **put_kwargs)
+            kwargs["ConditionExpression"] = condition
+        await run_in_thread(self._table().update_item, **kwargs)
         publish_status_changed(ws.org_id)
 
     async def get_workspace(self, org_id: str, *, consistent_read: bool = False) -> Optional[PaperclipWorkspace]:
@@ -407,7 +428,6 @@ class PaperclipRepo:
             if "automation_paused_routine_versions" in item
             else None,
             automation_pause_token=item.get("automation_pause_token"),
-            agent_keys=dict(item["agent_keys"]) if "agent_keys" in item else None,
             automation_paused_agent_ids=set(item["automation_paused_agent_ids"])
             if item.get("automation_paused_agent_ids")
             else None,

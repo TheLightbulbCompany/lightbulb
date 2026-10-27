@@ -59,8 +59,8 @@ async def _one(name: str, mode: str, has_row: dict[str, bool]) -> str:
     if not has_row[owner_id]:
         return "no_row"
     if mode == "dry-run":
-        row = await _repo().get_workspace(owner_id, consistent_read=True)
-        return "in_row" if row and agent_id in (row.agent_keys or {}) else "to_copy"
+        # Decrypted in memory only to test presence; never printed.
+        return "in_row" if await _repo().get_agent_key(owner_id, agent_id) is not None else "to_copy"
 
     value = await run_in_thread(_get_value, name)
     stored = await _repo().get_agent_key(owner_id, agent_id)

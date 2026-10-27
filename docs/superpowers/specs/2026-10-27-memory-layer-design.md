@@ -141,17 +141,15 @@ Same promise as messages, same transport. Free memory and capture live on member
 
 ## 11. Plan
 
-Four plans, each shipping on its own, in `docs/superpowers/plans/`:
+Split by who runs the code, in `docs/superpowers/plans/`:
 
 | Plan | Days | What | Done when |
 |---|---|---|---|
-| Network log (`2026-10-27-memory-network-log.md`) | 6 | Signed entries and tombstones; capability-gated sync; FTS5; `remember`/`recall`; session-start block; `lightbulb memory`; setup suggests sign-in; docs; CLI release | Two computers share a fact with a name on it; an old build keeps messaging |
-| Benchmark runner (`2026-10-27-memory-beam-runner.md`) | 3 | Fork; adapters for past.dev, AgentCore built-in and ours; the free signal; raw-turns mode; 100K baselines | We know where each arm stands and the judge's noise |
-| Workspace engine (`2026-10-27-memory-workspace-engine.md`) | 7 | Overrides and metadata schema; turns and entries namespaces; sync; five-stage recall; plugin and hosted tools call it; Memory tab; import; wipes | Our workspace runs on it a week; the runner runs end to end |
-| Capture and evaluator (`2026-10-27-memory-capture-evaluator.md`) | 7 | Capture tables and hooks; `lightbulb sessions`; upload choice; episodic strategy and drafts; approve into memory; Usage, timeline, share; the security page | A finding from a real session is approved into team memory; the security page is live |
-| Tuning | timebox 10 | Stage by stage on the free signal and Haiku; then one 10M run | 10M result in hand, whatever it is |
+| Free network, the engine (`2026-10-27-memory-free-network.md`, Rust, the CLI) | 9 | Signed entries and tombstones; capability-gated sync; FTS5; `remember`/`recall`; session-start block; `lightbulb memory`; cloud-member ops; setup suggests sign-in; local capture and `lightbulb sessions`; upload by choice and drafts from the CLI; docs; release v0.7.0 | Two computers share a fact with a name on it; an old build keeps messaging; nothing uploads with mode off |
+| Workspace (`2026-10-27-memory-workspace.md`, backend, AgentCore, plugin, frontend) | 12 | Overrides and metadata schema; turns and entries namespaces; five-stage recall; sync; routes and tool specs; plugin; wipes, import, Memory tab; sessions endpoints; the evaluator on the episodic strategy; approve drafts; usage, timeline, share; the security page | Our workspace runs on it a week; a real session's finding is approved into team memory; the security page is live |
+| Benchmark runner (`2026-10-27-memory-beam-runner.md`) | deferred | Built only when we decide to run benchmarks | — |
 
-About six weeks with agents; user-visible memory at the end of week one. Postgres (stage two) is a fifth plan only if the data asks for it.
+About four to five weeks with agents, native execution; user-visible memory at the end of week one. The AWS docs settle how metadata reaches merged records (re-extraction from the record text on consolidation), so no probe run is needed; the first dev deploy smoke-checks it for cents. Postgres (stage two) only if the per-question data ever asks for it.
 
 ## 12. Decisions for the founder
 

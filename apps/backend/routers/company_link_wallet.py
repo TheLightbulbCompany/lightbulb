@@ -88,7 +88,7 @@ async def disconnect(auth: Annotated[AuthContext, Depends(get_current_user)]):
 
 
 class LimitsBody(BaseModel):
-    perPurchaseCents: int = Field(ge=0, le=purchases.MAX_AMOUNT_CENTS)
+    perPurchaseCents: int = Field(ge=0)
     projectMonthlyCents: int = Field(ge=0, le=purchases.MAX_AMOUNT_CENTS * 10)
     merchants: list[str] = Field(default_factory=list, max_length=50)
 
@@ -107,7 +107,14 @@ async def put_limits(body: LimitsBody, auth: Annotated[AuthContext, Depends(get_
             merchants.append(purchases.website_logins.normalize_origin(m))
         except purchases.website_logins.LoginError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-    saved = await billing_repo.set_purchase_limits(owner_id, {**body.model_dump(), "merchants": merchants})
+    saved = await billing_repo.set_purchase_limits(
+        owner_id,
+        {
+            **body.model_dump(),
+            "perPurchaseCents": min(body.perPurchaseCents, purchases.MAX_AMOUNT_CENTS),
+            "merchants": merchants,
+        },
+    )
     if saved is None:
         raise HTTPException(status_code=404, detail="No billing account")
     return saved

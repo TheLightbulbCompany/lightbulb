@@ -40,7 +40,12 @@ SK_PREFIX = "PURCHASE#"
 # Statuses whose amount counts against the project's monthly cap: Link holds or has spent it.
 COUNTED = ("pending_approval", "approved", "submitted", "succeeded")
 _UNSAFE = re.compile(r"[\x00-\x1f\x7f]")
-MAX_AMOUNT_CENTS = 1_000_000_00  # sanity bound; the owner's caps are the real limit
+# Link refuses a spend request above $500 (stripe/link-cli README "Limits": "Max amount per spend
+# request: $500 (50,000 cents)"; the same figure is user-info's per_transaction limit). Refuse up
+# front, and clamp the owner's per-purchase cap to it, instead of sending Link a doomed request.
+MAX_AMOUNT_CENTS = 50_000
+# README "Limits": "Approval window: 30 minutes". A pending row older than this has expired at Link.
+APPROVAL_WINDOW_S = 30 * 60
 
 
 class PurchaseRefused(Exception):
@@ -70,7 +75,7 @@ def to_cents(amount: object) -> int:
     except (InvalidOperation, ValueError):
         raise PurchaseRefused("bad_amount", "amount must be a number of dollars.") from None
     if not 0 < cents <= MAX_AMOUNT_CENTS:
-        raise PurchaseRefused("bad_amount", "amount must be greater than zero.")
+        raise PurchaseRefused("bad_amount", "amount must be greater than zero and at most $500.")
     return cents
 
 
@@ -91,6 +96,16 @@ async def get(owner_id: str, request_id: str) -> dict | None:
 
 async def list_rows(owner_id: str) -> list[dict]:
     rows = await messaging_repo._query(messaging_repo.owner_pk(owner_id), begins_with=SK_PREFIX)
+    now = time.time()
+    for r in rows:
+        # Reconcile locally, no Link call: a request still pending past the approval window has
+        # expired there, and must stop counting against the project's cap.
+        if r.get("status") == "pending_approval" and now - float(r.get("linkedAt") or 0) > APPROVAL_WINDOW_S:
+            r["status"] = "expired"
+            try:
+                await _set(owner_id, r["requestId"], status="expired")
+            except Exception:  # noqa: BLE001 -- the in-memory value already excludes it; the write retries next read
+                logger.warning("purchases: could not persist expiry owner_id=%s", owner_id)
     return sorted(rows, key=lambda r: r.get("createdAt", ""), reverse=True)
 
 
@@ -152,7 +167,7 @@ def _allowlisted(limits: dict, site: str) -> bool:
 
 def _policy(limits: dict, cents: int, project_id: str, site: str, rows: list[dict], *, exclude: str = "") -> None:
     """Hard refusals only. Fail-closed: an unset limit refuses rather than allows."""
-    per, monthly = limits["perPurchaseCents"], limits["projectMonthlyCents"]
+    per, monthly = min(limits["perPurchaseCents"], MAX_AMOUNT_CENTS), limits["projectMonthlyCents"]
     if per <= 0 or monthly <= 0:
         raise PurchaseRefused("no_limits", "Purchases are off until an admin sets purchase limits in Budgets.")
     if cents > per:
@@ -202,7 +217,13 @@ async def _create_link_request(owner_id: str, row: dict) -> dict:
         context=_context(row["merchant"], row["site"], row["why"]),
         metadata={"agentId": row["agentId"], "issueId": row["issueId"], "projectId": row["projectId"]},
     )
-    await _set(owner_id, row["requestId"], linkId=created["id"], status=created.get("status") or "pending_approval")
+    await _set(
+        owner_id,
+        row["requestId"],
+        linkId=created["id"],
+        linkedAt=int(time.time()),
+        status=created.get("status") or "pending_approval",
+    )
     return created
 
 

@@ -9,6 +9,7 @@ import base64
 import hashlib
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
@@ -291,9 +292,11 @@ async def test_over_per_purchase_cap(world):
 async def test_over_project_monthly_cap(world):
     await connect(world)
     await ask(amount=100, why="First licence batch for the launch project, ask one.")
-    world.table.items[next(iter(world.table.items))]["status"] = "pending_approval"  # Link holds it
+    world.table.items[next(iter(world.table.items))].update(
+        status="pending_approval", linkedAt=time.time()
+    )  # Link holds it
     await ask(amount=100, why="Second licence batch for the launch project, ask two.")
-    world.table.items[list(world.table.items)[-1]]["status"] = "pending_approval"
+    world.table.items[list(world.table.items)[-1]].update(status="pending_approval", linkedAt=time.time())
     with pytest.raises(purchases.PurchaseRefused) as e:
         await ask(amount=1, why="One more small thing for the launch project, ask three.")
     assert e.value.code == "over_project_cap"
@@ -362,6 +365,33 @@ async def test_a_card_failure_leaves_no_ledger_row_so_a_retry_starts_clean(world
     assert not world.table.items
     world.cards.side_effect = None
     assert (await ask())["status"] == "needs_owner"
+
+
+async def test_over_links_500_dollar_maximum_is_refused_and_an_admin_cap_is_clamped(world):
+    await connect(world)
+    world.limits.update(perPurchaseCents=10_000_000, projectMonthlyCents=10_000_000)  # an admin typed $100,000
+    with pytest.raises(purchases.PurchaseRefused) as e:
+        await ask(amount=500.01)
+    assert e.value.code == "bad_amount" and not world.link.bodies("/spend_requests")
+    assert (await ask(amount=500, why="Exactly at Link's per-request maximum for the project."))[
+        "status"
+    ] == "needs_owner"
+
+
+async def test_a_pending_request_past_the_approval_window_stops_counting(world):
+    world.limits.update(merchants=["https://acme.com"], projectMonthlyCents=20000)
+    world.policy["money_moves"] = False
+    await connect(world)
+    for n in range(2):
+        await ask(amount=100, why=f"Licence batch number {n} for the launch project goes here.")
+    with pytest.raises(purchases.PurchaseRefused) as e:
+        await ask(amount=1, why="One more small thing for the launch project, ask three.")
+    assert e.value.code == "over_project_cap"
+    for row in world.table.items.values():
+        row["linkedAt"] = 1  # Link's 30-minute window closed long ago
+    out = await ask(amount=1, why="One more small thing for the launch project, ask three.")
+    assert out["status"] == "pending_approval"
+    assert {r["status"] for r in world.table.items.values()} == {"expired", "pending_approval"}
 
 
 # ---- no card or token reaches a log, row or response -------------------------------------------

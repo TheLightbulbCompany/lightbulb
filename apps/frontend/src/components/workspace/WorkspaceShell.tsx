@@ -194,7 +194,7 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
     if (command.descriptor.component === "chat") {
       // Room permalinks (?panel=chat&room=…&message=…) carry roomId, not agentId.
       if (command.descriptor.params.sessionId) {
-        openSessionPanel(command.descriptor.params.sessionId);
+        openSessionPanel(command.descriptor.params.sessionId, Number(command.descriptor.params.seq) || undefined);
       } else if (command.descriptor.params.roomId) {
         openMessagePanel(command.descriptor.params.roomId, command.descriptor.params.messageId);
       } else {

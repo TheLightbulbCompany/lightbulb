@@ -949,6 +949,20 @@ it("counts a person's session open as a pick, but not a held link's later replay
   expect(workspaceValue.explicitPickCount).toBe(before + 1);
 });
 
+it("keeps a search hit's turn when the URL it wrote replays the same session", async () => {
+  const landList = holdSessionList();
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await landList([liveSession("s1", "colleague"), liveSession("s2", "colleague")]);
+  act(() => workspaceValue.openSession("s1", false, 4));
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", seq: 4 });
+  // Dev 2026-10-27: the shell replayed ?session=s1 (no seq) and the conversation opened at the bottom.
+  act(() => workspaceValue.openSession("s1"));
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", seq: 4 });
+  act(() => workspaceValue.openSession("s2"));
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s2" });
+});
+
 it("says a linked session that the settled list lacks is no longer shared", async () => {
   const landList = holdSessionList();
   mocks.rooms.mockReturnValue(state);

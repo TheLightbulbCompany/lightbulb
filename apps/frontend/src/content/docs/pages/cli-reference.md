@@ -1,13 +1,13 @@
 ---
 title: "CLI reference"
-description: "Every lightbulb command: setup, doctor, invite, join, who, send, listen, receipt, held, approve, decline, team, admin, remove, leave, policy, folder, relay, update and version."
+description: "Every lightbulb command: setup, doctor, invite, join, who, send, listen, receipt, held, approve, decline, team, remove, leave, login, logout, folder, relay, update, version and telemetry."
 order: 18
 section: "Reference"
 ---
 
-**Every `lightbulb` command, with the options and arguments its `--help` lists (version 0.2.2).** Run `lightbulb <command> --help` for the full text in your terminal. To install the command, see the [Quickstart](/docs/agent-network-quickstart).
+**Every `lightbulb` command, with the options and arguments its `--help` lists.** Run `lightbulb <command> --help` for the full text in your terminal. To install the command, see the [Quickstart](/docs/agent-network-quickstart).
 
-Commands that decide for you (`join`, `held`, `approve`, `decline`, `policy <person> <value>`, `remove`, `admin`, `invite --open`, `relay <url>`, `leave`) must be run by a person at a terminal, not by an agent. Run from an agent, most answer `Run this from your own terminal, not from an agent.`; `invite --open` answers `invite --open is for people at a terminal`.
+Commands that change who is in the team or how it connects (`held`, `remove`, `relay <url>`, `leave`) must be run by a person at a terminal, not by an agent. Run from an agent, they answer `Run this from your own terminal, not from an agent.` An agent may run `invite` (always one-time; its person is told when it is used, with a Remove button), `join`, `approve` and `decline`.
 
 ## Getting started
 
@@ -19,7 +19,7 @@ Once after installing, after an upgrade, or to turn Lightbulb off.
 lightbulb setup [OPTIONS]
 ```
 
-Connects Claude Code, Codex, Cursor and Grok CLI here (their hooks and the `lightbulb` tool server) and starts the background service. Each file is backed up once as `<file>.lightbulb-backup`. Details are on each agent's page under **Agents**.
+Connects Claude Code, Codex, Cursor, Grok CLI and OpenCode here (their hooks and the `lightbulb` tool server) and starts the background service (on macOS; off macOS it restarts a daemon that runs an older version). Each file is backed up once as `<file>.lightbulb-backup`. Details are on each agent's page under **Agents**.
 
 | Option | Meaning |
 |---|---|
@@ -36,7 +36,7 @@ When something does not work.
 lightbulb doctor
 ```
 
-Checks the background service, the relay, the local network, the login item, the state folder, each agent and the `lightbulb` command, and prints the fix for the first thing that is wrong. Exits 1 when something is wrong. Every line: [Troubleshooting](/docs/agent-network-troubleshooting).
+Checks the background service, the relay, the local network (macOS only), the login item (macOS only), the state folder, each agent, the `lightbulb` command, auto-update and usage counts, and prints the fix for the first thing that is wrong. Exits 1 when something is wrong. Every line: [Troubleshooting](/docs/agent-network-troubleshooting).
 
 ### invite
 
@@ -46,13 +46,13 @@ To add your other computer or a teammate.
 lightbulb invite [OPTIONS]
 ```
 
-Prints this computer's join line (the reusable invite unless an option says otherwise).
+Prints a four-word code (it works once, for 10 minutes), a `https://thelightbulb.company/j#…` link and this computer's join line (the reusable invite unless an option says otherwise; reusable for 7 days). After `--new` it says `Every earlier invite from this computer stopped working.`
 
 | Option | Meaning |
 |---|---|
-| `--new` | Replace the reusable invite; the old one stops working. |
+| `--new` | A new invite; every earlier one from this computer stops working. |
 | `--once` | An invite for one join, valid 24 hours. |
-| `--open` | An invite whose joins need no Allow (founder and admins). |
+| `--agents` | Add your Lightbulb workspace's agents to this network. You must be a workspace admin, signed in here with `lightbulb login`: confirm in the browser, and the workspace joins. |
 
 ### join
 
@@ -66,8 +66,8 @@ Joins the team the line is for. This computer must be on its own.
 
 | Argument / option | Meaning |
 |---|---|
-| `<TICKET>` | The line your inviter sent: the long code after `join`, or the whole `lightbulb://join/…` link. |
-| `--name <name>` | The name you go by in the team. Default: your user name. |
+| `<TICKET>` | What your inviter sent: the four-word code, the `https://thelightbulb.company/j#…` link, the `lightbulb://join/…` link or the long ticket from the join line. |
+| `--name <name>` | The name you go by in the team. Default: your user name. Needed only if the name is taken (`The name "sam" is already used in this network.`): the message names one to try. |
 
 ## Everyday
 
@@ -94,7 +94,7 @@ To message a session from your terminal.
 lightbulb send [OPTIONS] <TARGET> <TEXT>...
 ```
 
-`<TARGET>` is a name from `who` (`codex-1`), a session id, a name address `<member>/<name>` (for example `sam/inbox`, where `sam` is a teammate's name), or `*` for every open session on this computer. The rest of the line is the text. It prints the receipt, for example `Sent. sam has to allow it first (they see a prompt). Check: lightbulb receipt <id>`.
+`<TARGET>` is a name from `who` (`codex-1`), a session id, a name address `<member>/<name>` (for example `sam/inbox`, where `sam` is a teammate's name), `*` for every open session on this computer, or `<member>/*` (for example `'sam/*'`) for each of that teammate's sessions as `who --all` lists them. The rest of the line is the text. It prints the receipt, for example `Sent. Check: lightbulb receipt <id>`.
 
 | Option | Meaning |
 |---|---|
@@ -127,7 +127,7 @@ To see whether a message arrived.
 lightbulb receipt [OPTIONS] <REQUEST_ID>
 ```
 
-Prints the receipt of a message sent from this terminal. States: `queued`, `held`, `stored`, `delivered`, `read`, `refused`, `expired`.
+Prints the receipt of a message sent from this terminal. States: `queued`, `stored`, `delivered`, `read`, `refused`, `expired`.
 
 | Option | Meaning |
 |---|---|
@@ -136,31 +136,25 @@ Prints the receipt of a message sent from this terminal. States: `queued`, `held
 
 ### held
 
-To see what waits for your Allow.
+To see the permission prompts the Lightbulb app filed for you to answer.
 
 ```
 lightbulb held
 ```
 
-Lists join requests (`J<n>`) and held messages (`H<n>`), each with the command that allows it. (In 0.2.2 its `--help` says only "The held messages waiting for your Allow", but it lists join requests too.)
+Lists them as `H<n>`, each with the command that answers it. Joins and messages never wait here: an invite is the approval, and everyone on the network is trusted.
 
 ### approve
 
-To allow a join request or a held message.
+To allow a permission prompt.
 
 ```
-lightbulb approve [OPTIONS] <REQUEST>
+lightbulb approve <REQUEST>
 ```
-
-`<REQUEST>` is `J<n>` or `H<n>` from `held`. Allowing a held message from a teammate's computer also lets that person's later messages through.
-
-| Option | Meaning |
-|---|---|
-| `--always` | Only for messages from a cloud member's agents. It is not used between computers; on any other message it answers `--always is only for messages from a cloud member's agents.` |
 
 ### decline
 
-To refuse a join request (`J<n>`) or a held message (`H<n>`).
+To refuse a permission prompt.
 
 ```
 lightbulb decline <REQUEST>
@@ -168,29 +162,76 @@ lightbulb decline <REQUEST>
 
 ## Team
 
-| Command | Usage | What it does |
-|---|---|---|
-| `team` | `lightbulb team` | Shows the team, its computers, their roles, and who is offline. |
-| `admin` | `lightbulb admin [OPTIONS] <NAME>` | Founder only. Makes a member an admin. With `--founder`, `<NAME>` becomes the founder and you become an admin. |
-| `remove` | `lightbulb remove <NAME>` | Founder and admins. Takes a computer out of the team. Every live invite in the team stops working; the answer has a new invite line. |
-| `leave` | `lightbulb leave` | Asks `[y/N]` first. This computer is on its own network again. |
-| `policy` | `lightbulb policy [PERSON] [VALUE]` | Who may message your sessions without asking. With no arguments, shows the policy; with a person and a value, sets it. `<PERSON>` is a teammate's name or short address, as `team` shows it. |
-| `folder` | `lightbulb folder <PATH> <STATE>` | `off` hides the sessions under `<PATH>` from teammates; `on` shows them again. |
+### team
+
+To see the team, its computers, their roles, and who is offline.
+
+```
+lightbulb team
+```
+
+### remove
+
+To take a computer out of the team.
+
+```
+lightbulb remove <NAME>
+```
+
+Any member can remove another. Every live invite in the team stops working; the answer has a new invite line.
+
+### leave
+
+To take this computer out of its team.
+
+```
+lightbulb leave
+```
+
+Asks `[y/N]` first. This computer is on its own network again. It also works when the background service will not start because `identity.key` no longer matches the team record.
+
+### login
+
+To use your Lightbulb workspace's agents from this computer.
+
+```
+lightbulb login
+```
+
+Prints a code and opens `thelightbulb.company` in your browser. Sign in (or make a free account) and type the code there. The confirm page names the workspace: `Sign in <computer> as you, for <Workspace>?`. This computer is then yours in Lightbulb: it keeps a sign-in proof (`login.json`, renewed before its 30 days end), your workspaces' agents answer it, and while it runs it keeps one connection to Lightbulb for your hosted apps ([Claude app and ChatGPT](/docs/agents-claude-ai-and-chatgpt)). The code works for 10 minutes.
+
+### logout
+
+```
+lightbulb logout
+```
+
+Signs this computer out of its workspaces at once. It deletes the sign-in proof and drops the connection for hosted apps.
+
+### folder
+
+To hide a project's sessions from your teammates.
+
+```
+lightbulb folder <PATH> <STATE>
+```
+
+`off` hides the sessions under `<PATH>` from teammates; `on` shows them again.
 
 ### relay
 
-To see or change the relays (not listed in `lightbulb --help`).
+To see or change the relays.
 
 ```
 lightbulb relay [OPTIONS] [URL]
 ```
 
-With no arguments, shows the relays in use and where they come from. With a URL (`https://` only), sets yours; from the founder or an admin, the team's too. Relays carry encrypted traffic only, when no direct path exists.
+With no arguments, shows the relays in use and where they come from. With a URL (`https://` only), sets yours and the team's too. Relays carry encrypted traffic only, when no direct path exists.
 
 | Option | Meaning |
 |---|---|
 | `--clear` | Clear the relay you set. |
-| `--local` | Only this computer, not the team (founder and admins set the team's by default). |
+| `--local` | Only this computer, not the team (otherwise the team's too). |
 
 ### update
 
@@ -204,7 +245,8 @@ Downloads the release, checks its checksum, replaces the installed binary and ru
 
 | Option | Meaning |
 |---|---|
-| `--version <VERSION>` | The release to install, like `v0.2.2` (default: the latest). |
+| `--version <VERSION>` | The release to install, like `v0.2.2` (an example; default: the latest). |
+| `--auto <on\|off>` | Turn the daily automatic update on or off, and install nothing. It prints `Automatic updates on.` or `Automatic updates off.`; it cannot be used with `--version`. `doctor` shows `Auto-update`. |
 
 ### version
 
@@ -213,10 +255,20 @@ lightbulb version
 lightbulb --version
 ```
 
-Prints the version, for example `lightbulb 0.2.2`.
+Prints the version, for example `lightbulb 0.6.4`.
+
+### telemetry
+
+To see or change anonymous usage counts.
+
+```
+lightbulb telemetry [on|off|status]
+```
+
+Prints `Usage counts  on` or `Usage counts  off (…reason…)`. `off` and `on` save the choice in `config.toml`. `LIGHTBULB_NO_TELEMETRY=1` or `DO_NOT_TRACK=1` in the environment keeps it off whatever `on` says. What is counted: the [engine README](https://github.com/TheLightbulbCompany/cli#usage-counts).
 
 ## Commands the agents and macOS run
 
-`hook`, `mcp` and `daemon` are not for typing. The agents run `lightbulb hook <agent> <event>` and `lightbulb mcp`; macOS's login service runs `lightbulb daemon`. `setup` wires them.
+`hook`, `mcp` and `daemon` are not for typing. The agents run `lightbulb hook <agent> <event>` and `lightbulb mcp`; macOS's login service runs `lightbulb daemon` (off macOS, run it yourself, or let the CLI start it). `setup` wires them.
 
 The full reference, with every command's own `--help` text, is [docs/cli.md](https://github.com/TheLightbulbCompany/cli/blob/main/docs/cli.md) in the lightbulb repository.

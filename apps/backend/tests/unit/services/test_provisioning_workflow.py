@@ -565,7 +565,11 @@ async def test_pending_auth_files_a_connect_card_and_waits():
             mod.api,
             "create_provider_connection_request",
             AsyncMock(
-                return_value={"id": "ar_1", "status": "pending_auth", "redirect_url": "https://provider.example/oauth"}
+                return_value={
+                    "id": "ar_1",
+                    "request_status": "pending_auth",
+                    "redirect_url": "https://provider.example/oauth",
+                }
             ),
         ),
         patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})) as patched,
@@ -593,7 +597,7 @@ async def test_a_later_leg_card_nobody_can_answer_stops_instead_of_re_filing():
         patch.object(
             mod.api,
             "create_provider_connection_request",
-            AsyncMock(return_value={"id": "ar_1", "status": "pending_auth"}),
+            AsyncMock(return_value={"id": "ar_1", "request_status": "pending_auth"}),
         ),
         patch.object(mod.repo, "patch", AsyncMock(side_effect=lambda wid, f: {**row, **f})),
         patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="requires_review"))) as move,
@@ -632,7 +636,7 @@ async def test_completed_account_request_records_which_provider_account_exists()
     )
     ar = {
         "id": "ar_1",
-        "status": "complete",
+        "request_status": "complete",
         "provider_account_details": {
             "id": "prv_acct_1",
             "display_name": "Northwind",
@@ -673,7 +677,9 @@ async def test_needs_information_records_which_endpoint_will_receive_it():
         patch.object(
             mod.api,
             "get_provider_connection_request",
-            AsyncMock(return_value={"id": "ar_1", "status": "needs_information", "needs_information_schema": schema}),
+            AsyncMock(
+                return_value={"id": "ar_1", "request_status": "needs_information", "needs_information_schema": schema}
+            ),
         ),
         patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="awaiting_user_action"))) as move,
     ):
@@ -703,7 +709,7 @@ async def test_an_empty_needs_information_schema_is_a_repoll_not_a_dead_end():
             AsyncMock(
                 return_value={
                     "id": "res_1",
-                    "status": "needs_information",
+                    "request_status": "needs_information",
                     "needs_information_schema": {"type": "object", "properties": {}},
                 }
             ),
@@ -772,7 +778,7 @@ async def test_account_request_error_fails_the_workflow_with_a_safe_message():
             AsyncMock(
                 return_value={
                     "id": "ar_1",
-                    "status": "error",
+                    "request_status": "error",
                     "error": {"code": "provider_failure", "message": "provider down"},
                 }
             ),
@@ -1160,7 +1166,9 @@ async def test_a_dev_row_with_the_old_field_name_still_polls_its_request():
     row = _row(state="connecting_provider", account_request_id="ar_old")
     with (
         patch.object(
-            mod.api, "get_provider_connection_request", AsyncMock(return_value={"id": "ar_old", "status": "requested"})
+            mod.api,
+            "get_provider_connection_request",
+            AsyncMock(return_value={"id": "ar_old", "request_status": "requested"}),
         ) as get,
         patch.object(mod.repo, "patch", AsyncMock(return_value=row)),
     ):
@@ -1174,7 +1182,9 @@ async def test_a_requested_connection_polls_until_the_fifteen_minute_cap():
     row = _row(state="connecting_provider", provider_connection_request_id="pcr_1", deadline_at=past)
     with (
         patch.object(
-            mod.api, "get_provider_connection_request", AsyncMock(return_value={"id": "pcr_1", "status": "requested"})
+            mod.api,
+            "get_provider_connection_request",
+            AsyncMock(return_value={"id": "pcr_1", "request_status": "requested"}),
         ),
         patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="requires_review"))) as move,
     ):
@@ -1193,7 +1203,7 @@ async def test_a_complete_create_response_needs_exactly_one_active_connection():
         patch.object(mod.api, "create_resource", AsyncMock()) as create,
         patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="requires_review"))) as move,
     ):
-        await mod._handle_connection_request("acct_1", row, {"id": "pcr_1", "status": "complete"})
+        await mod._handle_connection_request("acct_1", row, {"id": "pcr_1", "request_status": "complete"})
     assert move.await_args.kwargs["fields"] == {"error_code": "ambiguous_provider_connection"}
     create.assert_not_awaited()
 
@@ -1234,7 +1244,9 @@ async def test_the_connect_leg_polls_from_the_server_and_waits():
     )
     with (
         patch.object(
-            mod.api, "get_provider_connection_request", AsyncMock(return_value={"id": "ar_1", "status": "pending_auth"})
+            mod.api,
+            "get_provider_connection_request",
+            AsyncMock(return_value={"id": "ar_1", "request_status": "pending_auth"}),
         ),
         patch.object(mod.repo, "transition", AsyncMock()) as move,
     ):
@@ -1256,7 +1268,7 @@ async def test_the_connect_leg_resumes_itself_when_the_owner_comes_back():
     )
     ar = {
         "id": "ar_1",
-        "status": "complete",
+        "request_status": "complete",
         "provider_account_details": {"display_name": "Northwind", "link_action": "created"},
     }
     with (
@@ -1310,7 +1322,9 @@ async def test_a_week_with_no_answer_parks_the_row_stale_with_its_ids():
     )
     with (
         patch.object(
-            mod.api, "get_provider_connection_request", AsyncMock(return_value={"id": "ar_1", "status": "pending_auth"})
+            mod.api,
+            "get_provider_connection_request",
+            AsyncMock(return_value={"id": "ar_1", "request_status": "pending_auth"}),
         ),
         patch.object(
             mod.repo, "transition", AsyncMock(return_value=_row(state="stale", provider_connection_request_id="ar_1"))
@@ -1880,3 +1894,34 @@ async def test_on_approved_refuses_while_the_rail_is_off(monkeypatch):
             await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_a")
     assert exc.value.code == "provisioning_unavailable"
     catalog.assert_not_awaited()
+
+
+def test_a_connection_request_is_complete_when_its_connection_is_active_even_with_no_request_status():
+    """`request_status` is "unset once the workflow completes"."""
+    done = {"id": "pcr_1", "provider_connection": {"id": "c_1", "provider": "prvdr_1", "status": "active"}}
+    assert mod.connection_request_status(done) == "complete"
+    assert mod.connection_request_status({"id": "pcr_1", "request_status": "pending_auth"}) == "pending_auth"
+    expired = {"request_status": "requested", "provider_connection": {"status": "expired"}}
+    assert mod.connection_request_status(expired) == "requested"
+
+
+def test_resource_status_accepts_both_documented_spellings():
+    assert mod.resource_status({"status": "complete"}) == "complete"
+    assert mod.resource_status({"status": "resource_status_complete"}) == "complete"
+    assert mod.resource_status({}) is None
+
+
+@pytest.mark.asyncio
+async def test_resource_not_complete_on_reveal_polls_again_instead_of_failing():
+    row = _row(state="provisioning", resource_id="res_1", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
+    err = ProvisioningError("resource_not_complete", "not yet")
+    with (
+        patch.object(
+            mod.api, "get_resource", AsyncMock(return_value={"id": "res_1", "status": "resource_status_complete"})
+        ),
+        patch.object(mod.api, "reveal_access_configuration", AsyncMock(side_effect=err)),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="binding"))),
+        patch.object(mod.repo, "patch", AsyncMock(return_value=row)) as bump,
+    ):
+        await mod.advance(row)
+    assert bump.await_args[0][1]["attempts"] == 1

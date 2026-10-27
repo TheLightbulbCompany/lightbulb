@@ -105,6 +105,23 @@ def request_id_of(row: dict) -> str | None:
     return row.get("provider_connection_request_id") or row.get("account_request_id")
 
 
+def connection_request_status(ar: dict) -> str | None:
+    """A provider connection request's state. The field is ``request_status``
+    (NOT ``status``), and it is "unset once the workflow completes": the
+    resulting ``provider_connection`` (status ``active``) is then the answer."""
+    connection = ar.get("provider_connection")
+    if isinstance(connection, dict) and connection.get("status") == "active":
+        return "complete"
+    return ar.get("request_status")
+
+
+def resource_status(resource: dict) -> str | None:
+    """The enum lists ``complete`` but the reference's JSON examples show
+    ``resource_status_complete``; accept both."""
+    status = resource.get("status")
+    return status.removeprefix("resource_status_") if isinstance(status, str) else status
+
+
 class WorkflowRefused(RuntimeError):
     """A refusal the caller renders: ``not_eligible``, ``requirements_pending``,
     ``service_unavailable``, ``invalid_configuration``,
@@ -687,6 +704,9 @@ async def _read_or_park(row: dict, awaitable) -> tuple:
             return None, await _bump(row, e.retry_after)
         if e.code in _REVIEW_CODES:
             return None, await _requires_review(row, e.code)
+        if e.code == "resource_not_complete":
+            # Reveal raced the resource's own status: poll again, don't fail.
+            return None, await _bump(row)
         return None, await _fail(row, e.code, e.message)
 
 
@@ -806,7 +826,7 @@ async def _connect_provider(account_id: str, row: dict) -> dict:
 
 
 async def _handle_connection_request(account_id: str, row: dict, ar: dict) -> dict:
-    status = ar.get("status")
+    status = connection_request_status(ar)
     if status == "complete":
         # May be the create response itself (an immediate connect, no redirect).
         # "Verify an unambiguous active connection before continuing"; the
@@ -935,7 +955,7 @@ async def _poll_resource(account_id: str, row: dict) -> dict:
     if refused is not None:
         return refused
 
-    status = resource.get("status")
+    status = resource_status(resource)
     if status == "complete":
         return await _bind(account_id, row, resource)
     if status in ("errored", "removed"):

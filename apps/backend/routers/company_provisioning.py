@@ -817,7 +817,7 @@ async def connect_link(workflow_id: str, owner_id: Owner):
                 # new one", not "fail the click".
                 if e.code not in ("not_found", "provider_reauth_required"):
                     raise
-            if (request_ or {}).get("status") == "error":
+            if provisioning_workflow.connection_request_status(request_ or {}) == "error":
                 request_ = None
         if request_ is None:
             scope = (row.get("approval") or {}).get("scope")
@@ -834,7 +834,7 @@ async def connect_link(workflow_id: str, owner_id: Owner):
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
     await _resumed(row, "provider_connect")
-    if request_.get("status") != "pending_auth" or not request_.get("redirect_url"):
+    if provisioning_workflow.connection_request_status(request_) != "pending_auth" or not request_.get("redirect_url"):
         # `complete`, `requested` or `needs_information`: there is no browser
         # step to take right now, and the next read is what moves the row.
         raise _conflict("no_redirect_available", "This provider connection does not need a browser step right now")

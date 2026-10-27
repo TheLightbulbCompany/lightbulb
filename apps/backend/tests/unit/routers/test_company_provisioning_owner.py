@@ -736,7 +736,7 @@ def test_connect_link_reuses_a_live_account_request(client):
             AsyncMock(
                 return_value={
                     "id": "ar_1",
-                    "status": "pending_auth",
+                    "request_status": "pending_auth",
                     "redirect_url": "https://provider.example/oauth?fresh",
                 }
             ),
@@ -763,7 +763,9 @@ def test_connect_link_mints_a_new_account_request_when_the_old_one_errored(clien
         ),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
         patch.object(
-            mod.api, "get_provider_connection_request", AsyncMock(return_value={"id": "ar_old", "status": "error"})
+            mod.api,
+            "get_provider_connection_request",
+            AsyncMock(return_value={"id": "ar_old", "request_status": "error"}),
         ),
         patch.object(
             mod.api,
@@ -771,7 +773,7 @@ def test_connect_link_mints_a_new_account_request_when_the_old_one_errored(clien
             AsyncMock(
                 return_value={
                     "id": "ar_new",
-                    "status": "pending_auth",
+                    "request_status": "pending_auth",
                     "redirect_url": "https://provider.example/oauth?new",
                 }
             ),
@@ -797,7 +799,9 @@ def test_connect_link_mints_a_new_one_when_the_old_id_is_gone(client):
         patch.object(
             mod.api,
             "create_provider_connection_request",
-            AsyncMock(return_value={"id": "ar_new", "status": "pending_auth", "redirect_url": "https://p.example/x"}),
+            AsyncMock(
+                return_value={"id": "ar_new", "request_status": "pending_auth", "redirect_url": "https://p.example/x"}
+            ),
         ) as created,
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={})),
         patch.object(mod.workflow_repo, "patch", AsyncMock()),
@@ -817,7 +821,9 @@ def test_connect_link_un_stales_the_row_so_the_next_read_is_not_a_no_op(client):
         patch.object(
             mod.api,
             "get_provider_connection_request",
-            AsyncMock(return_value={"id": "ar_1", "status": "pending_auth", "redirect_url": "https://p.example/x"}),
+            AsyncMock(
+                return_value={"id": "ar_1", "request_status": "pending_auth", "redirect_url": "https://p.example/x"}
+            ),
         ),
         patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
         patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
@@ -837,7 +843,9 @@ def test_connect_link_409s_when_the_connection_needs_no_browser_step(client):
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=CONNECTING)),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
         patch.object(
-            mod.api, "get_provider_connection_request", AsyncMock(return_value={"id": "ar_1", "status": "complete"})
+            mod.api,
+            "get_provider_connection_request",
+            AsyncMock(return_value={"id": "ar_1", "request_status": "complete"}),
         ),
         patch.object(mod.api, "create_provider_connection_request", AsyncMock()) as created,
         patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,

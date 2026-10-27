@@ -2515,10 +2515,18 @@ impl Host {
         let native = if !eligible {
             None
         } else if cmd.kind == "end" {
-            // End needs only this process to be the one that was verified (its pid and start
-            // time), and the check before the stop below proves that again. A full verification
-            // runs `claude --version` and lsof (1-3 s) and held every End back by that much.
-            end_identity(&mirror.native)
+            // End needs this process to be the one that was verified (its pid and start time,
+            // proved again before the stop below) and, for an interactive Claude, still on this
+            // conversation (`/resume` and `/clear` switch it in place). A full verification runs
+            // `claude --version` and lsof (1-3 s) and held every End back by that much.
+            match end_identity(&mirror.native) {
+                Some(native) if native.provider == "claude" && native.job.is_none()
+                    && !claude::still_registered(&self.home, native.process.pid, &native.conversation) => {
+                    *why = "session moved";
+                    return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
+                }
+                native => native,
+            }
         } else {
             self.verified(&mirror.native).await.ok()
         };
@@ -3795,6 +3803,12 @@ pub(super) mod tests {
         mirror.shared = false; // Only me
         mirror.native.provider = "claude".into();
         mirror.native.process = process(child.id()).unwrap();
+        // Claude's record of this pid names the conversation, as a live session's does.
+        let conversation = mirror.native.conversation.clone();
+        let sessions = dir.path().join(".claude/sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let pid = child.id();
+        let record = |conversation: &str| fs::write(sessions.join(format!("{pid}.json")), json!({"pid": pid, "sessionId": conversation}).to_string()).unwrap();
         let mut host = test_host(dir.path(), vec![("own-end", mirror)]);
         host.verify = unchanged;
         let at = epoch_secs();
@@ -3805,7 +3819,14 @@ pub(super) mod tests {
         let refused = host.command(&command("r1", "interrupt", json!("turn-1"), 1), Some(&anchor)).await.unwrap();
         assert_eq!(refused.outcome, "rejected", "their own, and still refused: only End is carried out");
         assert!(child.try_wait().unwrap().is_none());
-        let ended = host.command(&command("r2", "end", Value::Null, 2), Some(&anchor)).await.unwrap();
+        // Same pid, but Claude switched it to another conversation (`/resume`, `/clear`) before the
+        // next liveness tick: End is refused, never sent to the conversation that moved in.
+        record("99999999-9999-4999-8999-999999999999");
+        let moved = host.command(&command("r1b", "end", Value::Null, 2), Some(&anchor)).await.unwrap();
+        assert_eq!(moved.outcome, "rejected");
+        assert!(child.try_wait().unwrap().is_none(), "no signal reached the process");
+        record(&conversation);
+        let ended = host.command(&command("r2", "end", Value::Null, 3), Some(&anchor)).await.unwrap();
         assert_eq!(ended.outcome, "applied");
         assert!(!child.wait().unwrap().success(), "SIGTERM reached its process");
         assert!(!host.mirrors["own-end"].shared, "ending it shared nothing");

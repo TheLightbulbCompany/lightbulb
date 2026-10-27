@@ -3,7 +3,7 @@
 //! branch's pull request, from `gh`; and how many of its subagents run. Git and `gh` run in spawned
 //! tasks, never in the relay loop: `tick` starts them, the heartbeat reads their last answer.
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -18,6 +18,8 @@ const PR_EVERY: Duration = Duration::from_secs(60);
 /// A subagent that wrote nothing for this long is not counted as running, whatever its file says
 /// (one killed mid-call never writes its end).
 const AGENT_QUIET: Duration = Duration::from_secs(600);
+/// An idle session whose PR's checks are still running is read again this often, until they settle.
+const PENDING_EVERY: Duration = Duration::from_secs(120);
 
 pub(super) fn read_features(listed: &Value) {
     READS.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "sessionSignals")), SeqCst);
@@ -39,6 +41,19 @@ struct Entry {
     running: bool,
     /// A turn ended while a read was running: read once more after it.
     again: bool,
+    /// Tracked files already gone at the first read: deleted before the session, not by it. None
+    /// until that read.
+    gone: Option<BTreeSet<String>>,
+}
+
+/// Due for a read: never read, busy for 30 s, a turn just ended, or idle with its PR's checks
+/// still running (else "checks running" would stand after CI finished).
+fn due(entry: &Entry, busy: bool, turn_ended: bool) -> bool {
+    let checks_running = entry.pr.as_ref().is_some_and(|pr| pr["state"] == "open" && pr["checks"] == "pending");
+    entry.at.is_none_or(|at| {
+        (busy && at.elapsed() >= BUSY_EVERY) || (checks_running && at.elapsed() >= PENDING_EVERY)
+    }) || turn_ended
+        || entry.again
 }
 
 static ENTRIES: Mutex<BTreeMap<String, Entry>> = Mutex::new(BTreeMap::new());
@@ -63,29 +78,35 @@ pub(super) fn tick(mirrors: &BTreeMap<String, Mirror>, home: &Path) {
             entry.again |= turn_ended;
             continue;
         }
-        let due = entry.at.is_none_or(|at| busy && at.elapsed() >= BUSY_EVERY) || turn_ended || entry.again;
-        if !due {
+        if !due(entry, busy, turn_ended) {
             continue;
         }
         entry.running = true;
         entry.again = false;
-        let (key, native, home) = (key.clone(), m.native.clone(), home.to_path_buf());
+        let (key, native, home, gone) = (key.clone(), m.native.clone(), home.to_path_buf(), entry.gone.clone());
         tokio::spawn(async move {
             let read = tokio::time::timeout(Duration::from_secs(30), async {
-                let Ok(root) = workspace::session_root(&native, &home).await else { return (None, None) };
+                let Ok(root) = workspace::session_root(&native, &home).await else { return (None, None, None) };
                 let since = (native.process.birth_micros / 1_000_000) as i64;
-                let changes = changes(&root, since).await.ok();
+                let (changes, gone) = match changes(&root, since, gone.as_ref()).await {
+                    Ok((changes, gone)) => (Some(changes), Some(gone)),
+                    Err(_) => (None, None),
+                };
                 let pr = match gh_program() {
                     Some(gh) => pr(&gh, &root, &home).await,
                     None => None,
                 };
-                (changes, pr)
+                (changes, pr, gone)
             })
             .await
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
             if let Ok(mut entries) = ENTRIES.lock() {
                 if let Some(entry) = entries.get_mut(&key) {
-                    (entry.changes, entry.pr) = read;
+                    let (changes, pr, gone) = read;
+                    (entry.changes, entry.pr) = (changes, pr);
+                    if entry.gone.is_none() {
+                        entry.gone = gone;
+                    }
                     entry.at = Some(Instant::now());
                     entry.running = false;
                 }
@@ -138,23 +159,32 @@ fn running_agents(m: &Mirror) -> u32 {
 
 /// What changed in the session's repository since the session started: the diff against the commit
 /// HEAD was on then (the reflog), counting only files written since (an older dirty file is not the
-/// session's), plus the untracked files it created. Err: not a repository, or too big to read.
+/// session's), plus the untracked files it created. A tracked file that is gone counts unless it was
+/// gone at the first read (`gone`; None: this is the first read, and every absent file was gone
+/// before). Returns the absent files too. Err: not a repository, or too big to read.
 // ponytail: a file dirty before the session and edited during it counts its whole diff; record a
 // baseline tree at the start if that ever matters.
-async fn changes(cwd: &Path, since: i64) -> Result<Changes> {
+async fn changes(cwd: &Path, since: i64, gone: Option<&BTreeSet<String>>) -> Result<(Changes, BTreeSet<String>)> {
     let top = PathBuf::from(
         String::from_utf8(workspace::git(cwd, &["rev-parse", "--show-toplevel"]).await?)
             .map_err(|_| "workspace unavailable")?
             .trim(),
     );
     let mut changes = Changes::default();
+    let mut absent = BTreeSet::new();
     if let Some(base) = start_commit(&top, since).await {
         let numstat = workspace::git(&top, &["diff", "--numstat", "--no-renames", "-z", &base, "--"]).await?;
         for record in numstat.split(|b| *b == 0).filter(|r| !r.is_empty()) {
             let text = std::str::from_utf8(record).map_err(|_| "workspace unavailable")?;
             let mut fields = text.splitn(3, '\t');
             let (Some(added), Some(removed), Some(path)) = (fields.next(), fields.next(), fields.next()) else { continue };
-            if !written_since(&top.join(path), since) {
+            let file = top.join(path);
+            if fs::symlink_metadata(&file).is_err() {
+                absent.insert(path.to_owned());
+                if gone.is_none_or(|g| g.contains(path)) {
+                    continue;
+                }
+            } else if !written_since(&file, since) {
                 continue;
             }
             changes.files += 1;
@@ -169,7 +199,7 @@ async fn changes(cwd: &Path, since: i64) -> Result<Changes> {
         .map_err(|_| "workspace unavailable")?;
     changes.files += new.0;
     changes.additions += new.1;
-    Ok(changes)
+    Ok((changes, absent))
 }
 
 /// The commit HEAD was on at `since`: the newest reflog entry no later than it, else the oldest one
@@ -332,15 +362,52 @@ mod tests {
             fs::File::options().write(true).open(root.join(name)).unwrap().set_modified(old).unwrap();
         }
         let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 1;
-        assert_eq!(changes(&root, since).await.unwrap(), Changes::default());
+        assert_eq!(changes(&root, since, None).await.unwrap().0, Changes::default());
         // The session edits by shell (no edit event), commits, then creates a file.
         fs::write(root.join("old.txt"), "one\n2\nthree\nfour\n").unwrap();
         git(&root, &["commit", "-qam", "session"]).await;
         fs::write(root.join("new.txt"), "n1\nn2\nn3").unwrap();
-        assert_eq!(changes(&root, since).await.unwrap(), Changes { files: 2, additions: 2 + 3, deletions: 1 });
+        assert_eq!(changes(&root, since, Some(&BTreeSet::new())).await.unwrap().0, Changes { files: 2, additions: 2 + 3, deletions: 1 });
         // Not a repository: no answer, the event count stands.
         let plain = tempfile::tempdir().unwrap();
-        assert!(changes(&fs::canonicalize(plain.path()).unwrap(), since).await.is_err());
+        assert!(changes(&fs::canonicalize(plain.path()).unwrap(), since, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn local_sessions_signals_a_file_deleted_before_the_session_is_not_its_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]).await;
+        for name in ["before.txt", "during.txt"] {
+            fs::write(root.join(name), "a\nb\n").unwrap();
+        }
+        git(&root, &["add", "."]).await;
+        git(&root, &["commit", "-qm", "start"]).await;
+        fs::remove_file(root.join("before.txt")).unwrap();
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 1;
+        // The first read is the baseline: what is gone already was gone before the session.
+        let (first, gone) = changes(&root, since, None).await.unwrap();
+        assert_eq!(first, Changes::default());
+        assert_eq!(gone, BTreeSet::from(["before.txt".to_owned()]));
+        // The session deletes another: that one counts, the earlier one still does not.
+        fs::remove_file(root.join("during.txt")).unwrap();
+        let (later, _) = changes(&root, since, Some(&gone)).await.unwrap();
+        assert_eq!(later, Changes { files: 1, additions: 0, deletions: 2 });
+    }
+
+    #[test]
+    fn local_sessions_signals_an_idle_session_rereads_only_while_its_checks_run() {
+        let old = Instant::now() - Duration::from_secs(150);
+        let read = |pr: Option<Value>| Entry { at: Some(old), pr, ..Default::default() };
+        let open = |checks: &str| Some(json!({"number": 1, "state": "open", "url": "https://x", "checks": checks}));
+        assert!(due(&read(open("pending")), false, false), "checks running: read again");
+        for settled in [open("passing"), open("failing"), Some(json!({"number": 1, "state": "merged", "url": "https://x", "checks": "pending"})), None] {
+            assert!(!due(&read(settled), false, false), "settled, or no PR: an idle session is left alone");
+        }
+        let fresh = Entry { at: Some(Instant::now()), pr: open("pending"), ..Default::default() };
+        assert!(!due(&fresh, false, false), "not before two minutes");
+        assert!(due(&read(None), true, false), "busy: every 30 s");
+        assert!(due(&read(None), false, true), "a turn ended");
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import type { SessionMarks } from "@lightbulb/shared";
 import type { SidebarSort } from "./roomSections";
 
 const SIDEBAR_PREFS_KEY_PREFIX = "lightbulb.messaging.sidebar.";
@@ -46,5 +47,29 @@ export function writeSessionSeen(scope: string, seen: Readonly<Record<string, nu
     window.localStorage.setItem(`${SESSION_SEEN_KEY_PREFIX}${scope}`, JSON.stringify(seen));
   } catch {
     // Blocked storage: every session simply re-baselines next load.
+  }
+}
+
+const SESSION_MARKS_KEY_PREFIX = "lightbulb.messaging.sessionMarks.";
+
+/** Per viewer, on this browser: pinned and archived sessions (`SessionMarks` in shared). Nothing server-side. */
+export function readSessionMarks(scope: string): SessionMarks {
+  try {
+    const parsed: Partial<SessionMarks> = JSON.parse(window.localStorage.getItem(`${SESSION_MARKS_KEY_PREFIX}${scope}`) ?? "{}") ?? {};
+    const archived = parsed.archived && typeof parsed.archived === "object" && !Array.isArray(parsed.archived) ? parsed.archived : {};
+    return {
+      pinned: Array.isArray(parsed.pinned) ? parsed.pinned.filter((id) => typeof id === "string") : [],
+      archived: Object.fromEntries(Object.entries(archived).filter(([, seq]) => typeof seq === "number")),
+    };
+  } catch {
+    return { pinned: [], archived: {} };
+  }
+}
+
+export function writeSessionMarks(scope: string, marks: SessionMarks): void {
+  try {
+    window.localStorage.setItem(`${SESSION_MARKS_KEY_PREFIX}${scope}`, JSON.stringify(marks));
+  } catch {
+    // Blocked storage: pins and archives last until the page reloads.
   }
 }

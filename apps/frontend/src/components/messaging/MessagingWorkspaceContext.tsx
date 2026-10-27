@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { canChangeListenMode, cardReplyRequest, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionsNeedingYou, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionsNeedingYou, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -896,6 +896,13 @@ export function MessagingWorkspaceProvider({
     onRemoveEndedSessions: async () => {
       try { await rooms.resourceSource.client.removeEndedLocalSessions(); }
       finally { await workspaceSessions.refresh(); }
+    },
+    onMarkSessionUnread: (sessionId, unread) => {
+      const session = workspaceSessions.sessions.find((candidate) => candidate.sessionId === sessionId);
+      if (!session) return;
+      const next = (unread ? markSessionUnread : markSessionRead)(seen, session);
+      setSessionSeen({ scope, seen: next });
+      writeSessionSeen(scope, next);
     },
     currentSessionId: sessionFocus?.sessionId ?? null,
     onOpenAllSessions: openAllSessions,

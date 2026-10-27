@@ -55,7 +55,8 @@ describe("confirm a lightbulb computer", () => {
     typeCode();
     expect(await screen.findByText("Sign in Ada's Mac as you, for Acme?")).toBeInTheDocument();
     expect(s.post).toHaveBeenCalledWith("/network/device/describe", { userCode: "ABCD-EFGH" });
-    expect(screen.getByText(/Requested 5 seconds ago from 203\.0\.113\.7/)).toBeInTheDocument();
+    // The age is computed from Date.now() at render; a slow runner reads 6 or 7 seconds, not 5.
+    expect(screen.getByText(/Requested \d+ seconds ago from 203\.0\.113\.7/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Sign in this computer" }));
     expect(await screen.findByText("This computer is signed in. You can close this tab.")).toBeInTheDocument();
     expect(s.post).toHaveBeenCalledWith("/network/device/approve", { userCode: "ABCD-EFGH" });

@@ -911,3 +911,39 @@ def test_onboarding_link_is_an_account_update_once_details_were_submitted(client
         resp = client.post("/api/v1/company/stripe/onboarding-link")
     assert resp.status_code == 200
     link.assert_awaited_once_with(account_id="acct_x", update=True)
+
+
+def test_status_says_projects_cannot_be_ready_for_a_pasted_key(client, monkeypatch):
+    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "api_key"}
+    ready = AsyncMock()
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod, "_refresh_api_key_status", AsyncMock(return_value=None)),
+        patch.object(mod.company_stripe, "projects_ready", ready),
+    ):
+        assert client.get("/api/v1/company/stripe/status").json()["projects_ready"] is False
+    ready.assert_not_awaited()
+
+
+def test_status_reads_projects_ready_for_a_connected_account_too(client, monkeypatch):
+    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "connected"}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "projects_ready", AsyncMock(return_value=False)),
+    ):
+        assert client.get("/api/v1/company/stripe/status").json()["projects_ready"] is False
+
+
+def test_onboarding_link_requests_the_projects_capability_first_when_missing(client, monkeypatch):
+    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "projects_ready", AsyncMock(return_value=False)),
+        patch.object(mod.company_stripe, "request_projects_capability", AsyncMock()) as request,
+        patch.object(mod.company_stripe, "create_company_onboarding_link", AsyncMock(return_value="https://x")),
+    ):
+        assert client.post("/api/v1/company/stripe/onboarding-link").status_code == 200
+    request.assert_awaited_once_with(account_id="acct_x")

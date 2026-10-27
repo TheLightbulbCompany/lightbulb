@@ -1925,3 +1925,17 @@ async def test_resource_not_complete_on_reveal_polls_again_instead_of_failing():
     ):
         await mod.advance(row)
     assert bump.await_args[0][1]["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_start_refuses_a_pasted_api_key_account(monkeypatch):
+    monkeypatch.setattr(
+        mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"company_stripe_account_id": "acct_1", "company_stripe_source": "api_key"}),
+    )
+    with pytest.raises(mod.WorkflowRefused) as exc:
+        await mod.start(
+            owner_id="org_a", provider_name="posthog", service_id="svc_analytics", configuration=CONFIG, issue_id=None
+        )
+    assert exc.value.code == "not_eligible"

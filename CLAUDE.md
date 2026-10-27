@@ -714,7 +714,7 @@ false) and rewritten to the guide's `2026-09-30.preview` contract
 flag is flipped and a Sandbox key is wired, and a workflow only starts once the
 account's `projects` capability is active (`company_stripe.projects_ready`,
 `projects_ready` on the status route, "Finish Stripe setup" on the card).
-`create_resource` always sends `livemode` (Stripe's default is LIVE). Everything else a company-Stripe binding powers — the Money tabs, the
+`create_resource` always sends `livemode` (Stripe's default is LIVE). Turning the rail on implies the developer configuration (`company_stripe.developer_config_on`), so created accounts request `projects`; the status route reports `projects_ready` for created and connected accounts (a pasted key can never have it), and the setup link adds the capability to an account made without it. Everything else a company-Stripe binding powers — the Money tabs, the
 revenue rollup, card status, the CEO agent's "Stripe connected" awareness — is plain
 v1 and runs on the **API-key path**: the owner pastes a restricted key
 (`POST /company/stripe/api-key`, Read on Charges/Customers/Products/Prices/

@@ -120,7 +120,14 @@ async def _projects_ready(row: dict | None) -> bool | None:
     """One Stripe read per status load, only where it can matter. Best-effort:
     a hiccup answers None (card shows nothing extra), never a 502."""
     row = row or {}
-    if not (settings.STRIPE_PROVISIONING_ENABLED and row.get("company_stripe_source") == "created"):
+    if not settings.STRIPE_PROVISIONING_ENABLED or not row.get("company_stripe_account_id"):
+        return None
+    source = row.get("company_stripe_source")
+    if source == "api_key":
+        # A pasted key is the owner's own account: the platform cannot add the
+        # projects capability to it, so it can never provision.
+        return False
+    if source not in ("created", "connected"):
         return None
     try:
         return await company_stripe.projects_ready(account_id=row["company_stripe_account_id"])
@@ -285,6 +292,10 @@ async def onboarding_link(auth: Annotated[AuthContext, Depends(get_current_user)
     if not account_id or row.get("company_stripe_source") != "created":
         raise HTTPException(status_code=409, detail="No created Stripe account to onboard")
     try:
+        # An account created before the rail was on lacks the developer
+        # configuration; request it (idempotent) so the link collects it.
+        if settings.STRIPE_PROVISIONING_ENABLED and not await company_stripe.projects_ready(account_id=account_id):
+            await company_stripe.request_projects_capability(account_id=account_id)
         # Already onboarded once => this is a correction, not a first onboarding.
         url = await company_stripe.create_company_onboarding_link(
             account_id=account_id, update=bool(row.get("company_stripe_details_submitted"))

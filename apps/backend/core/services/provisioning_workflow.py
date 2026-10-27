@@ -400,6 +400,10 @@ async def start(
 
     from core.services import company_stripe
 
+    if (await billing_repo.get_by_owner_id(owner_id) or {}).get("company_stripe_source") == "api_key":
+        raise WorkflowRefused(
+            "not_eligible", "A pasted API key can't set up services — create or connect a Stripe account instead"
+        )
     # "Start provisioning only after the projects capability is active" — a
     # return from hosted onboarding proves nothing. Cleared by "Finish Stripe setup".
     if not await company_stripe.projects_ready(account_id=account_id):

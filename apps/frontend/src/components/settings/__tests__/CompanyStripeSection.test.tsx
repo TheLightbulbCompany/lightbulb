@@ -80,6 +80,13 @@ describe("CompanyStripeSection", () => {
     expect(screen.queryByText("Finish onboarding")).not.toBeInTheDocument();
   });
 
+  it("says a pasted key can never enable Projects, with no setup button", async () => {
+    get.mockResolvedValue({ ...BOUND_BY_KEY, projects_ready: false });
+    renderSection(true);
+    expect(await screen.findByText(/pasted API key can't enable it/)).toBeInTheDocument();
+    expect(screen.queryByText("Finish Stripe setup")).not.toBeInTheDocument();
+  });
+
   it("hides Finish Stripe setup once projects is ready", async () => {
     get.mockResolvedValue({ ...BOUND, projects_ready: true });
     renderSection(true);

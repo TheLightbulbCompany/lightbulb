@@ -296,6 +296,13 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 </dd>
               </div>
             </dl>
+            {data.projects_ready === false && data.source !== "created" && (
+              <p className="text-sm text-[var(--midnight-soft)]">
+                {data.source === "api_key"
+                  ? "Setting up services needs a Stripe account Lightbulb created or connected — a pasted API key can't enable it."
+                  : "Stripe hasn't enabled Projects on this account. Finish setup in your Stripe Dashboard."}
+              </p>
+            )}
             {data.source === "connected" && !data.details_submitted && (
               // "Onboarding incomplete" names the problem; this names the fix.
               // A connected account is finished in Stripe's own Dashboard —

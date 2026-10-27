@@ -707,10 +707,15 @@ route and nowhere else, and teardown never reaches it (spec §3.6, proved by
 **The rail is OFF by default** — `STRIPE_PROVISIONING_ENABLED` (CDK env, default
 `false` in both envs) refuses `start()`/`on_approved()`, freezes `advance()`,
 empties the CEO agent's catalog with `reason: provisioning_unavailable`, and hides the
-Connect doors (the Domain & Site panel was deleted 2026-10-14 with the dead Growth/Company tabs). It stays off until Stripe ships
-delegated connected-account creation + KYC (isol8, Inc. is the Connect
-platform and cannot connect to itself, and `POST /v2/provisioning/*` 500s for
-us). Everything else a company-Stripe binding powers — the Money tabs, the
+Connect doors (the Domain & Site panel was deleted 2026-10-14 with the dead Growth/Company tabs). The
+rail is unblocked (2026-10-23 live test: the old "state-changing calls 500" claim is
+false) and rewritten to the guide's `2026-09-30.preview` contract
+(`provider_connection_requests`, explicit `livemode` on resources and payment,
+`reveal_access_configuration`), but it ships dark: it stays off until the dev
+flag is flipped and a Sandbox key is wired, and a workflow only starts once the
+account's `projects` capability is active (`company_stripe.projects_ready`,
+`projects_ready` on the status route, "Finish Stripe setup" on the card).
+`create_resource` always sends `livemode` (Stripe's default is LIVE). Turning the rail on implies the developer configuration (`company_stripe.developer_config_on`), so created accounts request `projects`; the status route reports `projects_ready` for created and connected accounts (a pasted key can never have it), and the setup link adds the capability to an account made without it. Everything else a company-Stripe binding powers — the Money tabs, the
 revenue rollup, card status, the CEO agent's "Stripe connected" awareness — is plain
 v1 and runs on the **API-key path**: the owner pastes a restricted key
 (`POST /company/stripe/api-key`, Read on Charges/Customers/Products/Prices/

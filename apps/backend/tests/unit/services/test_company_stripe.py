@@ -405,3 +405,28 @@ async def test_projects_ready_reads_the_developer_capability(status, ready):
     assert client.v2.core.accounts.retrieve.call_args.args[1] == {
         "include": ["configuration.developer", "requirements"]
     }
+
+
+@pytest.mark.asyncio
+async def test_the_rail_being_on_implies_the_developer_configuration(monkeypatch):
+    from core.services import company_stripe as mod
+
+    monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_DEVELOPER_CONFIG", False)
+    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", False)
+    assert "developer" not in mod.account_configuration()
+    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
+    assert "developer" in mod.account_configuration()
+    assert mod.onboarding_configurations() == ["merchant", "developer"]
+
+
+@pytest.mark.asyncio
+async def test_request_projects_capability_adds_the_developer_configuration():
+    from core.services import company_stripe as mod
+
+    client = MagicMock()
+    client.v2.core.accounts.update = MagicMock(return_value=SimpleNamespace(id="acct_1"))
+    with patch.object(mod, "_client", return_value=client):
+        await mod.request_projects_capability(account_id="acct_1")
+    args = client.v2.core.accounts.update.call_args.args
+    assert args[0] == "acct_1"
+    assert args[1] == {"configuration": {"developer": {"capabilities": {"projects": {"requested": True}}}}}

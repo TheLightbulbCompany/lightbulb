@@ -115,7 +115,9 @@ async def ensure_agentcore_trust(owner_id: str, role_name: str, account_id: str)
 #: 2026-10-09, was 4 h): a person typing wakes the runtime ahead of the send (routers/messaging
 #: typing prewake), so a parked session costs no visible cold start, and an idle microVM is spend.
 #: A running turn or follow-up reports HealthyBusy on /ping, which AgentCore never counts as idle.
-IDLE_TIMEOUT_S = 30 * 60
+#: 15 min (2026-10-27 cost review): ~95% of the AgentCore bill was idle warm memory, mostly this
+#: tail after heartbeat wakes. Reaches a live runtime only on its next roll (lifecycle drift).
+IDLE_TIMEOUT_S = 15 * 60
 #: AWS's hard ceiling for a microVM session; the backend rolls sessions at a quiet point before it.
 MAX_LIFETIME_S = 8 * 60 * 60
 

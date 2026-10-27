@@ -1,5 +1,6 @@
 import * as cdk from "aws-cdk-lib";
-import { Construct } from "constructs";
+import * as logs from "aws-cdk-lib/aws-logs";
+import { Construct, IConstruct } from "constructs";
 import {
   CLERK_DOMAIN,
   DEV_ROOT_DOMAIN,
@@ -72,11 +73,23 @@ export interface LightbulbStageProps extends cdk.StageProps {
   platformMailDomain?: string;
 }
 
+/** Caps every log group's retention (unset = forever) at dev 14 / prod 30 days. Cost review
+ *  2026-10-27: no alarm reads logs older than that. */
+class CapLogRetention implements cdk.IAspect {
+  constructor(private readonly maxDays: number) {}
+  visit(node: IConstruct): void {
+    if (node instanceof logs.CfnLogGroup && !((node.retentionInDays ?? Infinity) <= this.maxDays)) {
+      node.retentionInDays = this.maxDays;
+    }
+  }
+}
+
 export class LightbulbStage extends cdk.Stage {
   constructor(scope: Construct, id: string, props: LightbulbStageProps) {
     super(scope, id, props);
 
     const env = props.environment;
+    cdk.Aspects.of(this).add(new CapLogRetention(env === "prod" ? 30 : 14));
     const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
     const platformMailDomain =
       props.platformMailDomain ?? props.rootDomain ?? PLATFORM_MAIL_DOMAIN;

@@ -112,7 +112,7 @@
   - **log → AgentCore.** `memory.list {since_seq}`. A `remember` → `BatchCreateMemoryRecords` into `entries` (record id = entry id; metadata `subject`, `status=current`, `kind`). A `replace` → create its record and `BatchUpdateMemoryRecords` on each replaced record's metadata `status=replaced`. A tombstone → `BatchDeleteMemoryRecords` of its record; if the tombstoned entry is mapped to a `facts` record (it was imported), delete that `facts` record too and drop the mapping, so it is not re-imported.
   - Watermarks (`records_after`, `entries_seq`) in DynamoDB. `async def sync_if_stale(owner_id, …, max_age_s: int = 60) -> None`.
 
-- [ ] **Step 1: Write the failing tests** — `test_sync_imports_new_facts_as_entries`, `test_sync_mirrors_entries_and_tombstones`, `test_sync_skips_private_namespace`, `test_sync_if_stale_noop_within_max_age`, `test_sync_when_parked_leaves_watermark`
+- [ ] **Step 1: Write the failing tests** — `test_sync_imports_new_facts_as_entries`, `test_sync_rewrite_becomes_replace_entry` (a mapped record whose text changed → a `replace` with `replaces=[previous entry id]`), `test_sync_mirrors_entries_and_tombstones`, `test_sync_replace_marks_replaced_record_status`, `test_sync_tombstone_of_imported_entry_deletes_facts_record`, `test_sync_skips_private_namespace`, `test_sync_if_stale_noop_within_max_age`, `test_sync_when_parked_leaves_watermark`
 - [ ] **Step 2: Run → FAIL**
 - [ ] **Step 3: Implement**
 - [ ] **Step 4: Run → PASS**

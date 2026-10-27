@@ -1,5 +1,7 @@
 # Memory BEAM Runner Implementation Plan
 
+> **Status (27 Oct 2026): deferred.** The founder's call: build from the engineering, run no benchmarks for now. Nothing in this plan is built until we decide to run. The engine plan's Task 1 Step 5 (the probe cases against the dev memory, cents) is the only measurement kept.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Run BEAM (100K through 10M) on past.dev's own benchmark runner with three memory backends behind one adapter interface (past.dev, today's AgentCore built-in, the Lightbulb engine), a free evidence-on-page signal for tuning, a cheap answerer for loops, and the fixed model once per split for the published numbers.

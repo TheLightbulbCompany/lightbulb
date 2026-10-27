@@ -1,7 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { endedWhy, sessionEndable, sessionLabel, sessionLive, sessionState, sessionStateLabel, sessionTitle, sessionWaitingLine } from "@lightbulb/shared";
+import { endedWhy, sessionEndable, sessionLabel, sessionLive, sessionSignalsLine, sessionState, sessionStateLabel, sessionTitle, sessionWaitingLine } from "@lightbulb/shared";
 import { SessionToolIcon } from "./SessionToolIcon";
 import { SessionRenameButton } from "./SessionRenameButton";
 import { SessionRemoveButton } from "./SessionRemoveButton";
@@ -55,16 +55,18 @@ export function SessionListRow({ entry: { session, ownerName, own, owner, unread
   const waiting = sessionState(session) === "waiting";
   const waitLine = sessionWaitingLine(session);
   const where = why ?? (session.cwdName ? `in ${session.cwdName}` : null);
-  const second = oneLine ? "" : [own ? null : ownerName, why ?? waitLine ?? session.cwdName].filter(Boolean).join(" · ");
+  // Running subagents and the branch's PR (spec 2026-10-26 (f) gaps 16, 15): live rows only.
+  const signals = live ? sessionSignalsLine(session) : null;
+  const second = oneLine ? "" : [own ? null : ownerName, why ?? waitLine ?? session.cwdName, signals].filter(Boolean).join(" · ");
   return <li className={`room-directory-row room-directory-row--roster session-row${live ? "" : " session-row--gone"}`}>
     <button type="button" className="room-directory-entry" aria-current={current ? "page" : undefined}
-      aria-label={`Open ${label}, ${who}${where ? `, ${where}` : ""}, ${sessionStateLabel(session)}${waitLine && waitLine !== sessionStateLabel(session) ? `, ${waitLine}` : ""}${news}${chat}`} onClick={() => onSelect?.(session.sessionId)}>
+      aria-label={`Open ${label}, ${who}${where ? `, ${where}` : ""}, ${sessionStateLabel(session)}${waitLine && waitLine !== sessionStateLabel(session) ? `, ${waitLine}` : ""}${signals ? `, ${signals}` : ""}${news}${chat}`} onClick={() => onSelect?.(session.sessionId)}>
       <span className="session-owner-face">
         <ParticipantAvatar participant={owner} size="sm" showPresence={false} />
         <span className="session-tool-badge session-tool-badge--corner" aria-hidden="true"><SessionToolIcon provider={session.provider} /></span>
       </span>
       <span className="min-w-0 flex-1">
-        <span className={`block truncate${unread ? " font-semibold" : ""}${live && session.status === "busy" ? " session-title--working" : ""}`} title={label}>{sessionTitle(session)}</span>
+        <span className={`block truncate${unread ? " font-semibold" : ""}${live && session.status === "busy" ? " session-title--working" : ""}`} title={label}>{sessionTitle(session)}{oneLine && signals && <span className="text-caption text-muted-foreground" aria-hidden="true"> · {signals}</span>}</span>
         {second && <span className="block truncate text-caption text-muted-foreground">{second}</span>}
       </span>
       {!!session.chatUnread && <span className="session-chat-unread" aria-hidden="true">{session.chatUnread > 99 ? "99+" : session.chatUnread}</span>}

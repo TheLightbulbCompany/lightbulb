@@ -160,6 +160,34 @@ class TokenUsage(ContractModel):
 
 Label = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[\x21-\x7e]+$")]
 
+Count = Annotated[int, Field(ge=0, le=1_000_000_000)]
+
+
+class SessionChanges(ContractModel):
+    """Files the session changed since it started, from git on its Mac (spec 2026-10-26 (f) gap 7)."""
+
+    files: Count
+    additions: Count
+    deletions: Count
+
+
+class SessionPr(ContractModel):
+    """The pull request of the branch checked out in the session's folder (`gh pr view`, gap 15)."""
+
+    number: Annotated[int, Field(ge=1, le=99_999_999)]
+    state: Literal["open", "merged", "closed"]
+    url: Annotated[str, Field(max_length=300, pattern=r"^https://[^\s]+$")]
+    # Failing when any check failed, pending while any runs, passing; absent with no checks.
+    checks: Literal["passing", "failing", "pending"] | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("checks",))
+
+
+#: How many subagents a session has running (gap 16).
+AgentCount = Annotated[int, Field(ge=1, le=1000)]
+
 
 class SessionStats(ContractModel):
     """What the harness wrote about its own run; each field is absent until it does."""
@@ -306,6 +334,11 @@ class LocalSession(ContractModel):
     done: bool | None = None
     waiting_for: Annotated[str, Field(max_length=120)] | None = None
     note: Annotated[str, Field(max_length=300)] | None = None
+    # A live session only, from a Mac that reports them (`sessionSignals`): files changed since it
+    # started (git), its running subagents, its branch's pull request. Absent otherwise.
+    changes: SessionChanges | None = None
+    agents: AgentCount | None = None
+    pr: SessionPr | None = None
     # False while the owner has paused sharing this one session: only they can see it.
     shared: bool = True
     # Where this running session's browser connection is open now: the Browser
@@ -386,6 +419,9 @@ class LocalSession(ContractModel):
                 "done",
                 "waiting_for",
                 "note",
+                "changes",
+                "agents",
+                "pr",
                 "model",
                 "display_title",
                 "permission_mode",
@@ -822,7 +858,7 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     live = public["status"] not in ("ended", "offline")
     public["browser"] = browser_open(row) if live else None
     if not live:
-        for key in ("done", "waitingFor", "note"):
+        for key in ("done", "waitingFor", "note", "changes", "agents", "pr"):
             public.pop(key, None)
     if public["terminal"] is None and reason and (live or reason not in ("plain", "no-daemon")):
         public["terminalReason"] = reason

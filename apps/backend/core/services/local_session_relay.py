@@ -88,6 +88,12 @@ class Descriptor(ContractModel):
     done: bool | None = None
     waiting_for: Annotated[str, Field(max_length=120)] | None = None
     note: Annotated[str, Field(max_length=300)] | None = None
+    # Files changed since the session started (git), its running subagents, its branch's pull request
+    # (spec 2026-10-26 (f) gaps 7, 16, 15). Sent only once FEATURES lists sessionSignals; absent is
+    # none or unknown (an older desktop never sends them).
+    changes: sessions.SessionChanges | None = None
+    agents: sessions.AgentCount | None = None
+    pr: sessions.SessionPr | None = None
 
 
 class Register(ContractModel):
@@ -132,6 +138,12 @@ class HeartbeatSession(ContractModel):
     done: bool | None = None
     waiting_for: Annotated[str, Field(max_length=120)] | None = None
     note: Annotated[str, Field(max_length=300)] | None = None
+    # Files changed since the session started (git), its running subagents, its branch's pull request
+    # (spec 2026-10-26 (f) gaps 7, 16, 15). Sent only once FEATURES lists sessionSignals; absent is
+    # none or unknown (an older desktop never sends them).
+    changes: sessions.SessionChanges | None = None
+    agents: sessions.AgentCount | None = None
+    pr: sessions.SessionPr | None = None
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
@@ -157,6 +169,8 @@ FEATURES = [
     "remoteResize",
     # The Mac sends `done`, `waitingFor` and `note` only once this is listed.
     "sessionAttention",
+    # The Mac sends `changes`, `agents` and `pr` only once this is listed.
+    "sessionSignals",
 ]
 
 
@@ -367,6 +381,8 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
 #: Heartbeat fields whose change counts as the user doing something (stamps lastEventAt).
 #: What Claude says beyond `status`; each frame from a Mac that sends them says all of them.
 ATTENTION_FIELDS = ("done", "waitingFor", "note")
+#: What the session's Mac reads beyond its transcript; each frame from a Mac that sends them says all of them.
+SIGNAL_FIELDS = ("changes", "agents", "pr")
 _PUBLIC_FIELDS = (
     "status",
     "activeTurnId",
@@ -375,6 +391,7 @@ _PUBLIC_FIELDS = (
     "lastAssistantMessage",
     "controlUnavailableReason",
     *ATTENTION_FIELDS,
+    *SIGNAL_FIELDS,
 )
 
 
@@ -751,7 +768,7 @@ class LocalSessionRelay:
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
                     # Absent, never a stored null.
-                    for key in ("holderId", "forkedFrom", *ATTENTION_FIELDS):
+                    for key in ("holderId", "forkedFrom", *ATTENTION_FIELDS, *SIGNAL_FIELDS):
                         if not row.get(key):
                             row.pop(key, None)
                     # The hidden `background` kind is gone (Phase 3); a row that still has it is listed now.
@@ -1020,7 +1037,16 @@ class LocalSessionRelay:
                         **labels,
                     )
                     updated["terminalResize"] = item.terminal_resize
-                    for key, value in zip(ATTENTION_FIELDS, (item.done, item.waiting_for, item.note), strict=True):
+                    signals = (
+                        item.changes and item.changes.model_dump(by_alias=True),
+                        item.agents,
+                        item.pr and item.pr.model_dump(by_alias=True),
+                    )
+                    for key, value in zip(
+                        (*ATTENTION_FIELDS, *SIGNAL_FIELDS),
+                        (item.done, item.waiting_for, item.note, *signals),
+                        strict=True,
+                    ):
                         if value:
                             updated[key] = value
                         else:

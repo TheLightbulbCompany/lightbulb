@@ -379,6 +379,7 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
                 if let Some(thread) = thread {
                     apply_thread(&mut session, thread);
                 }
+                session.attention.agents = working_children(threads.iter().flatten(), &session.conversation);
                 found.push(session);
             },
             Err(e) => {
@@ -573,6 +574,14 @@ async fn loaded_threads(socket: &Path) -> Result<Vec<Value>> {
 /// A subagent thread belongs to its parent's row (Codex desktop shows it nested), never its own.
 fn subagent(thread: &Value) -> bool {
     !thread["parentThreadId"].is_null() || thread["source"].get("subAgent").is_some()
+}
+
+/// How many loaded threads `parent` spawned are working now (`parentThreadId`): the row's "2 agents
+/// running". Only direct children: a grandchild is its own parent's.
+fn working_children<'a>(threads: impl Iterator<Item = &'a Value>, parent: &str) -> u32 {
+    threads
+        .filter(|t| t["parentThreadId"] == parent && matches!(thread_status(&t["status"]), Some("busy" | "waiting-approval")))
+        .count() as u32
 }
 
 /// The app-server's `ThreadStatus` in the mirror's words (the state table, spec 2026-10-26 (e)):
@@ -1661,6 +1670,20 @@ mod tests {
         assert!(thread_rollout(&root, &thread("a", json!({"type":"idle"}), Path::new("/etc/passwd"))).is_none(), "only under ~/.codex/sessions");
         assert!(thread_rollout(&root, &thread("a", json!({"type":"idle"}), &day.join("missing.jsonl"))).is_none(), "not written yet");
         assert!(!subagent(&thread("a", json!({"type":"idle"}), &idle)));
+    }
+
+    #[test]
+    fn local_sessions_codex_counts_working_child_threads_by_parent_thread_id() {
+        let parent = "01a17a2e-71be-72a3-9ea3-db3681294921";
+        let child = |status: Value, of: &str| json!({"id":"c","parentThreadId":of,"status":status});
+        let threads = [
+            child(json!({"type":"active","activeFlags":[]}), parent),
+            child(json!({"type":"active","activeFlags":["waitingOnApproval"]}), parent),
+            child(json!({"type":"idle"}), parent),
+            child(json!({"type":"active","activeFlags":[]}), "someone-else"),
+            json!({"id":parent,"parentThreadId":null,"status":{"type":"active","activeFlags":[]}}),
+        ];
+        assert_eq!(working_children(threads.iter(), parent), 2);
     }
 
     #[test]

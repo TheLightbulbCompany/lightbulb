@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import boto3
+import pydantic
 import pytest
 from botocore.exceptions import ClientError
 from fastapi import FastAPI
@@ -1584,6 +1585,38 @@ async def test_attention_registers_updates_on_heartbeat_clears_when_absent_and_h
     assert stored["done"] is True and "waitingFor" not in stored
     stored["onlineUntil"] = 0
     assert service._session_public(stored).done is None, "an offline session is waiting on nothing"
+
+
+@pytest.mark.asyncio
+async def test_signals_register_update_on_heartbeat_clear_when_absent_and_hide_when_not_live(transport):
+    assert "sessionSignals" in importlib.import_module("core.services.local_session_relay").FEATURES
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport)
+    # An older desktop sends none of them: nothing is stored, nothing is listed.
+    sid = (await relay(transport).handle_message("conn-1", registration()))["sessionId"]
+    stored = await repo.get_session(OWNER, sid)
+    assert not {"changes", "agents", "pr"} & stored.keys()
+    listed = (await service.list_resources(BOB, ROOM)).sessions[0]
+    assert not {"changes", "agents", "pr"} & listed.model_dump(by_alias=True).keys(), "absent, never a null"
+    pr = {"number": 123, "state": "open", "url": "https://github.com/o/r/pull/123", "checks": "failing"}
+    transport[4].clear()
+    await relay(transport).handle_message(
+        "conn-1", heartbeat(sid, changes={"files": 3, "additions": 12, "deletions": 4}, agents=2, pr=pr)
+    )
+    listed = (await service.list_resources(BOB, ROOM)).sessions[0]
+    assert listed.changes.files == 3 and listed.agents == 2 and listed.pr.checks == "failing"
+    assert listed.model_dump(by_alias=True)["pr"] == pr
+    assert any(hint["channel"].endswith("/sessions") for hint in transport[4]), "a moved signal is news"
+    # No checks yet: the field is absent, not a null.
+    await relay(transport).handle_message("conn-1", heartbeat(sid, pr={**pr, "checks": None}))
+    stored = await repo.get_session(OWNER, sid)
+    assert "checks" not in stored["pr"] and not {"changes", "agents"} & stored.keys(), "each frame says all of it"
+    stored["onlineUntil"] = 0
+    assert service._session_public(stored).pr is None, "an offline session shows no PR"
+    with pytest.raises(pydantic.ValidationError):
+        importlib.import_module("core.services.local_session_relay").HeartbeatSession(
+            sessionId=sid, generation="g", status="idle", pr={**pr, "url": "javascript:x"}
+        )
 
 
 @pytest.mark.asyncio

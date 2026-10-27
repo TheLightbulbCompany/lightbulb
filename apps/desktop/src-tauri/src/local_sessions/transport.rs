@@ -1827,6 +1827,8 @@ impl Host {
                     self.workspace_key = Some(key.clone());
                 }
             }
+            // Git, gh and subagent counts for the rows: started here, read off the loop.
+            super::signals::tick(&self.mirrors, &self.home);
             laps.lap("workspace scan");
             if anchor.as_ref().is_some_and(|a| a.now().is_none()) {
                 anchor = None;
@@ -3162,6 +3164,7 @@ fn device_heartbeats_with_controls(
             super::session_states::add_reason(&mut entry, &m.native);
         }
         super::session_states::add_attention(&mut entry, &m.native);
+        super::signals::add(&mut entry, key, m);
         // This session's own holder takes the app panel's size (its HELLO said so): a holder an
         // older build started does not, though this Mac advertises remoteResize. Only to a relay
         // that lists remoteResize.

@@ -105,7 +105,7 @@ async fn output(program: &str, args: &[&str], cwd: &Path, limit: u64) -> Result<
     .map_err(|_| "workspace observation timed out")?
 }
 
-async fn git(cwd: &Path, args: &[&str]) -> Result<Vec<u8>> {
+pub(super) async fn git(cwd: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let mut fixed = vec![
         "-c",
         "core.fsmonitor=false",

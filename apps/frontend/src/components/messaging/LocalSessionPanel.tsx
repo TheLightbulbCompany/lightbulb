@@ -7,7 +7,7 @@ import { isDesktopApp } from "@/lib/desktopNotify";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  ApiError, audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, pendingQuestion, questionKeys, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionLive, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
+  ApiError, audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, pendingQuestion, questionKeys, receiptChip, sendBlockedReason, sessionAgentsLabel, sessionChanges, sessionFooter, sessionPrLabel, sessionLabel, sessionLive, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
   CLI_ONLY, conversationOnly, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox, watchOnlyLine,
   type LocalSession, type SessionControlClient, type SessionQuestion, type SessionSource,
 } from "@lightbulb/shared";
@@ -252,8 +252,13 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
 
   const messageOwner = !own && onMessageOwner
     ? <Button type="button" variant="outline" size="sm" onClick={onMessageOwner}><MessageSquare aria-hidden="true" />Message {ownerName}</Button> : null;
-  const added = changes.reduce((n, file) => n + file.added, 0);
-  const removed = changes.reduce((n, file) => n + file.removed, 0);
+  // Git's count from the session's Mac when it sends one (spec 2026-10-26 (f) gap 7): it sees edits made
+  // by shell, checkout and codegen that the transcript's edit events miss. Else the events' count.
+  const files = session.changes?.files ?? changes.length;
+  const added = session.changes?.additions ?? changes.reduce((n, file) => n + file.added, 0);
+  const removed = session.changes?.deletions ?? changes.reduce((n, file) => n + file.removed, 0);
+  const agents = sessionAgentsLabel(session);
+  const pr = sessionPrLabel(session);
   const done = plan?.filter(step => step.status === "completed").length ?? 0;
 
   // The sent-but-not-echoed prompt and the queued rows, so a follow-up stays visible; under an app session's conversation.
@@ -311,8 +316,10 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         <span>{own ? "You" : ownerName}</span>
         {where && <span className="session-fact-value room-wrap">{where}</span>}
         {session.pickedUpFrom && <span>picked up from {personName(session.pickedUpFrom.humanUserId)}</span>}
-        {changes.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>
-          {changes.length} {changes.length === 1 ? "file" : "files"} changed<span className="local-session-add">+{added}</span><span className="local-session-del">−{removed}</span></button>}
+        {files > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>
+          {files} {files === 1 ? "file" : "files"} changed<span className="local-session-add">+{added}</span><span className="local-session-del">−{removed}</span></button>}
+        {agents && <span>{agents}</span>}
+        {pr && session.pr && <a className="session-status-link" href={session.pr.url} target="_blank" rel="noopener noreferrer">{pr}</a>}
         {history.error && <span role="status">Could not load session details. <button type="button" className="session-status-link" onClick={() => void history.retry()}>Retry</button></span>}
         {plan && plan.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>plan {done} of {plan.length}</button>}
       </p>

@@ -87,6 +87,26 @@ export const sessionStateAction = (s: LocalSession): "Open" | "Attach" | "Resume
   return s.terminal === "attach" ? "Attach" : "Open";
 };
 
+/** "3 files changed +12 −4", the Codex wording. */
+export const changesLabel = (c: { files: number; additions: number; deletions: number }): string =>
+  `${c.files} ${c.files === 1 ? "file" : "files"} changed +${c.additions} −${c.deletions}`;
+
+/** "2 agents running"; null with none (spec 2026-10-26 (f) gap 16). */
+export const sessionAgentsLabel = (s: Pick<LocalSession, "agents">): string | null =>
+  s.agents ? `${s.agents} ${s.agents === 1 ? "agent" : "agents"} running` : null;
+
+/** "PR #123 · checks passing", "PR #123 · merged"; null without a PR (gap 15). */
+export const sessionPrLabel = (s: Pick<LocalSession, "pr">): string | null => {
+  const pr = s.pr;
+  if (!pr) return null;
+  const what = pr.state !== "open" ? pr.state : !pr.checks ? "open" : `checks ${pr.checks === "pending" ? "running" : pr.checks}`;
+  return `PR #${pr.number} · ${what}`;
+};
+
+/** A row's signals after its other line: running agents and the PR. Null with neither. */
+export const sessionSignalsLine = (s: Pick<LocalSession, "agents" | "pr">): string | null =>
+  [sessionAgentsLabel(s), sessionPrLabel(s)].filter(Boolean).join(" · ") || null;
+
 /** What a waiting session waits on, as its row's preview: the open prompt's reason, else its job's
  *  note. A note is shown as text, never as a prompt. Null when it waits on nothing. */
 export const sessionWaitingLine = (s: Pick<LocalSession, "status" | "waitingFor" | "note">): string | null =>

@@ -187,7 +187,7 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
   nameOf?: (userId: string) => string;
 }) {
   const switches = useAccessSwitches(client, session);
-  const hasChanges = useMemo(() => Boolean(sessionPlan(events)?.length) || sessionChanges(events).length > 0, [events]);
+  const hasChanges = useMemo(() => !!session.changes || Boolean(sessionPlan(events)?.length) || sessionChanges(events).length > 0, [events, session.changes]);
   return <Dialog open={open} onOpenChange={onOpenChange}>
     {/* Focus lands on the dialog, not its first tab: a ring on "About" would read as the open tab. */}
     <DialogContent tabIndex={-1} onOpenAutoFocus={event => { event.preventDefault(); (event.currentTarget as HTMLElement | null)?.focus(); }}
@@ -207,7 +207,7 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
         <TabsContent value="about" className="session-details-tab"><About session={session} ownerName={ownerName} own={own} /></TabsContent>
         <TabsContent value="changes" className="session-details-tab">
           {hasChanges
-            ? <SessionOverview expanded events={events} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />} />
+            ? <SessionOverview expanded events={events} git={session.changes} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />} />
             : <p className="text-muted-foreground">No plan or file changes yet.</p>}
         </TabsContent>
         <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} switches={switches} nameOf={nameOf ?? (() => "A teammate")} /></TabsContent>

@@ -257,7 +257,12 @@ async def search_sessions(auth: AuthContext, request: SessionSearchRequest) -> S
     if ids and not await local_sessions.still_in_workspace(owner_id, auth.user_id):
         return SessionSearchResponse(hits=[])
     rows = await local_sessions_repo.get_sessions(owner_id, ids)
-    readable = {sid for sid, row in zip(ids, rows) if local_sessions.still_searchable(row, auth.user_id)}
+    readable = {sid: row for sid, row in zip(ids, rows) if local_sessions.still_searchable(row, auth.user_id)}
+    # A teammate removed meanwhile keeps a shared row; their sessions leave search with them.
+    others = sorted({row["humanUserId"] for row in readable.values()} - {auth.user_id})
+    members = await asyncio.gather(*(local_sessions.still_in_workspace(owner_id, human) for human in others))
+    gone = {human for human, ok in zip(others, members) if not ok}
+    readable = {sid for sid, row in readable.items() if row["humanUserId"] not in gone}
     hits = []
     for hit in candidates:
         source = hit["_source"]

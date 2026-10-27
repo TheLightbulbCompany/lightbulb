@@ -113,6 +113,27 @@ async def test_a_member_removed_while_the_index_answered_gets_nothing(search_on)
     rows.assert_not_called()
 
 
+async def test_a_teammate_removed_while_the_index_answered_takes_their_sessions_along(search_on):
+    body = {"hits": {"hits": [_hit(S1), _hit(S2), _hit(S3)]}}
+    readable = {sid: _session(sid) for sid in (S1, S2, S3)}
+    rows = AsyncMock(
+        return_value=[{"humanUserId": "user_alice"}, {"humanUserId": "user_carol"}, {"humanUserId": BOB.user_id}]
+    )
+    # Bob (the caller) is a member; Alice still is; Carol was removed after the candidates were built.
+    member = AsyncMock(side_effect=lambda owner, user: user != "user_carol")
+    with (
+        patch.object(service, "searchable_sessions", AsyncMock(return_value=readable)),
+        patch.object(service, "still_in_workspace", member),
+        patch.object(
+            message_search, "_request", AsyncMock(return_value=httpx.Response(200, content=json.dumps(body).encode()))
+        ),
+        patch.object(repo, "get_sessions", rows),
+    ):
+        result = await message_search.search_sessions(BOB, message_search.SessionSearchRequest(q="deploy"))
+    assert [h.session_id for h in result.hits] == [S1, S3]
+    assert {c.args[1] for c in member.await_args_list} == {BOB.user_id, "user_alice", "user_carol"}
+
+
 async def test_no_readable_session_never_reaches_the_index(search_on):
     request = AsyncMock()
     with (

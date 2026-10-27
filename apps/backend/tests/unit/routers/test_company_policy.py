@@ -56,6 +56,7 @@ def _lease(monkeypatch):
     monkeypatch.setattr(container_repo, "release_owner_lifecycle_claim", AsyncMock())
     monkeypatch.setattr(mod.slack_installs_repo, "list_for_owner", AsyncMock(return_value=[]))
     monkeypatch.setattr(mod.website_logins, "list_logins", AsyncMock(return_value=[]))
+    monkeypatch.setattr(mod.link_wallet, "disconnect", AsyncMock(return_value=False))
 
 
 @pytest.fixture(autouse=True)

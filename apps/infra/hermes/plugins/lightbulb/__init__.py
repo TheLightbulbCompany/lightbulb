@@ -194,6 +194,52 @@ def _suggest_idea(args: dict, *, session_id: str = "", **_kw) -> str:
     return json.dumps(result)
 
 
+# request_purchase tool (Link Agent Wallet, dark): the agent can only ASK. The backend checks the
+# owner's purchase limits, files the Needs-you card and, after the owner's click, Link's own
+# approval. The agent and workspace come from the turn; the reply is {requestId, status} and
+# nothing else -- no URL, token or card ever reaches the model.
+PURCHASE_SCHEMA = {
+    "name": "request_purchase",
+    "description": "Ask the owner to approve buying something for this company. You do not pay: the "
+                   "owner approves it in Lightbulb and in Link first, and you are never given a card. "
+                   "Use it only for a real purchase your task needs, tied to the issue you are working on.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "merchant": {"type": "string", "description": "Who is paid, e.g. 'Acme Hosting'."},
+            "url": {"type": "string", "description": "The merchant's web address (the page you would buy on)."},
+            "amount": {"type": "number", "description": "Total in US dollars, e.g. 35.00."},
+            "why": {"type": "string", "description": "What it is and why the company needs it, one or two sentences. The owner reads this."},
+            "issue_id": {"type": "string", "description": "The issue this purchase is for."},
+        },
+        "required": ["merchant", "url", "amount", "why", "issue_id"],
+    },
+}
+PURCHASE_NO_TURN = "request_purchase works only inside a Lightbulb turn."
+
+
+def _request_purchase(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not ctx or not ctx.get("agentId") or not ctx.get("hookToken"):
+        return PURCHASE_NO_TURN
+    body = {"agentId": ctx["agentId"], "merchant": args.get("merchant"), "url": args.get("url"),
+            "amount": args.get("amount"), "why": args.get("why"), "issueId": args.get("issue_id")}
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/link-wallet/{ctx['ownerId']}/requests"
+    try:
+        result = _post(url, ctx["hookToken"], body)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return "Purchases are not switched on for this workspace."
+        try:
+            code = (json.loads(exc.read() or b"{}").get("detail") or {}).get("code")
+        except Exception:  # noqa: BLE001
+            code = None
+        return f"Purchase not requested: {code or f'HTTP {exc.code}'}."
+    except Exception as exc:  # noqa: BLE001
+        return f"Purchase not requested: {type(exc).__name__}."
+    return json.dumps({"requestId": result.get("requestId"), "status": result.get("status")})
+
+
 # Task 12: hire_suggestion tool
 # parseHireSuggestion (HireCard.tsx:38-78) matches this string EXACTLY and returns null on
 # any mismatch, which degrades the card to a plain tool pill with no error anywhere. It is
@@ -717,6 +763,8 @@ def register(ctx) -> None:
                       description=SUGGEST_IDEA_SCHEMA["description"], emoji="💡")
     ctx.register_tool("hire_suggestion", "lightbulb", HIRE_SCHEMA, _hire_suggestion,
                       description=HIRE_SCHEMA["description"], emoji="🧑‍💼")
+    ctx.register_tool("request_purchase", "lightbulb", PURCHASE_SCHEMA, _request_purchase,
+                      description=PURCHASE_SCHEMA["description"], emoji="💳")
     ctx.register_tool("request_approval", "lightbulb", APPROVAL_SCHEMA, _request_approval,
                       description=APPROVAL_SCHEMA["description"], emoji="✅")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,

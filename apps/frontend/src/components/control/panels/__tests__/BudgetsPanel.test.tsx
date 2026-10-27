@@ -6,6 +6,8 @@ const patch = vi.fn();
 let isAdmin = true;
 let overview: unknown;
 
+// The Purchases section is dark here: its API answers 404.
+vi.mock("@/lib/api", () => ({ useApi: () => ({ get: () => Promise.reject(new Error("404")), put: vi.fn() }) }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => isAdmin }));
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({

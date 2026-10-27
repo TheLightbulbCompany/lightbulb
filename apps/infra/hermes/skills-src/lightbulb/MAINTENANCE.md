@@ -373,6 +373,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Provisioning rail ....... references/money.md
                               <- apps/backend/routers/company_provisioning.py (container routes, refusal codes);
                                  core/services/provisioning_workflow.py (STATES); core/services/owner_facts.py (the `provisioning` facts list)
+  - Buying things ........... references/money.md ("Buying things")
+                              <- plugins/lightbulb/__init__.py (`request_purchase`, PURCHASE_SCHEMA); backend
+                                 routers/company_link_wallet.py (agent door, refusal codes), core/services/purchases.py (policy),
+                                 core/services/link_wallet.py. Dark behind LINK_WALLET_ENABLED. Pinned by
+                                 apps/infra/hermes/tests/test_plugin_request_purchase.py.
   - Budgets (monthly caps) .. references/money.md
                               <- apps/frontend Settings -> Budgets panel; routers/teams/budgets.py (BFF proxy, admin-gated writes);
                                  Paperclip budget engine (PATCH companies/agents budgets, GET budgets/overview). Real spend fed by

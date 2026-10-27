@@ -63,6 +63,15 @@ export function isPaymentSetupApproval(
   return approval?.payload?.isol8_action === PAYMENT_SETUP_ACTION;
 }
 
+/** A purchase an agent asked for (Link Agent Wallet). */
+const PURCHASE_REQUEST_ACTION = "purchase_request";
+
+export function isPurchaseRequestApproval(
+  approval?: { payload?: Record<string, unknown> | null } | null,
+): boolean {
+  return approval?.payload?.isol8_action === PURCHASE_REQUEST_ACTION;
+}
+
 /** Row label per marker — beats a growing ternary chain over the predicates. */
 const ACTION_LABEL: Record<string, string> = {
   [COMPANY_STRIPE_ACTION]: "Connect Stripe",
@@ -70,6 +79,7 @@ const ACTION_LABEL: Record<string, string> = {
   [PROVIDER_CONNECT_ACTION]: "Connect provider",
   [PROVIDER_INFORMATION_ACTION]: "Provider needs info",
   [PAYMENT_SETUP_ACTION]: "Add a card",
+  [PURCHASE_REQUEST_ACTION]: "Purchase",
 };
 
 /** One string field off an untrusted, agent-authored payload. */

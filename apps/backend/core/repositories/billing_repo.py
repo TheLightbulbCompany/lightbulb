@@ -1530,3 +1530,39 @@ async def set_capability_policy(owner_id: str, updates: dict[str, bool]) -> dict
             return None
         raise
     return _fill_capability_policy(merged)
+
+
+# --- Purchase limits (Link Agent Wallet) -----------------------------------
+# Structured, never free text. Absent = no limit configured = purchases refused (fail-closed).
+
+
+def _fill_purchase_limits(stored: dict | None) -> dict:
+    stored = stored or {}
+    return {
+        "perPurchaseCents": int(stored.get("perPurchaseCents") or 0),
+        "projectMonthlyCents": int(stored.get("projectMonthlyCents") or 0),
+        "merchants": [str(m) for m in stored.get("merchants") or []],
+    }
+
+
+async def get_purchase_limits(owner_id: str) -> dict:
+    row = await get_by_owner_id(owner_id) or {}
+    return _fill_purchase_limits(row.get("purchase_limits"))
+
+
+async def set_purchase_limits(owner_id: str, limits: dict) -> dict | None:
+    """Replace the limits map. ``None`` = no billing row."""
+    filled = _fill_purchase_limits(limits)
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET purchase_limits = :p",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":p": filled},
+        )
+    except ClientError as e:
+        if _is_condition_failure(e):
+            return None
+        raise
+    return filled

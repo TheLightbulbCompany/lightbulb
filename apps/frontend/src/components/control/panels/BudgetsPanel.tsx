@@ -8,6 +8,7 @@
 import { useState } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
+import { PurchasesSection } from "./PurchasesSection";
 
 interface Policy {
   scopeType: string;
@@ -131,6 +132,7 @@ export function BudgetsPanel() {
           ))}
         </ul>
       )}
+      <PurchasesSection canEdit={isAdmin} />
     </div>
   );
 }

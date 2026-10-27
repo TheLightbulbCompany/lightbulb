@@ -72,6 +72,21 @@ it("keeps a prompt it cannot show whole deny-only, and offers only suggested mod
   expect(c.submitLocalSessionCommand).toHaveBeenLastCalledWith("s1", expect.objectContaining({ decision: "allow", mode: "acceptEdits" }));
 });
 
+it("offers Claude's own similar-commands rule, naming what it allows", async () => {
+  const c = client();
+  render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval, summary: "npm run greet", modes: ["similar"], similar: "npm run *" } })} client={c} own ownerName="You" />);
+  await userEvent.click(screen.getByRole("button", { name: "Allow similar commands for this session (npm run *)" }));
+  expect(c.submitLocalSessionCommand).toHaveBeenCalledWith("s1", expect.objectContaining({ decision: "allow", mode: "similar" }));
+});
+
+it("answers a Codex prompt the same way, with Codex's own choices", async () => {
+  const c = client();
+  render(<SessionApprovalCard session={session({ provider: "codex", pendingApproval: { ...pendingApproval, summary: "/bin/zsh -lc 'mkdir -p /tmp/x'", modes: ["session"] } })} client={c} own ownerName="You" />);
+  expect(screen.getByText("Codex wants to use Bash")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Allow for this conversation" }));
+  expect(c.submitLocalSessionCommand).toHaveBeenCalledWith("s1", expect.objectContaining({ decision: "allow", mode: "session" }));
+});
+
 it("draws nothing when the session is not waiting", () => {
   const { container } = render(<SessionApprovalCard session={session({ status: "busy" })} client={client()} own ownerName="You" />);
   expect(container).toBeEmptyDOMElement();

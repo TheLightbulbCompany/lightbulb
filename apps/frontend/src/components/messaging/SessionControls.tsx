@@ -3,7 +3,7 @@
 import { useId, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { ShieldCheck } from "lucide-react";
-import { APPROVAL_MODE_LABEL, approvalInputView, canControlSession, useSessionApproval, useShownInputMatches, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
+import { approvalAgent, approvalInputView, approvalModeAction, canControlSession, useSessionApproval, useShownInputMatches, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Diff } from "./NativeSessionTranscript";
 
@@ -51,7 +51,7 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
   const [reason, setReason] = useState("");
   const reasonId = useId();
   const { userId } = useAuth();
-  if (!pending || session.provider !== "claude" || session.status !== "waiting-approval") return null;
+  if (!pending || !["claude", "codex"].includes(session.provider) || session.status !== "waiting-approval") return null;
   const allowed = canControlSession(session, own, userId);
   const canApprove = pending.exact || (pending.full === true && digestOk);
   const denying = denyingFor === pending.approvalId;
@@ -59,13 +59,13 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
   const busy = current?.status === "sending" || current?.status === "sent";
   const where = own ? "your" : `${ownerName}'s`;
   return <section className="mx-3 my-2 rounded-md border border-warn p-3 text-ui" aria-label="Permission prompt">
-    <p className="font-medium">Claude wants to use {pending.tool}</p>
+    <p className="font-medium">{approvalAgent(session.provider)} wants to use {pending.tool}</p>
     {pending.input ? <CallInput tool={pending.tool} input={pending.input} />
       : pending.summary && <pre className="my-2 whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-caption">{pending.summary}</pre>}
     {!allowed ? <p className="text-muted-foreground">Waiting on {where} approval in the terminal.</p> : <>
       {!canApprove && <p className="text-muted-foreground">Lightbulb shows only part of this call. Approve it on {where} Mac; you can deny it here.</p>}
       {denying ? <form className="mt-2 flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void answer({ decision: "deny", reason }); }}>
-        <label htmlFor={reasonId}>Tell Claude why (optional)</label>
+        <label htmlFor={reasonId}>Tell {approvalAgent(session.provider)} why (optional)</label>
         <input id={reasonId} className="room-input" maxLength={500} value={reason} onChange={event => setReason(event.target.value)} />
         <div className="flex gap-2">
           <Button type="submit" variant="outline" size="sm" disabled={busy}>Deny</Button>
@@ -74,7 +74,7 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
       </form> : <div className="mt-2 flex flex-wrap gap-2">
         {canApprove && <Button size="sm" disabled={busy} onClick={() => void answer({ decision: "allow" })}><ShieldCheck aria-hidden="true" />Approve</Button>}
         {canApprove && pending.modes.map(mode => <Button key={mode} size="sm" variant="outline" disabled={busy}
-          onClick={() => void answer({ decision: "allow", mode })}>Approve and switch to {APPROVAL_MODE_LABEL[mode]}</Button>)}
+          onClick={() => void answer({ decision: "allow", mode })}>{approvalModeAction(mode, pending)}</Button>)}
         <Button size="sm" variant="outline" disabled={busy} onClick={() => setDenyingFor(pending.approvalId)}>Deny…</Button>
       </div>}
       {current?.status === "sending" && <p role="status" className="mt-2">Submitting your decision…</p>}

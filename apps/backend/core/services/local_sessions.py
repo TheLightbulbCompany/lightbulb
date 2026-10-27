@@ -197,7 +197,9 @@ class SessionStats(ContractModel):
     usage: TokenUsage | None = None
 
 
-ApprovalMode = Literal["acceptEdits", "plan", "default"]
+# Claude's session mode switches; "session" is Codex's "allow for this conversation"; "similar" is
+# Claude's own suggested allow rule ("npm run *"), applied for the rest of the session only.
+ApprovalMode = Literal["acceptEdits", "plan", "default", "session", "similar"]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 
 
@@ -214,7 +216,9 @@ class PendingApproval(ContractModel):
     summary: Annotated[str, Field(max_length=300)] = ""
     input_digest: Digest
     exact: bool = False
-    modes: list[ApprovalMode] = Field(default_factory=list, max_length=3)
+    modes: list[ApprovalMode] = Field(default_factory=list, max_length=4)
+    # What "similar" allows, as the approver must see it before choosing it.
+    similar: Annotated[str, Field(max_length=120)] | None = None
     # ``exact`` is never widened (old clients gate Allow on it alone). ``full`` says ``input`` IS
     # the raw call (uncut, unredacted; ``input_digest`` is its digest), so a viewer who was shown
     # all of it may allow -- naming that digest as ``shownDigest``. The 16 KiB envelope caps it.
@@ -226,11 +230,14 @@ class PendingApproval(ContractModel):
         # A viewer cannot have been shown a call the prompt does not carry: it stays deny-only.
         if not self.input:
             self.full = False
+        # Nobody can choose "similar" without being shown what it allows.
+        if not self.similar:
+            self.modes = [mode for mode in self.modes if mode != "similar"]
         return self
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
-        return _drop_none(self, handler(self), info, ("input",))
+        return _drop_none(self, handler(self), info, ("input", "similar"))
 
 
 #: A pick-up snapshot is kept this long after its session ends (owner ruling 2026-09-27).

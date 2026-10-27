@@ -686,9 +686,11 @@ impl Host {
                 // Discovery sees a running Claude process as busy even while its
                 // PermissionRequest hook is holding a prompt. Keep the hook's
                 // stronger status until that exact hold is released.
+                // (Not a daemon hold: Codex's app-server status is the truth, and `codex_hold`
+                // follows it.)
                 if mirror.native.process == native.process
                     && matches!(native.status.as_str(), "busy" | "idle" | "waiting-approval")
-                    && mirror.waiting.as_ref().is_some_and(|prompt| prompt.held.is_some())
+                    && mirror.waiting.as_ref().and_then(|prompt| prompt.held.as_ref()).is_some_and(|held| !daemon_held(held))
                 {
                     native.status = "waiting-approval".into();
                 }
@@ -748,7 +750,9 @@ impl Host {
                 // Its end is no longer news; whatever has not been sent must not be.
                 self.ended_pending.retain(|pending| pending != &key);
             }
+            let withheld = self.stopped_now(&key);
             let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
+            codex_hold(mirror, withheld);
             if start_links::bind(&scope, &mirror.native, &mirror.generation)? {
                 invalidate = true;
             }
@@ -1025,6 +1029,11 @@ impl Host {
                         }
                         (held, private_send, input)
                     });
+                // A Codex hold comes from its daemon, not a hook: a hook's report of the same prompt
+                // must not replace the answerable one.
+                if self.mirrors.get(&key).and_then(|m| m.waiting.as_ref()?.held.as_ref()).is_some_and(daemon_held) {
+                    return Ok(None);
+                }
                 let prompt = WaitingPrompt {
                     id: event.tool_use_id.clone(),
                     tool: event.tool_name.clone(),
@@ -1330,7 +1339,8 @@ impl Host {
             else {
                 continue;
             };
-            if mirror.ended_at.is_some() || approval::deliver(&reply, None) {
+            // A daemon hold has no hook channel: discovery follows the daemon (`codex_hold`).
+            if reply == CODEX_DAEMON || mirror.ended_at.is_some() || approval::deliver(&reply, None) {
                 continue;
             }
             let Ok(before) = serde_json::to_value(&*mirror) else { continue };
@@ -2675,6 +2685,11 @@ impl Host {
             .waiting
             .as_ref()
             .and_then(|w| w.held.clone().filter(|held| answerable(held, w.shipped_full, cmd)));
+        // A Codex hold is answered over its daemon (`codex::answer`), named by the request's item.
+        let codex = held
+            .as_ref()
+            .is_some_and(|held| mirror.native.provider == "codex" && daemon_held(held))
+            .then(|| (mirror.native.clone(), mirror.waiting.as_ref().and_then(|w| w.id.clone())));
         let live = mirror.generation == cmd.expected_generation
             && mirror.registration.successor.is_none()
             && mirror.ended_at.is_none()
@@ -2688,9 +2703,10 @@ impl Host {
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
         let confined = |held: &approval::Held| {
-            enrollment::hook_path()
-                .parent()
-                .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
+            codex.is_some()
+                || enrollment::hook_path()
+                    .parent()
+                    .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
         };
         let Some(held) = held.filter(|held| live && confined(held)) else {
             return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
@@ -2707,7 +2723,14 @@ impl Host {
                 }
             }),
         };
-        if !approval::deliver(&held.reply, Some(&answer)) {
+        let delivered = match &codex {
+            Some((native, Some(item))) => codex::answer(&self.home, native, item, &held.input_digest, &answer.decision, cmd.mode.as_deref())
+                .await
+                .unwrap_or(false),
+            Some((_, None)) => false,
+            None => approval::deliver(&held.reply, Some(&answer)),
+        };
+        if !delivered {
             return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
         }
         // Answered: the prompt is gone and the session works (or is told no).
@@ -2719,6 +2742,62 @@ impl Host {
         self.heartbeat_dirty.insert(key);
         journal.finish(&cmd.session_id, &cmd.request_id, Some(held.id), false)
     }
+}
+
+/// A Codex thread's open approval, held the way a Claude hook holds a prompt (spec 2026-10-26 (f),
+/// gap 12). Its daemon replays it to any client that joins the thread, so the app answers it over
+/// the app-server (`codex::answer`), with no hook in between. Discovery owns the hold: once the
+/// daemon no longer holds the request (answered in the terminal, the turn moved on, sharing
+/// stopped), the prompt is let go.
+fn codex_hold(mirror: &mut Mirror, withheld: bool) {
+    if mirror.native.provider != "codex" || mirror.ended_at.is_some() {
+        return;
+    }
+    let thread = mirror.native.conversation.clone();
+    let open = codex::open_request(&thread)
+        .filter(|_| mirror.native.status == "waiting-approval" && !withheld)
+        .and_then(|request| codex::approval(&request));
+    let Some(open) = open else {
+        if mirror.waiting.as_ref().and_then(|w| w.held.as_ref()).is_some_and(daemon_held) {
+            mirror.waiting = None;
+        }
+        return;
+    };
+    let id = codex::approval_id(&thread, &open.item);
+    if mirror.waiting.as_ref().and_then(|w| w.held.as_ref()).is_some_and(|h| h.id == id) {
+        return;
+    }
+    let summary = redact(open.summary.trim());
+    // Exact as a Claude shell prompt is: the summary IS the whole command line.
+    let exact = summary == open.summary.trim() && approval::exact(open.tool, &open.input, None, None);
+    let held = approval::Held {
+        id,
+        input_digest: approval::digest(&open.input),
+        reply: CODEX_DAEMON.into(),
+        exact,
+        modes: if open.session { vec!["session".into()] } else { vec![] },
+        full: open.full,
+        similar: None,
+    };
+    let prompt = WaitingPrompt {
+        id: Some(open.item),
+        tool: Some(open.tool.into()),
+        summary: summary.clone(),
+        held: Some(held),
+        private_send: None,
+        input: open.full.then_some(open.input),
+        shipped_full: false,
+    };
+    mirror.queue.push(approval_row(&summary, &prompt));
+    mirror.waiting = Some(prompt);
+}
+
+/// The reply "channel" of a prompt Codex's daemon holds (`codex_hold`): it has no hook socket.
+/// Never a path `approval::reply_allowed` admits, so no hook report can carry it in.
+const CODEX_DAEMON: &str = "codex-daemon";
+
+fn daemon_held(held: &approval::Held) -> bool {
+    held.reply == CODEX_DAEMON
 }
 
 /// Does this command answer exactly this held prompt, with an option it offered?
@@ -2753,6 +2832,9 @@ fn approval_row(text: &str, prompt: &WaitingPrompt) -> Value {
             "modes": held.modes,
         },
     });
+    if let Some(similar) = &held.similar {
+        row["tool"]["input"]["similar"] = json!(similar);
+    }
     row
 }
 
@@ -4679,7 +4761,7 @@ pub(super) mod tests {
                 input_digest: "d".repeat(64),
                 reply: String::new(),
                 exact: true,
-                modes: vec![], full: false,
+                modes: vec![], full: false, similar: None,
             }),
             private_send: None,
             input: None,
@@ -5584,7 +5666,7 @@ pub(super) mod tests {
             summary: "list_targets {}".into(),
             held: Some(approval::Held {
                 id: id.clone(), input_digest: "d".repeat(64), reply: String::new(),
-                exact: true, modes: vec![], full: false,
+                exact: true, modes: vec![], full: false, similar: None,
             }),
             private_send: None,
             input: None,
@@ -5609,7 +5691,7 @@ pub(super) mod tests {
         let input = json!({"file_path":"/w/a.rs","old_string":"a","new_string":"b"});
         let prompt = WaitingPrompt { id: None, tool: Some("Edit".into()), summary: "Edit a.rs".into(),
             held: Some(approval::Held { id: id.clone(), input_digest: approval::digest(&input), reply: String::new(),
-                exact: false, modes: vec![], full: true }),
+                exact: false, modes: vec![], full: true, similar: None }),
             private_send: None, input: Some(input.clone()), shipped_full: false };
         let row = approval_row("", &prompt);
         assert!(row["tool"]["input"].get("full").is_none() && row["tool"]["input"].get("input").is_none(),
@@ -5656,7 +5738,7 @@ pub(super) mod tests {
             let raw = json!({"command":"make\nmake test"});
             let shown = if shown_digest_ok { raw.clone() } else { json!({"command":"make"}) };
             let held = approval::Held { id: id.clone(), input_digest: approval::digest(&raw),
-                reply: reply.to_string_lossy().into_owned(), exact: false, modes: vec![], full: true };
+                reply: reply.to_string_lossy().into_owned(), exact: false, modes: vec![], full: true, similar: None };
             private_write(&hooks.join(format!("{id}.json")),
                 &json!({"approvalId":id,"inputDigest":held.input_digest,"input":shown})).unwrap();
             host.apply_hook(&lifecycle::HookEvent {
@@ -5682,7 +5764,7 @@ pub(super) mod tests {
             "text":"private body","requestId":uuid::Uuid::new_v4().to_string()});
         let prompt = WaitingPrompt { id: None, tool: Some("mcp__lightbulb_native_sessions__send".into()),
             summary: "Lightbulb message".into(), held: Some(approval::Held {
-                id: id.clone(), input_digest: digest, reply: String::new(), exact: true, modes: vec![], full: false,
+                id: id.clone(), input_digest: digest, reply: String::new(), exact: true, modes: vec![], full: false, similar: None,
             }), private_send: Some(detail.clone()), input: None, shipped_full: false };
         mirror.waiting = Some(prompt.clone());
         let batch = json!({"type":"local.session.events","sessionId":SID,"generation":"gen-1",
@@ -5709,7 +5791,7 @@ pub(super) mod tests {
             input_digest: "d".repeat(64),
             reply: reply.to_string_lossy().into_owned(),
             exact: true,
-            modes: vec![], full: false,
+            modes: vec![], full: false, similar: None,
         };
         let event = lifecycle::HookEvent {
             tool_name: Some("Bash".into()),
@@ -5747,6 +5829,44 @@ pub(super) mod tests {
         assert!(host.mirrors[&key].waiting.is_none());
     }
 
+    /// Gap 12: a Codex thread's open approval, read from its daemon, is held like a hook's prompt
+    /// (tagged, answerable, the whole command shipped) and let go once the daemon no longer holds it.
+    #[test]
+    fn local_sessions_a_codex_daemon_approval_is_held_and_let_go_with_the_daemon() {
+        let thread = "01a17b15-0000-7000-8000-00000000c0de";
+        let mut mirror = test_mirror(thread, "gen-1");
+        mirror.native.status = "waiting-approval".into();
+        let request = json!({"method":"item/commandExecution/requestApproval","id":0,"params":{"threadId":thread,"turnId":"u",
+            "itemId":"exec-1","startedAtMs":1,"command":"/bin/zsh -lc 'mkdir -p /tmp/x'","cwd":"/tmp",
+            "availableDecisions":["accept","acceptForSession","decline","cancel"]}});
+        codex::remember_approval(thread, Some(request));
+        codex_hold(&mut mirror, true);
+        assert!(mirror.waiting.is_none() && mirror.queue.is_empty(), "a session that is not shared waits for its terminal");
+        codex_hold(&mut mirror, false);
+        let input = json!({"command":"/bin/zsh -lc 'mkdir -p /tmp/x'"});
+        let waiting = mirror.waiting.clone().unwrap();
+        let held = waiting.held.clone().unwrap();
+        assert_eq!(held.id, codex::approval_id(thread, "exec-1"));
+        assert_eq!(held.input_digest, approval::digest(&input));
+        assert!(held.exact && held.full && daemon_held(&held));
+        assert_eq!(held.modes, vec!["session"]);
+        assert_eq!((waiting.id.as_deref(), waiting.input.as_ref()), (Some("exec-1"), Some(&input)));
+        let row = &mirror.queue[0];
+        assert_eq!((row["lifecycle"].as_str(), row["itemId"].as_str()), (Some("approval_pending"), Some(held.id.as_str())));
+        assert_eq!(row["tool"]["input"]["modes"], json!(["session"]));
+        codex_hold(&mut mirror, false);
+        assert_eq!(mirror.queue.len(), 1, "rediscovered, it is the same prompt");
+        // Answered in the terminal: the daemon holds nothing, the prompt goes.
+        mirror.native.status = "busy".into();
+        codex::remember_approval(thread, None);
+        codex_hold(&mut mirror, false);
+        assert!(mirror.waiting.is_none());
+        // A hook's held prompt is never the daemon's to drop.
+        mirror.waiting = Some(WaitingPrompt { held: Some(approval::Held { reply: "/x/appr.sock".into(), ..held }), ..waiting });
+        codex_hold(&mut mirror, false);
+        assert!(mirror.waiting.is_some());
+    }
+
     #[test]
     fn local_sessions_a_held_prompt_the_hook_lets_go_stays_waiting_but_untagged() {
         let dir = tempfile::tempdir().unwrap();
@@ -5757,7 +5877,7 @@ pub(super) mod tests {
         let id = format!("appr-{}", uuid::Uuid::new_v4().simple());
         let reply = hooks.join(format!("{id}.sock"));
         let _hook_side = std::os::unix::net::UnixDatagram::bind(&reply).unwrap();
-        let held = approval::Held { id: id.clone(), input_digest: "d".repeat(64), reply: reply.to_string_lossy().into_owned(), exact: true, modes: vec![], full: false };
+        let held = approval::Held { id: id.clone(), input_digest: "d".repeat(64), reply: reply.to_string_lossy().into_owned(), exact: true, modes: vec![], full: false, similar: None };
         host.apply_hook(&lifecycle::HookEvent {
             tool_name: Some("Bash".into()),
             waiting_text: Some("ls".into()),
@@ -5827,7 +5947,7 @@ pub(super) mod tests {
             input_digest: cmd.input_digest.clone().unwrap(),
             reply: String::new(),
             exact: true,
-            modes: vec!["acceptEdits".into()], full: false,
+            modes: vec!["acceptEdits".into()], full: false, similar: None,
         };
         assert!(answerable(&held, true, &cmd));
         assert!(!answerable(&approval::Held { exact: false, ..held.clone() }, true, &cmd), "inexact is deny-only");

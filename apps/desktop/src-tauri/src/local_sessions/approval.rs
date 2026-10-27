@@ -10,8 +10,10 @@
 //! - The hook answers only with a decision the desktop app delivered for THIS
 //!   prompt: its random approval id and the SHA-256 of the exact tool input.
 //! - The decision is built here, from a closed set: allow, allow + a
-//!   session-scoped mode Claude itself suggested, or deny. Never `updatedInput`,
-//!   never a persistent rule -- a remote approver cannot widen what runs.
+//!   session-scoped mode Claude itself suggested, allow + the allow rule Claude
+//!   itself suggested ("similar"), pinned to this session, or deny. Never
+//!   `updatedInput`, never a persistent rule -- a remote approver cannot widen
+//!   what runs beyond what Claude offered, nor past this session.
 //! - A call can be approved remotely only when the approver saw all of it.
 //!   `exact` (the legacy flag old clients gate on, never widened) says the
 //!   one-line summary IS the call. `full` says the shipped input IS the raw
@@ -59,6 +61,10 @@ pub(crate) struct Held {
     /// The input in the private side file is the whole raw call (see `shown_input`).
     #[serde(default)]
     pub full: bool,
+    /// Claude's own suggested allow rule, as shown ("npm run *"): what "similar" allows for the
+    /// rest of this session. The hook applies the rule from its own stdin, never from this text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub similar: Option<String>,
 }
 
 /// The answer the app delivers to a holding hook.
@@ -257,6 +263,34 @@ pub(crate) fn modes(tool: &str, suggestions: &Value) -> Vec<String> {
     out
 }
 
+/// The longest suggested rule a remote approver is offered (it rides the held datagram).
+const SIMILAR_MAX: usize = 120;
+
+/// The allow rule Claude itself suggested for this prompt (the one its own dialog offers as
+/// "Yes, and don't ask again for ..."), and its text as an approver sees it. Only rules for
+/// this prompt's own tool, with plain visible content, and never for Lightbulb's own tools.
+/// Claude suggests it for `localSettings`; the decision pins it to the session (verified on
+/// 2.1.311: a `destination: "session"` rule from this hook stops the next matching prompt and
+/// writes no settings file).
+pub(crate) fn similar(tool: &str, suggestions: &Value) -> Option<(Value, String)> {
+    if tool.starts_with("mcp__lightbulb") {
+        return None;
+    }
+    let suggestion = suggestions.as_array()?.iter().find(|s| s["type"] == "addRules" && s["behavior"] == "allow")?;
+    let rules = suggestion["rules"].as_array().filter(|r| !r.is_empty() && r.len() <= 4)?;
+    let mut shown = vec![];
+    for rule in rules {
+        let content = rule["ruleContent"].as_str().filter(|c| !c.trim().is_empty())?;
+        if rule["toolName"] != tool || rule.as_object()?.len() != 2 {
+            return None;
+        }
+        shown.push(content);
+    }
+    let text = shown.join(", ");
+    (text.len() <= SIMILAR_MAX && text.bytes().all(|b| (0x20..0x7f).contains(&b)))
+        .then(|| (Value::Array(rules.clone()), text))
+}
+
 /// A reply channel the app may write to: inside the private hook directory,
 /// named for one approval. Anything else is refused, whatever a datagram says.
 pub(crate) fn reply_allowed(dir: &Path, reply: &str, id: &str) -> bool {
@@ -275,17 +309,23 @@ pub(crate) fn valid_id(id: &str) -> bool {
     })
 }
 
-/// The hook's stdout document for one delivered answer.
-pub(crate) fn decision(answer: &Answer) -> Option<Value> {
+/// The hook's stdout document for one delivered answer. `similar` is the rule the hook's own
+/// stdin suggested (`similar()`), never anything the app sent.
+pub(crate) fn decision(answer: &Answer, similar: Option<&Value>) -> Option<Value> {
     let decision = match answer.decision.as_str() {
         "allow" => {
             let mut d = json!({"behavior":"allow"});
-            if let Some(mode) = answer.mode.as_deref() {
-                if !MODES.contains(&mode) {
-                    return None;
+            match answer.mode.as_deref() {
+                None => {}
+                Some("similar") => {
+                    d["updatedPermissions"] =
+                        json!([{"type":"addRules","rules":similar?,"behavior":"allow","destination":"session"}]);
                 }
-                d["updatedPermissions"] =
-                    json!([{"type":"setMode","mode":mode,"destination":"session"}]);
+                Some(mode) if MODES.contains(&mode) => {
+                    d["updatedPermissions"] =
+                        json!([{"type":"setMode","mode":mode,"destination":"session"}]);
+                }
+                Some(_) => return None,
             }
             d
         }
@@ -372,6 +412,11 @@ pub(crate) fn hold(
         && private_write(&private_path, &private_payload).is_ok();
     let private_send = native_send && written;
     let _private_guard = Remove(private_path);
+    let similar = similar(tool, &stdin["permission_suggestions"]);
+    let mut modes = modes(tool, &stdin["permission_suggestions"]);
+    if similar.is_some() {
+        modes.push("similar".into());
+    }
     let held = Held {
         id: id.clone(),
         input_digest: digest(&stdin["tool_input"]),
@@ -383,8 +428,9 @@ pub(crate) fn hold(
                 stdin["cwd"].as_str(),
                 std::env::var("HOME").ok().as_deref(),
             ),
-        modes: modes(tool, &stdin["permission_suggestions"]),
+        modes,
         full: full && written,
+        similar: similar.as_ref().map(|(_, text)| text.clone()),
     };
     let datagram = lifecycle::build_held_datagram(provider, stdin, &held);
     if !UnixDatagram::unbound().is_ok_and(|s| {
@@ -432,7 +478,7 @@ pub(crate) fn hold(
         {
             continue;
         }
-        let Some(document) = decision(&answer) else {
+        let Some(document) = decision(&answer, similar.as_ref().map(|(rules, _)| rules)) else {
             continue;
         };
         // The one write this process ever makes to Claude's control channel.
@@ -596,6 +642,61 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_approval_similar_is_only_claudes_own_suggested_rule_for_this_tool() {
+        // As Claude Code 2.1.311 suggests it for `npm run greet`.
+        let npm = json!([{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm run *"}],"behavior":"allow","destination":"localSettings"}]);
+        let (rules, text) = similar("Bash", &npm).unwrap();
+        assert_eq!(rules, json!([{"toolName":"Bash","ruleContent":"npm run *"}]));
+        assert_eq!(text, "npm run *");
+        assert!(similar("Read", &npm).is_none(), "a rule for another tool");
+        assert!(similar("Bash", &json!([{"type":"setMode","mode":"acceptEdits","destination":"session"}])).is_none());
+        assert!(similar("Bash", &json!([{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"x"}],"behavior":"deny","destination":"session"}])).is_none());
+        assert!(similar("Bash", &json!([{"type":"addRules","rules":[{"toolName":"Bash"}],"behavior":"allow"}])).is_none(), "a whole-tool rule");
+        assert!(similar("Bash", &json!([{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm \u{202e}x"}],"behavior":"allow"}])).is_none());
+        assert!(similar("Bash", &json!([{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"x".repeat(200)}],"behavior":"allow"}])).is_none());
+        let send = json!([{"type":"addRules","rules":[{"toolName":"mcp__lightbulb__send_message","ruleContent":"x"}],"behavior":"allow"}]);
+        assert!(similar("mcp__lightbulb__send_message", &send).is_none());
+    }
+
+    /// "Allow similar" through the whole hook: the app sends only the mode; the rule written to
+    /// Claude is the one the hook's own stdin suggested, pinned to the session.
+    #[test]
+    fn local_sessions_approval_hook_allows_similar_with_its_own_suggested_rule() {
+        let dir = PathBuf::from(format!("/private/tmp/lbt-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        let wake = dir.join("wake.sock");
+        let app = UnixDatagram::bind(&wake).unwrap();
+        let (mut reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let stdin = json!({"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"Bash",
+            "tool_input":{"command":"npm run greet"},
+            "permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm run *"}],"behavior":"allow","destination":"localSettings"}]});
+        let fd = {
+            use std::os::unix::io::IntoRawFd;
+            writer.into_raw_fd()
+        };
+        let (w, st) = (wake.clone(), stdin.clone());
+        let hook = std::thread::spawn(move || hold(&w, "claude", &st, fd));
+        let mut buf = [0u8; 4096];
+        let n = app.recv(&mut buf).unwrap();
+        let held = lifecycle::parse_datagram(&buf[..n]).unwrap().held.unwrap();
+        assert_eq!(held.modes, vec!["similar"]);
+        assert_eq!(held.similar.as_deref(), Some("npm run *"));
+        assert!(acknowledge(&held.reply, &held.id));
+        let allow = Answer { approval_id: held.id.clone(), input_digest: held.input_digest.clone(), ..answer("allow") };
+        assert!(deliver(&held.reply, Some(&Answer { mode: Some("acceptEdits".into()), ..allow.clone() })), "not offered: ignored");
+        assert!(deliver(&held.reply, Some(&Answer { mode: Some("similar".into()), ..allow })));
+        hook.join().unwrap();
+        let mut out = String::new();
+        std::io::Read::read_to_string(&mut reader, &mut out).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&out).unwrap()["hookSpecificOutput"]["decision"]["updatedPermissions"],
+            json!([{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm run *"}],"behavior":"allow","destination":"session"}])
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn local_sessions_approval_digest_ignores_key_order_but_not_values() {
         assert_eq!(digest(&json!({"a":1,"b":2})), digest(&json!({"b":2,"a":1})));
         assert_ne!(
@@ -616,7 +717,7 @@ mod tests {
             input_digest: digest(&args),
             reply: scope.join(format!("{id}.sock")).to_string_lossy().into_owned(),
             exact: true,
-            modes: vec![], full: false,
+            modes: vec![], full: false, similar: None,
         };
         let path = scope.join(format!("{id}.json"));
         let detail = json!({"approvalId":id,"inputDigest":held.input_digest,
@@ -706,7 +807,7 @@ mod tests {
     #[test]
     fn local_sessions_held_input_is_full_only_when_it_hashes_to_the_held_digest() {
         let raw = json!({"file_path":"/x","old_string":"a","new_string":"b"});
-        let held = Held { id: ID.into(), input_digest: digest(&raw), reply: String::new(), exact: false, modes: vec![], full: true };
+        let held = Held { id: ID.into(), input_digest: digest(&raw), reply: String::new(), exact: false, modes: vec![], full: true, similar: None };
         let file = json!({"approvalId": ID, "inputDigest": held.input_digest, "input": raw});
         assert_eq!(held_input("Edit", &file, &held), (Some(raw.clone()), true));
         let redacted = json!({"approvalId": ID, "inputDigest": held.input_digest, "input": {"file_path":"/x","old_string":"[redacted]","new_string":"b"}});
@@ -718,7 +819,7 @@ mod tests {
     #[test]
     fn local_sessions_approval_decisions_are_a_closed_set() {
         assert_eq!(
-            decision(&answer("allow")).unwrap(),
+            decision(&answer("allow"), None).unwrap(),
             json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}})
         );
         let with_mode = Answer {
@@ -726,7 +827,7 @@ mod tests {
             ..answer("allow")
         };
         assert_eq!(
-            decision(&with_mode).unwrap()["hookSpecificOutput"]["decision"]["updatedPermissions"],
+            decision(&with_mode, None).unwrap()["hookSpecificOutput"]["decision"]["updatedPermissions"],
             json!([{"type":"setMode","mode":"acceptEdits","destination":"session"}])
         );
         let deny = Answer {
@@ -734,21 +835,30 @@ mod tests {
             ..answer("deny")
         };
         assert_eq!(
-            decision(&deny).unwrap()["hookSpecificOutput"]["decision"],
+            decision(&deny, None).unwrap()["hookSpecificOutput"]["decision"],
             json!({"behavior":"deny","message":"not on main"})
         );
         assert!(decision(&Answer {
             mode: Some("bypassPermissions".into()),
             ..answer("allow")
-        })
+        }, None)
         .is_none());
         assert!(decision(&Answer {
             mode: Some("plan".into()),
             ..answer("deny")
-        })
+        }, None)
         .is_none());
-        assert!(decision(&answer("ask")).is_none());
-        let text = decision(&answer("allow")).unwrap().to_string();
+        let similar = Answer { mode: Some("similar".into()), ..answer("allow") };
+        assert!(decision(&similar, None).is_none(), "no suggested rule, no similar");
+        let rules = json!([{"toolName":"Bash","ruleContent":"npm run *"}]);
+        assert_eq!(
+            decision(&similar, Some(&rules)).unwrap()["hookSpecificOutput"]["decision"],
+            json!({"behavior":"allow","updatedPermissions":[{"type":"addRules","rules":rules,"behavior":"allow","destination":"session"}]}),
+            "the rule Claude suggested, pinned to this session"
+        );
+        assert!(decision(&Answer { mode: Some("similar".into()), ..answer("deny") }, Some(&rules)).is_none());
+        assert!(decision(&answer("ask"), None).is_none());
+        let text = decision(&answer("allow"), None).unwrap().to_string();
         assert!(
             !text.contains("updatedInput"),
             "an answer can never change what runs"

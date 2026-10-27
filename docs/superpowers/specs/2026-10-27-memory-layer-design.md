@@ -108,7 +108,7 @@ Compared with what people use today: past.dev shares everything in the project b
 
 AgentCore Runtime is where our agents run; it does not touch memory design. AgentCore Memory stays as the cloud store:
 - **We use:** short-term events (already written every turn), the self-managed strategy (delivers conversation batches to us), record storage, semantic search with namespace and metadata filters (up to 100 results), record TTL, IAM.
-- **We own:** extraction, linking, the status and history fields, query planning, page building, the room cards.
+- **We own:** extraction, linking, the status and history fields, query planning, page building, the "needs you" items for contested facts.
 - **We retire:** the built-in `semanticMemoryStrategy` once ours beats it in the harness. Self-managed storage is also a third of the price ($0.25 vs $0.75 per 1,000 records a month).
 - **Not verified yet:** which metadata filter operators work in practice. Day 1 of the build checks it; if filtering by status does not work, we fetch more and filter in our code.
 

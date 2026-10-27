@@ -255,6 +255,14 @@ export class ObservabilityStack extends cdk.Stack {
     // A subscription is only real when that command shows a SubscriptionArn
     // that is not the literal string "PendingConfirmation".
     //
+    // ⚠️ RECREATED AGAIN 2026-10-27 (the `…V3` ids). CloudTrail showed no
+    // Unsubscribe after 09-12: SNS silently deleted all three V2 subscriptions
+    // (both emails AND PagerDuty) because none was ever confirmed, and every
+    // page from then on reached only a hand-added admin@isol8.co mailbox nobody
+    // reads. That masked a dry OpenRouter account for 3 days. After a deploy,
+    // run `aws sns list-subscriptions-by-topic` within minutes: a PagerDuty row
+    // still PendingConfirmation means the integration URL in SSM is broken.
+    //
     // ⚠️ RECREATED 2026-09-12 (the `…V2` ids). The prod subscriptions CFN
     // believed it owned were gone: SNS deleted all three after the three-day
     // unconfirmed window, and CloudFormation still reported them
@@ -272,12 +280,12 @@ export class ObservabilityStack extends cdk.Stack {
     // be bumped without also changing where the mail goes.
     const alertEmail = this.alertEmail;
 
-    new sns.Subscription(this, "AlertsPageEmailV2", {
+    new sns.Subscription(this, "AlertsPageEmailV3", {
       topic: this.pageTopic,
       endpoint: alertEmail,
       protocol: sns.SubscriptionProtocol.EMAIL,
     });
-    new sns.Subscription(this, "AlertsWarnEmailV2", {
+    new sns.Subscription(this, "AlertsWarnEmailV3", {
       topic: this.warnTopic,
       endpoint: alertEmail,
       protocol: sns.SubscriptionProtocol.EMAIL,
@@ -292,9 +300,9 @@ export class ObservabilityStack extends cdk.Stack {
     //
     // PagerDuty covers that gap instead: it turns a page into a phone push
     // with escalation, needs no carrier registration, and — unlike the email
-    // subscriptions above — CANNOT silently rot, because PagerDuty answers
-    // SNS's confirmation callback programmatically. There is no link to click
-    // and no 3-day expiry window.
+    // subscriptions above — needs no click: PagerDuty answers SNS's confirmation
+    // callback itself. It still rots if that callback never succeeds — the V2
+    // subscription sat unconfirmed and SNS deleted it. Check it after a deploy.
     if (props.envName === "prod") {
       // The URL embeds the integration key, so it lives in SSM rather than in
       // this file. Read with valueForStringParameter (a deploy-time CFN
@@ -314,7 +322,7 @@ export class ObservabilityStack extends cdk.Stack {
       // `…V2` for the same reason as the email subscriptions above: the
       // original was deleted out from under a CloudFormation record that
       // still says CREATE_COMPLETE, and only a new construct id recreates it.
-      new sns.Subscription(this, "PagerDutyPageV2", {
+      new sns.Subscription(this, "PagerDutyPageV3", {
         topic: this.pageTopic,
         endpoint: pagerDutyUrl,
         protocol: sns.SubscriptionProtocol.HTTPS,

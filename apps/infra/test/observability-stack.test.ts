@@ -507,11 +507,11 @@ describe("ObservabilityStack", () => {
   // by SNS, and CFN still reported them CREATE_COMPLETE — only a NEW construct
   // id recreates them. Pin the ids so a later "tidy up" rename does not
   // silently recreate the same dead-letterbox situation.
-  test("alert email subscriptions use the recreated V2 construct ids", () => {
+  test("alert subscriptions use the recreated V3 construct ids", () => {
     const logicalIds = Object.keys(
       template.findResources("AWS::SNS::Subscription"),
     );
-    for (const id of ["AlertsPageEmailV2", "AlertsWarnEmailV2"]) {
+    for (const id of ["AlertsPageEmailV3", "AlertsWarnEmailV3"]) {
       // CDK appends a uniqueness hash to the logical id, so match the prefix.
       expect(logicalIds.some((logicalId) => logicalId.startsWith(id))).toBe(
         true,

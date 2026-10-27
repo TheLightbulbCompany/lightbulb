@@ -34,6 +34,8 @@ describe("messaging HTTP client", () => {
     expect(methods.post).toHaveBeenLastCalledWith("/messaging/search", { q: "deploy" });
     await client.warmSearch();
     expect(methods.post).toHaveBeenLastCalledWith("/messaging/search/warm", {});
+    await client.searchSessions("deploy", { limit: 50 });
+    expect(methods.post).toHaveBeenLastCalledWith("/messaging/sessions/search", { q: "deploy", limit: 50 });
   });
 
   it("reads Activity with an opaque cursor, marks it seen and runs one escaped action door", async () => {

@@ -13,7 +13,7 @@ import type { Person } from "./NativeSessionTranscript";
 import type { SidebarSession } from "./roomSections";
 
 /** `sessionId: null` is a new, not-yet-started session (NewSessionView), or with `all` the All sessions list. */
-export interface SessionFocusTarget { sessionId: string | null; all?: boolean; chat?: boolean }
+export interface SessionFocusTarget { sessionId: string | null; all?: boolean; chat?: boolean; seq?: number }
 
 export type SessionChatLayout = "push" | "overlay" | "screen";
 const CHAT_WIDTH = 344;
@@ -46,7 +46,7 @@ const SESSION_BODY = ".session-terminal-scroll, .session-terminal-wait, .local-s
  */
 export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner, onEvent, chatOpen = false, onChatOpenChange, onChatRoom, onRemove }: {
   onEvent?: SessionSource["onEvent"];
-  focus: { sessionId: string }; entries: readonly Omit<SidebarSession, "owner">[]; loading: boolean; hintRevision: number;
+  focus: { sessionId: string; seq?: number }; entries: readonly Omit<SidebarSession, "owner">[]; loading: boolean; hintRevision: number;
   client: SessionSource["client"]; resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean };
   onAccessLost: () => void; onClose: () => void;
   /** Workspace humans and agents, for naming prompt authors and receipts. */
@@ -209,7 +209,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
         <Button variant="ghost" onClick={retryFallback}>Try again</Button>
       </div>}
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
-        client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={withSessions} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} />
+        client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={withSessions} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} focusSeq={focus.seq} />
         : <div className="p-4 text-ui text-muted-foreground">
           <p role="status">{resolvedFallback?.notFound ? "This session is no longer shared." : resolvedFallback?.error ? "Could not load this session." : "Opening session…"}</p>
           {resolvedFallback?.error && <Button variant="ghost" onClick={retryFallback}>Try again</Button>}

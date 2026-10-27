@@ -885,6 +885,12 @@ async def search_messages(body: message_search.MessageSearchRequest, auth: AuthC
     return await message_search.search(auth, body)
 
 
+@router.post("/messaging/sessions/search", response_model=message_search.SessionSearchResponse)
+async def search_sessions(body: message_search.SessionSearchRequest, auth: AuthContext = Depends(get_current_user)):
+    """What was said in coding sessions: prompts and replies of the sessions the caller may read."""
+    return await message_search.search_sessions(auth, body)
+
+
 @router.post("/messaging/search/warm", status_code=204)
 async def warm_message_search(auth: AuthContext = Depends(get_current_user)) -> Response:
     await message_search.warm(auth)

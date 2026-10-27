@@ -333,6 +333,28 @@ export interface MessageSearchResponse {
   hits: MessageSearchHit[];
 }
 
+/** One prompt or reply from a coding session (`POST /messaging/sessions/search`). */
+export interface SessionSearchHit {
+  sessionId: string;
+  /** The event's seq: open the session's conversation at this turn. */
+  seq: number;
+  authorKind: "person" | "agent";
+  /** Who typed it; empty for the assistant. */
+  authorId: string;
+  /** The assistant's name; a person's is resolved from authorId. */
+  authorName: string;
+  createdAt: string;
+  /** Matches are wrapped in \u0001...\u0002. */
+  snippet: string;
+  sessionTitle: string;
+  provider: string;
+  humanUserId: string;
+}
+
+export interface SessionSearchResponse {
+  hits: SessionSearchHit[];
+}
+
 export interface ReadCursorRequest {
   lastReadSeq: number;
 }

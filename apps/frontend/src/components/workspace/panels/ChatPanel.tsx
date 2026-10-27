@@ -15,6 +15,8 @@ interface ChatPanelParams {
   roomId?: string;
   messageId?: string;
   sessionId?: string;
+  /** A turn of that session to open its conversation at. */
+  seq?: string;
   sessionIntent?: string;
 }
 
@@ -71,20 +73,20 @@ export function ChatPanel(props: PanelProps): React.ReactElement {
       lastOpenedRoom.current = null;
       return;
     }
-    const key = JSON.stringify([params.roomId, params.messageId, params.sessionId, params.sessionIntent]);
+    const key = JSON.stringify([params.roomId, params.messageId, params.sessionId, params.seq, params.sessionIntent]);
     if (lastOpenedRoom.current === key) return;
     lastOpenedRoom.current = key;
     // A pending agent-DM focus must not supersede a room intent (a skipped replay is not one).
     if (params.sessionId) {
       ++navigationRequest.current;
-      openSession(params.sessionId);
+      openSession(params.sessionId, false, Number(params.seq) || undefined);
     // The replay of a room the person just picked (ChatHistorySync wrote its URL)
     // must not re-open it: that would clear a scroll target and close a session view.
     } else if (params.roomId && (params.messageId || params.roomId !== activeRoomId || sessionFocus)) {
       ++navigationRequest.current;
       openMessage(params.roomId, params.messageId ?? null);
     }
-  }, [params.roomId, params.messageId, params.sessionId, params.sessionIntent, openMessage, openSession, activeRoomId, sessionFocus]);
+  }, [params.roomId, params.messageId, params.sessionId, params.seq, params.sessionIntent, openMessage, openSession, activeRoomId, sessionFocus]);
 
   const roomId = roomProps?.roomId;
   const roomAgentId = roomProps?.composer.focusAgentId;

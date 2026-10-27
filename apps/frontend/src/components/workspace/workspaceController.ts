@@ -271,9 +271,10 @@ export function openMessagePanel(roomId: string, messageId?: string): void {
 }
 
 let sessionIntent = 0;
-/** Retargets the conversation at a workspace session (the session view lives inside Chat). */
-export function openSessionPanel(sessionId: string): void {
-  const descriptor = describePanel("chat", { session: sessionId });
+/** Retargets the conversation at a workspace session (the session view lives inside Chat);
+ *  `seq` opens its conversation at that turn. */
+export function openSessionPanel(sessionId: string, seq?: number): void {
+  const descriptor = describePanel("chat", { session: sessionId, ...(seq ? { seq: String(seq) } : {}) });
   if (descriptor) show(descriptor, { sessionIntent: String(++sessionIntent) });
 }
 

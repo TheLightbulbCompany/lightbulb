@@ -222,6 +222,7 @@ async def _create_link_request(owner_id: str, row: dict) -> dict:
         row["requestId"],
         linkId=created["id"],
         linkedAt=int(time.time()),
+        month=_month(),
         status=created.get("status") or "pending_approval",
     )
     return created

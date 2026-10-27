@@ -357,6 +357,30 @@ async def test_owner_click_creates_the_link_request_rechecks_policy_and_mints_th
     assert e.value.code == "over_purchase_cap"
 
 
+async def test_a_stale_ask_is_rebased_to_the_month_it_reaches_link(world):
+    await connect(world)
+    rid = (await ask(amount=100, why="Filed late last month, approved after the rollover."))["requestId"]
+    row = world.table.items[next(iter(world.table.items))]
+    row["month"] = "2000-01"  # asked in an earlier month
+    await purchases.approval_link(OWNER, rid)
+    assert row["month"] == purchases._month() and row["status"] == "pending_approval"
+    # it now counts against this month's project cap
+    world.limits.update(projectMonthlyCents=15000)
+    with pytest.raises(purchases.PurchaseRefused) as e:
+        await ask(amount=60, why="Second purchase that no longer fits this month's cap.")
+    assert e.value.code == "over_project_cap"
+
+
+async def test_a_stale_ask_that_no_longer_fits_this_months_cap_is_refused_at_the_click(world):
+    await connect(world)
+    rid = (await ask(amount=100, why="Filed late last month, now over the new month's cap."))["requestId"]
+    world.table.items[next(iter(world.table.items))]["month"] = "2000-01"
+    world.limits["projectMonthlyCents"] = 5000
+    with pytest.raises(purchases.PurchaseRefused) as e:
+        await purchases.approval_link(OWNER, rid)
+    assert e.value.code in ("over_purchase_cap", "over_project_cap") and not world.link.bodies("/spend_requests")
+
+
 async def test_a_card_failure_leaves_no_ledger_row_so_a_retry_starts_clean(world):
     await connect(world)
     world.cards.side_effect = RuntimeError("board down")

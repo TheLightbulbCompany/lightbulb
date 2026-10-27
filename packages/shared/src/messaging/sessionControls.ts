@@ -108,7 +108,19 @@ export const APPROVAL_MODE_LABEL: Record<LocalSessionApprovalMode, string> = {
   acceptEdits: "auto-accept edits",
   plan: "plan mode",
   default: "ask before edits",
+  session: "this conversation",
+  similar: "similar commands",
 };
+
+/** The approval card's button for one offered choice. */
+export function approvalModeAction(mode: LocalSessionApprovalMode, pending: Pick<LocalSessionPendingApproval, "similar">): string {
+  if (mode === "session") return "Allow for this conversation";
+  if (mode === "similar") return `Allow similar commands for this session (${pending.similar ?? ""})`;
+  return `Approve and switch to ${APPROVAL_MODE_LABEL[mode]}`;
+}
+
+/** Whose permission prompt the card answers. */
+export const approvalAgent = (provider: string): string => (provider === "codex" ? "Codex" : "Claude");
 
 const MODE_LABEL: Record<string, string> = {
   default: "Ask before edits", manual: "Ask before edits", acceptEdits: "Auto-accept edits", plan: "Plan mode",

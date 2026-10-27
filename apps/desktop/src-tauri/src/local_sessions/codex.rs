@@ -380,6 +380,13 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
                     apply_thread(&mut session, thread);
                 }
                 session.attention.agents = working_children(threads.iter().flatten(), &session.conversation);
+                if let (Some((socket, _)), Some(thread)) = (&control, thread) {
+                    let polled = match waiting_on_approval(thread) {
+                        true => Some(open_approval(socket, &session.conversation).await),
+                        false => None,
+                    };
+                    update_approval(&session.conversation, polled);
+                }
                 found.push(session);
             },
             Err(e) => {
@@ -541,7 +548,8 @@ async fn rpc_response(conn: &mut Conn, id: u64) -> Result<Value> {
         let Message::Text(text) = frame.map_err(|_| "control response unavailable")? else { continue; };
         if text.len() > 1024 * 1024 { continue; }
         let row: Value = serde_json::from_str(&text).map_err(|_| "control response invalid")?;
-        if row["id"].as_u64() == Some(id) { return Ok(row); }
+        // A server request (an approval) carries its own id and a method: never our response.
+        if row["id"].as_u64() == Some(id) && row.get("method").is_none() { return Ok(row); }
     }
     Err("control response unavailable".into())
 }
@@ -639,6 +647,187 @@ pub(super) fn loaded(process: &Process, conversation: &str) -> Option<bool> {
     let loaded = LOADED.lock().ok()?;
     let (daemon, threads) = loaded.as_ref()?;
     (daemon == process).then(|| threads.contains(conversation))
+}
+
+/// The approvals Lightbulb can hold for a Codex thread: a command, or a patch.
+const APPROVAL_METHODS: [&str; 2] = ["item/commandExecution/requestApproval", "item/fileChange/requestApproval"];
+/// How long a joining client waits for the daemon to replay a thread's open request.
+const REPLAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
+fn waiting_on_approval(thread: &Value) -> bool {
+    thread["status"]["activeFlags"].as_array().is_some_and(|flags| flags.iter().any(|f| f == "waitingOnApproval"))
+}
+
+/// The open approval of each waiting daemon thread, as its last discovery read it.
+static APPROVALS: std::sync::Mutex<std::collections::BTreeMap<String, Value>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+pub(super) fn remember_approval(thread: &str, request: Option<Value>) {
+    let Ok(mut open) = APPROVALS.lock() else { return };
+    match request {
+        Some(request) => open.insert(thread.to_owned(), request),
+        None => open.remove(thread),
+    };
+}
+
+/// One discovery's word on a thread's approval: None when it no longer waits on one (the request
+/// is gone), else the replay. A replay that failed (`Err`, a daemon timeout) knows nothing: the
+/// thread still waits, so the request held before is kept rather than dropping its card.
+fn update_approval(thread: &str, polled: Option<Result<Option<Value>>>) {
+    match polled {
+        None => remember_approval(thread, None),
+        Some(Ok(request)) => remember_approval(thread, request),
+        Some(Err(_)) => {}
+    }
+}
+
+/// The approval request the daemon holds open for `thread`, as discovery last read it.
+pub(super) fn open_request(thread: &str) -> Option<Value> {
+    APPROVALS.lock().ok()?.get(thread).cloned()
+}
+
+/// A Codex approval as Lightbulb holds it: what it shows, and the input whose digest an answer
+/// must name. A command is its whole command line, so it can be `full`. A patch request carries
+/// no patch (only its item id), so nobody here saw the change: deny-only.
+#[derive(Debug, PartialEq)]
+pub(super) struct Approval {
+    pub item: String,
+    pub tool: &'static str,
+    pub summary: String,
+    pub input: Value,
+    pub full: bool,
+    /// "Allow for this conversation" (`acceptForSession`) is offered.
+    pub session: bool,
+}
+
+pub(super) fn approval(request: &Value) -> Option<Approval> {
+    let params = &request["params"];
+    let item = params["itemId"].as_str().filter(|i| !i.is_empty() && i.len() <= 128)?.to_owned();
+    match request["method"].as_str()? {
+        "item/commandExecution/requestApproval" => {
+            let command = params["command"].as_str().filter(|c| !c.trim().is_empty())?;
+            let input = json!({"command": command});
+            Some(Approval {
+                item,
+                tool: "Bash",
+                summary: command.to_owned(),
+                full: super::approval::shown_input("Bash", &input).1,
+                input,
+                session: decision(request, "allow", Some("session")).is_some(),
+            })
+        }
+        "item/fileChange/requestApproval" => Some(Approval {
+            input: json!({"itemId": item}),
+            item,
+            tool: "apply_patch",
+            summary: params["reason"].as_str().unwrap_or("Edit files").to_owned(),
+            full: false,
+            session: false,
+        }),
+        _ => None,
+    }
+}
+
+/// The approval's id in Lightbulb (`approval::valid_id`): stable for one request of one thread,
+/// so rediscovering it never reads as a new prompt.
+pub(super) fn approval_id(thread: &str, item: &str) -> String {
+    format!("appr-{}", &hex::encode(Sha256::digest(format!("{thread}\n{item}")))[..32])
+}
+
+/// Codex's answer for a decision Lightbulb admitted, only if this request offers it. "Similar"
+/// (`acceptWithExecpolicyAmendment`) and network rules persist past the thread: never from here.
+fn decision(request: &Value, decision: &str, mode: Option<&str>) -> Option<&'static str> {
+    let offered = |choice: &str| {
+        request["params"]["availableDecisions"].as_array().is_none_or(|all| all.iter().any(|d| d == choice))
+    };
+    let wanted: &[&'static str] = match (decision, mode) {
+        ("allow", None) => &["accept"],
+        ("allow", Some("session")) => &["acceptForSession"],
+        // Declined, the turn goes on; where Codex offers only cancel, the turn stops.
+        ("deny", None) => &["decline", "cancel"],
+        _ => return None,
+    };
+    wanted.iter().copied().find(|choice| offered(choice))
+}
+
+/// Join `thread` and read the approval the daemon replays to a new subscriber. Observed on
+/// 0.163.0: a client that resumes a loaded thread is sent its open server requests right after
+/// the resume, may answer one like the client that started the turn, and every subscriber then
+/// gets `serverRequest/resolved`. A join without overrides changes nothing in the thread.
+async fn replayed_request(conn: &mut Conn, thread: &str) -> Result<Option<Value>> {
+    let resume = json!({"id":2,"method":"thread/resume","params":{"threadId":thread,"excludeTurns":true}});
+    conn.send(Message::Text(resume.to_string().into())).await.map_err(|_| "control request failed")?;
+    let (mut joined, mut found) = (false, None);
+    for _ in 0..512 {
+        let wait = if joined { REPLAY } else { HANDSHAKE };
+        let Ok(frame) = tokio::time::timeout(wait, conn.next()).await else { break };
+        let Some(frame) = frame else { break };
+        let Message::Text(text) = frame.map_err(|_| "control response unavailable")? else { continue };
+        if text.len() > 1024 * 1024 { continue; }
+        let row: Value = serde_json::from_str(&text).map_err(|_| "control response invalid")?;
+        if row.get("method").is_none() && row["id"].as_u64() == Some(2) {
+            if row.get("error").is_some() { return Err("thread/resume refused".into()); }
+            joined = true;
+        } else if row["params"]["threadId"] == thread
+            && row.get("id").is_some()
+            && row["method"].as_str().is_some_and(|m| APPROVAL_METHODS.contains(&m))
+        {
+            found.get_or_insert(row);
+        }
+        if joined && found.is_some() { break; }
+    }
+    if !joined {
+        return Err("thread/resume unanswered".into());
+    }
+    Ok(found)
+}
+
+/// Ok(None): the daemon joined us to the thread and replayed no approval. Err: unknown.
+async fn open_approval(socket: &Path, thread: &str) -> Result<Option<Value>> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut conn = connected(socket).await?;
+        replayed_request(&mut conn, thread).await
+    })
+    .await
+    .map_err(|_| "approval replay timed out".to_owned())?
+}
+
+/// Answer the thread's open approval, only if it is still the one held (`item`, `digest`) and
+/// offers this decision. Ok(true) once the daemon says the request is resolved; Ok(false) when
+/// it is not ours to answer (gone, changed, or another runtime); Err when that is unknown.
+pub(super) async fn answer(home: &Path, native: &NativeSession, item: &str, digest: &str, choice: &str, mode: Option<&str>) -> Result<bool> {
+    let (Some(socket), Some(inode)) = (&native.socket, native.socket_inode) else { return Ok(false) };
+    if native.provider != "codex"
+        || process(native.process.pid)? != native.process
+        || control_socket(home, &native.process).await.as_ref() != Some(&(socket.clone(), inode))
+    {
+        return Ok(false);
+    }
+    answer_on(socket, &native.conversation, item, digest, choice, mode).await
+}
+
+async fn answer_on(socket: &Path, thread: &str, item: &str, digest: &str, choice: &str, mode: Option<&str>) -> Result<bool> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut conn = connected(socket).await?;
+        let Some(request) = replayed_request(&mut conn, thread).await? else { return Ok(false) };
+        let held = approval(&request).filter(|a| a.item == item && super::approval::digest(&a.input) == digest);
+        let Some(answer) = held.and(decision(&request, choice, mode)) else { return Ok(false) };
+        let reply = json!({"id": request["id"], "result": {"decision": answer}});
+        conn.send(Message::Text(reply.to_string().into())).await.map_err(|_| "approval answer failed")?;
+        for _ in 0..512 {
+            let Some(frame) = conn.next().await else { break };
+            let Message::Text(text) = frame.map_err(|_| "approval answer unconfirmed")? else { continue };
+            let Ok(row) = serde_json::from_str::<Value>(&text) else { continue };
+            if row["method"] == "serverRequest/resolved"
+                && row["params"]["threadId"] == thread
+                && row["params"]["requestId"] == request["id"]
+            {
+                return Ok(true);
+            }
+        }
+        Err("approval answer unconfirmed".into())
+    })
+    .await
+    .map_err(|_| "approval answer unconfirmed".to_owned())?
 }
 
 /// The shared daemon's control socket while it runs: Codex's own link, resolved to a socket this
@@ -1719,6 +1908,126 @@ mod tests {
     /// notifications the daemon sends every client; it introduces itself as the TUI (CLIENT_NAME).
     async fn read(conn: &mut WebSocketStream<tokio::net::UnixStream>) -> Value {
         serde_json::from_str(&conn.next().await.unwrap().unwrap().into_text().unwrap()).unwrap()
+    }
+
+    /// `item/commandExecution/requestApproval` as Codex 0.163.0 replayed it to a second client
+    /// (a read-only thread asked to `mkdir` outside its sandbox).
+    fn mkdir_request() -> Value {
+        json!({"method":"item/commandExecution/requestApproval","id":0,"params":{"kind":"command",
+            "threadId":"01a17b15-9831-7651-8cd8-b55882740c23","turnId":"01a17b15-9bc9-77a1-85ec-7e8a48445038",
+            "itemId":"exec-84fa3836-f8cd-4230-9403-f62dd39973fb","startedAtMs":1793066384867u64,"environmentId":"local",
+            "reason":"Allow the requested command to create /tmp/cxappr/outside_made outside the read-only sandbox?",
+            "command":"/bin/zsh -lc 'mkdir -p /tmp/cxappr/outside_made && echo done'","cwd":"/tmp/cxappr/w",
+            "commandActions":[{"type":"unknown","command":"mkdir -p /tmp/cxappr/outside_made && echo done"}],
+            "proposedExecpolicyAmendment":["mkdir","-p","/tmp/cxappr/outside_made"],
+            "availableDecisions":["accept",{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["mkdir","-p","/tmp/cxappr/outside_made"]}},"cancel"]}})
+    }
+
+    #[test]
+    fn local_sessions_codex_an_approval_is_held_as_its_whole_command() {
+        let request = mkdir_request();
+        let open = approval(&request).unwrap();
+        assert_eq!(open.tool, "Bash");
+        assert_eq!(open.input, json!({"command":"/bin/zsh -lc 'mkdir -p /tmp/cxappr/outside_made && echo done'"}));
+        assert_eq!(open.summary, open.input["command"]);
+        assert!(open.full && !open.session, "the whole command line; this one offers no conversation-wide allow");
+        assert!(super::super::approval::valid_id(&approval_id("t", &open.item)));
+        assert_eq!(approval_id("t", &open.item), approval_id("t", &open.item), "rediscovered, it is the same prompt");
+        assert_ne!(approval_id("t", &open.item), approval_id("u", &open.item));
+        // Only what Codex offered, and never a rule that outlives the thread.
+        assert_eq!(decision(&request, "allow", None), Some("accept"));
+        assert_eq!(decision(&request, "allow", Some("session")), None);
+        assert_eq!(decision(&request, "allow", Some("similar")), None);
+        assert_eq!(decision(&request, "deny", None), Some("cancel"), "decline is not offered: the turn stops");
+        let mut open_ended = request.clone();
+        open_ended["params"]["availableDecisions"] = json!(["accept", "acceptForSession", "decline", "cancel"]);
+        assert!(approval(&open_ended).unwrap().session);
+        assert_eq!(decision(&open_ended, "allow", Some("session")), Some("acceptForSession"));
+        assert_eq!(decision(&open_ended, "deny", None), Some("decline"));
+        assert_eq!(decision(&open_ended, "deny", Some("session")), None);
+        // A patch request carries no patch: nobody here saw the change, so it is never `full`.
+        let patch = json!({"method":"item/fileChange/requestApproval","id":1,"params":{"threadId":"t","turnId":"u","itemId":"call_1","startedAtMs":1,"reason":"write outside the workspace"}});
+        let open = approval(&patch).unwrap();
+        assert!(!open.full && open.tool == "apply_patch" && open.summary == "write outside the workspace");
+        assert!(!super::super::approval::exact(open.tool, &open.input, None, None));
+        assert!(approval(&json!({"method":"item/permissions/requestApproval","id":2,"params":{"itemId":"x"}})).is_none());
+    }
+
+    /// A daemon thread holding `request` open: replays it to a client that joins the thread, and
+    /// resolves it when answered (as 0.163.0 does). Returns what the client answered.
+    async fn daemon_holding(request: Value) -> (std::path::PathBuf, tempfile::TempDir, tokio::task::JoinHandle<Option<Value>>) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut conn = tokio_tungstenite::accept_async(stream).await.unwrap();
+            read(&mut conn).await;
+            conn.send(Message::Text(json!({"id":1,"result":{}}).to_string().into())).await.unwrap();
+            read(&mut conn).await;
+            let resume = read(&mut conn).await;
+            assert_eq!(resume["method"], "thread/resume");
+            assert_eq!(resume["params"], json!({"threadId":request["params"]["threadId"],"excludeTurns":true}), "a join, no overrides");
+            // The server request's id is the daemon's own counter: it can equal ours.
+            let mut early = request.clone();
+            early["id"] = json!(2);
+            early["params"]["threadId"] = json!("another-thread");
+            conn.send(Message::Text(early.to_string().into())).await.unwrap();
+            conn.send(Message::Text(json!({"id":2,"result":{"thread":{"id":request["params"]["threadId"]}}}).to_string().into())).await.unwrap();
+            conn.send(Message::Text(json!({"method":"thread/goal/cleared","params":{"threadId":request["params"]["threadId"]}}).to_string().into())).await.unwrap();
+            conn.send(Message::Text(request.to_string().into())).await.unwrap();
+            let answered = match tokio::time::timeout(std::time::Duration::from_secs(3), conn.next()).await {
+                Ok(Some(Ok(Message::Text(text)))) => serde_json::from_str::<Value>(&text).ok(),
+                _ => None,
+            };
+            if answered.as_ref().is_some_and(|a| a["id"] == request["id"]) {
+                let resolved = json!({"method":"serverRequest/resolved","params":{"threadId":request["params"]["threadId"],"requestId":request["id"]}});
+                conn.send(Message::Text(resolved.to_string().into())).await.unwrap();
+            }
+            answered
+        });
+        (socket, dir, server)
+    }
+
+    #[test]
+    fn local_sessions_codex_a_failed_replay_keeps_the_held_approval() {
+        let thread = "01a17b15-0000-7000-8000-00000000fa11";
+        update_approval(thread, Some(Ok(Some(mkdir_request()))));
+        update_approval(thread, Some(Err("approval replay timed out".into())));
+        assert_eq!(open_request(thread), Some(mkdir_request()), "still waiting, the replay failed: kept");
+        update_approval(thread, Some(Ok(None)));
+        assert_eq!(open_request(thread), None, "the replay says it is gone");
+        update_approval(thread, Some(Ok(Some(mkdir_request()))));
+        update_approval(thread, None);
+        assert_eq!(open_request(thread), None, "no longer waiting on approval");
+    }
+
+    #[tokio::test]
+    async fn local_sessions_codex_an_approval_is_answered_over_the_daemon_only_as_held() {
+        let request = mkdir_request();
+        let thread = request["params"]["threadId"].as_str().unwrap().to_owned();
+        let open = approval(&request).unwrap();
+        let digest = super::super::approval::digest(&open.input);
+        // The replayed request, what discovery holds.
+        let (socket, _dir, server) = daemon_holding(request.clone()).await;
+        let mut conn = connected(&socket).await.unwrap();
+        assert_eq!(replayed_request(&mut conn, &thread).await.unwrap(), Some(request.clone()));
+        drop(conn);
+        assert_eq!(server.await.unwrap(), None, "reading it answers nothing");
+        // Allowed: Codex's own `accept`, confirmed by `serverRequest/resolved`.
+        let (socket, _dir, server) = daemon_holding(request.clone()).await;
+        assert!(answer_on(&socket, &thread, &open.item, &digest, "allow", None).await.unwrap());
+        assert_eq!(server.await.unwrap(), Some(json!({"id":0,"result":{"decision":"accept"}})));
+        // Denied where only cancel is offered.
+        let (socket, _dir, server) = daemon_holding(request.clone()).await;
+        assert!(answer_on(&socket, &thread, &open.item, &digest, "deny", None).await.unwrap());
+        assert_eq!(server.await.unwrap(), Some(json!({"id":0,"result":{"decision":"cancel"}})));
+        // A changed command, another item, or a choice it does not offer: nothing is sent.
+        for (item, digest, mode) in [(open.item.as_str(), "e".repeat(64), None), ("exec-other", digest.clone(), None), (open.item.as_str(), digest.clone(), Some("session"))] {
+            let (socket, _dir, server) = daemon_holding(request.clone()).await;
+            assert!(!answer_on(&socket, &thread, item, &digest, "allow", mode).await.unwrap());
+            assert_eq!(server.await.unwrap(), None);
+        }
     }
 
     #[tokio::test]

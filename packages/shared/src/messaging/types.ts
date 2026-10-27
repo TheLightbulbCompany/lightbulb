@@ -580,7 +580,8 @@ export interface LocalSessionPickupOutcome {
 
 export interface LocalSessionUsage { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
 
-export type LocalSessionApprovalMode = "acceptEdits" | "plan" | "default";
+/** Claude's session mode switches; "session" is Codex's "allow for this conversation"; "similar" applies the tool's own suggested allow rule for the rest of the session. */
+export type LocalSessionApprovalMode = "acceptEdits" | "plan" | "default" | "session" | "similar";
 export interface LocalSessionPendingApproval {
   approvalId: string;
   tool: string;
@@ -593,8 +594,10 @@ export interface LocalSessionPendingApproval {
   full?: boolean;
   /** The tool call's input as the Mac shipped it; whole only when `full`. */
   input?: Record<string, unknown>;
-  /** Session-scoped mode switches the tool itself offered with this prompt. */
+  /** Session-scoped choices the tool itself offered with this prompt. */
   modes: LocalSessionApprovalMode[];
+  /** What "similar" allows for the rest of the session ("npm run *"); present whenever it is offered. */
+  similar?: string;
 }
 
 export interface LocalSessionAuditEntry {

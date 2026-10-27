@@ -165,6 +165,32 @@ async def test_an_approval_lands_only_on_the_exact_open_prompt(transport):
 
 
 @pytest.mark.asyncio
+async def test_allow_similar_and_allow_for_the_conversation_land_only_where_offered(transport):
+    sid = await start(transport)
+    tool_input = {**APPROVAL["tool"]["input"], "modes": ["session", "similar"], "similar": "git push *"}
+    await waiting(transport, sid, {**APPROVAL, "tool": {**APPROVAL["tool"], "input": tool_input}})
+    public = (await service.get_session(ALICE, sid)).model_dump(by_alias=True)["pendingApproval"]
+    assert public["modes"] == ["session", "similar"] and public["similar"] == "git push *"
+    receipt = await service.submit_command(ALICE, None, sid, approve(mode="similar"))
+    assert receipt.model_dump(by_alias=True)["mode"] == "similar"
+    await service.submit_command(ALICE, None, sid, approve(requestId="approve-2", mode="session"))
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert transport[3][-1][1]["command"]["mode"] in {"similar", "session"}
+    with pytest.raises(ApiProblem, match="not offered"):
+        await service.submit_command(ALICE, None, sid, approve(requestId="approve-3", mode="acceptEdits"))
+
+
+def test_similar_is_never_offered_without_the_rule_it_allows():
+    base = {"approvalId": APPROVAL_ID, "tool": "Bash", "inputDigest": DIGEST, "exact": True}
+    assert service.PendingApproval(**base, modes=["similar", "session"]).modes == ["session"]
+    shown = service.PendingApproval(**base, modes=["similar"], similar="npm run *")
+    assert shown.model_dump(by_alias=True)["similar"] == "npm run *"
+    assert "similar" not in service.PendingApproval(**base).model_dump(by_alias=True)
+    with pytest.raises(ValueError):
+        service.PendingApproval(**base, modes=["bypassPermissions"])
+
+
+@pytest.mark.asyncio
 async def test_a_prompt_the_approver_cannot_see_whole_is_deny_only(transport):
     sid = await start(transport)
     inexact = {**APPROVAL, "tool": {**APPROVAL["tool"], "input": {**APPROVAL["tool"]["input"], "exact": False}}}

@@ -1,5 +1,5 @@
 import {
-  APPROVAL_MODE_LABEL, approvalInputView, useSessionApproval, useShownInputMatches,
+  approvalAgent, approvalInputView, approvalModeAction, useSessionApproval, useShownInputMatches,
   type LocalSession, type SessionControlClient,
 } from "@lightbulb/shared";
 import { CryptoDigestAlgorithm, digestStringAsync, randomUUID } from "expo-crypto";
@@ -52,7 +52,7 @@ function CallInput({ tool, input }: { tool: string; input: Record<string, unknow
   );
 }
 
-/** Claude's own permission prompt, held on the Mac and answerable here. */
+/** Claude's or Codex's own permission prompt, held on the Mac and answerable here. */
 export function SessionApprovalCard({ session, client, allowed, own, ownerName }: {
   session: LocalSession;
   client: SessionControlClient;
@@ -65,7 +65,7 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
   const digestOk = useShownInputMatches(session.pendingApproval, sha256Hex);
   const [denyingFor, setDenyingFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
-  if (!pending || session.provider !== "claude" || session.status !== "waiting-approval") return null;
+  if (!pending || !["claude", "codex"].includes(session.provider) || session.status !== "waiting-approval") return null;
 
   const current = state?.approvalId === pending.approvalId ? state : null;
   const busy = current?.status === "sending" || current?.status === "sent";
@@ -74,8 +74,8 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
   const canAnswer = allowed;
   const where = own ? "your" : `${ownerName}’s`;
   return (
-    <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.alert }]} accessibilityLabel="Claude permission prompt">
-      <Text style={[styles.title, { color: palette.fg }]}>Claude wants to use {pending.tool}</Text>
+    <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.alert }]} accessibilityLabel={`${approvalAgent(session.provider)} permission prompt`}>
+      <Text style={[styles.title, { color: palette.fg }]}>{approvalAgent(session.provider)} wants to use {pending.tool}</Text>
       {pending.input ? <CallInput tool={pending.tool} input={pending.input} /> : pending.summary ? (
         <Text selectable style={[styles.summary, { backgroundColor: palette.raised, color: palette.fg }]}>{pending.summary}</Text>
       ) : null}
@@ -108,7 +108,7 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
             <View style={styles.actions}>
               {canApprove && <ApprovalButton label="Approve" onPress={() => void answer({ decision: "allow" })} disabled={busy} primary />}
               {canApprove && pending.modes.map((mode) => (
-                <ApprovalButton key={mode} label={`Approve and switch to ${APPROVAL_MODE_LABEL[mode]}`} onPress={() => void answer({ decision: "allow", mode })} disabled={busy} />
+                <ApprovalButton key={mode} label={approvalModeAction(mode, pending)} onPress={() => void answer({ decision: "allow", mode })} disabled={busy} />
               ))}
               <ApprovalButton label="Deny…" onPress={() => setDenyingFor(pending.approvalId)} disabled={busy} />
             </View>

@@ -782,7 +782,11 @@ export function MessagingWorkspaceProvider({
   const applySession = useCallback((sessionId: string, chat = false, seq?: number) => {
     setThreadId(null);
     setTarget(null);
-    setSessionFocus({ sessionId, ...(chat ? { chat } : {}), ...(seq ? { seq } : {}) });
+    // Opening the URL this open just wrote (?session=, no seq) replays it: keep the turn it opened at.
+    setSessionFocus((current) => {
+      const at = seq ?? (current?.sessionId === sessionId ? current.seq : undefined);
+      return { sessionId, ...(chat ? { chat } : {}), ...(at ? { seq: at } : {}) };
+    });
     return !(workspaceSessions.loading && !workspaceSessions.sessions.some((candidate) => candidate.sessionId === sessionId));
   }, [workspaceSessions.sessions, workspaceSessions.loading]);
   // A person's open is a pick; a link applied before the list lands is not.

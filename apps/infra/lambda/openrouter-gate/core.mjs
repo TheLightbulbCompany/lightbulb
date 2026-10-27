@@ -194,9 +194,10 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     // A capped owner's per-key daily limit: OpenRouter answers 403 "Key limit exceeded".
     // Answer with the daily-cap 429 the limit card renders. Every 403 is held until its body
     // says why: a disabled key must surface as itself, not a cap, and "Key limit exceeded" on a
-    // key with money left (any owner) means the account is empty. A capped 402 is what an EMPTY
-    // ACCOUNT answers, so it gets the same key check — it used to be taken as the cap outright,
-    // which stamped every trial capped for the day and never paged (2026-10-26, $0.0005 left).
+    // key with money left (any owner) means the account is empty. A 402 is OpenRouter's
+    // insufficient-credits answer — the ACCOUNT, never the key (a key's daily limit is the 403) —
+    // so a capped 402 is always the paging 503. It used to be taken as the cap outright, which
+    // stamped every trial capped for the day and never paged (2026-10-26, $0.0005 left).
     let capHit = false, held403 = null, held402 = false, keyLimit = false;
     const result = await forwardImpl({ body, key: secret,
       writeHead: (upstreamStatus, headers) => {
@@ -214,7 +215,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       },
       abortSignal: responder.abortSignal });
     if (keyLimit) {
-      if (await keyIsSpent(secret, keyInfoImpl)) {
+      if (!held402 && await keyIsSpent(secret, keyInfoImpl)) {
         if (capped) {
           capHit = true;
           responder.writeHead(429, { 'content-type': 'application/json' }); responder.write(dailyCap().body()); responder.end();

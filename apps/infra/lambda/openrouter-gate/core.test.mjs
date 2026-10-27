@@ -131,18 +131,11 @@ test('a capped 402 on an empty account (the key has money left) is the paging 50
   assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
   assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1));
 });
-test('an upstream 402 for a capped owner stamps the capped day and returns the daily-cap 429', async () => {
-  const f = await runDs(cappedOwners.base, dsBody(), f => { f.deps.keyInfoImpl = async () => ({ limit: 0.25, limit_remaining: 0.001 }); f.deps.forwardImpl = async p => { p.writeHead(402, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":"key limit"}')); p.end(); return { status: 402, preGeneration: true }; }; });
-  assert.equal(f.calls.head.status, 429);
-  const error = JSON.parse(Buffer.concat(f.calls.chunks).toString());
-  assert.equal(error.error.code, 'trial_daily_cap');
-  assert.equal(error.error.message, 'Lightbulb: daily limit reached — resets at midnight UTC');
-  const stamp = f.calls.updates.find(u => u.TableName === 'billing');
-  assert.equal(stamp.Key.owner_id.S, 'owner-1');
-  assert.equal(stamp.ExpressionAttributeValues[':day'].S, today());
-  const capHit = f.calls.logs.find(entry => entry['openrouter.gate.cap_hit'] === 1);
-  assert.equal(capHit.tier, 'base');
-  assert.ok(f.calls.updates.some(u => u.TableName === 'requests' && u.ExpressionAttributeValues[':released']));
+test('a capped 402 is the account, never the key: a nearly spent key still pages instead of capping', async () => {
+  const f = await runDs(cappedOwners.base, dsBody(), upstream402(async () => ({ limit: 0.25, limit_remaining: 0.001, usage_daily: 0.249 })));
+  assert.equal(f.calls.head.status, 503);
+  assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
+  assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1));
 });
 const liveKeyLimit = '{"error":{"message":"Key limit exceeded (daily limit). Manage it using https://openrouter.ai/settings/keys","code":403}}';
 const keyLimit403 = (keyInfoImpl) => f => { f.deps.keyInfoImpl = keyInfoImpl; f.deps.forwardImpl = async p => { p.writeHead(403, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":{"message":"Upstream returned 403"}}')); p.end(liveKeyLimit); return { status: 403, preGeneration: true }; }; };

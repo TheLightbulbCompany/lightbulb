@@ -2456,6 +2456,31 @@ async def test_session_notification_prefs_choose_banner_badge_or_nothing_per_kin
     assert pushes == []
 
 
+@pytest.mark.asyncio
+async def test_a_prefs_read_failure_sends_no_banner(transport):
+    from core.repositories import user_repo
+    from core.services import local_session_relay as module
+
+    pushes = []
+
+    async def push(user_id, title, body, data=None, **kwargs):
+        pushes.append(body)
+
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    with (
+        patch("core.services.push_service.send_push_to_user", push),
+        patch.object(user_repo, "get", AsyncMock(side_effect=RuntimeError("ddb down"))),
+        patch("time.time", return_value=10010),
+    ):
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="waiting-approval"))
+        await asyncio.gather(*module._tasks)
+    assert pushes == []
+    notices = [json.loads(h["events"][0]) for h in transport[4]]
+    levels = [n["payload"]["level"] for n in notices if n["type"] == "workspace.session.attention"]
+    assert levels == ["badge"]
+
+
 async def test_subagent_events_round_trip_and_a_long_background_end_notifies_once(transport):
     from core.services import activity, local_session_relay as module
 

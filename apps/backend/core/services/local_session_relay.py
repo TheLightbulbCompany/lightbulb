@@ -490,8 +490,9 @@ async def notify_attention(row: dict, state: str, subagent: Event | None = None)
     try:
         prefs = user_repo.session_notifications(await user_repo.get(human))
     except Exception:
-        logger.warning("Session notification prefs read failed", exc_info=True)
-        prefs = user_repo.session_notifications(None)
+        # Fail closed: an unread opt-out must not be overridden, so this notice is badge-only.
+        logger.warning("Session notification prefs read failed; no banner", exc_info=True)
+        prefs = {**user_repo.session_notifications(None), "waiting": "badge", "finished": "badge", "attention": "badge"}
     # "off" and "badge" never banner; a note is no Activity row (the row's own text is the record).
     level = prefs[state]
     if state == "attention" and level != "banner":

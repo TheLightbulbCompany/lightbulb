@@ -381,10 +381,11 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
                 }
                 session.attention.agents = working_children(threads.iter().flatten(), &session.conversation);
                 if let (Some((socket, _)), Some(thread)) = (&control, thread) {
-                    remember_approval(&session.conversation, match waiting_on_approval(thread) {
-                        true => open_approval(socket, &session.conversation).await,
+                    let polled = match waiting_on_approval(thread) {
+                        true => Some(open_approval(socket, &session.conversation).await),
                         false => None,
-                    });
+                    };
+                    update_approval(&session.conversation, polled);
                 }
                 found.push(session);
             },
@@ -668,6 +669,17 @@ pub(super) fn remember_approval(thread: &str, request: Option<Value>) {
     };
 }
 
+/// One discovery's word on a thread's approval: None when it no longer waits on one (the request
+/// is gone), else the replay. A replay that failed (`Err`, a daemon timeout) knows nothing: the
+/// thread still waits, so the request held before is kept rather than dropping its card.
+fn update_approval(thread: &str, polled: Option<Result<Option<Value>>>) {
+    match polled {
+        None => remember_approval(thread, None),
+        Some(Ok(request)) => remember_approval(thread, request),
+        Some(Err(_)) => {}
+    }
+}
+
 /// The approval request the daemon holds open for `thread`, as discovery last read it.
 pub(super) fn open_request(thread: &str) -> Option<Value> {
     APPROVALS.lock().ok()?.get(thread).cloned()
@@ -763,17 +775,20 @@ async fn replayed_request(conn: &mut Conn, thread: &str) -> Result<Option<Value>
         }
         if joined && found.is_some() { break; }
     }
-    Ok(if joined { found } else { None })
+    if !joined {
+        return Err("thread/resume unanswered".into());
+    }
+    Ok(found)
 }
 
-async fn open_approval(socket: &Path, thread: &str) -> Option<Value> {
+/// Ok(None): the daemon joined us to the thread and replayed no approval. Err: unknown.
+async fn open_approval(socket: &Path, thread: &str) -> Result<Option<Value>> {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let mut conn = connected(socket).await.ok()?;
-        replayed_request(&mut conn, thread).await.ok().flatten()
+        let mut conn = connected(socket).await?;
+        replayed_request(&mut conn, thread).await
     })
     .await
-    .ok()
-    .flatten()
+    .map_err(|_| "approval replay timed out".to_owned())?
 }
 
 /// Answer the thread's open approval, only if it is still the one held (`item`, `digest`) and
@@ -1972,6 +1987,19 @@ mod tests {
             answered
         });
         (socket, dir, server)
+    }
+
+    #[test]
+    fn local_sessions_codex_a_failed_replay_keeps_the_held_approval() {
+        let thread = "01a17b15-0000-7000-8000-00000000fa11";
+        update_approval(thread, Some(Ok(Some(mkdir_request()))));
+        update_approval(thread, Some(Err("approval replay timed out".into())));
+        assert_eq!(open_request(thread), Some(mkdir_request()), "still waiting, the replay failed: kept");
+        update_approval(thread, Some(Ok(None)));
+        assert_eq!(open_request(thread), None, "the replay says it is gone");
+        update_approval(thread, Some(Ok(Some(mkdir_request()))));
+        update_approval(thread, None);
+        assert_eq!(open_request(thread), None, "no longer waiting on approval");
     }
 
     #[tokio::test]

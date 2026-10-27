@@ -253,6 +253,9 @@ async def search_sessions(auth: AuthContext, request: SessionSearchRequest) -> S
     ]
     # The search can outlast a pause or a removal: re-read the rows with hits (strongly).
     ids = sorted({h["_source"]["sessionId"] for h in candidates})
+    # A member removed while the index answered gets nothing (rooms re-check membership the same way).
+    if ids and not await local_sessions.still_in_workspace(owner_id, auth.user_id):
+        return SessionSearchResponse(hits=[])
     rows = await local_sessions_repo.get_sessions(owner_id, ids)
     readable = {sid for sid, row in zip(ids, rows) if local_sessions.still_searchable(row, auth.user_id)}
     hits = []

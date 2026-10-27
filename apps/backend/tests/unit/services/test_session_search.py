@@ -19,12 +19,16 @@ async def _change(sid, **fields):
 @pytest.mark.usefixtures("db")
 async def test_own_sessions_in_any_state_and_teammates_only_while_shared():
     await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
     shared, only_me, on_purpose, old = [await registered(conversation=c) for c in ("a", "b", "c", "d")]
     await _change(only_me, unshared=True)
     await _change(on_purpose, endedAt=1, endedReason=service.ENDED_ON_PURPOSE)
     await _change(old, endedAt=1, endedReason="process-exited", eventSeq=3)  # ended long ago: still searchable
     assert set(await service.searchable_sessions(ALICE)) == {shared, only_me, old}
     assert set(await service.searchable_sessions(BOB)) == {shared, old}
+    # A removed member searches nothing, whatever their JWT still says.
+    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
+    assert await service.searchable_sessions(BOB) == {}
 
 
 def test_a_paused_removed_or_ended_on_purpose_row_stops_being_searchable():
@@ -80,6 +84,7 @@ async def test_search_filters_to_readable_sessions_and_rechecks_after_the_index(
     rows = AsyncMock(return_value=[{"humanUserId": "user_alice"}, {"humanUserId": "user_alice", "unshared": True}])
     with (
         patch.object(service, "searchable_sessions", AsyncMock(return_value=readable)),
+        patch.object(service, "still_in_workspace", AsyncMock(return_value=True)),
         patch.object(message_search, "_request", request),
         patch.object(repo, "get_sessions", rows),
     ):
@@ -90,6 +95,22 @@ async def test_search_filters_to_readable_sessions_and_rechecks_after_the_index(
     assert rows.await_args.args == (OWNER, [S1, S2])
     assert [(h.session_id, h.seq, h.session_title) for h in result.hits] == [(S1, 4, "Fix deploy")]
     assert result.hits[0].snippet == "why does \u0001deploy\u0002 fail"
+
+
+async def test_a_member_removed_while_the_index_answered_gets_nothing(search_on):
+    body = {"hits": {"hits": [_hit(S1)]}}
+    rows = AsyncMock(return_value=[{"humanUserId": "user_alice"}])
+    with (
+        patch.object(service, "searchable_sessions", AsyncMock(return_value={S1: _session(S1)})),
+        patch.object(service, "still_in_workspace", AsyncMock(return_value=False)),
+        patch.object(
+            message_search, "_request", AsyncMock(return_value=httpx.Response(200, content=json.dumps(body).encode()))
+        ),
+        patch.object(repo, "get_sessions", rows),
+    ):
+        result = await message_search.search_sessions(BOB, message_search.SessionSearchRequest(q="deploy"))
+    assert result.hits == []
+    rows.assert_not_called()
 
 
 async def test_no_readable_session_never_reaches_the_index(search_on):

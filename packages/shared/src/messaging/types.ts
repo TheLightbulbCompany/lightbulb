@@ -381,6 +381,12 @@ export interface LocalSessionCapabilities {
   interrupt: boolean;
 }
 
+/** Files a session changed since it started, from git on its Mac. */
+export interface SessionChanges { files: number; additions: number; deletions: number }
+
+/** The pull request of a session's branch. `checks`: failing when any failed, pending while any runs; absent with none. */
+export interface SessionPr { number: number; state: "open" | "merged" | "closed"; url: string; checks?: "passing" | "failing" | "pending" }
+
 export interface LocalSession {
   /** Advisory bounded local evidence, not proof that a harness refreshed files. */
   workspace?: { revision: number; coverage: "bounded" | "unknown"; changed: boolean; overlap: boolean };
@@ -422,6 +428,12 @@ export interface LocalSession {
   waitingFor?: string;
   /** Live only: a Claude job's hand-off note for its person ("run lightbulb login, then press Resume"). A message, never a prompt. */
   note?: string;
+  /** Live only, from a Mac that reports it: files changed since the session started, from git (not edit events). */
+  changes?: SessionChanges;
+  /** Live only: how many of its subagents run now. Absent with none. */
+  agents?: number;
+  /** Live only: the pull request of the branch checked out in its folder (`gh pr view` on its Mac). */
+  pr?: SessionPr;
   /** Harness-derived: Claude ai-title or listing name, Codex first prompt. */
   title?: string | null;
   /** Owner-chosen name shared by Lightbulb surfaces. Null uses the harness title. */

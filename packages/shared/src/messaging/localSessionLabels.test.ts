@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSendToSession, endedWhy, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionState, sessionStateAction, sessionStateLabel, sessionStatus, sessionTitle, sessionWaitingLine, sessionsNeedingYou, SESSION_NOTIFICATION_DEFAULTS, sessionToolName, sessionAgentName, SESSION_AGENTS, sessionUnread, workspaceSections } from "./localSessionLabels";
+import { changesLabel, sessionPrLabel, sessionSignalsLine, canSendToSession, endedWhy, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionState, sessionStateAction, sessionStateLabel, sessionStatus, sessionTitle, sessionWaitingLine, sessionsNeedingYou, SESSION_NOTIFICATION_DEFAULTS, sessionToolName, sessionAgentName, SESSION_AGENTS, sessionUnread, workspaceSections } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
 const base = { capabilities: { sendMode: "queue" }, controlUnavailableReason: null, capabilitiesVerified: true } as unknown as LocalSession;
@@ -222,5 +222,22 @@ describe("sessionsNeedingYou", () => {
   it("leaves out a kind turned off; badge-only still counts", () => {
     expect(sessionsNeedingYou(rows, "me", { ...SESSION_NOTIFICATION_DEFAULTS, waiting: "off" })).toBe(1);
     expect(sessionsNeedingYou(rows, "me", { ...SESSION_NOTIFICATION_DEFAULTS, waiting: "badge", attention: "off" })).toBe(1);
+  });
+});
+
+describe("session signals", () => {
+  it("say changed files, running agents and the PR's checks in the vendors' words", () => {
+    expect(changesLabel({ files: 1, additions: 12, deletions: 0 })).toBe("1 file changed +12 −0");
+    expect(changesLabel({ files: 3, additions: 12, deletions: 4 })).toBe("3 files changed +12 −4");
+    const pr = { number: 123, state: "open" as const, url: "https://github.com/o/r/pull/123" };
+    expect(sessionPrLabel({ pr })).toBe("PR #123 · open");
+    expect(sessionPrLabel({ pr: { ...pr, checks: "passing" } })).toBe("PR #123 · checks passing");
+    expect(sessionPrLabel({ pr: { ...pr, checks: "failing" } })).toBe("PR #123 · checks failing");
+    expect(sessionPrLabel({ pr: { ...pr, checks: "pending" } })).toBe("PR #123 · checks running");
+    expect(sessionPrLabel({ pr: { ...pr, state: "merged", checks: "failing" } })).toBe("PR #123 · merged");
+    expect(sessionPrLabel({})).toBeNull();
+    expect(sessionSignalsLine({ agents: 2, pr })).toBe("2 agents running · PR #123 · open");
+    expect(sessionSignalsLine({ agents: 1 })).toBe("1 agent running");
+    expect(sessionSignalsLine({})).toBeNull();
   });
 });

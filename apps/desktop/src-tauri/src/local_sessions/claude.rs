@@ -414,6 +414,10 @@ pub(super) struct Attention {
     /// never a prompt (#4414).
     #[serde(default)]
     pub note: Option<String>,
+    /// Codex on the shared daemon only: how many of its child threads are working
+    /// (`codex::capture`). Claude's are counted from the subagent files it tails (`signals`).
+    #[serde(default)]
+    pub agents: u32,
 }
 
 /// From the listing row and, for a blocked job, its `~/.claude/jobs/<job>/state.json` (the
@@ -436,7 +440,7 @@ fn attention(home: &Path, row: &Value, job: Option<&str>) -> Attention {
             let state: Value = serde_json::from_str(&text).ok()?;
             line(&state["needs"], 300).or_else(|| line(&state["detail"], 300))
         });
-    Attention { done: row["state"] == "done", waiting_for: waiting.then(|| line(&row["waitingFor"], 120)).flatten(), note }
+    Attention { done: row["state"] == "done", waiting_for: waiting.then(|| line(&row["waitingFor"], 120)).flatten(), note, agents: 0 }
 }
 
 /// A run a program started (`claude -p`, the Agent SDK), not a person: plugins such as

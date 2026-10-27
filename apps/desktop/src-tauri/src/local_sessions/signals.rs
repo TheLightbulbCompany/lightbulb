@@ -1,0 +1,409 @@
+//! What a session's folder and helpers say beyond its transcript (spec 2026-10-26 (f), gaps 7, 15,
+//! 16): files changed since the session started, from git rather than edit events; the folder
+//! branch's pull request, from `gh`; and how many of its subagents run. Git and `gh` run in spawned
+//! tasks, never in the relay loop: `tick` starts them, the heartbeat reads their last answer.
+use super::*;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// The relay lists `sessionSignals`: it reads `changes`, `agents` and `pr` on a heartbeat.
+static READS: AtomicBool = AtomicBool::new(false);
+/// A busy session's folder is read again after this long; an idle one only when a turn ends.
+const BUSY_EVERY: Duration = Duration::from_secs(30);
+/// A branch's PR is asked of GitHub at most this often (every session on the Mac shares the
+/// person's one API budget).
+const PR_EVERY: Duration = Duration::from_secs(60);
+/// A subagent that wrote nothing for this long is not counted as running, whatever its file says
+/// (one killed mid-call never writes its end).
+const AGENT_QUIET: Duration = Duration::from_secs(600);
+
+pub(super) fn read_features(listed: &Value) {
+    READS.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "sessionSignals")), SeqCst);
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub(super) struct Changes {
+    files: u64,
+    additions: u64,
+    deletions: u64,
+}
+
+#[derive(Default)]
+struct Entry {
+    changes: Option<Changes>,
+    pr: Option<Value>,
+    at: Option<Instant>,
+    busy: bool,
+    running: bool,
+    /// A turn ended while a read was running: read once more after it.
+    again: bool,
+}
+
+static ENTRIES: Mutex<BTreeMap<String, Entry>> = Mutex::new(BTreeMap::new());
+/// `gh` answers by (repository, branch), so sessions in one checkout ask once.
+static PRS: Mutex<BTreeMap<(PathBuf, String), (Instant, Option<Value>)>> = Mutex::new(BTreeMap::new());
+
+/// From the relay loop, every lap: start a read for each live session that is due. Cheap: no I/O.
+pub(super) fn tick(mirrors: &BTreeMap<String, Mirror>, home: &Path) {
+    if !READS.load(SeqCst) {
+        return;
+    }
+    let Ok(mut entries) = ENTRIES.lock() else { return };
+    // Only a shared session's folder is read: nothing of one its person stopped sharing leaves the Mac.
+    let readable = |m: &Mirror| m.ended_at.is_none() && !m.withheld();
+    entries.retain(|key, _| mirrors.get(key).is_some_and(readable));
+    for (key, m) in mirrors.iter().filter(|(_, m)| readable(*m)) {
+        let entry = entries.entry(key.clone()).or_default();
+        let busy = matches!(m.native.status.as_str(), "busy" | "waiting-approval");
+        let turn_ended = entry.busy && !busy;
+        entry.busy = busy;
+        if entry.running {
+            entry.again |= turn_ended;
+            continue;
+        }
+        let due = entry.at.is_none_or(|at| busy && at.elapsed() >= BUSY_EVERY) || turn_ended || entry.again;
+        if !due {
+            continue;
+        }
+        entry.running = true;
+        entry.again = false;
+        let (key, native, home) = (key.clone(), m.native.clone(), home.to_path_buf());
+        tokio::spawn(async move {
+            let read = tokio::time::timeout(Duration::from_secs(30), async {
+                let Ok(root) = workspace::session_root(&native, &home).await else { return (None, None) };
+                let since = (native.process.birth_micros / 1_000_000) as i64;
+                let changes = changes(&root, since).await.ok();
+                let pr = match gh_program() {
+                    Some(gh) => pr(&gh, &root, &home).await,
+                    None => None,
+                };
+                (changes, pr)
+            })
+            .await
+            .unwrap_or((None, None));
+            if let Ok(mut entries) = ENTRIES.lock() {
+                if let Some(entry) = entries.get_mut(&key) {
+                    (entry.changes, entry.pr) = read;
+                    entry.at = Some(Instant::now());
+                    entry.running = false;
+                }
+            }
+        });
+    }
+}
+
+/// The signals on a heartbeat entry, for a relay that reads them. Absent is "none" or "unknown":
+/// each frame says all of them.
+pub(super) fn add(entry: &mut Value, key: &str, m: &Mirror) {
+    add_if(READS.load(SeqCst), entry, key, m);
+}
+
+fn add_if(reads: bool, entry: &mut Value, key: &str, m: &Mirror) {
+    if !reads || m.withheld() {
+        return;
+    }
+    let agents = running_agents(m);
+    if agents > 0 {
+        entry["agents"] = json!(agents);
+    }
+    let Ok(entries) = ENTRIES.lock() else { return };
+    let Some(read) = entries.get(key) else { return };
+    if let Some(changes) = read.changes.as_ref().filter(|c| c.files > 0) {
+        entry["changes"] = json!(changes);
+    }
+    if let Some(pr) = &read.pr {
+        entry["pr"] = pr.clone();
+    }
+}
+
+/// Codex on the shared daemon: its loaded child threads that are working (`codex::capture`).
+/// Claude, and Codex without the daemon: the subagent transcripts this mirror tails that have not
+/// ended and wrote something lately.
+fn running_agents(m: &Mirror) -> u32 {
+    if m.native.provider == "codex" && m.native.socket.is_some() {
+        return m.native.attention.agents;
+    }
+    m.subagents
+        .known
+        .values()
+        .filter(|s| !s.ended && !s.closed)
+        .filter(|s| {
+            s.path.as_ref().and_then(|p| fs::metadata(p).ok()).and_then(|meta| meta.modified().ok())
+                .and_then(|t| t.elapsed().ok()).is_some_and(|age| age < AGENT_QUIET)
+        })
+        .count() as u32
+}
+
+/// What changed in the session's repository since the session started: the diff against the commit
+/// HEAD was on then (the reflog), counting only files written since (an older dirty file is not the
+/// session's), plus the untracked files it created. Err: not a repository, or too big to read.
+// ponytail: a file dirty before the session and edited during it counts its whole diff; record a
+// baseline tree at the start if that ever matters.
+async fn changes(cwd: &Path, since: i64) -> Result<Changes> {
+    let top = PathBuf::from(
+        String::from_utf8(workspace::git(cwd, &["rev-parse", "--show-toplevel"]).await?)
+            .map_err(|_| "workspace unavailable")?
+            .trim(),
+    );
+    let mut changes = Changes::default();
+    if let Some(base) = start_commit(&top, since).await {
+        let numstat = workspace::git(&top, &["diff", "--numstat", "--no-renames", "-z", &base, "--"]).await?;
+        for record in numstat.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+            let text = std::str::from_utf8(record).map_err(|_| "workspace unavailable")?;
+            let mut fields = text.splitn(3, '\t');
+            let (Some(added), Some(removed), Some(path)) = (fields.next(), fields.next(), fields.next()) else { continue };
+            if !written_since(&top.join(path), since) {
+                continue;
+            }
+            changes.files += 1;
+            // A binary file says "-": it counts as a file, with no lines.
+            changes.additions += added.parse::<u64>().unwrap_or(0);
+            changes.deletions += removed.parse::<u64>().unwrap_or(0);
+        }
+    }
+    let untracked = workspace::git(&top, &["ls-files", "--others", "--exclude-standard", "-z"]).await?;
+    let new = tokio::task::spawn_blocking(move || new_files(&top, &untracked, since))
+        .await
+        .map_err(|_| "workspace unavailable")?;
+    changes.files += new.0;
+    changes.additions += new.1;
+    Ok(changes)
+}
+
+/// The commit HEAD was on at `since`: the newest reflog entry no later than it, else the oldest one
+/// (the repository's HEAD moved first after the session started), else HEAD now.
+async fn start_commit(top: &Path, since: i64) -> Option<String> {
+    let log = workspace::git(top, &["log", "-g", "--format=%H %gd", "--date=unix", "-n", "500", "HEAD"]).await.ok();
+    let entries: Vec<(&str, i64)> = log
+        .as_deref()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .into_iter()
+        .flat_map(str::lines)
+        .filter_map(|line| {
+            let (hash, selector) = line.split_once(' ')?;
+            let at = selector.strip_prefix("HEAD@{")?.strip_suffix('}')?.parse().ok()?;
+            Some((hash, at))
+        })
+        .collect();
+    if let Some((hash, _)) = entries.iter().find(|(_, at)| *at <= since).or(entries.last()) {
+        return Some((*hash).to_owned());
+    }
+    let head = workspace::git(top, &["rev-parse", "--verify", "-q", "HEAD"]).await.ok()?;
+    Some(String::from_utf8(head).ok()?.trim().to_owned()).filter(|h| !h.is_empty())
+}
+
+/// A path written at or after `since`, or gone (a deletion is a change).
+fn written_since(path: &Path, since: i64) -> bool {
+    fs::symlink_metadata(path).map_or(true, |meta| meta.mtime() >= since)
+}
+
+/// Untracked files written since the session started, and their lines. Only regular files under
+/// 1 MiB are read (never a FIFO or a link), 8 MiB in all.
+fn new_files(top: &Path, listed: &[u8], since: i64) -> (u64, u64) {
+    let (mut files, mut lines, mut read) = (0, 0, 0u64);
+    for name in listed.split(|b| *b == 0).filter(|n| !n.is_empty()).take(512) {
+        let path = top.join(std::ffi::OsStr::from_bytes(name));
+        let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+        if meta.mtime() < since {
+            continue;
+        }
+        files += 1;
+        if meta.is_file() && meta.len() <= 1024 * 1024 && read + meta.len() <= 8 * 1024 * 1024 {
+            read += meta.len();
+            if let Ok(bytes) = fs::read(&path) {
+                lines += bytecount(&bytes);
+            }
+        }
+    }
+    (files, lines)
+}
+
+fn bytecount(bytes: &[u8]) -> u64 {
+    let newlines = bytes.iter().filter(|b| **b == b'\n').count() as u64;
+    newlines + u64::from(bytes.last().is_some_and(|b| *b != b'\n'))
+}
+
+/// Homebrew's `gh`, when the person installed it.
+fn gh_program() -> Option<PathBuf> {
+    ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"].into_iter().map(PathBuf::from).find(|p| p.is_file())
+}
+
+/// The PR of the branch checked out in `root` (`gh pr view`), cached a minute per branch. None:
+/// no PR, a detached HEAD, `gh` not signed in, or anything else; it never prompts.
+async fn pr(gh: &Path, root: &Path, home: &Path) -> Option<Value> {
+    let branch = String::from_utf8(workspace::git(root, &["rev-parse", "--abbrev-ref", "HEAD"]).await.ok()?).ok()?;
+    let branch = branch.trim().to_owned();
+    if branch.is_empty() || branch == "HEAD" {
+        return None;
+    }
+    let cache = (root.to_path_buf(), branch);
+    if let Some((at, pr)) = PRS.lock().ok()?.get(&cache) {
+        if at.elapsed() < PR_EVERY {
+            return pr.clone();
+        }
+    }
+    let answer = gh_pr_view(gh, root, home).await;
+    if let Ok(mut prs) = PRS.lock() {
+        prs.retain(|_, (at, _)| at.elapsed() < PR_EVERY);
+        prs.insert(cache, (Instant::now(), answer.clone()));
+    }
+    answer
+}
+
+async fn gh_pr_view(gh: &Path, root: &Path, home: &Path) -> Option<Value> {
+    let run = tokio::process::Command::new(gh)
+        .args(["pr", "view", "--json", "number,state,url,statusCheckRollup"])
+        .current_dir(root)
+        .env_clear()
+        .env("HOME", home)
+        .env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(Duration::from_secs(10), run).await.ok()?.ok()?;
+    if !out.status.success() || out.stdout.len() > 512 * 1024 {
+        return None;
+    }
+    pr_wire(&serde_json::from_slice(&out.stdout).ok()?)
+}
+
+/// `{number, state, url, checks?}`: open, merged or closed, and the checks' verdict (failing when
+/// any failed, else pending while any runs, else passing; absent with none).
+fn pr_wire(view: &Value) -> Option<Value> {
+    let number = view["number"].as_u64().filter(|n| (1..100_000_000).contains(n))?;
+    let url = view["url"].as_str().filter(|u| u.starts_with("https://") && u.len() <= 300)?;
+    let state = match view["state"].as_str()? {
+        "OPEN" => "open",
+        "MERGED" => "merged",
+        "CLOSED" => "closed",
+        _ => return None,
+    };
+    let mut wire = json!({"number": number, "state": state, "url": url});
+    let checks = view["statusCheckRollup"].as_array().filter(|c| !c.is_empty()).map(|checks| {
+        let verdicts: Vec<_> = checks
+            .iter()
+            // A check run's conclusion, else a status context's state.
+            .map(|c| c["conclusion"].as_str().filter(|s| !s.is_empty()).or(c["state"].as_str()).unwrap_or(""))
+            .collect();
+        if verdicts.iter().any(|v| matches!(*v, "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE")) {
+            "failing"
+        } else if verdicts.iter().all(|v| matches!(*v, "SUCCESS" | "NEUTRAL" | "SKIPPED")) {
+            "passing"
+        } else {
+            "pending"
+        }
+    });
+    if let Some(checks) = checks {
+        wire["checks"] = json!(checks);
+    }
+    Some(wire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn git(root: &Path, args: &[&str]) {
+        let mut all = vec!["-c", "user.name=Test", "-c", "user.email=test@example.invalid"];
+        all.extend(args);
+        workspace::git(root, &all).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_sessions_signals_changes_count_what_the_session_wrote_in_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]).await;
+        fs::write(root.join("old.txt"), "one\ntwo\nthree\n").unwrap();
+        fs::write(root.join("dirty-before.txt"), "a\n").unwrap();
+        git(&root, &["add", "."]).await;
+        git(&root, &["commit", "-qm", "start"]).await;
+        // Dirty before the session started: not the session's.
+        fs::write(root.join("dirty-before.txt"), "a\nb\n").unwrap();
+        fs::write(root.join("untracked-before.txt"), "x\n").unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+        for name in ["dirty-before.txt", "untracked-before.txt"] {
+            fs::File::options().write(true).open(root.join(name)).unwrap().set_modified(old).unwrap();
+        }
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 1;
+        assert_eq!(changes(&root, since).await.unwrap(), Changes::default());
+        // The session edits by shell (no edit event), commits, then creates a file.
+        fs::write(root.join("old.txt"), "one\n2\nthree\nfour\n").unwrap();
+        git(&root, &["commit", "-qam", "session"]).await;
+        fs::write(root.join("new.txt"), "n1\nn2\nn3").unwrap();
+        assert_eq!(changes(&root, since).await.unwrap(), Changes { files: 2, additions: 2 + 3, deletions: 1 });
+        // Not a repository: no answer, the event count stands.
+        let plain = tempfile::tempdir().unwrap();
+        assert!(changes(&fs::canonicalize(plain.path()).unwrap(), since).await.is_err());
+    }
+
+    #[test]
+    fn local_sessions_signals_pr_says_state_and_the_checks_verdict() {
+        let pr = |state: &str, checks: Value| pr_wire(&json!({"number": 123, "state": state, "url": "https://github.com/o/r/pull/123", "statusCheckRollup": checks}));
+        let run = |conclusion: &str, status: &str| json!({"__typename":"CheckRun","conclusion":conclusion,"status":status});
+        assert_eq!(pr("OPEN", json!([])), Some(json!({"number":123,"state":"open","url":"https://github.com/o/r/pull/123"})));
+        assert_eq!(pr("OPEN", json!([run("SUCCESS", "COMPLETED"), run("SKIPPED", "COMPLETED")])).unwrap()["checks"], "passing");
+        assert_eq!(pr("OPEN", json!([run("SUCCESS", "COMPLETED"), run("", "IN_PROGRESS")])).unwrap()["checks"], "pending");
+        assert_eq!(pr("OPEN", json!([run("", "IN_PROGRESS"), {"__typename":"StatusContext","state":"FAILURE"}])).unwrap()["checks"], "failing");
+        assert_eq!(pr("MERGED", Value::Null).unwrap()["state"], "merged");
+        assert_eq!(pr("DRAFTISH", json!([])), None);
+        assert_eq!(pr_wire(&json!({"number": 1, "state": "OPEN", "url": "javascript:alert(1)"})), None, "only a web link");
+    }
+
+    #[tokio::test]
+    async fn local_sessions_signals_pr_reads_a_stubbed_gh_once_a_minute() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q", "-b", "feat/x"]).await;
+        git(&root, &["commit", "-q", "--allow-empty", "-m", "start"]).await;
+        let calls = root.join("calls");
+        let gh = root.join("gh");
+        fs::write(&gh, format!(
+            "#!/bin/sh\necho x >> '{}'\n[ \"$GH_PROMPT_DISABLED\" = 1 ] || exit 9\necho '{{\"number\":7,\"state\":\"OPEN\",\"url\":\"https://github.com/o/r/pull/7\",\"statusCheckRollup\":[]}}'\n",
+            calls.display()
+        )).unwrap();
+        fs::set_permissions(&gh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let want = Some(json!({"number":7,"state":"open","url":"https://github.com/o/r/pull/7"}));
+        assert_eq!(pr(&gh, &root, &root).await, want);
+        assert_eq!(pr(&gh, &root, &root).await, want, "cached");
+        assert_eq!(fs::read_to_string(&calls).unwrap().lines().count(), 1);
+        // A failing gh (signed out, no PR) is no PR.
+        let failing = root.join("gh-fails");
+        fs::write(&failing, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&failing, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        git(&root, &["checkout", "-q", "-b", "feat/y"]).await;
+        assert_eq!(pr(&failing, &root, &root).await, None);
+    }
+
+    #[test]
+    fn local_sessions_signals_count_live_subagents_and_travel_only_to_a_relay_that_reads_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("agent-a.jsonl");
+        fs::write(&live, "{\"isSidechain\":true}\n").unwrap();
+        let mut m = super::super::transport::tests::test_mirror("s", "g");
+        m.subagents.known.insert("a".into(), super::super::Subagent { path: Some(live.clone()), ..Default::default() });
+        m.subagents.known.insert("b".into(), super::super::Subagent { path: Some(live.clone()), ended: true, ..Default::default() });
+        m.subagents.known.insert("c".into(), super::super::Subagent { path: Some(live), closed: true, ..Default::default() });
+        assert_eq!(running_agents(&m), 1);
+        m.native.provider = "codex".into();
+        m.native.socket = Some("/tmp/sock".into());
+        m.native.attention.agents = 2;
+        assert_eq!(running_agents(&m), 2, "the daemon's count, not the tailed files");
+        let mut entry = json!({});
+        add_if(false, &mut entry, "signals-test", &m);
+        assert_eq!(entry, json!({}));
+        ENTRIES.lock().unwrap().insert("signals-test".into(), Entry {
+            changes: Some(Changes { files: 1, additions: 3, deletions: 0 }),
+            pr: Some(json!({"number": 7})), ..Default::default()
+        });
+        add_if(true, &mut entry, "signals-test", &m);
+        assert_eq!(entry, json!({"agents": 2, "changes": {"files": 1, "additions": 3, "deletions": 0}, "pr": {"number": 7}}));
+        ENTRIES.lock().unwrap().remove("signals-test");
+    }
+}

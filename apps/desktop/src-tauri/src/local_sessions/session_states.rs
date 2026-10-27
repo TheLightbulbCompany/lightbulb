@@ -127,6 +127,7 @@ pub(super) fn read_features(listed: &Value) {
     READS_IDLE_STOPPED.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "endedIdleStopped")), SeqCst);
     READS_REMOTE_RESIZE.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "remoteResize")), SeqCst);
     READS_ATTENTION.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "sessionAttention")), SeqCst);
+    super::signals::read_features(listed);
 }
 
 /// What Claude says beyond `status` (`claude::Attention`), on a register or heartbeat entry, for a
@@ -489,7 +490,7 @@ mod tests {
         let mut native: NativeSession = serde_json::from_value(json!({"provider":"claude","conversation":"c","profile":"p",
             "process":{"pid":1,"birth_micros":1,"executable":"/x"},"transcript":null,"socket":null,"socket_inode":null,"version":"2.1.310",
             "restriction":null,"status":"idle"})).unwrap();
-        native.attention = super::super::claude::Attention { done: true, waiting_for: None, note: Some("press Resume".into()) };
+        native.attention = super::super::claude::Attention { done: true, waiting_for: None, note: Some("press Resume".into()), agents: 0 };
         let mut entry = json!({});
         add_attention_if(false, &mut entry, &native);
         assert_eq!(entry, json!({}));

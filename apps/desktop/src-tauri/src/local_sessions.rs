@@ -24,6 +24,7 @@ pub(crate) mod remote_input;
 pub(crate) mod resume;
 pub(crate) mod screen;
 mod session_states;
+mod signals;
 mod stats;
 mod start_links;
 mod transport;

@@ -208,6 +208,8 @@ export {
   hasHiddenChars,
   canonicalJson,
   pendingApproval,
+  pendingQuestion,
+  questionKeys,
   thinkingLabel,
   toolActivity,
   toolGroupSummary,
@@ -226,6 +228,8 @@ export type {
   ToolRowView,
   ToolTranscriptRow,
   TranscriptItem,
+  SessionQuestion,
+  TurnChanges,
   TranscriptRow,
 } from "./messaging/localSessionTranscript";
 export { sessionChanges, sessionPlan } from "./messaging/localSessionOverview";

@@ -425,7 +425,7 @@ mod tests {
         for name in ["dirty-before.txt", "untracked-before.txt"] {
             fs::File::options().write(true).open(root.join(name)).unwrap().set_modified(old).unwrap();
         }
-        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 1;
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64; // the start commit is no later than this
         assert_eq!(changes(&root, since, &BTreeSet::new()).await.unwrap(), Changes::default());
         // The session edits by shell (no edit event), commits, then creates a file.
         fs::write(root.join("old.txt"), "one\n2\nthree\nfour\n").unwrap();
@@ -448,7 +448,7 @@ mod tests {
         git(&root, &["add", "."]).await;
         git(&root, &["commit", "-qm", "start"]).await;
         fs::remove_file(root.join("before.txt")).unwrap();
-        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 1;
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64; // the start commit is no later than this
         // Deleted before the session was first seen: the baseline, never its change.
         let gone = deleted_before(&root, since, since + 1).await;
         assert_eq!(gone, BTreeSet::from(["before.txt".to_owned()]));
@@ -513,7 +513,7 @@ mod tests {
         git(&root, &["commit", "-qm", "start"]).await;
         git(&root, &["rm", "-q", "staged.txt"]).await;
         fs::remove_file(root.join("worktree.txt")).unwrap();
-        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 1;
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64; // the start commit is no later than this
         let gone = deleted_before(&root, since, since + 1).await;
         assert_eq!(gone, BTreeSet::from(["staged.txt".to_owned(), "worktree.txt".to_owned()]));
         assert_eq!(changes(&root, since, &gone).await.unwrap(), Changes::default());

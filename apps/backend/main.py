@@ -20,7 +20,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core.auth import get_current_user
 from core.config import settings
@@ -1138,6 +1138,13 @@ async def mcp_protected_resource_metadata():
         "scopes_supported": ["user:org:read", READ_SCOPE, WRITE_SCOPE],
         "bearer_methods_supported": ["header"],
     }
+
+
+@app.get("/.well-known/openai-apps-challenge", include_in_schema=False)
+async def openai_apps_challenge():
+    if not settings.OPENAI_APPS_CHALLENGE_TOKEN:
+        return PlainTextResponse("Not Found", status_code=404)
+    return PlainTextResponse(settings.OPENAI_APPS_CHALLENGE_TOKEN)
 
 
 # Keep this last: the SDK serves /mcp and its root well-known OAuth metadata.

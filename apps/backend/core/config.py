@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     # CDK service-stack environment block per environment.
     PUBLIC_API_BASE: str = "http://localhost:8000"
 
+    # OpenAI's plugin portal token, served at /.well-known/openai-apps-challenge to prove we own the
+    # MCP host. Public by design. Empty: the path 404s. CDK sets it from OPENAI_APPS_CHALLENGE_TOKEN_{ENV}.
+    OPENAI_APPS_CHALLENGE_TOKEN: str = ""
+
     @property
     def frontend_host(self) -> str:
         """Hostname FRONTEND_URL is served from (e.g. ``dev.isol8.co``)."""

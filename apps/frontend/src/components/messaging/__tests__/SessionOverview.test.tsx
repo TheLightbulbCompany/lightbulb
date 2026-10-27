@@ -36,3 +36,11 @@ it("offers the reader's action on the changes inside What changed", () => {
   render(<SessionOverview events={events} changesAction={<button type="button">Commit &amp; open PR</button>} />);
   expect(screen.getByRole("button", { name: "Commit & open PR" })).toBeInTheDocument();
 });
+
+it("shows git's count from the Mac when no edit event names a file, and says it is from git", () => {
+  render(<SessionOverview events={[ev(1, { kind: "text", role: "assistant", text: "hi" })]} git={{ files: 3, additions: 12, deletions: 4 }} />);
+  expect(screen.getByText("What changed · 3 files", { exact: false })).toBeInTheDocument();
+  expect(screen.getByText("+12")).toBeInTheDocument();
+  expect(screen.getByText("−4")).toBeInTheDocument();
+  expect(screen.getByText("from git, since the session started")).toBeInTheDocument();
+});

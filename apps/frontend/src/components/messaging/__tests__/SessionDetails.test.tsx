@@ -132,6 +132,13 @@ it("Changes shows the plan and the files when the events carry them, and says so
   expect(screen.getByText(/^No plan or file changes yet\./)).toBeInTheDocument();
 });
 
+it("Changes shows git's summary when the Mac counted changes the transcript has no edits for", () => {
+  render(<Details tab="changes" s={session({ changes: { files: 2, additions: 5, deletions: 1 } })} events={[ev(1, { kind: "text", role: "assistant", text: "hi" })]} />);
+  expect(screen.queryByText(/No plan or file changes yet/)).not.toBeInTheDocument();
+  expect(screen.getByText("What changed · 2 files", { exact: false })).toBeInTheDocument();
+  expect(screen.getByText("from git, since the session started")).toBeInTheDocument();
+});
+
 it("switches tabs from the tab list", async () => {
   render(<Details tab="about" />);
   expect(screen.queryByRole("switch")).not.toBeInTheDocument();

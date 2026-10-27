@@ -3,7 +3,7 @@ import path from "node:path";
 import { act, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
-import { RoomDirectory } from "../RoomDirectory";
+import { RoomDirectory, type RoomDirectoryProps } from "../RoomDirectory";
 import type { DirectoryParticipant, DirectoryRoom } from "../types";
 
 const openInviteDialog = vi.hoisted(() => vi.fn());
@@ -845,9 +845,9 @@ it("pins, archives, unarchives and marks a session unread from its row menu, kep
   const onMarkSessionUnread = vi.fn();
   const sessions = [
     { session: makeSession("a", "Live work", "busy"), ownerName: "Alice", own: false, owner: aliceFace },
-    { session: makeSession("b", "Old work", "ended"), ownerName: "Alice", own: false, owner: alice, unread: "finished" as const },
+    { session: makeSession("b", "Old work", "ended"), ownerName: "Alice", own: false, owner: aliceFace, unread: "finished" as const },
   ];
-  const props = { ownerScopeId: "org-marks", sections: [], state: "ready" as const, rooms: [base], participants: [], onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSelectSession: vi.fn(), onMarkSessionUnread, sessions };
+  const props: RoomDirectoryProps = { ownerScopeId: "org-marks", sections: [], state: "ready" as const, rooms: [base], participants: [], onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSelectSession: vi.fn(), onMarkSessionUnread, sessions };
   const { unmount } = render(<RoomDirectory {...props} />);
   const section = () => screen.getByRole("region", { name: "Sessions" });
   const titles = () => within(section()).getAllByRole("button", { name: /^Open / }).map((b) => b.getAttribute("aria-label")!.match(/(Live|Old) work/)![0]);

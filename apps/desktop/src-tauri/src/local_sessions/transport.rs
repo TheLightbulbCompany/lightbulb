@@ -2520,8 +2520,7 @@ impl Host {
             // conversation (`/resume` and `/clear` switch it in place). A full verification runs
             // `claude --version` and lsof (1-3 s) and held every End back by that much.
             match end_identity(&mirror.native) {
-                Some(native) if native.provider == "claude" && native.job.is_none()
-                    && !claude::still_registered(&self.home, native.process.pid, &native.conversation) => {
+                Some(native) if end_moved(&self.home, &crate::holder::manager::socket_dir(), &native) => {
                     *why = "session moved";
                     return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
                 }
@@ -3034,6 +3033,20 @@ fn registration(mirror: &Mirror) -> Value {
 /// verified before (pid and start time). The cheap half of `verify_identity`.
 fn end_identity(native: &NativeSession) -> Option<NativeSession> {
     (native.status != "ended" && native.restriction.is_none()).then(|| super::hooked::verify(native).ok()).flatten()
+}
+
+/// Whether the process an End would stop left this row's conversation in place: an interactive
+/// Claude switched by `/resume` or `/clear` (its pid record names another), or a held Codex TUI
+/// switched by `/new` or `/resume` (its holder is bound to another thread). One small file each;
+/// no record, no evidence.
+fn end_moved(home: &Path, holders: &Path, native: &NativeSession) -> bool {
+    match native.provider.as_str() {
+        "claude" => native.job.is_none() && !claude::still_registered(home, native.process.pid, &native.conversation),
+        "codex" => native.holder.as_deref()
+            .and_then(|id| crate::holder::manager::bound_thread(holders, id))
+            .is_some_and(|thread| thread != native.conversation),
+        _ => false,
+    }
 }
 
 /// `Host::verify` in production: `verify_identity`, timed.
@@ -3789,6 +3802,36 @@ pub(super) mod tests {
         found.holder = Some("cd34ab12".into());
         host.observe(vec![found], &BTreeSet::new()).unwrap();
         assert!(!host.mirrors[&key].shared, "its person stopped sharing it");
+    }
+
+    #[test]
+    fn local_sessions_end_sees_a_conversation_that_moved_out_of_its_process() {
+        let home = tempfile::tempdir().unwrap();
+        let holders = home.path().join("h");
+        fs::create_dir_all(home.path().join(".claude/sessions")).unwrap();
+        fs::create_dir_all(&holders).unwrap();
+        const THREAD: &str = "019a1b2c-0000-7000-8000-000000000000";
+        const OTHER: &str = "019a1b2c-0000-7000-8000-0000000000ff";
+        let mut codex = test_native(THREAD);
+        codex.provider = "codex".into();
+        codex.holder = Some("c0dec0de".into());
+        assert!(!end_moved(home.path(), &holders, &codex), "no bound thread: no evidence");
+        fs::write(holders.join("c0dec0de.thread"), THREAD).unwrap();
+        assert!(!end_moved(home.path(), &holders, &codex));
+        fs::write(holders.join("c0dec0de.thread"), OTHER).unwrap();
+        assert!(end_moved(home.path(), &holders, &codex), "/new or /resume bound the holder to another thread");
+        codex.holder = None;
+        assert!(!end_moved(home.path(), &holders, &codex), "not held: the full verification decides");
+
+        let mut claude = test_native(THREAD);
+        claude.provider = "claude".into();
+        let record = home.path().join(format!(".claude/sessions/{}.json", claude.process.pid));
+        fs::write(&record, json!({"sessionId": THREAD}).to_string()).unwrap();
+        assert!(!end_moved(home.path(), &holders, &claude));
+        fs::write(&record, json!({"sessionId": OTHER}).to_string()).unwrap();
+        assert!(end_moved(home.path(), &holders, &claude));
+        claude.job = Some("1234abcd".into());
+        assert!(!end_moved(home.path(), &holders, &claude), "a job is stopped by its id");
     }
 
     #[tokio::test]

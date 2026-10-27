@@ -54,8 +54,16 @@ DEVELOPER_CONFIGURATION = {"developer": {"capabilities": {"projects": {"requeste
 DEVELOPER_INCLUDE = ["configuration.developer", "requirements", "identity"]
 
 
+def developer_config_on() -> bool:
+    """The rail being on implies the developer configuration: a workflow is
+    refused until the `projects` capability is active, so an account created
+    without it could never satisfy the gate. The explicit flag stays so the
+    configuration can be requested before the rail is switched on."""
+    return bool(settings.STRIPE_PROJECTS_DEVELOPER_CONFIG or settings.STRIPE_PROVISIONING_ENABLED)
+
+
 def account_configuration() -> dict:
-    if not settings.STRIPE_PROJECTS_DEVELOPER_CONFIG:
+    if not developer_config_on():
         return dict(MERCHANT_CONFIGURATION)
     return {**MERCHANT_CONFIGURATION, **DEVELOPER_CONFIGURATION}
 
@@ -64,7 +72,7 @@ def onboarding_configurations() -> list[str]:
     """A return to `return_url` proves only that the browser came back — "it
     doesn't prove that the projects capability is active" (guide). The
     workflow's eligibility read is the truth."""
-    return ["merchant", "developer"] if settings.STRIPE_PROJECTS_DEVELOPER_CONFIG else ["merchant"]
+    return ["merchant", "developer"] if developer_config_on() else ["merchant"]
 
 
 def accounts_v2_options(**extra) -> dict:
@@ -118,7 +126,7 @@ async def create_company_account(*, owner_id: str, email: str, company_name: str
     # v2 rejects an empty contact_email; Stripe collects one in onboarding.
     if email:
         params["contact_email"] = email
-    if settings.STRIPE_PROJECTS_DEVELOPER_CONFIG:
+    if developer_config_on():
         params["include"] = list(DEVELOPER_INCLUDE)
     account = await asyncio.to_thread(
         client.v2.core.accounts.create,
@@ -128,25 +136,56 @@ async def create_company_account(*, owner_id: str, email: str, company_name: str
     return account.id
 
 
-async def create_company_onboarding_link(*, account_id: str) -> str:
-    """Single-use, ~10-minute hosted onboarding link (v2). Mint per request."""
+async def create_company_onboarding_link(*, account_id: str, update: bool = False) -> str:
+    """Single-use, ~10-minute hosted link (v2). Mint per request.
+
+    ``update`` is for an account that already finished onboarding once: the
+    guide's ``account_update`` use case is "subsequent corrections", and it
+    takes no ``configurations`` list."""
     client = _client()
+    urls = {"refresh_url": settings.STRIPE_COMPANY_REFRESH_URL, "return_url": settings.STRIPE_COMPANY_RETURN_URL}
+    use_case = (
+        {"type": "account_update", "account_update": urls}
+        if update
+        else {
+            "type": "account_onboarding",
+            "account_onboarding": {"configurations": onboarding_configurations(), **urls},
+        }
+    )
     link = await asyncio.to_thread(
         client.v2.core.account_links.create,
-        {
-            "account": account_id,
-            "use_case": {
-                "type": "account_onboarding",
-                "account_onboarding": {
-                    "configurations": onboarding_configurations(),
-                    "refresh_url": settings.STRIPE_COMPANY_REFRESH_URL,
-                    "return_url": settings.STRIPE_COMPANY_RETURN_URL,
-                },
-            },
-        },
+        {"account": account_id, "use_case": use_case},
         options=accounts_v2_options(),
     )
     return link.url
+
+
+async def request_projects_capability(*, account_id: str) -> None:
+    """Add the developer configuration to an account created without it
+    (Accounts v2: a configuration is added by updating the account). The link
+    that follows then collects whatever the new capability makes due. Safe to
+    repeat: it only sets `requested: true`."""
+    await asyncio.to_thread(
+        _client().v2.core.accounts.update,
+        account_id,
+        {"configuration": DEVELOPER_CONFIGURATION},
+        options=accounts_v2_options(),
+    )
+
+
+async def projects_ready(*, account_id: str) -> bool:
+    """The `projects` capability is active — the guide's gate to provisioning
+    ("Don't treat the Account Link redirect alone as proof of completion").
+    Outstanding requirements are not read here: the workflow's eligibility
+    read refuses on those, and this answers the one thing the card can fix."""
+    account = await asyncio.to_thread(
+        _client().v2.core.accounts.retrieve,
+        account_id,
+        {"include": ["configuration.developer", "requirements"]},
+        options=accounts_v2_options(),
+    )
+    caps = ((account.get("configuration") or {}).get("developer") or {}).get("capabilities") or {}
+    return (caps.get("projects") or {}).get("status") == "active"
 
 
 def build_connect_authorize_url(*, state: str) -> str:

@@ -26,10 +26,10 @@ Repeating it is how an owner ends up paying for two.
 
 | `error_code` | what happened | is a Stripe object at risk? |
 |---|---|---|
-| `uncertain_write` | a `POST` to create a project, an account request or a resource timed out or 5xx'd | **YES — this is the one the rule is for** |
+| `uncertain_write` | a `POST` to create a project, a provider connection request or a resource timed out or 5xx'd | **YES — this is the one the rule is for** |
 | `payment_method_required` | the create was refused because the account has no payment profile | no |
 | `unrenderable_schema` | the provider asked for a form shape our constrained renderer cannot draw | no |
-| `credentials_not_found` | the resource reported `complete`, but `environment_info` had no entry for its id | the resource exists |
+| `credentials_not_found` | the resource reported `complete`, but `reveal_access_configuration` returned no configuration | the resource exists |
 | `poll_deadline_exceeded` | the resource stayed `pending` past the 15-minute deadline | the resource exists |
 | `ambiguous_provider_connection` | more than one `active` connection for the provider; the write API cannot pick | no |
 | `no_company` | a later-leg card could not be filed — the owner has no Paperclip board | ids may exist |
@@ -44,7 +44,7 @@ aws dynamodb get-item --profile isol8-admin \
 ```
 
 What matters: `owner_id`, `state`, `error_code`, `provider_id`,
-`service_ref`, `resource_name`, `account_request_id`, `resource_id`, and the
+`service_ref`, `resource_name`, `provider_connection_request_id` (dev rows: `account_request_id`), `resource_id`, and the
 owner's `company_stripe_account_id` / `company_stripe_project_id` (on the
 BILLING row, `lightbulb-prod-billing-accounts`).
 
@@ -63,8 +63,8 @@ H=(-H "Authorization: Bearer $STRIPE_SECRET_KEY"
 # which is unique per workflow (`{service_id}-{last 6 of workflow_id}`).
 curl -sS "${H[@]}" "https://api.stripe.com/v2/provisioning/resources?project=proj_…"
 
-# One account request, when the row carries an id.
-curl -sS "${H[@]}" "https://api.stripe.com/v2/provisioning/account_requests/acr_…"
+# One provider connection request, when the row carries an id.
+curl -sS "${H[@]}" "https://api.stripe.com/v2/provisioning/provider_connection_requests/…"
 
 # One resource, when the row carries an id.
 curl -sS "${H[@]}" "https://api.stripe.com/v2/provisioning/resources/res_…"
@@ -110,8 +110,8 @@ or Friday checking her request. It polls the resource, binds the credentials and
 goes `active` over the following reads. No deploy and no restart is involved;
 if nobody is looking, nothing moves, so tell the owner to open the page.
 
-An `account_request_id` that turned out to exist goes back the same way, with
-`account_request_id` set and the state `connecting_provider`.
+A `provider_connection_request_id` that turned out to exist goes back the same way, with
+`provider_connection_request_id` set and the state `connecting_provider`.
 
 ## Step 4 — tell the owner
 

@@ -2,10 +2,10 @@
 
 Allowlisted private preview; every request carries
 ``Stripe-Version: 2026-09-30.preview`` and "the contract can change"
-(spec.txt header; guide's Private preview note). Docs check 2026-10-16:
-docs.stripe.com/provisioning still says private preview, allowlisted, and now
-names ``2026-09-30.preview`` (not ``unsafe-development``); docs.stripe.com/projects
-is the CLI page and carries no version or date. The platform key acts on every
+(guide's Private preview note: tolerate new response fields, use returned enum
+values). Docs check 2026-10-27: docs.stripe.com/provisioning is the contract
+this module follows (provider connection requests, ``livemode`` on resources
+and payment, ``reveal_access_configuration``). The platform key acts on every
 connected account by changing one header, so it never leaves this process and
 this module is the ONLY place that speaks to ``/v2/provisioning``.
 
@@ -109,7 +109,7 @@ class TransientProvisioningError(ProvisioningError):
     """The call may not have been decided: a 5xx from the preview, a 429, or a
     transport timeout with the request possibly in flight.
 
-    A caller may re-READ (poll the resource / account request / payment
+    A caller may re-READ (poll the resource / provider connection request / payment
     profile) but must NEVER re-POST — a retried create is a second resource the
     owner pays for. Subclasses ProvisioningError so `except ProvisioningError`
     still catches everything.
@@ -247,15 +247,11 @@ async def paginate(account_id: str, path: str, *, params: dict | None = None, li
     return rows
 
 
-# --- 4.1 Projects, identity, access ----------------------------------------
+# --- 4.1 Eligibility, projects ---------------------------------------------
 
 
 async def eligibility(account_id: str) -> dict:
     return await request(account_id, "get", f"{BASE}/eligibility")
-
-
-async def identity(account_id: str, *, project: str | None = None) -> dict:
-    return await request(account_id, "get", f"{BASE}/identity", params={"project": project})
 
 
 async def create_project(account_id: str, *, name: str, catalog: str | None = None) -> dict:
@@ -264,10 +260,6 @@ async def create_project(account_id: str, *, name: str, catalog: str | None = No
     if catalog:
         body["catalog"] = catalog
     return await request(account_id, "post", f"{BASE}/projects", body=body)
-
-
-async def list_projects(account_id: str) -> list[dict]:
-    return await paginate(account_id, f"{BASE}/projects", params={"limit": 100})
 
 
 # --- 4.2 Catalog (account context) -----------------------------------------
@@ -328,26 +320,28 @@ async def list_provider_connections(account_id: str) -> list[dict]:
     return await paginate(account_id, f"{BASE}/provider_connections", params={"limit": 100})
 
 
-async def create_account_request(account_id: str, *, provider: str, project_id: str | None = None) -> dict:
-    """`provider` is the current field; `project_id` is the documented
-    exception where a `_id` suffix is still current (spec.txt 4.3: "project_id
-    is the current Account-request field"). PKCE fields are omitted: "Use PKCE
-    fields only if your integration owns the OAuth callback"."""
+async def create_provider_connection_request(account_id: str, *, provider: str, project: str | None = None) -> dict:
+    """`provider` is the catalog provider id. `status` comes back as
+    `requested | pending_auth | needs_information | complete | error`, and
+    `complete` can arrive on this very response (an immediate connect, no
+    redirect). PKCE fields are omitted: the platform takes no callback."""
     body: dict = {"provider": provider, "configuration": {}}
-    if project_id:
-        body["project_id"] = project_id
-    return await request(account_id, "post", f"{BASE}/account_requests", body=body)
+    if project:
+        body["project"] = project
+    return await request(account_id, "post", f"{BASE}/provider_connection_requests", body=body)
 
 
-async def get_account_request(account_id: str, request_id_: str) -> dict:
-    return await request(account_id, "get", f"{BASE}/account_requests/{request_id_}")
+async def get_provider_connection_request(account_id: str, request_id_: str) -> dict:
+    return await request(account_id, "get", f"{BASE}/provider_connection_requests/{request_id_}")
 
 
-async def submit_account_request_information(account_id: str, request_id_: str, *, information: dict) -> dict:
+async def submit_provider_connection_request_information(
+    account_id: str, request_id_: str, *, information: dict
+) -> dict:
     return await request(
         account_id,
         "post",
-        f"{BASE}/account_requests/{request_id_}/submit_information",
+        f"{BASE}/provider_connection_requests/{request_id_}/submit_information",
         body={"information": information},
     )
 
@@ -363,13 +357,17 @@ async def create_resource(
     project: str | None,
     name: str,
     configuration: dict,
+    livemode: bool,
     catalog: str | None = None,
 ) -> dict:
+    """`livemode` is required and always sent: Stripe defaults an omitted one to
+    TRUE, which creates live provider infrastructure and real charges."""
     body: dict = {
         "service_ref": service_ref,
         "provider": provider,
         "name": name,
         "configuration": configuration,
+        "livemode": livemode,
     }
     if project:
         body["project"] = project
@@ -391,10 +389,6 @@ async def submit_resource_information(account_id: str, resource_id: str, *, subm
     )
 
 
-async def list_resources(account_id: str, *, project: str | None = None) -> list[dict]:
-    return await paginate(account_id, f"{BASE}/resources", params={"project": project, "limit": 100})
-
-
 async def remove_resource(account_id: str, resource_id: str) -> dict:
     """Asks the Provider to deprovision the underlying infrastructure. Only
     ever reached from the owner's own separately confirmed click (spec §3.6)."""
@@ -412,30 +406,21 @@ async def rotate_credentials(account_id: str, resource_id: str) -> dict:
 # --- 4.5 Credentials --------------------------------------------------------
 
 
-async def environment_info(account_id: str, *, project: str, provider: str, service: str, reveal: bool) -> dict:
-    """`reveal` and `scope` are non-optional proto fields, so both are always
-    sent. Scope is SERVICE: the API "can scope by all, Provider, or Service,
-    but not by one Resource", so the caller still selects by `resource_id`."""
-    return await request(
-        account_id,
-        "get",
-        f"{BASE}/environment_info",
-        params={
-            "reveal": reveal,
-            "scope": "SERVICE",
-            "project": project,
-            "provider": provider,
-            "service": service,
-        },
-    )
+async def reveal_access_configuration(account_id: str, resource_id: str) -> dict:
+    """The resource's current provider-issued credentials (`configuration`).
+    A SECRET: no body, never logged (request logs carry no bodies), and only
+    reached from the workflow's bind step. Not a rotation."""
+    return await request(account_id, "post", f"{BASE}/resources/{resource_id}/reveal_access_configuration")
 
 
 # --- 4.6 Payment ------------------------------------------------------------
 
 
 async def payment_profile(account_id: str) -> dict:
-    """A missing profile returns `not_found` (spec.txt 4.6)."""
-    return await request(account_id, "get", f"{BASE}/payment_profile")
+    """A missing profile returns `not_found`. `livemode` is a query parameter
+    on every read: a test-mode profile 404s without it, so a successful write
+    looks like it silently failed."""
+    return await request(account_id, "get", f"{BASE}/payment_profile", params={"livemode": is_livemode()})
 
 
 def _usage_limits(max_amount: int, currency: str, recurring_interval: str) -> dict:
@@ -458,62 +443,11 @@ async def create_payment_method_request(
         account_id,
         "post",
         f"{BASE}/payment_method_requests",
-        body={"usage_limits": _usage_limits(max_amount, currency, recurring_interval)},
+        body={"livemode": is_livemode(), "usage_limits": _usage_limits(max_amount, currency, recurring_interval)},
     )
 
 
-# --- 4.7 Deep links + usage -------------------------------------------------
-
-
-async def create_deep_link(
-    account_id: str,
-    *,
-    provider: str,
-    project: str | None = None,
-    purpose: str = "dashboard",
-    catalog: str | None = None,
-) -> dict:
-    """Short-lived and pre-authenticated: "Present it immediately and do not
-    persist, cache, or log it." Only call it for a purpose the Provider
-    advertises in `deep_link_purposes`."""
-    body: dict = {"purpose": purpose, "provider": provider}
-    if project:
-        body["project"] = project
-    if catalog:
-        body["catalog"] = catalog
-    return await request(account_id, "post", f"{BASE}/deep_links", body=body)
-
-
-async def charges(
-    account_id: str,
-    *,
-    start_time: str,
-    end_time: str,
-    livemode: bool,
-    project: str | None = None,
-    limit: int | None = None,
-    page: str | None = None,
-) -> dict:
-    """`start_time`, `end_time` and `livemode` are non-optional current proto
-    fields (spec.txt 4.7).
-
-    NOT walkable with `paginate`: this endpoint answers `usage[]`, not the
-    `v2.list` `data[]` every other list route returns, so `paginate` would
-    collect nothing. Pass `page` from the response's `next_page_url` — or add
-    a usage-shaped walker the day a fleet outgrows one page."""
-    return await request(
-        account_id,
-        "get",
-        f"{BASE}/charges",
-        params={
-            "start_time": start_time,
-            "end_time": end_time,
-            "livemode": livemode,
-            "project": project,
-            "limit": limit,
-            "page": page,
-        },
-    )
+# --- 4.7 Mode -------------------------------------------------
 
 
 def is_livemode() -> bool:
@@ -525,29 +459,3 @@ def is_livemode() -> bool:
     guide is explicit that a TESTING catalog can still make real charges.
     """
     return settings.STRIPE_SECRET_KEY.startswith(("sk_live_", "rk_live_"))
-
-
-async def charges_usage(
-    account_id: str,
-    *,
-    start_time: str,
-    end_time: str,
-    livemode: bool,
-    project: str | None = None,
-    limit_pages: int = 5,
-) -> tuple[list[dict], bool]:
-    """Every ``usage`` row in the window, and whether the walk stopped early.
-
-    The usage-shaped walker ``charges`` promises: ``paginate`` collects nothing
-    here because this endpoint answers ``usage[]`` rather than ``data[]``.
-    Pages are followed by ``next_page_url`` verbatim, never constructed.
-    """
-    page = await charges(account_id, start_time=start_time, end_time=end_time, livemode=livemode, project=project)
-    rows: list[dict] = list(page.get("usage") or [])
-    for _ in range(limit_pages - 1):
-        nxt = page.get("next_page_url")
-        if not nxt:
-            return rows, False
-        page = await request(account_id, "get", _relative(nxt))
-        rows.extend(page.get("usage") or [])
-    return rows, bool(page.get("next_page_url"))

@@ -32,6 +32,9 @@ export type CompanyStripeStatus = {
   /** Connect is only offered while the provisioning rail is live — it is the
    *  one thing an OAuth grant does that a pasted key cannot. */
   provisioning_enabled: boolean;
+  /** false = the account exists but Stripe has not activated its `projects`
+   *  capability yet (the owner owes onboarding); null = not asked. */
+  projects_ready?: boolean | null;
 };
 
 /** The six read permissions the Money surface needs — shown so nobody has to
@@ -293,6 +296,13 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 </dd>
               </div>
             </dl>
+            {data.projects_ready === false && data.source !== "created" && (
+              <p className="text-sm text-[var(--midnight-soft)]">
+                {data.source === "api_key"
+                  ? "Setting up services needs a Stripe account Lightbulb created or connected — a pasted API key can't enable it."
+                  : "Stripe hasn't enabled Projects on this account. Finish setup in your Stripe Dashboard."}
+              </p>
+            )}
             {data.source === "connected" && !data.details_submitted && (
               // "Onboarding incomplete" names the problem; this names the fix.
               // A connected account is finished in Stripe's own Dashboard —
@@ -317,14 +327,14 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                   Open Stripe Dashboard
                 </a>
               )}
-              {canManage && data.source === "created" && !data.charges_enabled && (
+              {canManage && data.source === "created" && (!data.charges_enabled || data.projects_ready === false) && (
                 <EditorialButton
                   type="button"
                   size="sm"
                   disabled={busy}
                   onClick={() => openWith(async () => (await onboardingLink()).onboarding_url)}
                 >
-                  Finish onboarding
+                  {data.projects_ready === false ? "Finish Stripe setup" : "Finish onboarding"}
                 </EditorialButton>
               )}
               {canManage && (

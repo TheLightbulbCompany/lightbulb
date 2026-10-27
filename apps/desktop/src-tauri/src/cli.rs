@@ -246,7 +246,7 @@ pub fn ask_app(path: &Path, request: &Value) -> Result<Started, String> {
 }
 
 use crate::holder::model::strip_queries;
-use crate::holder::protocol::{encode, read_frame, split_offset, DETACHED, EXIT, HELLO, INPUT, OUTPUT, RESIZE, SNAPSHOT};
+use crate::holder::protocol::{encode, read_frame, split_offset, DETACHED, END, EXIT, HELLO, INPUT, OUTPUT, RESIZE, SNAPSHOT};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::OnceLock;
 
@@ -435,8 +435,9 @@ fn restore() {
     }
 }
 
-/// SIGWINCH resizes the session; SIGINT, SIGTERM and SIGHUP (the terminal closed) detach and
-/// leave it running. Blocked before any thread starts, so only `sigwait` receives them.
+/// SIGWINCH resizes the session. SIGHUP (the terminal closed) ends it, as closing the terminal
+/// ends the provider run directly (`signal_frame`). SIGINT and SIGTERM detach and leave it
+/// running. Blocked before any thread starts, so only `sigwait` receives them.
 fn block_signals() -> libc::sigset_t {
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
@@ -446,6 +447,22 @@ fn block_signals() -> libc::sigset_t {
         }
         libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
         set
+    }
+}
+
+/// The frame a signal sends the holder: SIGWINCH the window's new size, SIGHUP END. Closing the
+/// terminal ends the session (it never runs on headless with nothing to say so); a holder of a
+/// session the provider's own daemon hosts ends only its client, and the job runs on in the
+/// background, as Claude's own terminal does.
+fn signal_frame(sig: libc::c_int, (cols, rows): (u16, u16)) -> Option<Vec<u8>> {
+    match sig {
+        libc::SIGWINCH => {
+            let mut size = cols.to_be_bytes().to_vec();
+            size.extend_from_slice(&rows.to_be_bytes());
+            Some(encode(RESIZE, &size))
+        }
+        libc::SIGHUP => Some(encode(END, b"")),
+        _ => None,
     }
 }
 
@@ -481,12 +498,10 @@ fn attach(socket: &Path, (cols, rows): (u16, u16), signals: libc::sigset_t) -> i
         if unsafe { libc::sigwait(&signals, &mut sig) } != 0 {
             continue;
         }
-        if sig == libc::SIGWINCH {
-            let (cols, rows) = window_size();
-            let mut size = cols.to_be_bytes().to_vec();
-            size.extend_from_slice(&rows.to_be_bytes());
-            let _ = resize.lock().unwrap().write_all(&encode(RESIZE, &size));
-        } else {
+        if let Some(frame) = signal_frame(sig, if sig == libc::SIGWINCH { window_size() } else { (0, 0) }) {
+            let _ = resize.lock().unwrap().write_all(&frame);
+        }
+        if sig != libc::SIGWINCH {
             STOPPED_BY.store(sig, Ordering::SeqCst);
             let _ = stopper.shutdown(std::net::Shutdown::Both);
             return;
@@ -511,6 +526,7 @@ fn attach(socket: &Path, (cols, rows): (u16, u16), signals: libc::sigset_t) -> i
         Outcome::Moved => (0, Some("● This session was opened in another terminal. It keeps running in the Lightbulb app.")),
         Outcome::Lost => match STOPPED_BY.load(Ordering::SeqCst) {
             0 => (1, Some("● Lost this session's terminal. If it is still running, it is in the Lightbulb app.")),
+            libc::SIGHUP => (128 + libc::SIGHUP, None),
             sig => (128 + sig, Some("● Detached. The session keeps running in the Lightbulb app.")),
         },
     };
@@ -826,6 +842,14 @@ mod tests {
         assert_eq!(shared_line(Some("Acme")), "● Shared with Acme.");
         assert_eq!(shared_line(Some("Ev\x1b]0;pwned\x07il")), "● Shared with Ev]0;pwnedil.");
         assert_eq!(shared_line(None), "● Shared with your Lightbulb workspace.");
+    }
+
+    #[test]
+    fn cli_closing_the_terminal_ends_the_session_and_a_resize_sends_the_size() {
+        assert_eq!(signal_frame(libc::SIGHUP, (0, 0)), Some(encode(crate::holder::protocol::END, b"")));
+        assert_eq!(signal_frame(libc::SIGWINCH, (120, 40)), Some(encode(crate::holder::protocol::RESIZE, &[0, 120, 0, 40])));
+        assert_eq!(signal_frame(libc::SIGINT, (0, 0)), None, "an interrupt detaches and leaves it running");
+        assert_eq!(signal_frame(libc::SIGTERM, (0, 0)), None);
     }
 
     #[test]

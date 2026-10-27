@@ -809,10 +809,9 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
     minute reads as zero events while people were watching real work in it (prod 2026-10-08). The
     two cannot be told apart from here, so a held session is listed; its owner can remove it.
 
-    A session its person ended on purpose (`endedOnPurpose`: End, the provider's own exit) is not
-    listed at all (owner ruling 2026-10-08), whatever it holds. It still counts as the later one of
-    its origin, so ending a fork on purpose does not put the origin back. One that ended any other
-    way (the process died, a closed terminal, a shutdown) stays, so its owner can resume it."""
+    A session its person ended on purpose (`endedOnPurpose`: End, the provider's own exit) stays
+    listed until its owner removes it (owner ruling 2026-10-27, superseding 2026-10-08's hide:
+    ended work vanished from Recent minutes after End)."""
     ids = {(s.human_user_id, s.session_id) for s in found}
     empty = {
         (s.human_user_id, s.session_id)
@@ -828,7 +827,6 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
         s
         for s in found
         if (s.human_user_id, s.session_id) not in empty
-        and not s.ended_on_purpose
         and not (ended_empty(s.provider, s.status, s.latest_event_seq, s.control_unavailable_reason) and not s.was_held)
         and not (s.status in ("ended", "offline") and (s.human_user_id, s.session_id) in moved)
     ]
@@ -1382,8 +1380,8 @@ async def list_workspace_sessions(auth: Caller, *, include_ended: bool = False) 
 
 async def searchable_sessions(auth: AuthContext) -> dict[str, LocalSession]:
     """The sessions whose words this person may search: what the sessions list shows them
-    (their own in any sharing state, everyone else's while shared; not one ended on purpose
-    or continued by a fork), without the list's 7-day window on ended ones."""
+    (their own in any sharing state, everyone else's while shared; not one continued by a fork),
+    without the list's 7-day window on ended ones."""
     owner = resolve_owner_id(auth)
     if not await still_in_workspace(owner, auth.user_id):
         return {}
@@ -1410,7 +1408,6 @@ def still_searchable(row: dict | None, user_id: str) -> bool:
         row is not None
         and row.get("removedAt") is None
         and (not row.get("unshared") or row.get("humanUserId") == user_id)
-        and not (row.get("endedAt") is not None and row.get("endedReason") == ENDED_ON_PURPOSE)
     )
 
 
@@ -1463,8 +1460,6 @@ async def referenced_sessions(owner: str, members: list[dict], session_ids: list
                 or row.get("ownerId") != owner
                 or row.get("unshared")
                 or row.get("removedAt") is not None
-                # Ended on purpose: no list shows it, so an agent is not told of it either.
-                or (row.get("endedAt") is not None and row.get("endedReason") == ENDED_ON_PURPOSE)
                 or row.get("kind") == "background"
                 or row.get("humanUserId") not in humans
             ):

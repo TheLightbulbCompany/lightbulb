@@ -176,7 +176,9 @@ fn tag(resume: &Value, running: impl Fn(&str, &str) -> (String, Option<Option<Ho
 /// `daemon`: Codex's shared daemon runs. Then the holder is one more client that rejoins the thread
 /// the daemon runs (`codex::resume_on_daemon` loads it first, with this mode), so every client sees
 /// ONE thread. Only without a daemon is it a private `--no-daemon` writer.
-fn argv(program: &Path, w: &Wanted, own: bool, daemon: bool) -> Vec<String> {
+/// `kept`: the Claude permission mode the session last ran in (`last_claude_mode`). This Mac's own
+/// human resumes in it, as `claude --resume` in their terminal would; anyone else in plan.
+fn argv(program: &Path, w: &Wanted, own: bool, daemon: bool, kept: Option<&str>) -> Vec<String> {
     let plan = !own || w.mode != "default";
     let program = program.to_string_lossy().into_owned();
     if w.provider == "codex" && daemon {
@@ -210,9 +212,35 @@ fn argv(program: &Path, w: &Wanted, own: bool, daemon: bool) -> Vec<String> {
             "--resume".into(),
             w.conversation_id.clone(),
             "--permission-mode".into(),
-            (if plan { "plan" } else { "manual" }).into(),
+            (if plan { "plan" } else { claude_mode(kept) }).into(),
         ]
     }
+}
+
+/// The `--permission-mode` that keeps a session's last mode. Never one that skips every prompt
+/// (`bypassPermissions`, `dontAsk`): a click in a browser does not grant that; those, and a session
+/// with no mode on record, resume in `manual`.
+fn claude_mode(kept: Option<&str>) -> &'static str {
+    match kept {
+        Some("acceptEdits") => "acceptEdits",
+        Some("auto") => "auto",
+        Some("plan") => "plan",
+        _ => "manual",
+    }
+}
+
+/// The permission mode a Claude session last ran in: its transcript's last `permission-mode` row
+/// (Claude writes one whenever the mode is set or changed).
+fn last_claude_mode(claude_config: &Path, conversation: &str) -> Option<String> {
+    let transcript = super::snapshot::find_transcript(claude_config, conversation)?;
+    BufReader::new(fs::File::open(transcript).ok()?)
+        .lines()
+        .map_while(std::result::Result::ok)
+        .filter(|line| line.contains("\"permission-mode\""))
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .filter(|row| row["type"] == "permission-mode")
+        .filter_map(|row| row["permissionMode"].as_str().map(str::to_owned))
+        .last()
 }
 
 /// The folder the session last ran in, from its own transcript (Claude) or rollout (Codex), if it
@@ -359,7 +387,7 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
             // A daemon that is gone or stalled: the private writer it always was.
             Err(e) if e == codex::UNAVAILABLE => {
                 relay_log(&format!("{} resume: {e}, so it starts as a private --no-daemon writer", &w.session_id[..8]));
-                argv = self::argv(Path::new(&argv[0]), w, own, false);
+                argv = self::argv(Path::new(&argv[0]), w, own, false, None);
                 daemon = false;
             }
             Err(e) => {
@@ -506,7 +534,8 @@ fn prepare(w: &Wanted, own: bool, home: &Path) -> std::result::Result<Option<(Pa
     if w.provider == "codex" && !daemon {
         relay_log(&format!("{} resume: Codex's shared daemon is not running, so it starts as a private --no-daemon writer", &w.session_id[..8]));
     }
-    Ok(Some((folder, argv(&program, w, own, daemon))))
+    let kept = (w.provider == "claude").then(|| last_claude_mode(&claude_config(home), &w.conversation_id)).flatten();
+    Ok(Some((folder, argv(&program, w, own, daemon, kept.as_deref()))))
 }
 
 pub(crate) fn claude_config(home: &Path) -> PathBuf {
@@ -601,30 +630,52 @@ mod tests {
     /// forks it; a remote resume takes no permission flags (Codex refuses them).
     #[test]
     fn resume_argv_on_the_codex_daemon_rejoins_the_thread() {
-        let held = argv(Path::new("/bin/codex"), &wanted("codex", "default"), false, true);
+        let held = argv(Path::new("/bin/codex"), &wanted("codex", "default"), false, true, None);
         assert_eq!(held, ["/bin/codex", "--remote", "unix://", "-c", "check_for_update_on_startup=false", "resume", CONV]);
         assert!(codex::on_daemon(&held));
         assert!(!held.iter().any(|a| a == "--no-daemon" || a == "--sandbox" || a == "--ask-for-approval"));
         // Without a daemon it is the private writer it always was.
-        assert!(!codex::on_daemon(&argv(Path::new("/bin/codex"), &wanted("codex", "default"), false, false)));
-        assert_eq!(argv(Path::new("/bin/claude"), &wanted("claude", "default"), true, true)[1], "--resume");
+        assert!(!codex::on_daemon(&argv(Path::new("/bin/codex"), &wanted("codex", "default"), false, false, None)));
+        assert_eq!(argv(Path::new("/bin/claude"), &wanted("claude", "default"), true, true, None)[1], "--resume");
     }
 
     #[test]
     fn resume_argv_gives_anyone_but_this_macs_human_plan_mode() {
         let claude = Path::new("/bin/claude");
-        assert_eq!(argv(claude, &wanted("claude", "default"), false, false), ["/bin/claude", "--resume", CONV, "--permission-mode", "plan"]);
-        assert_eq!(argv(claude, &wanted("claude", "default"), true, false), ["/bin/claude", "--resume", CONV, "--permission-mode", "manual"]);
-        assert_eq!(argv(claude, &wanted("claude", "plan"), true, false)[4], "plan");
+        assert_eq!(argv(claude, &wanted("claude", "default"), false, false, None), ["/bin/claude", "--resume", CONV, "--permission-mode", "plan"]);
+        assert_eq!(argv(claude, &wanted("claude", "default"), true, false, None), ["/bin/claude", "--resume", CONV, "--permission-mode", "manual"]);
+        assert_eq!(argv(claude, &wanted("claude", "plan"), true, false, None)[4], "plan");
+        // The owner's own resume keeps the mode the session last ran in; never one that skips every prompt.
+        for (kept, flag) in [("auto", "auto"), ("acceptEdits", "acceptEdits"), ("plan", "plan"), ("default", "manual"), ("bypassPermissions", "manual"), ("dontAsk", "manual")] {
+            assert_eq!(argv(claude, &wanted("claude", "default"), true, false, Some(kept))[4], flag, "{kept}");
+        }
+        assert_eq!(argv(claude, &wanted("claude", "default"), false, false, Some("auto"))[4], "plan", "a teammate's resume is plan");
+        assert_eq!(argv(claude, &wanted("claude", "plan"), true, false, Some("auto"))[4], "plan", "a plan request stays plan");
         let codex = Path::new("/bin/codex");
         assert_eq!(
-            argv(codex, &wanted("codex", "default"), false, false),
+            argv(codex, &wanted("codex", "default"), false, false, None),
             ["/bin/codex", "--no-daemon", "--sandbox", "read-only", "--ask-for-approval", "on-request", "resume", CONV]
         );
-        assert_eq!(argv(codex, &wanted("codex", "default"), true, false)[3], "workspace-write");
+        assert_eq!(argv(codex, &wanted("codex", "default"), true, false, None)[3], "workspace-write");
         // A resumed Claude Code session runs in the classic renderer, as a new one does (owner ruling 2026-10-07).
         let classic = |argv: &[String]| crate::holder::run::provider_environment(vec![], argv).iter().any(|(k, _)| k == crate::holder::run::CLASSIC_RENDERER);
-        assert!(classic(&argv(claude, &wanted("claude", "default"), true, false)) && !classic(&argv(codex, &wanted("codex", "default"), true, false)));
+        assert!(classic(&argv(claude, &wanted("claude", "default"), true, false, None)) && !classic(&argv(codex, &wanted("codex", "default"), true, false, None)));
+    }
+
+    #[test]
+    fn resume_reads_the_mode_the_session_last_ran_in() {
+        let home = tempfile::tempdir().unwrap();
+        let claude = home.path().join(".claude");
+        let project = claude.join("projects/-work");
+        fs::create_dir_all(&project).unwrap();
+        assert_eq!(last_claude_mode(&claude, CONV), None, "no transcript");
+        fs::write(project.join(format!("{CONV}.jsonl")), concat!(
+            "{\"type\":\"permission-mode\",\"permissionMode\":\"default\"}\n",
+            "{\"type\":\"user\",\"permissionMode\":\"plan\",\"message\":\"\\\"permission-mode\\\"\"}\n",
+            "{\"type\":\"permission-mode\",\"permissionMode\":\"auto\"}\n",
+            "not json \"permission-mode\"\n",
+        )).unwrap();
+        assert_eq!(last_claude_mode(&claude, CONV).as_deref(), Some("auto"));
     }
 
     #[test]

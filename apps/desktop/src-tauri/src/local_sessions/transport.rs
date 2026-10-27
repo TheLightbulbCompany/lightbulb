@@ -2512,10 +2512,15 @@ impl Host {
             && anchor
                 .and_then(ClockAnchor::now)
                 .is_some_and(|now| cmd.authorized_at(now));
-        let native = if eligible {
-            self.verified(&mirror.native).await.ok()
-        } else {
+        let native = if !eligible {
             None
+        } else if cmd.kind == "end" {
+            // End needs only this process to be the one that was verified (its pid and start
+            // time), and the check before the stop below proves that again. A full verification
+            // runs `claude --version` and lsof (1-3 s) and held every End back by that much.
+            end_identity(&mirror.native)
+        } else {
+            self.verified(&mirror.native).await.ok()
         };
         let Some(native) = native else {
             *why = if eligible { "native session unverified" } else { "stale generation, expired, stopping or not shared" };
@@ -2602,17 +2607,27 @@ impl Host {
             }
             // ponytail: `claude stop` is awaited here, on the relay loop, for up to 5 s (a holder's
             // End for up to 2 s): no heartbeat goes meanwhile. Off-loop when that is ever seen.
-            let sent = match (native.holder.clone(), job) {
-                (Some(id), _) => tokio::task::spawn_blocking(move || crate::holder::manager::list().into_iter().find(|h| h.id == id)
-                    .map(|holder| crate::holder::manager::end(&holder)).is_some()).await.unwrap_or(false),
-                (None, Some(job)) => match provider_program(&self.home, "claude") {
+            // A background job is stopped by Claude's daemon even when a holder of ours shows it
+            // (`claude attach`): ending only that client left the job running with no row.
+            let claude_job = job.filter(|job| native.provider == "claude" && crate::holder::manager::attach_provider(job) == Some("claude"));
+            if let (Some(id), Some(_)) = (&native.holder, claude_job) {
+                crate::holder::manager::end_asked_now(id);
+            }
+            let sent = match (native.holder.clone(), claude_job) {
+                (_, Some(job)) => match provider_program(&self.home, "claude") {
                     Some(program) => native_output(&program, &["stop", job]).await.is_ok(),
                     None => false,
                 },
+                (Some(id), None) => tokio::task::spawn_blocking(move || crate::holder::manager::list().into_iter().find(|h| h.id == id)
+                    .map(|holder| crate::holder::manager::end(&holder)).is_some()).await.unwrap_or(false),
                 (None, None) => unsafe { libc::kill(native.process.pid as libc::pid_t, libc::SIGTERM) == 0 },
             };
-            if !sent && native.holder.is_none() {
-                crate::holder::manager::end_asked_forget(&cmd.session_id);
+            if !sent {
+                match (&native.holder, claude_job) {
+                    (None, _) => crate::holder::manager::end_asked_forget(&cmd.session_id),
+                    (Some(id), Some(_)) => crate::holder::manager::end_asked_forget(id),
+                    _ => {}
+                }
             }
             return journal.finish(&cmd.session_id, &cmd.request_id, sent.then(|| cmd.request_id.clone()), false);
         }
@@ -3005,6 +3020,12 @@ fn registration(mirror: &Mirror) -> Value {
         body["previousGeneration"] = json!(previous);
     }
     body
+}
+
+/// An End's check of the session it stops: still live and unrestricted, and its process the one
+/// verified before (pid and start time). The cheap half of `verify_identity`.
+fn end_identity(native: &NativeSession) -> Option<NativeSession> {
+    (native.status != "ended" && native.restriction.is_none()).then(|| super::hooked::verify(native).ok()).flatten()
 }
 
 /// `Host::verify` in production: `verify_identity`, timed.
@@ -3833,6 +3854,17 @@ pub(super) mod tests {
         assert_ne!(host.command(&failed, Some(&anchor)).await.unwrap().outcome, "applied");
         assert!(crate::holder::manager::end_asked(JOB).is_none(), "a later crash is not an end its person asked for");
         assert!(child.try_wait().unwrap().is_none());
+
+        // A job a holder of ours shows (`claude attach`, the page watching it): Claude's daemon
+        // still stops the job. Ending only that client left the job running with no row.
+        fs::write(bin.join("claude"), "#!/bin/sh\necho \"$@\" > \"$0.args\"\n").unwrap();
+        host.mirrors.get_mut("job-end").unwrap().native.holder = Some("a77ac4ed".into());
+        let mut shown = command("r7", "end", Value::Null, 5);
+        shown.session_id = JOB.into();
+        assert_eq!(host.command(&shown, Some(&anchor)).await.unwrap().outcome, "applied");
+        assert_eq!(fs::read_to_string(bin.join("claude.args")).unwrap().trim(), "stop 1234abcd");
+        assert!(crate::holder::manager::end_asked("a77ac4ed").is_some(), "the end that follows is one its person asked for");
+        crate::holder::manager::end_asked_forget("a77ac4ed");
         child.kill().unwrap();
         child.wait().unwrap();
     }

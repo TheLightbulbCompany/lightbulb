@@ -427,7 +427,9 @@ mod tests {
         }
         let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64; // the start commit is no later than this
         assert_eq!(changes(&root, since, &BTreeSet::new()).await.unwrap(), Changes::default());
-        // The session edits by shell (no edit event), commits, then creates a file.
+        // The session edits by shell (no edit event), commits, then creates a file. Its commit lands a
+        // second after the start: the reflog counts in whole seconds.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
         fs::write(root.join("old.txt"), "one\n2\nthree\nfour\n").unwrap();
         git(&root, &["commit", "-qam", "session"]).await;
         fs::write(root.join("new.txt"), "n1\nn2\nn3").unwrap();

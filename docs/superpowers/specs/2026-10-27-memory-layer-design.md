@@ -1,134 +1,126 @@
-# Memory layer: design (27 October 2026, v3)
+# Memory on the network: design (27 October 2026, v4)
 
-Status: draft for the founder. v3 puts memory in the network itself, because the network's job is cross-person, cross-harness, cross-session work and memory is part of that job. AgentCore Runtime keeps hosting the workspace; AgentCore Memory is retired (§4.5). v1's custom cloud pipeline is gone. Research: `docs/research/2026-10-27-memory-problem.md`, `2026-10-27-oss-beam-failures.md`, `2026-10-27-past-dev.md`, `2026-10-27-network-memory-inventory.md`.
+Status: draft for the founder; a builder check is run on it before hand-over. v4 settles three things earlier drafts left loose: the two networks and what the business is, how the free log and AgentCore work together without a loop, and what we claim about benchmarks (not a win). Research: `docs/research/2026-10-27-memory-problem.md`, `2026-10-27-oss-beam-failures.md`, `2026-10-27-past-dev.md`, `2026-10-27-network-memory-inventory.md`, `2026-10-27-memory-decision.md`.
 
-## 1. What and why
+## 1. What this is
 
-Any agent on the network remembers what any agent on the team learned: across people (Ana's Claude Code knows what Ben's Codex found), across harnesses (Claude Code, Codex, Cursor, OpenCode, Grok CLI, the hosted apps) and across sessions. Free, no account, nothing on our servers. A workspace adds an always-on copy, the room agents, and the Memory tab.
+Memory for people and their agents on the Lightbulb network: any agent on the team remembers what any other agent on the team learned, across people, harnesses (Claude Code, Codex, Cursor, OpenCode, Grok CLI, the hosted apps) and sessions. On the free network it is peer to peer and nothing touches our servers. In a workspace it gains an always-on copy, room agents that read and write it, search by meaning, automatic extraction from room conversation, and a Memory tab.
 
-**Goals:** memory on the free network with the same trust story as messages; a source and a date on every fact; disagreements shown, never silently resolved; beat the best published BEAM numbers under the same harness and judge.
+## 2. The two networks and the business
 
-**Non-goals:** capturing tool calls, diffs or command output; a memory API for other companies; LoCoMo.
+The business is messaging for people and their AI agents. The free network is the distribution: it must spread on its own, cost us nothing per install, and be trusted with nothing leaving the machine. The workspace is the revenue: $50 a month for up to five people, $20 a member after (the plan's number on the wall: ten founder-led teams with a card on file by 4 January 2027). Memory follows that split exactly.
 
-**Anti-goals:** memory that picks a winner between two people; a block before every prompt; a benchmark number from a different harness than the one we compare against; memory on our servers for someone who never signed up.
+| | Free network (no account) | Signed in (free) | Workspace (paid) |
+|---|---|---|---|
+| What exists today | Messaging between your agents and your teammates' agents; presence; approvals | Hosted apps (Claude app, ChatGPT) reach your agents | Rooms, always-on agents, tasks, spend gates, Memory tab on AgentCore (room agents only) |
+| Memory added | Personal memory across your harnesses and computers; team memory with the people on your network; keyword search; `lightbulb memory` | Same, plus your personal memory follows you to new computers via your identity (already how teammates' computers are linked) | Everything on the left, plus: a copy that is up while the workspace runs, so facts cross between teammates who are never online together; room agents and hosted apps read and write it; search by meaning; facts extracted from room conversation without anyone saving them; Memory tab with source, history and contested; wipe |
+| Why the line is here | Cross-person memory with no server is the thing nobody ships and the reason to install. It costs us $0 | An account is what an invite attaches to; nothing to charge for yet | Everything that needs a server that is on when you are not, or a model we pay for |
+| Cost to us | $0 | $0 | ~$6 per workspace a month (§7), inside the plan |
 
-## 2. What we must fix
+Two things this does not do: charge solo developers for memory (the person with everything working is the one who invites a cofounder), and put any memory on our servers for someone who never signed up.
 
-From the research, every system loses BEAM points the same way: the same fact stored many times crowds out the one update; an update in other words is not linked to the old value; the replaced value ranks first; two people disagreeing is settled by recency; totals across sessions miss facts. past.dev already scores 93–100 on six of ten abilities; the contest is knowledge update, information extraction, contradiction and multi-session.
+## 3. What the research says we must get right
 
-## 3. What the network already gives us
+Every memory system loses the same way (memory-problem §2, §6, §7): the same fact stored many times crowds out the one update; an update in other words is not linked to the old value; the replaced value ranks above the current one; two people disagreeing is settled by recency or not noticed; totals across sessions miss facts. The product rules in §4 exist to avoid these, whatever the benchmark says.
 
-From the CLI source (v0.6.5):
+## 4. The log: how memory moves
 
-- **A replicated, signed log.** The roster (`src/roster.rs`) is a hash-linked graph of signed entries with one root, "replayed deterministically, so every member computes the same team from the same set of entries whatever order they arrived in". Entries are at most 16 KB.
-- **Sync between members.** Peers exchange their heads in `hello` and page missing entries with `Frame::Roster { entries, more }` (`src/net/mod.rs`, `src/net/frames.rs`), over QUIC, end-to-end encrypted between member keys; relays see ciphertext.
-- **One tool spec for every harness.** `network_tools.json` feeds the engine's MCP server (wired by `setup` into Claude Code, Codex, Cursor, Grok CLI and OpenCode) and the hosted MCP.
-- **Hooks at session start and end** for all five harnesses (`src/hook.rs`).
-- **Local SQLite** (`state.db`, 0700), already holding the roster.
-- **The workspace is a member.** The cloud member is the same engine running as a sidecar in the workspace's AgentCore Runtime microVM (`apps/infra/hermes/bridge/network.py`). Its `state.db` is already snapshotted to S3 per workspace one second after any change and restored on start. It runs while the runtime is up; an idle runtime parks after 15 minutes (`IDLE_TIMEOUT_S`) and syncs again when it next starts.
+### 4.1 What is stored
 
-So team memory is a second log beside the roster, synced the same way, read and written through two new tools. No new service, no server holding free users' data.
-
-## 4. The design
-
-### 4.1 The memory log
-
-Each entry is signed by the member who wrote it:
+A second signed, replicated log beside the roster, synced the same way (`src/roster.rs`, `Frame::Roster` paging in `src/net/mod.rs`): every member computes the same memory from the same entries whatever order they arrive. Entries are small (the roster's 16 KB cap holds).
 
 ```
-remember  {id, subject, fact, kind (fact|decision|lesson|preference), when (event time), source (harness, repo, session), scope (team|me)}
-replace   {id, replaces: <id>, fact, when, ...}        a change: the old entry becomes history
-forget    {id: <target>}                              the content is dropped on every copy
+remember  {id, subject, fact, kind: fact|decision|lesson|preference, when, source: {harness, repo, session}, scope: me|team}
+replace   {id, replaces: [ids], fact, when, source}     a change; the old entries become history
+forget    {id: target}                                   the content is dropped on every copy
 ```
 
-- **Duplicates cannot pile up.** The writer is shown the existing facts on the subject before writing (4.2), so the same thing again is not written. A repeat that slips through still collapses at read, because the page shows one line per subject.
-- **Contested falls out of the graph.** Two `replace` entries pointing at the same fact, or a `remember` that contradicts a current fact without replacing it, mean two people hold different current values. Recall shows both with names and dates. Nobody's entry overwrites anybody's. Whoever settles it writes a `replace` of both.
-- **Scope.** `team` entries sync to every member computer. `me` entries sync only to the writer's own computers (the network already knows which computers are the same person's). A member who leaves stops receiving entries; what they already had they keep, as with messages they already read. The privacy page says so.
-- **Search** is SQLite FTS5 (BM25) over subject and fact. Measured on the probe set and BEAM 100K. If rephrased updates are missed ("latency" vs "response time"), add small local embeddings, and only then.
+- **Scope.** `team` entries sync to every member computer on the network. `me` entries sync only to the writer's own computers. A member who leaves stops receiving entries; what they already hold they keep, as with messages they already read. The privacy page says so.
+- **One line per subject at read time.** Recall collapses the replace chain: the current fact first, then "was X (who, when)". Copies cannot pile up on the page.
+- **Contested.** Two `replace` entries on the same fact, or a `remember` whose subject matches a current fact with a different value and no `replaces`, means two people hold different current values. Recall shows both with names and dates and the word "contested". Nobody's entry overwrites anybody's. Whoever settles it writes a `replace` of both.
+- **Search.** SQLite FTS5 (BM25) over subject and fact. Keyword only; §6 measures what that costs and §5 says what a workspace adds.
+- **Storage.** `state.db`, already 0700 on laptops, already snapshotted to S3 per workspace for the cloud member.
 
-### 4.2 Writing: the agent does it
+### 4.2 Writing
 
 No model runs in the engine. The agents already on the network are the models.
 
-- **`remember`** takes a fact and a subject. Before storing, it returns the current facts on that subject: "Existing: production database = Postgres 14 (Ana, 2 Aug). Is yours a change? Call again with `replaces`." The agent decides update, contest or new, and that is the linking step every system in §2 gets wrong, done by the model that just read the whole conversation.
-- **When:** the person says "remember"; and at session end, the Stop/SessionEnd hook asks the agent once for anything the next session or a teammate should know, in a few facts. That is a few hundred tokens of the developer's own agent, nothing billed to us.
-- **Which scope:** default `me`. The agent writes `team` when the fact is about shared work (the repo, a decision, a bug) and the person has not turned it off (`lightbulb memory team off`), and says so in its reply ("shared with the team: …"). A wrong team fact is fixed by any teammate's `replace` or `forget`.
+- **`remember(subject, fact, kind, scope?)`**: before storing, the engine returns the current facts on that subject ("Existing: production database = Postgres 14 (Ben, 2 Aug). A change? Call again with `replaces`."). The agent, which has just read the whole conversation, decides new, change or disagreement. That is the linking step in §3, done where the context is.
+- **When:** the person says "remember"; the agent judges something worth keeping; and at session end the Stop/SessionEnd hook (installed for all five harnesses, `src/hook.rs`) asks once for anything the next session or a teammate should know.
+- **Scope default is `me`.** The agent may say "this would help the team, share it?" and writes `team` only on a yes, or when the person says so. A laptop session holds secrets and half-formed thoughts; nothing from it reaches a teammate without the person choosing. `lightbulb memory share <id>` does the same by hand. Room agents (§5) write `team`, since a room is shared already.
+- **Secrets.** The same scrubbing that runs on egress today runs on `remember` before anything is stored.
 
 ### 4.3 Reading
 
-- **`recall(question)`** searches the local copy and returns a page: contested facts first with both sides, then current facts with "was X" history, newest first, packed into a token budget. Local, so it works offline and costs nothing.
-- **Session start:** the hook injects the current team and personal facts for this repo, at most ~400 tokens. Then the agent calls `recall` when it needs more. Nothing before every prompt.
-- **Questions needing several facts:** the agent calls `recall` again with narrower questions. Agents already do this.
+- **`recall(question, budget?)`**: searches the local copy and returns a page: contested facts first, then current facts with history, newest first, packed into the budget. Local, so it works offline and costs nothing.
+- **Session start:** the hook injects the current team and personal facts for this repo, at most about 400 tokens. Never before every prompt (past.dev's plugin injects 850–1,200 tokens every prompt; measured).
+- **Several facts:** the agent calls `recall` again with narrower questions, as agents already do.
+- **`lightbulb memory`**: list, show (history and who), forget, export, share, `last` (what was injected last time).
 
-### 4.4 Who sees what
+## 5. The workspace: AgentCore alongside the log
 
-| Who | Memory |
-|---|---|
-| One developer, no account | Personal memory across Claude Code, Codex and every session on their computers |
-| Two people on one free network | Team memory: one person's agent learns it, the other's knows it, with a name and date on it |
-| `lightbulb memory` | list, show (history and who), forget, export, `team off` |
-| A workspace | The cloud member holds a copy, persisted by the S3 snapshot it already has. While its runtime is up it relays facts between teammates who are never online at the same time. Room agents use the same tools through the bridge. The Memory tab reads the cloud member's copy: source, history, contested, edit and forget |
-| Room conversations | Room agents write with `remember` like any other agent (at the end of each task they finish, and when asked) |
+AgentCore Runtime hosts the workspace agents and the cloud member (`apps/infra/hermes/bridge/network.py`), so it hosts the workspace's copy of the log with no new work. AgentCore Memory does two jobs the log cannot do for free, and nothing else:
 
-### 4.5 Alongside AgentCore
-
-| AgentCore part | Role after this |
-|---|---|
-| Runtime | Unchanged. It hosts the workspace agents and the cloud member, so it hosts the workspace's copy of the memory log |
-| Memory, long-term records (`workspace_facts` semantic strategy) | Retired. Two stores of team facts would disagree the first time someone corrects one. Cutover: import every existing record once into the log as a `remember` from "workspace (imported)", with its date; turn off the strategy; the Hermes memory plugin's prefetch and search tool call `recall` instead |
-| Memory, short-term events (`CreateEvent` every turn, 7-day expiry) | Nothing reads them except long-term extraction, so they stop with it |
-| Memory as an extractor, if needed | If room facts are missed because agents do not write them (measured: what AgentCore would have extracted that the log lacks, over two weeks on our own workspace), turn the strategy back on with the v2 overrides as an extractor only: the cloud member writes its new records into the log (`ListMemoryRecords` filtered by `updatedAt AFTER` the last sync). The log stays the one store either way |
-
-### 4.6 Privacy
-
-The same promise as messages, because it is the same transport. Free memory lives on members' computers and moves only between them, encrypted end to end. We never see it. In a workspace the cloud member holds a copy, as it already holds the workspace's messages. `redact_for_egress`-style secret scrubbing runs before `remember` stores anything. `forget` removes the content from every copy that comes online. The privacy page and the network security doc say this before it ships.
-
-## 5. How we beat the benchmarks
-
-1. **Same harness.** Fork past.dev's MIT-licensed BEAM harness; replace only `past_api.py`. Same ExaBase prompts (hash-checked), same answer and judge model (`openai/gpt-5.6-luna`, reasoning off), 100 results within 8,000 tokens, each question once.
-2. **The product path, not a benchmark path.** BEAM has no agent in the loop, so the adapter plays the agent: after each session it gives a model the session and the `remember` tool, exactly as the Stop hook does, with the neighbours `remember` returns. Recall is the real `recall`. What we tune is what ships: the hook's instruction, the tool descriptions, the page format, and whether FTS5 is enough.
-3. **Measure the noise first** on the 100K split: rerun past.dev ourselves (~30,000 of our ~149,900 free credits), run today's AgentCore built-in as a second baseline, judge the same answers three times.
-4. **Targets** (to test; each ability weighs a tenth):
-
-| Ability | past.dev 1M / 10M | What moves it | Target 1M / 10M |
-|---|---|---|---|
-| Contradiction | 75.4 / 73.1 | Contested shown with both sides, who and when | 90 / 85 |
-| Knowledge update | 85.7 / 92.5 | `replace` linked by the writer; current first, history after | 95 / 95 |
-| Information extraction | 84.0 / 68.8 | One line per subject on the page | 92 / 85 |
-| Multi-session | 72.8 / 28.2 | Several recalls; budget not spent on copies | 80 / 55 |
-| Overall | 90.65 / 85.03 | other six held | ≈94.6 / ≈90.8 |
-
-5. **No overfitting.** Tune on 100K and the probe cases (`docs/research/2026-10-27-past-dev-probe2.py`); run 500K, 1M, 10M and LongMemEval_S once at the end; publish results, prompts, harness commit and cost.
-6. **The risk.** BM25 on 10M-token histories may miss facts a semantic index finds. The harness tells us; the fix is local embeddings, not a server.
-
-## 6. Cost
-
-- **Free network: $0 to us.** The person's own agent writes, their computer stores and searches, the network carries it.
-- **Workspace:** the cloud member's copy is a few MB inside a `state.db` already in S3, so effectively nothing. Retiring AgentCore long-term memory removes today's AgentCore Memory bill (built-in storage $0.75 per 1,000 records, $0.50 per 1,000 retrievals, short-term $1 per GB). If the extractor fallback is ever turned on: ~$2 a month per workspace (overrides storage plus Haiku-class extraction), and no retrieval charges since reading is local.
-- **Benchmarks:** the agent stand-in runs a small model over each session: 155M tokens for the full suite, ~$50 at Haiku 5.5 list price, plus answer and judge (~$80 for 2,000 questions). ~$15–20 per 100K tuning iteration; ~$500 with tuning. Bedrock and OpenRouter prices are checked before the first run.
-- **People's tokens:** a few hundred at session end and ~400 at session start, against 850–1,200 before every prompt with past.dev's plugin (measured).
-
-## 7. Plan
-
-Working days with agents; tuning is the only open-ended part, so it has a timebox.
-
-| Step | Days | What |
+| Source | Direction | Mechanism |
 |---|---|---|
-| 0. Harness | 2 | Fork; adapter with the agent stand-in; baselines on 100K (past.dev rerun, AgentCore built-in, judge ×3) |
-| 1. Memory log in the engine | 5 | Entries, signing and replay on the roster's pattern; `memory` heads in `hello` and a paged `Memory` frame; FTS5; `remember` and `recall` in `network_tools.json`; session-start and Stop hook text; `lightbulb memory` commands; tests including two-computer sync |
-| 2. Tuning | timebox 10 | Hook instruction, tool text, page format, FTS5 vs embeddings, on 100K and the probes; done when we beat our past.dev rerun by more than the judge's spread, or we stop and report |
-| 3. Workspace | 3 | Cloud member holds the copy; room agents get the tools through the bridge; Memory tab reads it; one-time import of AgentCore records; strategy off |
-| 4. Release and publish | 3 | CLI release; privacy and security docs; one run of 500K, 1M, 10M and LongMemEval_S; results repo |
+| Room and DM conversation | AgentCore → log | The semantic strategy keeps extracting from the events the Hermes plugin already writes, with override instructions (one fact per attribute; speaker and date in the text; a change rewrites current-then-history; two people's different values become one record marked contested, never a pick). The cloud member polls new and updated records (`ListMemoryRecords`, `updatedAt AFTER` last sync) and writes them as `team` entries signed "workspace" |
+| Every log entry | log → AgentCore | The cloud member mirrors each entry as a record in its own namespace with `BatchCreateMemoryRecords`, no strategy on that namespace, so nothing merges it. Workspace recall (room agents, hosted apps, Memory tab) runs `RetrieveMemoryRecords` over the mirror for search by meaning, then builds the same page as §4.3 |
 
-About four weeks. Step 1 ships to users before tuning finishes: memory that works is useful before it is benchmarked.
+One source, two indexes, one direction per source: no loop. The log is what people see and correct; AgentCore is an extractor and a search index over it.
 
-## 8. Decisions for the founder
+- **`forget`** deletes the log entry everywhere and the mirror record by the id we created. An extracted record's log entry can be forgotten the same way; the room message it came from stays until the person deletes it, as today.
+- **Cutover:** import today's AgentCore records once as `team` entries signed "workspace (imported)"; the Hermes plugin's prefetch and search tool read the mirror (fixing today's defect where the search text is routing JSON); Memory tab reads the cloud member's copy.
+- **Hard boundary:** laptop and hosted tools never call AgentCore. They read the log. Only the cloud member and the runtime touch AgentCore, under the workspace's role, as today.
 
-1. Memory is part of the free network, peer to peer, no account.
-2. Agents share to the team by default when the fact is about shared work, say so when they do, and the person can turn it off. The alternative is personal by default with an explicit "share".
-3. AgentCore Runtime stays; AgentCore Memory is retired at the workspace cutover, with its records imported, and comes back only as an extractor feeding the log if room facts are measurably missed.
-4. Publish the harness and results even if a split comes out below past.dev.
+## 6. Measurement: what we will and will not claim
+
+We do not expect to beat past.dev's 90 on BEAM; their score took a team a year and their losses are in the four hardest abilities. We measure anyway, honestly, because a number anyone can rerun is worth more than a claim.
+
+1. **Same harness.** Fork past.dev's MIT-licensed BEAM harness and replace only the memory calls. ExaBase's prompts hash-checked, same answer and judge model, 8,000-token budget, each question once.
+2. **Four arms on the 100K split** (~$80 total): past.dev rerun (our ~149,900 free credits cover it), AgentCore built-in as today, AgentCore with the §5 overrides, and the log with model-driven extraction standing in for the agent. Judge each three times to see the noise.
+3. **What the arms decide:** which extraction the workspace uses (built-in or overrides), and how much keyword search costs against search by meaning. Both have a price per workspace beside the score.
+4. **Tuning** is a two-week timebox on the leading arm. One untouched run of 500K, 1M, 10M and LongMemEval_S at the end. Publish results, prompts, harness commit, cost and variance, whatever they show.
+5. **The number we lead with** is the one nobody else runs: a team-memory set from our own rooms (with consent, anonymised), scored on whether one person's agent answers from what another person said, names the source, and surfaces disagreements instead of resolving them. The public line is about that and about where the data lives, never a competitor's name.
+
+## 7. Cost
+
+- **Free network: $0 to us.** The person's agent writes, their computer stores and searches, the network carries it.
+- **Workspace, per month, 5 people, 3,000 room messages, ~2,000 records (assumptions to measure):** extraction with overrides on a Haiku-class Bedrock model ~$1.50; records $0.25 per 1,000 with overrides ($0.50); mirror records the same (~$0.50); retrievals $0.50 per 1,000 × ~3,000 room turns × 2 namespaces (~$3); short-term events <$0.10. **About $6, 12% of the plan.** Laptop recall is local and free. Bedrock's model price and retrievals per turn are measured in week 1.
+- **Benchmarks:** ~$80 for the four baselines, ~$15–20 per tuning run, ~$150 for the final full run; ~$500 all in.
+- **People's tokens:** a few hundred at session end, ~400 at session start.
+
+## 8. Privacy
+
+Same promise as messages, same transport. Free memory lives on members' computers and moves only between them, encrypted end to end; we never see it. Nothing leaves a laptop session for a teammate unless the person says yes. In a workspace the cloud member holds a copy, as it already holds the workspace's messages, and only it touches AgentCore. `forget` removes content from every copy that comes online. Owner and member wipes extend to the mirror and extraction namespaces. The privacy policy rewrite and `docs/security.md` describe this before release.
+
+## 9. Plan
+
+Working days with agents. Memory ships to users before anything is benchmarked.
+
+| Step | Days | What | Done when |
+|---|---|---|---|
+| 1. The log | 5 | Entries, signing, replay and sync on the roster's pattern; FTS5; `remember`/`recall` in the shared tool spec; hooks; `lightbulb memory`; two-computer tests; CLI release; privacy and security docs | A fresh install on two computers shares a fact with a name on it |
+| 2. Harness and baselines (parallel) | 3 | Fork; four adapters; 100K ×4, judge ×3; Bedrock price check | We know where each arm stands and what the judge's noise is |
+| 3. Workspace | 5 | Cloud member imports and mirrors; override instructions; plugin reads the mirror; Memory tab reads the copy; one-time import; wipes | Our own workspace runs on it for a week |
+| 4. Tuning | timebox 10 | Leading arm only; probe cases every run | Improvement beyond the judge's spread, or stop and report |
+| 5. Publish | 3 | Final runs; team-memory set; results repo; /network page | Numbers anyone can rerun |
+
+About four to five weeks; user-visible memory at the end of week one.
+
+## 10. Decisions for the founder
+
+1. Memory is part of the free network, peer to peer, no account, including team memory between members.
+2. Personal by default; sharing to the team needs the person's yes.
+3. AgentCore Memory stays in workspaces as extractor and search index over the log, never as a second store people edit.
+4. We publish benchmark numbers with cost and variance even when they are below the leader, and the public line is about team memory and where data lives.
+
+## 11. Calls I made (check these while reading)
+
+- Keyword search on the free tier, search by meaning only in workspaces, until the harness says keyword is not enough.
+- The agent decides new/change/disagreement at write time, using the neighbours `remember` returns.
+- The cloud member polls AgentCore for extracted records instead of a push; it is up only while the workspace runtime is, so facts cross between offline teammates on the workspace's schedule, not instantly.
+- Session-end hook asks once; no capture of tool calls or diffs.
 
 ## Sources
 
-CLI v0.6.5 (`f9ea8d5`): `src/roster.rs`, `src/net/mod.rs`, `src/net/frames.rs`, `src/store.rs`, `src/hook.rs`, `src/embed.rs`, `docs/security.md`. Monorepo: `apps/backend/core/services/network_tools.json`, `apps/infra/hermes/bridge/network.py`, `apps/infra/hermes/plugins/memory/agentcore/__init__.py`, `apps/infra/lib/stacks/container-stack.ts`. AgentCore (the extractor fallback): [overrides](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-custom-strategy.html), [semantic prompts](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-system-prompt.html), [metadata](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/long-term-memory-metadata.html), [pricing](https://aws.amazon.com/bedrock/agentcore/pricing/). past.dev harness: `pastdotdev/benchmarks/beam`.
+CLI v0.6.5 (`f9ea8d5`): `src/roster.rs`, `src/net/mod.rs`, `src/net/frames.rs`, `src/store.rs`, `src/hook.rs`, `src/embed.rs`, `docs/security.md`. Monorepo: `apps/backend/core/services/network_tools.json`, `apps/infra/hermes/bridge/network.py`, `apps/infra/hermes/plugins/memory/agentcore/__init__.py`, `apps/backend/core/services/workspace_memory.py`, `apps/infra/lib/stacks/container-stack.ts`. AgentCore: [overrides](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-custom-strategy.html), [semantic prompts](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-system-prompt.html), [metadata and filters](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/long-term-memory-metadata.html), [RetrieveMemoryRecords](https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_RetrieveMemoryRecords.html), [pricing](https://aws.amazon.com/bedrock/agentcore/pricing/). past.dev harness: `pastdotdev/benchmarks/beam`.

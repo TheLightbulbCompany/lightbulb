@@ -58,7 +58,8 @@ export function LinkWalletSection({ canManage }: { canManage: boolean }) {
           <h3 className="text-sm font-medium text-midnight">Link wallet</h3>
           <p className="text-xs text-[var(--midnight-muted)]">
             {data.connected ? "Connected" : "Not connected"} — lets agents ask to buy things. You approve every purchase
-            in Lightbulb and in Link, and agents never see a card. If you leave the workspace, the wallet disconnects.
+            in Link; Lightbulb asks first too, unless you trust the merchant and have turned off asking before moving
+            money. Agents never see a card. If you leave the workspace, the wallet disconnects.
           </p>
         </div>
         {data.connected ? (

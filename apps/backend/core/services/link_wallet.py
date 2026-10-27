@@ -263,7 +263,7 @@ async def _api(owner_id: str, method: str, path: str, json: dict | None = None) 
     if res.status_code >= 300:
         logger.warning("link_wallet: %s %s answered %s", method, path.split("?")[0], res.status_code)
         raise LinkWalletError("link_rejected", "Link refused the request.")
-    data = res.json()
+    data = res.json() if res.content else {}
     # Whitelist: a card, token or address that Link echoes is dropped here, never passed on.
     return {k: data[k] for k in _SAFE if k in data}
 
@@ -299,3 +299,8 @@ async def create_spend_request(
 async def retrieve_spend_request(owner_id: str, link_id: str) -> dict[str, Any]:
     """Status only: no ``include`` parameter, so Link sends no credential."""
     return await _api(owner_id, "GET", f"/spend_requests/{link_id}")
+
+
+async def cancel_spend_request(owner_id: str, link_id: str) -> dict[str, Any]:
+    """``POST /spend_requests/{id}/cancel`` (stripe/link-cli sdk-go): ends an unused request."""
+    return await _api(owner_id, "POST", f"/spend_requests/{link_id}/cancel")

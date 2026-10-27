@@ -60,6 +60,8 @@ class Link:
         self.calls: list[httpx.Request] = []
         self.refreshes = 0
         self.spend_status = "pending_approval"
+        self.retrieve_status = "approved"
+        self.down = False
         self.scope = "payment_methods.agentic userinfo:read"
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -97,8 +99,12 @@ class Link:
                     "link_pay_token": "lpt_CANARY",
                 },
             )
+        if path.endswith("/cancel"):
+            return httpx.Response(200, json={"id": "lsrq_1", "status": "canceled"})
         if path.startswith("/spend_requests/"):
-            return httpx.Response(200, json={"id": "lsrq_1", "status": "approved"})
+            if self.down:
+                return httpx.Response(503)
+            return httpx.Response(200, json={"id": "lsrq_1", "status": self.retrieve_status})
         return httpx.Response(404)
 
     def bodies(self, path: str) -> list[dict]:
@@ -134,11 +140,20 @@ def world(monkeypatch):
     monkeypatch.setattr(link_wallet.integration_secret_store, "delete", delete)
 
     locks: dict[str, asyncio.Lock] = {}
+    holders: set = set()
 
     @asynccontextmanager
     async def guard(owner_id):
-        async with locks.setdefault(owner_id, asyncio.Lock()):
+        key = (owner_id, asyncio.current_task())
+        if key in holders:  # re-entrant for the same task, like the real lease
             yield
+            return
+        async with locks.setdefault(owner_id, asyncio.Lock()):
+            holders.add(key)
+            try:
+                yield
+            finally:
+                holders.discard(key)
 
     monkeypatch.setattr(link_wallet.owner_lifecycle, "owner_lifecycle_guard", guard)
     monkeypatch.setattr(link_wallet.owner_lifecycle, "revoked_since", AsyncMock(return_value=False))
@@ -402,20 +417,67 @@ async def test_over_links_500_dollar_maximum_is_refused_and_an_admin_cap_is_clam
     ] == "needs_owner"
 
 
-async def test_a_pending_request_past_the_approval_window_stops_counting(world):
+async def _two_holds_then_age_them(world):
     world.limits.update(merchants=["https://acme.com"], projectMonthlyCents=20000)
     world.policy["money_moves"] = False
     await connect(world)
     for n in range(2):
         await ask(amount=100, why=f"Licence batch number {n} for the launch project goes here.")
-    with pytest.raises(purchases.PurchaseRefused) as e:
-        await ask(amount=1, why="One more small thing for the launch project, ask three.")
-    assert e.value.code == "over_project_cap"
     for row in world.table.items.values():
         row["linkedAt"] = 1  # Link's 30-minute window closed long ago
+
+
+async def test_a_pending_request_Link_says_expired_stops_counting(world):
+    await _two_holds_then_age_them(world)
+    world.link.retrieve_status = "expired"
     out = await ask(amount=1, why="One more small thing for the launch project, ask three.")
     assert out["status"] == "pending_approval"
     assert {r["status"] for r in world.table.items.values()} == {"expired", "pending_approval"}
+
+
+async def test_an_approved_request_past_the_window_keeps_counting(world):
+    await _two_holds_then_age_them(world)
+    world.link.retrieve_status = "approved"  # the owner approved in Link and never came back
+    with pytest.raises(purchases.PurchaseRefused) as e:
+        await ask(amount=1, why="One more small thing for the launch project, ask three.")
+    assert e.value.code == "over_project_cap"
+
+
+async def test_when_link_cannot_be_reached_a_stale_hold_keeps_counting(world):
+    await _two_holds_then_age_them(world)
+    world.link.down = True
+    with pytest.raises(purchases.PurchaseRefused) as e:
+        await ask(amount=1, why="One more small thing for the launch project, ask three.")
+    assert e.value.code == "over_project_cap"
+    assert {r["status"] for r in world.table.items.values()} == {"pending_approval"}
+
+
+async def test_rejecting_the_card_cancels_the_link_request_and_the_row_is_never_payable(world):
+    world.limits.update(merchants=["https://acme.com"])
+    world.policy["money_moves"] = False
+    await connect(world)
+    rid = (await ask())["requestId"]
+    await purchases.cancel_for_card(OWNER, {"isol8_action": "purchase_request", "request_id": rid})
+    assert any(c.url.path == "/spend_requests/lsrq_1/cancel" for c in world.link.calls)
+    row = world.table.items[next(iter(world.table.items))]
+    assert row["status"] == "canceled"
+    world.link.retrieve_status = "approved"  # Link later says approved: ignored
+    assert await purchases.approval_link(OWNER, rid) == {"status": "canceled", "approvalUrl": None}
+    assert row["status"] == "canceled"
+    await purchases.cancel_for_card(OWNER, {"isol8_action": "something_else", "request_id": rid})  # no-op
+
+
+async def test_concurrent_clicks_cannot_both_take_the_same_headroom(world):
+    await connect(world)
+    world.limits.update(perPurchaseCents=10000, projectMonthlyCents=15000)
+    ids = [
+        (await ask(amount=100, why=f"Licence batch number {n} for the launch project goes here."))["requestId"]
+        for n in range(2)
+    ]
+    results = await asyncio.gather(*(purchases.approval_link(OWNER, i) for i in ids), return_exceptions=True)
+    refused = [r for r in results if isinstance(r, purchases.PurchaseRefused)]
+    assert len(refused) == 1 and refused[0].code == "over_project_cap"
+    assert len(world.link.bodies("/spend_requests")) == 1
 
 
 # ---- no card or token reaches a log, row or response -------------------------------------------

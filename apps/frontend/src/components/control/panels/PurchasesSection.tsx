@@ -64,8 +64,9 @@ export function PurchasesSection({ canEdit }: { canEdit: boolean }) {
     <section className="flex flex-col gap-3" data-testid="purchases-section">
       <h3 className="text-sm font-medium text-[var(--fg)]">Purchases</h3>
       <p className="text-sm text-[var(--fg-soft)]">
-        Agents can ask to buy things with your Link wallet. Nothing is bought without your approval in Lightbulb
-        and in Link. Until both limits are set, purchases are off.
+        Agents can ask to buy things with your Link wallet. Link always asks you to approve. Lightbulb asks first
+        too, unless the merchant is on your trusted list and &quot;ask before moving money&quot; is off. Until both
+        limits are set, purchases are off.
       </p>
       <div className="text-xs text-[var(--fg-soft)]">
         Per purchase: {limits.perPurchaseCents ? usd(limits.perPurchaseCents) : "not set"} · Per project each

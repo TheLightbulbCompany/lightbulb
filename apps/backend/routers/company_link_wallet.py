@@ -42,7 +42,7 @@ def _owner(auth: AuthContext) -> str:
 
 
 def _wire(exc: purchases.PurchaseRefused | link_wallet.LinkWalletError) -> HTTPException:
-    status = 503 if getattr(exc, "code", "") in ("link_unavailable", "board_unavailable") else 409
+    status = 503 if getattr(exc, "code", "") in ("link_unavailable", "board_unavailable", "busy") else 409
     return HTTPException(status_code=status, detail={"code": exc.code, "message": str(exc)})
 
 

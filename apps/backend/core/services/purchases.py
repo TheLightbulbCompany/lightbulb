@@ -16,6 +16,7 @@ Approval: the card carries the RECORD of the ask. The "Approve in Link" URL is m
 from __future__ import annotations
 
 import hashlib
+from contextlib import asynccontextmanager
 import logging
 import re
 import time
@@ -27,7 +28,7 @@ from botocore.exceptions import ClientError
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import billing_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import link_wallet, website_logins
+from core.services import link_wallet, owner_lifecycle, website_logins
 from core.services.board_cards import file_board_card
 from core.services.paperclip_admin_client import shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
@@ -39,6 +40,8 @@ CARD_MARKER = "purchase_request"
 SK_PREFIX = "PURCHASE#"
 # Statuses whose amount counts against the project's monthly cap: Link holds or has spent it.
 COUNTED = ("pending_approval", "approved", "submitted", "succeeded")
+# Link-confirmed ends: the only statuses that release a pending row from the cap.
+LINK_DEAD = ("denied", "expired", "canceled", "failed")
 _UNSAFE = re.compile(r"[\x00-\x1f\x7f]")
 # Link refuses a spend request above $500 (stripe/link-cli README "Limits": "Max amount per spend
 # request: $500 (50,000 cents)"; the same figure is user-info's per_transaction limit). Refuse up
@@ -98,15 +101,35 @@ async def list_rows(owner_id: str) -> list[dict]:
     rows = await messaging_repo._query(messaging_repo.owner_pk(owner_id), begins_with=SK_PREFIX)
     now = time.time()
     for r in rows:
-        # Reconcile locally, no Link call: a request still pending past the approval window has
-        # expired there, and must stop counting against the project's cap.
+        # Past Link's approval window a pending row may have expired, or been approved by an owner
+        # who never came back. Only Link knows: ask it, and release the row only on a Link-confirmed
+        # end. If Link cannot be reached the row keeps counting (fail closed for the cap).
         if r.get("status") == "pending_approval" and now - float(r.get("linkedAt") or 0) > APPROVAL_WINDOW_S:
-            r["status"] = "expired"
             try:
-                await _set(owner_id, r["requestId"], status="expired")
-            except Exception:  # noqa: BLE001 -- the in-memory value already excludes it; the write retries next read
-                logger.warning("purchases: could not persist expiry owner_id=%s", owner_id)
+                link = await link_wallet.retrieve_spend_request(owner_id, r["linkId"])
+            except Exception:  # noqa: BLE001 -- unknown stays counted
+                logger.warning("purchases: could not reconcile with Link owner_id=%s", owner_id)
+                continue
+            status = link.get("status")
+            if status and status != "pending_approval":
+                r["status"] = status
+                try:
+                    await _set(owner_id, r["requestId"], status=status)
+                except Exception:  # noqa: BLE001 -- the in-memory value is right; the write retries next read
+                    logger.warning("purchases: could not persist status owner_id=%s", owner_id)
     return sorted(rows, key=lambda r: r.get("createdAt", ""), reverse=True)
+
+
+@asynccontextmanager
+async def _serialized(owner_id: str):
+    """The cap check and the Link request it admits are one step: two concurrent asks must not
+    both pass the same headroom. The owner-lifecycle lease (a DynamoDB conditional write, shared by
+    every backend task) is held across both; no new table."""
+    try:
+        async with owner_lifecycle.owner_lifecycle_guard(owner_id):
+            yield
+    except owner_lifecycle.OwnerLifecycleBusyError:
+        raise PurchaseRefused("busy", "Another purchase is being checked. Try again in a moment.") from None
 
 
 async def _set(owner_id: str, request_id: str, **fields) -> None:
@@ -250,8 +273,7 @@ async def request_purchase(
         raise PurchaseRefused("wallet_disconnected", "The Link wallet isn't connected. Ask an admin to connect it.")
     project_id, project_name = await _issue_project(owner_id, issue_id)
     limits = await billing_repo.get_purchase_limits(owner_id)
-    rows = await list_rows(owner_id)
-    _policy(limits, cents, project_id, site, rows)
+    eager = _allowlisted(limits, site) and not (await billing_repo.get_capability_policy(owner_id))["money_moves"]
 
     row = {
         "pk": messaging_repo.owner_pk(owner_id),
@@ -270,22 +292,29 @@ async def request_purchase(
         "month": _month(),
         "createdAt": utc_now_iso(),
     }
-    try:
-        await run_in_thread(
-            messaging_repo._table().put_item,
-            Item={k: v for k, v in row.items() if v is not None},
-            ConditionExpression="attribute_not_exists(sk)",
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+    async with _serialized(owner_id):
+        _policy(limits, cents, project_id, site, await list_rows(owner_id))
+        try:
+            await run_in_thread(
+                messaging_repo._table().put_item,
+                Item={k: v for k, v in row.items() if v is not None},
+                ConditionExpression="attribute_not_exists(sk)",
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            return {"requestId": request_id, "status": (await get(owner_id, request_id) or row)["status"]}
+        try:
+            # money_moves is the existing "owner approval required?" switch (default True). Turning
+            # it off lets an allowlisted merchant go straight to Link's own customer approval.
+            if eager:
+                created = await _create_link_request(owner_id, row)
+                row["status"], row["linkId"] = created.get("status") or "pending_approval", created["id"]
+        except Exception:
+            await run_in_thread(messaging_repo._table().delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
             raise
-        return {"requestId": request_id, "status": (await get(owner_id, request_id) or row)["status"]}
 
     try:
-        # money_moves is the existing "owner approval required?" switch (default True). Turning it
-        # off lets an allowlisted merchant go straight to Link's own customer approval.
-        if _allowlisted(limits, site) and not (await billing_repo.get_capability_policy(owner_id))["money_moves"]:
-            row["status"] = (await _create_link_request(owner_id, row)).get("status") or "pending_approval"
         card = await file_board_card(
             owner_id,
             marker=CARD_MARKER,
@@ -304,8 +333,13 @@ async def request_purchase(
         if card is None:
             raise PurchaseRefused("board_unavailable", "The owner's board isn't ready yet. Try again later.")
     except Exception:
-        # Not filed, so not an ask: drop the row and let a retry (same id, same Link idempotency
-        # key) start clean instead of reading back a dead one.
+        # Not filed, so not an ask: end any Link request already made for it, drop the row, and let a
+        # retry (same id, same Link idempotency key) start clean instead of reading back a dead one.
+        if row.get("linkId"):
+            try:
+                await link_wallet.cancel_spend_request(owner_id, row["linkId"])
+            except Exception:  # noqa: BLE001 -- best effort; the row is deleted either way
+                logger.warning("purchases: could not cancel an unfiled request owner_id=%s", owner_id)
         await run_in_thread(messaging_repo._table().delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
         raise
     return {"requestId": request_id, "status": row["status"]}
@@ -326,18 +360,43 @@ async def approval_link(owner_id: str, request_id: str) -> dict:
         return {"status": row["status"], "approvalUrl": None}
     if not row.get("linkId"):
         limits = await billing_repo.get_purchase_limits(owner_id)
-        _policy(
-            limits,
-            int(row["amountCents"]),
-            row["projectId"],
-            row["site"],
-            await list_rows(owner_id),
-            exclude=request_id,
-        )
-        link = await _create_link_request(owner_id, row)
+        async with _serialized(owner_id):
+            row = await get(owner_id, request_id) or row  # a concurrent click may have created it
+            if row.get("linkId"):
+                link = await link_wallet.retrieve_spend_request(owner_id, row["linkId"])
+            elif row["status"] == "canceled":
+                return {"status": "canceled", "approvalUrl": None}
+            else:
+                _policy(
+                    limits,
+                    int(row["amountCents"]),
+                    row["projectId"],
+                    row["site"],
+                    await list_rows(owner_id),
+                    exclude=request_id,
+                )
+                link = await _create_link_request(owner_id, row)
     else:
         link = await link_wallet.retrieve_spend_request(owner_id, row["linkId"])
         if link.get("status") and link["status"] != row["status"]:
             await _set(owner_id, request_id, status=link["status"])
     status = link.get("status") or row["status"]
     return {"status": status, "approvalUrl": link.get("approval_url") if status == "pending_approval" else None}
+
+
+async def cancel_for_card(owner_id: str, payload: dict | None) -> None:
+    """The owner rejected a ``purchase_request`` card: end the ask. The row becomes ``canceled`` FIRST
+    and terminal (``approval_link`` refuses it; a later Link ``approved`` is never written over it), so
+    nothing may pay on it whatever Link says next. Then the Link request is cancelled
+    (``POST /spend_requests/{id}/cancel``), best effort."""
+    if not isinstance(payload, dict) or payload.get("isol8_action") != CARD_MARKER:
+        return
+    row = await get(owner_id, str(payload.get("request_id") or ""))
+    if row is None or row["status"] == "canceled":
+        return
+    await _set(owner_id, row["requestId"], status="canceled")
+    if row.get("linkId"):
+        try:
+            await link_wallet.cancel_spend_request(owner_id, row["linkId"])
+        except Exception:  # noqa: BLE001 -- the local row is already terminal
+            logger.warning("purchases: Link cancel failed after card rejection owner_id=%s", owner_id)

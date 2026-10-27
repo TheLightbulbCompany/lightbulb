@@ -146,8 +146,12 @@ function DirectoryContent({
   const [query, setQuery] = useState("");
   const [sessionsExpanded, setSessionsExpanded] = useState(false);
   const [archivedOpen, setArchivedOpen] = useState(false);
-  const [sessionMarks, setSessionMarks] = useState(() => readSessionMarks(ownerScopeId));
-  const updateSessionMarks = (next: SessionMarks) => { setSessionMarks(next); writeSessionMarks(ownerScopeId, next); };
+  // Per person AND workspace: two members on one browser profile keep their own pins and archives.
+  // The user id can arrive after the first render, so the marks carry the key they were read under.
+  const marksKey = `${currentUserId ?? ""}:${ownerScopeId}`;
+  const [storedMarks, setStoredMarks] = useState(() => ({ key: marksKey, marks: readSessionMarks(marksKey) }));
+  const sessionMarks = storedMarks.key === marksKey ? storedMarks.marks : readSessionMarks(marksKey);
+  const updateSessionMarks = (next: SessionMarks) => { setStoredMarks({ key: marksKey, marks: next }); writeSessionMarks(marksKey, next); };
   const [selected, setSelected] = useState(new Map<string, ParticipantSelection>());
   const [markingUnread, setMarkingUnread] = useState<string | null>(null);
   const [unreadError, setUnreadError] = useState<{ roomId: string; label: string } | null>(null);

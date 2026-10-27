@@ -52,7 +52,8 @@ export function writeSessionSeen(scope: string, seen: Readonly<Record<string, nu
 
 const SESSION_MARKS_KEY_PREFIX = "lightbulb.messaging.sessionMarks.";
 
-/** Per viewer, on this browser: pinned and archived sessions (`SessionMarks` in shared). Nothing server-side. */
+/** Per viewer, on this browser: pinned and archived sessions (`SessionMarks` in shared). `key` is
+ *  `<userId>:<workspace>`, so people sharing a browser profile do not share marks. Nothing server-side. */
 export function readSessionMarks(scope: string): SessionMarks {
   try {
     const parsed: Partial<SessionMarks> = JSON.parse(window.localStorage.getItem(`${SESSION_MARKS_KEY_PREFIX}${scope}`) ?? "{}") ?? {};

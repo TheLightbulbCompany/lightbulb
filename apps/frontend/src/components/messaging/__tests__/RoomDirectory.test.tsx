@@ -878,6 +878,25 @@ it("pins, archives, unarchives and marks a session unread from its row menu, kep
   expect(titles()).toEqual(["Live work", "Old work"]);
 });
 
+it("keeps pins and archives per person: another member on the same browser does not see them", async () => {
+  const sessions = [
+    { session: makeSession("a", "Live work", "busy"), ownerName: "Alice", own: false, owner: aliceFace },
+    { session: makeSession("b", "Old work", "ended"), ownerName: "Alice", own: false, owner: aliceFace },
+  ];
+  const props: RoomDirectoryProps = { ownerScopeId: "org-shared-browser", sections: [], state: "ready", rooms: [base], participants: [], onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSelectSession: vi.fn(), sessions };
+  const titles = () => within(screen.getByRole("region", { name: "Sessions" })).getAllByRole("button", { name: /^Open / }).map((b) => b.getAttribute("aria-label")!.match(/(Live|Old) work/)![0]);
+  const { unmount } = render(<RoomDirectory {...props} currentUserId="dana" />);
+  await userEvent.click(screen.getByRole("button", { name: "Session actions for Old work" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Archive" }));
+  expect(titles()).toEqual(["Live work"]);
+  unmount();
+  const other = render(<RoomDirectory {...props} currentUserId="sam" />);
+  expect(titles()).toEqual(["Live work", "Old work"]);
+  other.unmount();
+  render(<RoomDirectory {...props} currentUserId="dana" />);
+  expect(titles()).toEqual(["Live work"]);
+});
+
 it("opens the row menu on right-click", async () => {
   render(<RoomDirectory ownerScopeId="org-context" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
     onSelectSession={vi.fn()} sessions={[{ session: makeSession("a", "Live work", "busy"), ownerName: "Alice", own: false, owner: aliceFace }]} />);

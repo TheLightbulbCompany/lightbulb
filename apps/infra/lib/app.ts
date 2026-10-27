@@ -134,6 +134,19 @@ const CDKOUT_BUCKET = "cdk-hnb659fds-assets-877352799272-us-east-1";
 const CDKOUT_S3_URI = `s3://${CDKOUT_BUCKET}/gha-cdk-out/\${{ github.run_id }}-\${{ github.run_attempt }}`;
 // One tarball, not 6,376 loose objects. See the "cdk.out transport" block below.
 const CDKOUT_TARBALL = `${CDKOUT_S3_URI}/cdk.out.tgz`;
+// Host-local copy of the same tarball, shared by every runner on the box.
+// All DEPLOY_RUNNER instances run on one self-hosted machine outside AWS, so
+// each S3 GET of the tarball is billed as internet egress: 43 asset jobs x
+// ~34 MB = ~1.5 GB per run, ~817 GB/mo, ~$70/mo (docs/research/
+// 2026-10-27-aws-cost-review.md). Synth writes the tarball here, so asset jobs
+// on the same host read it from disk; S3 stays the source of truth and the
+// fallback for any runner that does not share this filesystem. Keyed by run
+// id + attempt, written via an atomic rename, so a job never reads another
+// run's assembly or a half-written file.
+const CDKOUT_HOST_ROOT = "$HOME/.cache/lightbulb-cdkout";
+const CDKOUT_HOST_TARBALL = `${CDKOUT_HOST_ROOT}/\${{ github.run_id }}-\${{ github.run_attempt }}/cdk.out.tgz`;
+// Best effort: a failed cache write never fails the job.
+const CDKOUT_HOST_PUT = `{ mkdir -p "$(dirname "${CDKOUT_HOST_TARBALL}")" && cp cdk.out.tgz "${CDKOUT_HOST_TARBALL}.$$" && mv "${CDKOUT_HOST_TARBALL}.$$" "${CDKOUT_HOST_TARBALL}"; } || true`;
 const CDKOUT_OIDC_STEP = {
   name: "Authenticate Via OIDC Role",
   uses: "aws-actions/configure-aws-credentials@v6",
@@ -585,7 +598,12 @@ const cdkoutPatches: JsonPatch[] = [
   // (pipeline.js:502,511 hardcode actions/upload-artifact).
   JsonPatch.replace("/jobs/Build-Synth/steps/3", {
     name: "Upload cdk.out to S3",
-    run: `tar -czf cdk.out.tgz -C apps/infra cdk.out && aws s3 cp cdk.out.tgz ${CDKOUT_TARBALL} --only-show-errors`,
+    // Also seeds the host cache, and prunes entries older than a day.
+    run: [
+      `tar -czf cdk.out.tgz -C apps/infra cdk.out && aws s3 cp cdk.out.tgz ${CDKOUT_TARBALL} --only-show-errors`,
+      CDKOUT_HOST_PUT,
+      `find "${CDKOUT_HOST_ROOT}" -mindepth 1 -maxdepth 1 -mmin +1440 -exec rm -rf {} + 2>/dev/null || true`,
+    ].join("\n"),
   }),
 ];
 for (const job of assetJobNames()) {
@@ -599,7 +617,15 @@ for (const job of assetJobNames()) {
   cdkoutPatches.push(
     JsonPatch.add(`/jobs/${job}/steps/2`, {
       name: "Download cdk.out from S3",
-      run: `aws s3 cp ${CDKOUT_TARBALL} cdk.out.tgz --only-show-errors && rm -rf cdk.out && tar -xzf cdk.out.tgz`,
+      run: [
+        `if [ -s "${CDKOUT_HOST_TARBALL}" ]; then`,
+        `  echo "cdk.out: host cache hit" && cp "${CDKOUT_HOST_TARBALL}" cdk.out.tgz`,
+        "else",
+        `  aws s3 cp ${CDKOUT_TARBALL} cdk.out.tgz --only-show-errors || exit 1`,
+        `  ${CDKOUT_HOST_PUT}`,
+        "fi",
+        "rm -rf cdk.out && tar -xzf cdk.out.tgz",
+      ].join("\n"),
     }),
   );
   // The `Install` step is `npm install --no-save cdk-assets` and the publish

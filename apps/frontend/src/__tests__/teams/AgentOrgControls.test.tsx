@@ -69,7 +69,8 @@ describe("AgentOrgControls", () => {
 
     await waitFor(() => expect(rename).toHaveBeenCalledWith("b", "  Research Lead  "));
     expect(onUpdated).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("textbox", { name: "Agent name" })).not.toBeInTheDocument();
+    // The editor closes on the rename's resolution, a tick after the mock was called.
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Agent name" })).not.toBeInTheDocument());
   });
 
   it("rejects a duplicate display name without calling the API", () => {

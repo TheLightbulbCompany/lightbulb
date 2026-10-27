@@ -2457,6 +2457,35 @@ async def test_session_notification_prefs_choose_banner_badge_or_nothing_per_kin
 
 
 @pytest.mark.asyncio
+async def test_a_turn_that_ends_with_a_new_note_tells_both_by_their_own_settings(transport):
+    from core.repositories import user_repo
+    from core.services import local_session_relay as module
+
+    pushes = []
+
+    async def push(user_id, title, body, data=None, **kwargs):
+        pushes.append(body)
+
+    await user_repo.put(ALICE.user_id, "alice@example.com")
+    prefs = {**user_repo.SESSION_NOTIFICATION_DEFAULTS, "finished": "off", "attention": "banner"}
+    await user_repo.set_prefs(ALICE.user_id, session_notifications=prefs)
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    with patch("core.services.push_service.send_push_to_user", push), patch("time.time", return_value=10100):
+        # One frame: a 100 s turn ends AND the job leaves a note.
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", note="run lightbulb login"))
+        await asyncio.gather(*module._tasks)
+    assert pushes == ["run lightbulb login"]
+    notices = [json.loads(h["events"][0]) for h in transport[4]]
+    notices = [n for n in notices if n["type"] == "workspace.session.attention"]
+    assert sorted((n["payload"]["state"], n["payload"]["level"]) for n in notices) == [
+        ("attention", "banner"),
+        ("finished", "off"),
+    ]
+    assert len({n["eventId"] for n in notices}) == 2
+
+
+@pytest.mark.asyncio
 async def test_a_prefs_read_failure_sends_no_banner(transport):
     from core.repositories import user_repo
     from core.services import local_session_relay as module

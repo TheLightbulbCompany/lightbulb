@@ -391,11 +391,17 @@ _tasks: set[asyncio.Task] = set()
 FINISHED_COLLAPSE_S = 30
 
 
-def _attention(
-    row: dict, status: str, now: int, note: str | None = None
-) -> Literal["waiting", "finished", "attention"] | None:
-    """The owner-facing state change a heartbeat carries, if any: a new hand-off ``note`` is
-    "attention" (it banners only when the owner asked for it)."""
+def _attention(row: dict, status: str, now: int, note: str | None = None) -> list[str]:
+    """The owner-facing state changes a heartbeat carries: "waiting" or "finished", and
+    "attention" for a new hand-off ``note`` (a job can finish and leave one in the same frame;
+    each is told by its own setting)."""
+    changes = [state] if (state := _status_attention(row, status, now)) else []
+    if note and note != row.get("note"):
+        changes.append("attention")
+    return changes
+
+
+def _status_attention(row: dict, status: str, now: int) -> Literal["waiting", "finished"] | None:
     if status == "waiting-approval" and row["status"] != "waiting-approval":
         return "waiting"
     busy_since = row.get("busySince")
@@ -407,8 +413,6 @@ def _attention(
         and now - row.get("finishedNotifiedAt", 0) >= FINISHED_COLLAPSE_S
     ):
         return "finished"
-    if note and note != row.get("note"):
-        return "attention"
     return None
 
 
@@ -502,7 +506,9 @@ async def notify_attention(row: dict, state: str, subagent: Event | None = None)
     title, body = attention_copy(row, state, line, prompt_text)
     created = utc_now_iso()
     # A subagent ends once; its own id keeps a replayed batch to one notification.
+    # A note's notice shares its frame's revision with a "finished": its own key keeps both.
     key = f"subagent|{subagent.subagent}" if subagent else row["revision"]
+    key = f"attention|{key}" if state == "attention" else key
     event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-attention|{sid}|{key}"))
     try:
         if state != "attention":
@@ -1042,9 +1048,9 @@ class LocalSessionRelay:
                     if item.status in _TURN_STATUSES and row["status"] not in _TURN_STATUSES:
                         updated["busySince"] = now
                     attention = _attention(row, item.status, now, item.note)
-                    if attention == "waiting":
+                    if "waiting" in attention:
                         updated["waitingSince"] = now  # which wait an Activity item is about
-                    if attention == "finished":
+                    if "finished" in attention:
                         updated["finishedNotifiedAt"] = now
                     if item.status not in _TURN_STATUSES:
                         updated.pop("subagentEnded", None)
@@ -1088,7 +1094,8 @@ class LocalSessionRelay:
                     if attention:
                         # The write above is revision-fenced, so exactly one frame wins a transition:
                         # one state change is one notification, retries included.
-                        _spawn(notify_attention(updated, attention))
+                        for state in attention:
+                            _spawn(notify_attention(updated, state))
                     # A workspace scan is worth a refetch but is not the user doing something,
                     # so it hints without stamping lastEventAt. A lapsed lease reads as
                     # offline, so recovery must reach the room even when nothing else moved;

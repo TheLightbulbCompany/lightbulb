@@ -15,7 +15,7 @@ import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, Linking, Platform, useColorScheme } from "react-native";
 import { deepLinkToSubscriptions } from "expo-iap";
-import { ApiError, createApiClient, SESSION_NOTIFICATION_DEFAULTS, type SessionNotifications } from "@lightbulb/shared";
+import { ApiError, createApiClient, type SessionNotifications } from "@lightbulb/shared";
 
 import { GroupedList, NavigationRow } from "../../../components/ui/GroupedList";
 import { WEB_ORIGIN } from "../../../config/domain";
@@ -25,6 +25,7 @@ import { paywallProductIds } from "../../../lib/appleIap";
 import { isAppleManaged } from "../../../lib/manageSubscription";
 import { isManagedNoChoiceAccount, MANAGED_NO_CHOICE_LABEL } from "../../../lib/managedProvider";
 import { unregisterDevice } from "../../../lib/pushDevice";
+import { prefsSaver, readSessionNotifications } from "../../../lib/sessionNotifications";
 
 // Billing here never points outside the app. This screen used to carry
 // "Upgrade on thelightbulb.company" and "Manage billing on thelightbulb.company" rows out to
@@ -302,13 +303,17 @@ const NOTIFY_LEVELS = [
 
 function SessionNotificationsSection({ api, menu }: { api: ReturnType<typeof createApiClient>; menu: ReturnType<typeof pickerStyle>[] }) {
   const [prefs, setPrefs] = useState<SessionNotifications | null>(null);
+  const saver = useRef<ReturnType<typeof prefsSaver> | null>(null);
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      api
-        .get("/users/me/prefs")
+      readSessionNotifications(api)
         .then((value) => {
-          if (!cancelled) setPrefs({ ...SESSION_NOTIFICATION_DEFAULTS, ...(value as { sessionNotifications?: SessionNotifications }).sessionNotifications });
+          if (cancelled) return;
+          setPrefs(value);
+          saver.current = prefsSaver(api, value, setPrefs, () =>
+            Alert.alert("Notifications", "The setting could not be saved."),
+          );
         })
         .catch(() => undefined);
       return () => {
@@ -317,14 +322,7 @@ function SessionNotificationsSection({ api, menu }: { api: ReturnType<typeof cre
     }, [api]),
   );
   if (prefs === null) return null;
-  const save = (change: Partial<SessionNotifications>) => {
-    const next = { ...prefs, ...change };
-    setPrefs(next);
-    api.put("/users/me/prefs", { sessionNotifications: next }).catch(() => {
-      setPrefs(prefs);
-      Alert.alert("Notifications", "The setting could not be saved.");
-    });
-  };
+  const save = (change: Partial<SessionNotifications>) => void saver.current?.(change);
   const options = (items: readonly { value: string; label: string }[]) =>
     items.map((item) => (
       <Text key={item.value} modifiers={[tag(item.value)]}>

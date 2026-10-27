@@ -15,18 +15,21 @@ Two design points worth knowing:
    Paperclip's audit log — not to Friday and not to
    ``admin+paperclip@isol8.co`` the way the admin-API call sites are.
 
-2. **Self-healing.** This helper is idempotent: if the key already exists
-   in Secrets Manager, we return it; otherwise we mint via Paperclip and
-   store it. A missing-key reprovision recovers on the next
-   ``write_user_configs`` run without any operator intervention.
+2. **Self-healing.** This helper is idempotent: if the key is already
+   stored we return it; otherwise we mint via Paperclip and store it. A
+   missing-key reprovision recovers on the next profile write without any
+   operator intervention.
 
-Storage: AWS Secrets Manager at
-``lightbulb/<env>/paperclip-agent-keys/<owner>/<paperclip_agent_id>``. The owner_id
-is the container owner (Clerk user_id for personal, org_id for orgs). These keys
-are re-mintable, so a reprovision (or the clean-slate reset) recovers them.
-There is no per-agent index, so the Admin Account-Wipe teardown enumerates
-them by the Secrets Manager name prefix — see
-``list_owner_agent_key_secret_names`` / ``delete_owner_agent_key_secrets``.
+Storage: the owner's ``paperclip-companies`` workspace row, map
+``agent_keys.<paperclip_agent_id>``, Fernet-encrypted with ``ENCRYPTION_KEY``
+(``PaperclipRepo.get_agent_key`` / ``put_agent_key``). It used to be one Secrets
+Manager secret per agent at
+``lightbulb/<env>/paperclip-agent-keys/<owner>/<paperclip_agent_id>`` (58% of the
+account's secrets, $0.40 each). New keys are written to the row only; reads fall
+back to that secret until ``scripts/migrate_agent_keys_to_rows.py`` has copied
+every one and scheduled its deletion. The wipe sweeps
+(``list_owner_agent_key_secret_names`` / ``delete_owner_agent_key_secrets``) stay
+until the prefix is empty; the wipes delete the row, which takes the map.
 
 Public functions: ``ensure_paperclip_api_key`` (mint/read),
 ``list_owner_agent_key_secret_names`` + ``delete_owner_agent_key_secrets``
@@ -43,7 +46,7 @@ import httpx
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
-from core.secrets_manager import create_or_update_secret
+from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
     PaperclipApiError,
@@ -61,10 +64,19 @@ def _secret_name(owner_id: str, paperclip_agent_id: str) -> str:
     return f"lightbulb/{env}/paperclip-agent-keys/{owner_id}/{paperclip_agent_id}"
 
 
+def _env_prefix() -> str:
+    """Secrets Manager name prefix covering every legacy per-agent key in this env."""
+    env = settings.ENVIRONMENT or "dev"
+    return f"lightbulb/{env}/paperclip-agent-keys/"
+
+
 def _owner_prefix(owner_id: str) -> str:
     """Secrets Manager name prefix covering ALL of an owner's per-agent keys."""
-    env = settings.ENVIRONMENT or "dev"
-    return f"lightbulb/{env}/paperclip-agent-keys/{owner_id}/"
+    return f"{_env_prefix()}{owner_id}/"
+
+
+def _repo() -> PaperclipRepo:
+    return PaperclipRepo(table_name="paperclip-companies")
 
 
 async def list_owner_agent_key_secret_names(owner_id: str) -> list[str]:
@@ -147,12 +159,27 @@ async def _read_existing(
     owner_id: str,
     paperclip_agent_id: str,
 ) -> str | None:
-    """Read the stored key from Secrets Manager, or None if absent.
+    """The stored key: the workspace row first, then the legacy Secrets Manager
+    secret (until the migration has run), or None if absent.
 
     Any read failure is treated as "no key" so the next pass re-mints; we
-    never raise, so a transient Secrets Manager error degrades to a re-mint
-    rather than blocking provision.
+    never raise, so a transient read error degrades to a re-mint rather than
+    blocking provision.
     """
+    try:
+        key = await _repo().get_agent_key(owner_id, paperclip_agent_id)
+    except Exception:
+        logger.exception(
+            "paperclip_api_key: row read failed owner=%s agent=%s",
+            owner_id,
+            paperclip_agent_id,
+        )
+        put_metric("paperclip_api_key.read.error")
+        key = None
+    if key is not None:
+        return key
+
+    # ponytail: legacy fallback; delete with the prefix once the migration's --delete-migrated has run.
     name = _secret_name(owner_id, paperclip_agent_id)
 
     def _get() -> str | None:
@@ -180,8 +207,8 @@ async def _mint_and_store(
     paperclip_agent_id: str,
     admin_client: PaperclipAdminClient,
 ) -> str | None:
-    """Mint a fresh key via the Paperclip admin API and store it in Secrets
-    Manager.
+    """Mint a fresh key via the Paperclip admin API and store it on the
+    owner's workspace row (never in Secrets Manager).
 
     Returns the plaintext on success, None on any failure. Failures are
     swallowed — provision continues without staging this agent's identity
@@ -226,16 +253,13 @@ async def _mint_and_store(
         put_metric("paperclip_api_key.mint.missing_token")
         return None
 
-    name = _secret_name(owner_id, paperclip_agent_id)
-
-    def _put() -> str:
-        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-        return create_or_update_secret(sm, name, plaintext, create_only=True)
-
     try:
-        stored = await run_in_thread(_put)
+        stored = await _repo().put_agent_key(owner_id, paperclip_agent_id, plaintext)
     except Exception:
-        logger.exception(
+        stored = None
+        logger.exception("paperclip_api_key: row write raised owner=%s agent=%s", owner_id, paperclip_agent_id)
+    if stored is None:
+        logger.error(
             "paperclip_api_key: failed to persist key owner=%s agent=%s — Paperclip "
             "still has the key but we lost it; next provision will mint a new one",
             owner_id,

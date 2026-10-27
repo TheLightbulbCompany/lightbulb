@@ -1,15 +1,11 @@
 """Unit tests for paperclip_api_key.ensure_paperclip_api_key.
 
-Covers the mint-or-read flow: an existing Secrets Manager secret is read
-back and returned verbatim; a miss triggers a Paperclip
-create_agent_api_key call followed by a Secrets Manager create_secret. Every
-failure path swallows + returns None so a Paperclip (or Secrets Manager)
-outage never blocks container provision.
-
-Storage moved from the api-keys DDB table (Fernet-encrypted) to AWS Secrets
-Manager (plaintext SecretString) in the credential-layer redesign, so these
-tests patch ``boto3.client`` with an in-memory FakeSM rather than mocking
-``api_key_repo`` + encrypt/decrypt.
+Covers the mint-or-read flow: the workspace row is read first, the legacy
+Secrets Manager secret second; a miss on both mints via Paperclip and stores
+on the row only (no secret is ever created). Every failure path swallows +
+returns None so a Paperclip (or storage) outage never blocks provision.
+``FakeRepo`` stands in for ``PaperclipRepo`` (its moto round-trip lives in
+``tests/unit/repositories/test_paperclip_repo.py``); ``FakeSM`` for boto3.
 """
 
 from __future__ import annotations
@@ -126,8 +122,39 @@ def admin_client(monkeypatch):
     return client
 
 
+class FakeRepo:
+    """In-memory ``PaperclipRepo`` agent-key surface (create-only put, like the real one)."""
+
+    def __init__(self):
+        self.store: dict[tuple[str, str], str] = {}
+        self.put_calls: list[tuple[str, str]] = []
+
+    async def get_agent_key(self, org_id, agent_id):
+        return self.store.get((org_id, agent_id))
+
+    async def put_agent_key(self, org_id, agent_id, plaintext):
+        self.put_calls.append((org_id, agent_id))
+        return self.store.setdefault((org_id, agent_id), plaintext)
+
+
+@pytest.fixture
+def fake_repo(monkeypatch) -> FakeRepo:
+    repo = FakeRepo()
+    monkeypatch.setattr(paperclip_api_key, "_repo", lambda: repo)
+    return repo
+
+
 def _secret_name() -> str:
     return paperclip_api_key._secret_name("user_x", "friday-uuid")
+
+
+KEY = ("user_x", "friday-uuid")
+
+
+async def _ensure(admin_client):
+    return await paperclip_api_key.ensure_paperclip_api_key(
+        owner_id="user_x", paperclip_agent_id="friday-uuid", admin_client=admin_client
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -136,113 +163,80 @@ def _secret_name() -> str:
 
 
 @pytest.mark.asyncio
-async def test_mints_and_stores_when_no_existing_key(admin_client, fake_sm):
-    """SM miss → mint via Paperclip → create_secret stores the token."""
-    result = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
+async def test_mints_and_stores_on_the_row_and_creates_no_secret(admin_client, fake_sm, fake_repo):
+    """Row miss + SM miss -> mint via Paperclip -> the key lands on the row; no secret is created."""
+    result = await _ensure(admin_client)
 
     assert result == "pcli_live_abc"
-    admin_client.create_agent_api_key.assert_awaited_once()
-    # Idempotency key includes both owner_id and agent_id so retries
-    # collapse to the same Paperclip record.
+    # Idempotency key includes both owner_id and agent_id so retries collapse to one Paperclip record.
     assert admin_client.create_agent_api_key.await_args.kwargs["idempotency_key"] == "user_x:mcp-key:friday-uuid"
-    # Plaintext token stored in Secrets Manager under the namespaced name.
-    name = _secret_name()
-    assert fake_sm.store[name] == "pcli_live_abc"
-    assert fake_sm.create_calls == [(name, "pcli_live_abc")]
+    assert fake_repo.store[KEY] == "pcli_live_abc"
+    assert fake_sm.create_calls == []
     assert fake_sm.put_calls == []
 
 
 @pytest.mark.asyncio
-async def test_a_racing_writer_wins_and_our_duplicate_is_revoked(admin_client, fake_sm):
-    """SM read misses (store empty), so we mint; but a concurrent provision has
-    stored ITS key by the time create_secret runs. Create-only: the stored key
-    wins, we return it, and the key we just minted is revoked best-effort so the
-    agent is not left holding two live credentials."""
-    name = _secret_name()
+async def test_row_is_read_first_and_secrets_manager_is_not_touched(admin_client, fake_sm, fake_repo):
+    fake_repo.store[KEY] = "pcli_live_row"
+    fake_sm.store[_secret_name()] = "pcli_live_legacy"
+
+    assert await _ensure(admin_client) == "pcli_live_row"
+    assert fake_sm.get_calls == []
+    admin_client.create_agent_api_key.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_row_miss_falls_back_to_the_legacy_secret_without_minting(admin_client, fake_sm, fake_repo):
+    fake_sm.store[_secret_name()] = "pcli_live_legacy"
+
+    assert await _ensure(admin_client) == "pcli_live_legacy"
+    admin_client.create_agent_api_key.assert_not_awaited()
+    assert fake_repo.put_calls == []
+    assert fake_sm.create_calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_row_read_error_still_falls_back_to_the_legacy_secret(admin_client, fake_sm, fake_repo):
+    fake_repo.get_agent_key = AsyncMock(side_effect=RuntimeError("dynamodb down"))
+    fake_sm.store[_secret_name()] = "pcli_live_legacy"
+
+    assert await _ensure(admin_client) == "pcli_live_legacy"
+
+
+@pytest.mark.asyncio
+async def test_a_racing_writer_wins_and_our_duplicate_is_revoked(admin_client, fake_sm, fake_repo):
+    """Both reads miss, so we mint; a concurrent provision stored ITS key first. Create-only:
+    the stored key wins and the key we minted is revoked."""
     admin_client.revoke_agent_api_key = AsyncMock(return_value={})
+    real_put = fake_repo.put_agent_key
 
-    real_create = fake_sm.create_secret
+    async def racing_put(org_id, agent_id, plaintext):
+        fake_repo.store[(org_id, agent_id)] = "pcli_live_from_racer"
+        return await real_put(org_id, agent_id, plaintext)
 
-    def racing_create(*, Name, SecretString):
-        fake_sm.store[Name] = "pcli_live_from_racer"
-        return real_create(Name=Name, SecretString=SecretString)
+    fake_repo.put_agent_key = racing_put
 
-    fake_sm.create_secret = racing_create
-
-    result = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
-
-    assert result == "pcli_live_from_racer"
-    assert fake_sm.put_calls == []
-    assert fake_sm.store[name] == "pcli_live_from_racer"
+    assert await _ensure(admin_client) == "pcli_live_from_racer"
+    assert fake_repo.store[KEY] == "pcli_live_from_racer"
     admin_client.revoke_agent_api_key.assert_awaited_once_with(
         session_cookie="session=admin", agent_id="friday-uuid", key_id="key-1"
     )
 
 
 @pytest.mark.asyncio
-async def test_a_failed_revoke_of_the_duplicate_still_returns_the_winner(admin_client, fake_sm):
+async def test_a_failed_revoke_of_the_duplicate_still_returns_the_winner(admin_client, fake_sm, fake_repo):
     admin_client.revoke_agent_api_key = AsyncMock(side_effect=httpx.ConnectError("down"))
-    fake_sm.store[_secret_name()] = "pcli_live_from_racer"
-    fake_sm.get_secret_value = MagicMock(
-        side_effect=[FakeSM.ResourceNotFoundException("miss"), {"SecretString": "pcli_live_from_racer"}]
-    )
+    fake_repo.put_agent_key = AsyncMock(return_value="pcli_live_from_racer")
 
-    result = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
-
-    assert result == "pcli_live_from_racer"
+    assert await _ensure(admin_client) == "pcli_live_from_racer"
 
 
 @pytest.mark.asyncio
-async def test_reads_existing_key_without_calling_paperclip(admin_client, fake_sm):
-    """SM hit → return stored token, never touch Paperclip."""
-    fake_sm.store[_secret_name()] = "pcli_live_stored"
-
-    result = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
-
-    assert result == "pcli_live_stored"
-    # No mint — Paperclip wasn't called and nothing was written.
-    admin_client.create_agent_api_key.assert_not_awaited()
+async def test_second_call_is_idempotent_and_reads_the_row(admin_client, fake_sm, fake_repo):
+    assert await _ensure(admin_client) == "pcli_live_abc"
+    assert await _ensure(admin_client) == "pcli_live_abc"
+    admin_client.create_agent_api_key.assert_awaited_once()
     assert fake_sm.create_calls == []
-    assert fake_sm.put_calls == []
-
-
-@pytest.mark.asyncio
-async def test_second_call_is_idempotent_and_hits_sm_not_paperclip(admin_client, fake_sm):
-    """First call mints + stores; a second call reads SM and skips Paperclip."""
-    first = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
-    assert first == "pcli_live_abc"
-    admin_client.create_agent_api_key.assert_awaited_once()
-
-    second = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
-    assert second == "pcli_live_abc"
-    # Still only one mint across both calls — the second read short-circuits.
-    admin_client.create_agent_api_key.assert_awaited_once()
-    # Only one create_secret total (from the first call).
-    assert len(fake_sm.create_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -251,114 +245,54 @@ async def test_second_call_is_idempotent_and_hits_sm_not_paperclip(admin_client,
 
 
 @pytest.mark.asyncio
-async def test_returns_none_when_admin_session_fails(admin_client, fake_sm, monkeypatch):
-    """RuntimeError from get_admin_session_cookie (Secrets Manager miss /
-    malformed payload) is swallowed; we return None so provision proceeds."""
-
+async def test_returns_none_when_admin_session_fails(admin_client, fake_sm, fake_repo, monkeypatch):
     async def fail_cookie(_http):
         raise RuntimeError("secrets manager unavailable")
 
     monkeypatch.setattr(paperclip_api_key, "get_admin_session_cookie", fail_cookie)
 
-    result = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
-
-    assert result is None
+    assert await _ensure(admin_client) is None
     admin_client.create_agent_api_key.assert_not_awaited()
-    assert fake_sm.create_calls == []
+    assert fake_repo.put_calls == []
 
 
 @pytest.mark.asyncio
-async def test_returns_none_when_paperclip_5xxs(admin_client, fake_sm):
-    admin_client.create_agent_api_key = AsyncMock(side_effect=PaperclipApiError("upstream down", 503, None))
+@pytest.mark.parametrize("error", [PaperclipApiError("upstream down", 503, None), httpx.ConnectError("upstream down")])
+async def test_returns_none_when_the_mint_fails(admin_client, fake_sm, fake_repo, error):
+    admin_client.create_agent_api_key = AsyncMock(side_effect=error)
 
-    result = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
-
-    assert result is None
-    assert fake_sm.create_calls == []
-    assert fake_sm.put_calls == []
+    assert await _ensure(admin_client) is None
+    assert fake_repo.put_calls == []
 
 
 @pytest.mark.asyncio
-async def test_returns_none_when_transport_fails(admin_client, fake_sm):
-    admin_client.create_agent_api_key = AsyncMock(side_effect=httpx.ConnectError("upstream down"))
+async def test_returns_none_when_paperclip_response_missing_token(admin_client, fake_sm, fake_repo):
+    admin_client.create_agent_api_key = AsyncMock(return_value={"id": "key-1", "name": "lightbulb-mcp-server"})
 
-    result = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
-
-    assert result is None
-    assert fake_sm.create_calls == []
-    assert fake_sm.put_calls == []
+    assert await _ensure(admin_client) is None
+    assert fake_repo.put_calls == []
 
 
 @pytest.mark.asyncio
-async def test_returns_none_when_paperclip_response_missing_token(admin_client, fake_sm):
-    admin_client.create_agent_api_key = AsyncMock(
-        return_value={"id": "key-1", "name": "lightbulb-mcp-server"},
-    )  # no "token" field
-
-    result = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
-
-    assert result is None
-    assert fake_sm.create_calls == []
-    assert fake_sm.put_calls == []
-
-
-@pytest.mark.asyncio
-async def test_sm_read_error_degrades_to_remint(admin_client, fake_sm):
-    """A non-ResourceNotFound read error (transient SM outage) is swallowed
-    and treated as 'no key', so we fall through to a fresh mint + store."""
-
+async def test_sm_read_error_degrades_to_remint_onto_the_row(admin_client, fake_sm, fake_repo):
     def boom(*, SecretId):
         raise RuntimeError("secretsmanager read timeout")
 
     fake_sm.get_secret_value = boom
 
-    result = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
-
-    # Read error → re-mint path → token returned + stored.
-    assert result == "pcli_live_abc"
-    admin_client.create_agent_api_key.assert_awaited_once()
-    assert fake_sm.store[_secret_name()] == "pcli_live_abc"
+    assert await _ensure(admin_client) == "pcli_live_abc"
+    assert fake_repo.store[KEY] == "pcli_live_abc"
 
 
 @pytest.mark.asyncio
-async def test_returns_none_when_sm_store_fails(admin_client, fake_sm):
-    """A Secrets Manager write error after a successful mint is swallowed —
-    Paperclip has the key but we return None so the next pass re-mints."""
+@pytest.mark.parametrize("failure", [AsyncMock(return_value=None), AsyncMock(side_effect=RuntimeError("ddb"))])
+async def test_returns_none_when_the_row_store_fails(admin_client, fake_sm, fake_repo, failure):
+    """No workspace row (put returns None) or a write error: return None, never write a secret."""
+    fake_repo.put_agent_key = failure
 
-    def boom(*, Name, SecretString):
-        raise RuntimeError("secretsmanager unavailable")
-
-    fake_sm.create_secret = boom
-
-    result = await paperclip_api_key.ensure_paperclip_api_key(
-        owner_id="user_x",
-        paperclip_agent_id="friday-uuid",
-        admin_client=admin_client,
-    )
-
-    assert result is None
-    # We did mint (Paperclip was called) but the store failed.
+    assert await _ensure(admin_client) is None
     admin_client.create_agent_api_key.assert_awaited_once()
+    assert fake_sm.create_calls == []
 
 
 # ---------------------------------------------------------------------------

@@ -542,8 +542,6 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
     already-read row, never re-read here (a wipe's caller already holds the authoritative
     ``ALL_OLD`` image; a rollback's caller already read it strongly consistent).
     """
-    from core.billing.bedrock_gate_tokens import delete_gate_token_rows
-
     from core.services import browser_control
 
     try:
@@ -556,19 +554,7 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
     arn = container_row.get("agentcore_runtime_arn")
     if arn:
         await stop_runtime_session(owner_id, arn)  # best-effort; never raises
-        try:
-            await run_in_thread(_delete_runtime, arn)
-        except Exception:  # noqa: BLE001 — best-effort: the runtime may already be gone
-            logger.warning(
-                "hermes teardown: DeleteAgentRuntime failed for owner=%s arn=%s", owner_id, arn, exc_info=True
-            )
-
-    current_hash = container_row.get("bedrock_gate_token_hash")
-    if current_hash:
-        try:
-            await delete_gate_token_rows([current_hash])
-        except Exception:  # noqa: BLE001 — best-effort: a stranded row is a known, accepted risk elsewhere too
-            logger.warning("hermes teardown: could not revoke gate token for owner=%s", owner_id, exc_info=True)
+    await _delete_runtime_and_bearer(owner_id, container_row)
 
     try:
         await run_in_thread(_delete_boot_secret, owner_id)
@@ -588,6 +574,35 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
             logger.warning("hermes teardown: could not delete S3 profiles for owner=%s", owner_id, exc_info=True)
 
 
+async def _delete_runtime_and_bearer(owner_id: str, container_row: dict) -> None:
+    """``DeleteAgentRuntime`` on the row's runtime and revoke the row's gate token: the two names
+    that belong to this runtime alone, not to the owner. Best-effort; never raises."""
+    from core.billing.bedrock_gate_tokens import delete_gate_token_rows
+
+    arn = container_row.get("agentcore_runtime_arn")
+    if arn:
+        try:
+            await run_in_thread(_delete_runtime, arn)
+        except Exception:  # noqa: BLE001 — best-effort: the runtime may already be gone
+            logger.warning(
+                "hermes teardown: DeleteAgentRuntime failed for owner=%s arn=%s", owner_id, arn, exc_info=True
+            )
+
+    current_hash = container_row.get("bedrock_gate_token_hash")
+    if current_hash:
+        try:
+            await delete_gate_token_rows([current_hash])
+        except Exception:  # noqa: BLE001 — best-effort: a stranded row is a known, accepted risk elsewhere too
+            logger.warning("hermes teardown: could not revoke gate token for owner=%s", owner_id, exc_info=True)
+
+
+async def _superseded(owner_id: str, arn: str | None) -> bool:
+    """A new workspace was provisioned under this owner id after the wipe deleted the row: its
+    boot secret carries the old member key over, so every owner-keyed name is now ITS."""
+    row = await container_repo.get_by_owner_id(owner_id)
+    return bool(row) and row.get("agentcore_runtime_arn") != arn
+
+
 _runtime_teardowns: set[asyncio.Task] = set()
 FORGET_RETRY_S = 20
 FORGET_WINDOW_S = 180
@@ -596,15 +611,21 @@ FORGET_WINDOW_S = 180
 async def _forget_then_teardown(owner_id: str, container: dict, author: str) -> None:
     """An owner wipe whose cloud member was parked: retry ``memory.forget_author`` against the
     captured row (the containers row is already deleted; an invoke cold-starts the runtime), then
-    tear the runtime down whatever happened. Never raises.
+    tear the runtime down whatever happened. Never raises. If the owner id was provisioned again
+    meanwhile (``_superseded``), the late forget would tombstone the new workspace's entries and
+    the owner-keyed deletes would take its boot secret, network state and profiles: then only the
+    captured runtime and its gate token go.
     ponytail: in-process like workspace_memory's tail, so a backend task stopping inside the
     window leaks the runtime; a durable follow-up (SFN wait) if that ever shows up."""
     from core.services import container_rpc
 
+    arn = container.get("agentcore_runtime_arn")
     retry_s = FORGET_RETRY_S
     deadline = time.monotonic() + FORGET_WINDOW_S
-    forgot = False
+    forgot = superseded = False
     while not forgot:
+        if superseded := await _superseded(owner_id, arn):
+            break
         try:
             await container_rpc.call(owner_id, "memory.forget_author", {"author": author}, target=container)
             forgot = True
@@ -614,6 +635,10 @@ async def _forget_then_teardown(owner_id: str, container: dict, author: str) -> 
                 break
             await asyncio.sleep(retry_s)
     try:
+        if superseded or await _superseded(owner_id, arn):
+            await _delete_runtime_and_bearer(owner_id, container)
+            logger.warning("owner wipe: owner provisioned again; only the old runtime deleted owner=%s", owner_id)
+            return
         await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=True)
         logger.info("owner wipe: runtime torn down owner=%s forgot=%s", owner_id, forgot)
     except Exception:  # noqa: BLE001 -- nothing awaits this task

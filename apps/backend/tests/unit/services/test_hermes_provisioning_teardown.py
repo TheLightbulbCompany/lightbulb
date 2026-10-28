@@ -291,6 +291,29 @@ async def test_a_member_that_never_answers_still_loses_its_runtime_after_the_win
 
 
 @pytest.mark.asyncio
+async def test_a_workspace_provisioned_again_mid_window_keeps_its_names(monkeypatch):
+    """The new boot secret carries the old member key over: no late forget, and only the captured
+    runtime and its gate token are deleted -- never the owner-keyed secret, state or profiles."""
+    import asyncio
+
+    calls = _parked(monkeypatch, [False, True])
+    await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True)
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={**ROW, "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/r2"}),
+    )
+    deleted, revoked = [], AsyncMock()
+    monkeypatch.setattr(hermes_provisioning, "_delete_runtime", deleted.append)
+    monkeypatch.setattr("core.billing.bedrock_gate_tokens.delete_gate_token_rows", revoked)
+    monkeypatch.setattr(hermes_provisioning, "_delete_boot_secret", lambda *a: calls.append("secret"))
+    (task,) = hermes_provisioning._runtime_teardowns
+    await asyncio.wait_for(task, 1)
+    assert deleted == [ROW["agentcore_runtime_arn"]]
+    revoked.assert_awaited_once_with(["hash-1"])
+    assert "try:True" not in calls and "runtime" not in calls and "secret" not in calls
+
+
+@pytest.mark.asyncio
 async def test_a_reprovision_keeps_workspace_memory(monkeypatch):
     calls = _seam(monkeypatch, row=ROW)
     await hermes_provisioning.delete_workspace_runtime("org_a")

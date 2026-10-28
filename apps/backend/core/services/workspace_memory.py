@@ -39,6 +39,7 @@ from botocore.exceptions import ClientError, ParamValidationError
 
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.services import memory_stages
 
 logger = logging.getLogger(__name__)
 
@@ -280,11 +281,17 @@ def _scopes(owner_id: str, user_id: str) -> tuple[str, str]:
 def _view(r: dict) -> dict:
     text = (r.get("content") or {}).get("text", "")
     confirmed = text.startswith(CONFIRMED_PREFIX)
+    # status, history and speaker are the recall page's, parsed by memory_stages.
+    shown = memory_stages._result(memory_stages.from_record(r, "claim"))
     return {
         "id": r["memoryRecordId"],
         "text": text.removeprefix(CONFIRMED_PREFIX),
         "createdAt": r["createdAt"].isoformat(),
         "confirmed": confirmed,
+        "status": shown["status"],
+        "history": shown["history"],
+        "speaker": shown["sources"][0]["speaker"],
+        "source": {k: shown["sources"][0][k] for k in ("sourceId", "occurredAt")},
     }
 
 

@@ -431,3 +431,29 @@ async def test_drain_retries_then_drops_a_failing_op_and_never_raises(table):
 async def test_drain_swallows_storage_errors():
     with patch("core.repositories.messaging_repo._table", side_effect=RuntimeError("down")):
         assert await network_member.drain_ops(OWNER) == 0
+
+
+async def test_import_skips_refused_entries_logs_them_and_advances_the_watermark(table, agentcore, caplog):
+    agentcore.add_response(
+        "list_memory_records",
+        {
+            "memoryRecordSummaries": [
+                fact(rid("r1"), "Ana: api port: 8080"),
+                fact(rid("r2"), "Ana: api key: sk-secret"),
+            ]
+        },
+    )
+    no_sessions(agentcore)
+
+    async def refuse(owner_id, op, params, timeout=30.0):
+        if op == "memory.import":
+            return {"ids": ["e0", None], "refused": [{"index": 1, "reason": "secret"}]}
+        return {}
+
+    with caplog.at_level("WARNING", logger="core.services.memory_sync"):
+        out = await run(refuse)
+    assert out["imported"] == 1
+    assert memory_sync._get(OWNER, "MEMLINK#" + rid("r1"))["entry"] == "e0"
+    assert not memory_sync._get(OWNER, "MEMLINK#" + rid("r2"))
+    assert memory_sync._get(OWNER, "MEMSYNC")["records_after"]
+    assert "secret" in caplog.text and "sk-secret" not in caplog.text

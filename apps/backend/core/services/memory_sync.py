@@ -19,14 +19,18 @@ Nothing here logs record or entry text.
 """
 
 import hashlib
+import logging
 import re
 import time
 from datetime import datetime, timezone
 
+from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
 from core.services import network_member
 from core.services.workspace_memory import _client, _pages
+
+logger = logging.getLogger(__name__)
 
 _BATCH = 100  # AgentCore batch calls and memory.import
 _STATE = "MEMSYNC"
@@ -168,11 +172,32 @@ async def _import_facts(owner_id: str, memory_id: str, ns: str, state: dict, sta
         ids = answer.get("ids") or []
         if len(ids) != len(chunk):
             raise RuntimeError("memory sync: memory.import answered a different number of ids")
+        if answer.get("refused"):
+            # Final, not a retry: a secret or an oversize fact. Reasons only, never the fact.
+            logger.warning(
+                "memory sync: memory.import refused owner=%s refused=%s",
+                owner_id,
+                [(r.get("index"), r.get("reason")) for r in answer["refused"]],
+            )
         for item, entry_id in zip(chunk, ids):
+            if entry_id is None:
+                continue
             await run_in_thread(_record_import, owner_id, item, entry_id)
-        done += len(chunk)
+            done += 1
     state["records_after"] = started
     return done, False
+
+
+async def entry_for(owner_id: str, record_id: str) -> str | None:
+    """The log entry a facts record was imported as (its ``MEMLINK`` row), if any."""
+    return (await run_in_thread(_get, owner_id, f"MEMLINK#{record_id}")).get("entry")
+
+
+async def drop_mirror(owner_id: str, entry_id: str) -> None:
+    """Delete an entry's ``entries`` record and its mapping rows (what a tombstone does)."""
+    memory_id = settings.AGENTCORE_MEMORY_ID
+    if memory_id:
+        await run_in_thread(_delete_for_tombstone, _client(), owner_id, memory_id, entry_id)
 
 
 # ---------------------------------------------------------------------------

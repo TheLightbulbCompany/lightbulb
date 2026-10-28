@@ -1079,6 +1079,7 @@ app.include_router(ideas_router.router, prefix="/api/v1", tags=["ideas"])
 from routers import memory as memory_router  # noqa: E402
 
 app.include_router(memory_router.router, prefix="/api/v1/memory", tags=["memory"])
+app.include_router(memory_router.internal_router, prefix="/api/v1/internal/memory", tags=["memory"])
 
 # Sessions a person uploads from the CLI, by choice (metadata or full).
 from routers import sessions as sessions_router  # noqa: E402

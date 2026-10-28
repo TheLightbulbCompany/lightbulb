@@ -4,7 +4,7 @@ Adapted from sfalsin/hermes-agentcore-memory (MIT License, Copyright (c) sfalsin
 https://github.com/sfalsin/hermes-agentcore-memory
 
 Differences from the original, all deliberate:
-- Two scopes. Team: ``actorId = <owner>``, records in ``/owners/<owner>/``. Private to one
+- Two scopes (the backend applies them on read). Team: ``actorId = <owner>``, records in ``/owners/<owner>/``. Private to one
   person: ``actorId = <owner>:<userId>``, records in ``/owners/<owner>:<userId>/`` (the memory's
   ``/owners/{actorId}/`` template does the split; no resource change). Only a 1:1 DM turn whose
   speaker is a person is private, and only a DM recalls that person's private scope -- in any
@@ -17,11 +17,12 @@ Differences from the original, all deliberate:
   turn path on its own serialized worker, so the write is inline there -- no second thread.
 - Text is passed through upstream's ``redact_for_egress`` first: memory is shared by every
   agent in the workspace, so a key pasted in one DM must not resurface in another room.
-- Recall is passive on every turn, plus one tool (``workspace_memory_search``) the agent calls
-  on purpose: passive recall searches with the message as written, so a question about
-  distribution never surfaces the demo facts it needs. Near-duplicates are folded, since the
-  strategy stores one fact several times and they crowd the few slots. No write tool: every turn
-  is already written (``sync_turn``), and MEMORY.md is the agent's own note.
+- Reads go through the backend, not AgentCore: ``POST /api/v1/memory/recall`` answers the
+  passive recall before each turn (the user's text only, 400 tokens) and the search tool
+  (``workspace_memory_search``). The backend sorts private from shared, folds duplicates and
+  puts contested facts first. Writes: every turn is an event (``sync_turn``), and ``remember``
+  forwards a deliberate fact to ``POST /api/v1/memory/remember``. The plugin never writes
+  records; the backend's sync turns the events into them.
 - Each turn's recall also carries the live task board (in progress, and done in the last 14
   days), read with the agent's own Paperclip key: memory keeps "X is making the demos" long after
   the board says done (prod 2026-10-15, Pulse planned demos the team had already shipped).
@@ -56,11 +57,11 @@ logger = logging.getLogger(__name__)
 _QUERY_MAX = 10_000     # SearchCriteria.searchQuery
 _TEXT_MAX = 100_000     # Content.text
 _SESSION_MAX = 100      # SessionId, pattern [a-zA-Z0-9][a-zA-Z0-9-_]*
-# RetrieveMemoryRecords counts by searchCriteria.topK; maxResults only pages (prod audit
-# 2026-09-24: maxResults=5 returned 10 records, topK=3 returned 3).
-_MAX_RESULTS = 5
-# What the search tool returns: it is asked for on purpose, so it may say more.
-_SEARCH_RESULTS = 10
+# Evidence tokens the backend may spend on the page: passive recall is small; the search tool is
+# asked for on purpose, so it may say more.
+_RECALL_BUDGET = 400
+_SEARCH_BUDGET = 1500
+_BACKEND_TIMEOUT_S = 3.0  # Hermes gives prefetch 8 s in all
 # The board: how many rows of each kind, how far back "done" reaches, and how long one read
 # serves later turns (a busy room asks every few seconds; the board moves in minutes).
 _BOARD_ROWS = 10
@@ -96,6 +97,13 @@ def _user_text(text: str) -> str:
     return text.partition("\n")[2] if text.startswith(_TURN_CONTEXT_PREFIX) else text
 
 
+def _speaker(line: str) -> tuple:
+    """("<name>", "<text>") of a "<name>: <text>" line; ("", line) when it has no speaker (a
+    follow-up notice reads "[IMPORTANT: ...")."""
+    name, sep, rest = line.partition(": ")
+    return (name, rest) if sep and "[" not in name and "\n" not in name else ("", line)
+
+
 def _agent_name(hermes_home: str) -> str:
     """The display name from the backend-written SOUL.md heading ("# <name>")."""
     try:
@@ -108,19 +116,6 @@ def _agent_name(hermes_home: str) -> str:
     return ""
 
 
-def _dedupe(texts, limit: int) -> List[str]:
-    """Distinct facts, in order. The strategy stores one fact several times with small changes in
-    wording or a later date (prod: three copies of one outreach preference in a top 5), so the
-    key is the opening words, not the whole text."""
-    seen, out = set(), []
-    for t in texts:
-        key = re.sub(r"\W+", " ", t.lower()).strip()[:80]
-        if key not in seen:
-            seen.add(key)
-            out.append(t)
-    return out[:limit]
-
-
 def _secret(name: str) -> str:
     """A value from the turn's profile secret scope (the profile's .env), else the process env."""
     try:
@@ -128,6 +123,19 @@ def _secret(name: str) -> str:
         return (get_secret(name) or "").strip()
     except ImportError:
         return os.environ.get(name, "").strip()
+
+
+def _backend(path: str, body: dict) -> dict:
+    """POST to the backend with the agent's own key, as the board read does. Raises when there is
+    no identity or the call fails; callers degrade."""
+    base, key = _secret("PAPERCLIP_API_URL").rstrip("/"), _secret("PAPERCLIP_API_KEY")
+    if not (base and key):
+        raise RuntimeError("no backend identity")
+    req = urllib.request.Request(
+        f"{base}/api/v1/memory/{path}", data=json.dumps(body).encode(), method="POST",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=_BACKEND_TIMEOUT_S) as res:
+        return json.loads(res.read() or b"{}")
 
 
 def _issues(base: str, key: str, company: str, **query) -> list:
@@ -224,48 +232,38 @@ class AgentCoreMemoryProvider(MemoryProvider):
             return ("Recalled memory may appear in your context: workspace memory shared by every "
                     "agent and room, plus memory private to the person in this DM. What they say "
                     "here stays private to them and is remembered automatically, so the memory "
-                    "tool cannot save in this DM (its notes are shown in every room); if they ask "
-                    "you to remember something, just confirm that you will. Look up past work with "
-                    "workspace_memory_search.")
+                    "tool cannot save in this DM (its notes are shown in every room); to keep "
+                    "something on purpose use remember, which stays personal unless they ask to "
+                    "share it. Look up past work with workspace_memory_search.")
         return ("Recalled workspace memory may appear in your context; it is shared by every "
                 "agent in this workspace and may come from any room. Look up past work with "
-                "workspace_memory_search, and trust the task board over a remembered fact.")
+                "workspace_memory_search, save a fact worth keeping with remember, and trust the "
+                "task board over a remembered fact.")
 
-    def _recall(self, namespace: str, query: str, top_k: int = _MAX_RESULTS) -> List[str]:
+    def _search(self, question: str, budget: int) -> List[dict]:
+        """The backend's recall page (contested facts first), [] when it fails. Never logs the question."""
         try:
-            resp = _client().retrieve_memory_records(
-                memoryId=self._memory_id, namespace=namespace,
-                searchCriteria={"searchQuery": query, "topK": top_k})
+            return _backend("recall", {"question": question[:_QUERY_MAX], "budget_tokens": budget}).get("results") or []
         except Exception as exc:  # recall is best-effort: a slow or denied call is "no memory"
-            logger.warning("agentcore memory recall failed: %s", exc)
+            logger.warning("memory recall failed: %s", exc)
             return []
-        texts = [(r.get("content") or {}).get("text", "") for r in resp.get("memoryRecordSummaries", [])]
-        return [t.strip() for t in texts if t and t.strip()]
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         # Hermes keys recall on the persisted user text and skips it for a trivial prompt
         # (agent/turn_context.py), but ours carries the turn-context JSON line, so neither works
         # until it is stripped. A room line reads "<name>: <text>"; the skip judges the text.
         line = _user_text(query or "")
-        # A follow-up notice carries no speaker ("[IMPORTANT: ..."), so only a "<name>: " head is dropped.
-        name, sep, rest = line.partition(": ")
-        said = rest if line != query and sep and "[" not in name and "\n" not in name else line
+        said = _speaker(line)[1] if line != query else line
         if is_trivial_prompt(said) or not self.is_available():
             return ""
         with ThreadPoolExecutor(1) as pool:  # the board read overlaps the recall round trip
             # The profile's secret scope is a contextvar: a bare pool thread would not see it.
             board = pool.submit(contextvars.copy_context().run, board_snapshot)
-            texts = self._search(line[:_QUERY_MAX], _MAX_RESULTS)
+            results = self._search(line, _RECALL_BUDGET)
             board = board.result()
-        logger.info("agentcore memory recall: %d records, board %s", len(texts), "yes" if board else "no")
-        return "\n\n".join(p for p in ("\n".join(f"- {t}" for t in texts), board) if p)
-
-    def _search(self, query: str, limit: int) -> List[str]:
-        # Private first, in parallel with team, so a DM costs one round trip, not two.
-        namespaces = [f"/owners/{self._actor()}/"] * bool(self._member) + [f"/owners/{self._owner}/"]
-        with ThreadPoolExecutor(len(namespaces)) as pool:
-            found = pool.map(lambda ns: self._recall(ns, query, limit), namespaces)
-            return _dedupe([t for batch in found for t in batch], limit)
+        logger.info("memory recall: %d results, board %s", len(results), "yes" if board else "no")
+        facts = "\n".join(f"- {r['content']}" for r in results if r.get("content"))
+        return "\n\n".join(p for p in ("Remembered:\n" + facts if facts else "", board) if p)
 
     def on_pre_compress(self, messages) -> str:
         board = board_snapshot() if self.is_available() else ""
@@ -274,7 +272,10 @@ class AgentCoreMemoryProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", **_) -> None:
         if not self.is_available():
             return
-        turns = ((_user_text(user_content or ""), "USER"),
+        said = _user_text(user_content or "")
+        if self._member and said.strip() and not _speaker(said)[0]:
+            said = f"{self._member}: {said}"  # the bridge names every person; this is the fallback
+        turns = ((said, "USER"),
                  (f"{self._agent}: {assistant_content}" if assistant_content and assistant_content.strip() else "",
                   "ASSISTANT"))
         payload = [{"conversational": {"content": {"text": redact_for_egress(text)[:_TEXT_MAX]}, "role": role}}
@@ -294,6 +295,24 @@ class AgentCoreMemoryProvider(MemoryProvider):
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [{
+            "name": "remember",
+            "description": ("Save a fact, decision, lesson or preference to workspace memory. Returns what "
+                            "is already known on the subject; call again with `replaces` if yours is a "
+                            "change. Personal unless the person says to share"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subject": {"type": "string", "description": "What it is about, a few words."},
+                    "fact": {"type": "string", "description": "The thing to keep, one self-contained sentence."},
+                    "kind": {"type": "string", "enum": ["fact", "decision", "lesson", "preference"]},
+                    "scope": {"type": "string", "enum": ["me", "team"],
+                              "description": "me: only this person. team: the whole workspace."},
+                    "replaces": {"type": "array", "items": {"type": "string"},
+                                 "description": "Ids of remembered items this one supersedes."},
+                },
+                "required": ["subject", "fact", "kind"],
+            },
+        }, {
             "name": "workspace_memory_search",
             "description": (
                 "Search workspace memory: facts every agent has learned in every room (and, in a DM, "
@@ -309,12 +328,35 @@ class AgentCoreMemoryProvider(MemoryProvider):
         }]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
-        query = str((args or {}).get("query") or "").strip()
+        args = args or {}
+        if tool_name == "remember":
+            return self._remember(args)
+        query = str(args.get("query") or "").strip()
         if tool_name != "workspace_memory_search" or not query:
             return json.dumps({"error": "workspace_memory_search needs a query"})
         if not self.is_available():
             return json.dumps({"error": "workspace memory is off"})
-        return json.dumps({"results": self._search(query[:_QUERY_MAX], _SEARCH_RESULTS)}, ensure_ascii=False)
+        try:
+            page = _backend("recall", {"question": query[:_QUERY_MAX], "budget_tokens": _SEARCH_BUDGET})
+        except Exception as exc:
+            logger.warning("memory search failed: %s", exc)
+            return json.dumps({"error": "workspace memory is unavailable right now"})
+        return json.dumps({"results": page.get("results") or []}, ensure_ascii=False)
+
+    def _remember(self, args: Dict[str, Any]) -> str:
+        subject, fact = str(args.get("subject") or "").strip(), str(args.get("fact") or "").strip()
+        if not (subject and fact):
+            return json.dumps({"error": "remember needs a subject and a fact"})
+        body = {"subject": subject, "fact": redact_for_egress(fact), "kind": args.get("kind") or "fact",
+                # A room is shared already; a 1:1 DM is the person's own.
+                "scope": args.get("scope") or ("me" if self._member else "team")}
+        if args.get("replaces"):
+            body["replaces"] = [str(i) for i in args["replaces"]]
+        try:
+            return json.dumps(_backend("remember", body), ensure_ascii=False)
+        except Exception as exc:
+            logger.warning("memory remember failed: %s", exc)
+            return json.dumps({"error": "could not save to memory right now"})
 
 
 def register(ctx) -> None:

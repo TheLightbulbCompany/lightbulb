@@ -15,8 +15,9 @@ Differences from the original, all deliberate:
 - Writes go through ``CreateEvent`` (short-term events the memory's strategy extracts
   records from), not ``BatchCreateMemoryRecords``. Hermes already calls ``sync_turn`` off the
   turn path on its own serialized worker, so the write is inline there -- no second thread.
-- Text is passed through upstream's ``redact_for_egress`` first: memory is shared by every
-  agent in the workspace, so a key pasted in one DM must not resurface in another room.
+- Turn text is passed through upstream's ``redact_for_egress`` first: memory is shared by every
+  agent in the workspace, so a key pasted in one DM must not resurface in another room. A
+  ``remember`` is not scrubbed: the backend refuses a credential-shaped fact and says why.
 - Reads go through the backend, not AgentCore: ``POST /api/v1/internal/memory/recall/<owner>`` answers the
   passive recall before each turn (the user's text only, 400 tokens) and the search tool
   (``workspace_memory_search``). The backend sorts private from shared, folds duplicates and
@@ -373,7 +374,9 @@ class AgentCoreMemoryProvider(MemoryProvider):
         subject, fact = str(args.get("subject") or "").strip(), str(args.get("fact") or "").strip()
         if not (subject and fact):
             return json.dumps({"error": "remember needs a subject and a fact"})
-        body = {"subject": redact_for_egress(subject), "fact": redact_for_egress(fact), "kind": args.get("kind") or "fact",
+        # Sent as written: the backend refuses a credential-shaped fact (422, the agent is told
+        # why) instead of storing a scrubbed copy. Only raw turns (sync_turn) are redacted.
+        body = {"subject": subject, "fact": fact, "kind": args.get("kind") or "fact",
                 # A room is shared already; a 1:1 DM is the person's own.
                 "scope": args.get("scope") or ("me" if self._member else "team")}
         if self._member:

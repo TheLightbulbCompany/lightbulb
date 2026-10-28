@@ -367,8 +367,6 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {own && !!session.pendingPickups?.length && <JoinRequests waiting={session.pendingPickups} ids={session.pendingPickupIds}
       line={pickupRequestLine} decide={(who, d, id) => client.decideLocalSessionPickup!(session.sessionId, who, d, id)}
       enabled={!!client.decideLocalSessionPickup} personName={personName} />}
-    {/* A Claude job's hand-off note: what it left its person, shown as text, never as a prompt. */}
-    {waitingOn === null && session.note && sessionLive(session) && <p role="status" className="session-ended-line">{session.note}</p>}
     {(session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
       {paused && session.status === "ended" && <p role="status">Only you see this session. Sharing again shares the whole session.</p>}
       {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}

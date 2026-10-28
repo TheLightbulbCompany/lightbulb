@@ -185,7 +185,7 @@ describe("the sidebar state table (spec 2026-10-26 (e))", () => {
     [{ status: "idle", terminal: "held" }, "here", "Idle", "Open"],
     [{ status: "busy", terminal: "attach" }, "background", "Running in background", "Attach"],
     [{ status: "waiting-approval", terminal: "attach", waitingFor: "permission prompt" }, "waiting", "Waiting on you", "Attach"],
-    [{ status: "idle", terminal: "attach", note: "run lightbulb login, then press Resume" }, "waiting", "Waiting on you", "Attach"],
+    [{ status: "idle", terminal: "attach", note: "run lightbulb login, then press Resume" }, "background", "Running in background", "Attach"],
     [{ status: "idle", terminal: "attach", done: true }, "done", "Done", "Attach"],
     [{ status: "offline" }, "offline", "Offline", null],
     [{ status: "ended", endedReason: "exited" }, "stopped", "Stopped", "Resume"],
@@ -197,12 +197,12 @@ describe("the sidebar state table (spec 2026-10-26 (e))", () => {
     expect(sessionStateAction(s)).toBe(action);
   });
 
-  it("previews an open prompt's reason, and a hand-off note as text, never as a prompt", () => {
+  it("previews an open prompt's reason only; a hand-off note is never shown", () => {
     expect(sessionWaitingLine({ status: "waiting-approval", waitingFor: "permission prompt" })).toBe("Waiting for input: permission prompt");
     expect(sessionWaitingLine({ status: "waiting-approval" })).toBe("Waiting for input");
-    expect(sessionWaitingLine({ status: "idle", note: "run lightbulb login" })).toBe("run lightbulb login");
+    expect(sessionWaitingLine({ status: "idle", note: "run lightbulb login" } as never)).toBeNull();
     expect(sessionWaitingLine({ status: "idle" })).toBeNull();
-    expect(sessionWaitingLine({ status: "ended", note: "stale" })).toBeNull();
+    expect(sessionWaitingLine({ status: "ended", note: "stale" } as never)).toBeNull();
   });
 });
 
@@ -215,12 +215,12 @@ describe("sessionsNeedingYou", () => {
     row("me", "ended", "a stale note"),
     row("other", "waiting-approval"),
   ];
-  it("counts your own prompts and notes, not a teammate's or an ended one", () => {
-    expect(sessionsNeedingYou(rows, "me")).toBe(2);
+  it("counts your own open prompts only, not notes, a teammate's or an ended one", () => {
+    expect(sessionsNeedingYou(rows, "me")).toBe(1);
     expect(sessionsNeedingYou(rows, null)).toBe(0);
   });
   it("leaves out a kind turned off; badge-only still counts", () => {
-    expect(sessionsNeedingYou(rows, "me", { ...SESSION_NOTIFICATION_DEFAULTS, waiting: "off" })).toBe(1);
+    expect(sessionsNeedingYou(rows, "me", { ...SESSION_NOTIFICATION_DEFAULTS, waiting: "off" })).toBe(0);
     expect(sessionsNeedingYou(rows, "me", { ...SESSION_NOTIFICATION_DEFAULTS, waiting: "badge", attention: "off" })).toBe(1);
   });
 });

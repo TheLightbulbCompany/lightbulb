@@ -45,7 +45,7 @@ export type SessionState = "here" | "background" | "waiting" | "done" | "offline
 export function sessionState(s: Pick<LocalSession, "status" | "note" | "done" | "terminal">): SessionState {
   if (s.status === "ended") return "stopped";
   if (s.status === "offline") return "offline";
-  if (s.status === "waiting-approval" || s.note) return "waiting";
+  if (s.status === "waiting-approval") return "waiting";
   if (s.done) return "done";
   return s.terminal === "attach" ? "background" : "here";
 }
@@ -67,8 +67,7 @@ export function sessionsNeedingYou(
   prefs: SessionNotifications = SESSION_NOTIFICATION_DEFAULTS,
 ): number {
   return sessions.filter((s) => s.humanUserId === userId && (
-    s.status === "waiting-approval" ? prefs.waiting !== "off"
-      : s.status !== "ended" && s.status !== "offline" && Boolean(s.note?.trim()) && prefs.attention !== "off"
+    s.status === "waiting-approval" && prefs.waiting !== "off"
   )).length;
 }
 
@@ -107,11 +106,11 @@ export const sessionPrLabel = (s: Pick<LocalSession, "pr">): string | null => {
 export const sessionSignalsLine = (s: Pick<LocalSession, "agents" | "pr">): string | null =>
   [sessionAgentsLabel(s), sessionPrLabel(s)].filter(Boolean).join(" · ") || null;
 
-/** What a waiting session waits on, as its row's preview: the open prompt's reason, else its job's
- *  note. A note is shown as text, never as a prompt. Null when it waits on nothing. */
-export const sessionWaitingLine = (s: Pick<LocalSession, "status" | "waitingFor" | "note">): string | null =>
-  s.status === "waiting-approval" ? `${sessionStatus["waiting-approval"]}${s.waitingFor ? `: ${s.waitingFor}` : ""}`
-    : s.status === "ended" || s.status === "offline" ? null : s.note?.trim() || null;
+/** What a waiting session waits on, as its row's preview: the open prompt's reason. Null when it
+ *  waits on nothing. A Claude job's hand-off note is not shown anywhere (owner 2026-10-27): the
+ *  terminal already says it. */
+export const sessionWaitingLine = (s: Pick<LocalSession, "status" | "waitingFor">): string | null =>
+  s.status === "waiting-approval" ? `${sessionStatus["waiting-approval"]}${s.waitingFor ? `: ${s.waitingFor}` : ""}` : null;
 
 /** Why an ended session ended, when it is not the ordinary leave. `mac` is "your Mac" or "Leo's Mac"; the phone passes its curly ’ as `apostrophe`.
  *  "stopped while idle": the Mac stopped it after an idle hour with nobody on it (sooner when short of memory), as Claude's background sessions; Resume continues it. */

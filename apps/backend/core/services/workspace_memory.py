@@ -351,7 +351,7 @@ def _entry_id(r: dict) -> str:
     return ((r.get("metadata") or {}).get("entryId") or {}).get("stringValue") or ""
 
 
-def _view(r: dict) -> dict:
+def _view(r: dict, mirrored: bool = False) -> dict:
     text = (r.get("content") or {}).get("text", "")
     confirmed = text.startswith(CONFIRMED_PREFIX)
     # status, history and speaker are the recall page's, parsed by memory_stages.
@@ -365,8 +365,9 @@ def _view(r: dict) -> dict:
         "history": shown["history"],
         "speaker": shown["sources"][0]["speaker"],
         # network: a mirrored log entry (team remembers, approved lessons, a person's own notes);
-        # room: what AgentCore extracted from the workspace's conversations.
-        "source": "network" if _entry_id(r) else "room",
+        # room: what AgentCore extracted from the workspace's conversations. ``mirrored``: listed from
+        # the entries namespace, which only the sync writes (record metadata is not always returned).
+        "source": "network" if mirrored or _entry_id(r) else "room",
     }
 
 
@@ -376,9 +377,11 @@ def _not_imported(owner_id: str, mirrored: list[dict], facts_ids: set[str]) -> l
     ponytail: one Dynamo read per mirrored record (<= _LIST_CAP); batch-get if listing gets slow."""
     from core.services import memory_sync  # lazy: it imports this module
 
-    return [
-        r for r in mirrored if memory_sync._get(owner_id, f"MEMENTRY#{_entry_id(r)}").get("facts_rec") not in facts_ids
-    ]
+    def imported(r: dict) -> bool:
+        eid = _entry_id(r)  # no entry id: no link row to read, so nothing says it is a duplicate
+        return bool(eid) and memory_sync._get(owner_id, f"MEMENTRY#{eid}").get("facts_rec") in facts_ids
+
+    return [r for r in mirrored if not imported(r)]
 
 
 def _list_scope(client, memory_id: str, ns: str) -> tuple[list[dict], bool]:
@@ -434,8 +437,13 @@ async def list_memories(owner_id: str, user_id: str) -> dict:
             rows[key], more = _list_scope(client, memory_id, ns)
             truncated |= more
         facts_ids = {r["memoryRecordId"] for r in rows["team"]}
-        rows["team"] += _not_imported(owner_id, rows.pop("entries"), facts_ids)
-        out = {k: [_view(r) for r in sorted(v, key=lambda r: r["createdAt"], reverse=True)] for k, v in rows.items()}
+        mirrors = _not_imported(owner_id, rows.pop("entries"), facts_ids)
+        rows["team"] += mirrors
+        net = {r["memoryRecordId"] for r in mirrors}
+        out = {
+            k: [_view(r, r["memoryRecordId"] in net) for r in sorted(v, key=lambda r: r["createdAt"], reverse=True)]
+            for k, v in rows.items()
+        }
         return {**out, "truncated": truncated}
 
     return await run_in_thread(run)

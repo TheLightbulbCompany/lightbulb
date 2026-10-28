@@ -78,14 +78,21 @@ async def test_team_lists_mirrored_log_entries_once_labelled_network(fake, monke
     by_ns = {
         PRIV: [_mirrored("mem-pe", "e-me", PRIV)],  # a person's own note, mirrored to their scope
         TEAM: [_rec("mem-t1", TEAM, "team", T0)],
-        ENTRIES: [_mirrored("mem-e1", "e-1"), _mirrored("mem-e2", "e-2")],
+        # mem-e3 came back without its metadata: the entries namespace alone says "network".
+        ENTRIES: [_mirrored("mem-e1", "e-1"), _mirrored("mem-e2", "e-2"), _rec("mem-e3", ENTRIES, "e3", T0)],
     }
     fake.list_memory_records.side_effect = lambda **kw: {"memoryRecordSummaries": by_ns[kw["namespace"]]}
     # e-2 is the entry mem-t1 was imported as: it already shows as mem-t1.
     rows = {"MEMENTRY#e-2": {"facts_rec": "mem-t1"}}
-    monkeypatch.setattr(memory_sync, "_get", lambda owner, sk: rows.get(sk, {}))
+    reads = []
+    monkeypatch.setattr(memory_sync, "_get", lambda owner, sk: reads.append(sk) or rows.get(sk, {}))
     out = await wm.list_memories("org_a", "user_me")
-    assert [(m["id"], m["source"]) for m in out["team"]] == [("mem-e1", "network"), ("mem-t1", "room")]
+    assert [(m["id"], m["source"]) for m in out["team"]] == [
+        ("mem-e1", "network"),
+        ("mem-t1", "room"),
+        ("mem-e3", "network"),
+    ]
+    assert "MEMENTRY#" not in reads  # no entry id, no link-row read
     assert [(m["id"], m["source"]) for m in out["private"]] == [("mem-pe", "network")]
 
 

@@ -96,6 +96,13 @@ describe("ContainerStack — dev", () => {
     const trust = role.Properties.AssumeRolePolicyDocument.Statement[0];
     expect(trust.Principal.Service).toBe("bedrock-agentcore.amazonaws.com");
     expect(JSON.stringify(trust.Condition)).toContain("memory/*");
+    // The memory waits for the role's policy, not only the role (UpdateMemory checks model access).
+    const policies = template.findResources("AWS::IAM::Policy");
+    const policyId = Object.keys(policies).find((id) =>
+      ((policies[id] as any).Properties.Roles ?? []).some((r: any) => r.Ref === roleId),
+    );
+    expect(policyId).toBeDefined();
+    expect(memory.DependsOn).toContain(policyId);
     template.hasResourceProperties("AWS::IAM::Policy", {
       Roles: [{ Ref: roleId }],
       PolicyDocument: {

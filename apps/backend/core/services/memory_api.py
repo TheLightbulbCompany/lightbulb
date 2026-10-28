@@ -20,6 +20,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
 from core.services import evaluator, memory_recall, memory_stages, memory_sync, network_member, workspace_memory
+from core.services.secret_shaped import secret_pattern, secret_shaped
 
 logger = logging.getLogger(__name__)
 
@@ -172,8 +173,12 @@ async def remember(
     on_behalf_of: str | None = None,
 ) -> dict:
     """``{"queued": bool, "neighbours": [...]}``; the write is ``memory.remember`` on the member.
-    Raises ``Refused`` when the member refuses it, or (parked) when it looks like a secret: a queued
-    row is plaintext at rest until the member can refuse it itself."""
+    Raises ``Refused`` for a credential-shaped value before any call or queue (``secret:<name>``,
+    the CLI's own names), when the member refuses it, or (parked) when it mentions a secret at all:
+    a queued row is plaintext at rest until the member can refuse it itself."""
+    text = f"{subject}\n{fact}"
+    if name := secret_pattern(text):  # before anything leaves: neighbours, the member, the queue
+        raise Refused(f"secret:{name}")
     params = {"subject": subject, "fact": fact, "kind": kind, "scope": scope}
     if replaces:
         params["replaces"] = replaces
@@ -182,7 +187,7 @@ async def remember(
     near = await neighbours(owner_id, subject)
     answer = await network_member.call_op(owner_id, "memory.remember", params)
     if answer is None:
-        if evaluator._SECRET.search(f"{subject}\n{fact}"):
+        if secret_shaped(text):  # parked: a bare keyword is enough not to hold it at rest
             raise Refused("secret")
         await network_member.queue_op(owner_id, "memory.remember", params)
     elif answer.get("stored") is False:

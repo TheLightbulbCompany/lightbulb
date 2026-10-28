@@ -185,6 +185,21 @@ def test_parked_remember_of_a_secret_is_refused_and_never_queued(member):
     queue.assert_not_awaited()
 
 
+def test_a_credential_shaped_fact_is_refused_before_any_call_or_queue(member):
+    near, call, queue = AsyncMock(return_value=[]), AsyncMock(return_value=None), AsyncMock()  # parked
+    with (
+        patch.object(memory_api, "neighbours", near),
+        patch.object(memory_api.network_member, "call_op", call),
+        patch.object(memory_api.network_member, "queue_op", queue),
+    ):
+        r = member.post(
+            "/api/v1/memory/remember",
+            json={"subject": "ci", "fact": "use ghp_" + "a" * 36 + " for pushes", "kind": "fact"},
+        )
+    assert r.status_code == 422 and r.json()["detail"] == "Not remembered: secret:vendor_key"
+    near.assert_not_awaited(), call.assert_not_awaited(), queue.assert_not_awaited()
+
+
 async def test_hosted_remember_tool_raises_the_refusal_as_a_tool_error(monkeypatch):
     from mcp.server.mcpserver.exceptions import ToolError
 

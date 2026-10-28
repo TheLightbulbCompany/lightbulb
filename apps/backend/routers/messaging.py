@@ -16,7 +16,7 @@ from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, Request, Response, UploadFile
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core.observability.metrics import put_metric
 from core.observability.session_analytics import capture_session_event
@@ -241,6 +241,82 @@ async def agent_read_messages(
     ):
         raise ApiProblem("ROOM_FORBIDDEN", "In a meeting only channels the whole workspace is in can be read.")
     return await hosted_mcp.messages_for(read.auth, room_id, after_seq, limit)
+
+
+async def agent_actor(
+    auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
+) -> AuthContext:
+    """An agent turn acts (adds a member, makes a room, pins...) with exactly the rights of the person
+    who asked it: the grant's requester only. A Meet's reader may read for the room, never act for it."""
+    if not auth.requester_id or not auth.room_id:
+        raise ApiProblem(
+            "ROOM_FORBIDDEN",
+            "Only a person can ask for this: have someone in a room ask you, and you act with their access.",
+        )
+    return (await agent_reader(auth)).auth  # the same re-checks: agent and requester still in the room
+
+
+# The browser's own service calls, so an agent changes the workspace exactly as its person would
+# (18 Oct: a hand-written member row skipped the agent's delivery cursor and silenced its @mentions).
+AGENT_ACTIONS = {
+    "add_member": lambda auth, room, args: service.upsert_member(auth, room, UpsertRoomMemberRequest(**args)),
+    "set_listen_mode": lambda auth, room, args: service.upsert_member(auth, room, UpsertRoomMemberRequest(**args)),
+    "remove_member": lambda auth, room, args: service.remove_member(auth, room, args["kind"], args["id"]),
+    "leave_room": lambda auth, room, args: service.leave_room(auth, room),
+    "create_room": lambda auth, room, args: service.create_room(auth, CreateRoomRequest(**args)),
+    "update_room": lambda auth, room, args: service.patch_room(auth, room, PatchRoomRequest(**args)),
+    "pin": lambda auth, room, args: service.set_pin(auth, room, args["message_id"], True),
+    "unpin": lambda auth, room, args: service.set_pin(auth, room, args["message_id"], False),
+    "search_messages": lambda auth, room, args: message_search.search(
+        auth, message_search.MessageSearchRequest(**args)
+    ),
+    "search_sessions": lambda auth, room, args: message_search.search_sessions(
+        auth, message_search.SessionSearchRequest(**args)
+    ),
+}
+
+
+class AgentActRequest(ContractModel):
+    action: Literal[tuple(AGENT_ACTIONS)]  # type: ignore[valid-type]
+    room_id: str | None = None
+    args: dict = {}
+
+
+@router.post("/messaging/agent-act")
+async def agent_act(
+    body: AgentActRequest,
+    turn: local_session_grants.AgentInvocation = Depends(local_session_invocation),
+    auth: AuthContext = Depends(agent_actor),
+):
+    outcome = "error"
+    try:
+        result = await AGENT_ACTIONS[body.action](auth, body.room_id, body.args)
+        outcome = "ok"
+        return result
+    except ValidationError as exc:
+        outcome = "refused"
+        raise ApiProblem(
+            "INVALID_REQUEST", "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+        ) from exc
+    except KeyError as exc:
+        if exc.args[0] in body.args:  # a service bug, not a missing arg
+            raise
+        outcome = "refused"
+        raise ApiProblem("INVALID_REQUEST", f"args.{exc.args[0]} is required.") from exc
+    except ApiProblem:
+        outcome = "refused"
+        raise
+    finally:
+        logger.info(
+            "agent-act %s agent=%s turn=%s requester=%s room=%s outcome=%s",
+            body.action,
+            turn.agent_id,
+            turn.turn_id,
+            turn.requester_id,
+            body.room_id,
+            outcome,
+        )
+        put_metric("messaging.agent_act", dimensions={"action": body.action, "outcome": outcome})
 
 
 @router.get("/messaging/local-session-agent/resources", response_model=local_sessions.RoomResources)

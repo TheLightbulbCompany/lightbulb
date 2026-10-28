@@ -9,9 +9,7 @@ can confirm the published numbers add up and that no question is missing.
 """
 
 import argparse
-import ast
 import hashlib
-import inspect
 import json
 import math
 import re
@@ -111,6 +109,7 @@ def same(a, b) -> bool:
 
 def verify_prompts() -> list[str]:
     """Download ExaBase's adapter, check its hash, and find each of our prompts in it unchanged."""
+    exabase_prompts.ensure_exabase_prompts(exabase_prompts._cache_dir, fetch=download_exabase_adapter)
     published = download_exabase_adapter()
     source = published.decode("utf-8")
     problems = []
@@ -118,10 +117,8 @@ def verify_prompts() -> list[str]:
     if digest != exabase_prompts.SOURCE_SHA256:
         problems.append(f"ExaBase's file now hashes to {digest}, not {exabase_prompts.SOURCE_SHA256}")
 
-    for function in (exabase_prompts.answer_prompt, exabase_prompts.rubric_item_prompt,
-                     exabase_prompts.equivalence_prompt):
-        if as_written_in_a_class(prompt_code(function)) not in source:
-            problems.append(f"{function.__name__} differs from ExaBase's code")
+    # The fork's prompts.py derives the prompt functions by calling ExaBase's own code in the
+    # verified file, so there is no copy of their bodies to compare; the hash and schemas remain.
 
     for schema in (exabase_prompts.RUBRIC_SCHEMA, exabase_prompts.EQUIVALENCE_SCHEMA):
         for name, spec in schema["properties"].items():
@@ -137,24 +134,6 @@ def download_exabase_adapter() -> bytes:
     if link is None:
         raise SystemExit(f"Could not find the adapter's download link on {exabase_prompts.SOURCE_URL}")
     return httpx.get(link.group(0), follow_redirects=True, timeout=30).content
-
-
-def prompt_code(function) -> list[str]:
-    """The lines of a function's body that come from ExaBase: without our docstring, and without
-    the `return prompt` our wrappers add."""
-    lines = inspect.getsource(function).splitlines()
-    body = ast.parse(inspect.getsource(function)).body[0].body
-    if isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-        body = body[1:]
-    if isinstance(body[-1], ast.Return) and isinstance(body[-1].value, ast.Name):
-        body = body[:-1]
-    return lines[body[0].lineno - 1:body[-1].end_lineno]
-
-
-def as_written_in_a_class(lines: list[str]) -> str:
-    """ExaBase's prompts are methods, one indent deeper than our functions. Lines inside the
-    prompt text start at the margin and keep it."""
-    return "\n".join("    " + line if line.startswith(" ") else line for line in lines)
 
 
 # --- Command line ------------------------------------------------------------------------------

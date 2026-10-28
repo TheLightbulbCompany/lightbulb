@@ -196,7 +196,15 @@ def _seam(monkeypatch, *, row):
     monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row))
     monkeypatch.setattr("core.repositories.container_repo.delete", AsyncMock(return_value=row))
     monkeypatch.setattr("core.repositories.container_repo.delete_browser_state", AsyncMock())
-    monkeypatch.setattr(hermes_provisioning, "teardown_hermes_runtime", AsyncMock())
+
+    async def _teardown(*a, **kw):
+        calls.append("runtime")
+
+    async def _forget(owner_id):
+        calls.append(f"forget:{owner_id}")
+
+    monkeypatch.setattr(hermes_provisioning, "teardown_hermes_runtime", _teardown)
+    monkeypatch.setattr("core.services.workspace_memory.forget_workspace_authored", _forget)
     monkeypatch.setattr(hermes_provisioning, "_delete_profile_prefix_objects", lambda *a: None)
     monkeypatch.setattr("core.services.paperclip_agent_lifecycle.pause_owner_automation", AsyncMock())
 
@@ -222,14 +230,15 @@ async def test_the_seam_wipes_workspace_memory_with_the_profiles_even_on_a_row_l
     AFTER the reap, which needs this call's deleted-row image."""
     calls = _seam(monkeypatch, row=row)
     await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True)
-    assert calls == ["reap", "memory:org_a"]
+    # The cloud member forgets what it signed while it still runs; a row-less retry has no runtime.
+    assert calls == (["forget:org_a", "runtime"] if row else []) + ["reap", "memory:org_a"]
 
 
 @pytest.mark.asyncio
 async def test_a_reprovision_keeps_workspace_memory(monkeypatch):
     calls = _seam(monkeypatch, row=ROW)
     await hermes_provisioning.delete_workspace_runtime("org_a")
-    assert "memory:org_a" not in calls
+    assert "memory:org_a" not in calls and "forget:org_a" not in calls
 
 
 @pytest.mark.asyncio
@@ -251,7 +260,7 @@ async def test_teardown_pauses_paperclip_automation_and_a_paperclip_failure_neve
     monkeypatch.setattr("core.services.paperclip_agent_lifecycle.pause_owner_automation", pause)
     await hermes_provisioning.delete_workspace_runtime("org_a")
     pause.assert_awaited_once_with("org_a")
-    assert calls == ["reap"]
+    assert calls == ["runtime", "reap"]
 
 
 @pytest.mark.asyncio

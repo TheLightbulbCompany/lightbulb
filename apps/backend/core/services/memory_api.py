@@ -234,27 +234,47 @@ async def forget_on_behalf_of(owner_id: str, user_id: str) -> int:
 OWED_WIPE_S = 30 * 86400  # how long a forward owed to a parked member is retried
 
 
-def _owed_key(owner_id: str, user_id: str) -> dict:
-    return {"pk": f"MEMWIPE#{owner_id}", "sk": f"U#{user_id}"}
+async def _owe(owner_id: str, sk: str, what: str) -> None:
+    """One durable retry row (``MEMWIPE#<owner>`` / ``U#<user>`` for a member wipe's forward,
+    ``A#<key>`` for an owner wipe's forget of the cloud member's own entries) and a wake. Never raises."""
+    from core.repositories import messaging_repo
+
+    try:
+        item = {"pk": f"MEMWIPE#{owner_id}", "sk": sk, "expiresAt": int(time.time()) + OWED_WIPE_S}
+        await run_in_thread(messaging_repo._table().put_item, Item=item)
+        await network_member.wake(owner_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("%s forward could not be owed owner=%s error=%s", what, owner_id, type(exc).__name__)
 
 
 async def forward_on_behalf_of(owner_id: str, user_id: str) -> None:
     """The member wipe's forward. Never raises: a parked or unavailable member gets one durable
     retry row (``MEMWIPE#<owner>`` / ``U#<user>``) and a wake, and the sweep finishes the forward
     once the runtime is warm. The rest of the wipe, and the empty-workspace teardown after it, go on."""
-    from core.repositories import messaging_repo
-
     try:
         await forget_on_behalf_of(owner_id, user_id)
         return
     except Exception as exc:  # noqa: BLE001
         logger.warning("member wipe forward owed owner=%s error=%s", owner_id, type(exc).__name__)
+    await _owe(owner_id, f"U#{user_id}", "member wipe")
+
+
+async def _forget_author_now(owner_id: str, author: str) -> None:
+    """``memory.forget_author`` on the member itself, or raise: no queue, so the caller can owe it."""
+    if await network_member.call_op(owner_id, "memory.forget_author", {"author": author}) is None:
+        raise RuntimeError("memory.forget_author unavailable: the workspace's member is parked")
+
+
+async def forward_forget_author(owner_id: str, author: str) -> None:
+    """The owner wipe's forget of every entry the cloud member signed (imported facts, workspace
+    remembers), sent through that member so its tombstones replicate to members' computers. Never
+    raises: parked or failing, it is owed (``A#<key>``) and the runtime woken, like the member wipe."""
     try:
-        item = {**_owed_key(owner_id, user_id), "expiresAt": int(time.time()) + OWED_WIPE_S}
-        await run_in_thread(messaging_repo._table().put_item, Item=item)
-        await network_member.wake(owner_id)
+        await _forget_author_now(owner_id, author)
+        return
     except Exception as exc:  # noqa: BLE001
-        logger.error("member wipe forward could not be owed owner=%s error=%s", owner_id, type(exc).__name__)
+        logger.warning("owner wipe forget_author owed owner=%s error=%s", owner_id, type(exc).__name__)
+    await _owe(owner_id, f"A#{author}", "owner wipe")
 
 
 async def retry_member_wipes(owner_id: str) -> int:
@@ -263,11 +283,15 @@ async def retry_member_wipes(owner_id: str) -> int:
 
     done = 0
     try:
-        for row in await messaging_repo._query(f"MEMWIPE#{owner_id}", begins_with="U#"):
+        for row in await messaging_repo._query(f"MEMWIPE#{owner_id}"):
             if int(row.get("expiresAt") or 0) <= time.time():
                 continue
+            kind, _, who = row["sk"].partition("#")
+            send = {"U": forget_on_behalf_of, "A": _forget_author_now}.get(kind)
+            if send is None:
+                continue
             try:
-                await forget_on_behalf_of(owner_id, row["sk"].removeprefix("U#"))
+                await send(owner_id, who)
             except Exception:  # noqa: BLE001 -- still parked: the next pass tries again
                 continue
             await run_in_thread(messaging_repo._table().delete_item, Key={"pk": row["pk"], "sk": row["sk"]})

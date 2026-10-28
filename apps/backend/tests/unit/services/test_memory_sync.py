@@ -755,6 +755,68 @@ async def test_a_parked_member_is_owed_the_wipe_forward_and_the_sweep_finishes_i
     assert table.scan()["Items"] == []
 
 
+# RFC 8032 section 7.1, test 1: an Ed25519 seed and its public key.
+RFC_SEED = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+RFC_PUBLIC = bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+
+
+async def test_owner_wipe_forgets_what_the_cloud_member_signed_by_its_public_key(monkeypatch):
+    import base64
+    from unittest.mock import AsyncMock
+
+    from core.services import agentcore_runtime, memory_api, network_login, workspace_memory
+
+    secret = {"networkKey": base64.b64encode(RFC_SEED).decode()}
+    monkeypatch.setattr(agentcore_runtime, "_read_secret", lambda sm, name: secret)
+    forward = AsyncMock()
+    monkeypatch.setattr(memory_api, "forward_forget_author", forward)
+    await workspace_memory.forget_workspace_authored(OWNER)
+    key = base64.b32encode(RFC_PUBLIC).decode().lower().rstrip("=")  # the engine's member key spelling
+    forward.assert_awaited_once_with(OWNER, key)
+    assert network_login.KEY_RE.match(key)
+
+    secret = None  # no boot secret: never a member, nothing to forget, and never a raise
+    monkeypatch.setattr(agentcore_runtime, "_read_secret", lambda sm, name: secret)
+    await workspace_memory.forget_workspace_authored(OWNER)
+    monkeypatch.setattr(agentcore_runtime, "_read_secret", lambda sm, name: 1 / 0)
+    await workspace_memory.forget_workspace_authored(OWNER)
+    assert forward.await_count == 1
+
+
+async def test_owner_wipe_forget_author_goes_through_the_member_or_is_owed_with_a_wake(table):
+    from unittest.mock import AsyncMock
+
+    from core.services import memory_api
+
+    key = "k" * 52
+    sent = []
+
+    async def warm(owner_id, op, params, timeout=30.0):
+        sent.append((op, params))
+        return {"forgotten": 3}
+
+    with patch.object(network_member, "call_op", warm):
+        await memory_api.forward_forget_author(OWNER, key)
+    assert sent == [("memory.forget_author", {"author": key})] and table.scan()["Items"] == []
+
+    wake = AsyncMock(return_value=True)
+    with (
+        patch.object(network_member, "call_op", AsyncMock(return_value=None)),
+        patch.object(network_member, "wake", wake),
+        patch.object(network_member, "queue_op", AsyncMock(side_effect=AssertionError("owed, not queued"))),
+    ):
+        await memory_api.forward_forget_author(OWNER, key)  # parked: never raises
+        assert await memory_api.retry_member_wipes(OWNER) == 0
+    wake.assert_awaited_once_with(OWNER)
+    (row,) = table.scan()["Items"]
+    assert (row["pk"], row["sk"]) == (f"MEMWIPE#{OWNER}", f"A#{key}")
+
+    sent.clear()
+    with patch.object(network_member, "call_op", warm):
+        assert await memory_api.retry_member_wipes(OWNER) == 1
+    assert sent == [("memory.forget_author", {"author": key})] and table.scan()["Items"] == []
+
+
 async def test_the_sweep_retries_owed_wipes_for_every_workspace(monkeypatch):
     from unittest.mock import AsyncMock
 

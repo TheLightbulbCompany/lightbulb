@@ -609,7 +609,9 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
          reporting success: the runtime is already gone, so a raise honestly means
          "teardown incomplete, retry me", and every step is idempotent.
       4. Sweep the owner's ``channel_links`` rows (non-fatal).
-      5. (``delete_profiles`` only) wipe the owner's workspace memory. Raises on failure.
+      5. (``delete_profiles`` only) wipe the owner's workspace memory. Raises on failure. Its
+         network half runs first, before step 1: the cloud member forgets the entries it signed
+         (``workspace_memory.forget_workspace_authored``), which needs the live runtime.
 
     ``delete_profiles`` (M6-R42) defaults to **False** and must stay that way: this
     function is shared by NON-terminal callers -- ``entitlement_teardown`` (a lapsed or
@@ -638,6 +640,11 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
 
     container = await container_repo.get_by_owner_id(owner_id)
     if container:
+        if delete_profiles:
+            from core.services import workspace_memory
+
+            # While the runtime and its member key still exist; never raises.
+            await workspace_memory.forget_workspace_authored(owner_id)
         await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=delete_profiles)
 
     deleted = await container_repo.delete(owner_id)

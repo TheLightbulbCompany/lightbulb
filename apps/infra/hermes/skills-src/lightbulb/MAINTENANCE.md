@@ -32,7 +32,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  routers/ses_inbound.py (email wake — any authenticated sender while the row's
                                  `send_to_anyone` is on, the default; else allowlisted senders only) and
                                  core/services/agent_mail_send.py (the same flag gates `--to`/`--reply`);
-                                 the Google scopes in providers.yaml (gmail.send, calendar.events, drive.file)
+                                 the Google scopes in providers.yaml (gmail.modify, calendar, drive)
   - Send a file in chat ..... references/platform-primitives.md ("Send a file in chat" row)
                               <- apps/infra/hermes/bridge/turn.py (MEDIA_PREFIX, MEDIA_CONTENT_TYPES,
                                  ATTACHMENT_MAX_BYTES_BY_TYPE incl. video, MAX_ATTACHMENTS, _within: own profile or
@@ -50,10 +50,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  .scratch/ and /tmp share the microVM's ~4 GB disk across teammates until it is
                                  recycled; numbered slots filled it twice for the founder's engineering agent
                                  (2026-10-07/08). Mirrors bridge/turn.py `_repo_rule`; edit both together.
-  - gog scope-denied ........ references/integrations.md ("Google Workspace (`gog`)": say Google access does not
-                              cover it; offer forwarding / the file picker; never a browser sign-in)
-                              <- Google is the platform app now (docs/superpowers/plans/2026-10-23-google-verification.md);
-                                 its scopes are the providers.yaml `google` list. Update when phase 3 adds gmail.readonly/drive.
+  - gog scope-denied ........ references/integrations.md ("Google Workspace (`gog`)": ask for a reconnect in
+                              Connections; never a browser sign-in)
+                              <- Google is the platform app, unverified under the 100-user exemption; its scopes are
+                                 the providers.yaml `google` list. A 403 means a grant from before the scopes widened.
   - Plain words, no plumbing  SKILL.md ("Talk to people in plain words, never plumbing")
                               <- observed prod 2026-09-29: an agent told #general "PAPERCLIP_RUN_ID is empty (this is
                                  a webchat session, not a heartbeat)". No code enforces it; the verifier footer that

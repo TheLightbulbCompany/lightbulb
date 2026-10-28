@@ -9,7 +9,7 @@ import { ContainerStack } from "../lib/stacks/container-stack";
 import { LAUNCH_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
-import { ServiceStack, stripeProvisioningEnabled } from "../lib/stacks/service-stack";
+import { ServiceStack } from "../lib/stacks/service-stack";
 
 /**
  * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
@@ -512,64 +512,17 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", envOf("prod"));
   });
 
-  test("Stripe developer configuration defaults off, and the Accounts v2 version pin defaults empty, when no prop threads a value", () => {
-    // configuration.developer is an Unknown field for our platform today
-    // (probed 2026-08-29) — sending it would break every company-account
-    // create, so a stack that forgets to set the prop must stay off.
+  test("the Accounts v2 version pin defaults empty, and no Stripe rail flag reaches the task env", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_PROJECTS_DEVELOPER_CONFIG", Value: "false" }),
-            Match.objectLike({ Name: "STRIPE_ACCOUNTS_V2_VERSION", Value: "" }),
-          ]),
+          Environment: Match.arrayWith([Match.objectLike({ Name: "STRIPE_ACCOUNTS_V2_VERSION", Value: "" })]),
         }),
       ]),
     }));
-  });
-
-  test("the Stripe provisioning rail defaults OFF when no prop threads a value", () => {
-    // Every state-changing /v2/provisioning call 500s until Stripe ships
-    // delegated account creation + KYC; a stack that forgets the prop must
-    // refuse at the door rather than park owners in requires_review.
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_PROVISIONING_ENABLED", Value: "false" }),
-          ]),
-        }),
-      ]),
-    }));
-  });
-
-  test("reads the provisioning switch per environment from the deploy variables", () => {
-    expect(stripeProvisioningEnabled("dev", { STRIPE_PROVISIONING_ENABLED_DEV: "true" })).toBe(true);
-    expect(stripeProvisioningEnabled("prod", { STRIPE_PROVISIONING_ENABLED_DEV: "true" })).toBe(false);
-    expect(stripeProvisioningEnabled("prod", { STRIPE_PROVISIONING_ENABLED_PROD: "true" })).toBe(true);
-    expect(stripeProvisioningEnabled("dev", { STRIPE_PROVISIONING_ENABLED_DEV: "false" })).toBe(false);
-    expect(stripeProvisioningEnabled("dev", {})).toBe(false);
-  });
-
-  test("STRIPE_PROVISIONING_ENABLED_DEV=true turns the rail on in the dev stack only", () => {
-    const before = process.env.STRIPE_PROVISIONING_ENABLED_DEV;
-    process.env.STRIPE_PROVISIONING_ENABLED_DEV = "true";
-    try {
-      const envOn = (value: string) => Match.objectLike({
-        ContainerDefinitions: Match.arrayWith([
-          Match.objectLike({
-            Environment: Match.arrayWith([
-              Match.objectLike({ Name: "STRIPE_PROVISIONING_ENABLED", Value: value }),
-            ]),
-          }),
-        ]),
-      });
-      buildServiceStack("dev").hasResourceProperties("AWS::ECS::TaskDefinition", envOn("true"));
-      buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", envOn("false"));
-    } finally {
-      if (before === undefined) delete process.env.STRIPE_PROVISIONING_ENABLED_DEV;
-      else process.env.STRIPE_PROVISIONING_ENABLED_DEV = before;
-    }
+    const taskDefs = JSON.stringify(template.findResources("AWS::ECS::TaskDefinition"));
+    expect(taskDefs).not.toContain("STRIPE_PROVISIONING_ENABLED");
+    expect(taskDefs).not.toContain("STRIPE_PROJECTS_DEVELOPER_CONFIG");
   });
 
   test("backend task env carries neither LAUNCH_SCHEDULE_JSON nor STRIPE_FREE_MONTH_COUPON_ID nor any retired per-field LAUNCH_* name — settings now live in the launch-settings DynamoDB row, not synth-time env", () => {

@@ -55,40 +55,19 @@ DEVELOPER_CONFIGURATION = {"developer": {"capabilities": {"projects": {"requeste
 DEVELOPER_INCLUDE = ["configuration.developer", "requirements", "identity"]
 
 
-def developer_config_on() -> bool:
-    """The rail being on implies the developer configuration: a workflow is
-    refused until the `projects` capability is active, so an account created
-    without it could never satisfy the gate. The explicit flag stays so the
-    configuration can be requested before the rail is switched on."""
-    return bool(settings.STRIPE_PROJECTS_DEVELOPER_CONFIG or settings.STRIPE_PROVISIONING_ENABLED)
-
-
 def account_configuration() -> dict:
-    if not developer_config_on():
-        return dict(MERCHANT_CONFIGURATION)
+    """Every account requests the developer configuration: a workflow is
+    refused until the `projects` capability is active, so an account created
+    without it could never satisfy the gate."""
     return {**MERCHANT_CONFIGURATION, **DEVELOPER_CONFIGURATION}
 
 
-def onboarding_configurations() -> list[str]:
-    """A return to `return_url` proves only that the browser came back — "it
-    doesn't prove that the projects capability is active" (guide). The
-    workflow's eligibility read is the truth."""
-    return ["merchant", "developer"] if developer_config_on() else ["merchant"]
-
-
 def accounts_v2_options(**extra) -> dict:
-    """Per-request options for the Accounts v2 calls. Pins `Stripe-Version`
-    when configured. The `developer` configuration (the `projects` capability)
-    exists only in the provisioning preview, so with it on and no explicit
-    version the calls pin the provisioning preview: the SDK default rejects it
+    """Per-request options for the Accounts v2 calls. Pins `Stripe-Version` to
+    `STRIPE_ACCOUNTS_V2_VERSION`, else the provisioning preview: the
+    `developer` configuration exists only there, and the SDK default rejects it
     as "configuration.developer: Unknown field" (dev sandbox, 2026-10-27)."""
-    options = dict(extra)
-    version = settings.STRIPE_ACCOUNTS_V2_VERSION
-    if not version and developer_config_on():
-        version = PROVISIONING_VERSION
-    if version:
-        options["stripe_version"] = version
-    return options
+    return {**extra, "stripe_version": settings.STRIPE_ACCOUNTS_V2_VERSION or PROVISIONING_VERSION}
 
 
 def _client() -> StripeClient:
@@ -134,8 +113,7 @@ async def create_company_account(*, owner_id: str, email: str, company_name: str
     # v2 rejects an empty contact_email; Stripe collects one in onboarding.
     if email:
         params["contact_email"] = email
-    if developer_config_on():
-        params["include"] = list(DEVELOPER_INCLUDE)
+    params["include"] = list(DEVELOPER_INCLUDE)
     account = await asyncio.to_thread(
         client.v2.core.accounts.create,
         params,
@@ -151,17 +129,14 @@ async def create_company_onboarding_link(*, account_id: str, update: bool = Fals
     guide's ``account_update`` use case is "subsequent corrections", and it
     takes no ``configurations`` list.
 
-    With the developer configuration on, the call runs on the provisioning
-    preview, which REJECTS ``configurations`` ("Unknown field", dev sandbox
-    2026-10-27) and collects what the account's own configurations require; the
-    provisioning guide sends ``collection_options`` instead."""
+    The call runs on the provisioning preview, which REJECTS
+    ``configurations`` ("Unknown field", dev sandbox 2026-10-27) and collects
+    what the account's own configurations require; the provisioning guide
+    sends ``collection_options`` instead. A return to `return_url` proves only
+    that the browser came back; the workflow's eligibility read is the truth."""
     client = _client()
     urls = {"refresh_url": settings.STRIPE_COMPANY_REFRESH_URL, "return_url": settings.STRIPE_COMPANY_RETURN_URL}
-    onboarding = (
-        {"collection_options": {"fields": "currently_due"}, **urls}
-        if developer_config_on()
-        else {"configurations": onboarding_configurations(), **urls}
-    )
+    onboarding = {"collection_options": {"fields": "currently_due"}, **urls}
     use_case = (
         {"type": "account_update", "account_update": urls}
         if update

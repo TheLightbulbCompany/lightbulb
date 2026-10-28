@@ -118,7 +118,6 @@ def world(monkeypatch):
     link = Link()
     monkeypatch.setattr(link_wallet, "_transport", httpx.MockTransport(link.handler))
     for k, v in (
-        ("LINK_WALLET_ENABLED", True),
         ("LINK_CLIENT_ID", "cid"),
         ("LINK_CLIENT_SECRET", "csecret"),
         ("LINK_PUBLISHABLE_KEY", "pk_test_x"),
@@ -513,8 +512,10 @@ def client():
         app.dependency_overrides.clear()
 
 
-def test_every_route_404s_while_the_flag_is_off(client, monkeypatch):
-    monkeypatch.setattr(settings, "LINK_WALLET_ENABLED", False)
+@pytest.mark.parametrize("missing", ["LINK_CLIENT_ID", "LINK_CLIENT_SECRET", "LINK_PUBLISHABLE_KEY"])
+def test_every_route_404s_while_link_is_unconfigured(client, monkeypatch, missing):
+    for k in ("LINK_CLIENT_ID", "LINK_CLIENT_SECRET", "LINK_PUBLISHABLE_KEY"):
+        monkeypatch.setattr(settings, k, "" if k == missing else "x")
     base = "/api/v1/company/link-wallet"
     for method, path in (
         ("get", "/status"),

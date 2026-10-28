@@ -589,7 +589,7 @@ export class ServiceStack extends cdk.Stack {
       }),
       new iam.PolicyStatement({
         sid: "MemoryRerank",
-        actions: ["bedrock:Rerank"],
+        actions: ["bedrock:Rerank", "bedrock:InvokeModel"],
         resources: [`arn:aws:bedrock:${this.region}::foundation-model/cohere.rerank-v3-5:0`],
       }),
     );

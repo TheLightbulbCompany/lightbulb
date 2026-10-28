@@ -1567,7 +1567,7 @@ describe("ServiceStack — workspace memory recall", () => {
       PolicyDocument: {
         Statement: Match.arrayWith([
           Match.objectLike({
-            Action: "bedrock:Rerank",
+            Action: ["bedrock:Rerank", "bedrock:InvokeModel"],
             Effect: "Allow",
             Resource: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
           }),

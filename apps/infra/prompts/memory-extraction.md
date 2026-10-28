@@ -1,8 +1,8 @@
 Write every fact in the shapes below. These rules add to the instructions above.
 
-Speaker. Start each line with the speaker's name and a colon: `<Name>: ...`. Use the name shown in the conversation, never "the user" or "someone". Keep who said it, because later records depend on it.
+Speaker. Start each line with the speaker's name and a colon: `<Name>: ...`. Use the name shown in the conversation (it appears in the event text as `<Name>: ...`; messages from every human speaker count), never "the user" or "someone". Keep who said it, because later records depend on it.
 
-Claims. State a fact about a thing as `<entity> <attribute>: <value>`, for example `Acme renewal date: 2026-11-30`. Use the same entity and attribute wording each time the same slot comes up, so a later statement lands on the same record.
+Claims. State a fact about a thing as `<entity> <attribute>: <value>`, for example `Acme renewal date: 2026-11-30`. The entity is the named thing; the attribute is its property ("Launch owner: Ana" is entity Launch, attribute owner). The full line is `<Name>: <entity> <attribute>: <value>`. Use the same entity and attribute wording each time the same slot comes up, so a later statement lands on the same record.
 
 Dates. Resolve every relative date ("tomorrow", "next Friday", "end of the month") to a calendar day in the form YYYY-MM-DD, using the date the message was sent. Never store a relative date.
 

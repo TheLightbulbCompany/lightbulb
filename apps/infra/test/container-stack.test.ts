@@ -81,6 +81,30 @@ describe("ContainerStack — dev", () => {
     expect(sem.Extraction.ModelId).toMatch(/haiku/);
   });
 
+  test("memory execution role is trusted by agentcore and can invoke the extract model", () => {
+    const [memory] = Object.values(template.findResources("AWS::BedrockAgentCore::Memory")) as any[];
+    const roleId = memory.Properties.MemoryExecutionRoleArn["Fn::GetAtt"][0];
+    const roles = template.findResources("AWS::IAM::Role");
+    const role = roles[roleId] as any;
+    const trust = role.Properties.AssumeRolePolicyDocument.Statement[0];
+    expect(trust.Principal.Service).toBe("bedrock-agentcore.amazonaws.com");
+    expect(JSON.stringify(trust.Condition)).toContain("memory/*");
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      Roles: [{ Ref: roleId }],
+      PolicyDocument: {
+        Statement: [
+          Match.objectLike({
+            Action: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+            Resource: Match.arrayWith([
+              Match.stringLikeRegexp("inference-profile/us\\.anthropic\\.claude-haiku"),
+              "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+            ]),
+          }),
+        ],
+      },
+    });
+  });
+
   test("episodic strategy declared with per-user namespaces", () => {
     const [memory] = Object.values(template.findResources("AWS::BedrockAgentCore::Memory")) as any[];
     const episodic = memory.Properties.MemoryStrategies.find((s: any) => s.EpisodicMemoryStrategy)

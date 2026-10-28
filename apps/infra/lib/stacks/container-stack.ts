@@ -240,12 +240,36 @@ export class ContainerStack extends cdk.Stack {
     // to the service plus kms grants on every owner role. EncryptionKeyArn (like Name) is
     // create-only: changing it later REPLACES this resource, and with a fixed Name the prod
     // replacement fails on the name clash -- a CMK later means a new name and a data migration.
+    // The override names a Bedrock model, so the memory service calls it in this account by assuming
+    // this role (required alongside any modelId). The SourceArn is the memory ARN family, not this
+    // memory's own ARN: the memory references the role, so naming it would be a circular dependency.
+    // A `us.` profile routes to any US region, hence the wildcard region on the foundation-model ARN.
+    const memoryExecutionRole = new iam.Role(this, "WorkspaceMemoryExecutionRole", {
+      assumedBy: new iam.ServicePrincipal("bedrock-agentcore.amazonaws.com", {
+        conditions: {
+          StringEquals: { "aws:SourceAccount": this.account },
+          ArnLike: { "aws:SourceArn": `arn:aws:bedrock-agentcore:${this.region}:${this.account}:memory/*` },
+        },
+      }),
+      description: "AgentCore workspace memory: invokes the extraction/merge model.",
+    });
+    memoryExecutionRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        resources: [
+          `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${MEMORY_EXTRACT_MODEL}`,
+          `arn:aws:bedrock:*::foundation-model/${MEMORY_EXTRACT_MODEL.replace(/^us\./, "")}`,
+        ],
+      }),
+    );
+
     this.workspaceMemory = new bedrockagentcore.CfnMemory(this, "WorkspaceMemory", {
       name: `lightbulb_${props.environment}_workspace_memory`,
       description: "Long-term memory shared by the agents of each workspace (namespace per owner).",
       // The shortest AWS allows: events are only extraction input (records are the memory), and the
       // wipe deletes them in a best-effort background tail, so expiry bounds any residue.
       eventExpiryDuration: 7,
+      memoryExecutionRoleArn: memoryExecutionRole.roleArn,
       // The slots recall filters on and the merge writes. Max 10 and never removable, so only the
       // six the facts model needs. Time is epoch seconds (NUMBER) so a range filter works.
       indexedKeys: [
@@ -309,7 +333,7 @@ export class ContainerStack extends cdk.Stack {
                   extractionConfig: {
                     llmExtractionConfig: {
                       definition:
-                        "Read from the record text's fixed form: 'contested' when the text starts with 'Contested:', otherwise 'current'.",
+                        "Read from the record text's fixed form: 'contested' when the text begins with the token 'Contested:' (first token on the line), otherwise 'current'.",
                       llmExtractionInstruction: "LATEST_VALUE",
                       validation: { stringValidation: { allowedValues: ["current", "contested"] } },
                     },

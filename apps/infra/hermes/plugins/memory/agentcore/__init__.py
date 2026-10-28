@@ -125,15 +125,19 @@ def _secret(name: str) -> str:
         return os.environ.get(name, "").strip()
 
 
-def _backend(path: str, body: dict) -> dict:
-    """POST to the backend with the agent's own key, as the board read does. Raises when there is
-    no identity or the call fails; callers degrade."""
-    base, key = _secret("PAPERCLIP_API_URL").rstrip("/"), _secret("PAPERCLIP_API_KEY")
-    if not (base and key):
+def _backend(owner: str, path: str, body: dict) -> dict:
+    """POST to the backend's internal memory route with the runtime's hook token, the owner in the
+    path like the internal messaging calls. Raises when there is no channel or the call fails;
+    callers degrade."""
+    import bridge  # read at call time: the boot-secret fetch fills these after import
+
+    if not (bridge.API and bridge.HOOK_TOKEN and owner):
         raise RuntimeError("no backend identity")
     req = urllib.request.Request(
-        f"{base}/api/v1/memory/{path}", data=json.dumps(body).encode(), method="POST",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", "Accept": "application/json"})
+        f"{bridge.API}/api/v1/internal/memory/{path}/{urllib.parse.quote(owner)}",
+        data=json.dumps(body).encode(), method="POST",
+        headers={"Authorization": f"Bearer {bridge.HOOK_TOKEN}", "Content-Type": "application/json",
+                 "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=_BACKEND_TIMEOUT_S) as res:
         return json.loads(res.read() or b"{}")
 
@@ -243,7 +247,7 @@ class AgentCoreMemoryProvider(MemoryProvider):
     def _search(self, question: str, budget: int) -> List[dict]:
         """The backend's recall page (contested facts first), [] when it fails. Never logs the question."""
         try:
-            return _backend("recall", {"question": question[:_QUERY_MAX], "budget_tokens": budget}).get("results") or []
+            return _backend(self._owner, "recall", {"question": question[:_QUERY_MAX], "budget_tokens": budget}).get("results") or []
         except Exception as exc:  # recall is best-effort: a slow or denied call is "no memory"
             logger.warning("memory recall failed: %s", exc)
             return []
@@ -298,7 +302,7 @@ class AgentCoreMemoryProvider(MemoryProvider):
             "name": "remember",
             "description": ("Save a fact, decision, lesson or preference to workspace memory. Returns what "
                             "is already known on the subject; call again with `replaces` if yours is a "
-                            "change. Personal unless the person says to share"),
+                            "change. Team in a room; personal in a direct message"),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -337,7 +341,7 @@ class AgentCoreMemoryProvider(MemoryProvider):
         if not self.is_available():
             return json.dumps({"error": "workspace memory is off"})
         try:
-            page = _backend("recall", {"question": query[:_QUERY_MAX], "budget_tokens": _SEARCH_BUDGET})
+            page = _backend(self._owner, "recall", {"question": query[:_QUERY_MAX], "budget_tokens": _SEARCH_BUDGET})
         except Exception as exc:
             logger.warning("memory search failed: %s", exc)
             return json.dumps({"error": "workspace memory is unavailable right now"})
@@ -353,7 +357,7 @@ class AgentCoreMemoryProvider(MemoryProvider):
         if args.get("replaces"):
             body["replaces"] = [str(i) for i in args["replaces"]]
         try:
-            return json.dumps(_backend("remember", body), ensure_ascii=False)
+            return json.dumps(_backend(self._owner, "remember", body), ensure_ascii=False)
         except Exception as exc:
             logger.warning("memory remember failed: %s", exc)
             return json.dumps({"error": "could not save to memory right now"})

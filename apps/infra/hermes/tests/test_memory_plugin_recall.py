@@ -6,6 +6,7 @@ import logging
 
 import pytest
 
+import bridge
 from bridge import turn
 from tests.test_memory_agentcore import FakeClient, mod, provider  # noqa: F401  (mod is a fixture)
 
@@ -33,9 +34,11 @@ class FakeBackend:
 
 @pytest.fixture
 def backend(mod, monkeypatch):  # noqa: F811
-    for k, v in {"PAPERCLIP_API_URL": "http://api.local/", "PAPERCLIP_API_KEY": "pk-agent",
+    for k, v in {"PAPERCLIP_API_URL": "http://pc.local/", "PAPERCLIP_API_KEY": "pk-agent",
                  "PAPERCLIP_COMPANY_ID": "co-1"}.items():
-        monkeypatch.setenv(k, v)
+        monkeypatch.setenv(k, v)  # the task board's identity; memory uses the bridge's
+    monkeypatch.setattr(bridge, "API", "http://api.local")
+    monkeypatch.setattr(bridge, "HOOK_TOKEN", "hook-tok")
     mod._BOARD.clear()
     fake = FakeBackend()
     monkeypatch.setattr(mod.urllib.request, "urlopen", fake)
@@ -49,7 +52,7 @@ def said(text):
 
 
 def recalls(backend):
-    return [c for c in backend.calls if c[0].endswith("/api/v1/memory/recall")]
+    return [c for c in backend.calls if c[0].endswith("/api/v1/internal/memory/recall/org_test")]
 
 
 def test_user_text_drops_the_turn_context_line(mod):
@@ -62,7 +65,7 @@ def test_prefetch_query_is_user_text_only(mod, backend):
     p = provider(mod, client)
     p.prefetch(said("what is our launch date?"))
     (url, auth, body, _), = recalls(backend)
-    assert url == "http://api.local/api/v1/memory/recall" and auth == "Bearer pk-agent"
+    assert url == "http://api.local/api/v1/internal/memory/recall/org_test" and auth == "Bearer hook-tok"
     assert body == {"question": "Aden: what is our launch date?", "budget_tokens": 400}
     assert p.prefetch(said("thanks!")) == "" and len(recalls(backend)) == 1  # trivial prompt: no call
     assert client.calls == []  # AgentCore is no longer read
@@ -118,7 +121,7 @@ def test_remember_tool_forwards(mod, backend):
     out = json.loads(p.handle_tool_call("remember", args))
     assert out == backend.reply
     (url, _, body, _), = backend.calls
-    assert url == "http://api.local/api/v1/memory/remember"
+    assert url == "http://api.local/api/v1/internal/memory/remember/org_test"
     assert body == {**args, "scope": "team"}  # a room is shared already
     dm = provider(mod, FakeClient(), user_id="user_2abc", chat_type="dm")
     dm.handle_tool_call("remember", {"subject": "s", "fact": "f", "kind": "fact"})

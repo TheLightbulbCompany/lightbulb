@@ -167,6 +167,7 @@ export function UsagePanel({ embedded = false }: UsagePanelProps = {}) {
               <tr className="border-b border-[var(--edge)] text-[var(--midnight-muted)]">
                 <th className="text-left px-4 py-2 label-caps">Member</th>
                 <th className="text-right px-4 py-2 label-caps">Requests</th>
+                <th className="text-right px-4 py-2 label-caps">From your agents&apos; sessions</th>
               </tr>
             </thead>
             <tbody>
@@ -180,6 +181,9 @@ export function UsagePanel({ embedded = false }: UsagePanelProps = {}) {
                   </td>
                   <td className="px-4 py-2 text-right text-[var(--midnight-muted)]">
                     {member.request_count}
+                  </td>
+                  <td className="px-4 py-2 text-right text-[var(--midnight-muted)]">
+                    {formatTokens((member.capture_prompt_tokens ?? 0) + (member.capture_completion_tokens ?? 0))} tokens
                   </td>
                 </tr>
               ))}

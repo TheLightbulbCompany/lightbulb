@@ -350,8 +350,9 @@ def _same_target(signed: str, path: str, query: str) -> bool:
     return unquote(signed_path) == unquote(path) and pairs(signed_query) == pairs(query)
 
 
-async def computer_person(request: Request) -> tuple[AuthContext, str]:
-    """A signed-in computer's call (``lightbulb login``): the person its proof names, in the
+async def computer_person(request: Request, *, free_ok: bool = False) -> tuple[AuthContext, str]:
+    """(``free_ok``: a person in no workspace is returned with ``org_id=None`` instead of a 409.)
+    A signed-in computer's call (``lightbulb login``): the person its proof names, in the
     workspace chosen at login, and the engine-verified label of the calling session. Each call is signed over its
     method, path, query, body hash and a timestamp, and is good once, within ``TOOLS_SKEW_S``."""
     import hashlib
@@ -406,6 +407,8 @@ async def computer_person(request: Request) -> tuple[AuthContext, str]:
             )
     elif len(organizations) == 1:
         org = organizations[0]
+    elif free_ok and not organizations:
+        return AuthContext(user_id=claims["sub"]), label
     else:
         raise HTTPException(
             status_code=409,
@@ -413,3 +416,8 @@ async def computer_person(request: Request) -> tuple[AuthContext, str]:
             "Sign it in again with your workspace selected: lightbulb login",
         )
     return AuthContext(user_id=claims["sub"], org_id=org["id"], org_role=org.get("role")), label
+
+
+async def computer_identity(request: Request) -> tuple[AuthContext, str]:
+    """``computer_person`` for routes a free (no-workspace) signed-in computer may also call."""
+    return await computer_person(request, free_ok=True)

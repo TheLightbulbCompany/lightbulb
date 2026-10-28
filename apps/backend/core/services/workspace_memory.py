@@ -230,11 +230,34 @@ async def delete_member_memory(
     can never have a private scope, and when the env has no memory. The tail (events, late
     re-sweep) runs only while ``still_gone`` says so: a re-add must keep its new memories."""
     owner_namespace(owner_id)
-    memory_id = settings.AGENTCORE_MEMORY_ID
-    if not memory_id or not _MEMBER_ID.fullmatch(user_id or ""):
+    if not _MEMBER_ID.fullmatch(user_id or ""):
         return
+    from core.services import evaluator, session_store  # lazy: evaluator imports this module
+
+    memory_id = settings.AGENTCORE_MEMORY_ID
     actor = f"{owner_id}:{user_id}"
-    await _wipe(_client(), f"actor={actor}", memory_id, [f"/owners/{actor}/"], [actor], resweep_after_s, still_gone)
+    steps = [
+        lambda: session_store.delete_sessions(user_id),
+        lambda: evaluator.delete_drafts(user_id),
+        lambda: evaluator.delete_episodes(user_id, resweep_after_s=resweep_after_s, still_gone=still_gone),
+    ]
+    if memory_id:
+        steps.insert(
+            0,
+            lambda: _wipe(
+                _client(), f"actor={actor}", memory_id, [f"/owners/{actor}/"], [actor], resweep_after_s, still_gone
+            ),
+        )
+    errors = []
+    for step in steps:  # every step runs; one failure must not leave the rest of the person's data behind
+        try:
+            await step()
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+    if errors:
+        raise RuntimeError(
+            f"member wipe failed for {actor}: {', '.join(type(e).__name__ for e in errors)}"
+        ) from errors[0]
 
 
 # ponytail: per-scope cap, newest-first after the cap; add a cursor when a workspace hits it.

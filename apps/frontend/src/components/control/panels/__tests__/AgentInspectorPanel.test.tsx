@@ -31,6 +31,7 @@ vi.mock("../AgentInstructionsTab", () => ({
   ),
 }));
 
+vi.mock("../SessionsTimeline", () => ({ SessionsTimeline: () => <div>sessions</div> }));
 vi.mock("../AgentMemoryTab", () => ({
   AgentMemoryTab: () => <div data-testid="memory-tab">memory</div>,
 }));
@@ -156,10 +157,10 @@ describe("AgentInspectorPanel", () => {
     expect(screen.getByRole("tab", { name: "Schedule" })).toBeInTheDocument();
   });
 
-  it("orders the tabs Overview·Dashboard·Runs·Instructions·Memory·Tools·Schedule", () => {
+  it("orders the tabs Overview·Dashboard·Runs·Instructions·Memory·Sessions·Tools·Schedule", () => {
     renderInspector();
     const labels = screen.getAllByRole("tab").map((t) => t.textContent);
-    expect(labels).toEqual(["Overview", "Dashboard", "Runs", "Instructions", "Memory", "Tools", "Schedule"]);
+    expect(labels).toEqual(["Overview", "Dashboard", "Runs", "Instructions", "Memory", "Sessions", "Tools", "Schedule"]);
   });
 
   it("mounts the Instructions tab with the ?agent id when selected", () => {

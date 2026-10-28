@@ -617,6 +617,9 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
         return JSONResponse(status_code=problem.status_code, content=problem.body())
+    if request.url.path.startswith("/api/v1/sessions"):
+        # uploaded sessions: FastAPI's default 422 would echo tool-call summaries.
+        return JSONResponse(status_code=422, content={"detail": "Invalid sessions upload."})
     return await request_validation_exception_handler(request, exc)
 
 
@@ -1076,6 +1079,12 @@ app.include_router(ideas_router.router, prefix="/api/v1", tags=["ideas"])
 from routers import memory as memory_router  # noqa: E402
 
 app.include_router(memory_router.router, prefix="/api/v1/memory", tags=["memory"])
+
+# Sessions a person uploads from the CLI, by choice (metadata or full).
+from routers import sessions as sessions_router  # noqa: E402
+
+app.include_router(sessions_router.router, prefix="/api/v1/sessions", tags=["sessions"])
+app.include_router(sessions_router.shared_router, prefix="/api/v1/shared", tags=["sessions"])
 
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402

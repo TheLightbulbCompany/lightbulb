@@ -208,6 +208,7 @@ class TestGetUsage:
         self, mock_get_summary, mock_usage_repo, mock_clerk, async_client
     ):
         row = {"total_spend_microdollars": 0, "total_input_tokens": 1, "total_output_tokens": 1, "request_count": 1}
+        row |= {"capture_prompt_tokens": 0, "capture_completion_tokens": 0}
         mock_usage_repo.get_member_usage = AsyncMock(
             return_value=[{"user_id": "org_test_456", **row}, {"user_id": "user_test_123", **row}]
         )

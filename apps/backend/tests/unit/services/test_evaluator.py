@@ -473,3 +473,21 @@ async def test_a_credential_shaped_reflection_is_a_finding_never_mirrored(agentc
     kinds = {d["id"]: d["kind"] for d in await evaluator.list_drafts(user_id="u")}
     assert kinds == {rid("gh"): "finding", rid("aws"): "finding", rid("ok"): "lesson"}
     assert [d["id"] for d in await evaluator.list_drafts(workspace_id="org_x")] == [rid("ok")]
+
+
+async def test_a_failed_chunk_drops_the_chunks_already_written(agentcore, collected):
+    from core.repositories import messaging_repo as store
+
+    esid, t = "s1", datetime(2026, 10, 27, 12, tzinfo=UTC)
+    agentcore.add_response("create_event", event_ok())
+    agentcore.add_client_error("create_event", "ThrottledException")
+    agentcore.add_response("list_events", {"events": [
+        {"eventId": "e1", "memoryId": MEM, "actorId": "u", "sessionId": esid, "eventTimestamp": t, "payload": []}]},
+        {"memoryId": MEM, "sessionId": esid, "actorId": "u", "includePayloads": False})  # fmt: skip
+    agentcore.add_response("delete_event", {"eventId": "e1"},
+                           {"memoryId": MEM, "sessionId": esid, "eventId": "e1", "actorId": "u"})  # fmt: skip
+    with pytest.raises(ClientError):
+        await evaluator.ingest_session("u", sess(), calls(120), workspace_id=None)
+    assert "Item" not in store._table().get_item(Key={"pk": "EVAL#u", "sk": "S#s1"})
+    month = datetime.now(UTC).strftime("%Y-%m")
+    assert int(store._table().get_item(Key={"pk": f"MEMCAP#u#{month}", "sk": "COUNT"})["Item"]["n"]) == 0

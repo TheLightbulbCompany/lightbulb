@@ -121,6 +121,7 @@ async def ingest_session(user_id: str, session: dict, tool_calls: list[dict], *,
         return False
     events = _events(session, tool_calls)
     client = _client()
+    sent = 0
     try:
         for i in range(0, len(events), _BATCH):  # one CreateEvent per <=100 payloads, stamped at the first
             chunk = events[i : i + _BATCH]
@@ -128,7 +129,13 @@ async def ingest_session(user_id: str, session: dict, tool_calls: list[dict], *,
                 client.create_event,
                 memoryId=memory_id, actorId=user_id, sessionId=event_session_id(sid), eventTimestamp=chunk[0][0], payload=[p for _, p in chunk],
             )  # fmt: skip
+            sent += 1
     except Exception:
+        if sent:  # the retry writes every chunk again: drop the ones already in, or episodes count them twice
+            try:
+                await run_in_thread(_delete_session_events, client, memory_id, user_id, sid)
+            except Exception as e:  # noqa: BLE001 -- best effort; the original failure is what is raised
+                logger.warning("partial ingest cleanup failed: %s", type(e).__name__)
         await run_in_thread(table.delete_item, Key=marker)  # a failed ingest neither counts nor blocks the retry
         if workspace_id is None:
             await run_in_thread(

@@ -28,6 +28,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/ideas.md` | Someone sends you an **idea** (a quoted idea, "Let's do it!", maybe "Tracked in Work: …"); a Work task whose description has **Needs** and **Done means** sections, or you notice a concrete job worth adding with `suggest_idea`. On a linked project, break it into assigned tasks first. |
 | `references/chat-vs-document.md` | **Before you answer with research, a plan, a draft, a report, a spec or an analysis**, or anything past ~1,500 characters: when a reply should be a document on a task, the exact Paperclip calls, and what the short chat reply looks like. |
 | `references/documents.md` | **How to write a document** (a plan, research, a report, a spec): open with the answer, owners and dates, tasks in a table, cards and diagrams. |
+| `references/workspace.md` | Adding or removing a room member, changing listen mode, making, renaming or archiving a room, pinning, searching messages or sessions → `lightbulb_workspace`. |
 | `references/platform-primitives.md` § Other rooms | Someone asks about another channel, DM or group chat ("what did we decide in #launch?", "check our recent conversations") → `lightbulb_read_rooms`, with the asker's own access. |
 | `references/platform-primitives.md` § Human-shared local sessions | Reading a person's Claude Code/Codex session (`lightbulb_local_sessions`); messaging one goes through `lightbulb_network`. |
 | `references/platform-primitives.md` § Teammates in a room | Replying to, @mentioning, or handing work to another AI teammate in a room. |
@@ -56,6 +57,7 @@ These hold whether or not you open a reference.
   change: read integrations live from `GET $ISOL8_API_URL/api/v1/platform-info`,
   marketplace listings live with `marketplace_search`, and plan/provider from
   `$HERMES_HOME/lightbulb-facts.json`. Never recite any of the three from memory.
+- **Lightbulb's own data (rooms, members, messages, tasks) changes only through Lightbulb tools or the Paperclip API.** Never write Lightbulb's tables or buckets with AWS or any other direct access, even when you can. Room and member changes: `references/workspace.md`.
 - **Google Workspace on Lightbulb uses the managed `gog` CLI.** Validate it with
   `gog auth list --check`, never `gog auth status` or the generic Google Workspace
   skill's setup check (wrong credential path). For a Google Doc, Sheet or Drive file use

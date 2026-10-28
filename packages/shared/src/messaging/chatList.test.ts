@@ -96,7 +96,7 @@ describe("sessionPreview", () => {
   it("puts a waiting prompt ahead of the last reply", () => {
     expect(sessionPreview({ status: "waiting-approval", lastAssistantMessage: "Done" })).toBe("Waiting for input");
     expect(sessionPreview({ status: "waiting-approval", waitingFor: "permission prompt", lastAssistantMessage: "Done" })).toBe("Waiting for input: permission prompt");
-    expect(sessionPreview({ status: "idle", note: "run lightbulb login", lastAssistantMessage: "Done" })).toBe("run lightbulb login");
+    expect(sessionPreview({ status: "idle", note: "run lightbulb login", lastAssistantMessage: "Done" })).toBe("Done"); // a hand-off note is never shown
   });
 });
 
@@ -116,7 +116,7 @@ describe("ring states", () => {
     expect(sessionRingState({ status: "busy" })).toBe("running");
     expect(sessionRingState({ status: "waiting-approval" })).toBe("attention");
     expect(sessionRingState({ status: "idle" })).toBeNull();
-    expect(sessionRingState({ status: "idle", note: "press Resume" })).toBe("attention");
+    expect(sessionRingState({ status: "idle", note: "press Resume" })).toBeNull();
   });
 });
 

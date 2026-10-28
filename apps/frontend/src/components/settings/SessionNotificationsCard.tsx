@@ -16,10 +16,9 @@ export function useSessionNotificationPrefs() {
   return { prefs, loaded: data !== undefined, mutate };
 }
 
-const KINDS: { key: "waiting" | "finished" | "attention"; title: string; desc: string }[] = [
+const KINDS: { key: "waiting" | "finished"; title: string; desc: string }[] = [
   { key: "waiting", title: "Waiting on you", desc: "A session asks for permission or asks you a question." },
   { key: "finished", title: "Finished", desc: "A turn of a minute or more ends." },
-  { key: "attention", title: "Needs attention", desc: "A background job leaves you a hand-off note." },
 ];
 const LEVELS: { value: NotifyLevel; label: string }[] = [
   { value: "banner", label: "Banner" },

@@ -224,7 +224,7 @@ def test_list_includes_status_and_history(monkeypatch):
         app.dependency_overrides.clear()
     assert item["status"] == "current" and item["speaker"] == "Ana"
     assert item["history"] == [{"value": "8080", "speaker": "Bo", "occurredAt": "2026-10-02T00:00:00+00:00"}]
-    assert item["source"]["sourceId"] == "mem-t1"
+    assert item["source"] == "room"
 
 
 def test_delete_forgets_the_entry_and_drops_the_mirror(member):

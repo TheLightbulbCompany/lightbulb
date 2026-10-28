@@ -10,7 +10,7 @@ from core.services import workspace_memory as wm
 
 T0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
 T1 = datetime(2026, 10, 2, tzinfo=timezone.utc)
-PRIV, TEAM = "/owners/org_a:user_me/", "/owners/org_a/"
+PRIV, TEAM, ENTRIES = "/owners/org_a:user_me/", "/owners/org_a/", "/entries/org_a/"
 
 
 def _rec(rid, ns, text="fact", at=T0):
@@ -29,6 +29,9 @@ def fake(monkeypatch):
     client = MagicMock()
     client.batch_delete_memory_records.return_value = {"successfulRecords": [], "failedRecords": []}
     monkeypatch.setattr(wm, "_client", lambda: client)
+    from core.services import memory_sync
+
+    monkeypatch.setattr(memory_sync, "_get", lambda owner, sk: {})  # no link rows
     return client
 
 
@@ -41,12 +44,13 @@ async def test_lists_private_and_team_newest_first_and_drops_prefix_neighbours(f
             _rec("mem-x", "/owners/org_a:user_mex/"),
         ],  # a prefix neighbour: never shown
         TEAM: [_rec("mem-t1", TEAM, wm.CONFIRMED_PREFIX + "team", T0)],
+        ENTRIES: [],
     }
     fake.list_memory_records.side_effect = lambda **kw: {"memoryRecordSummaries": by_ns[kw["namespace"]]}
     out = await wm.list_memories("org_a", "user_me")
     assert [m["id"] for m in out["private"]] == ["mem-p2", "mem-p1"]
     (team,) = out["team"]
-    assert team | {"source": None} == {
+    assert team == {
         "id": "mem-t1",
         "text": "team",
         "createdAt": T0.isoformat(),
@@ -54,12 +58,35 @@ async def test_lists_private_and_team_newest_first_and_drops_prefix_neighbours(f
         "status": "current",
         "history": [],
         "speaker": "",
-        "source": None,
+        "source": "room",
     }
-    assert team["source"]["sourceId"] == "mem-t1"
     assert out["private"][0]["confirmed"] is False
     assert out["truncated"] is False
-    assert {c.kwargs["namespace"] for c in fake.list_memory_records.call_args_list} == {PRIV, TEAM}
+    assert {c.kwargs["namespace"] for c in fake.list_memory_records.call_args_list} == {PRIV, TEAM, ENTRIES}
+
+
+def _mirrored(rid, entry_id, ns=None, at=T1):
+    rec = _rec(rid, ns or ENTRIES, "deploy: Fridays only", at)
+    rec["metadata"] = {"entryId": {"stringValue": entry_id}, "kind": {"stringValue": "entry"}}
+    return rec
+
+
+@pytest.mark.asyncio
+async def test_team_lists_mirrored_log_entries_once_labelled_network(fake, monkeypatch):
+    from core.services import memory_sync
+
+    by_ns = {
+        PRIV: [_mirrored("mem-pe", "e-me", PRIV)],  # a person's own note, mirrored to their scope
+        TEAM: [_rec("mem-t1", TEAM, "team", T0)],
+        ENTRIES: [_mirrored("mem-e1", "e-1"), _mirrored("mem-e2", "e-2")],
+    }
+    fake.list_memory_records.side_effect = lambda **kw: {"memoryRecordSummaries": by_ns[kw["namespace"]]}
+    # e-2 is the entry mem-t1 was imported as: it already shows as mem-t1.
+    rows = {"MEMENTRY#e-2": {"facts_rec": "mem-t1"}}
+    monkeypatch.setattr(memory_sync, "_get", lambda owner, sk: rows.get(sk, {}))
+    out = await wm.list_memories("org_a", "user_me")
+    assert [(m["id"], m["source"]) for m in out["team"]] == [("mem-e1", "network"), ("mem-t1", "room")]
+    assert [(m["id"], m["source"]) for m in out["private"]] == [("mem-pe", "network")]
 
 
 @pytest.mark.asyncio

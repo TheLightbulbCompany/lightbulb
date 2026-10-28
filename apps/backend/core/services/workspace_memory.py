@@ -325,6 +325,11 @@ def _scopes(owner_id: str, user_id: str) -> tuple[str, str]:
     return f"/owners/{owner_id}:{user_id}/", team
 
 
+def _entry_id(r: dict) -> str:
+    """The log entry a mirrored record stands for (``memory_sync`` writes ``entryId``); "" for a fact."""
+    return ((r.get("metadata") or {}).get("entryId") or {}).get("stringValue") or ""
+
+
 def _view(r: dict) -> dict:
     text = (r.get("content") or {}).get("text", "")
     confirmed = text.startswith(CONFIRMED_PREFIX)
@@ -338,8 +343,21 @@ def _view(r: dict) -> dict:
         "status": shown["status"],
         "history": shown["history"],
         "speaker": shown["sources"][0]["speaker"],
-        "source": {k: shown["sources"][0][k] for k in ("sourceId", "occurredAt")},
+        # network: a mirrored log entry (team remembers, approved lessons, a person's own notes);
+        # room: what AgentCore extracted from the workspace's conversations.
+        "source": "network" if _entry_id(r) else "room",
     }
+
+
+def _not_imported(owner_id: str, mirrored: list[dict], facts_ids: set[str]) -> list[dict]:
+    """Mirrored entries, less those whose facts record is already listed: one fact shows once.
+    The sync never mirrors an imported fact, but a mirror can precede its import's link row.
+    ponytail: one Dynamo read per mirrored record (<= _LIST_CAP); batch-get if listing gets slow."""
+    from core.services import memory_sync  # lazy: it imports this module
+
+    return [
+        r for r in mirrored if memory_sync._get(owner_id, f"MEMENTRY#{_entry_id(r)}").get("facts_rec") not in facts_ids
+    ]
 
 
 def _list_scope(client, memory_id: str, ns: str) -> tuple[list[dict], bool]:
@@ -382,17 +400,21 @@ def _delete_one(client, memory_id: str, record_id: str) -> None:
 
 
 async def list_memories(owner_id: str, user_id: str) -> dict:
+    """The viewer's private scope, and the team: extracted facts plus the mirrored log entries."""
     private, team = _scopes(owner_id, user_id)
+    entries = namespaces_for(owner_id, None)["entries"]
     memory_id = settings.AGENTCORE_MEMORY_ID
     if not memory_id:
         return {"private": [], "team": [], "truncated": False}
 
     def run() -> dict:
-        client, out, truncated = _client(), {}, False
-        for key, ns in (("private", private), ("team", team)):
-            rows, more = _list_scope(client, memory_id, ns)
+        client, rows, truncated = _client(), {}, False
+        for key, ns in (("private", private), ("team", team), ("entries", entries)):
+            rows[key], more = _list_scope(client, memory_id, ns)
             truncated |= more
-            out[key] = [_view(r) for r in sorted(rows, key=lambda r: r["createdAt"], reverse=True)]
+        facts_ids = {r["memoryRecordId"] for r in rows["team"]}
+        rows["team"] += _not_imported(owner_id, rows.pop("entries"), facts_ids)
+        out = {k: [_view(r) for r in sorted(v, key=lambda r: r["createdAt"], reverse=True)] for k, v in rows.items()}
         return {**out, "truncated": truncated}
 
     return await run_in_thread(run)

@@ -37,6 +37,28 @@ DUE_S = 7 * 86400  # how long after an ingest the sweep keeps collecting that pe
 CAP_ROW_S = 62 * 86400  # a monthly cap row outlives its month, then expires
 _DUE = "EVALDUE"
 _SECRET = re.compile(r"secret|credential|token|\bkeys?\b|api[_ -]?key|password", re.I)
+# Verbatim from the CLI's refusal list (src/memory.rs, cli main 5b2e2c5 + #85), so the two filters agree.
+SECRET_PATTERNS = [
+    (name, re.compile(rx))
+    for name, rx in (
+        ("credential", r"(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*\S{8,}"),
+        ("private_key", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+        ("aws_key", r"AKIA[0-9A-Z]{16}"),
+        ("api_key", r"sk-[A-Za-z0-9_-]{20,}"),
+        (
+            "vendor_key",
+            r"\b(?:[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}"
+            r"|xox[abprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|glpat-[A-Za-z0-9_-]{20})",
+        ),
+        ("url_credentials", r"https?://[^\s/]+:[^\s@]+@"),
+        ("jwt", r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    )
+]
+
+
+def _secret_shaped(text: str) -> bool:
+    """A finding (author-only, never mirrored): a secret keyword or a credential-shaped string."""
+    return bool(_SECRET.search(text)) or any(rx.search(text) for _, rx in SECRET_PATTERNS)
 
 
 def _ns(user_id: str) -> str:
@@ -204,7 +226,7 @@ async def collect_drafts(user_id: str, *, workspace_id: str | None) -> int:
             )
         ]
         item = {
-            "id": r["memoryRecordId"], "user_id": user_id, "kind": "finding" if _SECRET.search(text) else "lesson",
+            "id": r["memoryRecordId"], "user_id": user_id, "kind": "finding" if _secret_shaped(text) else "lesson",
             "text": text, "evidence": sorted(named), "status": "proposed", "created": utc_now_iso(),
         }  # fmt: skip
         if workspace_id:

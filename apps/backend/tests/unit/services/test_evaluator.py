@@ -461,3 +461,15 @@ async def test_forget_session_never_raises_and_still_drops_the_marker(agentcore)
     agentcore.add_client_error("list_events", "ThrottledException")
     await evaluator.forget_session("u", "s1", workspace_id=None)
     assert "Item" not in store._table().get_item(Key={"pk": "EVAL#u", "sk": "S#s1"})
+
+
+async def test_a_credential_shaped_reflection_is_a_finding_never_mirrored(agentcore):
+    await session_store.put_sessions("u", [sess("s1")], False, "org_x")
+    t = datetime(2026, 10, 27, 12, tzinfo=UTC)
+    agentcore.add_response("list_memory_records", listing(
+        rec("gh", "in s1 the push used ghp_" + "a" * 36, t), rec("aws", "s1 ran with AKIA" + "B" * 16, t),
+        rec("ok", "pinning the fixture fixed s1", t)))  # fmt: skip
+    assert await evaluator.collect_drafts("u", workspace_id="org_x") == 3
+    kinds = {d["id"]: d["kind"] for d in await evaluator.list_drafts(user_id="u")}
+    assert kinds == {rid("gh"): "finding", rid("aws"): "finding", rid("ok"): "lesson"}
+    assert [d["id"] for d in await evaluator.list_drafts(workspace_id="org_x")] == [rid("ok")]

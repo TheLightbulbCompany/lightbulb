@@ -160,6 +160,14 @@ def test_remember_tool_forwards(mod, backend):
     dm = provider(mod, FakeClient(), user_id="user_2abc", chat_type="dm")
     dm.handle_tool_call("remember", {"subject": "s", "fact": "f", "kind": "fact"})
     assert backend.calls[-1][2]["scope"] == "me"
+    assert backend.calls[-1][2]["on_behalf_of"] == "user_2abc"  # the person in the DM
+    assert "on_behalf_of" not in backend.calls[0][2]  # a room has no one to attach
+
+
+def test_recall_query_is_cut_to_the_backends_limit(mod, backend):
+    p = provider(mod, FakeClient())
+    p.prefetch(said("launch " * 1500))  # ~10,000 characters
+    assert 0 < len(recalls(backend)[0][2]["question"]) <= 2000
 
 
 def test_tools_return_a_short_error_when_the_backend_fails(mod, backend):

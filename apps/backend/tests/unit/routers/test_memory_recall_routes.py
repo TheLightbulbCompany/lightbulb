@@ -218,3 +218,51 @@ async def test_hosted_recall_tool_rejects_a_bad_question_as_a_tool_error(monkeyp
     monkeypatch.setattr(hosted_mcp, "_caller", lambda *_: AuthContext(user_id="user_me", org_id="org_a"))
     with pytest.raises(ToolError):
         await hosted_mcp.recall.__wrapped__("")
+
+
+async def test_forget_queues_when_the_call_raises():
+    queue = AsyncMock()
+    with (
+        patch.object(memory_api.network_member, "call_op", AsyncMock(side_effect=OSError("boom"))),
+        patch.object(memory_api.network_member, "queue_op", queue),
+    ):
+        await memory_api.forget("org_a", "e7")
+    queue.assert_awaited_once_with("org_a", "memory.forget", {"entry": "e7"})
+
+
+def test_delete_sends_the_forget_before_deleting_the_record_and_survives_a_failing_call(member):
+    rid = "mem-" + "a1" * 20
+    order = []
+    queue = AsyncMock(side_effect=lambda *a: order.append("queued"))
+    rm = AsyncMock(side_effect=lambda *a: order.append("deleted"))
+    with (
+        patch("routers.memory.workspace_memory.delete_memory", rm),
+        patch("routers.memory.memory_sync.entry_for", AsyncMock(return_value="e7")),
+        patch("routers.memory.memory_sync.drop_mirror", AsyncMock()),
+        patch.object(memory_api.network_member, "call_op", AsyncMock(side_effect=OSError("boom"))),
+        patch.object(memory_api.network_member, "queue_op", queue),
+    ):
+        assert member.delete(f"/api/v1/memory/{rid}").status_code == 204
+    assert order == ["queued", "deleted"]
+
+
+def test_delete_without_mirror_rows_sends_no_forget(member):
+    rid = "mem-" + "a1" * 20
+    forget = AsyncMock()
+    with (
+        patch("routers.memory.workspace_memory.delete_memory", AsyncMock()),
+        patch("routers.memory.memory_sync.entry_for", AsyncMock(return_value=None)),
+        patch("routers.memory.memory_api.forget", forget),
+    ):
+        assert member.delete(f"/api/v1/memory/{rid}").status_code == 204
+    forget.assert_not_awaited()
+
+
+def test_recall_treats_a_naive_as_of_as_utc(member):
+    rec = AsyncMock(return_value=PAGE)
+    with (
+        patch.object(memory_api.memory_sync, "sync_if_stale", AsyncMock()),
+        patch.object(memory_api.memory_recall, "recall", rec),
+    ):
+        member.post("/api/v1/memory/recall", json={"question": "q", "as_of": "2026-10-01T00:00:00"})
+    assert rec.await_args.kwargs["as_of"] == datetime(2026, 10, 1, tzinfo=timezone.utc)

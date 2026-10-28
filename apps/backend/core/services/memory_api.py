@@ -6,7 +6,7 @@ logs a question or a fact.
 """
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -17,7 +17,7 @@ from core.services import memory_recall, memory_stages, memory_sync, network_mem
 
 logger = logging.getLogger(__name__)
 
-MAX_QUESTION = 2000
+MAX_QUESTION = 2000  # the Hermes plugin truncates to this (_QUERY_MAX in plugins/memory/agentcore)
 NEIGHBOURS = 5
 
 
@@ -40,6 +40,8 @@ async def recall_page(
 ) -> dict:
     """The evidence page. ``user_id`` adds that person's private scope; ``None`` is the workspace."""
     question = _question(question)
+    if as_of and as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=UTC)
     memory_id = settings.AGENTCORE_MEMORY_ID
     if not memory_id:
         return {"asOf": (as_of or datetime.now().astimezone()).isoformat(), "usedEvidenceTokens": 0, "results": []}
@@ -105,6 +107,12 @@ async def remember(
 
 
 async def forget(owner_id: str, entry_id: str) -> None:
+    """Never raises out of the network call: parked or failing, the forget is queued."""
     params = {"entry": entry_id}
-    if await network_member.call_op(owner_id, "memory.forget", params) is None:
+    sent = None
+    try:
+        sent = await network_member.call_op(owner_id, "memory.forget", params)
+    except Exception as exc:  # noqa: BLE001 -- the queue is the retry
+        logger.warning("memory.forget failed owner=%s error=%s", owner_id, type(exc).__name__)
+    if sent is None:
         await network_member.queue_op(owner_id, "memory.forget", params)

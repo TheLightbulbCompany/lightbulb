@@ -54,7 +54,7 @@ from agent.redact import redact_for_egress
 logger = logging.getLogger(__name__)
 
 # botocore service-model limits for bedrock-agentcore (boto3 1.42.89, the base image's).
-_QUERY_MAX = 10_000     # SearchCriteria.searchQuery
+_QUERY_MAX = 2000       # the backend's recall rejects more (core/services/memory_api.py MAX_QUESTION)
 _TEXT_MAX = 100_000     # Content.text
 _SESSION_MAX = 100      # SessionId, pattern [a-zA-Z0-9][a-zA-Z0-9-_]*
 # Evidence tokens the backend may spend on the page: passive recall is small; the search tool is
@@ -371,6 +371,8 @@ class AgentCoreMemoryProvider(MemoryProvider):
         body = {"subject": redact_for_egress(subject), "fact": redact_for_egress(fact), "kind": args.get("kind") or "fact",
                 # A room is shared already; a 1:1 DM is the person's own.
                 "scope": args.get("scope") or ("me" if self._member else "team")}
+        if self._member:
+            body["on_behalf_of"] = self._member  # a private fact belongs to the person in this DM
         if args.get("replaces"):
             body["replaces"] = [str(i) for i in args["replaces"]]
         try:

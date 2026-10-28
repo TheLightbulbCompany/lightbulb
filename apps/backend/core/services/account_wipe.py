@@ -488,7 +488,7 @@ def _runtime_detail(report: dict) -> str:
     if report.get("runtime") == "scheduled":
         return (
             "containers row + channel-links removed; agentcore runtime + boot secret + S3 profiles "
-            "teardown scheduled (after the cloud member forgets its entries, at most 3 minutes)"
+            "teardown scheduled (after the cloud member forgets its entries, within a few minutes)"
         )
     return "agentcore runtime + boot secret + S3 profiles + containers row + channel-links removed"
 

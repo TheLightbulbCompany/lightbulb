@@ -106,13 +106,21 @@ async def remember(
     return {"queued": queued, "neighbours": near}
 
 
-async def forget(owner_id: str, entry_id: str) -> None:
-    """Never raises out of the network call: parked or failing, the forget is queued."""
-    params = {"entry": entry_id}
+async def _send_or_queue(owner_id: str, op: str, params: dict) -> None:
+    """Never raises out of the network call: parked or failing, the op is queued."""
     sent = None
     try:
-        sent = await network_member.call_op(owner_id, "memory.forget", params)
+        sent = await network_member.call_op(owner_id, op, params)
     except Exception as exc:  # noqa: BLE001 -- the queue is the retry
-        logger.warning("memory.forget failed owner=%s error=%s", owner_id, type(exc).__name__)
+        logger.warning("%s failed owner=%s error=%s", op, owner_id, type(exc).__name__)
     if sent is None:
-        await network_member.queue_op(owner_id, "memory.forget", params)
+        await network_member.queue_op(owner_id, op, params)
+
+
+async def forget(owner_id: str, entry_id: str) -> None:
+    await _send_or_queue(owner_id, "memory.forget", {"entry": entry_id})
+
+
+async def forget_author(owner_id: str, author: str) -> None:
+    """Tombstone every entry this engine member key authored."""
+    await _send_or_queue(owner_id, "memory.forget_author", {"author": author})

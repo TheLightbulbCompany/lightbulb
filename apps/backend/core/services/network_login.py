@@ -292,6 +292,17 @@ async def revoked_keys(user_ids: list[str]) -> list[str]:
     return sorted({r["sk"] for found in rows for r in found if int(r.get("ttl") or 0) > now})
 
 
+async def computer_keys(user_id: str) -> list[str]:
+    """Member keys of this person's computers: those linked now, and those they signed out whose
+    proof could still be in force. Proofs are stateless, so no other record of a key exists.
+    ponytail: a computer that is offline and was never signed out is missed; add a key
+    registry written at ``login`` if the wipe must reach those."""
+    from core.services import network_route
+
+    live = [r["key"] for r in await network_route._connections().routes_for_user(user_id)]
+    return sorted({*live, *await revoked_keys([user_id])})
+
+
 async def require_live_user(user_id: str) -> None:
     """The Clerk user still exists and is not banned or locked: 401 if not, 503 when Clerk cannot
     say (fail closed). A proof is renewed, and a personal key used, only for a live account."""

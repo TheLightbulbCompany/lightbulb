@@ -17,9 +17,12 @@ def _fake_client(record_pages: list[tuple[list[str], bool]], sessions: dict[str,
         {"memoryRecordSummaries": [{"memoryRecordId": r} for r in page], **({"nextToken": "n"} if nxt else {})}
         for page, nxt in record_pages
     ]
-    # The owner wipe's member scan (namespacePath) finds no member scope here.
+    # The pages are the team facts namespace's; the member scan (namespacePath) and the turns and
+    # entries namespaces hold nothing here.
     fake.list_memory_records.side_effect = lambda **kw: (
-        {"memoryRecordSummaries": []} if "namespacePath" in kw else pages_left.pop(0)
+        {"memoryRecordSummaries": []}
+        if "namespacePath" in kw or kw["namespace"] in ("/turns/org_x/", "/entries/org_x/")
+        else pages_left.pop(0)
     )
     fake.batch_delete_memory_records.return_value = {"successfulRecords": [], "failedRecords": []}
     fake.list_sessions.return_value = {"sessionSummaries": [{"sessionId": s} for s in sessions]}
@@ -56,8 +59,8 @@ async def test_wipe_deletes_records_now_and_events_plus_late_records_in_the_tail
     await asyncio.gather(*workspace_memory._tails)
 
     for call in fake.list_memory_records.call_args_list:
-        # The team namespace, plus one member scan of /owners/.
-        assert call.kwargs.get("namespace", "/owners/org_x/") == "/owners/org_x/"
+        # The three team namespaces, plus one member scan of /owners/.
+        assert call.kwargs.get("namespace", "/owners/org_x/") in workspace_memory.namespaces_for("org_x", None).values()
         assert call.kwargs.get("namespacePath", "/owners/") == "/owners/"
     chunks = [c.kwargs["records"] for c in fake.batch_delete_memory_records.call_args_list]
     assert [len(c) for c in chunks] == [100, 100, 50, 1]
@@ -67,6 +70,21 @@ async def test_wipe_deletes_records_now_and_events_plus_late_records_in_the_tail
     # Multi-page sessions are fully listed BEFORE deletion starts, so nothing is skipped.
     assert deleted == {("s1", "e1"), ("s1", "e2"), ("s1", "e3"), ("s2", "e4")}
     assert all(c.kwargs["actorId"] == "org_x" for c in fake.delete_event.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_owner_wipe_covers_three_namespaces(monkeypatch, configured):
+    seen = {}
+
+    async def spy(client, label, memory_id, namespaces, *a, **k):
+        seen["namespaces"] = namespaces
+
+    monkeypatch.setattr(workspace_memory, "_client", lambda: _scoped_client({}, actors=[]))
+    monkeypatch.setattr(workspace_memory, "_wipe", spy)
+    await workspace_memory.delete_owner_memory("org_x")
+    wanted = workspace_memory.namespaces_for("org_x", None)
+    assert set(wanted) == {"facts", "turns", "entries"}
+    assert set(wanted.values()) <= set(seen["namespaces"])
 
 
 @pytest.mark.asyncio
@@ -199,10 +217,15 @@ def no_evaluator_wipe(monkeypatch):
     """The member wipe also clears sessions, drafts and episodes (tests/unit/services/test_evaluator.py)."""
     from unittest.mock import AsyncMock
 
-    from core.services import evaluator, session_store
+    from core.services import evaluator, network_login, session_store
 
-    for mod, name in ((session_store, "delete_sessions"), (evaluator, "delete_drafts"), (evaluator, "delete_episodes")):
-        monkeypatch.setattr(mod, name, AsyncMock(return_value=0))
+    for mod, name in (
+        (session_store, "delete_sessions"),
+        (evaluator, "delete_drafts"),
+        (evaluator, "delete_episodes"),
+        (network_login, "computer_keys"),  # no signed-in computer: no forget_author forward
+    ):
+        monkeypatch.setattr(mod, name, AsyncMock(return_value=0 if name != "computer_keys" else []))
 
 
 async def test_member_wipe_runs_every_step_when_one_fails(monkeypatch):
@@ -227,3 +250,28 @@ async def test_member_wipe_runs_every_step_when_one_fails(monkeypatch):
     with pytest.raises(RuntimeError, match="OSError"):
         await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)
     assert ran == ["wipe", "sessions", "drafts", "episodes"]
+
+
+@pytest.mark.usefixtures("no_evaluator_wipe")
+async def test_member_wipe_forwards_forget_author(monkeypatch):
+    from core.services import memory_api, network_login, session_store
+
+    sent = []
+
+    async def boom(*a, **k):
+        raise OSError("down")
+
+    async def keys(user_id):
+        assert user_id == "user_a"
+        return ["k1", "k2"]
+
+    async def forward(owner_id, author):
+        sent.append((owner_id, author))
+
+    monkeypatch.setattr(workspace_memory.settings, "AGENTCORE_MEMORY_ID", "", raising=False)
+    monkeypatch.setattr(session_store, "delete_sessions", boom)  # an earlier step raises
+    monkeypatch.setattr(network_login, "computer_keys", keys)
+    monkeypatch.setattr(memory_api, "forget_author", forward)
+    with pytest.raises(RuntimeError, match="OSError"):
+        await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)
+    assert sent == [("org_x", "k1"), ("org_x", "k2")]

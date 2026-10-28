@@ -28,7 +28,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
 from core.services import network_member
-from core.services.workspace_memory import _client, _pages
+from core.services.workspace_memory import _client, _pages, namespaces_for
 
 logger = logging.getLogger(__name__)
 
@@ -332,9 +332,8 @@ def _mirror_turns(client, owner_id: str, memory_id: str, ns: str, after: str | N
 
 
 def _owned(owner_id: str, namespaces: dict[str, str]) -> bool:
-    """Every namespace is under this owner's team scope: never a ``<owner>:<user>`` private one."""
-    root = f"/owners/{owner_id}/"
-    return all(namespaces.get(k, "").startswith(root) for k in ("facts", "turns", "entries"))
+    """The namespaces are exactly this owner's team ones: never a ``<owner>:<user>`` private one."""
+    return all(namespaces.get(k) == v for k, v in namespaces_for(owner_id, None).items())
 
 
 _LEASE_S = 300

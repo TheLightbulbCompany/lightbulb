@@ -204,4 +204,33 @@ describe("AgentMemoryTab", () => {
       vi.useRealTimers();
     }
   });
+
+  it("renders contested badge and history line", async () => {
+    mockGet.mockResolvedValue({
+      ...LIST,
+      team: [
+        {
+          id: "mem-c", text: "API port is 9090", createdAt: "2026-10-01T00:00:00+00:00", confirmed: false,
+          status: "contested", speaker: "Ana",
+          history: [{ value: "8080", speaker: "Bo", occurredAt: "2026-09-30T00:00:00+00:00" }],
+        },
+        { ...LIST.team[0], status: "current", history: [] },
+      ],
+    });
+    renderTab();
+    expect(await screen.findByText("API port is 9090")).toBeInTheDocument();
+    expect(screen.getByText("Contested")).toBeInTheDocument();
+    expect(screen.getByText(/Was 8080/)).toHaveTextContent(/Bo/);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Contested only" }));
+    expect(screen.getByText("API port is 9090")).toBeInTheDocument();
+    expect(screen.queryByText("Warehouse is in Leeds")).not.toBeInTheDocument();
+  });
+
+  it("labels a record the overlay is holding as pending", async () => {
+    mockPost.mockResolvedValue({ id: "mem-new" });
+    renderTab();
+    await screen.findByText("I am allergic to nuts");
+    fireEvent.click(screen.getByRole("button", { name: "Share with team" }));
+    expect(await screen.findByText("Pending")).toBeInTheDocument();
+  });
 });

@@ -208,15 +208,21 @@ async def delete_owner_memory(owner_id: str, *, resweep_after_s: float = RESWEEP
     """Delete this owner's long-term records -- team AND every member's private scope -- now
     (raising if any fail), then start the background tail: their events, and one late re-sweep
     of records. No-op when the env has no memory."""
-    team = owner_namespace(owner_id)
+    owned = namespaces_for(owner_id, None)  # facts, turns, entries
     memory_id = settings.AGENTCORE_MEMORY_ID
     if not memory_id:
         return
     client = _client()
     members = await run_in_thread(_member_actors, client, owner_id, memory_id)
     scanned = await run_in_thread(_member_namespaces, client, owner_id, memory_id)
-    namespaces = list(dict.fromkeys([team, *scanned, *(f"/owners/{a}/" for a in members)]))
+    namespaces = list(dict.fromkeys([*owned.values(), *scanned, *(f"/owners/{a}/" for a in members)]))
     await _wipe(client, f"owner={owner_id}", memory_id, namespaces, [owner_id, *members], resweep_after_s)
+
+
+async def _forget_authored(owner_id: str, user_id: str, memory_api, network_login) -> None:
+    """Tombstone, in the network log, every entry written from this person's signed-in computers."""
+    for key in await network_login.computer_keys(user_id):
+        await memory_api.forget_author(owner_id, key)
 
 
 async def delete_member_memory(
@@ -233,7 +239,7 @@ async def delete_member_memory(
     owner_namespace(owner_id)
     if not _MEMBER_ID.fullmatch(user_id or ""):
         return
-    from core.services import evaluator, session_store  # lazy: evaluator imports this module
+    from core.services import evaluator, memory_api, network_login, session_store  # lazy: import cycles
 
     memory_id = settings.AGENTCORE_MEMORY_ID
     actor = f"{owner_id}:{user_id}"
@@ -241,6 +247,7 @@ async def delete_member_memory(
         lambda: session_store.delete_sessions(user_id),
         lambda: evaluator.delete_drafts(user_id),
         lambda: evaluator.delete_episodes(user_id, resweep_after_s=resweep_after_s, still_gone=still_gone),
+        lambda: _forget_authored(owner_id, user_id, memory_api, network_login),
     ]
     if memory_id:
         steps.insert(

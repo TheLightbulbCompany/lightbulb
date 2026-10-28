@@ -12,7 +12,7 @@ from core.repositories import messaging_repo
 from core.services import memory_sync
 
 OWNER = "org_1"
-NS = {"facts": "/owners/org_1/", "turns": "/owners/org_1/turns/", "entries": "/owners/org_1/entries/"}
+NS = {"facts": "/owners/org_1/", "turns": "/turns/org_1/", "entries": "/entries/org_1/"}
 
 
 def rid(x):
@@ -457,3 +457,37 @@ async def test_import_skips_refused_entries_logs_them_and_advances_the_watermark
     assert not memory_sync._get(OWNER, "MEMLINK#" + rid("r2"))
     assert memory_sync._get(OWNER, "MEMSYNC")["records_after"]
     assert "secret" in caplog.text and "sk-secret" not in caplog.text
+
+
+async def test_import_sends_entries_in_batches(table, agentcore):
+    from scripts import memory_import
+
+    n = memory_sync._BATCH * 2 + 5
+    facts = [fact(rid(f"r{i}"), f"Ana: api port: {i}") for i in range(n)]
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": facts})
+    no_sessions(agentcore)
+    member = Member()
+    with (
+        patch("core.services.network_member.call_op", member),
+        patch("core.services.network_member.drain_ops", return_value=0),
+        patch.object(memory_import.settings, "AGENTCORE_MEMORY_ID", MEM),
+    ):
+        assert await memory_import.import_workspace(OWNER) == n
+    sizes = [len(p["entries"]) for p in member.ops("memory.import")]
+    assert sizes == [memory_sync._BATCH, memory_sync._BATCH, 5]
+
+
+async def test_computer_keys_are_live_links_and_signed_out_keys():
+    from core.services import network_login
+
+    live, out = "a" * 52, "b" * 52
+
+    class Conn:
+        async def routes_for_user(self, user_id):
+            return [{"key": live}]
+
+    with (
+        patch("core.services.network_route._connections", return_value=Conn()),
+        patch.object(network_login, "revoked_keys", return_value=[out, live]),
+    ):
+        assert await network_login.computer_keys("user_a") == sorted([live, out])

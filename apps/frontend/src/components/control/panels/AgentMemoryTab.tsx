@@ -6,7 +6,11 @@ import useSWR from "swr";
 
 import { useApi } from "@/lib/api";
 
-interface Memory { id: string; text: string; createdAt: string; confirmed: boolean }
+interface Memory {
+  id: string; text: string; createdAt: string; confirmed: boolean;
+  status?: "current" | "contested" | "replaced";
+  history?: { value: string; speaker: string; occurredAt: string }[];
+}
 interface MemoryList { private: Memory[]; team: Memory[]; truncated: boolean }
 
 const BTN = "text-xs font-medium text-[var(--link)] hover:underline disabled:opacity-50";
@@ -55,6 +59,7 @@ export function AgentMemoryTab() {
   );
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [err, setErr] = useState<string | null>(null);
+  const [contestedOnly, setContestedOnly] = useState(false);
   const [, bump] = useState(0);
   // One refetch at HOLD_MS after each successful action: the overlay expires then, and the server list is current by now.
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -100,6 +105,8 @@ export function AgentMemoryTab() {
         <div className="mt-1 flex items-center gap-3 text-xs text-[var(--fg-mute)]">
           <span>{new Date(m.createdAt).toLocaleDateString()}</span>
           {m.confirmed ? <span className="text-[var(--live)]">Confirmed</span> : null}
+          {m.status === "contested" ? <span className="text-[var(--alert)]">Contested</span> : null}
+          {added.get(m.id)?.scope === scope ? <span>Pending</span> : null}
           {kind === "private" ? (
             <button type="button" className={BTN} disabled={busy.has(m.id)}
               onClick={() => act(m.id, () => api.post(`/memory/${m.id}/share`, {}), (r) => hold(m, r.id))}>Share with team</button>
@@ -118,11 +125,17 @@ export function AgentMemoryTab() {
               }
             }}>Delete</button>
         </div>
+        {m.history?.map((h, i) => (
+          <p key={i} className="mt-1 text-xs text-[var(--fg-mute)]">
+            Was {h.value} · {h.speaker} · {new Date(h.occurredAt).toLocaleDateString()}
+          </p>
+        ))}
       </li>
     );
   }
 
   function section(title: string, note: string, rows: Memory[], kind: "private" | "team") {
+    if (contestedOnly) rows = rows.filter((m) => m.status === "contested");
     return (
       <section className="mt-4">
         <h3 className="label-caps text-[var(--fg-mute)]">{title}</h3>
@@ -137,7 +150,13 @@ export function AgentMemoryTab() {
   if (error || !data) return <p className="py-4 text-sm text-[var(--alert)]">Memory is unavailable right now.</p>;
   return (
     <div className="py-4">
-      <p className="text-xs text-[var(--fg-mute)]">Shared by every agent in this workspace.</p>
+      <div className="flex items-center justify-between text-xs text-[var(--fg-mute)]">
+        <p>Shared by every agent in this workspace.</p>
+        <label className="flex items-center gap-1">
+          <input type="checkbox" checked={contestedOnly} onChange={(e) => setContestedOnly(e.target.checked)} />
+          Contested only
+        </label>
+      </div>
       {err ? <p role="alert" className="mt-2 text-xs text-[var(--alert)]">{err}</p> : null}
       {section("Only you", "From your direct messages with agents. Only you and the agents in those messages see these.", data.private, "private")}
       {section("Team", "Every member and every agent can recall these.", data.team, "team")}

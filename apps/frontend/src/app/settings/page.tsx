@@ -22,7 +22,7 @@ import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
 import { Logo } from "@/components/Logo";
 import { PlanChooser } from "@/components/settings/PlanChooser";
 import { UsagePanel } from "@/components/control/panels/UsagePanel";
-import { BudgetsPanel } from "@/components/control/panels/BudgetsPanel";
+import { BudgetsPanel, usesOwnProvider } from "@/components/control/panels/BudgetsPanel";
 import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
@@ -747,7 +747,13 @@ export default function SettingsPage() {
 function SettingsPageInner() {
   // The one Settings page: Control's panels, Team Settings and Accounts, in six
   // groups (settings-nav-config.tsx).
-  const navSections = SETTINGS_NAV_SECTIONS;
+  // Budgets meter Lightbulb credits only: hide the row for ChatGPT/BYO-key
+  // owners. A direct ?panel=budgets still mounts and explains why.
+  const { account } = useBilling();
+  const hideBudgets = usesOwnProvider(account?.provider_choice);
+  const navSections = hideBudgets
+    ? SETTINGS_NAV_SECTIONS.map((s) => ({ ...s, items: s.items.filter((n) => n.id !== "budgets") }))
+    : SETTINGS_NAV_SECTIONS;
 
   // Personal owners are admins; org members are admins only with org:admin.
   const isAdmin = useIsWorkspaceAdmin();

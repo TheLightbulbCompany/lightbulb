@@ -8,6 +8,7 @@
 import { useState } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
+import { useBilling } from "@/hooks/useBilling";
 import { PurchasesSection } from "./PurchasesSection";
 
 interface Policy {
@@ -27,6 +28,11 @@ interface Row {
   amount: number;
   observed: number;
 }
+
+// Budgets meter Lightbulb credits (the openrouter-gate). ChatGPT and BYO-key
+// owners never pass the gate, so nothing is metered: the feature is off for them.
+export const usesOwnProvider = (providerChoice: string | null | undefined) =>
+  providerChoice === "chatgpt_oauth" || providerChoice === "byo_key";
 
 const usd = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
@@ -90,8 +96,23 @@ function BudgetRow({ row, canEdit, onSave }: { row: Row; canEdit: boolean; onSav
 }
 
 export function BudgetsPanel() {
-  const { read, patch } = useTeamsApi();
   const isAdmin = useIsWorkspaceAdmin();
+  const { account } = useBilling();
+  if (usesOwnProvider(account?.provider_choice)) {
+    return (
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-[var(--fg-soft)]">
+          Budgets track Lightbulb credits. Your workspace uses its own model provider, so there is nothing to track.
+        </p>
+        <PurchasesSection canEdit={isAdmin} />
+      </div>
+    );
+  }
+  return <BudgetsEditor isAdmin={isAdmin} />;
+}
+
+function BudgetsEditor({ isAdmin }: { isAdmin: boolean }) {
+  const { read, patch } = useTeamsApi();
   const overview = read<{ policies?: Policy[] }>("/budgets/overview");
   const agents = read<{ agents?: { id: string; name: string }[] }>("/agents");
   const [error, setError] = useState<string | null>(null);

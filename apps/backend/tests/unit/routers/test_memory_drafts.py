@@ -4,6 +4,7 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
@@ -26,10 +27,13 @@ def table():
     rows = {
         ("WDRAFTS#org_a", "D#user_ana#d1"): _draft(),
         ("DRAFTS#user_ana", "D#d1"): _draft(),
+        ("SESSIONS#user_ana", "S#s1"): {"id": "s1", "repo": "acme/api", "harness": "claude"},
         ("DRAFTS#user_solo", "D#d9"): _draft(id="d9", user_id="user_solo", workspace_id=None),
     }
 
     def update(Key, ExpressionAttributeValues, **_):
+        if rows[(Key["pk"], Key["sk"])]["status"] != ExpressionAttributeValues[":from"]:
+            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
         rows[(Key["pk"], Key["sk"])]["status"] = ExpressionAttributeValues[":s"]
 
     t.update_item.side_effect = update
@@ -73,17 +77,28 @@ def test_approve_in_workspace_signs_as_workspace_with_approver(table):
     owner, op, params = call.await_args.args
     assert (owner, op) == ("org_a", "memory.remember")
     assert params["kind"] == "lesson" and params["scope"] == "team" and params["on_behalf_of"] == "user_bo"
-    assert params["fact"] == "Run migrations first"
+    assert params["fact"] == "Run migrations first" and params["subject"] == "acme/api"
     assert table.rows[("WDRAFTS#org_a", "D#user_ana#d1")]["status"] == "approved"
     assert table.rows[("DRAFTS#user_ana", "D#d1")]["status"] == "approved"
     assert c.get("/api/v1/memory/drafts").json() == {"drafts": []}
 
 
-def test_approve_in_workspace_failure_leaves_draft_proposed(table):
+def test_approve_in_workspace_failure_reverts_both_rows_to_proposed(table):
     c = _as("user_bo", "org_a")
     with patch.object(memory_api, "remember", AsyncMock(side_effect=RuntimeError("down"))):
         assert c.post("/api/v1/memory/drafts/d1/approve", json={}).status_code == 502
     assert table.rows[("WDRAFTS#org_a", "D#user_ana#d1")]["status"] == "proposed"
+    assert table.rows[("DRAFTS#user_ana", "D#d1")]["status"] == "proposed"
+
+
+def test_approve_races_to_409_and_remembers_once(table):
+    c = _as("user_bo", "org_a")
+    rem = AsyncMock(return_value={"queued": False, "neighbours": []})
+    with patch.object(memory_api, "remember", rem):
+        table.rows[("DRAFTS#user_ana", "D#d1")]["status"] = "approved"  # someone else won between read and write
+        # the mirror still says proposed, so the draft is found; the conditional flip on the author's row loses
+        assert c.post("/api/v1/memory/drafts/d1/approve", json={}).status_code == 409
+    rem.assert_not_awaited()
 
 
 def test_approve_solo_returns_entry_for_local_store(table):

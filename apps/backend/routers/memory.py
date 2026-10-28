@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.services import container_auth, evaluator, memory_api, memory_sync, workspace_memory
+from core.services import container_auth, evaluator, memory_api, memory_sync, session_store, workspace_memory
 from routers.sessions import caller
 
 logger = logging.getLogger(__name__)
@@ -148,17 +148,23 @@ async def approve_draft(draft_id: str, body: ApproveBody | None = None, auth: Au
     if d["kind"] != "lesson":  # a finding may hold a secret: it can only be dismissed
         raise HTTPException(status_code=422, detail="Only lessons can be approved.")
     scope = (body and body.scope) or ("team" if auth.org_id else "me")
-    # The evaluator keeps no repo or title on a draft, so the subject is its kind.
-    subject = d["kind"]
+    # Subject: the repo of the first evidence session, else its harness, else the draft kind.
+    first = (d.get("evidence") or [None])[0]
+    sess = await session_store.get_session(first, user_id=d["user_id"], workspace_id=None) if first else None
+    subject = (sess or {}).get("repo") or (sess or {}).get("harness") or d["kind"]
+    if not await evaluator.set_draft_status(d, "approved"):  # first, so a retry or double-click writes once
+        raise HTTPException(status_code=409, detail="draft already settled")
     if auth.org_id:
-        out = await _guard(
-            memory_api.remember(
-                auth.org_id, subject=subject, fact=d["text"], kind="lesson", scope=scope, on_behalf_of=auth.user_id
+        try:
+            out = await _guard(
+                memory_api.remember(
+                    auth.org_id, subject=subject, fact=d["text"], kind="lesson", scope=scope, on_behalf_of=auth.user_id
+                )
             )
-        )
-        await evaluator.set_draft_status(d, "approved")  # only once remember returned
+        except BaseException:
+            await evaluator.set_draft_status(d, "proposed", frm="approved")
+            raise
         return {"queued": out["queued"]}
-    await evaluator.set_draft_status(d, "approved")
     evidence = d.get("evidence") or []
     source = {"harness": "workspace", "on_behalf_of": None, "repo": None, "session": evidence[0] if evidence else None}
     return {"subject": subject, "fact": d["text"], "kind": "lesson", "scope": scope, "source": source}
@@ -166,7 +172,8 @@ async def approve_draft(draft_id: str, body: ApproveBody | None = None, auth: Au
 
 @router.post("/drafts/{draft_id}/dismiss", status_code=204)
 async def dismiss_draft(draft_id: str, auth: AuthContext = Depends(caller)) -> Response:
-    await evaluator.set_draft_status(await _draft(draft_id, auth), "dismissed")
+    if not await evaluator.set_draft_status(await _draft(draft_id, auth), "dismissed"):
+        raise HTTPException(status_code=409, detail="draft already settled")
     return Response(status_code=204)
 
 

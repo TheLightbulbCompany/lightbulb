@@ -173,8 +173,20 @@ async def test_member_wipe_removes_sessions_drafts_episodes(agentcore):
     agentcore.add_response("batch_delete_memory_records", {"successfulRecords": [], "failedRecords": []},
                            {"memoryId": MEM, "records": [{"memoryRecordId": rid("rf")}, {"memoryRecordId": rid("ep")}]})  # fmt: skip
     agentcore.add_response("list_sessions", {"sessionSummaries": []}, {"memoryId": MEM, "actorId": "user_a"})
-    with patch.object(workspace_memory, "_wipe", return_value=None), patch.object(workspace_memory, "_tail"):
+    from unittest.mock import AsyncMock
+
+    from core.services import network_login
+
+    keys, forget = AsyncMock(return_value=[]), AsyncMock()  # the computer-key registry is not in this fixture
+    with (
+        patch.object(workspace_memory, "_wipe", return_value=None),
+        patch.object(workspace_memory, "_tail"),
+        patch.object(network_login, "computer_keys", keys),
+        patch.object(network_login, "forget_keys", forget),
+    ):
         await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)
+    keys.assert_awaited_once_with("user_a")
+    forget.assert_awaited_once_with("user_a")
     assert await session_store.list_sessions(user_id="user_a") == []
     assert await evaluator.list_drafts(user_id="user_a") == []
     assert await evaluator.list_drafts(workspace_id="org_x") == []

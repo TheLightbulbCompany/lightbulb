@@ -178,25 +178,32 @@ async def find_draft(draft_id: str, *, user_id: str, workspace_id: str | None) -
     return {k: v for k, v in row.items() if k not in ("pk", "sk")} if row else None
 
 
-async def set_draft_status(draft: dict, status: str) -> None:
-    """Both copies (the author's and the workspace mirror), so neither list shows it again."""
+async def set_draft_status(draft: dict, status: str, *, frm: str = "proposed") -> bool:
+    """Move the draft ``frm`` -> ``status`` in both copies (the author's and the workspace mirror).
+
+    Conditional on the current status, so two callers cannot both win: False if the author's row is
+    not in ``frm`` (someone settled it first, or the user wiped it). The mirror follows the author's row.
+    """
     table = store._table()
     keys = [{"pk": f"DRAFTS#{draft['user_id']}", "sk": f"D#{draft['id']}"}]
     if draft.get("workspace_id"):
         keys.append({"pk": f"WDRAFTS#{draft['workspace_id']}", "sk": f"D#{draft['user_id']}#{draft['id']}"})
-    for key in keys:
+    for i, key in enumerate(keys):
         try:
             await run_in_thread(
                 table.update_item,
                 Key=key,
                 UpdateExpression="SET #s = :s",
-                ConditionExpression="attribute_exists(pk)",  # never resurrect a draft the user wiped
+                ConditionExpression="#s = :from",
                 ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={":s": status},
+                ExpressionAttributeValues={":s": status, ":from": frm},
             )
         except ClientError as e:
             if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
+            if i == 0:
+                return False
+    return True
 
 
 async def delete_drafts(user_id: str) -> int:

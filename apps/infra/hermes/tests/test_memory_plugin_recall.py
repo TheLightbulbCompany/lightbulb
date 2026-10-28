@@ -18,7 +18,7 @@ PAGE = {"asOf": "2026-10-27T00:00:00Z", "usedEvidenceTokens": 40, "results": [
 
 
 class FakeBackend:
-    """urlopen stand-in for the backend's /api/v1/memory/* endpoints."""
+    """urlopen stand-in for the backend's /api/v1/internal/memory/* endpoints."""
 
     def __init__(self, reply=None, fail=False):
         self.reply, self.fail, self.calls, self.board = PAGE if reply is None else reply, fail, [], []
@@ -92,6 +92,39 @@ def test_prefetch_backend_failure_returns_board_only(mod, backend, caplog):
     assert any("recall failed" in r.message for r in caplog.records)
 
 
+@pytest.mark.parametrize("reply", [[], {"results": None}, {"results": [None]}, {"results": [{"content": 5}]},
+                                   {"results": [{"rank": 1}]}])
+def test_prefetch_malformed_page_returns_board_only(mod, backend, reply):
+    backend.reply = reply
+    backend.board = [{"identifier": "ISOA-9", "title": "Launch page"}]
+    out = provider(mod, FakeClient()).prefetch(said("launch?"))
+    assert out.startswith("Task board right now") and "Remembered" not in out
+
+
+@pytest.mark.parametrize("reply", [[], {"results": [None]}, {"results": "x"}])
+def test_search_tool_malformed_page_returns_error_string(mod, backend, reply):
+    backend.reply = reply
+    out = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "x"}))
+    assert list(out) == ["error"]
+
+
+def test_prefetch_caps_injected_block(mod, backend):
+    backend.reply = {"results": [{"content": f"fact {i} " + "x" * 90} for i in range(40)]}
+    out = provider(mod, FakeClient()).prefetch(said("launch?"))
+    facts = out.split("\n", 1)[1]
+    assert len(facts) <= 1600 and all(line.startswith("- fact ") and line.endswith("x") for line in facts.splitlines())
+    backend.reply = {"results": [{"content": "y" * 300} for _ in range(40)]}
+    big = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "x"}))
+    assert len(json.dumps(big)) <= 6000 and big["results"]
+
+
+def test_remember_redacts_subject_and_fact(mod, backend):
+    provider(mod, FakeClient()).handle_tool_call(
+        "remember", {"subject": "key sk-abc123", "fact": "uses sk-def456", "kind": "fact"})
+    body = backend.calls[-1][2]
+    assert "abc123" not in body["subject"] and "def456" not in body["fact"]
+
+
 def test_sync_turn_prefixes_speaker_on_events(mod, tmp_path):
     (tmp_path / "SOUL.md").write_text("# Friday\n")
     client = FakeClient()
@@ -116,7 +149,8 @@ def test_search_tool_reads_through_the_backend(mod, backend):
 def test_remember_tool_forwards(mod, backend):
     backend.reply = {"queued": True, "neighbours": [{"id": "m1", "content": "Launch is Nov 3"}]}
     p = provider(mod, FakeClient())
-    assert "remember" in [t["name"] for t in p.get_tool_schemas()]
+    desc, = [t["description"] for t in p.get_tool_schemas() if t["name"] == "remember"]
+    assert desc.endswith("Team in a room; personal in a direct message.")
     args = {"subject": "launch", "fact": "Launch moved to Nov 10", "kind": "decision", "replaces": ["m1"]}
     out = json.loads(p.handle_tool_call("remember", args))
     assert out == backend.reply

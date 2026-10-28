@@ -17,11 +17,11 @@ Differences from the original, all deliberate:
   turn path on its own serialized worker, so the write is inline there -- no second thread.
 - Text is passed through upstream's ``redact_for_egress`` first: memory is shared by every
   agent in the workspace, so a key pasted in one DM must not resurface in another room.
-- Reads go through the backend, not AgentCore: ``POST /api/v1/memory/recall`` answers the
+- Reads go through the backend, not AgentCore: ``POST /api/v1/internal/memory/recall/<owner>`` answers the
   passive recall before each turn (the user's text only, 400 tokens) and the search tool
   (``workspace_memory_search``). The backend sorts private from shared, folds duplicates and
   puts contested facts first. Writes: every turn is an event (``sync_turn``), and ``remember``
-  forwards a deliberate fact to ``POST /api/v1/memory/remember``. The plugin never writes
+  forwards a deliberate fact to ``POST /api/v1/internal/memory/remember/<owner>``. The plugin never writes
   records; the backend's sync turns the events into them.
 - Each turn's recall also carries the live task board (in progress, and done in the last 14
   days), read with the agent's own Paperclip key: memory keeps "X is making the demos" long after
@@ -61,6 +61,8 @@ _SESSION_MAX = 100      # SessionId, pattern [a-zA-Z0-9][a-zA-Z0-9-_]*
 # asked for on purpose, so it may say more.
 _RECALL_BUDGET = 400
 _SEARCH_BUDGET = 1500
+_INJECT_MAX = 1600  # characters of recalled facts per turn, cut on a line
+_SEARCH_MAX = 6000  # characters the search tool returns
 _BACKEND_TIMEOUT_S = 3.0  # Hermes gives prefetch 8 s in all
 # The board: how many rows of each kind, how far back "done" reaches, and how long one read
 # serves later turns (a busy room asks every few seconds; the board moves in minutes).
@@ -140,6 +142,19 @@ def _backend(owner: str, path: str, body: dict) -> dict:
                  "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=_BACKEND_TIMEOUT_S) as res:
         return json.loads(res.read() or b"{}")
+
+
+def _page(obj) -> list:
+    """The results of a recall reply, or ValueError when the reply is not {"results": [{"content": str}]}."""
+    rows = obj.get("results") if isinstance(obj, dict) else None
+    if not isinstance(rows, list) or not all(isinstance(r, dict) and isinstance(r.get("content"), str) for r in rows):
+        raise ValueError("malformed recall page")
+    return rows
+
+
+def _cut(text: str, limit: int) -> str:
+    """text cut at the last whole line within limit."""
+    return text if len(text) <= limit else text[:limit].rpartition("\n")[0]
 
 
 def _issues(base: str, key: str, company: str, **query) -> list:
@@ -245,12 +260,8 @@ class AgentCoreMemoryProvider(MemoryProvider):
                 "task board over a remembered fact.")
 
     def _search(self, question: str, budget: int) -> List[dict]:
-        """The backend's recall page (contested facts first), [] when it fails. Never logs the question."""
-        try:
-            return _backend(self._owner, "recall", {"question": question[:_QUERY_MAX], "budget_tokens": budget}).get("results") or []
-        except Exception as exc:  # recall is best-effort: a slow or denied call is "no memory"
-            logger.warning("memory recall failed: %s", exc)
-            return []
+        """The backend's recall results (contested facts first); a failed or malformed reply raises."""
+        return _page(_backend(self._owner, "recall", {"question": question[:_QUERY_MAX], "budget_tokens": budget}))
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         # Hermes keys recall on the persisted user text and skips it for a trivial prompt
@@ -263,10 +274,14 @@ class AgentCoreMemoryProvider(MemoryProvider):
         with ThreadPoolExecutor(1) as pool:  # the board read overlaps the recall round trip
             # The profile's secret scope is a contextvar: a bare pool thread would not see it.
             board = pool.submit(contextvars.copy_context().run, board_snapshot)
-            results = self._search(line, _RECALL_BUDGET)
+            try:
+                results = self._search(line, _RECALL_BUDGET)
+            except Exception as exc:  # recall is best-effort: a slow, denied or malformed reply is "no memory"
+                logger.warning("memory recall failed: %s", type(exc).__name__)  # never the question
+                results = []
             board = board.result()
         logger.info("memory recall: %d results, board %s", len(results), "yes" if board else "no")
-        facts = "\n".join(f"- {r['content']}" for r in results if r.get("content"))
+        facts = _cut("\n".join(f"- {r['content']}" for r in results if r["content"]), _INJECT_MAX)
         return "\n\n".join(p for p in ("Remembered:\n" + facts if facts else "", board) if p)
 
     def on_pre_compress(self, messages) -> str:
@@ -302,7 +317,7 @@ class AgentCoreMemoryProvider(MemoryProvider):
             "name": "remember",
             "description": ("Save a fact, decision, lesson or preference to workspace memory. Returns what "
                             "is already known on the subject; call again with `replaces` if yours is a "
-                            "change. Team in a room; personal in a direct message"),
+                            "change. Team in a room; personal in a direct message."),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -341,17 +356,19 @@ class AgentCoreMemoryProvider(MemoryProvider):
         if not self.is_available():
             return json.dumps({"error": "workspace memory is off"})
         try:
-            page = _backend(self._owner, "recall", {"question": query[:_QUERY_MAX], "budget_tokens": _SEARCH_BUDGET})
+            results = self._search(query, _SEARCH_BUDGET)
         except Exception as exc:
-            logger.warning("memory search failed: %s", exc)
+            logger.warning("memory search failed: %s", type(exc).__name__)
             return json.dumps({"error": "workspace memory is unavailable right now"})
-        return json.dumps({"results": page.get("results") or []}, ensure_ascii=False)
+        while results and len(out := json.dumps({"results": results}, ensure_ascii=False)) > _SEARCH_MAX:
+            results = results[:-1]  # whole results only, so the JSON stays valid
+        return out if results else json.dumps({"results": []})
 
     def _remember(self, args: Dict[str, Any]) -> str:
         subject, fact = str(args.get("subject") or "").strip(), str(args.get("fact") or "").strip()
         if not (subject and fact):
             return json.dumps({"error": "remember needs a subject and a fact"})
-        body = {"subject": subject, "fact": redact_for_egress(fact), "kind": args.get("kind") or "fact",
+        body = {"subject": redact_for_egress(subject), "fact": redact_for_egress(fact), "kind": args.get("kind") or "fact",
                 # A room is shared already; a 1:1 DM is the person's own.
                 "scope": args.get("scope") or ("me" if self._member else "team")}
         if args.get("replaces"):
@@ -359,7 +376,7 @@ class AgentCoreMemoryProvider(MemoryProvider):
         try:
             return json.dumps(_backend(self._owner, "remember", body), ensure_ascii=False)
         except Exception as exc:
-            logger.warning("memory remember failed: %s", exc)
+            logger.warning("memory remember failed: %s", type(exc).__name__)
             return json.dumps({"error": "could not save to memory right now"})
 
 

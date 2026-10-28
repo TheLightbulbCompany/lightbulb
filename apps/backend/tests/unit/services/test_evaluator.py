@@ -3,11 +3,13 @@
 # ruff: noqa: F811 -- `table` is the repo suite's moto fixture, imported and then requested by name.
 
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
 from core.config import settings
@@ -31,11 +33,21 @@ def env(table):
         yield
 
 
+SESSION_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9-_]{0,99}")  # API_CreateEvent.html, read 28 Oct 2026
+
+
+def _refuse_bad_session_id(params, model, **_):
+    """The stubber checks shapes, not patterns: refuse a sessionId the way the service does."""
+    if "sessionId" in params and not SESSION_ID.fullmatch(params["sessionId"]):
+        raise ClientError({"Error": {"Code": "ValidationException", "Message": "sessionId"}}, model.name)
+
+
 @pytest.fixture
 def agentcore():
     client = boto3.client(
         "bedrock-agentcore", region_name="us-east-1", aws_access_key_id="x", aws_secret_access_key="x"
     )
+    client.meta.events.register("before-parameter-build.bedrock-agentcore.*", _refuse_bad_session_id)
     with Stubber(client) as stub, patch.object(evaluator, "_client", return_value=client):
         with patch.object(workspace_memory, "_client", return_value=client):
             yield stub
@@ -95,6 +107,33 @@ async def test_ingest_session_writes_events_with_tool_role(agentcore, sent, coll
     assert params["payload"][1]["conversational"]["content"]["text"] == "Bash: ran 0"
     # the same session uploaded again is not ingested twice
     assert await evaluator.ingest_session("u", sess(), calls(2), workspace_id=None) is False
+
+
+CLI_ID = "claude:00000000-0000-4000-8000-0000000000a1"
+
+
+def test_event_session_id_is_a_valid_agentcore_session_id():
+    mapped = evaluator.event_session_id(CLI_ID)
+    assert SESSION_ID.fullmatch(mapped) and mapped.startswith("claude-00000000")
+    assert evaluator.event_session_id(CLI_ID) == mapped  # stable
+    assert evaluator.event_session_id(CLI_ID.replace(":", ".")) != mapped  # differ only where replaced
+    long = evaluator.event_session_id("a" * 150)
+    assert len(long) <= 100 and SESSION_ID.fullmatch(long)
+    assert evaluator.event_session_id("s1") == "s1"  # already valid: unchanged
+    assert evaluator.event_session_id("a" * 100) == "a" * 100
+    assert SESSION_ID.fullmatch(evaluator.event_session_id("_x")) and SESSION_ID.fullmatch(
+        evaluator.event_session_id("")
+    )
+
+
+async def test_a_cli_session_id_is_mapped_for_agentcore_and_kept_in_our_rows(agentcore, sent, collected):
+    from core.repositories import messaging_repo as store
+
+    agentcore.add_response("create_event", event_ok())
+    assert await evaluator.ingest_session("u", sess(CLI_ID), calls(1, CLI_ID), workspace_id=None) is True
+    (params,) = sent
+    assert params["sessionId"] == evaluator.event_session_id(CLI_ID)
+    assert store._table().get_item(Key={"pk": "EVAL#u", "sk": f"S#{CLI_ID}"}).get("Item")
 
 
 async def test_an_ingest_collects_once_and_marks_the_person_due(agentcore, collected):
@@ -198,6 +237,19 @@ async def test_collect_drafts_creates_rows_from_new_reflections(agentcore):
         {"memoryId": MEM, "namespace": "/users/u/"},
     )
     assert await evaluator.collect_drafts("u", workspace_id="org_x") == 0
+
+
+async def test_a_reflection_naming_the_agentcore_session_id_cites_the_cli_session(agentcore):
+    await session_store.put_sessions("u", [sess(CLI_ID)], False, None)
+    text = f"retries fixed flaky tests in {evaluator.event_session_id(CLI_ID)}"
+    agentcore.add_response(
+        "list_memory_records",
+        listing(rec("r1", text, datetime(2026, 10, 27, 12, tzinfo=UTC))),
+        {"memoryId": MEM, "namespace": "/users/u/"},
+    )
+    assert await evaluator.collect_drafts("u", workspace_id=None) == 1
+    (draft,) = await evaluator.list_drafts(user_id="u")
+    assert draft["evidence"] == [CLI_ID]
 
 
 async def test_collect_drafts_ignores_episode_subnamespace(agentcore):

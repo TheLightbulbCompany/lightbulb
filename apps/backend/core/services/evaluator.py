@@ -16,6 +16,7 @@ Nothing here logs session text, summaries or reflection text.
 """
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -42,6 +43,17 @@ def _ns(user_id: str) -> str:
     if not user_id or "/" in user_id or ".." in user_id:
         raise ValueError("unsafe user id for a memory namespace")
     return f"/users/{user_id}/"
+
+
+def event_session_id(sid: str) -> str:
+    """The AgentCore sessionId for a CLI session id (``claude:<uuid>``): CreateEvent takes 1-100 of
+    ``[a-zA-Z0-9][a-zA-Z0-9-_]*``. Outside characters become ``-``; when any was replaced or the id is
+    too long, 90 characters plus ``-`` and 8 hex of its sha256 keep distinct ids distinct. Our own rows
+    (markers, evidence, sessions) keep the CLI id."""
+    out = re.sub(r"[^A-Za-z0-9_-]", "-", sid)
+    if out != sid or len(out) > 100:
+        out = f"{out[:90]}-{hashlib.sha256(sid.encode()).hexdigest()[:8]}"
+    return out if out[:1].isalnum() else f"s{out}"  # only ASCII is left
 
 
 def _ts(value: str | None) -> datetime:
@@ -92,7 +104,7 @@ async def ingest_session(user_id: str, session: dict, tool_calls: list[dict], *,
             chunk = events[i : i + _BATCH]
             await run_in_thread(
                 client.create_event,
-                memoryId=memory_id, actorId=user_id, sessionId=sid, eventTimestamp=chunk[0][0], payload=[p for _, p in chunk],
+                memoryId=memory_id, actorId=user_id, sessionId=event_session_id(sid), eventTimestamp=chunk[0][0], payload=[p for _, p in chunk],
             )  # fmt: skip
     except Exception:
         await run_in_thread(table.delete_item, Key=marker)  # a failed ingest neither counts nor blocks the retry
@@ -183,7 +195,14 @@ async def collect_drafts(user_id: str, *, workspace_id: str | None) -> int:
     for r in new:
         text = r.get("content", {}).get("text", "")
         meta = " ".join(str(v) for v in (r.get("metadata") or {}).values())
-        named = [s for s in sessions if re.search(rf"(?<![\w.-]){re.escape(s)}(?![\w.-])", f"{text} {meta}")]
+        # A reflection may name the session by our id or by the one AgentCore was given.
+        named = [
+            s
+            for s in sessions
+            if any(
+                re.search(rf"(?<![\w.-]){re.escape(x)}(?![\w.-])", f"{text} {meta}") for x in {s, event_session_id(s)}
+            )
+        ]
         item = {
             "id": r["memoryRecordId"], "user_id": user_id, "kind": "finding" if _SECRET.search(text) else "lesson",
             "text": text, "evidence": sorted(named), "status": "proposed", "created": utc_now_iso(),

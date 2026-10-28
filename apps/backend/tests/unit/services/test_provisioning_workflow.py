@@ -126,14 +126,6 @@ def no_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def provisioning_enabled(monkeypatch):
-    """The rail is OFF by default in every environment until Stripe's write
-    endpoints work; these tests exercise the rail itself, so they run with it
-    on. The one test of the off state flips it back."""
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
-
-
-@pytest.fixture(autouse=True)
 def projects_ready(monkeypatch):
     """The account's `projects` capability is active unless a test says not."""
     ready = AsyncMock(return_value=True)
@@ -157,25 +149,6 @@ async def test_start_refuses_until_the_projects_capability_is_active(projects_re
                 issue_id=None,
             )
     assert exc.value.code == "requirements_pending"
-    elig.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_start_refuses_at_the_door_while_the_rail_is_off(monkeypatch):
-    """Every POST to /v2/provisioning 500s today, so an approved workflow
-    would park permanently. Refuse before eligibility is even read — Stripe
-    must not be called."""
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", False)
-    with patch.object(mod.api, "eligibility", AsyncMock()) as elig:
-        with pytest.raises(mod.WorkflowRefused) as exc:
-            await mod.start(
-                owner_id="org_a",
-                provider_name="posthog",
-                service_id="svc_analytics",
-                configuration=CONFIG,
-                issue_id=None,
-            )
-    assert exc.value.code == "provisioning_unavailable"
     elig.assert_not_awaited()
 
 
@@ -1880,32 +1853,6 @@ async def test_read_catalog_none_provider_refuses_cleanly():
     ):
         with pytest.raises(mod.WorkflowRefused):
             await mod._read_catalog("acct_1", None, "analytics")
-
-
-@pytest.mark.asyncio
-async def test_advance_freezes_every_row_while_the_rail_is_off(monkeypatch):
-    """Guarding only `start` is not enough: a card filed before the flag went
-    off still has an owner who can approve it, and reads still step rows. With
-    the rail off, `advance` must be a no-op that touches nothing at Stripe."""
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", False)
-    row = _row(state="provisioning", resource_id="res_1")
-    with patch.object(mod.api, "get_resource", AsyncMock()) as get_resource:
-        out = await mod.advance(row)
-    assert out is row
-    get_resource.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_on_approved_refuses_while_the_rail_is_off(monkeypatch):
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", False)
-    with (
-        patch.object(mod.repo, "get", AsyncMock(return_value=_row(state="awaiting_approval"))),
-        patch.object(mod.api, "catalog_services", AsyncMock()) as catalog,
-    ):
-        with pytest.raises(mod.WorkflowRefused) as exc:
-            await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_a")
-    assert exc.value.code == "provisioning_unavailable"
-    catalog.assert_not_awaited()
 
 
 def test_a_connection_request_is_complete_when_its_connection_is_active_even_with_no_request_status():

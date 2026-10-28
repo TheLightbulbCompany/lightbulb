@@ -120,16 +120,6 @@ export interface SecretNames {
   sesIngestSecret: string;
 }
 
-/**
- * The Stripe Projects rail master switch, from the deploy job's environment
- * (a per-env repo variable). Off ⇒ the backend refuses `start()` and the
- * frontend hides the Connect door. Unset = off.
- */
-export function stripeProvisioningEnabled(env: "dev" | "prod", vars: NodeJS.ProcessEnv = process.env): boolean {
-  const v = env === "dev" ? vars.STRIPE_PROVISIONING_ENABLED_DEV : vars.STRIPE_PROVISIONING_ENABLED_PROD;
-  return v === "true";
-}
-
 export interface ServiceStackProps extends cdk.StackProps {
   environment: string;
   /** Product root domain (see lib/domains.ts). Defaults to ROOT_DOMAIN. */
@@ -238,18 +228,8 @@ export interface ServiceStackProps extends cdk.StackProps {
   /** LiveKit server URL for huddles. Empty (default) keeps huddle routes 503 — ships dark. */
   livekitUrl?: string;
   /**
-   * Stripe's recommended Provisioning onboarding path: request the Accounts v2
-   * `developer` configuration with the `projects` capability on the company
-   * account. DEFAULT FALSE — `configuration.developer` is an "Unknown field"
-   * for our platform today (probed 2026-08-29); sending it breaks every
-   * company-account create. Flip once Stripe enables the field.
-   */
-  stripeProjectsDeveloperConfig?: boolean;
-  /**
    * The Accounts v2 API version pinned on the company account/account-link
-   * calls (`Stripe-Version` header). Empty ⇒ the SDK's own default, i.e.
-   * today's behaviour. Set once Stripe names the version during preview
-   * onboarding for stripeProjectsDeveloperConfig.
+   * calls (`Stripe-Version` header). Empty ⇒ the provisioning preview.
    */
   stripeAccountsV2Version?: string;
 }
@@ -1815,16 +1795,9 @@ export class ServiceStack extends cdk.Stack {
       // charges.'"
       STRIPE_PROJECTS_CATALOG: props.stripeProjectsCatalog ?? "prod",
       LIVEKIT_URL: props.livekitUrl ?? "",
-      // Stripe's recommended `developer` configuration + `projects`
-      // capability on the company account. Default-off flag — see the
-      // stripeProjectsDeveloperConfig prop doc for why.
-      STRIPE_PROJECTS_DEVELOPER_CONFIG: String(props.stripeProjectsDeveloperConfig ?? false),
       // Accounts v2 API version pin for the company account/account-link
-      // calls. Empty ⇒ the SDK's own default.
+      // calls. Empty ⇒ the provisioning preview.
       STRIPE_ACCOUNTS_V2_VERSION: props.stripeAccountsV2Version ?? "",
-      // Provisioning rail master switch: off unless the owner sets the
-      // STRIPE_PROVISIONING_ENABLED_{DEV,PROD} repo variable to "true".
-      STRIPE_PROVISIONING_ENABLED: String(stripeProvisioningEnabled(env === "dev" ? "dev" : "prod")),
       // Dev keeps timer heartbeats off (spend): arm_nightly_ceo leaves them alone.
       NIGHTLY_CEO_HEARTBEATS_ENABLED: env === "dev" ? "false" : "true",
       // PostHog server-side reads for the admin Activity tab.

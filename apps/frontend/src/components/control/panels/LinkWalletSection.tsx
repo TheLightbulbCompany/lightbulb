@@ -1,7 +1,7 @@
 "use client";
 
-// The Link wallet card in Settings -> Connections. Admins only, and hidden entirely while the
-// feature is off (the status route answers 404) -- so a workspace never sees a dead door.
+// The Link wallet card in Settings -> Connections. Admins only, and hidden entirely while Link
+// is unconfigured (the status route answers 404) -- so a workspace never sees a dead door.
 
 import { useState } from "react";
 import useSWR from "swr";

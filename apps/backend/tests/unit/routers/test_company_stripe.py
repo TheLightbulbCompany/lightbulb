@@ -94,7 +94,6 @@ def test_status_unbound(client):
         "livemode": None,
         "dashboard_url": None,
         "connect_configured": True,
-        "provisioning_enabled": False,
         "projects_ready": None,
         "services_account_id": None,
         "publishable_key": None,
@@ -876,21 +875,18 @@ def test_the_paywall_copy_names_stripe_not_scheduled_routines(client, monkeypatc
     assert "Stripe" in message and "Scheduled routines" not in message
 
 
-def test_status_reports_projects_ready_for_a_created_account_only_while_the_rail_is_on(client, monkeypatch):
+def test_status_reports_projects_ready_for_a_created_account(client):
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}
     ready = AsyncMock(return_value=False)
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
         patch.object(mod.company_stripe, "projects_ready", ready),
     ):
-        assert client.get("/api/v1/company/stripe/status").json()["projects_ready"] is None
-        ready.assert_not_awaited()
-        monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
         assert client.get("/api/v1/company/stripe/status").json()["projects_ready"] is False
+    ready.assert_awaited_once_with(account_id="acct_x")
 
 
 def test_a_projects_ready_read_failure_never_breaks_the_card(client, monkeypatch):
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
@@ -909,6 +905,7 @@ def test_onboarding_link_is_an_account_update_once_details_were_submitted(client
     }
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "projects_ready", AsyncMock(return_value=True)),
         patch.object(mod.company_stripe, "create_company_onboarding_link", AsyncMock(return_value="https://x")) as link,
     ):
         resp = client.post("/api/v1/company/stripe/onboarding-link")
@@ -917,7 +914,6 @@ def test_onboarding_link_is_an_account_update_once_details_were_submitted(client
 
 
 def test_status_says_projects_cannot_be_ready_for_a_pasted_key(client, monkeypatch):
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "api_key"}
     ready = AsyncMock()
     with (
@@ -932,7 +928,6 @@ def test_status_says_projects_cannot_be_ready_for_a_pasted_key(client, monkeypat
 def test_status_says_a_connected_account_needs_a_services_account(client, monkeypatch):
     """A connected v1 Standard account can't run Projects (prod 2026-10-27),
     so readiness is False without asking Stripe about it."""
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "connected"}
     ready = AsyncMock()
     with (
@@ -945,7 +940,6 @@ def test_status_says_a_connected_account_needs_a_services_account(client, monkey
 
 
 def test_status_reads_projects_ready_on_the_services_account(client, monkeypatch):
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
     row = {
         "owner_id": "org_a",
         "company_stripe_account_id": "acct_x",
@@ -966,7 +960,6 @@ def test_status_reads_projects_ready_on_the_services_account(client, monkeypatch
 
 
 def test_services_account_creates_beside_the_main_binding(client, monkeypatch, metric):
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_main", "company_stripe_source": "connected"}
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
@@ -986,7 +979,6 @@ def test_services_account_creates_beside_the_main_binding(client, monkeypatch, m
 
 
 def test_services_account_is_idempotent(client, monkeypatch):
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
     row = {
         "owner_id": "org_a",
         "company_stripe_account_id": "acct_main",
@@ -1010,7 +1002,6 @@ def test_services_account_is_idempotent(client, monkeypatch):
     ],
 )
 def test_services_account_refused_when_not_needed(client, monkeypatch, row):
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
         patch.object(mod.company_stripe, "create_company_account", AsyncMock()) as create,
@@ -1020,15 +1011,7 @@ def test_services_account_refused_when_not_needed(client, monkeypatch, row):
     create.assert_not_awaited()
 
 
-def test_services_account_refused_while_the_rail_is_off(client):
-    with patch.object(mod.company_stripe, "create_company_account", AsyncMock()) as create:
-        resp = client.post("/api/v1/company/stripe/services-account")
-    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "provisioning_unavailable"
-    create.assert_not_awaited()
-
-
 def test_services_account_is_admin_only(member_client, monkeypatch):
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
     assert member_client.post("/api/v1/company/stripe/services-account").status_code == 403
 
 
@@ -1051,6 +1034,7 @@ def test_account_session_targets_the_platform_created_account(client, monkeypatc
     monkeypatch.setattr(mod.settings, "STRIPE_PUBLISHABLE_KEY", "pk_test_x")
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a", **row})),
+        patch.object(mod.company_stripe, "projects_ready", AsyncMock(return_value=True)),
         patch.object(mod.company_stripe, "create_account_session", AsyncMock(return_value="cs_secret")) as session,
     ):
         resp = client.post("/api/v1/company/stripe/account-session", json={"target": target})
@@ -1075,7 +1059,6 @@ def test_account_session_refuses_a_main_account_we_did_not_create(client, monkey
 
 def test_account_session_requests_the_projects_capability_first_when_missing(client, monkeypatch):
     monkeypatch.setattr(mod.settings, "STRIPE_PUBLISHABLE_KEY", "pk_test_x")
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
@@ -1159,7 +1142,6 @@ def test_onboarding_link_refuses_services_without_one(client):
 
 
 def test_onboarding_link_requests_the_projects_capability_first_when_missing(client, monkeypatch):
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),

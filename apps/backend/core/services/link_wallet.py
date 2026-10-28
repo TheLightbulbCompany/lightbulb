@@ -64,7 +64,7 @@ def _client() -> httpx.AsyncClient:
 
 
 def _configured() -> None:
-    if not (settings.LINK_CLIENT_ID and settings.LINK_CLIENT_SECRET and settings.LINK_PUBLISHABLE_KEY):
+    if not configured():
         raise LinkWalletError("not_configured", "The Link wallet isn't configured for this environment.")
 
 
@@ -214,13 +214,18 @@ async def connection(owner_id: str) -> dict | None:
     return cred
 
 
+def configured() -> bool:
+    """Link's OAuth client and the pk its /auth calls need. Unconfigured, every route 404s."""
+    return bool(settings.LINK_CLIENT_ID and settings.LINK_CLIENT_SECRET and settings.LINK_PUBLISHABLE_KEY)
+
+
 async def status(owner_id: str) -> dict:
     cred = await connection(owner_id)
     return {
         "connected": cred is not None,
         "connectedBy": (cred or {}).get("connected_by"),
         "scope": (cred or {}).get("scope"),
-        "configured": bool(settings.LINK_CLIENT_ID and settings.LINK_CLIENT_SECRET and settings.LINK_PUBLISHABLE_KEY),
+        "configured": configured(),
     }
 
 

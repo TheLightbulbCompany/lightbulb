@@ -423,22 +423,10 @@ class Settings(BaseSettings):
     # back to the hosted Account Link.
     STRIPE_PUBLISHABLE_KEY: str = ""
 
-    # Stripe's recommended Provisioning onboarding path: request the Accounts v2
-    # `developer` configuration with the `projects` capability on the company
-    # account (guide, "Create the connected account").
-    #
-    # DEFAULT FALSE, deliberately. Probed 2026-08-29: `configuration.developer`
-    # is an "Unknown field" for our platform under 2026-02-25.clover,
-    # 2026-08-26.dahlia AND unsafe-development, in both test and live mode, so
-    # sending it today breaks every company-account create. It is also not
-    # load-bearing — eligibility already returns is_eligible on an account
-    # without it. Flip to True once Stripe enables the field for our platform
-    # and names the Accounts API version to pin below.
-    STRIPE_PROJECTS_DEVELOPER_CONFIG: bool = False
     # The Accounts v2 API version for the account/account-link calls. The guide
     # pins them with `Stripe-Version: {{ACCOUNTS_V2_VERSION}}` and says to
-    # confirm it during preview onboarding. Empty ⇒ the SDK's own default,
-    # which is exactly today's behaviour.
+    # confirm it during preview onboarding. Empty ⇒ the provisioning preview
+    # (`company_stripe.PROVISIONING_VERSION`).
     STRIPE_ACCOUNTS_V2_VERSION: str = ""
 
     # Which Provider catalog partition this environment reads and writes:
@@ -450,17 +438,9 @@ class Settings(BaseSettings):
     # doesn't mean 'no real charges.'"
     STRIPE_PROJECTS_CATALOG: str = "prod"
 
-    # Whether the Stripe Projects provisioning rail is offered at all. Ships
-    # dark: OFF in both envs until the dev flag is flipped with a Sandbox key
-    # and the account is in Stripe's preview cohort. While off, `start()` refuses and
-    # the Connect door + the Accounts / Domain & Site panels are hidden. The
-    # v1 Money surface (company_stripe_reads) does not depend on this.
-    STRIPE_PROVISIONING_ENABLED: bool = False
-
-    # Stripe Link Agent Wallet (agent purchases). OFF by default: every route 404s and the
-    # UI hides while false. CLIENT_ID/SECRET come from Link's OAuth client application;
-    # PUBLISHABLE_KEY is the Stripe pk that Link's /auth and /auth/token require.
-    LINK_WALLET_ENABLED: bool = False
+    # Stripe Link Agent Wallet (agent purchases). Unconfigured (any of the three empty):
+    # every route 404s and the UI hides. CLIENT_ID/SECRET come from Link's OAuth client
+    # application; PUBLISHABLE_KEY is the Stripe pk that Link's /auth and /auth/token require.
     LINK_CLIENT_ID: str = ""
     LINK_CLIENT_SECRET: str = ""
     LINK_PUBLISHABLE_KEY: str = ""

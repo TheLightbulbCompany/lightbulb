@@ -31,8 +31,6 @@ function fakeTab() {
   return { opener: undefined, location: { href: "" }, close: vi.fn() };
 }
 
-// provisioning_enabled defaults ON in these fixtures so the existing Connect-
-// door tests keep exercising those doors; the off-state tests flip it.
 const UNBOUND = {
   account_id: null,
   source: null,
@@ -41,7 +39,6 @@ const UNBOUND = {
   payouts_enabled: false,
   dashboard_url: null,
   connect_configured: true,
-  provisioning_enabled: true,
 };
 
 const BOUND = {
@@ -52,7 +49,6 @@ const BOUND = {
   payouts_enabled: false,
   dashboard_url: "https://dashboard.stripe.com/",
   connect_configured: true,
-  provisioning_enabled: true,
 };
 
 const BOUND_BY_KEY = { ...BOUND, source: "api_key" };
@@ -158,31 +154,6 @@ describe("CompanyStripeSection", () => {
     expect(screen.queryByText("Finish Stripe setup")).not.toBeInTheDocument();
   });
 
-  it("offers ONLY the API-key door while provisioning is off", async () => {
-    // Connect exists for provisioning. With that rail off, the OAuth doors
-    // would ask for a read_write grant to power a read-only tab a pasted key
-    // already powers — so they are not shown.
-    get.mockResolvedValue({ ...UNBOUND, provisioning_enabled: false });
-    renderSection(true);
-    expect(await screen.findByText("Add API key")).toBeInTheDocument();
-    expect(screen.queryByText("Set up Stripe")).toBeNull();
-    expect(screen.queryByText("Connect your Stripe")).toBeNull();
-  });
-
-  it("never asks for a services account while provisioning is off", async () => {
-    get.mockResolvedValue({
-      ...BOUND,
-      source: "connected",
-      provisioning_enabled: false,
-      projects_ready: false,
-      publishable_key: "pk_test_x",
-    });
-    renderSection(true);
-    await screen.findByText("Open Stripe Dashboard");
-    expect(screen.queryByText("Add a services account")).toBeNull();
-    expect(screen.queryByText(/needs a services account/)).toBeNull();
-  });
-
   it("without embedded onboarding, Add a services account creates it, then opens its hosted link", async () => {
     get.mockResolvedValue({ ...BOUND, source: "connected", projects_ready: false, publishable_key: null });
     post.mockImplementation(async (path: string) =>
@@ -232,7 +203,7 @@ describe("CompanyStripeSection", () => {
   });
 
   it("pastes a key: posts it, clears the field, and refreshes status", async () => {
-    get.mockResolvedValueOnce({ ...UNBOUND, provisioning_enabled: false }).mockResolvedValue(BOUND_BY_KEY);
+    get.mockResolvedValueOnce(UNBOUND).mockResolvedValue(BOUND_BY_KEY);
     post.mockResolvedValue({ account_id: "acct_x", livemode: true });
     renderSection(true);
     fireEvent.click(await screen.findByText("Add API key"));
@@ -249,7 +220,7 @@ describe("CompanyStripeSection", () => {
   });
 
   it("Connect is disabled until something is typed, and Cancel puts the door back", async () => {
-    get.mockResolvedValue({ ...UNBOUND, provisioning_enabled: false });
+    get.mockResolvedValue(UNBOUND);
     renderSection(true);
     fireEvent.click(await screen.findByText("Add API key"));
     expect(screen.getByText("Connect")).toBeDisabled();
@@ -259,7 +230,7 @@ describe("CompanyStripeSection", () => {
   });
 
   it("a rejected key surfaces the API error and keeps the field open", async () => {
-    get.mockResolvedValue({ ...UNBOUND, provisioning_enabled: false });
+    get.mockResolvedValue(UNBOUND);
     post.mockRejectedValue(new Error("invalid_api_key"));
     renderSection(true);
     fireEvent.click(await screen.findByText("Add API key"));

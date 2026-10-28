@@ -31,7 +31,6 @@ export type CompanyStripeStatus = {
   livemode?: boolean | null;
   dashboard_url: string | null;
   connect_configured: boolean;
-  provisioning_enabled: boolean;
   /** Readiness of the account Stripe Projects runs on (the services account,
    *  else a created main account); false = not active yet, or a connected /
    *  api_key owner with no services account; null = not asked. */
@@ -178,18 +177,13 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   // Both Connect doors ("Set up Stripe" mints a Connect account too) need the
   // platform client id: without it the account could never be disconnected.
   const connectConfigured = Boolean(data?.connect_configured);
-  // The Connect doors and the services account exist for provisioning. While
-  // that rail is off they would ask for a read_write grant (or mint an account)
-  // nothing can use — a pasted key already powers the read-only tabs.
-  const connectOffered = Boolean(data?.provisioning_enabled) && connectConfigured;
   // Embedded onboarding needs the platform pk; the desktop webview can't open
   // Stripe's sign-in popup, so it keeps the hosted link in the system browser.
   const publishableKey = data?.publishable_key && !isTauri() ? data.publishable_key : null;
   const isApiKey = data?.source === "api_key";
   // Connected/api_key owners run Projects on a separate, platform-created
   // services account (Accounts v2 refuses a v1 Standard account).
-  const servicesShown =
-    bound && Boolean(data?.provisioning_enabled) && data?.source !== "created" && data?.projects_ready === false;
+  const servicesShown = bound && data?.source !== "created" && data?.projects_ready === false;
   const needsServicesAccount = servicesShown && !data?.services_account_id;
   const servicesPending = servicesShown && Boolean(data?.services_account_id);
   // Disconnect needs the client id only for Connect rows; an api_key row has
@@ -328,7 +322,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                   <EditorialButton type="button" size="sm" disabled={busy} onClick={() => setPasting(true)}>
                     Add API key
                   </EditorialButton>
-                  {connectOffered && (
+                  {connectConfigured && (
                     <>
                       <EditorialButton
                         type="button"

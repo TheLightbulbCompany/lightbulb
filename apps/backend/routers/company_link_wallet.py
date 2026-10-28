@@ -1,7 +1,7 @@
 """The Stripe Link Agent Wallet — /api/v1/company/link-wallet/* and the agent's ask door.
 
-DARK by default: every route, the OAuth callback and the agent door included, answers 404 while
-``LINK_WALLET_ENABLED`` is false.
+Unconfigured (``link_wallet.configured()`` false): every route, the OAuth callback and the agent
+door included, answers 404, so the card hides and the agent tool says purchases are not set up.
 
 Owner routes are Clerk-authed and org-admin only (the gating ``company_policy`` uses); the owner
 is the org, never the member who clicked. The agent door is hook-token-authed and can only ASK:
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def _enabled() -> None:
-    if not settings.LINK_WALLET_ENABLED:
+    if not link_wallet.configured():
         raise HTTPException(status_code=404, detail="Not found")
 
 

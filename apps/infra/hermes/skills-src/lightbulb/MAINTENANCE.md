@@ -377,7 +377,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Buying things ........... references/money.md ("Buying things")
                               <- plugins/lightbulb/__init__.py (`request_purchase`, PURCHASE_SCHEMA); backend
                                  routers/company_link_wallet.py (agent door, refusal codes), core/services/purchases.py (policy),
-                                 core/services/link_wallet.py. Dark behind LINK_WALLET_ENABLED. Pinned by
+                                 core/services/link_wallet.py. Every route 404s until Link's OAuth client is configured. Pinned by
                                  apps/infra/hermes/tests/test_plugin_request_purchase.py.
   - Budgets (monthly caps) .. references/money.md
                               <- apps/frontend Settings -> Budgets panel; routers/teams/budgets.py (BFF proxy, admin-gated writes);
@@ -392,8 +392,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  _REPRODUCIBLE_DIRS node_modules/*venv/.next/dist/build, work/ of other conversations never
                                  restored, save at end of turn);
                                  apps/infra/hermes/Dockerfile (global npm installs as root, then USER 1000; no dockerd);
-                                 the provisioning-rail fallback = core/config.py STRIPE_PROVISIONING_ENABLED +
-                                 routers/company_provisioning.py container_catalog (`provisioning_unavailable`);
+                                 the provisioning-rail fallback = routers/company_provisioning.py container_catalog
+                                 (nothing offered that fits the task);
                                  Hermes's bundled github / requesting-code-review skills (/opt/hermes/skills, the base image);
                                  PyPI package graphifyy (its `graphify` entry point; `graphify query --graph`,
                                  `graphify update . --no-cluster` = AST only), mirrored by this repo's own

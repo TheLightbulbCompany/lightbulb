@@ -97,12 +97,8 @@ def _status_payload(row: dict | None, projects_ready: bool | None = None) -> dic
         # The frontend hides "Connect existing" and disables "Disconnect" when
         # this is false — both routes 503 without the platform client id.
         "connect_configured": bool(settings.STRIPE_CONNECT_CLIENT_ID),
-        # The Connect door only earns its place when provisioning is live —
-        # it is the one thing an OAuth grant does that a pasted key cannot.
-        # While off, the card offers the api_key path alone.
-        "provisioning_enabled": bool(settings.STRIPE_PROVISIONING_ENABLED),
         # Readiness of the account Projects actually uses
-        # (`company_stripe.projects_account_of`). None = not asked (rail off).
+        # (`company_stripe.projects_account_of`). None = not asked (no account).
         # False shows "Finish Stripe setup", or "Add a services account" when
         # the main binding can't run Projects and no services account exists.
         "projects_ready": projects_ready,
@@ -129,7 +125,7 @@ async def _projects_ready(row: dict | None) -> bool | None:
     """One Stripe read per status load, only where it can matter. Best-effort:
     a hiccup answers None (card shows nothing extra), never a 502."""
     row = row or {}
-    if not settings.STRIPE_PROVISIONING_ENABLED or not row.get("company_stripe_account_id"):
+    if not row.get("company_stripe_account_id"):
         return None
     account_id = company_stripe.projects_account_of(row)
     if not account_id:
@@ -306,14 +302,10 @@ def _onboardable_account(row: dict, target: str) -> str:
 
 
 async def _ensure_projects_capability(target: str, account_id: str) -> None:
-    """An account created before the rail was on lacks the developer
-    configuration; request it (idempotent) so onboarding collects it. The
-    services account is always created with it."""
-    if (
-        target == "main"
-        and settings.STRIPE_PROVISIONING_ENABLED
-        and not await company_stripe.projects_ready(account_id=account_id)
-    ):
+    """An account created without the developer configuration lacks it;
+    request it (idempotent) so onboarding collects it. The services account is
+    always created with it."""
+    if target == "main" and not await company_stripe.projects_ready(account_id=account_id):
         await company_stripe.request_projects_capability(account_id=account_id)
 
 
@@ -353,11 +345,6 @@ async def services_account(auth: Annotated[AuthContext, Depends(get_current_user
     _gate_admin(auth)
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id, message=COMPANY_STRIPE_MESSAGE)
-    if not company_stripe.developer_config_on():
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "provisioning_unavailable", "message": "Setting up services isn't available yet"},
-        )
     row = await billing_repo.get_by_owner_id(owner_id) or {}
     if row.get("company_stripe_projects_account_id"):
         return {"account_id": row["company_stripe_projects_account_id"]}

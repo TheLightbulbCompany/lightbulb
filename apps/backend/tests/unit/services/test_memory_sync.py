@@ -116,6 +116,7 @@ async def test_sync_imports_new_facts_as_entries(table, agentcore):
         "when": "2026-10-01",
         "source": {"harness": "workspace", "repo": None, "session": None, "on_behalf_of": "Ana"},
         "replaces": [],
+        "key": ANY,
     }
     assert memory_sync._get(OWNER, "MEMLINK#" + rid("r1"))["entry"] == "e0"
 
@@ -292,3 +293,141 @@ async def test_sync_mirrors_events_into_turns(table, agentcore):
     out = await run(Member())
     assert out["turns"] == 1
     assert memory_sync._get(OWNER, "MEMSYNC")["events_after"] == T0.isoformat()
+
+
+async def test_import_carries_idempotency_key(table, agentcore):
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": [fact(rid("r1"), "Ana: api port: 8080")]})
+    no_sessions(agentcore)
+    member = Member()
+    await run(member)
+    key = member.ops("memory.import")[0]["entries"][0]["key"]
+    assert key.startswith(rid("r1") + ":") and len(key) > len(rid("r1")) + 10
+
+
+async def test_partial_create_failure_keeps_mappings_of_the_rest(table, agentcore):
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": []})
+    agentcore.add_response(
+        "batch_create_memory_records",
+        {
+            "successfulRecords": [{"memoryRecordId": rid("ar1"), "status": "SUCCEEDED", "requestIdentifier": "x1"}],
+            "failedRecords": [
+                {"memoryRecordId": rid("ar2"), "requestIdentifier": "x2", "status": "FAILED", "errorCode": 500}
+            ],
+        },
+    )
+    op = {"t": "remember", "subject": "s", "fact": "f", "kind": "fact"}
+    with pytest.raises(RuntimeError):
+        await run(Member([entry(1, "x1", op), entry(2, "x2", op)]))
+    assert memory_sync._get(OWNER, "MEMENTRY#x1")["arec"] == rid("ar1")
+    assert "entries_seq" not in memory_sync._get(OWNER, "MEMSYNC")
+
+
+async def test_tombstone_retry_tolerates_already_deleted_records(table, agentcore):
+    memory_sync._put(OWNER, "MEMENTRY#x1", arec=rid("ar1"))
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": []})
+    agentcore.add_response(
+        "batch_delete_memory_records",
+        {
+            "successfulRecords": [],
+            "failedRecords": [
+                {"memoryRecordId": rid("ar1"), "status": "FAILED", "errorCode": 404, "errorMessage": "ResourceNotFound"}
+            ],
+        },
+    )
+    no_sessions(agentcore)
+    out = await run(Member([entry(3, "t1", {"t": "forget", "target": "x1"})]))
+    assert out["mirrored"] == 1
+
+
+async def test_concurrent_sync_returns_at_once_while_lease_is_held(table, agentcore):
+    assert memory_sync._take_lease(OWNER)
+    member = Member()
+    assert await run(member) == {"imported": 0, "mirrored": 0, "turns": 0}
+    assert member.calls == []  # and no AgentCore call (nothing is queued on the stubber)
+    memory_sync._release_lease(OWNER)
+    assert memory_sync._take_lease(OWNER)
+
+
+async def test_sync_releases_lease_even_when_it_fails(table, agentcore):
+    agentcore.add_client_error("list_memory_records", service_error_code="ThrottlingException")
+    with pytest.raises(Exception):
+        await run(Member())
+    assert memory_sync._take_lease(OWNER)
+
+
+# --- network_member: call_op / queue_op / drain_ops ---------------------------------------------
+
+from core.services import network_member  # noqa: E402
+
+
+async def test_call_op_returns_none_when_parked():
+    with (
+        patch.object(network_member, "_session_is_warm", return_value=False),
+        patch("core.services.container_rpc.call") as rpc,
+    ):
+        assert await network_member.call_op(OWNER, "memory.list", {}, 5.0) is None
+    rpc.assert_not_called()
+
+
+async def test_call_op_sends_over_the_runtime_rpc_when_warm():
+    with (
+        patch.object(network_member, "_session_is_warm", return_value=True),
+        patch("core.services.container_rpc.call", return_value={"ids": []}) as rpc,
+    ):
+        assert await network_member.call_op(OWNER, "memory.import", {"entries": []}, 5.0) == {"ids": []}
+    rpc.assert_awaited_once_with(OWNER, "memory.import", {"entries": []}, timeout_s=5.0)
+
+
+async def test_queue_op_then_drain_sends_in_order_and_deletes(table):
+    await network_member.queue_op(OWNER, "memory.forget_author", {"author": "a"})
+    await network_member.queue_op(OWNER, "memory.remember", {"fact": "b"})
+    sent = []
+
+    async def fake(owner, op, params, timeout):
+        sent.append((op, params))
+        return {}
+
+    with patch.object(network_member, "call_op", fake):
+        assert await network_member.drain_ops(OWNER) == 2
+    assert sent == [("memory.forget_author", {"author": "a"}), ("memory.remember", {"fact": "b"})]
+    assert table.scan()["Items"] == []
+
+
+async def test_drain_skips_unclaimable_rows(table):
+    await network_member.queue_op(OWNER, "memory.remember", {"fact": "claimed"})
+    await network_member.queue_op(OWNER, "memory.remember", {"fact": "free"})
+    first = sorted(table.scan()["Items"], key=lambda r: r["sk"])[0]
+    table.update_item(
+        Key={"pk": first["pk"], "sk": first["sk"]},
+        UpdateExpression="SET claimed_until = :u",
+        ExpressionAttributeValues={":u": 4102444800},
+    )
+    sent = []
+
+    async def fake(owner, op, params, timeout):
+        sent.append(params)
+        return {}
+
+    with patch.object(network_member, "call_op", fake):
+        assert await network_member.drain_ops(OWNER) == 1
+    assert sent == [{"fact": "free"}]
+    assert len(table.scan()["Items"]) == 1
+
+
+async def test_drain_retries_then_drops_a_failing_op_and_never_raises(table):
+    await network_member.queue_op(OWNER, "memory.remember", {"fact": "x"})
+
+    async def boom(owner, op, params, timeout):
+        raise RuntimeError("{}")
+
+    with patch.object(network_member, "call_op", boom):
+        for _ in range(4):
+            await network_member.drain_ops(OWNER)
+        assert len(table.scan()["Items"]) == 1
+        await network_member.drain_ops(OWNER)
+    assert table.scan()["Items"] == []
+
+
+async def test_drain_swallows_storage_errors():
+    with patch("core.repositories.messaging_repo._table", side_effect=RuntimeError("down")):
+        assert await network_member.drain_ops(OWNER) == 0

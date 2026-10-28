@@ -543,27 +543,75 @@ async def queue_op(owner_id: str, op: str, params: dict) -> None:
     await run_in_thread(messaging_repo._table().put_item, Item=item)
 
 
+_MAX_ATTEMPTS = 5
+_CLAIM_S = 120
+
+
 async def drain_ops(owner_id: str) -> int:
-    """Send queued ops in order, deleting each once answered; stops at the first failure or when
-    the runtime is parked. Returns how many were sent."""
+    """Send queued ops in order. Never raises (it runs on the edit path); returns how many were
+    sent. Each row is claimed with a conditional write before it is sent, so two drains cannot
+    both send it. An op that fails is retried on later drains, up to ``_MAX_ATTEMPTS``, then
+    dropped with a warning naming the op and owner (never the params)."""
+    try:
+        return await _drain(owner_id)
+    except Exception as exc:  # noqa: BLE001 -- params can carry fact text: log the class only
+        logger.warning("queued ops drain failed owner=%s error=%s", owner_id, type(exc).__name__)
+        return 0
+
+
+async def _drain(owner_id: str) -> int:
     from boto3.dynamodb.conditions import Key
+    from botocore.exceptions import ClientError
 
     from core.repositories import messaging_repo
 
     table = messaging_repo._table()
-    rows = (
-        await run_in_thread(
-            table.query, KeyConditionExpression=Key("pk").eq(_op_pk(owner_id)) & Key("sk").begins_with("MEMOP#")
-        )
-    )["Items"]
+    query = {"KeyConditionExpression": Key("pk").eq(_op_pk(owner_id)) & Key("sk").begins_with("MEMOP#")}
+    rows: list[dict] = []
+    while True:
+        page = await run_in_thread(table.query, **query)
+        rows += page["Items"]
+        if not page.get("LastEvaluatedKey"):
+            break
+        query["ExclusiveStartKey"] = page["LastEvaluatedKey"]
     sent = 0
     for row in rows:
+        key = {"pk": row["pk"], "sk": row["sk"]}
+        now = int(time.time())
         try:
-            if await call_op(owner_id, row["op"], json.loads(row["params"]), 30.0) is None:
-                break
-        except Exception:  # noqa: BLE001 -- the row stays queued for the next drain
-            logger.warning("queued op failed owner=%s op=%s", owner_id, row["op"], exc_info=True)
+            await run_in_thread(
+                table.update_item,
+                Key=key,
+                UpdateExpression="SET claimed_until = :u",
+                ConditionExpression="attribute_exists(pk) AND (attribute_not_exists(claimed_until) OR claimed_until < :now)",
+                ExpressionAttributeValues={":u": now + _CLAIM_S, ":now": now},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # another drain has it, or it is already sent
+            raise
+        failed = False
+        try:
+            answer = await call_op(owner_id, row["op"], json.loads(row["params"]), 30.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("queued op failed owner=%s op=%s error=%s", owner_id, row["op"], type(exc).__name__)
+            answer, failed = {}, True
+        if answer is None:  # parked: leave the rest for the next drain
+            await run_in_thread(table.update_item, Key=key, UpdateExpression="REMOVE claimed_until")
             break
-        await run_in_thread(table.delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
-        sent += 1
+        if not failed:
+            await run_in_thread(table.delete_item, Key=key)
+            sent += 1
+            continue
+        attempts = int(row.get("attempts") or 0) + 1
+        if attempts >= _MAX_ATTEMPTS:
+            logger.warning("queued op dropped after %d attempts owner=%s op=%s", attempts, owner_id, row["op"])
+            await run_in_thread(table.delete_item, Key=key)
+        else:
+            await run_in_thread(
+                table.update_item,
+                Key=key,
+                UpdateExpression="SET attempts = :a REMOVE claimed_until",
+                ExpressionAttributeValues={":a": attempts},
+            )
     return sent

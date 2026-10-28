@@ -71,9 +71,17 @@ def parse_fact(text: str, entity: str, attribute: str) -> tuple[str, str | None]
     return value, (None if name == "Contested" else name)
 
 
-def _write_ok(resp: dict, what: str) -> dict:
-    if resp.get("failedRecords"):
-        raise RuntimeError(f"memory sync: {len(resp['failedRecords'])} {what} records failed")
+def _not_found(failure: dict) -> bool:
+    message = str(failure.get("errorMessage", "")).lower().replace(" ", "").replace("_", "")
+    return failure.get("errorCode") == 404 or "notfound" in message
+
+
+def _write_ok(resp: dict, what: str, *, gone_ok: bool = False) -> dict:
+    """Raise if any record failed. With ``gone_ok`` a not-found failure counts as done (a delete
+    that already happened)."""
+    failed = [f for f in resp.get("failedRecords") or [] if not (gone_ok and _not_found(f))]
+    if failed:
+        raise RuntimeError(f"memory sync: {len(failed)} {what} records failed")
     return resp
 
 
@@ -126,6 +134,7 @@ def _facts_to_import(client, owner_id: str, memory_id: str, ns: str, after: str 
                     "kind": _meta(rec, "kind") or "fact",
                     "scope": "team",
                     "when": _meta(rec, "validFrom") or None,
+                    "key": f"{rec['memoryRecordId']}:{digest}",  # memory.import is idempotent on it
                     "source": {"harness": "workspace", "repo": None, "session": None, "on_behalf_of": speaker},
                     "replaces": [link["entry"]] if link.get("entry") else [],
                 },
@@ -189,9 +198,12 @@ def _create_entry_records(client, owner_id: str, memory_id: str, ns: str, entrie
             }
             for e in chunk
         ]
-        resp = _write_ok(client.batch_create_memory_records(memoryId=memory_id, records=records), "entry")
+        resp = client.batch_create_memory_records(memoryId=memory_id, records=records)
+        # Keep the mapping of every record that was created BEFORE raising for the ones that were
+        # not: a tombstone or a replace finds its record only through this row.
         for ok in resp.get("successfulRecords", []):
             _put(owner_id, f"MEMENTRY#{ok['requestIdentifier']}", arec=ok["memoryRecordId"])
+        _write_ok(resp, "entry")
 
 
 def _mark_replaced(client, owner_id: str, memory_id: str, entry_ids: list[str]) -> None:
@@ -211,6 +223,7 @@ def _delete_for_tombstone(client, owner_id: str, memory_id: str, entry_id: str) 
         _write_ok(
             client.batch_delete_memory_records(memoryId=memory_id, records=[{"memoryRecordId": r} for r in ids]),
             "tombstoned",
+            gone_ok=True,
         )
     if row.get("facts_rec"):
         _t().delete_item(Key=_key(owner_id, f"MEMLINK#{row['facts_rec']}"))
@@ -264,7 +277,7 @@ def _mirror_turns(client, owner_id: str, memory_id: str, ns: str, after: str | N
             client.list_events, "events", memoryId=memory_id, sessionId=sid, actorId=owner_id, includePayloads=True
         ):
             when = ev["eventTimestamp"]
-            if when <= floor:
+            if when < floor:
                 continue
             newest = max(newest, when)
             for i, payload in enumerate(ev.get("payload") or []):
@@ -299,10 +312,34 @@ def _owned(owner_id: str, namespaces: dict[str, str]) -> bool:
     return all(namespaces.get(k, "").startswith(root) for k in ("facts", "turns", "entries"))
 
 
-async def sync_workspace(owner_id: str, *, memory_id: str, namespaces: dict[str, str]) -> dict:
+_LEASE_S = 300
+
+
+def _take_lease(owner_id: str) -> bool:
+    """One sync per owner at a time: a conditional write on the state row."""
+    from botocore.exceptions import ClientError
+
+    now = int(time.time())
+    try:
+        _t().update_item(
+            Key=_key(owner_id, _STATE),
+            UpdateExpression="SET lease_until = :u",
+            ConditionExpression="attribute_not_exists(lease_until) OR lease_until < :now",
+            ExpressionAttributeValues={":u": now + _LEASE_S, ":now": now},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+def _release_lease(owner_id: str) -> None:
+    _t().update_item(Key=_key(owner_id, _STATE), UpdateExpression="REMOVE lease_until")
+
+
+async def _sync_locked(owner_id: str, memory_id: str, namespaces: dict[str, str]) -> dict:
     out = {"imported": 0, "mirrored": 0, "turns": 0}
-    if not _owned(owner_id, namespaces):
-        return out
     started = utc_now_iso()
     state = await run_in_thread(_get, owner_id, _STATE)
     await network_member.drain_ops(owner_id)
@@ -314,8 +351,22 @@ async def sync_workspace(owner_id: str, *, memory_id: str, namespaces: dict[str,
     )
     if not parked:
         state["synced_at"] = int(time.time())
-    await run_in_thread(lambda: _put(owner_id, _STATE, **{k: v for k, v in state.items() if k not in ("pk", "sk")}))
+    # The put replaces the row, which also releases the lease (not carried over from the read).
+    await run_in_thread(
+        lambda: _put(owner_id, _STATE, **{k: v for k, v in state.items() if k not in ("pk", "sk", "lease_until")})
+    )
     return out
+
+
+async def sync_workspace(owner_id: str, *, memory_id: str, namespaces: dict[str, str]) -> dict:
+    """A caller that cannot take the owner's lease (a sync is running) returns zeros at once."""
+    out = {"imported": 0, "mirrored": 0, "turns": 0}
+    if not _owned(owner_id, namespaces) or not await run_in_thread(_take_lease, owner_id):
+        return out
+    try:
+        return await _sync_locked(owner_id, memory_id, namespaces)
+    finally:
+        await run_in_thread(_release_lease, owner_id)
 
 
 async def sync_if_stale(owner_id: str, *, memory_id: str, namespaces: dict[str, str], max_age_s: int = 60) -> None:

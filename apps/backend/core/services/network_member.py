@@ -140,6 +140,7 @@ async def _write_and_ping(owner_id: str, apps: list[dict]) -> None:
     # and an invoke here would cold-start the workspace (~55 s) from an agent edit.
     if await _session_is_warm(owner_id):
         await container_rpc.call(owner_id, "network.sessions", {})
+        await drain_ops(owner_id)  # the member is up and just refreshed: send what waited for it
 
 
 async def app_title(user_id: str, client: str) -> str:
@@ -512,3 +513,57 @@ async def _queue_wake(owner_id: str, digest: str) -> None:
         logger.info("network wake skipped (within %ss) owner=%s", WAKE_WINDOW_S, owner_id)
         return
     logger.info("network wake queued owner=%s", owner_id)
+
+
+# ---------------------------------------------------------------------------
+# cloud-member ops (memory.*): only while the runtime is up
+# ---------------------------------------------------------------------------
+
+
+async def call_op(owner_id: str, op: str, params: dict, timeout: float = 30.0) -> dict | None:
+    """One cloud-member op over the runtime RPC path (``container_rpc.call``). ``None`` when the
+    runtime is parked: this never cold-starts it (an invoke would, ~55 s)."""
+    if not await _session_is_warm(owner_id):
+        return None
+    return await container_rpc.call(owner_id, op, params, timeout_s=timeout)
+
+
+def _op_pk(owner_id: str) -> str:
+    from core.repositories import messaging_repo
+
+    return messaging_repo.owner_pk(owner_id)
+
+
+async def queue_op(owner_id: str, op: str, params: dict) -> None:
+    """Persist an op for ``drain_ops`` (run when the runtime is next up). Params are JSON text."""
+    from core.repositories import messaging_repo
+
+    sk = f"MEMOP#{int(time.time() * 1000):013d}#{uuid.uuid4().hex[:8]}"
+    item = {"pk": _op_pk(owner_id), "sk": sk, "op": op, "params": json.dumps(params)}
+    await run_in_thread(messaging_repo._table().put_item, Item=item)
+
+
+async def drain_ops(owner_id: str) -> int:
+    """Send queued ops in order, deleting each once answered; stops at the first failure or when
+    the runtime is parked. Returns how many were sent."""
+    from boto3.dynamodb.conditions import Key
+
+    from core.repositories import messaging_repo
+
+    table = messaging_repo._table()
+    rows = (
+        await run_in_thread(
+            table.query, KeyConditionExpression=Key("pk").eq(_op_pk(owner_id)) & Key("sk").begins_with("MEMOP#")
+        )
+    )["Items"]
+    sent = 0
+    for row in rows:
+        try:
+            if await call_op(owner_id, row["op"], json.loads(row["params"]), 30.0) is None:
+                break
+        except Exception:  # noqa: BLE001 -- the row stays queued for the next drain
+            logger.warning("queued op failed owner=%s op=%s", owner_id, row["op"], exc_info=True)
+            break
+        await run_in_thread(table.delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
+        sent += 1
+    return sent

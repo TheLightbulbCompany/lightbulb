@@ -2472,13 +2472,12 @@ async def test_session_notification_prefs_choose_banner_badge_or_nothing_per_kin
             with patch("time.time", return_value=stamp):
                 await relay(transport).handle_message("conn-1", heartbeat(sid, **change))
                 await asyncio.gather(*module._tasks)
-    assert pushes == [("run lightbulb login, then press Resume", {"sound": False})]
+    assert pushes == []  # a hand-off note never notifies, even set to banner (owner 2026-10-27)
     events = [json.loads(h["events"][0]) for h in transport[4]]
     notices = [e["payload"] for e in events if e["type"] == "workspace.session.attention"]
     assert [(n["state"], n["level"], n["sound"], n["onlyUnfocused"]) for n in notices] == [
         ("waiting", "badge", False, True),
         ("finished", "off", False, True),
-        ("attention", "banner", False, True),
     ]
 
     # The defaults are the old behaviour: a note is never a banner, nor even a live notice.
@@ -2491,7 +2490,7 @@ async def test_session_notification_prefs_choose_banner_badge_or_nothing_per_kin
 
 
 @pytest.mark.asyncio
-async def test_a_turn_that_ends_with_a_new_note_tells_both_by_their_own_settings(transport):
+async def test_a_turn_that_ends_with_a_new_note_tells_only_the_finish(transport):
     from core.repositories import user_repo
     from core.services import local_session_relay as module
 
@@ -2509,14 +2508,10 @@ async def test_a_turn_that_ends_with_a_new_note_tells_both_by_their_own_settings
         # One frame: a 100 s turn ends AND the job leaves a note.
         await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", note="run lightbulb login"))
         await asyncio.gather(*module._tasks)
-    assert pushes == ["run lightbulb login"]
+    assert pushes == []  # the note notifies nobody; only the finish is told, by its own setting
     notices = [json.loads(h["events"][0]) for h in transport[4]]
     notices = [n for n in notices if n["type"] == "workspace.session.attention"]
-    assert sorted((n["payload"]["state"], n["payload"]["level"]) for n in notices) == [
-        ("attention", "banner"),
-        ("finished", "off"),
-    ]
-    assert len({n["eventId"] for n in notices}) == 2
+    assert [(n["payload"]["state"], n["payload"]["level"]) for n in notices] == [("finished", "off")]
 
 
 @pytest.mark.asyncio

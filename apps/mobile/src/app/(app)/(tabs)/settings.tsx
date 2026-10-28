@@ -293,7 +293,6 @@ const PLACEHOLDER = [redacted("placeholder"), accessibilityLabel("Loading")];
 const NOTIFY_KINDS = [
   { key: "waiting", label: "Waiting on you" },
   { key: "finished", label: "Finished" },
-  { key: "attention", label: "Needs attention" },
 ] as const;
 const NOTIFY_LEVELS = [
   { value: "banner", label: "Banner" },

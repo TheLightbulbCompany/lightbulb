@@ -419,13 +419,9 @@ FINISHED_COLLAPSE_S = 30
 
 
 def _attention(row: dict, status: str, now: int, note: str | None = None) -> list[str]:
-    """The owner-facing state changes a heartbeat carries: "waiting" or "finished", and
-    "attention" for a new hand-off ``note`` (a job can finish and leave one in the same frame;
-    each is told by its own setting)."""
-    changes = [state] if (state := _status_attention(row, status, now)) else []
-    if note and note != row.get("note"):
-        changes.append("attention")
-    return changes
+    """The owner-facing state changes a heartbeat carries: "waiting" or "finished". A Claude job's
+    hand-off ``note`` notifies nobody (owner 2026-10-27: notes are not shown anywhere)."""
+    return [state] if (state := _status_attention(row, status, now)) else []
 
 
 def _status_attention(row: dict, status: str, now: int) -> Literal["waiting", "finished"] | None:

@@ -421,8 +421,9 @@ async def list_memories(owner_id: str, user_id: str) -> dict:
 
 
 async def delete_memory(owner_id: str, user_id: str, record_id: str) -> None:
-    """Delete one fact from the viewer's private scope or the team scope (any member: D2)."""
-    scopes = _scopes(owner_id, user_id)
+    """Delete one fact from the viewer's private scope or the team scope -- extracted facts and
+    mirrored log entries alike (any member: D2)."""
+    scopes = (*_scopes(owner_id, user_id), namespaces_for(owner_id, None)["entries"])
     memory_id = settings.AGENTCORE_MEMORY_ID
     if not memory_id:
         raise LookupError(record_id)

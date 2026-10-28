@@ -110,7 +110,7 @@ async def test_no_memory_configured_is_empty_and_never_builds_a_client(monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ns", [PRIV, TEAM])
+@pytest.mark.parametrize("ns", [PRIV, TEAM, ENTRIES])
 async def test_deletes_a_record_in_the_viewers_scopes(fake, ns):
     fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-1", ns)}
     await wm.delete_memory("org_a", "user_me", "mem-1")
@@ -118,7 +118,9 @@ async def test_deletes_a_record_in_the_viewers_scopes(fake, ns):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ns", ["/owners/org_a:user_other/", "/owners/org_b/", "/owners/org_a/deeper/"])
+@pytest.mark.parametrize(
+    "ns", ["/owners/org_a:user_other/", "/owners/org_b/", "/owners/org_a/deeper/", "/entries/org_b/", "/turns/org_a/"]
+)
 async def test_refuses_another_members_or_workspaces_record(fake, ns):
     fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-1", ns)}
     with pytest.raises(LookupError):

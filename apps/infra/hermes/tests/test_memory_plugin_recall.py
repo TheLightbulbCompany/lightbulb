@@ -1,0 +1,169 @@
+"""Room agents read memory through the backend's recall and write through ``remember``; the
+AgentCore events keep carrying the speaker's name."""
+import io
+import json
+import logging
+
+import pytest
+
+import bridge
+from bridge import turn
+from tests.test_memory_agentcore import FakeClient, mod, provider  # noqa: F401  (mod is a fixture)
+
+PAGE = {"asOf": "2026-10-27T00:00:00Z", "usedEvidenceTokens": 40, "results": [
+    {"rank": 1, "kind": "fact", "content": "Launch is Nov 3 (contested)", "occurredAt": "2026-10-20", "status": "contested",
+     "history": [], "sources": []},
+    {"rank": 2, "kind": "decision", "content": "Weekly reports", "occurredAt": "2026-10-13", "status": "current",
+     "history": [], "sources": []}]}
+
+
+class FakeBackend:
+    """urlopen stand-in for the backend's /api/v1/internal/memory/* endpoints."""
+
+    def __init__(self, reply=None, fail=False):
+        self.reply, self.fail, self.calls, self.board = PAGE if reply is None else reply, fail, [], []
+
+    def __call__(self, req, timeout=None):
+        if req.data is None:  # the task board's GET
+            return io.BytesIO(json.dumps(self.board if "in_progress" in req.full_url else []).encode())
+        self.calls.append((req.full_url, req.get_header("Authorization"), json.loads(req.data), timeout))
+        if self.fail:
+            raise TimeoutError("timed out")
+        return io.BytesIO(json.dumps(self.reply).encode())
+
+
+@pytest.fixture
+def backend(mod, monkeypatch):  # noqa: F811
+    for k, v in {"PAPERCLIP_API_URL": "http://pc.local/", "PAPERCLIP_API_KEY": "pk-agent",
+                 "PAPERCLIP_COMPANY_ID": "co-1"}.items():
+        monkeypatch.setenv(k, v)  # the task board's identity; memory uses the bridge's
+    monkeypatch.setattr(bridge, "API", "http://api.local")
+    monkeypatch.setattr(bridge, "HOOK_TOKEN", "hook-tok")
+    mod._BOARD.clear()
+    fake = FakeBackend()
+    monkeypatch.setattr(mod.urllib.request, "urlopen", fake)
+    return fake
+
+
+def said(text):
+    return turn._turn_input({"sender": {"id": "u1", "displayName": "Aden"},
+                             "message": {"messageId": "m1", "text": text},
+                             "room": {"id": "r1", "kind": "channel"}, "participants": []})
+
+
+def recalls(backend):
+    return [c for c in backend.calls if c[0].endswith("/api/v1/internal/memory/recall/org_test")]
+
+
+def test_user_text_drops_the_turn_context_line(mod):
+    assert mod._user_text(said("hello")) == "Aden: hello"
+    assert mod._user_text("no context here") == "no context here"
+
+
+def test_prefetch_query_is_user_text_only(mod, backend):
+    client = FakeClient()
+    p = provider(mod, client)
+    p.prefetch(said("what is our launch date?"))
+    (url, auth, body, _), = recalls(backend)
+    assert url == "http://api.local/api/v1/internal/memory/recall/org_test" and auth == "Bearer hook-tok"
+    assert body == {"question": "Aden: what is our launch date?", "budget_tokens": 400}
+    assert p.prefetch(said("thanks!")) == "" and len(recalls(backend)) == 1  # trivial prompt: no call
+    assert client.calls == []  # AgentCore is no longer read
+
+
+def test_prefetch_injects_page_lines_under_budget(mod, backend):
+    p = provider(mod, FakeClient())
+    assert p.prefetch(said("launch?")).splitlines() == [
+        "Remembered:", "- Launch is Nov 3 (contested)", "- Weekly reports"]
+    backend.board = [{"identifier": "ISOA-9", "title": "Launch page"}]
+    mod._BOARD.clear()
+    recalled, board = p.prefetch(said("launch?")).split("\n\n")
+    assert recalled.endswith("- Weekly reports") and "ISOA-9 Launch page" in board
+
+
+def test_prefetch_backend_failure_returns_board_only(mod, backend, caplog):
+    backend.fail = True
+    with caplog.at_level(logging.WARNING):
+        out = provider(mod, FakeClient()).prefetch(said("secret launch plan?"))
+    assert out == "" and "secret launch plan" not in caplog.text
+    backend.board = [{"identifier": "ISOA-9", "title": "Launch page"}]
+    mod._BOARD.clear()
+    assert "ISOA-9" in provider(mod, FakeClient()).prefetch(said("secret launch plan?"))  # the board survives
+    assert any("recall failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize("reply", [[], {"results": None}, {"results": [None]}, {"results": [{"content": 5}]},
+                                   {"results": [{"rank": 1}]}])
+def test_prefetch_malformed_page_returns_board_only(mod, backend, reply):
+    backend.reply = reply
+    backend.board = [{"identifier": "ISOA-9", "title": "Launch page"}]
+    out = provider(mod, FakeClient()).prefetch(said("launch?"))
+    assert out.startswith("Task board right now") and "Remembered" not in out
+
+
+@pytest.mark.parametrize("reply", [[], {"results": [None]}, {"results": "x"}])
+def test_search_tool_malformed_page_returns_error_string(mod, backend, reply):
+    backend.reply = reply
+    out = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "x"}))
+    assert list(out) == ["error"]
+
+
+def test_prefetch_caps_injected_block(mod, backend):
+    backend.reply = {"results": [{"content": f"fact {i} " + "x" * 90} for i in range(40)]}
+    out = provider(mod, FakeClient()).prefetch(said("launch?"))
+    facts = out.split("\n", 1)[1]
+    assert len(facts) <= 1600 and all(line.startswith("- fact ") and line.endswith("x") for line in facts.splitlines())
+    backend.reply = {"results": [{"content": "y" * 300} for _ in range(40)]}
+    big = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "x"}))
+    assert len(json.dumps(big)) <= 6000 and big["results"]
+
+
+def test_remember_redacts_subject_and_fact(mod, backend):
+    provider(mod, FakeClient()).handle_tool_call(
+        "remember", {"subject": "key sk-abc123", "fact": "uses sk-def456", "kind": "fact"})
+    body = backend.calls[-1][2]
+    assert "abc123" not in body["subject"] and "def456" not in body["fact"]
+
+
+def test_sync_turn_prefixes_speaker_on_events(mod, tmp_path):
+    (tmp_path / "SOUL.md").write_text("# Friday\n")
+    client = FakeClient()
+    mod._CLIENT = client
+    p = mod.AgentCoreMemoryProvider()
+    p.initialize("room:ceo", hermes_home=str(tmp_path), user_id="user_2abc", chat_type="dm")
+    p.sync_turn(said("I prefer weekly reports"), "Got it.")
+    p.sync_turn("plain words with no speaker", "")
+    (_, a), (_, b) = client.calls
+    assert [m["conversational"]["content"]["text"] for m in a["payload"]] == [
+        "Aden: I prefer weekly reports", "Friday: Got it."]
+    assert b["payload"][0]["conversational"]["content"]["text"] == "user_2abc: plain words with no speaker"
+    assert {c[0] for c in client.calls} == {"create"}  # events only, never a record write
+
+
+def test_search_tool_reads_through_the_backend(mod, backend):
+    out = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "launch"}))
+    assert [r["content"] for r in out["results"]] == ["Launch is Nov 3 (contested)", "Weekly reports"]
+    assert recalls(backend)[0][2]["question"] == "launch"
+
+
+def test_remember_tool_forwards(mod, backend):
+    backend.reply = {"queued": True, "neighbours": [{"id": "m1", "content": "Launch is Nov 3"}]}
+    p = provider(mod, FakeClient())
+    desc, = [t["description"] for t in p.get_tool_schemas() if t["name"] == "remember"]
+    assert desc.endswith("Team in a room; personal in a direct message.")
+    args = {"subject": "launch", "fact": "Launch moved to Nov 10", "kind": "decision", "replaces": ["m1"]}
+    out = json.loads(p.handle_tool_call("remember", args))
+    assert out == backend.reply
+    (url, _, body, _), = backend.calls
+    assert url == "http://api.local/api/v1/internal/memory/remember/org_test"
+    assert body == {**args, "scope": "team"}  # a room is shared already
+    dm = provider(mod, FakeClient(), user_id="user_2abc", chat_type="dm")
+    dm.handle_tool_call("remember", {"subject": "s", "fact": "f", "kind": "fact"})
+    assert backend.calls[-1][2]["scope"] == "me"
+
+
+def test_tools_return_a_short_error_when_the_backend_fails(mod, backend):
+    backend.fail = True
+    p = provider(mod, FakeClient())
+    assert "error" in json.loads(p.handle_tool_call("remember", {"subject": "s", "fact": "f", "kind": "fact"}))
+    assert "error" in json.loads(p.handle_tool_call("workspace_memory_search", {"query": "x"}))

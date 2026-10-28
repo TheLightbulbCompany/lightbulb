@@ -679,6 +679,11 @@ async def _forget_then_teardown(owner_id: str, container: dict, author: str, *, 
         try:
             await container_rpc.call(owner_id, "memory.forget_author", {"author": author}, target=container)
             forgot = True
+            try:  # the owed row the forget answered (its sweep never runs once the row is gone)
+                key = {"pk": f"MEMWIPE#{owner_id}", "sk": f"A#{author}"}
+                await run_in_thread(messaging_repo._table().delete_item, Key=key)
+            except Exception as exc:  # noqa: BLE001 -- it expires on its own
+                logger.warning("owner wipe: owed row not deleted owner=%s error=%s", owner_id, type(exc).__name__)
         except Exception as exc:  # noqa: BLE001 -- still parked or failing: try again inside the window
             logger.info("owner wipe: forget_author retry owner=%s error=%s", owner_id, type(exc).__name__)
             if time.monotonic() + retry_s > deadline:

@@ -298,7 +298,10 @@ async def test_a_parked_member_keeps_the_runtime_until_the_forget_lands(monkeypa
     report: dict = {}
     await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True, report=report)
     assert report == {"runtime": "scheduled"} and "runtime" not in calls
-    (row,) = table.scan()["Items"]  # durable before the task runs: a restart leaves the sweep this
+    (row,) = table.scan()["Items"]
+    table.put_item(
+        Item={"pk": "MEMWIPE#org_a", "sk": "A#memberkey"}
+    )  # what the stubbed forget owed  # durable before the task runs: a restart leaves the sweep this
     assert row["pk"] == "TEARDOWN#" and row["ownerId"] == "org_a" and row["author"] == "memberkey"
     assert row["row"] == ROW and row["dueAt"] > time.time() + 150
     (task,) = hermes_provisioning._runtime_teardowns

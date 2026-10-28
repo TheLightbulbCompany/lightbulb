@@ -53,7 +53,7 @@ async def test_rerank_returns_indices_sorted_by_score(stubbed):
     stub = stubbed("bedrock-agent-runtime")
     stub.add_response(
         "rerank",
-        {"results": [{"index": 2, "relevanceScore": 0.9}, {"index": 0, "relevanceScore": 0.4}]},
+        {"results": [{"index": 0, "relevanceScore": 0.4}, {"index": 2, "relevanceScore": 0.9}]},
         _rerank_params("q", ["a", "b", "c"], 2),
     )
     assert await memory_models.rerank("q", ["a", "b", "c"], 2) == [(2, 0.9), (0, 0.4)]
@@ -115,3 +115,10 @@ async def test_expand_error_returns_original(stubbed):
     stub = stubbed("bedrock-runtime")
     stub.add_client_error("converse", "ThrottlingException")
     assert await memory_models.expand("q") == ["q"]
+
+
+async def test_rerank_clamps_top_n_to_document_count(stubbed):
+    stub = stubbed("bedrock-agent-runtime")
+    stub.add_response("rerank", {"results": []}, _rerank_params("q", ["a", "b"], 2))
+    assert await memory_models.rerank("q", ["a", "b"], 10) == []
+    stub.assert_no_pending_responses()

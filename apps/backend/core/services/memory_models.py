@@ -46,14 +46,14 @@ async def rerank(query: str, documents: list[str], top_n: int) -> list[tuple[int
                 "type": "BEDROCK_RERANKING_MODEL",
                 "bedrockRerankingConfiguration": {
                     "modelConfiguration": {"modelArn": arn},
-                    "numberOfResults": top_n,
+                    "numberOfResults": min(top_n, len(documents)),
                 },
             },
         )
     except (ClientError, BotoCoreError) as exc:
         logger.warning("memory rerank failed: %s", type(exc).__name__)
         return None
-    results = sorted(resp["results"], key=lambda r: r["relevanceScore"], reverse=True)
+    results = sorted(resp.get("results", []), key=lambda r: r["relevanceScore"], reverse=True)
     return [(r["index"], r["relevanceScore"]) for r in results]
 
 

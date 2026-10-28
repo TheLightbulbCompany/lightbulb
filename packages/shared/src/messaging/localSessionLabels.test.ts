@@ -189,7 +189,7 @@ describe("the sidebar state table (spec 2026-10-26 (e))", () => {
     [{ status: "idle", terminal: "attach", done: true }, "done", "Done", "Attach"],
     [{ status: "offline" }, "offline", "Offline", null],
     [{ status: "ended", endedReason: "exited" }, "stopped", "Stopped", "Resume"],
-    [{ status: "ended", endedOnPurpose: true }, "hidden", "Ended", null],
+    [{ status: "ended", endedOnPurpose: true }, "stopped", "Stopped", "Resume"],
   ] as const)("%o is %s: %s, %s", (fields, state, label, action) => {
     const s = live(fields as Partial<LocalSession>);
     expect(sessionState(s)).toBe(state);

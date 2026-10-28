@@ -37,13 +37,13 @@ export const sessionStatus: Record<LocalSession["status"], string> = {
  *  - `waiting`: a prompt is open in its terminal, or its job left its person a hand-off note.
  *  - `done`: a background job whose turn is over; it may still sit at its shell.
  *  - `offline`: its Mac is not heard from.
- *  - `stopped`: it ended, not on purpose: Resume.
- *  - `hidden`: its person ended it on purpose (owner ruling 2026-10-08): no list shows it.
+ *  - `stopped`: it ended, on purpose or not: Resume. An ended row stays listed until its owner
+ *    removes it (2026-10-27, superseding the 2026-10-08 hide-on-purpose ruling; desktop #4453).
  */
-export type SessionState = "here" | "background" | "waiting" | "done" | "offline" | "stopped" | "hidden";
+export type SessionState = "here" | "background" | "waiting" | "done" | "offline" | "stopped";
 
-export function sessionState(s: Pick<LocalSession, "status" | "endedOnPurpose" | "note" | "done" | "terminal">): SessionState {
-  if (s.status === "ended") return s.endedOnPurpose ? "hidden" : "stopped";
+export function sessionState(s: Pick<LocalSession, "status" | "note" | "done" | "terminal">): SessionState {
+  if (s.status === "ended") return "stopped";
   if (s.status === "offline") return "offline";
   if (s.status === "waiting-approval" || s.note) return "waiting";
   if (s.done) return "done";
@@ -76,14 +76,14 @@ export function sessionsNeedingYou(
 export const sessionStateLabel = (s: LocalSession): string => {
   const state = sessionState(s);
   return state === "here" ? sessionStatus[s.status]
-    : { background: "Running in background", waiting: "Waiting on you", done: "Done", offline: "Offline", stopped: "Stopped", hidden: "Ended" }[state];
+    : { background: "Running in background", waiting: "Waiting on you", done: "Done", offline: "Offline", stopped: "Stopped" }[state];
 };
 
 /** The state's primary action: Open its terminal, Attach to the job, Resume what stopped; none while its Mac is offline. */
 export const sessionStateAction = (s: LocalSession): "Open" | "Attach" | "Resume" | null => {
   const state = sessionState(s);
   if (state === "stopped") return "Resume";
-  if (state === "offline" || state === "hidden") return null;
+  if (state === "offline") return null;
   return s.terminal === "attach" ? "Attach" : "Open";
 };
 
@@ -200,14 +200,14 @@ export const sessionArchivedByViewer = (s: Pick<LocalSession, "sessionId" | "lat
  * The web sidebar's sessions (owner decision 2026-10-27: ended ones stay until archived, as on the
  * phone and in both vendor apps; supersedes the 2026-10-13 live-only ruling). Pinned first, then
  * live, then the rest (ended, offline) newest activity first. Pinned and live keep the order they
- * came in (`workspaceSections`: mine first). Never listed: one ended on purpose (ruling 2026-10-08)
- * or offline for days. `archived` is what the viewer archived, for the "Archived" group.
+ * came in (`workspaceSections`: mine first). Never listed: one
+ * offline for days. One ended on purpose is listed like any ended one until removed (2026-10-27). `archived` is what the viewer archived, for the "Archived" group.
  */
 export function sidebarSessionList<T extends { session: LocalSession }>(entries: readonly T[], marks: SessionMarks, now = Date.now()): { list: T[]; archived: T[] } {
   const list: T[] = [];
   const archived: T[] = [];
   for (const entry of entries) {
-    if (sessionState(entry.session) === "hidden" || sessionArchived(entry.session, now)) continue;
+    if (sessionArchived(entry.session, now)) continue;
     (sessionArchivedByViewer(entry.session, marks.archived) ? archived : list).push(entry);
   }
   const rank = (s: LocalSession) => marks.pinned.includes(s.sessionId) ? 0 : sessionLive(s) ? 1 : 2;

@@ -492,27 +492,39 @@ it("offers Open in a terminal for an app session, never for a Cursor or Grok CLI
   expect(screen.getByText(/runs in the person's own terminal/)).toBeTruthy();
 });
 
-describe("Terminal | Conversation", () => {
+describe("one body: the live terminal, or the conversation, never both (owner ruling 2026-10-27)", () => {
   const events = [
     { seq: 1, truncated: false, kind: "text", role: "user", text: "fix it" },
     { seq: 2, truncated: false, kind: "text", role: "assistant", text: "Done." }];
-  it("opens on the terminal, shows the conversation on its tab, and remembers the pick", async () => {
-    window.localStorage.clear();
+  const props = { ownerName: "Alice", own: true, client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+  it("shows only the terminal while it is live: no Conversation tab and no transcript under it", async () => {
     client.listLocalSessionEvents.mockResolvedValue({ events, nextAfterSeq: null } as never);
-    const props = { ownerName: "Alice", own: true, client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
-    const live = { ...session, latestEventSeq: 2 };
-    const first = render(<LocalSessionPanel {...props} session={live} />);
-    const terminalTab = await screen.findByRole("tab", { name: "Terminal" });
-    expect(terminalTab.getAttribute("aria-selected")).toBe("true");
+    render(<LocalSessionPanel {...props} session={{ ...session, latestEventSeq: 2 }} />);
+    await screen.findByRole("region", { name: "Live terminal (view only)" });
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.queryByRole("tab", { name: "Conversation" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Native session history" })).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: "Conversation" }));
-    expect(await screen.findByText("Done.")).toBeTruthy();
-    expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
-    expect(window.localStorage.getItem("lightbulb:session-view")).toBe("conversation");
-    first.unmount();
-    render(<LocalSessionPanel {...props} session={live} />);
-    expect((await screen.findByRole("tab", { name: "Conversation" })).getAttribute("aria-selected")).toBe("true");
-    window.localStorage.clear();
+    expect(screen.queryByText("Done.")).toBeNull();
+    client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
+  });
+
+  it("draws the conversation once when sharing is paused, says Paused at once, and shows no frozen picture", async () => {
+    client.listLocalSessionEvents.mockResolvedValue({ events, nextAfterSeq: null } as never);
+    render(<LocalSessionPanel {...props} session={{ ...session, latestEventSeq: 2, shared: false }} />);
+    expect(await screen.findAllByText("Done.")).toHaveLength(1);
+    expect(screen.queryByRole("region", { name: "Live terminal (view only)" })).toBeNull();
+    expect(document.querySelector(".session-status-line")!.textContent).toMatch(/^Paused/);
+    client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
+  });
+
+  it("opens a search hit on its turn, then goes back to the live terminal", async () => {
+    client.listLocalSessionEvents.mockResolvedValue({ events, nextAfterSeq: null } as never);
+    render(<LocalSessionPanel {...props} session={{ ...session, latestEventSeq: 2 }} focusSeq={2} />);
+    expect(await screen.findAllByText("Done.")).toHaveLength(1);
+    expect(screen.queryByRole("region", { name: "Live terminal (view only)" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back to the live terminal" }));
+    expect(await screen.findByRole("region", { name: "Live terminal (view only)" })).toBeTruthy();
+    expect(screen.queryByText("Done.")).toBeNull();
     client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
   });
 });

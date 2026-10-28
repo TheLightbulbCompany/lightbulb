@@ -6,13 +6,20 @@ import { ApiError, type LiveEvent } from "@lightbulb/shared";
 import { panelGrid, SessionTerminalView, terminalScale } from "../SessionTerminalView";
 
 const writes: Uint8Array[] = [];
-const hooks: { data?: (d: string) => void; key?: (e: unknown) => boolean; term?: { cols: number; rows: number };
+const hooks: { addons?: string[]; webglFails?: boolean; unicode?: string; data?: (d: string) => void; key?: (e: unknown) => boolean; term?: { cols: number; rows: number };
   options?: { scrollback?: number }; resets: number; screen?: { w: number; h: number }; scrolled: number[]; binary?: boolean;
   /** Set: writes wait, as in xterm, until `drain` parses them in order; `did` is what the terminal then did. */
   later?: (() => void)[]; did: string[] } = { resets: 0, scrolled: [], did: [] };
 const drain = () => { for (const step of hooks.later?.splice(0) ?? []) step(); };
+vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class {
+  constructor() { if (hooks.webglFails) throw new Error("no WebGL2"); }
+  name = "webgl"; onContextLoss() {} dispose() {}
+} }));
+vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class { name = "unicode11"; dispose() {} } }));
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   cols = 80; rows = 24; options = { disableStdin: true };
+  unicode = { set activeVersion(v: string) { hooks.unicode = v; } };
+  loadAddon(addon: { name: string }) { (hooks.addons ??= []).push(addon.name); }
   // 100 rows of history above the screen. A test that sets `baseY` gets xterm's own moves: a reset empties
   // the buffer, each line feed adds a row (the view follows at the tail), and a scroll stops at the tail.
   buffer: { active: { viewportY: number; baseY?: number } } = { active: { viewportY: 100 } };
@@ -45,7 +52,7 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
     if (hooks.later) hooks.later.push(parse); else parse();
   }
 } }));
-afterEach(() => { writes.length = 0; hooks.resets = 0; hooks.later = undefined; hooks.did = []; hooks.scrolled = []; hooks.binary = undefined; hooks.screen = undefined; window.localStorage.clear(); vi.useRealTimers(); });
+afterEach(() => { hooks.addons = undefined; hooks.webglFails = undefined; hooks.unicode = undefined; writes.length = 0; hooks.resets = 0; hooks.later = undefined; hooks.did = []; hooks.scrolled = []; hooks.binary = undefined; hooks.screen = undefined; window.localStorage.clear(); vi.useRealTimers(); });
 const CLEAR = Array.from(new TextEncoder().encode("\x1b[?1049l\x1b[r\x1b[2J\x1b[H"));
 
 const screenEvent = (sessionId: string, kind = "snapshot", seq = 0, epoch = 1, data = "G1tI") => ({ schemaVersion: 1, eventId: `e${seq}`, type: "workspace.session.screen", occurredAt: "now",
@@ -713,20 +720,24 @@ describe("the session takes this panel's size while its person uses it", () => {
     expect(panelGrid({ w: 800, h: 510 }, { cols: 100, rows: 30 }, { w: 9000, h: 9000 })).toEqual({ cols: 300, rows: 120 });
   });
 
-  it("claims on open, follows the box debounced, and sends a size with the keys", async () => {
+  it("never resizes on open or on a resize alone; claims with the keys, then follows the box debounced", async () => {
+    // Owner ruling 2026-10-27: looking at a session must not re-wrap the owner's terminal.
     const { input } = await open(true);
-    expect(sizes(input)).toEqual([[0, { cols: 82, rows: 22, claim: true }]]); // opened: the person uses it
     size = { w: 820, h: 400 };
+    act(() => { resized(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(input).not.toHaveBeenCalled(); // opened and resized, nothing typed: no size
+    act(() => { hooks.data!("ls"); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    expect(sizes(input)).toEqual([[2, { cols: 102, rows: 23, claim: true }]]); // typing is using
+    size = { w: 660, h: 390 };
     act(() => { resized(); resized(); });
     expect(input).toHaveBeenCalledTimes(1); // not on every observer tick
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
-    expect(sizes(input)[1]).toEqual([0, { cols: 102, rows: 23, claim: false }]); // applies only while it is still the latest user
+    expect(sizes(input)[1]).toEqual([0, { cols: 82, rows: 22, claim: false }]); // applies only while it is still the latest user
     act(() => { resized(); });
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     expect(input).toHaveBeenCalledTimes(2); // the same size is not sent again
-    act(() => { hooks.data!("ls"); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
-    expect(sizes(input)[2]).toEqual([2, { cols: 102, rows: 23, claim: true }]); // typing is using
   });
 
   it("sends no size at all, and keys exactly as before, when the session lacks the capability", async () => {
@@ -1112,5 +1123,52 @@ describe("the session's own frames channel", () => {
     expect(watch).toHaveBeenCalledTimes(1);
     expect(held).toEqual([]);
     expect(onLive).toHaveBeenLastCalledWith(false);
+  });
+});
+
+describe("the renderer", () => {
+  it("draws with WebGL and Unicode 11 widths, and keeps its scrollback", async () => {
+    await mountView();
+    expect(hooks.addons).toEqual(["unicode11", "webgl"]);
+    expect(hooks.unicode).toBe("11");
+    expect(hooks.options?.scrollback).toBe(5000);
+  });
+
+  it("falls back to the DOM renderer where WebGL2 is missing", async () => {
+    hooks.webglFails = true;
+    const { emit } = await mountView();
+    expect(hooks.addons).toEqual(["unicode11"]);
+    emit(screenEvent("s1"));
+    expect(writes).toHaveLength(1); // still draws
+  });
+});
+
+describe("a resumed session", () => {
+  it("asks afresh for the new process's screen: same id, new generation", async () => {
+    vi.useFakeTimers();
+    const watch = vi.fn(async () => undefined);
+    const props = { onEvent: () => () => {}, watch, onLive: vi.fn() };
+    const { rerender } = render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} {...props} />);
+    rerender(<SessionTerminalView session={{ sessionId: "s1", generation: "g2" }} {...props} />);
+    expect(watch.mock.calls).toEqual([["s1", true], ["s1", true]]);
+  });
+
+  it("asks again within seconds while the new process is not running yet, not at the 15 s renewal", async () => {
+    vi.useFakeTimers();
+    let running = false;
+    const watch = vi.fn(async () => {
+      if (!running) throw new ApiError(409, { code: "LOCAL_SESSION_OFFLINE" }, "This session is not running.");
+      return undefined;
+    });
+    render(<SessionTerminalView session={{ sessionId: "s1", generation: "g2" }} onEvent={() => () => {}} watch={watch} onLive={vi.fn()} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(watch).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(watch).toHaveBeenCalledTimes(2);
+    running = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(watch.mock.calls).toEqual([["s1", true], ["s1", true], ["s1", true]]); // each a fresh ask
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(watch).toHaveBeenCalledTimes(3); // answered: back to the renewal cadence
   });
 });

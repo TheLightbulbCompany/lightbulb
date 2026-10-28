@@ -3,7 +3,7 @@
  * session, as ONE list sorted by last activity, plus the row's preview line and
  * the avatar's state ring. Pure: no React, no DOM, no react-native.
  */
-import { sessionArchived, sessionArchivedByViewer, sessionState, sessionStatus, sessionWaitingLine } from "./localSessionLabels";
+import { sessionArchived, sessionArchivedByViewer, sessionStatus, sessionWaitingLine } from "./localSessionLabels";
 import type { LocalSession, RoomSummary } from "./types";
 
 export type ChatEntry =
@@ -46,7 +46,7 @@ export function mergeChats(
     entries.push({ kind: "room", key: `room:${room.roomId}`, at: roomActivityAt(room), room });
   }
   for (const session of sessions) {
-    if (sessionState(session) === "hidden" || sessionArchived(session, now) || sessionArchivedByViewer(session, archivedSessions)) continue;
+    if (sessionArchived(session, now) || sessionArchivedByViewer(session, archivedSessions)) continue;
     entries.push({ kind: "session", key: `session:${session.sessionId}`, at: sessionActivityAt(session), session });
   }
   return entries.sort((a, b) => b.at - a.at || a.key.localeCompare(b.key));

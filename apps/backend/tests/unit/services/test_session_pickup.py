@@ -546,7 +546,7 @@ async def test_a_reported_pick_up_is_announced_once(transport, s3):
         hint.assert_not_awaited()  # a failure writes no audit, so there is nothing to show
         await pickup.report_outcome(BOB, sid, request_id, pickup.PickupOutcome(ok=True, branch="pickup/x-1"))
         await pickup.report_outcome(BOB, sid, request_id, pickup.PickupOutcome(ok=True, branch="pickup/x-1"))
-    hint.assert_awaited_once_with(OWNER, ALICE.user_id)
+    hint.assert_awaited_once_with(OWNER, ALICE.user_id, session_id=sid)
 
 
 @pytest.mark.asyncio

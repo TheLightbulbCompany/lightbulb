@@ -404,7 +404,7 @@ async def set_local_session_sharing(
     session = await local_sessions.set_sharing(auth, session_id, body.shared)
     from core.services.local_session_relay import publish_resources_changed
 
-    await publish_resources_changed(resolve_owner_id(auth), auth.user_id)
+    await publish_resources_changed(resolve_owner_id(auth), auth.user_id, session_id=session_id)
     return session
 
 

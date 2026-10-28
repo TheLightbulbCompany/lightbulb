@@ -9,6 +9,7 @@ Session rows and summaries are never logged.
 import base64
 import hashlib
 import hmac
+import logging
 import time
 from typing import Annotated, Literal
 
@@ -17,8 +18,9 @@ from pydantic import BaseModel, Field, StringConstraints
 
 from core.config import settings
 from core.auth import AuthContext, get_current_user, security_optional
-from core.services import network_login, session_store
+from core.services import evaluator, network_login, session_store
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 shared_router = APIRouter()
 
@@ -72,7 +74,19 @@ async def upload(body: Upload, auth: AuthContext = Depends(caller)) -> dict:
         {**s.model_dump(), "tool_calls": [c.model_dump() for c in body.tool_calls if c.session_id == s.id]}
         for s in body.sessions
     ]
-    return {"stored": await session_store.put_sessions(auth.user_id, rows, full, auth.org_id)}
+    stored = await session_store.put_sessions(auth.user_id, rows, full, auth.org_id)
+    if full:  # the evaluator reads only what a person chose to upload in full; its failure never fails the upload
+        for r in rows:
+            try:
+                await evaluator.ingest_session(
+                    auth.user_id,
+                    {k: v for k, v in r.items() if k != "tool_calls"},
+                    r["tool_calls"],
+                    workspace_id=auth.org_id,
+                )
+            except Exception as e:
+                logger.warning("session ingest failed: %s", type(e).__name__)
+    return {"stored": stored}
 
 
 @router.get("")

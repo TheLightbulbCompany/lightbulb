@@ -219,6 +219,11 @@ async def delete_member_memory(
     can never have a private scope, and when the env has no memory. The tail (events, late
     re-sweep) runs only while ``still_gone`` says so: a re-add must keep its new memories."""
     owner_namespace(owner_id)
+    from core.services import evaluator, session_store  # lazy: evaluator imports this module
+
+    await session_store.delete_sessions(user_id)
+    await evaluator.delete_drafts(user_id)
+    await evaluator.delete_episodes(user_id)
     memory_id = settings.AGENTCORE_MEMORY_ID
     if not memory_id or not _MEMBER_ID.fullmatch(user_id or ""):
         return

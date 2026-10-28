@@ -1067,3 +1067,14 @@ async def test_membership_events_republish_the_network_member_list(lifecycle_io,
     )
     assert await webhooks.handle_clerk_webhook(request) == {"status": "ok"}
     publish.assert_awaited_once_with("org_acme")
+
+
+@pytest.fixture(autouse=True)
+def _no_evaluator_wipe(monkeypatch):
+    """The member wipe also clears sessions, drafts and episodes (tests/unit/services/test_evaluator.py)."""
+    from unittest.mock import AsyncMock
+
+    from core.services import evaluator, session_store
+
+    for mod, name in ((session_store, "delete_sessions"), (evaluator, "delete_drafts"), (evaluator, "delete_episodes")):
+        monkeypatch.setattr(mod, name, AsyncMock(return_value=0))

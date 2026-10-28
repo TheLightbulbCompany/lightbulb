@@ -190,3 +190,14 @@ async def test_member_wipe_skips_ids_that_can_have_no_private_scope(monkeypatch,
         await workspace_memory.delete_member_memory("org_x", user_id)
     with pytest.raises(ValueError):
         await workspace_memory.delete_member_memory("org_x:user_z", "user_a")
+
+
+@pytest.fixture(autouse=True)
+def _no_evaluator_wipe(monkeypatch):
+    """The member wipe also clears sessions, drafts and episodes (tests/unit/services/test_evaluator.py)."""
+    from unittest.mock import AsyncMock
+
+    from core.services import evaluator, session_store
+
+    for mod, name in ((session_store, "delete_sessions"), (evaluator, "delete_drafts"), (evaluator, "delete_episodes")):
+        monkeypatch.setattr(mod, name, AsyncMock(return_value=0))

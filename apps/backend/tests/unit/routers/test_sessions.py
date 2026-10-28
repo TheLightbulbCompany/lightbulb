@@ -316,3 +316,19 @@ def test_share_requires_member_or_owner(app, s3):
     assert share(as_(app, "user_eve")).status_code == 404
     assert share(as_(app, "user_ada", "org_1")).status_code == 200  # owner
     assert share(as_(app, "user_bob", "org_1")).status_code == 200  # workspace member
+
+
+def test_upload_full_triggers_ingest_and_metadata_does_not(app, s3):
+    from unittest.mock import AsyncMock
+
+    c = as_(app, "u1", "org_x")
+    body = {"sessions": [session()], "tool_calls": [call()]}
+    with patch("routers.sessions.evaluator.ingest_session", new=AsyncMock(return_value=True)) as ingest:
+        assert c.post("/api/v1/sessions", json={"mode": "metadata", **body}).status_code == 200
+        ingest.assert_not_called()
+        assert c.post("/api/v1/sessions", json={"mode": "full", **body}).status_code == 200
+        ingest.assert_awaited_once()
+        assert ingest.await_args.kwargs == {"workspace_id": "org_x"}
+        assert ingest.await_args.args[2][0]["tool"] == "Bash"
+    with patch("routers.sessions.evaluator.ingest_session", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        assert c.post("/api/v1/sessions", json={"mode": "full", **body}).status_code == 200  # never fails the upload

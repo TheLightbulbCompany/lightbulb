@@ -457,6 +457,7 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     rows = await integrations_repo.list_for_owner(owner_id)
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
+    reasons = {r["provider"]: r.get("reconnect_reason") for r in rows if r.get("status") == "reconnect_required"}
     connections = []
     for k, v in registry.all_providers().items():
         # A gate still means HIDDEN unless the provider opts into being requested,
@@ -465,7 +466,10 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
         if not registry.is_listable(v, owner_id) and k not in connected:
             continue
         byo = await _byo_active(owner_id, k)
-        connections.append(_connection_row(k, v, connected, byo, owner_id))
+        row = _connection_row(k, v, connected, byo, owner_id)
+        # Why the grant died (an OAuth error code or our own short code; never a token).
+        row["reconnect_reason"] = reasons.get(k)
+        connections.append(row)
     return {"connections": connections}
 
 

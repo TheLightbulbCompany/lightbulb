@@ -135,6 +135,24 @@ describe("StripeSection — the consolidated Stripe card", () => {
     expect(screen.queryByText(/pick the same account/)).toBeNull();
   });
 
+  it("says why the agent grant needs a reconnect", async () => {
+    get.mockResolvedValue(COMPANY_BOUND);
+    h.connections = [
+      {
+        provider: "stripe",
+        display_name: "Stripe",
+        acquisition: "direct_oauth",
+        status: "reconnect_required",
+        reconnect_reason: "invalid_grant: Invalid refresh token",
+      },
+    ];
+    renderSection();
+
+    expect(
+      await screen.findByText("Stripe ended the sign-in (invalid_grant). Reconnect to continue."),
+    ).toBeInTheDocument();
+  });
+
   it("keeps Disconnect but does not claim an unsupported old agent grant works", async () => {
     get.mockResolvedValue(COMPANY_UNBOUND);
     h.connections = [

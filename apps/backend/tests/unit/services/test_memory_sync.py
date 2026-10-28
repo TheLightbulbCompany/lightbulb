@@ -10,6 +10,7 @@ from moto import mock_aws
 
 from core.repositories import messaging_repo
 from core.services import memory_sync
+from tests.unit.services.agentcore_filters import check_filters
 
 OWNER = "org_1"
 NS = {"facts": "/owners/org_1/", "turns": "/turns/org_1/", "entries": "/entries/org_1/"}
@@ -43,6 +44,11 @@ def table():
 def agentcore():
     client = boto3.client(
         "bedrock-agentcore", region_name="us-east-1", aws_access_key_id="a", aws_secret_access_key="b"
+    )
+    # The stubber checks shapes only; refuse the filters AgentCore refuses, as the service does.
+    client.meta.events.register(
+        "before-parameter-build.bedrock-agentcore.*",
+        lambda params, model, **_: check_filters(params.get("metadataFilters"), model.name),
     )
     with Stubber(client) as stub, patch.object(memory_sync, "_client", return_value=client):
         yield stub
@@ -171,6 +177,33 @@ async def test_sync_rerun_imports_nothing_new(table, agentcore):
     await run(member)
     assert (await run(member))["imported"] == 0
     assert len(member.ops("memory.import")) == 1
+
+
+async def test_second_sync_filters_on_the_updated_at_system_field(table, agentcore):
+    agentcore.add_response(
+        "list_memory_records", {"memoryRecordSummaries": []}, {"memoryId": MEM, "namespace": NS["facts"]}
+    )
+    no_sessions(agentcore)
+    member = Member()
+    await run(member)
+    after = memory_sync._get(OWNER, "MEMSYNC")["records_after"]
+    agentcore.add_response(
+        "list_memory_records",
+        {"memoryRecordSummaries": [fact(rid("r1"), "Ana: api port: 8080")]},
+        {
+            "memoryId": MEM,
+            "namespace": NS["facts"],
+            "metadataFilters": [
+                {
+                    "left": {"metadataKey": "x-amz-agentcore-memory-updatedAt"},
+                    "operator": "AFTER",
+                    "right": {"metadataValue": {"dateTimeValue": after.replace("+00:00", "Z")}},
+                }
+            ],
+        },
+    )
+    no_sessions(agentcore)
+    assert (await run(member))["imported"] == 1
 
 
 async def test_sync_mirrors_entries_and_tombstones(table, agentcore):

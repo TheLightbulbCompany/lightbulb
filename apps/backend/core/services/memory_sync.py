@@ -140,12 +140,14 @@ def _put(owner_id: str, sk: str, **attrs) -> None:
 
 def _facts_to_import(client, owner_id: str, memory_id: str, ns: str, after: str | None) -> list[dict]:
     kwargs = {"memoryId": memory_id, "namespace": ns}
-    if after:
+    if after:  # the watermark: the sync start time, stored by utc_now_iso
+        # The system field (a bare ``updatedAt`` is not indexed: ValidationException), ISO-8601 UTC.
+        at = datetime.fromisoformat(after).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         kwargs["metadataFilters"] = [
             {
-                "left": {"metadataKey": "updatedAt"},
+                "left": {"metadataKey": "x-amz-agentcore-memory-updatedAt"},
                 "operator": "AFTER",
-                "right": {"metadataValue": {"stringValue": after}},
+                "right": {"metadataValue": {"dateTimeValue": at}},
             }
         ]
     out = []

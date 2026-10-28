@@ -253,6 +253,7 @@ async def serve(websocket) -> None:
         await _close(websocket, CLOSE_NOT_SIGNED_IN)
         return
     user_id = claims["sub"]
+    await network_login.register_key(user_id, key)
     connections = _connections()
     online = await connections.routes_for_user(user_id)
     if len(online) >= MAX_LINKS_PER_USER and all(r["key"] != key for r in online):

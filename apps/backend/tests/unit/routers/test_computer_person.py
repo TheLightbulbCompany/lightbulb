@@ -121,6 +121,21 @@ def test_the_login_workspace_picks_among_several_and_membership_is_rechecked(env
     assert response.status_code == 403
 
 
+def test_computer_identity_is_free_when_in_no_workspace(env, monkeypatch):
+    from routers import sessions
+
+    client, computer, proof, orgs = env
+    orgs.return_value = []
+    app = FastAPI()
+    app.include_router(sessions.router, prefix="/api/v1/sessions")
+    with TestClient(app) as c:
+        listed = AsyncMock(return_value=[])
+        monkeypatch.setattr(sessions.session_store, "list_sessions", listed)
+        response = c.get("/api/v1/sessions", headers=signed(computer, proof, "GET", "/sessions", sign_path="/sessions"))
+    assert response.status_code == 200, response.text
+    assert listed.await_args.kwargs["user_id"] == "user_ada" and listed.await_args.kwargs["workspace_id"] is None
+
+
 def test_only_listed_routes_accept_computer_person():
     def deps(dependant):
         for dep in dependant.dependencies:
@@ -144,6 +159,14 @@ def test_only_listed_routes_accept_computer_person():
         ("POST", "/messaging/rooms"),
         ("POST", "/messaging/rooms/{room_id}/messages"),
     ]
+    # The sessions routes take a computer's identity too, free (no workspace) or in one.
+    from routers import sessions
+
+    assert sorted(
+        (sorted(route.methods)[0], route.path)
+        for route in sessions.router.routes
+        if sessions.caller in set(deps(route.dependant))
+    ) == [("DELETE", "/{session_id}"), ("GET", ""), ("POST", ""), ("POST", "/{session_id}/share")]
 
 
 def test_room_post_from_a_computer_carries_the_session_label(env, monkeypatch):

@@ -64,6 +64,8 @@ EXPECTED_ORDER = [
     "usage_counters",
     "messaging",
     "search",
+    # The person's own memory data: uploaded sessions, drafts, episodes, computer keys.
+    "person_memory",
     "paperclip_row",
     "billing_row",
     "user_row",
@@ -216,6 +218,7 @@ def wipe_mocks():
     messaging_delete_room = AsyncMock(return_value=2)
     messaging_delete_owner = AsyncMock(return_value=3)
     search_delete = AsyncMock(return_value="dropped")
+    person_memory_delete = AsyncMock(return_value=None)
     clerk_delete = AsyncMock(return_value=None)
     agent_keys_list = AsyncMock(return_value=["lightbulb/dev/paperclip-agent-keys/user_abc123/agent-1"])
     agent_keys_delete = AsyncMock(return_value=1)
@@ -278,6 +281,7 @@ def wipe_mocks():
         ("core.services.account_wipe.messaging_repo.delete_room_partition", messaging_delete_room),
         ("core.services.account_wipe.messaging_repo.delete_owner_partition", messaging_delete_owner),
         ("core.services.account_wipe.message_search.delete_owner_index", search_delete),
+        ("core.services.workspace_memory.delete_person_memory", person_memory_delete),
         ("core.services.account_wipe.clerk_admin.delete_user", clerk_delete),
         ("core.services.account_wipe.list_owner_agent_key_secret_names", agent_keys_list),
         ("core.services.account_wipe.delete_owner_agent_key_secrets", agent_keys_delete),
@@ -335,6 +339,7 @@ def wipe_mocks():
             messaging_delete_room=messaging_delete_room,
             messaging_delete_owner=messaging_delete_owner,
             search_delete=search_delete,
+            person_memory_delete=person_memory_delete,
             clerk_delete=clerk_delete,
             agent_keys_list=agent_keys_list,
             agent_keys_delete=agent_keys_delete,
@@ -403,6 +408,19 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     wipe_mocks.agent_keys_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.oauth_revoke.assert_awaited_once_with(user_id=OWNER_ID)
+
+
+@pytest.mark.asyncio
+async def test_person_memory_is_its_own_step_and_fails_alone(wipe_mocks):
+    """The person's sessions, drafts, episodes and computer keys go with the account."""
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    step = next(step for step in report.steps if step.system == "person_memory")
+    assert (step.action, step.status) == ("delete_person_memory", "ok")
+    wipe_mocks.person_memory_delete.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.person_memory_delete.side_effect = RuntimeError("memory down")
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    assert next(s for s in report.steps if s.system == "person_memory").status == "failed"
+    assert next(s for s in report.steps if s.system == "search").status == "ok"
 
 
 @pytest.mark.asyncio
@@ -741,6 +759,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.slug_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.messaging_list_rooms.side_effect = RuntimeError("ddb down")
     wipe_mocks.search_delete.side_effect = RuntimeError("search down")
+    wipe_mocks.person_memory_delete.side_effect = RuntimeError("memory down")
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 

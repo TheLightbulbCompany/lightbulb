@@ -45,7 +45,18 @@ async def test_lists_private_and_team_newest_first_and_drops_prefix_neighbours(f
     fake.list_memory_records.side_effect = lambda **kw: {"memoryRecordSummaries": by_ns[kw["namespace"]]}
     out = await wm.list_memories("org_a", "user_me")
     assert [m["id"] for m in out["private"]] == ["mem-p2", "mem-p1"]
-    assert out["team"] == [{"id": "mem-t1", "text": "team", "createdAt": T0.isoformat(), "confirmed": True}]
+    (team,) = out["team"]
+    assert team | {"source": None} == {
+        "id": "mem-t1",
+        "text": "team",
+        "createdAt": T0.isoformat(),
+        "confirmed": True,
+        "status": "current",
+        "history": [],
+        "speaker": "",
+        "source": None,
+    }
+    assert team["source"]["sourceId"] == "mem-t1"
     assert out["private"][0]["confirmed"] is False
     assert out["truncated"] is False
     assert {c.kwargs["namespace"] for c in fake.list_memory_records.call_args_list} == {PRIV, TEAM}

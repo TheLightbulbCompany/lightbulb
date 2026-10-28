@@ -5,15 +5,24 @@ one fact. Owner and user ids come from auth only. Any member may delete a team f
 the same rule as editing an agent's USER.md). See core.services.workspace_memory.
 """
 
+import logging
 import re
 from collections.abc import Awaitable, Callable
+from datetime import datetime
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.services import workspace_memory
+from core.services import container_auth, evaluator, memory_api, memory_sync, session_store, workspace_memory
+from routers.sessions import caller
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+# The Hermes plugin's channel, mounted at /api/v1/internal/memory and guarded by the owner's hook token.
+internal_router = APIRouter()
 
 _RECORD_ID = re.compile(r"mem-[A-Za-z0-9_-]{36,46}")  # botocore: mem-[a-zA-Z0-9-_]*, 40-50 chars
 
@@ -42,7 +51,17 @@ async def list_memory(auth: AuthContext = Depends(get_current_user)) -> dict:
 
 @router.delete("/{record_id}", status_code=204)
 async def delete_memory(record_id: str, auth: AuthContext = Depends(get_current_user)) -> Response:
+    owner_id = resolve_owner_id(auth)
+    # The entries mirror and the log entry are found through the facts record's link row.
+    entry = await memory_sync.entry_for(owner_id, record_id) if _RECORD_ID.fullmatch(record_id) else None
+    if entry:  # first, so a failed record delete leaves a retry that still finds the link
+        await _guard(memory_api.forget(owner_id, entry))
     await _act(workspace_memory.delete_memory, auth, record_id)
+    if entry:
+        try:
+            await memory_sync.drop_mirror(owner_id, entry)
+        except Exception as exc:  # noqa: BLE001 -- the forget's tombstone removes the mirror on the next sync
+            logger.warning("memory mirror cleanup failed owner=%s error=%s", owner_id, type(exc).__name__)
     return Response(status_code=204)
 
 
@@ -63,3 +82,117 @@ async def share_memory(record_id: str, auth: AuthContext = Depends(get_current_u
 async def confirm_memory(record_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     """Phase 4: a person vouches for a team fact (any member: D2)."""
     return await _vouch(workspace_memory.confirm_memory, auth, record_id)
+
+
+async def _guard(call: Awaitable):
+    try:
+        return await call
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except RuntimeError:
+        raise HTTPException(status_code=502, detail="memory service failed; try again") from None
+
+
+class RecallBody(BaseModel):
+    question: str
+    as_of: datetime | None = None
+    budget_tokens: int = Field(default=8000, ge=1, le=50_000)
+    limit: int = Field(default=100, ge=1, le=200)
+
+
+class RememberBody(BaseModel):
+    subject: str = Field(min_length=1, max_length=500)
+    fact: str = Field(min_length=1, max_length=16_000)
+    kind: Literal["fact", "decision", "lesson", "preference"]
+    scope: Literal["me", "team"] = "me"
+    replaces: list[str] | None = Field(default=None, max_length=50)
+
+
+class InternalRecallBody(RecallBody):
+    # The person in a 1:1 DM (the plugin's ``_member``): adds their private scope, as before the log.
+    member: str | None = Field(default=None, max_length=200)
+
+
+class InternalRememberBody(RememberBody):
+    on_behalf_of: str | None = Field(default=None, max_length=200)
+
+
+@router.post("/recall")
+async def recall(body: RecallBody, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """The evidence page for a question, with the caller's own private scope included."""
+    owner_id = resolve_owner_id(auth)
+    return await _guard(memory_api.recall_page(owner_id, auth.user_id, **body.model_dump()))
+
+
+@router.post("/remember")
+async def remember(body: RememberBody, auth: AuthContext = Depends(get_current_user)) -> dict:
+    owner_id = resolve_owner_id(auth)
+    return await _guard(memory_api.remember(owner_id, **body.model_dump(), on_behalf_of=auth.user_id))
+
+
+class ApproveBody(BaseModel):
+    scope: Literal["me", "team"] | None = None  # default: team in a workspace, me for a solo person
+
+
+async def _draft(draft_id: str, auth: AuthContext) -> dict:
+    """The caller's still-proposed draft; anyone else's (or a settled one) is 404, never 403."""
+    d = await evaluator.find_draft(draft_id, user_id=auth.user_id, workspace_id=auth.org_id)
+    if not d or d.get("status") != "proposed":
+        raise HTTPException(status_code=404, detail="draft not found")
+    return d
+
+
+@router.get("/drafts")
+async def list_drafts(auth: AuthContext = Depends(caller)) -> dict:
+    return {"drafts": await evaluator.list_drafts(user_id=auth.user_id, workspace_id=auth.org_id)}
+
+
+@router.post("/drafts/{draft_id}/approve")
+async def approve_draft(draft_id: str, body: ApproveBody | None = None, auth: AuthContext = Depends(caller)) -> dict:
+    d = await _draft(draft_id, auth)
+    if d["kind"] != "lesson":  # a finding may hold a secret: it can only be dismissed
+        raise HTTPException(status_code=422, detail="Only lessons can be approved.")
+    scope = (body and body.scope) or ("team" if auth.org_id else "me")
+    # Subject: the repo of the first evidence session, else its harness, else the draft kind.
+    first = (d.get("evidence") or [None])[0]
+    sess = await session_store.get_session(first, user_id=d["user_id"], workspace_id=None) if first else None
+    subject = (sess or {}).get("repo") or (sess or {}).get("harness") or d["kind"]
+    if not await evaluator.set_draft_status(d, "approved"):  # first, so a retry or double-click writes once
+        raise HTTPException(status_code=409, detail="draft already settled")
+    if auth.org_id:
+        try:
+            out = await _guard(
+                memory_api.remember(
+                    auth.org_id, subject=subject, fact=d["text"], kind="lesson", scope=scope, on_behalf_of=auth.user_id
+                )
+            )
+        except BaseException:  # BaseException: the revert must also run when the request is cancelled
+            await evaluator.set_draft_status(d, "proposed", frm="approved")
+            raise
+        return {"queued": out["queued"]}
+    return {"subject": subject, "fact": d["text"], "kind": "lesson", "scope": scope}
+
+
+@router.post("/drafts/{draft_id}/dismiss", status_code=204)
+async def dismiss_draft(draft_id: str, auth: AuthContext = Depends(caller)) -> Response:
+    if not await evaluator.set_draft_status(await _draft(draft_id, auth), "dismissed"):
+        raise HTTPException(status_code=409, detail="draft already settled")
+    return Response(status_code=204)
+
+
+@internal_router.post("/recall/{owner_id}")
+async def internal_recall(owner_id: str, body: InternalRecallBody, request: Request) -> dict:
+    """Recall for the workspace's agents: the team scope, plus the private scope of ``member`` (sent
+    only from a 1:1 DM with that person). No question expansion: the plugin waits seconds, not a model call."""
+    await container_auth._require_hook_token(owner_id, request)
+    fields = body.model_dump()
+    member = fields.pop("member")
+    if member is not None and not workspace_memory._MEMBER_ID.fullmatch(member):
+        raise HTTPException(status_code=422, detail="member must be a user id")
+    return await _guard(memory_api.recall_page(owner_id, member, **fields, use_expand=False))
+
+
+@internal_router.post("/remember/{owner_id}")
+async def internal_remember(owner_id: str, body: InternalRememberBody, request: Request) -> dict:
+    await container_auth._require_hook_token(owner_id, request)
+    return await _guard(memory_api.remember(owner_id, **body.model_dump()))

@@ -660,9 +660,11 @@ def test_workspace_registry_covers_user_path_systems():
     """The shared registry covers every system the user-keyed path emits
     (plus clerk_org, which only a workspace wipe has) — the two paths cannot
     silently diverge. ``paperclip_membership`` is the user path's alternative
-    to deleting the company, which the workspace wipe does outright."""
+    to deleting the company, which the workspace wipe does outright. ``person_memory`` is a
+    person's own data (theirs in every workspace); a workspace's sessions and drafts go with its
+    runtime teardown (workspace_memory.delete_owner_memory)."""
     registry_systems = {system for system, _ in WORKSPACE_STEP_ORDER}
-    assert set(EXPECTED_ORDER) - {"paperclip_membership"} <= registry_systems
+    assert set(EXPECTED_ORDER) - {"paperclip_membership", "person_memory"} <= registry_systems
     assert "clerk_org" in registry_systems
 
 

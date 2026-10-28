@@ -92,10 +92,12 @@ async def test_every_tool_declares_openais_three_hints():
         "read_messages",
         "find_tasks",
         "read_task",
+        "recall",
     }
     assert hints == {
         **{name: (True, False, False) for name in reads},
         "send_message": (False, False, True),  # deletes and overwrites nothing (owner, 10-27)
         "update_task": (False, False, False),
+        "remember": (False, False, False),
         "wake_me": (False, False, True),
     }

@@ -89,6 +89,8 @@ class MemberUsage(BaseModel):
     total_input_tokens: int
     total_output_tokens: int
     request_count: int
+    capture_prompt_tokens: int = 0
+    capture_completion_tokens: int = 0
 
 
 class UsageSummary(BaseModel):

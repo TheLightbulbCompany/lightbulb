@@ -254,6 +254,8 @@ async def get_usage(
                 total_input_tokens=m["total_input_tokens"],
                 total_output_tokens=m["total_output_tokens"],
                 request_count=m["request_count"],
+                capture_prompt_tokens=m["capture_prompt_tokens"],
+                capture_completion_tokens=m["capture_completion_tokens"],
             )
 
         by_member = await asyncio.gather(*[_enrich(m) for m in members_raw])

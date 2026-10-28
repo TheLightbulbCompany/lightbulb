@@ -16,7 +16,8 @@ RID = "mem-" + "a1" * 20
 
 
 @pytest.fixture
-def member():
+def member(monkeypatch):
+    monkeypatch.setattr(mod.memory_sync, "entry_for", AsyncMock(return_value=None))
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
         user_id="user_me", org_id="org_a", org_role="org:member"
     )

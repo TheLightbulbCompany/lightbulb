@@ -39,6 +39,7 @@ from botocore.exceptions import ClientError, ParamValidationError
 
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.services import memory_stages
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,17 @@ def owner_namespace(owner_id: str) -> str:
     if not owner_id or "/" in owner_id or ".." in owner_id or ":" in owner_id:
         raise ValueError(f"refusing unsafe owner id for a memory namespace: {owner_id!r}")
     return f"/owners/{owner_id}/"
+
+
+def namespaces_for(owner_id: str, user_id: str | None) -> dict[str, str]:
+    """The namespaces recall reads for ``owner_id``; ``private`` only when ``user_id`` is given."""
+    # turns and entries are siblings of the facts namespace, never children: a prefix read of
+    # /owners/<o>/ must not pull them in.
+    team = owner_namespace(owner_id)
+    out = {"facts": team, "turns": f"/turns/{owner_id}/", "entries": f"/entries/{owner_id}/"}
+    if user_id:
+        out["private"] = f"/owners/{owner_id}:{user_id}/"
+    return out
 
 
 def _client():
@@ -192,19 +204,54 @@ async def _wipe(
     task.add_done_callback(_tails.discard)
 
 
+async def _run_all(label: str, steps: list[Callable[[], Awaitable]]) -> None:
+    """Every step runs; one failure must not leave the rest of the data behind. Raises after."""
+    errors = []
+    for step in steps:
+        try:
+            await step()
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+    if errors:
+        raise RuntimeError(f"{label} failed: {', '.join(type(e).__name__ for e in errors)}") from errors[0]
+
+
 async def delete_owner_memory(owner_id: str, *, resweep_after_s: float = RESWEEP_AFTER_S) -> None:
     """Delete this owner's long-term records -- team AND every member's private scope -- now
     (raising if any fail), then start the background tail: their events, and one late re-sweep
-    of records. No-op when the env has no memory."""
-    team = owner_namespace(owner_id)
-    memory_id = settings.AGENTCORE_MEMORY_ID
-    if not memory_id:
-        return
-    client = _client()
-    members = await run_in_thread(_member_actors, client, owner_id, memory_id)
-    scanned = await run_in_thread(_member_namespaces, client, owner_id, memory_id)
-    namespaces = list(dict.fromkeys([team, *scanned, *(f"/owners/{a}/" for a in members)]))
-    await _wipe(client, f"owner={owner_id}", memory_id, namespaces, [owner_id, *members], resweep_after_s)
+    of records. Also every session and draft members uploaded or collected in the workspace,
+    directly from the workspace's rows (no per-member webhook is relied on). The records are a
+    no-op when the env has no memory."""
+    owned = namespaces_for(owner_id, None)  # facts, turns, entries
+    from core.services import evaluator, session_store  # lazy: import cycles
+
+    async def records() -> None:
+        memory_id = settings.AGENTCORE_MEMORY_ID
+        if not memory_id:
+            return
+        client = _client()
+        members = await run_in_thread(_member_actors, client, owner_id, memory_id)
+        scanned = await run_in_thread(_member_namespaces, client, owner_id, memory_id)
+        namespaces = list(dict.fromkeys([*owned.values(), *scanned, *(f"/owners/{a}/" for a in members)]))
+        await _wipe(client, f"owner={owner_id}", memory_id, namespaces, [owner_id, *members], resweep_after_s)
+
+    await _run_all(
+        f"owner wipe for {owner_id}",
+        [
+            lambda: evaluator.delete_workspace_drafts(owner_id),  # first: it finds people by their session rows
+            lambda: session_store.delete_workspace_sessions(owner_id),
+            records,
+        ],
+    )
+
+
+async def _forget_authored(owner_id: str, user_id: str, memory_api, network_login) -> None:
+    """Tombstone, in the network log, every entry written from this person's signed-in computers,
+    and every entry the workspace wrote on their behalf (their own notes from DMs, hosted tools,
+    the member route). The key registry stays: it is the person's, for their other workspaces."""
+    for key in await network_login.computer_keys(user_id):
+        await memory_api.forget_author(owner_id, key)
+    await memory_api.forward_on_behalf_of(owner_id, user_id)  # never raises: a parked member is owed it
 
 
 async def delete_member_memory(
@@ -215,15 +262,50 @@ async def delete_member_memory(
     still_gone: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
     """A member left the workspace: delete their private scope at once (no grace period), the
-    same way as the owner wipe. Team memory is the workspace's and stays. No-op for an id that
-    can never have a private scope, and when the env has no memory. The tail (events, late
-    re-sweep) runs only while ``still_gone`` says so: a re-add must keep its new memories."""
+    same way as the owner wipe, and what they uploaded or were drafted in THIS workspace. Team
+    memory is the workspace's and stays; so do their episodes and computer keys, which are theirs,
+    not this workspace's (``delete_person_memory`` takes those with the account). No-op for an id
+    that can never have a private scope. The tail (events, late re-sweep) runs only while
+    ``still_gone`` says so: a re-add must keep its new memories."""
     owner_namespace(owner_id)
-    memory_id = settings.AGENTCORE_MEMORY_ID
-    if not memory_id or not _MEMBER_ID.fullmatch(user_id or ""):
+    if not _MEMBER_ID.fullmatch(user_id or ""):
         return
+    from core.services import evaluator, memory_api, network_login, session_store  # lazy: import cycles
+
+    memory_id = settings.AGENTCORE_MEMORY_ID
     actor = f"{owner_id}:{user_id}"
-    await _wipe(_client(), f"actor={actor}", memory_id, [f"/owners/{actor}/"], [actor], resweep_after_s, still_gone)
+    steps = [
+        lambda: session_store.delete_sessions(user_id, workspace_id=owner_id),
+        lambda: evaluator.delete_drafts(user_id, workspace_id=owner_id),
+        lambda: _forget_authored(owner_id, user_id, memory_api, network_login),
+    ]
+    if memory_id:
+        steps.insert(
+            0,
+            lambda: _wipe(
+                _client(), f"actor={actor}", memory_id, [f"/owners/{actor}/"], [actor], resweep_after_s, still_gone
+            ),
+        )
+    await _run_all(f"member wipe for {actor}", steps)
+
+
+async def delete_person_memory(user_id: str, *, resweep_after_s: float = RESWEEP_AFTER_S) -> None:
+    """The account is deleted: everything of the person's own, in no workspace's keeping -- every
+    session they uploaded, every draft and evaluator row, their episodes and reflections, and the
+    registry of their computers' keys."""
+    if not user_id:
+        return
+    from core.services import evaluator, network_login, session_store  # lazy: import cycles
+
+    await _run_all(
+        f"person wipe for {user_id}",
+        [
+            lambda: session_store.delete_sessions(user_id),
+            lambda: evaluator.delete_drafts(user_id),
+            lambda: evaluator.delete_episodes(user_id, resweep_after_s=resweep_after_s),
+            lambda: network_login.forget_keys(user_id),
+        ],
+    )
 
 
 # ponytail: per-scope cap, newest-first after the cap; add a cursor when a workspace hits it.
@@ -246,11 +328,17 @@ def _scopes(owner_id: str, user_id: str) -> tuple[str, str]:
 def _view(r: dict) -> dict:
     text = (r.get("content") or {}).get("text", "")
     confirmed = text.startswith(CONFIRMED_PREFIX)
+    # status, history and speaker are the recall page's, parsed by memory_stages.
+    shown = memory_stages._result(memory_stages.from_record(r, "claim"))
     return {
         "id": r["memoryRecordId"],
         "text": text.removeprefix(CONFIRMED_PREFIX),
         "createdAt": r["createdAt"].isoformat(),
         "confirmed": confirmed,
+        "status": shown["status"],
+        "history": shown["history"],
+        "speaker": shown["sources"][0]["speaker"],
+        "source": {k: shown["sources"][0][k] for k in ("sourceId", "occurredAt")},
     }
 
 

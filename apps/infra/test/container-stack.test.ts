@@ -45,6 +45,98 @@ describe("ContainerStack — dev", () => {
     template = buildStack("dev");
   });
 
+  const memoryNamed = (suffix: string) =>
+    (Object.values(template.findResources("AWS::BedrockAgentCore::Memory")) as any[]).find((m) =>
+      m.Properties.Name.endsWith(suffix),
+    );
+
+  test("workspace memory declares the six indexed keys", () => {
+    const memory = memoryNamed("_workspace_memory");
+    expect(memory.Properties.IndexedKeys).toEqual([
+      { Key: "kind", Type: "STRING" },
+      { Key: "entity", Type: "STRING" },
+      { Key: "attribute", Type: "STRING" },
+      { Key: "status", Type: "STRING" },
+      { Key: "validFrom", Type: "NUMBER" },
+      { Key: "validTo", Type: "NUMBER" },
+    ]);
+    const custom = memory.Properties.MemoryStrategies.find((s: any) => s.CustomMemoryStrategy)
+      .CustomMemoryStrategy;
+    expect(custom.Name).toBe("workspace_facts");
+    expect(custom.Namespaces).toEqual(["/owners/{actorId}/"]);
+    const schema = Object.fromEntries(
+      custom.MemoryRecordSchema.MetadataSchema.map((m: any) => [m.Key, m]),
+    );
+    expect(Object.keys(schema).sort()).toEqual(
+      ["attribute", "entity", "kind", "status", "validFrom", "validTo"].sort(),
+    );
+    const llm = (k: string) => schema[k].ExtractionConfig.LlmExtractionConfig;
+    expect(llm("kind").Validation.StringValidation.AllowedValues).toEqual([
+      "claim", "observation", "rule", "mention", "anchor",
+    ]);
+    expect(llm("status").Validation.StringValidation.AllowedValues).toEqual(["current", "contested"]);
+    expect(llm("status").LlmExtractionInstruction).toBe("LATEST_VALUE");
+    for (const k of ["status", "validFrom", "validTo"]) {
+      expect(llm(k).Definition).toMatch(/record text/i);
+    }
+    // Every record carries a validFrom, so an as-of filter (validFrom <= as_of) keeps undated claims.
+    expect(llm("validFrom").Definition).toMatch(/when no date is stated, the date of the conversation it came from/);
+    // Both overrides carry our prompt files after AWS's defaults.
+    const sem = custom.Configuration.SemanticOverride;
+    expect(sem.Extraction.AppendToPrompt).toContain("<entity> <attribute>: <value>");
+    expect(sem.Consolidation.AppendToPrompt).toContain("Contested:");
+    expect(sem.Extraction.ModelId).toMatch(/haiku/);
+  });
+
+  test("memory execution role is trusted by agentcore and can invoke the extract model", () => {
+    const memory = memoryNamed("_workspace_memory");
+    const roleId = memory.Properties.MemoryExecutionRoleArn["Fn::GetAtt"][0];
+    const roles = template.findResources("AWS::IAM::Role");
+    const role = roles[roleId] as any;
+    const trust = role.Properties.AssumeRolePolicyDocument.Statement[0];
+    expect(trust.Principal.Service).toBe("bedrock-agentcore.amazonaws.com");
+    expect(JSON.stringify(trust.Condition)).toContain("memory/*");
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      Roles: [{ Ref: roleId }],
+      PolicyDocument: {
+        Statement: [
+          Match.objectLike({
+            Action: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+            Resource: Match.arrayWith([
+              Match.stringLikeRegexp("inference-profile/us\\.anthropic\\.claude-haiku"),
+              "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+            ]),
+          }),
+        ],
+      },
+    });
+  });
+
+  test("episodic strategy lives alone in the sessions memory, with per-user namespaces", () => {
+    const memory = memoryNamed("_sessions_memory");
+    expect(memory.Properties.Name).toBe("lightbulb_dev_sessions_memory");
+    expect(memory.Properties.MemoryStrategies).toHaveLength(1);
+    const workspace = memoryNamed("_workspace_memory");
+    expect(workspace.Properties.MemoryStrategies.some((s: any) => s.EpisodicMemoryStrategy)).toBe(false);
+    const episodic = memory.Properties.MemoryStrategies.find((s: any) => s.EpisodicMemoryStrategy)
+      .EpisodicMemoryStrategy;
+    expect(episodic.Name).toBe("session_episodes");
+    expect(episodic.Namespaces).toEqual(["/users/{actorId}/episodes/"]);
+    expect(episodic.ReflectionConfiguration.Namespaces).toEqual(["/users/{actorId}/"]);
+  });
+
+  test("sessions prefixes expire after 30 and 365 days", () => {
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: "lightbulb-dev-openclaw-replicas",
+      LifecycleConfiguration: {
+        Rules: Match.arrayWith([
+          Match.objectLike({ Prefix: "sessions/free/", ExpirationInDays: 30, Status: "Enabled" }),
+          Match.objectLike({ Prefix: "sessions/workspace/", ExpirationInDays: 365, Status: "Enabled" }),
+        ]),
+      },
+    });
+  });
+
   test("owns the platform ECS cluster the backend runs on", () => {
     template.hasResourceProperties("AWS::ECS::Cluster", {
       ClusterName: "lightbulb-dev-container",
@@ -416,6 +508,8 @@ describe("ContainerStack — CFN exports", () => {
       "lightbulb-dev-container:ExportsOutputFnGetAttClusterEB0386A7Arn2F2E3C3F",
       "lightbulb-dev-container:ExportsOutputFnGetAttContainerSecurityGroup38DC7A88GroupId12565082",
       "lightbulb-dev-container:ExportsOutputFnGetAttNamespaceV2A3FDDFD9Id65EAD270",
+      // The sessions memory (the evaluator's): -service names it in the backend env and grant.
+      "lightbulb-dev-container:ExportsOutputFnGetAttSessionsMemoryMemoryIdDC40DD83",
       // The workspace browser (VPC mode): -service names it in the backend env and the grants.
       "lightbulb-dev-container:ExportsOutputFnGetAttWorkspaceBrowserBrowserId09016DCA",
       // Workspace memory (Track G): -service stamps the id into the backend env and derives the

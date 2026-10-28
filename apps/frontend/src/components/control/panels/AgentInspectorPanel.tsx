@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, ScrollText, Wrench, CalendarClock, LayoutDashboard, History, Brain } from "lucide-react";
+import { Bot, ScrollText, Wrench, CalendarClock, LayoutDashboard, History, Brain, Laptop } from "lucide-react";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentInstructionsTab } from "./AgentInstructionsTab";
 import { AgentMemoryTab } from "./AgentMemoryTab";
+import { SessionsTimeline } from "./SessionsTimeline";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentHeartbeatSection } from "./AgentHeartbeatSection";
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
@@ -17,7 +18,7 @@ import { cn } from "@/lib/utils";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import type { AgentEntry } from "./agents-types";
 
-type InspectorTab = "overview" | "dashboard" | "runs" | "instructions" | "memory" | "tools" | "schedule";
+type InspectorTab = "overview" | "dashboard" | "runs" | "instructions" | "memory" | "sessions" | "tools" | "schedule";
 
 // Module-level tab metadata (no inline component literals).
 const TABS: { id: InspectorTab; icon: typeof Bot; label: string }[] = [
@@ -27,6 +28,7 @@ const TABS: { id: InspectorTab; icon: typeof Bot; label: string }[] = [
   { id: "runs", icon: History, label: "Runs" },
   { id: "instructions", icon: ScrollText, label: "Instructions" },
   { id: "memory", icon: Brain, label: "Memory" },
+  { id: "sessions", icon: Laptop, label: "Sessions" },
   { id: "tools", icon: Wrench, label: "Tools" },
   { id: "schedule", icon: CalendarClock, label: "Schedule" },
 ];
@@ -218,6 +220,7 @@ export function AgentInspectorPanel({
           <AgentInstructionsTab agentId={inspectedAgentId} />
         ) : null}
         {activeTab === "memory" ? <AgentMemoryTab /> : null}
+        {activeTab === "sessions" ? <SessionsTimeline /> : null}
         {activeTab === "tools" ? <AgentToolsTab agentId={inspectedAgentId} /> : null}
         {activeTab === "schedule" ? (
           // RoutinesPanel needs no TeamsEventsProvider/CommandPaletteProvider:

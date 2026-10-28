@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import * as bedrockagentcore from "aws-cdk-lib/aws-bedrockagentcore";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
@@ -17,6 +19,13 @@ export const DEV_SPOT: ecs.CapacityProviderStrategy[] = [
   { capacityProvider: "FARGATE_SPOT", weight: 1 },
   { capacityProvider: "FARGATE", weight: 0 },
 ];
+
+/** Haiku-class: extraction and merge run on every event batch, so the cheap model. */
+const MEMORY_EXTRACT_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+// Ours, appended to AWS's default instructions (appendToPrompt), read at synth time.
+const promptText = (name: string) => fs.readFileSync(path.join(__dirname, "../../prompts", name), "utf8");
+const EXTRACTION_PROMPT = promptText("memory-extraction.md");
+const CONSOLIDATION_PROMPT = promptText("memory-consolidation.md");
 
 /**
  * What the name no longer means: nothing per-user runs on ECS. Every workspace
@@ -62,6 +71,7 @@ export class ContainerStack extends cdk.Stack {
   public readonly ownerBedrockBasePolicy: iam.ManagedPolicy;
   public readonly ownerBedrockBoundary: iam.ManagedPolicy;
   public readonly workspaceMemory: bedrockagentcore.CfnMemory;
+  public readonly sessionsMemory: bedrockagentcore.CfnMemory;
   public readonly workspaceBrowser: bedrockagentcore.CfnBrowserCustom;
 
   constructor(scope: Construct, id: string, props: ContainerStackProps) {
@@ -226,27 +236,159 @@ export class ContainerStack extends cdk.Stack {
     // Workspace memory: ONE resource per env, shared by every tenant. Isolation is IAM, proven in
     // the 2026-09-22 dev spike: the per-owner `owner-memory` inline policy
     // (bedrock_aip.ensure_owner_memory_policy) scopes events by `actorId` = owner and records by
-    // the exact `namespace` /owners/<owner>/ that this strategy extracts into. Semantic only.
+    // the exact `namespace` /owners/<owner>/ that this strategy extracts into. Semantic (workspace_facts) plus episodic (session_episodes, per user).
     // Encryption: AWS-owned key, DELIBERATELY (Track G, 2026-09-22). A CMK needs a key-policy grant
     // to the service plus kms grants on every owner role. EncryptionKeyArn (like Name) is
     // create-only: changing it later REPLACES this resource, and with a fixed Name the prod
     // replacement fails on the name clash -- a CMK later means a new name and a data migration.
+    // The override names a Bedrock model, so the memory service calls it in this account by assuming
+    // this role (required alongside any modelId). The SourceArn is the memory ARN family, not this
+    // memory's own ARN: the memory references the role, so naming it would be a circular dependency.
+    // A `us.` profile routes to any US region, hence the wildcard region on the foundation-model ARN.
+    const memoryExecutionRole = new iam.Role(this, "WorkspaceMemoryExecutionRole", {
+      assumedBy: new iam.ServicePrincipal("bedrock-agentcore.amazonaws.com", {
+        conditions: {
+          StringEquals: { "aws:SourceAccount": this.account },
+          ArnLike: { "aws:SourceArn": `arn:aws:bedrock-agentcore:${this.region}:${this.account}:memory/*` },
+        },
+      }),
+      description: "AgentCore workspace memory: invokes the extraction/merge model.",
+    });
+    memoryExecutionRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        resources: [
+          `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${MEMORY_EXTRACT_MODEL}`,
+          `arn:aws:bedrock:*::foundation-model/${MEMORY_EXTRACT_MODEL.replace(/^us\./, "")}`,
+        ],
+      }),
+    );
+
     this.workspaceMemory = new bedrockagentcore.CfnMemory(this, "WorkspaceMemory", {
       name: `lightbulb_${props.environment}_workspace_memory`,
       description: "Long-term memory shared by the agents of each workspace (namespace per owner).",
       // The shortest AWS allows: events are only extraction input (records are the memory), and the
       // wipe deletes them in a best-effort background tail, so expiry bounds any residue.
       eventExpiryDuration: 7,
+      memoryExecutionRoleArn: memoryExecutionRole.roleArn,
+      // The slots recall filters on and the merge writes. Max 10 and never removable, so only the
+      // six the facts model needs. Time is epoch seconds (NUMBER) so a range filter works.
+      indexedKeys: [
+        { key: "kind", type: "STRING" },
+        { key: "entity", type: "STRING" },
+        { key: "attribute", type: "STRING" },
+        { key: "status", type: "STRING" },
+        { key: "validFrom", type: "NUMBER" },
+        { key: "validTo", type: "NUMBER" },
+      ],
       memoryStrategies: [
         {
-          semanticMemoryStrategy: {
+          // A custom strategy with a semantic override is the only way to add our instructions to
+          // the built-in extraction and merge; the output schema (AddMemory/UpdateMemory) stays
+          // AWS's, which is why the prompts only shape the TEXT. A merged record is re-extracted
+          // against the schema below from that text, so status and dates are read out of the
+          // fixed forms memory-consolidation.md writes.
+          customMemoryStrategy: {
             name: "workspace_facts",
             namespaces: ["/owners/{actorId}/"],
+            configuration: {
+              semanticOverride: {
+                extraction: { appendToPrompt: EXTRACTION_PROMPT, modelId: MEMORY_EXTRACT_MODEL },
+                consolidation: { appendToPrompt: CONSOLIDATION_PROMPT, modelId: MEMORY_EXTRACT_MODEL },
+              },
+            },
+            memoryRecordSchema: {
+              metadataSchema: [
+                {
+                  key: "kind",
+                  type: "STRING",
+                  extractionConfig: {
+                    llmExtractionConfig: {
+                      definition:
+                        "What the fact is: claim (a value of an entity attribute), observation (something seen or done), rule (a standing instruction), mention (a passing reference), anchor (a fixed reference point such as a deadline).",
+                      validation: { stringValidation: { allowedValues: ["claim", "observation", "rule", "mention", "anchor"] } },
+                    },
+                  },
+                },
+                {
+                  key: "entity",
+                  type: "STRING",
+                  extractionConfig: {
+                    llmExtractionConfig: {
+                      definition: "The thing the fact is about: the <entity> in '<entity> <attribute>: <value>'. Empty for rules.",
+                    },
+                  },
+                },
+                {
+                  key: "attribute",
+                  type: "STRING",
+                  extractionConfig: {
+                    llmExtractionConfig: {
+                      definition: "The property of the entity: the <attribute> in '<entity> <attribute>: <value>'. Empty for rules.",
+                    },
+                  },
+                },
+                {
+                  key: "status",
+                  type: "STRING",
+                  extractionConfig: {
+                    llmExtractionConfig: {
+                      definition:
+                        "Read from the record text's fixed form: 'contested' when the text begins with the token 'Contested:' (first token on the line), otherwise 'current'.",
+                      llmExtractionInstruction: "LATEST_VALUE",
+                      validation: { stringValidation: { allowedValues: ["current", "contested"] } },
+                    },
+                  },
+                },
+                {
+                  key: "validFrom",
+                  type: "NUMBER",
+                  extractionConfig: {
+                    llmExtractionConfig: {
+                      definition:
+                        "The date the fact became true; when no date is stated, the date of the conversation it came from. Read from the record text's fixed form when it has one: the date after '(since '; for a Contested record, the earlier of the two dates. Epoch seconds at 00:00 UTC.",
+                    },
+                  },
+                },
+                {
+                  key: "validTo",
+                  type: "NUMBER",
+                  extractionConfig: {
+                    llmExtractionConfig: {
+                      definition:
+                        "Read from the record text's fixed form: the date after 'until ' when the text itself is a value that has ended; empty for a current value (its 'until' dates describe older values). Epoch seconds at 00:00 UTC.",
+                    },
+                  },
+                },
+              ],
+            },
           },
         },
       ],
     });
     this.workspaceMemory.applyRemovalPolicy(config.removalPolicy);
+
+    // Uploaded coding sessions, in a resource of their own: AgentCore runs every strategy over every
+    // event in a resource, so sharing one would extract room and DM turns into episodes and
+    // sessions into team facts. Episodes (what happened in a session) and the reflections drawn
+    // from them. Reflection namespaces can span actors unless they are per actor, so BOTH are per
+    // user: one person's sessions never feed another's reflections. Only the backend reads or
+    // writes it (no runtime grant), and the built-in strategy names no model, so no execution role.
+    this.sessionsMemory = new bedrockagentcore.CfnMemory(this, "SessionsMemory", {
+      name: `lightbulb_${props.environment}_sessions_memory`,
+      description: "Episodes and reflections from coding sessions people upload in full (namespace per user).",
+      eventExpiryDuration: 7,
+      memoryStrategies: [
+        {
+          episodicMemoryStrategy: {
+            name: "session_episodes",
+            namespaces: ["/users/{actorId}/episodes/"],
+            reflectionConfiguration: { namespaces: ["/users/{actorId}/"] },
+          },
+        },
+      ],
+    });
+    this.sessionsMemory.applyRemovalPolicy(config.removalPolicy);
 
     // The workspace browser. AWS's built-in `aws.browser.v1` leaves from a new AWS address every
     // session (dev 2026-10-26: three sessions, three IPs), so a site that ties a sign-in to its
@@ -487,7 +629,13 @@ export class ContainerStack extends cdk.Stack {
       removalPolicy: config.removalPolicy,
       autoDeleteObjects: props.environment !== "prod",
       metrics: [{ id: "EntireBucket" }],
-      lifecycleRules: [{ abortIncompleteMultipartUploadAfter: cdk.Duration.days(1) }],
+      lifecycleRules: [
+        { abortIncompleteMultipartUploadAfter: cdk.Duration.days(1) },
+        // Workspace session transcripts: free-plan ones are kept 30 days, workspace-plan ones a
+        // year. Prefix-scoped so the Litestream and per-owner state above is never expired.
+        { id: "SessionsFree", prefix: "sessions/free/", expiration: cdk.Duration.days(30) },
+        { id: "SessionsWorkspace", prefix: "sessions/workspace/", expiration: cdk.Duration.days(365) },
+      ],
     });
 
     // The account-scoped image repositories are IMPORTED, never created by CDK — the

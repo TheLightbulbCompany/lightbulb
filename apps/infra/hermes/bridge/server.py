@@ -525,6 +525,21 @@ RPC_METHODS.update({"network.join": _network_join, "network.sessions": _network_
                     "network.wake": _network_wake})
 
 
+# The backend's memory sync, remember and wipes (core/services/memory_*.py) onto the cloud member:
+# each one is the engine op of the same name, its params passed through unchanged (they carry fact
+# text: like every params here, never logged).
+_MEMORY_OPS = ("memory.import", "memory.list", "memory.remember", "memory.forget", "memory.forget_author")
+
+
+def _memory_op(method: str):
+    # The backend's own timeout (memory.import asks 60 s), not the 10 s engine default.
+    return lambda params, timeout_ms=RPC_DEFAULT_TIMEOUT_MS, **_kwargs: _net(
+        method, "", run=lambda: network.ask(method, params, timeout_ms / 1000))
+
+
+RPC_METHODS.update({m: _memory_op(m) for m in _MEMORY_OPS})
+
+
 def _rpc(body) -> tuple[int, dict]:
     if not isinstance(body, dict):
         return 400, {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "body must be an object"}}

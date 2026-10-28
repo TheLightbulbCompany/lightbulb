@@ -174,6 +174,8 @@ export interface ServiceStackProps extends cdk.StackProps {
     /** The env's shared AgentCore Memory id (ContainerStack.workspaceMemory). One export, not two:
      *  the ARN is derived here, so the container stack pins as little as possible. */
     workspaceMemoryId: string;
+    /** The env's uploaded-sessions AgentCore Memory id (ContainerStack.sessionsMemory): the evaluator's. */
+    sessionsMemoryId: string;
     /** The env's workspace browser id (ContainerStack.workspaceBrowser, VPC mode). */
     workspaceBrowserId: string;
   };
@@ -548,8 +550,7 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // Workspace memory wipe (account_wipe / DELETE /debug/user-data -> workspace_memory.
-    // delete_owner_memory). The backend never SEARCHES memory; runtimes recall under their per-owner
-    // `owner-memory` policy.
+    // delete_owner_memory). This statement is the wipe only; recall has its own below.
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreMemoryWipe",
@@ -570,12 +571,56 @@ export class ServiceStack extends cdk.Stack {
     // namespaces, reads ONE record to prove it sits in the viewer's own scope before any delete
     // or copy (BatchDelete/BatchCreate take bare ids), and writes the vouched team copy that
     // "Share with team" / "Confirm" produce. Runtimes stay denied every record write, so only this
-    // role can mark a fact confirmed. Still no RetrieveMemoryRecords: the backend never searches.
+    // role can mark a fact confirmed.
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreMemoryReview",
         actions: ["bedrock-agentcore:GetMemoryRecord", "bedrock-agentcore:BatchCreateMemoryRecords"],
         resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
+      }),
+    );
+
+    // Memory sync (memory_sync._mark_replaced): an entry the network log replaced is marked
+    // `replaced` on its mirrored record, in place.
+    agentCorePolicy.addStatements(
+      new iam.PolicyStatement({
+        sid: "AgentCoreMemorySync",
+        actions: ["bedrock-agentcore:BatchUpdateMemoryRecords"],
+        resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
+      }),
+    );
+
+    // The evaluator (core/services/evaluator.py) on the sessions memory, which only the backend
+    // touches: writes uploaded sessions as events, lists reflections into drafts, and deletes a
+    // person's episodes and events on a wipe.
+    agentCorePolicy.addStatements(
+      new iam.PolicyStatement({
+        sid: "AgentCoreSessionsMemory",
+        actions: [
+          "bedrock-agentcore:CreateEvent",
+          "bedrock-agentcore:ListMemoryRecords",
+          "bedrock-agentcore:BatchDeleteMemoryRecords",
+          "bedrock-agentcore:ListSessions",
+          "bedrock-agentcore:ListEvents",
+          "bedrock-agentcore:DeleteEvent",
+        ],
+        resources: [agentcoreArn(`memory/${props.container.sessionsMemoryId}`)],
+      }),
+    );
+
+    // Workspace recall: the backend now searches the memory (RetrieveMemoryRecords), writes room
+    // conversation in as events for extraction (CreateEvent), and reranks the hits with Cohere on
+    // Bedrock (foundation-model ARNs carry no account).
+    agentCorePolicy.addStatements(
+      new iam.PolicyStatement({
+        sid: "AgentCoreMemoryRecall",
+        actions: ["bedrock-agentcore:RetrieveMemoryRecords", "bedrock-agentcore:CreateEvent"],
+        resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
+      }),
+      new iam.PolicyStatement({
+        sid: "MemoryRerank",
+        actions: ["bedrock:Rerank", "bedrock:InvokeModel"],
+        resources: [`arn:aws:bedrock:${this.region}::foundation-model/cohere.rerank-v3-5:0`],
       }),
     );
 
@@ -1010,6 +1055,15 @@ export class ServiceStack extends cdk.Stack {
         sid: "SessionPickupRW",
         actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
         resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/session-pickup/*`],
+      }),
+    );
+    // Uploaded coding sessions (session_store.py): sessions/<free|workspace>/<user>/<id>.json, the
+    // full uploads the lifecycle rules age out. Backend-only, outside every <owner>/ prefix.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "SessionsRW",
+        actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/sessions/*`],
       }),
     );
     // Redacted copies of a shared session for a link's holder (session_links.py): an id-free
@@ -1516,6 +1570,8 @@ export class ServiceStack extends cdk.Stack {
       // Stamped into every runtime spec as AGENTCORE_MEMORY_ID; the image enables its memory
       // provider only when it is set (N-1 safe: an older image ignores it).
       AGENTCORE_MEMORY_ID: props.container.workspaceMemoryId,
+      // The evaluator's own memory (uploaded sessions); backend only, never stamped into a runtime.
+      AGENTCORE_SESSIONS_MEMORY_ID: props.container.sessionsMemoryId,
       // The browser every workspace session starts on (bedrock_aip.BROWSER_ID); unset = the
       // built-in one. Per env, and only once every runtime there runs a bridge that accepts a
       // custom browser's CDP URL (#4391): an older bridge refuses it and the browser fails.

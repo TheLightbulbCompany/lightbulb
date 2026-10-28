@@ -60,6 +60,12 @@ class TestDeleteUserData:
             yield mock
 
     @pytest.fixture(autouse=True)
+    def person_memory(self):
+        """The person's own memory data (workspace_memory.delete_person_memory), stubbed."""
+        with patch("routers.debug.workspace_memory.delete_person_memory", new_callable=AsyncMock) as mock:
+            yield mock
+
+    @pytest.fixture(autouse=True)
     def _mock_integrations_teardown(self):
         # Phase 2 added an integrations sweep (per-provider Secrets Manager
         # credentials + the secret-free status rows) to the teardown. Stub it so
@@ -103,6 +109,7 @@ class TestDeleteUserData:
         mock_paperclip_repo_cls,
         async_client,
         runtime_teardown,
+        person_memory,
     ):
         """Endpoint returns deleted summary and calls each subsystem teardown."""
         mock_container = {
@@ -133,6 +140,8 @@ class TestDeleteUserData:
         assert "pending-updates" in body["deleted"]["ddb"]
         assert "channel-links" in body["deleted"]["ddb"]
         assert "integrations" in body["deleted"]["ddb"]
+        assert "person-memory" in body["deleted"]["ddb"]
+        person_memory.assert_awaited_once_with("user_test_123")  # the caller's user id
         assert "ws-connections" in body["deleted"]["ddb"]
         # paperclip-companies (whose row now carries onboarding
         # generation/funnel/bootstrap fields) must be part of the atomic

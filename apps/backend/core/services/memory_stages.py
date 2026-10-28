@@ -16,6 +16,7 @@ _SPEAKER = re.compile(r"^([A-Z][\w'.-]*(?: [A-Z][\w'.-]*)?): (?=\S)")
 _SINCE = re.compile(r"^(?P<claim>.*?) \(since (?P<since>[^;()]*)(?P<tail>;.*)?\)$", re.S)
 _SIDE = re.compile(r"^(?P<name>[^:]+): (?P<claim>.*) \((?P<who>[^()]*?), (?P<date>[^()]*)\)$", re.S)
 _SPEAKER_KINDS = _CURRENT_KINDS | {"turn"}
+_LOG_KINDS = {"fact", "decision", "lesson", "preference"}  # the network log's kinds (memory_sync: logKind)
 _EXCERPT_CHARS = 280
 
 
@@ -64,6 +65,8 @@ def from_record(summary: dict, kind_default: str) -> Candidate:
     metadata = summary.get("metadata") or {}
     text = (summary.get("content") or {}).get("text", "")
     kind = _meta(metadata, "kind") or kind_default
+    if _meta(metadata, "logKind") or kind in _LOG_KINDS:
+        kind = "entry"  # a mirrored log entry; mirrors written before logKind carried the log kind as kind
     contested = text.startswith("Contested: ")
     speaker = ""
     if contested:

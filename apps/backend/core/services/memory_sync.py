@@ -1,20 +1,24 @@
 """Sync between AgentCore Memory and the network memory log (the workspace's cloud member).
 
-Per owner ``<o>``, three namespaces (``namespaces`` = ``{"facts", "turns", "entries"}``):
-``/owners/<o>/`` holds what AgentCore extracted, ``/owners/<o>/turns/`` mirrored raw room turns,
-``/owners/<o>/entries/`` the log's entries. Private scopes ``/owners/<o>:<user>/`` are never synced.
+Per owner ``<o>``, three sibling namespaces (``namespaces`` = ``{"facts", "turns", "entries"}``):
+``/owners/<o>/`` holds what AgentCore extracted, ``/turns/<o>/`` mirrored raw room turns,
+``/entries/<o>/`` the log's team entries. A private scope ``/owners/<o>:<user>/`` is never read
+from; the one thing written there is that person's own (``me``) log entries.
 
 1. facts -> log: a first-seen fact record becomes a ``memory.import`` remember, a mapped record
    whose text changed becomes a replace; the record <-> entry mapping advances.
-2. log -> entries: ``memory.list`` entries are mirrored so workspace recall can search them; a
-   replace marks the replaced records ``replaced``, a tombstone deletes its record (and the
-   imported facts record, so it is not re-imported).
+2. log -> entries: ``memory.list`` entries are mirrored so recall can search them (team entries
+   and the workspace's own notes to ``/entries/<o>/``, a person's own to their private scope;
+   facts imported in step 1 are not mirrored back); a replace marks the replaced records
+   ``replaced``, a tombstone deletes its record (and the imported facts record, so it is not
+   re-imported).
 3. events -> turns: conversational payloads become searchable turn records.
 
 State lives in the messaging table under the owner: ``MEMSYNC`` (watermarks), ``MEMLINK#<facts
-record>`` (entry id, text hash) and ``MEMENTRY#<entry>`` (its entries-namespace record, and the
-facts record it was imported from). AgentCore assigns record ids itself, so an entry's record id
-is kept in ``MEMENTRY``; ``requestIdentifier`` (the entry id) is what makes a retry idempotent.
+record>`` (entry id, text hash), ``MEMENTRY#<entry>`` (its mirrored record, and the facts record it
+was imported from) and ``MEMTURN#<turn>`` (a mirrored turn, until its event has expired).
+AgentCore assigns record ids itself and ``requestIdentifier`` only correlates results, so a write
+is idempotent by these rows (one already mirrored is skipped) and by ``clientToken`` per batch.
 Nothing here logs record or entry text.
 """
 
@@ -28,13 +32,19 @@ from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
 from core.services import network_member
-from core.services.workspace_memory import _client, _pages, namespaces_for
+from core.services.workspace_memory import _MEMBER_ID, _client, _pages, namespaces_for
 
 logger = logging.getLogger(__name__)
 
 _BATCH = 100  # AgentCore batch calls and memory.import
 _STATE = "MEMSYNC"
 _TS_FLOOR = "1970-01-01T00:00:00+00:00"
+_TURN_TTL_S = 8 * 86400  # past the memory's 7-day event expiry: the event can no longer be listed
+# AgentCore kind -> the log's (fact|decision|lesson|preference): a standing instruction is a
+# decision; claim, observation, anchor and mention are facts.
+_LOG_KIND = {"rule": "decision"}
+# botocore's metadata StringValue: 1-256 of these. botocore does not check the pattern, the server does.
+_STRING_VALUE = re.compile(r"[a-zA-Z0-9\s._:/=+@-]{1,256}")
 
 
 def _t():
@@ -54,6 +64,27 @@ def _dt(value: str | None) -> datetime:
 
 def _meta(rec: dict, name: str) -> str:
     return ((rec.get("metadata") or {}).get(name) or {}).get("stringValue") or ""
+
+
+def _number(rec: dict, name: str) -> int | None:
+    """A NUMBER key (validFrom, validTo: epoch seconds), or None."""
+    value = ((rec.get("metadata") or {}).get(name) or {}).get("numberValue")
+    return None if value is None else int(value)
+
+
+def _strings(**values: str) -> dict:
+    """String metadata, leaving out any value AgentCore would refuse (empty, too long, off-pattern)."""
+    return {k: {"stringValue": v} for k, v in values.items() if v and _STRING_VALUE.fullmatch(v)}
+
+
+def _token(ids) -> str:
+    """A batch's ``clientToken``: the same records, the same token."""
+    return hashlib.sha256("\n".join(sorted(ids)).encode()).hexdigest()
+
+
+def _at(seconds) -> datetime:
+    """A log entry's ``at`` (epoch seconds)."""
+    return datetime.fromtimestamp(int(seconds or 0), timezone.utc)
 
 
 def _chunks(items: list):
@@ -119,7 +150,7 @@ def _facts_to_import(client, owner_id: str, memory_id: str, ns: str, after: str 
         ]
     out = []
     for rec in _pages(client.list_memory_records, "memoryRecordSummaries", **kwargs):
-        if rec.get("namespaces") != [ns]:  # namespace is a prefix: turns/ and entries/ sit under it
+        if rec.get("namespaces") != [ns]:  # the listing matches by prefix: keep this namespace only
             continue
         link = _get(owner_id, f"MEMLINK#{rec['memoryRecordId']}")
         digest = hashlib.sha256(_text(rec).encode()).hexdigest()
@@ -135,9 +166,9 @@ def _facts_to_import(client, owner_id: str, memory_id: str, ns: str, after: str 
                 "entry": {
                     "subject": f"{entity} {attribute}".strip(),
                     "fact": value,
-                    "kind": _meta(rec, "kind") or "fact",
+                    "kind": _LOG_KIND.get(_meta(rec, "kind"), "fact"),
                     "scope": "team",
-                    "when": _meta(rec, "validFrom") or None,
+                    "when": _number(rec, "validFrom"),  # the log's when is epoch seconds (i64)
                     "key": f"{rec['memoryRecordId']}:{digest}",  # memory.import is idempotent on it
                     "source": {"harness": "workspace", "repo": None, "session": None, "on_behalf_of": speaker},
                     "replaces": [link["entry"]] if link.get("entry") else [],
@@ -205,25 +236,44 @@ async def drop_mirror(owner_id: str, entry_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _create_entry_records(client, owner_id: str, memory_id: str, ns: str, entries: list[dict]) -> None:
+def _entry_namespace(owner_id: str, op: dict) -> str | None:
+    """Where a log entry is mirrored. A person's own (``me`` on behalf of a member) goes to their
+    private scope, the one DM agents read; team entries and the workspace's own notes to
+    ``/entries/<o>/``. None (not mirrored): a ``me`` entry for someone no namespace can name."""
+    person = (op.get("source") or {}).get("on_behalf_of")
+    if op.get("scope") == "me" and person:
+        return namespaces_for(owner_id, person)["private"] if _MEMBER_ID.fullmatch(person) else None
+    return namespaces_for(owner_id, None)["entries"]
+
+
+def _create_entry_records(client, owner_id: str, memory_id: str, entries: list[dict]) -> None:
     for chunk in _chunks(entries):
-        records = [
-            {
-                "requestIdentifier": e["id"],
-                "namespaces": [ns],
-                "content": {"text": f"{e['op'].get('subject', '')}: {e['op'].get('fact', '')}"},
-                "timestamp": _dt(e.get("at")),
-                "metadata": {
-                    "subject": {"stringValue": e["op"].get("subject", "")},
-                    "status": {"stringValue": "current"},
-                    "kind": {"stringValue": e["op"].get("kind", "")},
-                    "author": {"stringValue": e.get("author", "")},
-                    "entryId": {"stringValue": e["id"]},
-                },
-            }
-            for e in chunk
-        ]
-        resp = client.batch_create_memory_records(memoryId=memory_id, records=records)
+        records = []
+        for e in chunk:
+            op = e["op"]
+            records.append(
+                {
+                    "requestIdentifier": e["id"],
+                    "namespaces": [e["namespace"]],
+                    "content": {"text": f"{op.get('subject', '')}: {op.get('fact', '')}"},
+                    "timestamp": _at(e.get("at")),
+                    "metadata": {
+                        **_strings(
+                            subject=op.get("subject", ""),
+                            status="current",
+                            kind="entry",
+                            logKind=op.get("kind", ""),
+                            author=e.get("author", ""),
+                            entryId=e["id"],
+                        ),
+                        # So a private scope's as-of filter (validFrom <= as_of) keeps it.
+                        "validFrom": {"numberValue": int(op.get("when") or e.get("at") or 0)},
+                    },
+                }
+            )
+        resp = client.batch_create_memory_records(
+            memoryId=memory_id, records=records, clientToken=_token(r["requestIdentifier"] for r in records)
+        )
         # Keep the mapping of every record that was created BEFORE raising for the ones that were
         # not: a tombstone or a replace finds its record only through this row.
         for ok in resp.get("successfulRecords", []):
@@ -256,32 +306,57 @@ def _delete_for_tombstone(client, owner_id: str, memory_id: str, entry_id: str) 
         _t().delete_item(Key=_key(owner_id, f"MEMENTRY#{entry_id}"))
 
 
-def _apply_entries(client, owner_id: str, memory_id: str, ns: str, entries: list[dict]) -> None:
+def _save_seq(owner_id: str, seq: int) -> None:
+    _t().update_item(
+        Key=_key(owner_id, _STATE), UpdateExpression="SET entries_seq = :s", ExpressionAttributeValues={":s": seq}
+    )
+
+
+def _apply_entries(client, owner_id: str, memory_id: str, entries: list[dict]) -> None:
+    """Mirror ``memory.list`` rows in order; ``entries_seq`` is saved after every flushed batch, so a
+    failure later in the page does not replay what was already written."""
     pending: list[dict] = []
+    replaced: list[str] = []
+    seq: int | None = None
 
     def flush() -> None:
         if pending:
-            _create_entry_records(client, owner_id, memory_id, ns, pending)
-            _mark_replaced(client, owner_id, memory_id, [r for e in pending for r in e["op"].get("replaces") or []])
-            pending.clear()
+            _create_entry_records(client, owner_id, memory_id, pending)
+        if replaced:
+            _mark_replaced(client, owner_id, memory_id, replaced)
+        pending.clear()
+        replaced.clear()
+        if seq is not None:
+            _save_seq(owner_id, seq)
 
-    for e in sorted(entries, key=lambda e: e["seq"]):
-        if e["op"].get("t") == "forget":
+    for e in sorted(entries, key=lambda e: int(e["seq"])):
+        op = e.get("op")
+        if e.get("tombstone") or not op:
+            pass  # a tombstoned row ({id, author, tombstone, seq}): its body is gone; its Forget is a row of its own
+        elif op.get("t") == "forget":
             flush()
-            _delete_for_tombstone(client, owner_id, memory_id, e["op"]["target"])
-        elif e["op"].get("t") == "remember":
-            pending.append(e)
+            _delete_for_tombstone(client, owner_id, memory_id, op["target"])
+        elif op.get("t") == "remember":
+            replaced.extend(op.get("replaces") or [])
+            namespace = _entry_namespace(owner_id, op)
+            row = _get(owner_id, f"MEMENTRY#{e['id']}")
+            # Already mirrored, or a fact imported from the facts namespace (recall finds it there).
+            if namespace and not (row.get("arec") or row.get("facts_rec")):
+                pending.append({**e, "namespace": namespace})
+        seq = int(e["seq"])
+        if len(pending) >= _BATCH:
+            flush()
     flush()
 
 
-async def _mirror_entries(owner_id: str, memory_id: str, ns: str, state: dict) -> tuple[int, bool]:
+async def _mirror_entries(owner_id: str, memory_id: str, state: dict) -> tuple[int, bool]:
     since = int(state.get("entries_seq") or 0)
     answer = await network_member.call_op(owner_id, "memory.list", {"since_seq": since}, 30.0)
     if answer is None:
         return 0, True
     entries = [e for e in answer.get("entries") or [] if int(e["seq"]) > since]
     if entries:
-        await run_in_thread(lambda: _apply_entries(_client(), owner_id, memory_id, ns, entries))
+        await run_in_thread(lambda: _apply_entries(_client(), owner_id, memory_id, entries))
         state["entries_seq"] = max(int(e["seq"]) for e in entries)
     return len(entries), False
 
@@ -289,6 +364,11 @@ async def _mirror_entries(owner_id: str, memory_id: str, ns: str, state: dict) -
 # ---------------------------------------------------------------------------
 # 3. events -> turns
 # ---------------------------------------------------------------------------
+
+
+def _turn_id(sid: str, event_id: str, i: int) -> str:
+    """A turn's ``requestIdentifier`` ([a-zA-Z0-9_-], at most 80): session and event ids may not fit."""
+    return hashlib.sha256(f"{sid}:{event_id}:{i}".encode()).hexdigest()
 
 
 def _mirror_turns(client, owner_id: str, memory_id: str, ns: str, after: str | None) -> tuple[int, str | None]:
@@ -307,22 +387,27 @@ def _mirror_turns(client, owner_id: str, memory_id: str, ns: str, after: str | N
             newest = max(newest, when)
             for i, payload in enumerate(ev.get("payload") or []):
                 text = ((payload.get("conversational") or {}).get("content") or {}).get("text")
-                if not text:
+                turn = _turn_id(sid, ev["eventId"], i)
+                # The newest event sits on the watermark and is listed again: skip what is mirrored.
+                if not text or _get(owner_id, f"MEMTURN#{turn}"):
                     continue
                 records.append(
                     {
-                        "requestIdentifier": f"{sid}:{ev['eventId']}:{i}",
+                        "requestIdentifier": turn,
                         "namespaces": [ns],
                         "content": {"text": text},
                         "timestamp": when,
-                        "metadata": {
-                            "speaker": {"stringValue": text.partition(": ")[0] if ": " in text else ""},
-                            "session": {"stringValue": sid},
-                        },
+                        "metadata": _strings(speaker=text.partition(": ")[0] if ": " in text else "", session=sid),
                     }
                 )
     for chunk in _chunks(records):
-        _write_ok(client.batch_create_memory_records(memoryId=memory_id, records=chunk), "turn")
+        resp = client.batch_create_memory_records(
+            memoryId=memory_id, records=chunk, clientToken=_token(r["requestIdentifier"] for r in chunk)
+        )
+        expires = int(time.time()) + _TURN_TTL_S
+        for ok in resp.get("successfulRecords", []):
+            _put(owner_id, f"MEMTURN#{ok['requestIdentifier']}", ttl=expires)
+        _write_ok(resp, "turn")
     return len(records), (newest.isoformat() if newest > floor else after)
 
 
@@ -369,7 +454,7 @@ async def _sync_locked(owner_id: str, memory_id: str, namespaces: dict[str, str]
     await network_member.drain_ops(owner_id)
     out["imported"], parked = await _import_facts(owner_id, memory_id, namespaces["facts"], state, started)
     if not parked:
-        out["mirrored"], parked = await _mirror_entries(owner_id, memory_id, namespaces["entries"], state)
+        out["mirrored"], parked = await _mirror_entries(owner_id, memory_id, state)
     out["turns"], state["events_after"] = await run_in_thread(
         lambda: _mirror_turns(_client(), owner_id, memory_id, namespaces["turns"], state.get("events_after"))
     )

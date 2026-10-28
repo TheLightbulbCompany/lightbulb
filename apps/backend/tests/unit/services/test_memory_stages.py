@@ -136,3 +136,18 @@ def test_from_record_entry_keeps_subject_and_metadata_author():
     a = cand("a", "Postgres Version: 16", kind="entry", entity="Postgres Version")
     b = cand("b", "Postgres Version: 15", kind="entry", entity="postgres version")
     assert {r["status"] for r in compose([a, b], 10_000, T)["results"]} == {"contested"}
+
+
+def test_from_record_mirrored_entry_takes_the_entry_branch_by_log_kind():
+    # What memory_sync mirrors: kind "entry", the log's kind under logKind, author as the speaker.
+    meta = {
+        "kind": {"stringValue": "entry"},
+        "logKind": {"stringValue": "decision"},
+        "subject": {"stringValue": "Redis"},
+        "author": {"stringValue": "Bo"},
+    }
+    c = from_record({"content": {"text": "Redis: 3 nodes"}, "metadata": meta}, "entry")
+    assert (c.kind, c.speaker, c.entity) == ("entry", "Bo", "Redis")
+    # A mirror written before logKind carried the log kind as kind: still an entry.
+    old = from_record({"content": {"text": "Redis: 3 nodes"}, "metadata": {"kind": {"stringValue": "fact"}}}, "entry")
+    assert old.kind == "entry"

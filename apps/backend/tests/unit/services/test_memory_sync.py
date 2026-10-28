@@ -71,15 +71,22 @@ class Member:
         return [p for o, p in self.calls if o == name]
 
 
-def fact(record_id, text, **meta):
-    meta = {"entity": "api", "attribute": "port", "kind": "fact", "validFrom": "2026-10-01", **meta}
+DAY0 = int(T0.timestamp())
+
+
+def fact(record_id, text, valid_from=DAY0, **meta):
+    """A facts record as ListMemoryRecords returns it: an AgentCore kind, validFrom a NUMBER."""
+    meta = {"entity": "api", "attribute": "port", "kind": "claim", **meta}
+    metadata = {k: {"stringValue": v} for k, v in meta.items()}
+    if valid_from is not None:
+        metadata["validFrom"] = {"numberValue": float(valid_from)}
     return {
         "memoryRecordId": record_id,
         "content": {"text": text},
         "memoryStrategyId": "s",
         "namespaces": [NS["facts"]],
         "createdAt": T0,
-        "metadata": {k: {"stringValue": v} for k, v in meta.items()},
+        "metadata": metadata,
     }
 
 
@@ -96,7 +103,28 @@ async def run(member, **kw):
 
 
 def entry(seq, eid, op, author="workspace"):
-    return {"id": eid, "author": author, "seq": seq, "op": op, "at": "2026-10-02T00:00:00+00:00"}
+    """A ``memory.list`` row as the CLI emits it: the stored entry (``at`` epoch seconds) plus ``seq``."""
+    return {"v": 1, "id": eid, "author": author, "seq": seq, "op": op, "at": DAY0 + 86400, "sig": "s"}
+
+
+def remember(subject, fact_, kind="fact", scope="team", on_behalf_of=None, replaces=()):
+    source = {"harness": "workspace", "repo": None, "session": None, "on_behalf_of": on_behalf_of}
+    return {
+        "t": "remember", "subject": subject, "fact": fact_, "kind": kind, "scope": scope,
+        "when": None, "source": source, "replaces": list(replaces),
+    }  # fmt: skip
+
+
+def tombstoned(seq, eid, author="workspace"):
+    """A row whose body a Forget removed (src/memory.rs page_since): no op."""
+    return {"id": eid, "author": author, "tombstone": True, "seq": seq}
+
+
+def created(*pairs):
+    return {
+        "successfulRecords": [{"memoryRecordId": r, "status": "SUCCEEDED", "requestIdentifier": q} for q, r in pairs],
+        "failedRecords": [],
+    }
 
 
 async def test_sync_imports_new_facts_as_entries(table, agentcore):
@@ -113,7 +141,7 @@ async def test_sync_imports_new_facts_as_entries(table, agentcore):
         "fact": "8080",
         "kind": "fact",
         "scope": "team",
-        "when": "2026-10-01",
+        "when": DAY0,
         "source": {"harness": "workspace", "repo": None, "session": None, "on_behalf_of": "Ana"},
         "replaces": [],
         "key": ANY,
@@ -160,21 +188,24 @@ async def test_sync_mirrors_entries_and_tombstones(table, agentcore):
                     "requestIdentifier": "x1",
                     "namespaces": [NS["entries"]],
                     "content": {"text": "db host: pg1"},
-                    "timestamp": ANY,
+                    "timestamp": datetime.fromtimestamp(DAY0 + 86400, timezone.utc),
                     "metadata": {
                         "subject": {"stringValue": "db host"},
                         "status": {"stringValue": "current"},
-                        "kind": {"stringValue": "fact"},
+                        "kind": {"stringValue": "entry"},
+                        "logKind": {"stringValue": "fact"},
                         "author": {"stringValue": "ana"},
                         "entryId": {"stringValue": "x1"},
+                        "validFrom": {"numberValue": DAY0 + 86400},
                     },
                 }
             ],
+            "clientToken": memory_sync._token(["x1"]),
         },
     )
     no_sessions(agentcore)
-    remember = {"t": "remember", "subject": "db host", "fact": "pg1", "kind": "fact"}
-    out = await run(Member([entry(1, "x1", remember, author="ana")]))
+    op = remember("db host", "pg1")
+    out = await run(Member([entry(1, "x1", op, author="ana")]))
     assert out["mirrored"] == 1
     assert memory_sync._get(OWNER, "MEMENTRY#x1")["arec"] == rid("ar1")
     assert int(memory_sync._get(OWNER, "MEMSYNC")["entries_seq"]) == 1
@@ -186,7 +217,7 @@ async def test_sync_mirrors_entries_and_tombstones(table, agentcore):
         {"memoryId": MEM, "records": [{"memoryRecordId": rid("ar1")}]},
     )
     no_sessions(agentcore)
-    out = await run(Member([entry(1, "x1", remember), entry(2, "t1", {"t": "forget", "target": "x1"})]))
+    out = await run(Member([entry(1, "x1", op), entry(2, "t1", {"t": "forget", "target": "x1"})]))
     assert out["mirrored"] == 1 and memory_sync._get(OWNER, "MEMENTRY#x1") == {}
 
 
@@ -211,8 +242,7 @@ async def test_sync_replace_marks_replaced_record_status(table, agentcore):
         },
     )
     no_sessions(agentcore)
-    op = {"t": "remember", "subject": "db host", "fact": "pg2", "kind": "fact", "replaces": ["x1"]}
-    await run(Member([entry(2, "x2", op)]))
+    await run(Member([entry(2, "x2", remember("db host", "pg2", replaces=["x1"]))]))
 
 
 async def test_sync_tombstone_of_imported_entry_deletes_facts_record(table, agentcore):
@@ -281,13 +311,14 @@ async def test_sync_mirrors_events_into_turns(table, agentcore):
             "memoryId": MEM,
             "records": [
                 {
-                    "requestIdentifier": "s1:ev1:0",
+                    "requestIdentifier": memory_sync._turn_id("s1", "ev1", 0),
                     "namespaces": [NS["turns"]],
                     "content": {"text": "Ana: ship it"},
                     "timestamp": T0,
                     "metadata": {"speaker": {"stringValue": "Ana"}, "session": {"stringValue": "s1"}},
                 }
             ],
+            "clientToken": ANY,
         },
     )
     out = await run(Member())
@@ -315,7 +346,7 @@ async def test_partial_create_failure_keeps_mappings_of_the_rest(table, agentcor
             ],
         },
     )
-    op = {"t": "remember", "subject": "s", "fact": "f", "kind": "fact"}
+    op = remember("s", "f")
     with pytest.raises(RuntimeError):
         await run(Member([entry(1, "x1", op), entry(2, "x2", op)]))
     assert memory_sync._get(OWNER, "MEMENTRY#x1")["arec"] == rid("ar1")
@@ -447,7 +478,7 @@ async def test_import_skips_refused_entries_logs_them_and_advances_the_watermark
 
     async def refuse(owner_id, op, params, timeout=30.0):
         if op == "memory.import":
-            return {"ids": ["e0", None], "refused": [{"index": 1, "reason": "secret"}]}
+            return {"ids": ["e0", None], "refused": [{"index": 1, "reason": "secret:api_key"}]}
         return {}
 
     with caplog.at_level("WARNING", logger="core.services.memory_sync"):
@@ -508,3 +539,132 @@ async def test_computer_keys_union_registry_live_and_signed_out(table):
         assert await network_login.computer_keys("user_a") == sorted([reg, live, out])
     await network_login.forget_keys("user_a")
     assert table.scan()["Items"] == []
+
+
+# --- the CLI's real shapes and idempotency (final review #2-#5, #18, #19) -----------------------
+
+
+async def test_import_maps_every_agentcore_kind_and_reads_a_number_valid_from(table, agentcore):
+    kinds = ["claim", "observation", "rule", "mention", "anchor"]
+    agentcore.add_response(
+        "list_memory_records",
+        {"memoryRecordSummaries": [fact(rid(f"r{i}"), f"Ana: api port: {i}", kind=k) for i, k in enumerate(kinds)]},
+    )
+    no_sessions(agentcore)
+    member = Member()
+    await run(member)
+    sent = member.ops("memory.import")[0]["entries"]
+    assert [e["kind"] for e in sent] == ["fact", "fact", "decision", "fact", "fact"]
+    assert all(e["when"] == DAY0 for e in sent)  # the CLI reads when as i64 epoch seconds
+
+
+async def test_undated_fact_imports_with_no_when(table, agentcore):
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": [fact(rid("r1"), "x", valid_from=None)]})
+    no_sessions(agentcore)
+    member = Member()
+    await run(member)
+    assert member.ops("memory.import")[0]["entries"][0]["when"] is None
+
+
+async def test_tombstoned_row_is_skipped_and_the_watermark_still_advances(table, agentcore):
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": []})
+    no_sessions(agentcore)
+    out = await run(Member([tombstoned(3, "x1", author="ana")]))
+    assert out["mirrored"] == 1
+    state = memory_sync._get(OWNER, "MEMSYNC")
+    assert int(state["entries_seq"]) == 3 and state["synced_at"]
+
+
+async def test_entries_route_by_scope(table, agentcore):
+    rows = [
+        entry(1, "t1", remember("team fact", "a", scope="team", on_behalf_of="user_b")),
+        entry(2, "m1", remember("ada's note", "b", scope="me", on_behalf_of="user_b")),
+        entry(3, "w1", remember("workspace note", "c", scope="me")),
+        entry(4, "n1", remember("unnamed", "d", scope="me", on_behalf_of="Ana")),
+    ]
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": []})
+    agentcore.add_response(
+        "batch_create_memory_records",
+        created(("t1", rid("a1")), ("m1", rid("a2")), ("w1", rid("a3"))),
+        {
+            "memoryId": MEM,
+            "clientToken": memory_sync._token(["t1", "m1", "w1"]),
+            "records": [
+                {
+                    "requestIdentifier": "t1", "namespaces": ["/entries/org_1/"],
+                    "content": ANY, "timestamp": ANY, "metadata": ANY,
+                },
+                {
+                    "requestIdentifier": "m1", "namespaces": ["/owners/org_1:user_b/"],
+                    "content": ANY, "timestamp": ANY, "metadata": ANY,
+                },
+                {
+                    "requestIdentifier": "w1", "namespaces": ["/entries/org_1/"],
+                    "content": ANY, "timestamp": ANY, "metadata": ANY,
+                },
+            ],
+        },
+    )  # fmt: skip
+    no_sessions(agentcore)
+    assert (await run(Member(rows)))["mirrored"] == 4
+    assert memory_sync._get(OWNER, "MEMENTRY#n1") == {}  # a me entry no namespace can name stays unmirrored
+
+
+async def test_metadata_leaves_out_values_agentcore_would_refuse():
+    assert memory_sync._strings(subject="Bob's deploy", author="", entryId="x1") == {"entryId": {"stringValue": "x1"}}
+
+
+async def test_already_mirrored_entry_is_not_created_again(table, agentcore):
+    # A sync that wrote the record but died before saving entries_seq lists the same row again.
+    memory_sync._put(OWNER, "MEMENTRY#x1", arec=rid("ar1"))
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": []})
+    no_sessions(agentcore)  # and no batch_create: the stubber would fail on an unexpected call
+    out = await run(Member([entry(1, "x1", remember("db host", "pg1"))]))
+    assert out["mirrored"] == 1 and memory_sync._get(OWNER, "MEMENTRY#x1")["arec"] == rid("ar1")
+
+
+async def test_imported_fact_is_not_mirrored_back_into_entries(table, agentcore):
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": [fact(rid("r1"), "Ana: api port: 8080")]})
+    no_sessions(agentcore)
+    member = Member()
+    await run(member)  # imported as e0; memory.list now returns it
+    member.entries = [entry(1, "e0", remember("api port", "8080", on_behalf_of="Ana"))]
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": []})
+    no_sessions(agentcore)
+    assert (await run(member))["mirrored"] == 1  # listed, but no batch_create
+    assert "arec" not in memory_sync._get(OWNER, "MEMENTRY#e0")
+
+
+async def test_entries_seq_is_saved_per_flushed_batch(table, agentcore):
+    n = memory_sync._BATCH + 1
+    rows = [entry(i + 1, f"x{i}", remember("s", f"f{i}")) for i in range(n)]
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": []})
+    agentcore.add_response("batch_create_memory_records", created(*((f"x{i}", rid(f"a{i}")) for i in range(n - 1))))
+    agentcore.add_client_error("batch_create_memory_records", service_error_code="ThrottlingException")
+    with pytest.raises(Exception):
+        await run(Member(rows))
+    assert int(memory_sync._get(OWNER, "MEMSYNC")["entries_seq"]) == memory_sync._BATCH
+
+
+async def test_repeated_turn_sync_creates_nothing_new(table, agentcore):
+    def events():
+        agentcore.add_response("list_memory_records", {"memoryRecordSummaries": []})
+        agentcore.add_response(
+            "list_sessions", {"sessionSummaries": [{"sessionId": "s1", "actorId": OWNER, "createdAt": T0}]}
+        )
+        payload = [{"conversational": {"role": "USER", "content": {"text": "Ana: ship it"}}}]
+        agentcore.add_response(
+            "list_events",
+            {
+                "events": [
+                    {"memoryId": MEM, "actorId": OWNER, "sessionId": "s1", "eventId": "ev1",
+                     "eventTimestamp": T0, "payload": payload}
+                ]
+            },
+        )  # fmt: skip
+
+    events()
+    agentcore.add_response("batch_create_memory_records", created((memory_sync._turn_id("s1", "ev1", 0), rid("t1"))))
+    assert (await run(Member()))["turns"] == 1
+    events()  # the same event sits on the watermark: it is listed again, and skipped
+    assert (await run(Member()))["turns"] == 0

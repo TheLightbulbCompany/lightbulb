@@ -178,16 +178,20 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   // Both Connect doors ("Set up Stripe" mints a Connect account too) need the
   // platform client id: without it the account could never be disconnected.
   const connectConfigured = Boolean(data?.connect_configured);
+  // The Connect doors and the services account exist for provisioning. While
+  // that rail is off they would ask for a read_write grant (or mint an account)
+  // nothing can use — a pasted key already powers the read-only tabs.
+  const connectOffered = Boolean(data?.provisioning_enabled) && connectConfigured;
   // Embedded onboarding needs the platform pk; the desktop webview can't open
   // Stripe's sign-in popup, so it keeps the hosted link in the system browser.
   const publishableKey = data?.publishable_key && !isTauri() ? data.publishable_key : null;
   const isApiKey = data?.source === "api_key";
   // Connected/api_key owners run Projects on a separate, platform-created
   // services account (Accounts v2 refuses a v1 Standard account).
-  const needsServicesAccount =
-    bound && data?.source !== "created" && data?.projects_ready === false && !data?.services_account_id;
-  const servicesPending =
-    bound && data?.source !== "created" && data?.projects_ready === false && Boolean(data?.services_account_id);
+  const servicesShown =
+    bound && Boolean(data?.provisioning_enabled) && data?.source !== "created" && data?.projects_ready === false;
+  const needsServicesAccount = servicesShown && !data?.services_account_id;
+  const servicesPending = servicesShown && Boolean(data?.services_account_id);
   // Disconnect needs the client id only for Connect rows; an api_key row has
   // nothing at Stripe to revoke.
   const canDisconnect = isApiKey || connectConfigured;
@@ -204,8 +208,8 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
 
   // The shared client returns `unknown`; narrow at the call site.
   const createLink = async () => (await api.post("/company/stripe/create", {})) as { onboarding_url: string };
-  const onboardingLink = async () =>
-    (await api.post("/company/stripe/onboarding-link", {})) as { onboarding_url: string };
+  const onboardingLink = async (target: OnboardingTarget = "main") =>
+    (await api.post("/company/stripe/onboarding-link", { target })) as { onboarding_url: string };
   const connectStart = async () => (await api.get("/company/stripe/connect/start")) as { authorize_url: string };
 
   function setUpStripe() {
@@ -222,10 +226,21 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   }
 
   function addServicesAccount() {
+    if (!publishableKey) {
+      return openWith(async () => {
+        await api.post("/company/stripe/services-account", {});
+        return (await onboardingLink("services")).onboarding_url;
+      });
+    }
     void run(async () => {
       await api.post("/company/stripe/services-account", {});
       setOnboarding("services");
     });
+  }
+
+  function finishServices() {
+    if (!publishableKey) return openWith(async () => (await onboardingLink("services")).onboarding_url);
+    setOnboarding("services");
   }
 
   return (
@@ -313,7 +328,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                   <EditorialButton type="button" size="sm" disabled={busy} onClick={() => setPasting(true)}>
                     Add API key
                   </EditorialButton>
-                  {connectConfigured && (
+                  {connectOffered && (
                     <>
                       <EditorialButton
                         type="button"
@@ -400,15 +415,13 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                   {data.projects_ready === false ? "Finish Stripe setup" : "Finish onboarding"}
                 </EditorialButton>
               )}
-              {/* The services account is onboarded only in-page: no hosted
-                  link exists for it, so these need the embedded component. */}
-              {canManage && publishableKey && needsServicesAccount && (
+              {canManage && needsServicesAccount && (
                 <EditorialButton type="button" size="sm" disabled={busy} onClick={addServicesAccount}>
                   Add a services account
                 </EditorialButton>
               )}
-              {canManage && publishableKey && servicesPending && (
-                <EditorialButton type="button" size="sm" disabled={busy} onClick={() => setOnboarding("services")}>
+              {canManage && servicesPending && (
+                <EditorialButton type="button" size="sm" disabled={busy} onClick={finishServices}>
                   Finish services account setup
                 </EditorialButton>
               )}

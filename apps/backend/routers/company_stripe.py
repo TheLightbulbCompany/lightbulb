@@ -289,23 +289,54 @@ async def bind_api_key(body: ApiKeyBody, auth: Annotated[AuthContext, Depends(ge
     return {"account_id": account_id, "livemode": info["livemode"]}
 
 
+class OnboardingTarget(BaseModel):
+    target: Literal["main", "services"] = "main"
+
+
+def _onboardable_account(row: dict, target: str) -> str:
+    """The platform-created account a target names: the main account only when
+    we created it, or the services account. Anything else can't be onboarded."""
+    if target == "services":
+        account_id = row.get("company_stripe_projects_account_id")
+    else:
+        account_id = row.get("company_stripe_account_id") if row.get("company_stripe_source") == "created" else None
+    if not account_id:
+        raise HTTPException(status_code=409, detail="No created Stripe account to onboard")
+    return account_id
+
+
+async def _ensure_projects_capability(target: str, account_id: str) -> None:
+    """An account created before the rail was on lacks the developer
+    configuration; request it (idempotent) so onboarding collects it. The
+    services account is always created with it."""
+    if (
+        target == "main"
+        and settings.STRIPE_PROVISIONING_ENABLED
+        and not await company_stripe.projects_ready(account_id=account_id)
+    ):
+        await company_stripe.request_projects_capability(account_id=account_id)
+
+
 @router.post("/onboarding-link")
-async def onboarding_link(auth: Annotated[AuthContext, Depends(get_current_user)]):
+async def onboarding_link(
+    auth: Annotated[AuthContext, Depends(get_current_user)], body: OnboardingTarget | None = None
+):
+    """Hosted Account Link: the fallback where embedded onboarding can't run
+    (no publishable key, or the desktop app)."""
     _gate_admin(auth)
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id, message=COMPANY_STRIPE_MESSAGE)
-    row = await billing_repo.get_by_owner_id(owner_id) or {}
-    account_id = row.get("company_stripe_account_id")
-    if not account_id or row.get("company_stripe_source") != "created":
-        raise HTTPException(status_code=409, detail="No created Stripe account to onboard")
+    target = body.target if body else "main"
+    # Consistent: the card calls this right after /services-account wrote the id.
+    row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+    account_id = _onboardable_account(row, target)
     try:
-        # An account created before the rail was on lacks the developer
-        # configuration; request it (idempotent) so the link collects it.
-        if settings.STRIPE_PROVISIONING_ENABLED and not await company_stripe.projects_ready(account_id=account_id):
-            await company_stripe.request_projects_capability(account_id=account_id)
+        await _ensure_projects_capability(target, account_id)
         # Already onboarded once => this is a correction, not a first onboarding.
+        # The status flags describe the main account only.
         url = await company_stripe.create_company_onboarding_link(
-            account_id=account_id, update=bool(row.get("company_stripe_details_submitted"))
+            account_id=account_id,
+            update=target == "main" and bool(row.get("company_stripe_details_submitted")),
         )
     except stripe.error.StripeError as e:
         raise _stripe_failure(e) from e
@@ -355,12 +386,8 @@ async def services_account(auth: Annotated[AuthContext, Depends(get_current_user
     return {"account_id": account_id}
 
 
-class AccountSessionBody(BaseModel):
-    target: Literal["main", "services"] = "main"
-
-
 @router.post("/account-session")
-async def account_session(body: AccountSessionBody, auth: Annotated[AuthContext, Depends(get_current_user)]):
+async def account_session(body: OnboardingTarget, auth: Annotated[AuthContext, Depends(get_current_user)]):
     """Client secret for Connect embedded onboarding. Only for accounts the
     platform created: the main account when its source is `created`, or the
     services account."""
@@ -372,23 +399,11 @@ async def account_session(body: AccountSessionBody, auth: Annotated[AuthContext,
             status_code=409,
             detail={"code": "embedded_onboarding_unavailable", "message": "Embedded onboarding isn't configured"},
         )
-    row = await billing_repo.get_by_owner_id(owner_id) or {}
-    if body.target == "services":
-        account_id = row.get("company_stripe_projects_account_id")
-    else:
-        account_id = row.get("company_stripe_account_id") if row.get("company_stripe_source") == "created" else None
-    if not account_id:
-        raise HTTPException(status_code=409, detail="No created Stripe account to onboard")
+    # Consistent: the card calls this right after /services-account wrote the id.
+    row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+    account_id = _onboardable_account(row, body.target)
     try:
-        # Same as /onboarding-link: an account created before the rail was on
-        # lacks the developer configuration; request it (idempotent) so
-        # onboarding collects it.
-        if (
-            body.target == "main"
-            and settings.STRIPE_PROVISIONING_ENABLED
-            and not await company_stripe.projects_ready(account_id=account_id)
-        ):
-            await company_stripe.request_projects_capability(account_id=account_id)
+        await _ensure_projects_capability(body.target, account_id)
         client_secret = await company_stripe.create_account_session(account_id=account_id)
     except stripe.error.StripeError as e:
         raise _stripe_failure(e) from e

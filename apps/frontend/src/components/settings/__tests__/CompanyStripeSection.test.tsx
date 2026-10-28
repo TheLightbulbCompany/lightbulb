@@ -158,12 +158,71 @@ describe("CompanyStripeSection", () => {
     expect(screen.queryByText("Finish Stripe setup")).not.toBeInTheDocument();
   });
 
-  it("offers both Stripe doors while provisioning is off", async () => {
+  it("offers ONLY the API-key door while provisioning is off", async () => {
+    // Connect exists for provisioning. With that rail off, the OAuth doors
+    // would ask for a read_write grant to power a read-only tab a pasted key
+    // already powers — so they are not shown.
     get.mockResolvedValue({ ...UNBOUND, provisioning_enabled: false });
     renderSection(true);
     expect(await screen.findByText("Add API key")).toBeInTheDocument();
-    expect(screen.getByText("Set up Stripe")).toBeInTheDocument();
-    expect(screen.getByText("Connect your Stripe")).toBeInTheDocument();
+    expect(screen.queryByText("Set up Stripe")).toBeNull();
+    expect(screen.queryByText("Connect your Stripe")).toBeNull();
+  });
+
+  it("never asks for a services account while provisioning is off", async () => {
+    get.mockResolvedValue({
+      ...BOUND,
+      source: "connected",
+      provisioning_enabled: false,
+      projects_ready: false,
+      publishable_key: "pk_test_x",
+    });
+    renderSection(true);
+    await screen.findByText("Open Stripe Dashboard");
+    expect(screen.queryByText("Add a services account")).toBeNull();
+    expect(screen.queryByText(/needs a services account/)).toBeNull();
+  });
+
+  it("without embedded onboarding, Add a services account creates it, then opens its hosted link", async () => {
+    get.mockResolvedValue({ ...BOUND, source: "connected", projects_ready: false, publishable_key: null });
+    post.mockImplementation(async (path: string) =>
+      path === "/company/stripe/onboarding-link"
+        ? { onboarding_url: "https://connect.stripe.com/setup/svc" }
+        : { account_id: "acct_svc" },
+    );
+    const tab = fakeTab();
+    vi.spyOn(window, "open").mockImplementation(() => tab as unknown as Window);
+    renderSection(true);
+
+    fireEvent.click(await screen.findByText("Add a services account"));
+
+    expect(window.open).toHaveBeenCalledWith("", "_blank");
+    await waitFor(() => expect(tab.location.href).toBe("https://connect.stripe.com/setup/svc"));
+    expect(post.mock.calls.map((c) => c[0])).toEqual([
+      "/company/stripe/services-account",
+      "/company/stripe/onboarding-link",
+    ]);
+    expect(post).toHaveBeenLastCalledWith("/company/stripe/onboarding-link", { target: "services" });
+    expect(screen.queryByTestId("stripe-embedded-onboarding")).toBeNull();
+  });
+
+  it("without embedded onboarding, Finish services account setup opens its hosted link", async () => {
+    get.mockResolvedValue({
+      ...BOUND,
+      source: "api_key",
+      projects_ready: false,
+      services_account_id: "acct_svc",
+      publishable_key: null,
+    });
+    post.mockResolvedValue({ onboarding_url: "https://connect.stripe.com/setup/svc" });
+    const tab = fakeTab();
+    vi.spyOn(window, "open").mockImplementation(() => tab as unknown as Window);
+    renderSection(true);
+
+    fireEvent.click(await screen.findByText("Finish services account setup"));
+
+    await waitFor(() => expect(tab.location.href).toBe("https://connect.stripe.com/setup/svc"));
+    expect(post).toHaveBeenCalledWith("/company/stripe/onboarding-link", { target: "services" });
   });
 
   it("labels a binding made with a test-mode key so sandbox figures never read as revenue", async () => {

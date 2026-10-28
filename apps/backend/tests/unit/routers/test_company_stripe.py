@@ -1107,6 +1107,57 @@ def test_account_session_is_entitlement_gated(client, monkeypatch):
     assert client.post("/api/v1/company/stripe/account-session", json={}).status_code == 402
 
 
+def test_account_session_reads_the_row_consistently(client, monkeypatch):
+    """The card asks for a session right after /services-account wrote the id;
+    an eventually consistent read could miss it and 409."""
+    monkeypatch.setattr(mod.settings, "STRIPE_PUBLISHABLE_KEY", "pk_test_x")
+    row = {
+        "owner_id": "org_a",
+        "company_stripe_account_id": "acct_main",
+        "company_stripe_source": "connected",
+        "company_stripe_projects_account_id": "acct_svc",
+    }
+    read = AsyncMock(return_value=row)
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", read),
+        patch.object(mod.company_stripe, "create_account_session", AsyncMock(return_value="cs")),
+    ):
+        assert client.post("/api/v1/company/stripe/account-session", json={"target": "services"}).status_code == 200
+    read.assert_awaited_once_with("org_a", consistent_read=True)
+
+
+def test_onboarding_link_for_the_services_account(client):
+    """The hosted fallback where embedded onboarding can't run (desktop, no pk)."""
+    row = {
+        "owner_id": "org_a",
+        "company_stripe_account_id": "acct_main",
+        "company_stripe_source": "connected",
+        "company_stripe_details_submitted": True,
+        "company_stripe_projects_account_id": "acct_svc",
+    }
+    read = AsyncMock(return_value=row)
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", read),
+        patch.object(mod.company_stripe, "create_company_onboarding_link", AsyncMock(return_value="https://x")) as link,
+    ):
+        resp = client.post("/api/v1/company/stripe/onboarding-link", json={"target": "services"})
+    assert resp.status_code == 200 and resp.json() == {"onboarding_url": "https://x"}
+    # The main account's flags say nothing about the services account.
+    link.assert_awaited_once_with(account_id="acct_svc", update=False)
+    read.assert_awaited_once_with("org_a", consistent_read=True)
+
+
+def test_onboarding_link_refuses_services_without_one(client):
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_main", "company_stripe_source": "connected"}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "create_company_onboarding_link", AsyncMock()) as link,
+    ):
+        assert client.post("/api/v1/company/stripe/onboarding-link", json={"target": "services"}).status_code == 409
+        assert client.post("/api/v1/company/stripe/onboarding-link").status_code == 409
+    link.assert_not_awaited()
+
+
 def test_onboarding_link_requests_the_projects_capability_first_when_missing(client, monkeypatch):
     monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}

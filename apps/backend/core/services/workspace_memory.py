@@ -223,6 +223,7 @@ async def _forget_authored(owner_id: str, user_id: str, memory_api, network_logi
     """Tombstone, in the network log, every entry written from this person's signed-in computers."""
     for key in await network_login.computer_keys(user_id):
         await memory_api.forget_author(owner_id, key)
+    await network_login.forget_keys(user_id)  # only once every forward was sent or queued
 
 
 async def delete_member_memory(

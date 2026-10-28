@@ -224,8 +224,9 @@ def no_evaluator_wipe(monkeypatch):
         (evaluator, "delete_drafts"),
         (evaluator, "delete_episodes"),
         (network_login, "computer_keys"),  # no signed-in computer: no forget_author forward
+        (network_login, "forget_keys"),
     ):
-        monkeypatch.setattr(mod, name, AsyncMock(return_value=0 if name != "computer_keys" else []))
+        monkeypatch.setattr(mod, name, AsyncMock(return_value=[] if name == "computer_keys" else 0))
 
 
 async def test_member_wipe_runs_every_step_when_one_fails(monkeypatch):
@@ -261,9 +262,10 @@ async def test_member_wipe_forwards_forget_author(monkeypatch):
     async def boom(*a, **k):
         raise OSError("down")
 
+    # k1 is linked now; k2 only in the registry (offline, never signed out); k3 signed out.
     async def keys(user_id):
         assert user_id == "user_a"
-        return ["k1", "k2"]
+        return ["k1", "k2", "k3"]
 
     async def forward(owner_id, author):
         sent.append((owner_id, author))
@@ -274,4 +276,4 @@ async def test_member_wipe_forwards_forget_author(monkeypatch):
     monkeypatch.setattr(memory_api, "forget_author", forward)
     with pytest.raises(RuntimeError, match="OSError"):
         await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)
-    assert sent == [("org_x", "k1"), ("org_x", "k2")]
+    assert sent == [("org_x", "k1"), ("org_x", "k2"), ("org_x", "k3")]

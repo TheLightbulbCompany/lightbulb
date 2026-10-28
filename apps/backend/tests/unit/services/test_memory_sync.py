@@ -477,10 +477,25 @@ async def test_import_sends_entries_in_batches(table, agentcore):
     assert sizes == [memory_sync._BATCH, memory_sync._BATCH, 5]
 
 
-async def test_computer_keys_are_live_links_and_signed_out_keys():
+async def test_proof_registers_member_key(table):
     from core.services import network_login
 
-    live, out = "a" * 52, "b" * 52
+    k1, k2 = "a" * 52, "b" * 52
+    await network_login.register_key("user_a", k1)
+    first = table.get_item(Key=network_login._registry_key("user_a", k1))["Item"]["first_seen"]
+    with patch("time.time", return_value=first + 500):
+        await network_login.register_key("user_a", k1)
+        await network_login.register_key("user_a", k2)
+    rows = table.scan()["Items"]
+    assert sorted(r["sk"] for r in rows) == [f"NETKEY#{k1}", f"NETKEY#{k2}"]
+    assert table.get_item(Key=network_login._registry_key("user_a", k1))["Item"]["first_seen"] == first
+
+
+async def test_computer_keys_union_registry_live_and_signed_out(table):
+    from core.services import network_login
+
+    reg, live, out = "r" * 52, "a" * 52, "b" * 52
+    await network_login.register_key("user_a", reg)
 
     class Conn:
         async def routes_for_user(self, user_id):
@@ -490,4 +505,6 @@ async def test_computer_keys_are_live_links_and_signed_out_keys():
         patch("core.services.network_route._connections", return_value=Conn()),
         patch.object(network_login, "revoked_keys", return_value=[out, live]),
     ):
-        assert await network_login.computer_keys("user_a") == sorted([live, out])
+        assert await network_login.computer_keys("user_a") == sorted([reg, live, out])
+    await network_login.forget_keys("user_a")
+    assert table.scan()["Items"] == []

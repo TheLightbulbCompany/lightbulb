@@ -505,15 +505,15 @@ def _read_rooms(args: dict, *, session_id: str = "", **_kw) -> str:
 WORKSPACE_SCHEMA = {
     "name": "lightbulb_workspace",
     "description": "Act in the Lightbulb workspace with exactly the access of the person who asked you: room "
-                   "members (add_member, remove_member, set_listen_mode), leave_room, create_room, update_room "
-                   "(rename or archive), pin and unpin a message, search_messages and search_sessions. Never "
+                   "members (add_member, remove_member, set_listen_mode), create_room, update_room "
+                   "(rename or archive), pin and unpin a message, and search_messages. Never "
                    "change Lightbulb data any other way.",
     "parameters": {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": [
-                "add_member", "set_listen_mode", "remove_member", "leave_room", "create_room",
-                "update_room", "pin", "unpin", "search_messages", "search_sessions"]},
+                "add_member", "set_listen_mode", "remove_member", "create_room",
+                "update_room", "pin", "unpin", "search_messages"]},
             "roomId": {"type": "string"},
             "args": {"type": "object"},
         },
@@ -526,6 +526,8 @@ def _workspace(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
     if not ctx or not ctx.get("localSessionToken"):
         return NO_TURN
+    if not isinstance(args.get("args") or {}, dict):
+        return "args must be an object"
     act_args = dict(args.get("args") or {})
     if args.get("action") == "create_room" and not (act_args.get("clientRoomId") or act_args.get("client_room_id")):
         act_args["clientRoomId"] = str(uuid.uuid5(

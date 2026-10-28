@@ -264,7 +264,6 @@ AGENT_ACTIONS = {
     "add_member": (lambda args: (UpsertRoomMemberRequest(**args),), lambda *a: service.upsert_member(*a)),
     "set_listen_mode": (lambda args: (UpsertRoomMemberRequest(**args),), lambda *a: service.upsert_member(*a)),
     "remove_member": (lambda args: (args["kind"], args["id"]), lambda *a: service.remove_member(*a)),
-    "leave_room": (lambda args: (), lambda *a: service.leave_room(*a)),
     "create_room": (lambda args: (CreateRoomRequest(**args),), lambda auth, room, req: service.create_room(auth, req)),
     "update_room": (lambda args: (PatchRoomRequest(**args),), lambda *a: service.patch_room(*a)),
     "pin": (lambda args: (args["message_id"], True), lambda *a: service.set_pin(*a)),
@@ -272,10 +271,6 @@ AGENT_ACTIONS = {
     "search_messages": (
         lambda args: (message_search.MessageSearchRequest(**args),),
         lambda auth, room, req: message_search.search(auth, req),
-    ),
-    "search_sessions": (
-        lambda args: (message_search.SessionSearchRequest(**args),),
-        lambda auth, room, req: message_search.search_sessions(auth, req),
     ),
 }
 
@@ -305,7 +300,7 @@ async def agent_act(
             raise ApiProblem("INVALID_REQUEST", f"args.{exc.args[0]} is required.") from exc
         result = await call(auth, body.room_id, *parsed)
         outcome = "ok"
-        return result
+        return {"ok": True} if result is None else result  # remove_member returns nothing
     except ApiProblem:
         outcome = "refused"
         raise

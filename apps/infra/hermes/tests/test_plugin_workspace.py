@@ -30,7 +30,7 @@ def turn(tmp_path, monkeypatch):
 
 def test_no_grant_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
-    assert lightbulb._workspace({"action": "leave_room"}, session_id=SESSION) == lightbulb.NO_TURN
+    assert lightbulb._workspace({"action": "update_room"}, session_id=SESSION) == lightbulb.NO_TURN
 
 
 def test_posts_the_action_with_the_turns_grant(turn):
@@ -57,3 +57,8 @@ def test_create_room_gets_a_stable_client_id_unless_given(turn):
     first, second = (b["args"] for _, _, b in turn)
     assert str(uuid.UUID(first["clientRoomId"])) == first["clientRoomId"]
     assert second["clientRoomId"] == "mine"
+
+
+def test_args_sent_as_a_string_is_a_readable_answer_not_a_crash(turn):
+    out = lightbulb._workspace({"action": "pin", "roomId": ROOM, "args": '{"message_id": "m1"}'}, session_id=SESSION)
+    assert out == "args must be an object" and turn == []

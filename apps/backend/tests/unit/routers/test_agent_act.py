@@ -74,11 +74,15 @@ def test_a_turn_nobody_signed_in_asked_acts_for_no_one(client, monkeypatch, seat
     upsert.assert_not_awaited()
 
 
-@pytest.mark.parametrize("left", [("agent", "friday"), ("human", "user_ana")])
-def test_an_agent_or_requester_no_longer_in_the_turns_room_acts_for_no_one(client, monkeypatch, seated, left):
+@pytest.mark.parametrize(
+    ("left", "foreign"), [(("agent", "friday"), False), (("human", "user_ana"), False), (None, True)]
+)
+def test_an_agent_or_requester_no_longer_in_the_turns_room_acts_for_no_one(client, monkeypatch, seated, left, foreign):
+    """Nor in a room another organization is in."""
     upsert = AsyncMock()
     monkeypatch.setattr(router.service, "upsert_member", upsert)
     seated.seated.discard(left)
+    monkeypatch.setattr(messaging_repo, "has_foreign_members", AsyncMock(return_value=foreign))
     assert client.post(URL, json=ADD, headers=_bearer("user_ana")).status_code == 403
     upsert.assert_not_awaited()
 
@@ -93,7 +97,8 @@ def test_a_service_refusal_passes_through_unchanged(client, monkeypatch, seated)
 def test_an_unknown_action_or_bad_args_is_a_readable_4xx(client, monkeypatch, seated):
     upsert = AsyncMock()
     monkeypatch.setattr(router.service, "upsert_member", upsert)
-    assert client.post(URL, json={**ADD, "action": "delete_room"}, headers=_bearer("user_ana")).status_code == 422
+    for action in ("delete_room", "leave_room", "search_sessions"):  # leave/session search act as the person
+        assert client.post(URL, json={**ADD, "action": action}, headers=_bearer("user_ana")).status_code == 422
     bad = client.post(URL, json={**ADD, "args": {"kind": "robot"}}, headers=_bearer("user_ana"))
     assert bad.status_code == 400 and "kind" in bad.json()["message"]
     missing = client.post(URL, json={"action": "pin", "room_id": ROOM, "args": {}}, headers=_bearer("user_ana"))
@@ -105,7 +110,6 @@ def test_an_unknown_action_or_bad_args_is_a_readable_4xx(client, monkeypatch, se
     ("action", "args", "name", "called_with"),
     [
         ("remove_member", {"kind": "agent", "id": "atlas"}, "remove_member", (ROOM, "agent", "atlas")),
-        ("leave_room", {}, "leave_room", (ROOM,)),
         ("pin", {"message_id": "m1"}, "set_pin", (ROOM, "m1", True)),
         ("unpin", {"message_id": "m1"}, "set_pin", (ROOM, "m1", False)),
     ],
@@ -114,7 +118,7 @@ def test_each_action_reaches_its_service_call(client, monkeypatch, seated, actio
     call = AsyncMock(return_value=None)
     monkeypatch.setattr(router.service, name, call)
     response = client.post(URL, json={"action": action, "room_id": ROOM, "args": args}, headers=_bearer("user_ana"))
-    assert response.status_code == 200
+    assert response.status_code == 200 and response.json() == {"ok": True}  # a None result still answers
     assert call.await_args.args[0].user_id == "user_ana" and call.await_args.args[1:] == called_with
 
 

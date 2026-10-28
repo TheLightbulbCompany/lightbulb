@@ -506,7 +506,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/infra/hermes/plugins/lightbulb/__init__.py (`lightbulb_workspace`) -> apps/backend/routers/messaging.py
                                  AGENT_ACTIONS / agent_actor (acts as the turn's requester; no person = refused). Args mirror
                                  UpsertRoomMemberRequest/CreateRoomRequest/PatchRoomRequest (core/services/messaging.py) and
-                                 MessageSearchRequest/SessionSearchRequest (core/services/message_search.py): edit both together.
+                                 MessageSearchRequest (core/services/message_search.py): edit both together.
                                  Lesson 2026-10-18: a hand-written member row skipped the delivery cursor and silenced an agent.
                                  lightbulb-api.sh's owner-only refusal points room/member/search actions at the tool.
   - Writing a document ...... references/documents.md

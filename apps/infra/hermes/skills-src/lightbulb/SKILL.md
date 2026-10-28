@@ -28,7 +28,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/ideas.md` | Someone sends you an **idea** (a quoted idea, "Let's do it!", maybe "Tracked in Work: …"); a Work task whose description has **Needs** and **Done means** sections, or you notice a concrete job worth adding with `suggest_idea`. On a linked project, break it into assigned tasks first. |
 | `references/chat-vs-document.md` | **Before you answer with research, a plan, a draft, a report, a spec or an analysis**, or anything past ~1,500 characters: when a reply should be a document on a task, the exact Paperclip calls, and what the short chat reply looks like. |
 | `references/documents.md` | **How to write a document** (a plan, research, a report, a spec): open with the answer, owners and dates, tasks in a table, cards and diagrams. |
-| `references/workspace.md` | Adding or removing a room member, changing listen mode, making, renaming or archiving a room, leaving, pinning, searching messages or sessions → `lightbulb_workspace`. |
+| `references/workspace.md` | Adding or removing a room member, changing listen mode, making, renaming or archiving a room, pinning, searching messages → `lightbulb_workspace`. |
 | `references/platform-primitives.md` § Other rooms | Someone asks about another channel, DM or group chat ("what did we decide in #launch?", "check our recent conversations") → `lightbulb_read_rooms`, with the asker's own access. |
 | `references/platform-primitives.md` § Human-shared local sessions | Reading a person's Claude Code/Codex session (`lightbulb_local_sessions`); messaging one goes through `lightbulb_network`. |
 | `references/platform-primitives.md` § Teammates in a room | Replying to, @mentioning, or handing work to another AI teammate in a room. |

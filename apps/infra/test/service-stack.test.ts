@@ -1560,3 +1560,32 @@ describe("Apple IAP env", () => {
     expect(json).not.toMatch(/"APPLE_IAP_ACCEPT_XCODE","Value":"true"/);
   });
 });
+
+describe("ServiceStack — workspace memory recall", () => {
+  test("backend task role can rerank", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "bedrock:Rerank",
+            Effect: "Allow",
+            Resource: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+          }),
+        ]),
+      },
+    });
+  });
+
+  test("backend task role can retrieve records and write events on the workspace memory", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: ["bedrock-agentcore:RetrieveMemoryRecords", "bedrock-agentcore:CreateEvent"],
+            Effect: "Allow",
+          }),
+        ]),
+      },
+    });
+  });
+});

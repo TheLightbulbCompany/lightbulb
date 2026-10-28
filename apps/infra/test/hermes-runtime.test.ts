@@ -362,13 +362,14 @@ describe("hermes runtime wiring", () => {
   // Workspace memory (Track G). One shared resource per env; tenants are isolated by the per-owner
   // inline policy, so the boundary must never admit the record get/delete/Batch* actions -- they
   // carry no condition keys and would let one owner reach another's records by id (dev spike 09-22).
-  it("creates one semantic workspace memory per env, namespaced by actor (= owner)", () => {
+  it("creates one workspace memory per env: facts namespaced by actor (= owner), episodes by user", () => {
     dev.containerTemplate.resourceCountIs("AWS::BedrockAgentCore::Memory", 1);
     dev.containerTemplate.hasResourceProperties("AWS::BedrockAgentCore::Memory", {
       Name: "lightbulb_dev_workspace_memory",
       EventExpiryDuration: 7,
       MemoryStrategies: [
-        { SemanticMemoryStrategy: Match.objectLike({ Namespaces: ["/owners/{actorId}/"] }) },
+        { CustomMemoryStrategy: Match.objectLike({ Name: "workspace_facts", Namespaces: ["/owners/{actorId}/"] }) },
+        { EpisodicMemoryStrategy: Match.objectLike({ Name: "session_episodes" }) },
       ],
     });
     // Prod memory is owner data: a later edit that drops applyRemovalPolicy must fail here.
@@ -401,7 +402,7 @@ describe("hermes runtime wiring", () => {
     expect(JSON.stringify(base)).not.toContain("MemoryRecords");
   });
 
-  it("grants the backend task role the memory wipe and the review actions, never retrieve", () => {
+  it("grants the backend task role the memory wipe, review and recall actions", () => {
     dev.serviceTemplate.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
@@ -434,8 +435,16 @@ describe("hermes runtime wiring", () => {
     });
     const env = backendContainerEnv(dev.serviceTemplate, "dev") as Record<string, unknown>;
     expect(env.AGENTCORE_MEMORY_ID).toBeDefined();
-    expect(JSON.stringify([dev.serviceTemplate.findResources("AWS::IAM::Policy"), dev.serviceTemplate.findResources("AWS::IAM::ManagedPolicy")])).not.toContain(
-      "bedrock-agentcore:RetrieveMemoryRecords",
-    );
+    // Recall (task 1 of the workspace memory plan): the backend now searches and writes events.
+    dev.serviceTemplate.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AgentCoreMemoryRecall",
+            Action: ["bedrock-agentcore:RetrieveMemoryRecords", "bedrock-agentcore:CreateEvent"],
+          }),
+        ]),
+      }),
+    });
   });
 });

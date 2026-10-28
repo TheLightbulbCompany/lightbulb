@@ -548,8 +548,7 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // Workspace memory wipe (account_wipe / DELETE /debug/user-data -> workspace_memory.
-    // delete_owner_memory). The backend never SEARCHES memory; runtimes recall under their per-owner
-    // `owner-memory` policy.
+    // delete_owner_memory). This statement is the wipe only; recall has its own below.
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreMemoryWipe",
@@ -570,12 +569,28 @@ export class ServiceStack extends cdk.Stack {
     // namespaces, reads ONE record to prove it sits in the viewer's own scope before any delete
     // or copy (BatchDelete/BatchCreate take bare ids), and writes the vouched team copy that
     // "Share with team" / "Confirm" produce. Runtimes stay denied every record write, so only this
-    // role can mark a fact confirmed. Still no RetrieveMemoryRecords: the backend never searches.
+    // role can mark a fact confirmed.
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreMemoryReview",
         actions: ["bedrock-agentcore:GetMemoryRecord", "bedrock-agentcore:BatchCreateMemoryRecords"],
         resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
+      }),
+    );
+
+    // Workspace recall: the backend now searches the memory (RetrieveMemoryRecords), writes room
+    // conversation in as events for extraction (CreateEvent), and reranks the hits with Cohere on
+    // Bedrock (foundation-model ARNs carry no account).
+    agentCorePolicy.addStatements(
+      new iam.PolicyStatement({
+        sid: "AgentCoreMemoryRecall",
+        actions: ["bedrock-agentcore:RetrieveMemoryRecords", "bedrock-agentcore:CreateEvent"],
+        resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
+      }),
+      new iam.PolicyStatement({
+        sid: "MemoryRerank",
+        actions: ["bedrock:Rerank"],
+        resources: [`arn:aws:bedrock:${this.region}::foundation-model/cohere.rerank-v3-5:0`],
       }),
     );
 

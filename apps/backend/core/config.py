@@ -418,6 +418,10 @@ class Settings(BaseSettings):
     STRIPE_COMPANY_OAUTH_REDIRECT_URL: str = ""
     # Connect platform client id (ca_…). Public, not a secret.
     STRIPE_CONNECT_CLIENT_ID: str = ""
+    # The platform's publishable key (pk_…). Public, not a secret: Connect
+    # embedded onboarding initialises with it. Empty ⇒ the Stripe card falls
+    # back to the hosted Account Link.
+    STRIPE_PUBLISHABLE_KEY: str = ""
 
     # Stripe's recommended Provisioning onboarding path: request the Accounts v2
     # `developer` configuration with the `projects` capability on the company

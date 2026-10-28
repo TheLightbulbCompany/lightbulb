@@ -1135,6 +1135,9 @@ async def test_last_member_leaving_a_parked_workspace_still_reaches_the_teardown
     from routers import webhooks
 
     monkeypatch.setattr(memory_api, "forget_on_behalf_of", AsyncMock(side_effect=RuntimeError("member is parked")))
+    from core.services import mac_browser
+
+    monkeypatch.setattr(mac_browser, "revoke_member_soon", lambda *a: None)  # no background task left pending
     table = MagicMock()
     monkeypatch.setattr("core.repositories.messaging_repo._table", lambda: table)
     wake = AsyncMock(return_value=True)

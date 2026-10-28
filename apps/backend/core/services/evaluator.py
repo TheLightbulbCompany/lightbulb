@@ -240,13 +240,14 @@ async def collect_drafts(user_id: str, *, workspace_id: str | None) -> int:
             item["workspace_id"] = workspace_id
         # Only a lesson drawn from this workspace's sessions reaches its members.
         item["mirrored"] = item["kind"] == "lesson" and bool(here.intersection(named))
-        if not await _put_new(table, {"pk": f"DRAFTS#{user_id}", "sk": f"D#{item['id']}", **item}):
-            continue  # already collected (maybe approved since): never reset it
-        created += 1
-        if item["mirrored"]:
-            await run_in_thread(
-                table.put_item, Item={"pk": f"WDRAFTS#{workspace_id}", "sk": f"D#{user_id}#{item['id']}", **item}
-            )
+        author = {"pk": f"DRAFTS#{user_id}", "sk": f"D#{item['id']}", **item}
+        if await _put_new(table, author):
+            created += 1
+        else:  # already collected (maybe approved since): never reset it, but repair a mirror a failed write missed
+            author = await store._get(author["pk"], author["sk"]) or {}
+        if author.get("mirrored"):
+            mirror = {**author, "pk": f"WDRAFTS#{author['workspace_id']}", "sk": f"D#{user_id}#{item['id']}"}
+            await _put_new(table, mirror)
     if new:
         newest = max(_ts(str(r.get("createdAt"))) for r in new)
         await run_in_thread(table.put_item, Item={"pk": f"EVAL#{user_id}", "sk": "WATERMARK", "at": newest.isoformat()})

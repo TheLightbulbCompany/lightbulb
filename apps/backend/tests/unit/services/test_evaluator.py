@@ -491,3 +491,18 @@ async def test_a_failed_chunk_drops_the_chunks_already_written(agentcore, collec
     assert "Item" not in store._table().get_item(Key={"pk": "EVAL#u", "sk": "S#s1"})
     month = datetime.now(UTC).strftime("%Y-%m")
     assert int(store._table().get_item(Key={"pk": f"MEMCAP#u#{month}", "sk": "COUNT"})["Item"]["n"]) == 0
+
+
+async def test_a_missing_workspace_mirror_is_repaired_on_the_next_collect(agentcore):
+    from core.repositories import messaging_repo as store
+
+    await session_store.put_sessions("u", [sess("s1")], False, "org_x")
+    t = datetime(2026, 10, 27, 12, tzinfo=UTC)
+    author = {"id": rid("a"), "user_id": "u", "kind": "lesson", "text": "retry flaky tests in s1",
+              "evidence": ["s1"], "status": "approved", "workspace_id": "org_x", "mirrored": True}  # fmt: skip
+    store._table().put_item(Item={"pk": "DRAFTS#u", "sk": f"D#{rid('a')}", **author})  # the mirror write failed
+    agentcore.add_response("list_memory_records", listing(rec("a", "retry flaky tests in s1", t)))
+    assert await evaluator.collect_drafts("u", workspace_id="org_x") == 0
+    mirror = store._table().get_item(Key={"pk": "WDRAFTS#org_x", "sk": f"D#u#{rid('a')}"})["Item"]
+    assert mirror["status"] == "approved"  # the author row's state, never reset
+    assert store._table().get_item(Key={"pk": "EVAL#u", "sk": "WATERMARK"})["Item"]["at"].startswith("2026-10-27T12")

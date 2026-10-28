@@ -36,8 +36,8 @@ class FakeClient:
         self.handler, self.calls = handler, []
 
     def _do(self, op, shape, kw):
-        validate_parameters(kw, MODEL.operation_model(shape).input_shape)
         self.calls.append((op, kw))
+        validate_parameters(kw, MODEL.operation_model(shape).input_shape)
         return {"memoryRecordSummaries": self.handler(op, kw)}
 
     def retrieve_memory_records(self, **kw):
@@ -80,8 +80,8 @@ def _texts(page):
 def test_namespaces_for():
     assert NS == {
         "facts": "/owners/own1/",
-        "turns": "/owners/own1/turns/",
-        "entries": "/owners/own1/entries/",
+        "turns": "/turns/own1/",
+        "entries": "/entries/own1/",
         "private": "/owners/own1:user_a/",
     }
     assert "private" not in TEAM_ONLY
@@ -89,15 +89,17 @@ def test_namespaces_for():
 
 @pytest.mark.asyncio
 async def test_recall_empty_namespace_returns_empty_page(monkeypatch):
-    _use(monkeypatch, FakeClient())
+    c = _use(monkeypatch, FakeClient())
     page = await _run(as_of=AS_OF)
     assert page["results"] == [] and page["asOf"] == AS_OF.isoformat()
+    assert c.calls
 
 
 @pytest.mark.asyncio
 async def test_recall_only_queries_own_namespaces(monkeypatch):
     c = _use(monkeypatch, FakeClient())
     await _run(namespaces=TEAM_ONLY, include_private=True)
+    assert c.calls
     assert {kw["namespace"] for _, kw in c.calls} <= set(TEAM_ONLY.values())
     assert all(kw["searchCriteria"]["topK"] == 100 for o, kw in c.calls if o == "retrieve")
 
@@ -239,3 +241,90 @@ async def test_recall_failed_arm_does_not_fail_recall(monkeypatch):
 
     _use(monkeypatch, FakeClient(handler))
     assert "still here" in _texts(await _run())
+
+
+def _ann_handler(rows):
+    def handler(op, kw):
+        f = kw.get("metadataFilters")
+        if op == "list" and not f:
+            return [_rec("x", "Ann: a: 1", entity="Ann")]
+        return rows if op == "list" else []
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_entity_cache_skips_failed_listing(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    state = {"fail": True}
+
+    def handler(op, kw):
+        if op == "list" and not kw.get("metadataFilters") and state["fail"]:
+            raise ClientError({"Error": {"Code": "Throttling", "Message": "x"}}, "List")
+        return _ann_handler([_rec("a1", "Ann: city: Rome", kind="claim", entity="Ann")])(op, kw)
+
+    c = _use(monkeypatch, FakeClient(handler))
+    await memory_recall.recall(memory_id=MEM, namespaces=NS, question="ann?")
+    state["fail"] = False
+    page = await memory_recall.recall(memory_id=MEM, namespaces=NS, question="ann?")
+    assert _texts(page) == ["Ann: city: Rome"]
+    assert len([kw for o, kw in c.calls if o == "list" and not kw.get("metadataFilters")]) == 2
+
+
+@pytest.mark.asyncio
+async def test_param_validation_error_is_not_swallowed(monkeypatch):
+    c = _use(monkeypatch, FakeClient())
+    with pytest.raises(Exception, match="memoryId"):
+        await memory_recall.recall(memory_id="x", namespaces=NS, question="q?")
+    assert c.calls
+
+
+@pytest.mark.asyncio
+async def test_listing_is_capped_in_pages_and_records(monkeypatch):
+    pages = []
+
+    def list_memory_records(**kw):
+        pages.append(kw)
+        return {"memoryRecordSummaries": [_rec(f"r{len(pages)}", "Ann: a: 1", entity="Ann")], "nextToken": "n"}
+
+    client = FakeClient()
+    client.list_memory_records = list_memory_records
+    assert len(memory_recall._list(client, MEM, NS["facts"], [], 1000)) == memory_recall.MAX_PAGES
+    pages.clear()
+    assert len(memory_recall._list(client, MEM, NS["facts"], [], 3)) == 3 and len(pages) == 3
+
+
+@pytest.mark.asyncio
+async def test_recall_scores_below_floor_return_only_positive(monkeypatch):
+    async def scores(query, documents, top_n):
+        return [(0, 0.9), (1, 0.0), (2, 0.0)]
+
+    monkeypatch.setattr(memory_models, "rerank", scores)
+    rows = [_rec(f"t{i}", f"note {i}") for i in range(3)]
+    _use(monkeypatch, FakeClient(lambda op, kw: rows if kw["namespace"] == NS["turns"] else []))
+    assert _texts(await _run()) == ["note 0"]
+
+
+@pytest.mark.asyncio
+async def test_recall_caps_parts_at_five(monkeypatch):
+    async def seven(question):
+        return [f"part {i}" for i in range(7)]
+
+    monkeypatch.setattr(memory_models, "expand", seven)
+    c = _use(monkeypatch, FakeClient())
+    await _run()
+    assert len({kw["searchCriteria"]["searchQuery"] for _, kw in c.calls if "searchCriteria" in kw}) == 5
+
+
+@pytest.mark.asyncio
+async def test_recall_caps_entities_at_five_per_part(monkeypatch):
+    names = [f"Name{i}" for i in range(8)]
+
+    def handler(op, kw):
+        listing = op == "list" and not kw.get("metadataFilters")
+        return [_rec(n, f"{n}: a: 1", entity=n) for n in names] if listing else []
+
+    c = _use(monkeypatch, FakeClient(handler))
+    await memory_recall.recall(memory_id=MEM, namespaces=NS, question=" ".join(names))
+    assert len([kw for o, kw in c.calls if o == "list" and kw.get("metadataFilters")]) == 5

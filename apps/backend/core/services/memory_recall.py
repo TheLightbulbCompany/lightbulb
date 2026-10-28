@@ -8,11 +8,12 @@ import asyncio
 import logging
 import re
 import time
+import weakref
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError, ClientError, ParamValidationError
 
 from core.dynamodb import run_in_thread
 from core.services import memory_models, workspace_memory
@@ -25,6 +26,9 @@ MAX_ENTITIES = 5
 RERANK_TOP = 100
 MIN_POSITIVE = 5
 ENTITY_TTL_S = 60.0
+MAX_PAGES = 10
+MAX_CALLS = 16
+_gates: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # one semaphore per event loop
 _entity_cache: dict[tuple[str, str], tuple[float, set[str]]] = {}
 
 
@@ -44,13 +48,18 @@ def _as_of_variants(as_of: datetime | None) -> list[list[dict]]:
     return [[start, _flt("validTo", "NOT_EXISTS")], [start, _flt("validTo", "GREATER_THAN", e)]]
 
 
-async def _call(label: str, fn, **kwargs) -> list[dict]:
-    """One AgentCore read in a thread; a failure loses that arm only."""
+async def _call(label: str, fn, **kwargs) -> list[dict] | None:
+    """One AgentCore read in a thread, at most MAX_CALLS at once. None when it failed: that loses
+    one arm only. A malformed request is a bug and propagates."""
+    gate = _gates.setdefault(asyncio.get_running_loop(), asyncio.Semaphore(MAX_CALLS))
     try:
-        return await run_in_thread(fn, **kwargs)
+        async with gate:
+            return await run_in_thread(fn, **kwargs)
+    except ParamValidationError:
+        raise
     except (ClientError, BotoCoreError) as exc:
         logger.warning("memory recall %s failed: %s", label, type(exc).__name__)
-        return []
+        return None
 
 
 def _retrieve(client, memory_id: str, namespace: str, query: str, limit: int, filters: list[dict]) -> list[dict]:
@@ -61,11 +70,20 @@ def _retrieve(client, memory_id: str, namespace: str, query: str, limit: int, fi
     return resp.get("memoryRecordSummaries", [])
 
 
-def _list(client, memory_id: str, namespace: str, filters: list[dict]) -> list[dict]:
+def _list(client, memory_id: str, namespace: str, filters: list[dict], cap: int) -> list[dict]:
+    """At most ``cap`` records and MAX_PAGES pages."""
     extra = {"metadataFilters": filters} if filters else {}
-    return workspace_memory._pages(
-        client.list_memory_records, "memoryRecordSummaries", memoryId=memory_id, namespace=namespace, **extra
-    )
+    items, token = [], None
+    for _ in range(MAX_PAGES):
+        resp = client.list_memory_records(
+            memoryId=memory_id, namespace=namespace, **extra, **({"nextToken": token} if token else {})
+        )
+        items.extend(resp.get("memoryRecordSummaries", []))
+        token = resp.get("nextToken")
+        if not token or len(items) >= cap:
+            return items[:cap]
+    logger.info("memory recall listing hit the %d page cap", MAX_PAGES)
+    return items[:cap]
 
 
 async def _entities(client, memory_id: str, facts_ns: str) -> set[str]:
@@ -73,7 +91,9 @@ async def _entities(client, memory_id: str, facts_ns: str) -> set[str]:
     hit = _entity_cache.get(key)
     if hit and time.monotonic() - hit[0] < ENTITY_TTL_S:
         return hit[1]
-    rows = await _call("entities", partial(_list, client, memory_id, facts_ns, []))
+    rows = await _call("entities", partial(_list, client, memory_id, facts_ns, [], MAX_PAGES * 100))
+    if rows is None:  # a failed listing is not an empty one: do not cache it
+        return set()
     names = {e for r in rows if (e := ((r.get("metadata") or {}).get("entity") or {}).get("stringValue"))}
     _entity_cache[key] = (time.monotonic(), names)
     return names
@@ -98,19 +118,25 @@ async def _search_part(client, memory_id, namespaces, part, limit, as_of, includ
     jobs.append(("turn", retrieve(namespaces["turns"], [])))
     jobs.append(("entry", retrieve(namespaces["entries"], [])))
     if include_private and "private" in namespaces:
-        jobs.append(("claim", retrieve(namespaces["private"], [])))
+        for extra in variants:
+            jobs.append(("claim", retrieve(namespaces["private"], extra)))
     for entity in _named(part, entities):
         for extra in variants:
             jobs.append(
                 (
                     "claim",
                     partial(
-                        _list, client, memory_id, namespaces["facts"], [_flt("entity", "EQUALS_TO", entity), *extra]
+                        _list,
+                        client,
+                        memory_id,
+                        namespaces["facts"],
+                        [_flt("entity", "EQUALS_TO", entity), *extra],
+                        limit,
                     ),
                 )
             )
     results = await asyncio.gather(*(_call("search", fn) for _, fn in jobs))
-    return [(kind, rows) for (kind, _), rows in zip(jobs, results, strict=True)]
+    return [(kind, rows or []) for (kind, _), rows in zip(jobs, results, strict=True)]  # failed arms are None
 
 
 def _as_current(c: Candidate, as_of: datetime | None) -> Candidate:
@@ -135,7 +161,7 @@ async def recall(
     now = datetime.now(UTC)
     when = as_of or now
     t0 = time.monotonic()
-    parts = (await memory_models.expand(question))[:MAX_PARTS] if use_expand else [question]
+    parts = ((await memory_models.expand(question))[:MAX_PARTS] if use_expand else []) or [question]
     t1 = time.monotonic()
 
     client = workspace_memory._client()

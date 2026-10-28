@@ -58,8 +58,10 @@ def owner_namespace(owner_id: str) -> str:
 
 def namespaces_for(owner_id: str, user_id: str | None) -> dict[str, str]:
     """The namespaces recall reads for ``owner_id``; ``private`` only when ``user_id`` is given."""
+    # turns and entries are siblings of the facts namespace, never children: a prefix read of
+    # /owners/<o>/ must not pull them in.
     team = owner_namespace(owner_id)
-    out = {"facts": team, "turns": f"{team}turns/", "entries": f"{team}entries/"}
+    out = {"facts": team, "turns": f"/turns/{owner_id}/", "entries": f"/entries/{owner_id}/"}
     if user_id:
         out["private"] = f"/owners/{owner_id}:{user_id}/"
     return out

@@ -4,7 +4,7 @@ Rooms, members, pins and search change only through this tool. It calls `POST /a
 
 Why not edit the data yourself: on 18 Oct a hand-written member row skipped the agent's delivery cursor and silenced its @mentions; the tool makes the same call the browser does.
 
-Call it with `action`, `roomId` (the room acted on; omit for `create_room` and the searches) and `args`. Inside `args`, camelCase or snake_case field names both work except `pin`/`unpin`, which read `message_id`; an unknown key is rejected. In a channel, removing a member and updating the room need the person to be a room owner or admin, otherwise the call is refused.
+Call it with `action`, `roomId` (the room acted on; omit for `create_room` and the searches) and `args`. Inside `args`, camelCase or snake_case field names both work except `pin`/`unpin`, which read `message_id`; an unknown key is rejected. In a channel, adding or removing a member and updating the room need the person to be a room owner or admin, otherwise the call is refused (except a listen-mode change on an existing agent member, or adding a member at role `member` to a DM or group chat, which any participant may do).
 
 | action | args |
 |---|---|

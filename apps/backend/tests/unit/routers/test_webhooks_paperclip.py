@@ -1121,3 +1121,33 @@ async def test_user_deleted_fails_the_event_when_the_person_wipe_fails(async_cli
         pytest.raises(RuntimeError, match="down"),  # the app error reaches the client: no 200 to ack
     ):
         await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_svix_headers())
+
+
+@pytest.mark.asyncio
+async def test_last_member_leaving_a_parked_workspace_still_reaches_the_teardown(
+    lifecycle_io, monkeypatch, no_evaluator_wipe
+):
+    """The member wipe's on-behalf-of forward cannot reach a parked runtime: it is owed (a durable
+    retry row and a wake), never raised, so the empty-workspace teardown still runs (2026-09-23)."""
+    from unittest.mock import MagicMock
+
+    from core.services import memory_api, network_member
+    from routers import webhooks
+
+    monkeypatch.setattr(memory_api, "forget_on_behalf_of", AsyncMock(side_effect=RuntimeError("member is parked")))
+    table = MagicMock()
+    monkeypatch.setattr("core.repositories.messaging_repo._table", lambda: table)
+    wake = AsyncMock(return_value=True)
+    monkeypatch.setattr(network_member, "wake", wake)
+    teardown = AsyncMock()
+    monkeypatch.setattr(webhooks, "_teardown_if_no_members_left", teardown)
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+
+    await webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "user_a"})
+
+    (owed,) = [c.kwargs["Item"] for c in table.put_item.call_args_list]
+    assert (owed["pk"], owed["sk"]) == ("MEMWIPE#org_acme", "U#user_a") and owed["expiresAt"]
+    wake.assert_awaited_once_with("org_acme")
+    teardown.assert_awaited_once_with("org_acme")
+    no_evaluator_wipe["delete_sessions"].assert_awaited_once_with("user_a", workspace_id="org_acme")

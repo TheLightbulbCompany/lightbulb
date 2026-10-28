@@ -10,6 +10,7 @@ logs a question or a fact.
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime
 from functools import partial
 
@@ -99,11 +100,12 @@ async def sweep_once() -> int:
     stops the rest."""
     memory_id = settings.AGENTCORE_MEMORY_ID
     ran = 0
-    if not memory_id:
-        return await _collect_due(ran)
     # ponytail: one containers-table scan per pass; keep an index of memory owners if the fleet grows.
     for row in await container_repo.scan_all():
         owner_id = row.get("owner_id") or ""
+        await retry_member_wipes(owner_id)
+        if not memory_id:
+            continue
         try:
             ns = workspace_memory.namespaces_for(owner_id, None)
             ran += await memory_sync.sync_if_stale(
@@ -204,9 +206,9 @@ async def forget(owner_id: str, entry_id: str) -> None:
 
 
 async def forget_on_behalf_of(owner_id: str, user_id: str) -> int:
-    """Forget every entry the workspace wrote on ``user_id``'s behalf (the member wipe), found by
-    paging ``memory.list``: each row carries its source. Raises when the member is parked: the list
-    cannot be read, and a wipe that skipped it would keep the person's notes."""
+    """Forget every entry the workspace wrote on ``user_id``'s behalf, found by paging
+    ``memory.list``: each row carries its source. Raises when the member is parked or unavailable
+    (the list cannot be read); the member wipe calls it through ``forward_on_behalf_of``."""
     since, sent = 0, 0
     while True:
         answer = await network_member.call_op(owner_id, "memory.list", {"since_seq": since}, 30.0)
@@ -222,6 +224,52 @@ async def forget_on_behalf_of(owner_id: str, user_id: str) -> int:
         if not rows or nxt <= since:
             return sent
         since = nxt
+
+
+OWED_WIPE_S = 30 * 86400  # how long a forward owed to a parked member is retried
+
+
+def _owed_key(owner_id: str, user_id: str) -> dict:
+    return {"pk": f"MEMWIPE#{owner_id}", "sk": f"U#{user_id}"}
+
+
+async def forward_on_behalf_of(owner_id: str, user_id: str) -> None:
+    """The member wipe's forward. Never raises: a parked or unavailable member gets one durable
+    retry row (``MEMWIPE#<owner>`` / ``U#<user>``) and a wake, and the sweep finishes the forward
+    once the runtime is warm. The rest of the wipe, and the empty-workspace teardown after it, go on."""
+    from core.repositories import messaging_repo
+
+    try:
+        await forget_on_behalf_of(owner_id, user_id)
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("member wipe forward owed owner=%s error=%s", owner_id, type(exc).__name__)
+    try:
+        item = {**_owed_key(owner_id, user_id), "expiresAt": int(time.time()) + OWED_WIPE_S}
+        await run_in_thread(messaging_repo._table().put_item, Item=item)
+        await network_member.wake(owner_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("member wipe forward could not be owed owner=%s error=%s", owner_id, type(exc).__name__)
+
+
+async def retry_member_wipes(owner_id: str) -> int:
+    """The sweep's retry of owed forwards: each one that now goes through loses its row. Never raises."""
+    from core.repositories import messaging_repo
+
+    done = 0
+    try:
+        for row in await messaging_repo._query(f"MEMWIPE#{owner_id}", begins_with="U#"):
+            if int(row.get("expiresAt") or 0) <= time.time():
+                continue
+            try:
+                await forget_on_behalf_of(owner_id, row["sk"].removeprefix("U#"))
+            except Exception:  # noqa: BLE001 -- still parked: the next pass tries again
+                continue
+            await run_in_thread(messaging_repo._table().delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
+            done += 1
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("member wipe retry failed owner=%s error=%s", owner_id, type(exc).__name__)
+    return done
 
 
 async def forget_author(owner_id: str, author: str) -> None:

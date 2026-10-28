@@ -238,8 +238,8 @@ async def delete_owner_memory(owner_id: str, *, resweep_after_s: float = RESWEEP
     await _run_all(
         f"owner wipe for {owner_id}",
         [
+            lambda: evaluator.delete_workspace_drafts(owner_id),  # first: it finds people by their session rows
             lambda: session_store.delete_workspace_sessions(owner_id),
-            lambda: evaluator.delete_workspace_drafts(owner_id),
             records,
         ],
     )
@@ -251,7 +251,7 @@ async def _forget_authored(owner_id: str, user_id: str, memory_api, network_logi
     the member route). The key registry stays: it is the person's, for their other workspaces."""
     for key in await network_login.computer_keys(user_id):
         await memory_api.forget_author(owner_id, key)
-    await memory_api.forget_on_behalf_of(owner_id, user_id)
+    await memory_api.forward_on_behalf_of(owner_id, user_id)  # never raises: a parked member is owed it
 
 
 async def delete_member_memory(

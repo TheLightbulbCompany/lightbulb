@@ -103,10 +103,10 @@ async def test_an_ingest_collects_once_and_marks_the_person_due(agentcore, colle
     agentcore.add_response("create_event", event_ok())
     assert await evaluator.ingest_session("u", sess(), calls(1), workspace_id="org_x") is True
     collected.assert_awaited_once_with("u", workspace_id="org_x")
-    due = store._table().get_item(Key={"pk": "EVALDUE", "sk": "u"})["Item"]
+    due = store._table().get_item(Key={"pk": "EVALDUE", "sk": "U#u#W#org_x"})["Item"]  # per person AND workspace
     assert due["workspace_id"] == "org_x" and int(due["expiresAt"]) > datetime.now(UTC).timestamp()
     # the sweep collects everyone still due, and no one whose window has passed
-    store._table().put_item(Item={"pk": "EVALDUE", "sk": "old", "expiresAt": 1})
+    store._table().put_item(Item={"pk": "EVALDUE", "sk": "U#old#W#free", "user_id": "old", "expiresAt": 1})
     collected.reset_mock()
     await evaluator.collect_due()
     collected.assert_awaited_once_with("u", workspace_id="org_x")
@@ -214,12 +214,18 @@ async def test_member_wipe_removes_only_what_belongs_to_that_workspace(agentcore
     await session_store.put_sessions("user_a", [sess("s1")], True, "org_x")
     await session_store.put_sessions("user_a", [sess("s2")], True, "org_y")  # another workspace's
     await session_store.put_sessions("user_a", [sess("s3")], False)  # free tier
-    agentcore.add_response("list_memory_records", listing(rec("rf", "a lesson", t, ("/users/user_a/",))),
+    agentcore.add_response("list_memory_records", listing(rec("rf", "a lesson from s1", t, ("/users/user_a/",))),
                            {"memoryId": MEM, "namespace": "/users/user_a/"})  # fmt: skip
     await evaluator.collect_drafts("user_a", workspace_id="org_x")
-    agentcore.add_response("list_memory_records", listing(rec("rg", "a lesson", t + timedelta(hours=1), ("/users/user_a/",))),
+    agentcore.add_response("list_memory_records", listing(rec("rg", "a lesson from s2", t + timedelta(hours=1), ("/users/user_a/",))),
                            {"memoryId": MEM, "namespace": "/users/user_a/"})  # fmt: skip
     await evaluator.collect_drafts("user_a", workspace_id="org_y")
+    from core.repositories import messaging_repo as store
+
+    for ws in ("org_x", "org_y"):
+        store._table().put_item(
+            Item={"pk": "EVALDUE", "sk": f"U#user_a#W#{ws}", "user_id": "user_a", "workspace_id": ws}
+        )
     from unittest.mock import AsyncMock
 
     from core.services import memory_api, network_login
@@ -241,6 +247,9 @@ async def test_member_wipe_removes_only_what_belongs_to_that_workspace(agentcore
     assert [d["id"] for d in await evaluator.list_drafts(user_id="user_a")] == [rid("rg")]
     assert await evaluator.list_drafts(workspace_id="org_x") == []
     assert len(await evaluator.list_drafts(workspace_id="org_y")) == 1
+    # The removed person's lessons stop flowing into org_x; org_y keeps collecting.
+    due = [i["sk"] for i in store._table().scan()["Items"] if i["pk"] == "EVALDUE"]
+    assert due == ["U#user_a#W#org_y"]
     s3 = boto3.client("s3", region_name="us-east-1")
     keys_left = [o["Key"] for o in s3.list_objects_v2(Bucket=BUCKET).get("Contents", [])]
     assert keys_left == ["sessions/workspace/user_a/s2.json"]
@@ -264,7 +273,7 @@ async def test_person_wipe_removes_everything_of_the_persons_own(agentcore):
         await workspace_memory.delete_person_memory("user_a", resweep_after_s=0)
     episodes.assert_awaited_once_with("user_a", resweep_after_s=0)
     forget.assert_awaited_once_with("user_a")
-    left = [i for i in store._table().scan()["Items"] if "user_a" in i["pk"] or i.get("sk") == "user_a"]
+    left = [i for i in store._table().scan()["Items"] if "user_a" in i["pk"] + i["sk"]]
     assert left == []  # SESSIONS#, WSESSIONS#, DRAFTS#, WDRAFTS#, EVAL#, MEMCAP#, EVALDUE
     assert boto3.client("s3", region_name="us-east-1").list_objects_v2(Bucket=BUCKET).get("Contents", []) == []
 
@@ -276,15 +285,25 @@ async def test_owner_wipe_deletes_every_members_workspace_sessions_and_drafts_di
     await session_store.put_sessions("user_a", [sess("s1")], True, "org_x")
     await session_store.put_sessions("user_b", [sess("s2")], False, "org_x")
     await session_store.put_sessions("user_b", [sess("s3")], True)  # user_b's free tier stays
-    agentcore.add_response("list_memory_records", listing(rec("rf", "a lesson", t, ("/users/user_a/",))))
+    agentcore.add_response("list_memory_records", listing(
+        rec("rf", "a lesson from s1", t, ("/users/user_a/",)),
+        rec("rk", "an api key showed up in s1", t, ("/users/user_a/",)),  # a finding: never mirrored
+        rec("rh", "a lesson from no session here", t, ("/users/user_a/",))))  # fmt: skip
     await evaluator.collect_drafts("user_a", workspace_id="org_x")
+    assert len(await evaluator.list_drafts(user_id="user_a")) == 3
+    assert [d["id"] for d in await evaluator.list_drafts(workspace_id="org_x")] == [rid("rf")]
+    store._table().put_item(
+        Item={"pk": "EVALDUE", "sk": "U#user_a#W#org_x", "user_id": "user_a", "workspace_id": "org_x"}
+    )
+    store._table().put_item(Item={"pk": "EVALDUE", "sk": "U#user_b#W#free", "user_id": "user_b"})
     with patch.object(settings, "AGENTCORE_MEMORY_ID", ""):
         await workspace_memory.delete_owner_memory("org_x")
     assert await session_store.list_sessions(workspace_id="org_x") == []
     assert await session_store.list_sessions(user_id="user_a") == []
     assert [r["id"] for r in await session_store.list_sessions(user_id="user_b")] == ["s3"]
     assert await evaluator.list_drafts(workspace_id="org_x") == []
-    assert await evaluator.list_drafts(user_id="user_a") == []
+    assert await evaluator.list_drafts(user_id="user_a") == []  # the unmirrored finding and lesson too
+    assert [i["sk"] for i in store._table().scan()["Items"] if i["pk"] == "EVALDUE"] == ["U#user_b#W#free"]
     keys_left = [
         o["Key"] for o in boto3.client("s3", region_name="us-east-1").list_objects_v2(Bucket=BUCKET)["Contents"]
     ]
@@ -334,3 +353,18 @@ async def test_concurrent_same_session_ingests_once(agentcore, collected):
         evaluator.ingest_session("u", sess(), calls(1), workspace_id=None),
     )
     assert sorted(results) == [False, True]
+
+
+async def test_a_workspace_collect_mirrors_only_lessons_drawn_from_its_sessions(agentcore):
+    await session_store.put_sessions("u", [sess("s1")], False, "org_x")
+    await session_store.put_sessions("u", [sess("s2")], False, "org_y")
+    await session_store.put_sessions("u", [sess("s3")], False)
+    t = datetime(2026, 10, 27, 12, tzinfo=UTC)
+    agentcore.add_response("list_memory_records", listing(
+        rec("a", "retry flaky tests in s1", t), rec("b", "pin node in s2", t),
+        rec("c", "s3 taught squash merges", t), rec("d", "a lesson naming no session", t)))  # fmt: skip
+    assert await evaluator.collect_drafts("u", workspace_id="org_x") == 4
+    assert [d["id"] for d in await evaluator.list_drafts(workspace_id="org_x")] == [rid("a")]
+    # the rest stay the author's: listed for them in the workspace, never to their teammates
+    mine = {d["id"] for d in await evaluator.list_drafts(user_id="u", workspace_id="org_x")}
+    assert mine == {rid("a"), rid("b"), rid("c"), rid("d")}

@@ -467,6 +467,19 @@ async def ring(token: str) -> bool:
     return True
 
 
+async def wake(owner_id: str) -> bool:
+    """Ring this workspace's own doorbell (the queued ``network_wake``, rate-limited by
+    ``_queue_wake``). False when it has none: it was never on a network."""
+    from core.repositories import messaging_repo
+
+    key = _netwake_key(owner_id)
+    row = await messaging_repo._get(key["pk"], key["sk"])
+    if not row or not row.get("tokenHash"):
+        return False
+    await _queue_wake(owner_id, str(row["tokenHash"]))
+    return True
+
+
 async def _queue_wake(owner_id: str, digest: str) -> None:
     """At most one ``network_wake`` per workspace per ``WAKE_WINDOW_S`` reaches the work queue."""
     from botocore.exceptions import ClientError

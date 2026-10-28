@@ -6,10 +6,12 @@ reflections (patterns across their sessions) become drafts a person can later ap
 Namespaces are per user and never cross users: episodes in ``/users/<user>/episodes/``,
 reflections in ``/users/<user>/``. ListMemoryRecords on the latter also returns the episodes
 beneath it, so a reflection is told apart by the record's own ``namespaces``.
-Rows live in the messaging table: DRAFTS#<user>/D#<id> (+ WDRAFTS#<ws>/D#<user>#<id> for a lesson:
-a finding may hold a secret, so only its author sees it), EVAL#<user>/WATERMARK and /S#<session>
-(ingested), EVALDUE/<user> (reflections may still come: the sweep collects until it expires),
-MEMCAP#<user>#<YYYY-MM>/COUNT (free cap, expires after the month).
+Rows live in the messaging table: DRAFTS#<user>/D#<id> (``workspace_id``: the workspace it was
+collected in, absent when free), mirrored to WDRAFTS#<ws>/D#<user>#<id> only for a lesson drawn from
+at least one of the person's sessions in that workspace (``mirrored``): a finding may hold a secret,
+and reflections span all of a person's sessions, so the rest stay their author's. EVAL#<user>/WATERMARK
+and /S#<session> (ingested), EVALDUE/U#<user>#W#<ws|free> (reflections may still come: the sweep
+collects until it expires), MEMCAP#<user>#<YYYY-MM>/COUNT (free cap, expires after the month).
 Nothing here logs session text, summaries or reflection text.
 """
 
@@ -100,13 +102,20 @@ async def ingest_session(user_id: str, session: dict, tool_calls: list[dict], *,
             )
         raise
     # Reflections are extracted later: collect what is ready now, and the sweep the rest.
-    due = {"pk": _DUE, "sk": user_id, "workspace_id": workspace_id, "expiresAt": int(time.time()) + DUE_S}
+    due = {**_due_key(user_id, workspace_id), "user_id": user_id, "expiresAt": int(time.time()) + DUE_S}
+    if workspace_id:
+        due["workspace_id"] = workspace_id
     try:
         await run_in_thread(table.put_item, Item=due)
         await collect_drafts(user_id, workspace_id=workspace_id)
     except Exception as e:  # noqa: BLE001 -- the session is in; collecting again is the sweep's job
         logger.warning("draft collect after ingest failed: %s", type(e).__name__)
     return True
+
+
+def _due_key(user_id: str, workspace_id: str | None) -> dict:
+    """One partition the sweep can list; a row per person and workspace, so a wipe of one leaves the others."""
+    return {"pk": _DUE, "sk": f"U#{user_id}#W#{workspace_id or 'free'}"}
 
 
 async def collect_due() -> int:
@@ -117,7 +126,7 @@ async def collect_due() -> int:
         if int(row.get("expiresAt") or 0) <= now:
             continue
         try:
-            created += await collect_drafts(row["sk"], workspace_id=row.get("workspace_id"))
+            created += await collect_drafts(row["user_id"], workspace_id=row.get("workspace_id"))
         except Exception as e:  # noqa: BLE001
             logger.warning("draft collect failed: %s", type(e).__name__)
     return created
@@ -166,7 +175,10 @@ async def collect_drafts(user_id: str, *, workspace_id: str | None) -> int:
     since = _ts(mark["at"]) if mark else _ts(None)
     records = await run_in_thread(_reflections, _client(), memory_id, user_id)
     new = [r for r in records if _ts(str(r.get("createdAt"))) > since] if records else []
-    sessions = {r["id"] for r in await store._query(f"SESSIONS#{user_id}", begins_with="S#")}
+    rows = await store._query(f"SESSIONS#{user_id}", begins_with="S#")
+    sessions = {r["id"] for r in rows}
+    # The person's sessions in this workspace (each also has its WSESSIONS#<ws> row).
+    here = {r["id"] for r in rows if workspace_id and r.get("workspace_id") == workspace_id}
     created = 0
     for r in new:
         text = r.get("content", {}).get("text", "")
@@ -178,10 +190,12 @@ async def collect_drafts(user_id: str, *, workspace_id: str | None) -> int:
         }  # fmt: skip
         if workspace_id:
             item["workspace_id"] = workspace_id
+        # Only a lesson drawn from this workspace's sessions reaches its members.
+        item["mirrored"] = item["kind"] == "lesson" and bool(here.intersection(named))
         if not await _put_new(table, {"pk": f"DRAFTS#{user_id}", "sk": f"D#{item['id']}", **item}):
             continue  # already collected (maybe approved since): never reset it
         created += 1
-        if workspace_id and item["kind"] != "finding":  # a finding may hold a secret: its author's only
+        if item["mirrored"]:
             await run_in_thread(
                 table.put_item, Item={"pk": f"WDRAFTS#{workspace_id}", "sk": f"D#{user_id}#{item['id']}", **item}
             )
@@ -196,8 +210,9 @@ def _row(item: dict) -> dict:
 
 
 def _own_findings(rows: list[dict], workspace_id: str) -> list[dict]:
-    """The caller's own findings in this workspace: in no mirror, so read from their partition."""
-    return [r for r in rows if r.get("kind") == "finding" and r.get("workspace_id") == workspace_id]
+    """The caller's own unmirrored drafts in this workspace (findings, lessons from elsewhere): read
+    from their partition."""
+    return [r for r in rows if not r.get("mirrored") and r.get("workspace_id") == workspace_id]
 
 
 async def list_drafts(
@@ -246,7 +261,7 @@ async def set_draft_status(draft: dict, status: str, *, frm: str = "proposed") -
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
         return False
-    if draft.get("workspace_id") and draft.get("kind") != "finding":  # a finding has no mirror
+    if draft.get("workspace_id") and draft.get("mirrored"):  # an unmirrored draft has no copy to follow
         mirror = {"pk": f"WDRAFTS#{draft['workspace_id']}", "sk": f"D#{draft['user_id']}#{draft['id']}"}
         try:
             await run_in_thread(
@@ -278,21 +293,29 @@ async def delete_drafts(user_id: str, *, workspace_id: str | None = None) -> int
         drafts = [d for d in drafts if d.get("workspace_id") == workspace_id]
     jobs = [_rm(d["pk"], d["sk"]) for d in drafts]
     jobs += [_rm(f"WDRAFTS#{d['workspace_id']}", f"D#{user_id}#{d['id']}") for d in drafts if d.get("workspace_id")]
-    if not workspace_id:
+    if workspace_id:
+        jobs.append(_rm(**_due_key(user_id, workspace_id)))
+    else:
         jobs += [_rm(m["pk"], m["sk"]) for m in await store._query(f"EVAL#{user_id}")]
+        jobs += [_rm(d["pk"], d["sk"]) for d in await store._query(_DUE, begins_with=f"U#{user_id}#")]
         # Older months' cap rows expire on their own (CAP_ROW_S).
-        jobs += [_rm(_DUE, user_id), _rm(f"MEMCAP#{user_id}#{utc_now_iso()[:7]}", "COUNT")]
+        jobs.append(_rm(f"MEMCAP#{user_id}#{utc_now_iso()[:7]}", "COUNT"))
     await asyncio.gather(*jobs)
     return len(drafts)
 
 
 async def delete_workspace_drafts(workspace_id: str) -> int:
-    """Every draft collected in this workspace, both copies (the workspace is deleted)."""
+    """Every draft collected in this workspace, both copies, mirrored or not, and the due rows (the
+    workspace is deleted). Its people are the ones its session and draft rows name, so this runs
+    before the sessions go."""
     mirrored = await store._query(f"WDRAFTS#{workspace_id}", begins_with="D#")
-    jobs = [_rm(r["pk"], r["sk"]) for r in mirrored]
-    jobs += [_rm(f"DRAFTS#{r['user_id']}", f"D#{r['id']}") for r in mirrored]
-    await asyncio.gather(*jobs)
-    return len(mirrored)
+    sessions = await store._query(f"WSESSIONS#{workspace_id}", begins_with="S#")
+    users = {r["user_id"] for r in [*mirrored, *sessions] if r.get("user_id")}
+    deleted = 0
+    for user_id in sorted(users):
+        deleted += await delete_drafts(user_id, workspace_id=workspace_id)
+    await asyncio.gather(*(_rm(r["pk"], r["sk"]) for r in mirrored))  # any mirror whose author row is gone
+    return deleted
 
 
 def _delete_episodes(client, memory_id: str, user_id: str) -> int:

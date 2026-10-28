@@ -18,7 +18,7 @@ from routers.sessions import caller  # noqa: E402
 
 def _draft(**kw):
     return {"id": "d1", "user_id": "user_ana", "kind": "lesson", "text": "Run migrations first",
-            "evidence": ["s1", "s2"], "status": "proposed", "workspace_id": "org_a", **kw}  # fmt: skip
+            "evidence": ["s1", "s2"], "status": "proposed", "workspace_id": "org_a", "mirrored": True, **kw}  # fmt: skip
 
 
 @pytest.fixture

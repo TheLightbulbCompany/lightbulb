@@ -690,3 +690,47 @@ async def test_mirrored_turn_rows_expire(table, agentcore):
     agentcore.add_response("batch_create_memory_records", created((turn, rid("t1"))))
     await run(Member())
     assert int(memory_sync._get(OWNER, f"MEMTURN#{turn}")["expiresAt"]) > T0.timestamp()
+
+
+async def test_a_parked_member_is_owed_the_wipe_forward_and_the_sweep_finishes_it(table):
+    from unittest.mock import AsyncMock
+
+    from core.services import memory_api
+
+    wake = AsyncMock(return_value=True)
+    with (
+        patch.object(network_member, "call_op", AsyncMock(return_value=None)),
+        patch.object(network_member, "wake", wake),
+    ):
+        await memory_api.forward_on_behalf_of(OWNER, "user_a")  # never raises
+        assert await memory_api.retry_member_wipes(OWNER) == 0  # still parked: the row stays
+    wake.assert_awaited_once_with(OWNER)
+    (row,) = table.scan()["Items"]
+    assert (row["pk"], row["sk"]) == (f"MEMWIPE#{OWNER}", "U#user_a")
+
+    mine = {"id": "e1", "author": "ws", "seq": 1, "at": 1, "op": remember("s", "f", scope="me", on_behalf_of="user_a")}
+    pages = {0: {"entries": [mine], "next": 1}, 1: {"entries": [], "next": 1}}
+    sent = []
+
+    async def warm(owner_id, op, params, timeout=30.0):
+        sent.append((op, params))
+        return pages[params["since_seq"]] if op == "memory.list" else {}
+
+    with patch.object(network_member, "call_op", warm):
+        assert await memory_api.retry_member_wipes(OWNER) == 1
+    assert ("memory.forget", {"entry": "e1"}) in sent
+    assert table.scan()["Items"] == []
+
+
+async def test_the_sweep_retries_owed_wipes_for_every_workspace(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from core.services import memory_api
+
+    monkeypatch.setattr(memory_api.settings, "AGENTCORE_MEMORY_ID", "", raising=False)
+    monkeypatch.setattr(memory_api.container_repo, "scan_all", AsyncMock(return_value=[{"owner_id": "org_1"}]))
+    retry = AsyncMock(return_value=1)
+    monkeypatch.setattr(memory_api, "retry_member_wipes", retry)
+    monkeypatch.setattr(memory_api.evaluator, "collect_due", AsyncMock(return_value=0))
+    await memory_api.sweep_once()
+    retry.assert_awaited_once_with("org_1")

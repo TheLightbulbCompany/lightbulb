@@ -62,7 +62,7 @@ describe("ContainerStack — dev", () => {
     ]);
     const custom = memory.Properties.MemoryStrategies.find((s: any) => s.CustomMemoryStrategy)
       .CustomMemoryStrategy;
-    expect(custom.Name).toBe("workspace_facts");
+    expect(custom.Name).toBe("workspace_claims");
     expect(custom.Namespaces).toEqual(["/owners/{actorId}/"]);
     const schema = Object.fromEntries(
       custom.MemoryRecordSchema.MetadataSchema.map((m: any) => [m.Key, m]),

@@ -369,7 +369,7 @@ describe("hermes runtime wiring", () => {
       Name: "lightbulb_dev_workspace_memory",
       EventExpiryDuration: 7,
       MemoryStrategies: [
-        { CustomMemoryStrategy: Match.objectLike({ Name: "workspace_facts", Namespaces: ["/owners/{actorId}/"] }) },
+        { CustomMemoryStrategy: Match.objectLike({ Name: "workspace_claims", Namespaces: ["/owners/{actorId}/"] }) },
       ],
     });
     dev.containerTemplate.hasResourceProperties("AWS::BedrockAgentCore::Memory", {

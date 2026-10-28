@@ -236,7 +236,7 @@ export class ContainerStack extends cdk.Stack {
     // Workspace memory: ONE resource per env, shared by every tenant. Isolation is IAM, proven in
     // the 2026-09-22 dev spike: the per-owner `owner-memory` inline policy
     // (bedrock_aip.ensure_owner_memory_policy) scopes events by `actorId` = owner and records by
-    // the exact `namespace` /owners/<owner>/ that this strategy extracts into. Semantic (workspace_facts) plus episodic (session_episodes, per user).
+    // the exact `namespace` /owners/<owner>/ that this strategy extracts into. Custom semantic (workspace_claims) plus episodic (session_episodes, per user).
     // Encryption: AWS-owned key, DELIBERATELY (Track G, 2026-09-22). A CMK needs a key-policy grant
     // to the service plus kms grants on every owner role. EncryptionKeyArn (like Name) is
     // create-only: changing it later REPLACES this resource, and with a fixed Name the prod
@@ -289,7 +289,10 @@ export class ContainerStack extends cdk.Stack {
           // against the schema below from that text, so status and dates are read out of the
           // fixed forms memory-consolidation.md writes.
           customMemoryStrategy: {
-            name: "workspace_facts",
+            // A new name on purpose: AgentCore cannot change the TYPE of an existing strategy
+            // (the built-in `workspace_facts` was semantic); CloudFormation deletes that one and
+            // creates this custom one on the same namespace. Nothing old is kept (founder, 28 Oct).
+            name: "workspace_claims",
             namespaces: ["/owners/{actorId}/"],
             configuration: {
               semanticOverride: {

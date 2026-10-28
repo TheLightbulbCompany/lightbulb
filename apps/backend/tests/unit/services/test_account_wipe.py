@@ -362,6 +362,17 @@ def wipe_mocks():
 
 
 @pytest.mark.asyncio
+async def test_a_parked_members_runtime_step_says_scheduled(wipe_mocks):
+    async def _parked(owner_id, *, delete_profiles=False, report=None):
+        report["runtime"] = "scheduled"
+
+    wipe_mocks.delete_workspace_runtime.side_effect = _parked
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    (step,) = [s for s in report.steps if s.system == "runtime"]
+    assert step.status == "ok" and "teardown scheduled" in step.detail
+
+
+@pytest.mark.asyncio
 async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     """(a) Every collaborator succeeds -> every step is "ok" (the company step
     is "refused" — never a delete), in the exact spec-mandated order, with

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
@@ -16,5 +16,35 @@ describe("/security", () => {
     expect(text).toContain("we do not use it to train AI models");
     expect(screen.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
     expect(metadata.alternates?.canonical).toBe("https://thelightbulb.company/security");
+  });
+
+  it("carries the claims table with evidence on every row", () => {
+    render(<SecurityPage />);
+    const table = screen.getByRole("table", { name: "Security claims and the evidence for them" });
+    const rows = within(table).getAllByRole("row").slice(1);
+    expect(rows).toHaveLength(11);
+    for (const row of rows) {
+      const cells = within(row).getAllByRole("cell");
+      expect(cells).toHaveLength(2);
+      for (const cell of cells) expect((cell.textContent ?? "").trim()).not.toBe("");
+    }
+    expect(table.textContent).toContain("a computer that stays offline forever keeps what it held");
+  });
+
+  it("says what leaves your machine: memory, capture and upload", () => {
+    render(<SecurityPage />);
+    const band = screen.getByRole("heading", { name: "What leaves your machine" }).parentElement!;
+    for (const word of ["memory", "capture", "upload"]) {
+      expect(band.textContent?.toLowerCase()).toContain(word);
+    }
+  });
+
+  it("names no competitor and claims no compliance", () => {
+    const { container } = render(<SecurityPage />);
+    const text = container.textContent ?? "";
+    for (const name of ["past.dev", "Beacon", "Mem0", "Hindsight", "Honcho", "Graphiti", "Supermemory"]) {
+      expect(text).not.toContain(name);
+    }
+    expect(text).not.toMatch(/HIPAA|SAML|!/);
   });
 });

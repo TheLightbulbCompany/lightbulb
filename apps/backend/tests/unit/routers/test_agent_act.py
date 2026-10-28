@@ -138,3 +138,32 @@ def test_the_incident_an_agent_added_through_agent_act_gets_its_delivery_cursor(
     response = client.post(URL, json=body, headers={"Authorization": f"Bearer {grant}"})
     assert response.status_code == 200, response.json()
     assert asyncio.run(messaging_repo.get_agent_delivery(room_id, GAUGE)) is not None
+
+
+@pytest.mark.parametrize("error", [KeyError("roomId"), ValueError("boom")])
+def test_a_service_bug_is_not_blamed_on_the_agents_args(client, monkeypatch, seated, error):
+    """Only reading args is the agent's mistake: a KeyError deep in the service stays a server error."""
+    monkeypatch.setattr(router.service, "set_pin", AsyncMock(side_effect=error))
+    metrics = []
+    monkeypatch.setattr(router, "put_metric", lambda name, **kw: metrics.append(kw["dimensions"]["outcome"]))
+    with pytest.raises(type(error)):
+        client.post(
+            URL, json={"action": "pin", "room_id": ROOM, "args": {"message_id": "m1"}}, headers=_bearer("user_ana")
+        )
+    assert metrics == ["error"]
+
+
+def test_a_service_validation_error_is_not_blamed_on_the_agents_args(client, monkeypatch, seated):
+    from pydantic import ValidationError
+
+    from core.services.messaging import PatchRoomRequest
+
+    try:
+        PatchRoomRequest(bogus=1)
+    except ValidationError as exc:
+        inner = exc
+    monkeypatch.setattr(router.service, "patch_room", AsyncMock(side_effect=inner))
+    with pytest.raises(ValidationError):
+        client.post(
+            URL, json={"action": "update_room", "room_id": ROOM, "args": {"name": "x"}}, headers=_bearer("user_ana")
+        )

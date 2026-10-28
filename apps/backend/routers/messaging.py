@@ -258,20 +258,24 @@ async def agent_actor(
 
 # The browser's own service calls, so an agent changes the workspace exactly as its person would
 # (18 Oct: a hand-written member row skipped the agent's delivery cursor and silenced its @mentions).
+# Each action: (args -> the call's arguments, read up front so only a bad arg is the agent's mistake; the call,
+# looked up when called).
 AGENT_ACTIONS = {
-    "add_member": lambda auth, room, args: service.upsert_member(auth, room, UpsertRoomMemberRequest(**args)),
-    "set_listen_mode": lambda auth, room, args: service.upsert_member(auth, room, UpsertRoomMemberRequest(**args)),
-    "remove_member": lambda auth, room, args: service.remove_member(auth, room, args["kind"], args["id"]),
-    "leave_room": lambda auth, room, args: service.leave_room(auth, room),
-    "create_room": lambda auth, room, args: service.create_room(auth, CreateRoomRequest(**args)),
-    "update_room": lambda auth, room, args: service.patch_room(auth, room, PatchRoomRequest(**args)),
-    "pin": lambda auth, room, args: service.set_pin(auth, room, args["message_id"], True),
-    "unpin": lambda auth, room, args: service.set_pin(auth, room, args["message_id"], False),
-    "search_messages": lambda auth, room, args: message_search.search(
-        auth, message_search.MessageSearchRequest(**args)
+    "add_member": (lambda args: (UpsertRoomMemberRequest(**args),), lambda *a: service.upsert_member(*a)),
+    "set_listen_mode": (lambda args: (UpsertRoomMemberRequest(**args),), lambda *a: service.upsert_member(*a)),
+    "remove_member": (lambda args: (args["kind"], args["id"]), lambda *a: service.remove_member(*a)),
+    "leave_room": (lambda args: (), lambda *a: service.leave_room(*a)),
+    "create_room": (lambda args: (CreateRoomRequest(**args),), lambda auth, room, req: service.create_room(auth, req)),
+    "update_room": (lambda args: (PatchRoomRequest(**args),), lambda *a: service.patch_room(*a)),
+    "pin": (lambda args: (args["message_id"], True), lambda *a: service.set_pin(*a)),
+    "unpin": (lambda args: (args["message_id"], False), lambda *a: service.set_pin(*a)),
+    "search_messages": (
+        lambda args: (message_search.MessageSearchRequest(**args),),
+        lambda auth, room, req: message_search.search(auth, req),
     ),
-    "search_sessions": lambda auth, room, args: message_search.search_sessions(
-        auth, message_search.SessionSearchRequest(**args)
+    "search_sessions": (
+        lambda args: (message_search.SessionSearchRequest(**args),),
+        lambda auth, room, req: message_search.search_sessions(auth, req),
     ),
 }
 
@@ -289,20 +293,19 @@ async def agent_act(
     auth: AuthContext = Depends(agent_actor),
 ):
     outcome = "error"
+    parse, call = AGENT_ACTIONS[body.action]
     try:
-        result = await AGENT_ACTIONS[body.action](auth, body.room_id, body.args)
+        try:
+            parsed = parse(body.args)
+        except ValidationError as exc:
+            raise ApiProblem(
+                "INVALID_REQUEST", "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+            ) from exc
+        except KeyError as exc:
+            raise ApiProblem("INVALID_REQUEST", f"args.{exc.args[0]} is required.") from exc
+        result = await call(auth, body.room_id, *parsed)
         outcome = "ok"
         return result
-    except ValidationError as exc:
-        outcome = "refused"
-        raise ApiProblem(
-            "INVALID_REQUEST", "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
-        ) from exc
-    except KeyError as exc:
-        if exc.args[0] in body.args:  # a service bug, not a missing arg
-            raise
-        outcome = "refused"
-        raise ApiProblem("INVALID_REQUEST", f"args.{exc.args[0]} is required.") from exc
     except ApiProblem:
         outcome = "refused"
         raise

@@ -17,10 +17,21 @@ class ReconnectRequired(RuntimeError):
     """The workspace has no usable, refreshable grant for this provider."""
 
 
-def _refresh_reason(exc: Exception, credential: dict) -> str:
+def _secret_values(value, key: str = "") -> list[str]:
+    """Every string under a ``*token*`` / ``*secret*`` key, at any depth (a BYO credential can
+    carry ``client_secret``, a DCR one ``client_information.client_secret``)."""
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in _secret_values(v, str(k).lower())]
+    if isinstance(value, list):
+        return [s for v in value for s in _secret_values(v, key)]
+    return [value] if isinstance(value, str) and value and ("token" in key or "secret" in key) else []
+
+
+async def _refresh_reason(owner_id: str, provider_key: str, exc: Exception, credential: dict) -> str:
     """Why the provider refused the refresh, secret-free: the OAuth ``error`` (+ description)
-    from the body, else the HTTP status. Any of the credential's own tokens is redacted, in case
-    a provider echoes one back."""
+    from the body, else the HTTP status. Every token or secret the refresh could have sent --
+    the credential's own, and the OAuth app's client secret from its store -- is redacted, in
+    case a provider echoes one back."""
     if isinstance(exc, httpx.HTTPStatusError):
         try:
             body = exc.response.json()
@@ -34,9 +45,13 @@ def _refresh_reason(exc: Exception, credential: dict) -> str:
             reason = f"http_{exc.response.status_code}"
     else:
         reason = f"refresh_error: {exc}"
-    for key in ("access_token", "refresh_token", "id_token"):
-        if credential.get(key):
-            reason = reason.replace(str(credential[key]), "[redacted]")
+    secrets = _secret_values(credential)
+    try:
+        secrets.append((await oauth_dance._oauth_client(owner_id, provider_key))[1])
+    except Exception:  # noqa: BLE001 -- no app means no app secret to redact
+        pass
+    for secret in sorted({s for s in secrets if s}, key=len, reverse=True):
+        reason = reason.replace(secret, "[redacted]")
     return reason[:200]
 
 
@@ -128,11 +143,15 @@ async def get(owner_id: str, provider_key: str) -> str:
                 try:
                     credential = await oauth_dance.refresh(owner_id, provider_key, credential)
                 except ValueError as exc:
-                    await _mark_reconnect(owner_id, provider_key, _refresh_reason(exc, credential))
+                    await _mark_reconnect(
+                        owner_id, provider_key, await _refresh_reason(owner_id, provider_key, exc, credential)
+                    )
                     raise ReconnectRequired(provider_key) from exc
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code in (400, 401):
-                        await _mark_reconnect(owner_id, provider_key, _refresh_reason(exc, credential))
+                        await _mark_reconnect(
+                            owner_id, provider_key, await _refresh_reason(owner_id, provider_key, exc, credential)
+                        )
                         raise ReconnectRequired(provider_key) from exc
                     raise
                 await integration_secret_store.put(owner_id, provider_key, credential)

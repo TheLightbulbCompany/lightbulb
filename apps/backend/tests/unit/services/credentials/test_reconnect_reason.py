@@ -34,6 +34,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(access_token.integration_secret_store, "get", AsyncMock(return_value=dict(_STORED)))
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
     monkeypatch.setattr(access_token, "_announce_reconnect", AsyncMock())
+    monkeypatch.setattr(access_token.oauth_dance, "_oauth_client", AsyncMock(return_value=("cid", "CS-store-secret")))
     return set_status
 
 
@@ -80,6 +81,30 @@ async def test_a_token_echoed_by_the_provider_never_lands_on_the_row(monkeypatch
     reason = await _reason(monkeypatch, wired, exc)
     assert "secret" not in reason
     assert reason == "invalid_grant: token [redacted] revoked ([redacted])"
+
+
+@pytest.mark.asyncio
+async def test_client_secrets_echoed_by_the_provider_are_redacted(monkeypatch, wired):
+    # A BYO credential carries its own client_secret, a DCR one a nested copy, and the
+    # refresh also sends the app store's secret: none may reach the row or the log.
+    stored = {
+        **_STORED,
+        "client_secret": "CS-byo-secret",
+        "client_information": {"client_id": "cid", "client_secret": "CS-dcr-secret"},
+    }
+    monkeypatch.setattr(access_token.integration_secret_store, "get", AsyncMock(return_value=stored))
+    exc = _refused(
+        400,
+        {"error": "invalid_client", "error_description": "bad CS-byo-secret / CS-dcr-secret / CS-store-secret"},
+    )
+    reason = await _reason(monkeypatch, wired, exc)
+    assert reason == "invalid_client: bad [redacted] / [redacted] / [redacted]"
+
+
+@pytest.mark.asyncio
+async def test_no_oauth_app_still_records_a_reason(monkeypatch, wired):
+    monkeypatch.setattr(access_token.oauth_dance, "_oauth_client", AsyncMock(side_effect=ValueError("no app")))
+    assert await _reason(monkeypatch, wired, _refused(400, {"error": "invalid_grant"})) == "invalid_grant"
 
 
 @pytest.fixture

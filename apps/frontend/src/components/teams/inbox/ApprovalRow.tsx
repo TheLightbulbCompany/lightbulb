@@ -49,10 +49,9 @@ export function ApprovalRow({
 }) {
   const { approve, reject } = useApprovalMutations();
   const api = useApi();
-  // "Set up Stripe" / "Connect existing" are the Connect doors, which exist
-  // only while the provisioning rail is on (same gate CompanyStripeSection
-  // uses). While it is off the card sends the owner to Accounts, where the
-  // API-key path lives.
+  // "Connect your Stripe" / "Set up Stripe" need the Connect client id and an
+  // unbound company (same gate as CompanyStripeSection). Otherwise the card
+  // sends the owner to Accounts (Settings → Connections).
   const { data: stripeStatus } = useCompanyStripeStatus();
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
@@ -204,22 +203,8 @@ export function ApprovalRow({
               <EditorialButton size="sm" disabled>
                 Loading…
               </EditorialButton>
-            ) : isCompanyStripeApproval(approval) && stripeStatus?.provisioning_enabled ? (
+            ) : isCompanyStripeApproval(approval) && !stripeStatus?.account_id && stripeStatus?.connect_configured ? (
               <>
-                <EditorialButton
-                  size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    openMintedUrl(
-                      async () =>
-                        ((await api.post("/company/stripe/create", {})) as { onboarding_url: string })
-                          .onboarding_url,
-                      true,
-                    )
-                  }
-                >
-                  Set up Stripe
-                </EditorialButton>
                 <EditorialButton
                   size="sm"
                   disabled={busy}
@@ -232,7 +217,21 @@ export function ApprovalRow({
                     )
                   }
                 >
-                  Connect existing
+                  Connect your Stripe
+                </EditorialButton>
+                {/* Onboarding is embedded in the Stripe card, which a row is too
+                    small to hold: approve, then take the owner there. */}
+                <EditorialButton
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      await approve(approval.id);
+                      navigateShell(teamsPanelUrl("accounts"));
+                    })
+                  }
+                >
+                  Set up Stripe
                 </EditorialButton>
               </>
             ) : isProviderConsentApproval(approval) || isProviderInformationApproval(approval) ? (
@@ -327,7 +326,14 @@ export function ApprovalRow({
               <>
                 {isCompanyStripeApproval(approval) && (
                   <EditorialButton size="sm" disabled={busy} onClick={() => navigateShell(teamsPanelUrl("accounts"))}>
-                    Open Accounts
+                    {/* Same rule as the Stripe card: a connected/api_key
+                        binding runs Projects on a separate services account. */}
+                    {stripeStatus?.account_id &&
+                    stripeStatus.source !== "created" &&
+                    stripeStatus.projects_ready === false &&
+                    !stripeStatus.services_account_id
+                      ? "Add a services account"
+                      : "Open Accounts"}
                   </EditorialButton>
                 )}
                 <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>

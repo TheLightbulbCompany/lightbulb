@@ -16,8 +16,15 @@ const post = vi.fn();
 const get = vi.fn();
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post, get }) }));
 
-// The Connect doors are offered only while the provisioning rail is on.
-const stripeStatus = vi.hoisted(() => ({ provisioning_enabled: true, loaded: true }));
+// The Stripe doors are offered while nothing is bound and Connect is configured.
+const stripeStatus = vi.hoisted(() => ({
+  loaded: true,
+  account_id: null as string | null,
+  source: null as string | null,
+  connect_configured: true,
+  projects_ready: null as boolean | null,
+  services_account_id: null as string | null,
+}));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: stripeStatus.loaded ? stripeStatus : undefined }),
 }));
@@ -51,8 +58,14 @@ beforeEach(() => {
   post.mockReset();
   get.mockReset();
   navigateShell.mockReset();
-  stripeStatus.provisioning_enabled = true;
-  stripeStatus.loaded = true;
+  Object.assign(stripeStatus, {
+    loaded: true,
+    account_id: null,
+    source: null,
+    connect_configured: true,
+    projects_ready: null,
+    services_account_id: null,
+  });
 });
 
 describe("ApprovalRow company_stripe", () => {
@@ -61,67 +74,79 @@ describe("ApprovalRow company_stripe", () => {
     render(<ApprovalRow approval={A} />);
 
     expect(screen.getByRole("button", { name: "Loading…" })).toBeDisabled();
-    for (const name of ["Set up Stripe", "Connect existing", "Open Accounts", "Approve"]) {
+    for (const name of ["Set up Stripe", "Connect your Stripe", "Open Accounts", "Approve"]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
   });
 
-  it("with provisioning off, offers Open Accounts + Approve instead of the Connect doors", () => {
-    stripeStatus.provisioning_enabled = false;
+  it("with Connect unconfigured, offers Open Accounts + Approve instead of the Stripe doors", () => {
+    stripeStatus.connect_configured = false;
     render(<ApprovalRow approval={A} />);
 
     expect(screen.queryByRole("button", { name: "Set up Stripe" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Connect existing" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect your Stripe" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open Accounts" }));
     expect(navigateShell).toHaveBeenCalledWith("/chat?panel=teams-accounts");
     expect(screen.getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
     expect(post).not.toHaveBeenCalled();
   });
 
-  it("shows Set up Stripe / Connect existing (no Approve); Set up Stripe posts, navigates the tab, then approves", async () => {
-    let resolvePost: (v: unknown) => void = () => {};
-    post.mockImplementation(() => new Promise((r) => { resolvePost = r; }));
-    const tab = fakeTab();
-    vi.spyOn(window, "open").mockImplementation(() => tab as unknown as Window);
+  it("shows Connect your Stripe / Set up Stripe (no Approve); Set up Stripe approves, then opens the Stripe card", async () => {
     render(<ApprovalRow approval={A} />);
 
     expect(screen.getByText("Connect Stripe: Set up Northwind on Stripe")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Set up Stripe" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connect existing" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect your Stripe" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^approve$/i })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Set up Stripe" }));
 
-    // Synchronously, before the API promise settles.
-    expect(window.open).toHaveBeenCalledWith("", "_blank");
-    expect(tab.location.href).toBe("");
-    expect(approve).not.toHaveBeenCalled();
-
-    resolvePost({ onboarding_url: "https://connect.stripe.com/setup/x" });
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/company/stripe/create", {}));
-    await waitFor(() => expect(tab.location.href).toBe("https://connect.stripe.com/setup/x"));
     await waitFor(() => expect(approve).toHaveBeenCalledWith("a-stripe"));
+    await waitFor(() => expect(navigateShell).toHaveBeenCalledWith("/chat?panel=teams-accounts"));
+    // Onboarding is embedded in the card: no hosted link is minted here.
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("asks a connected owner for a services account when Projects isn't ready", () => {
+    Object.assign(stripeStatus, { account_id: "acct_x", source: "connected", projects_ready: false });
+    render(<ApprovalRow approval={A} />);
+
+    expect(screen.queryByRole("button", { name: "Connect your Stripe" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add a services account" }));
+    expect(navigateShell).toHaveBeenCalledWith("/chat?panel=teams-accounts");
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
+  });
+
+  it("a bound company with a services account just opens Accounts", () => {
+    Object.assign(stripeStatus, {
+      account_id: "acct_x",
+      source: "api_key",
+      projects_ready: false,
+      services_account_id: "acct_svc",
+    });
+    render(<ApprovalRow approval={A} />);
+    expect(screen.getByRole("button", { name: "Open Accounts" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add a services account" })).toBeNull();
   });
 
   it("does not approve — or call the API — when the popup is blocked", async () => {
-    post.mockResolvedValue({ onboarding_url: "https://connect.stripe.com/setup/x" });
+    get.mockResolvedValue({ authorize_url: "https://connect.stripe.com/oauth/authorize?x" });
     vi.spyOn(window, "open").mockImplementation(() => null);
     render(<ApprovalRow approval={A} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Set up Stripe" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect your Stripe" }));
 
     await waitFor(() => expect(notifyError).toHaveBeenCalled());
-    expect(post).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
     expect(approve).not.toHaveBeenCalled();
   });
 
   it("closes the pending tab and does not approve when the API call fails", async () => {
-    post.mockRejectedValue(new Error("409"));
+    get.mockRejectedValue(new Error("409"));
     const tab = fakeTab();
     vi.spyOn(window, "open").mockImplementation(() => tab as unknown as Window);
     render(<ApprovalRow approval={A} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Set up Stripe" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect your Stripe" }));
 
     await waitFor(() => expect(tab.close).toHaveBeenCalled());
     expect(notifyApiError).toHaveBeenCalled();
@@ -130,21 +155,18 @@ describe("ApprovalRow company_stripe", () => {
   });
 
   it("desktop (Tauri): does NOT approve when the system-browser open fails", async () => {
-    post.mockResolvedValue({ onboarding_url: "https://connect.stripe.com/setup/x" });
+    get.mockResolvedValue({ authorize_url: "https://connect.stripe.com/oauth/authorize?x" });
     const invoke = vi.fn().mockRejectedValue("forbidden");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).__TAURI__ = { core: { invoke } };
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
     try {
       render(<ApprovalRow approval={A} />);
-      fireEvent.click(screen.getByRole("button", { name: "Set up Stripe" }));
+      fireEvent.click(screen.getByRole("button", { name: "Connect your Stripe" }));
 
       await waitFor(() => expect(invoke).toHaveBeenCalled());
-      // The failed open surfaces as an error and the hand-off is NOT treated
-      // as seen: no approval is recorded for a page the owner never got.
       await waitFor(() => expect(notifyApiError).toHaveBeenCalled());
       expect(approve).not.toHaveBeenCalled();
-      // The two-phase web tab dance must not have run.
       expect(openSpy).not.toHaveBeenCalled();
     } finally {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -153,17 +175,17 @@ describe("ApprovalRow company_stripe", () => {
   });
 
   it("desktop (Tauri): approves only after the system browser opened", async () => {
-    post.mockResolvedValue({ onboarding_url: "https://connect.stripe.com/setup/x" });
+    get.mockResolvedValue({ authorize_url: "https://connect.stripe.com/oauth/authorize?x" });
     const invoke = vi.fn().mockResolvedValue(undefined);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).__TAURI__ = { core: { invoke } };
     try {
       render(<ApprovalRow approval={A} />);
-      fireEvent.click(screen.getByRole("button", { name: "Set up Stripe" }));
+      fireEvent.click(screen.getByRole("button", { name: "Connect your Stripe" }));
 
       await waitFor(() =>
         expect(invoke).toHaveBeenCalledWith("plugin:shell|open", {
-          path: "https://connect.stripe.com/setup/x",
+          path: "https://connect.stripe.com/oauth/authorize?x",
         }),
       );
       await waitFor(() => expect(approve).toHaveBeenCalledWith("a-stripe"));
@@ -173,13 +195,13 @@ describe("ApprovalRow company_stripe", () => {
     }
   });
 
-  it("Connect existing navigates the tab to the authorize URL", async () => {
+  it("Connect your Stripe opens the tab synchronously, then the authorize URL, then approves", async () => {
     get.mockResolvedValue({ authorize_url: "https://connect.stripe.com/oauth/authorize?x" });
     const tab = fakeTab();
     vi.spyOn(window, "open").mockImplementation(() => tab as unknown as Window);
     render(<ApprovalRow approval={A} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Connect existing" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect your Stripe" }));
 
     expect(window.open).toHaveBeenCalledWith("", "_blank");
     await waitFor(() => expect(get).toHaveBeenCalledWith("/company/stripe/connect/start"));

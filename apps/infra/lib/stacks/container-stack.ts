@@ -71,6 +71,7 @@ export class ContainerStack extends cdk.Stack {
   public readonly ownerBedrockBasePolicy: iam.ManagedPolicy;
   public readonly ownerBedrockBoundary: iam.ManagedPolicy;
   public readonly workspaceMemory: bedrockagentcore.CfnMemory;
+  public readonly sessionsMemory: bedrockagentcore.CfnMemory;
   public readonly workspaceBrowser: bedrockagentcore.CfnBrowserCustom;
 
   constructor(scope: Construct, id: string, props: ContainerStackProps) {
@@ -345,7 +346,7 @@ export class ContainerStack extends cdk.Stack {
                   extractionConfig: {
                     llmExtractionConfig: {
                       definition:
-                        "Read from the record text's fixed form: the date after '(since ' as epoch seconds at 00:00 UTC. For a Contested record, the earlier of the two dates. Absent when the text has no date.",
+                        "The date the fact became true; when no date is stated, the date of the conversation it came from. Read from the record text's fixed form when it has one: the date after '(since '; for a Contested record, the earlier of the two dates. Epoch seconds at 00:00 UTC.",
                     },
                   },
                 },
@@ -363,10 +364,22 @@ export class ContainerStack extends cdk.Stack {
             },
           },
         },
+      ],
+    });
+    this.workspaceMemory.applyRemovalPolicy(config.removalPolicy);
+
+    // Uploaded coding sessions, in a resource of their own: AgentCore runs every strategy over every
+    // event in a resource, so sharing one would extract room and DM turns into episodes and
+    // sessions into team facts. Episodes (what happened in a session) and the reflections drawn
+    // from them. Reflection namespaces can span actors unless they are per actor, so BOTH are per
+    // user: one person's sessions never feed another's reflections. Only the backend reads or
+    // writes it (no runtime grant), and the built-in strategy names no model, so no execution role.
+    this.sessionsMemory = new bedrockagentcore.CfnMemory(this, "SessionsMemory", {
+      name: `lightbulb_${props.environment}_sessions_memory`,
+      description: "Episodes and reflections from coding sessions people upload in full (namespace per user).",
+      eventExpiryDuration: 7,
+      memoryStrategies: [
         {
-          // Episodes (what happened in a session) and the reflections drawn from them. Reflection
-          // namespaces can span actors unless they are per actor, so BOTH are per user: one
-          // person's sessions never feed another's reflections.
           episodicMemoryStrategy: {
             name: "session_episodes",
             namespaces: ["/users/{actorId}/episodes/"],
@@ -375,7 +388,7 @@ export class ContainerStack extends cdk.Stack {
         },
       ],
     });
-    this.workspaceMemory.applyRemovalPolicy(config.removalPolicy);
+    this.sessionsMemory.applyRemovalPolicy(config.removalPolicy);
 
     // The workspace browser. AWS's built-in `aws.browser.v1` leaves from a new AWS address every
     // session (dev 2026-10-26: three sessions, three IPs), so a site that ties a sign-in to its

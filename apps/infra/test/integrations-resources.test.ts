@@ -99,6 +99,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,
       workspaceMemoryId: container.workspaceMemory.attrMemoryId,
+      sessionsMemoryId: container.sessionsMemory.attrMemoryId,
       workspaceBrowserId: container.workspaceBrowser.attrBrowserId,
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",

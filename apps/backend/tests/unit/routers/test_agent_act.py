@@ -97,7 +97,7 @@ def test_a_service_refusal_passes_through_unchanged(client, monkeypatch, seated)
 def test_an_unknown_action_or_bad_args_is_a_readable_4xx(client, monkeypatch, seated):
     upsert = AsyncMock()
     monkeypatch.setattr(router.service, "upsert_member", upsert)
-    for action in ("delete_room", "leave_room", "search_sessions"):  # leave/session search act as the person
+    for action in ("delete_room", "leave_room"):  # leave acts as the person
         assert client.post(URL, json={**ADD, "action": action}, headers=_bearer("user_ana")).status_code == 422
     bad = client.post(URL, json={**ADD, "args": {"kind": "robot"}}, headers=_bearer("user_ana"))
     assert bad.status_code == 400 and "kind" in bad.json()["message"]
@@ -120,6 +120,16 @@ def test_each_action_reaches_its_service_call(client, monkeypatch, seated, actio
     response = client.post(URL, json={"action": action, "room_id": ROOM, "args": args}, headers=_bearer("user_ana"))
     assert response.status_code == 200 and response.json() == {"ok": True}  # a None result still answers
     assert call.await_args.args[0].user_id == "user_ana" and call.await_args.args[1:] == called_with
+
+
+def test_search_sessions_searches_the_requesters_sessions(client, monkeypatch, seated):
+    search = AsyncMock(return_value={"hits": []})
+    monkeypatch.setattr(router.message_search, "search_sessions", search)
+    body = {"action": "search_sessions", "args": {"q": "deploy"}}
+    response = client.post(URL, json=body, headers=_bearer("user_ana"))
+    assert response.status_code == 200 and response.json() == {"hits": []}
+    auth, request = search.await_args.args
+    assert auth.user_id == "user_ana" and (request.q, request.limit) == ("deploy", 30)
 
 
 def test_the_incident_an_agent_added_through_agent_act_gets_its_delivery_cursor(client, monkeypatch, table):

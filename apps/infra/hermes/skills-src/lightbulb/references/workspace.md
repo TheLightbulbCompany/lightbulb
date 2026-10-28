@@ -4,7 +4,7 @@ Rooms, members, pins and search change only through this tool. It calls `POST /a
 
 Why not edit the data yourself: on 18 Oct a hand-written member row skipped the agent's delivery cursor and silenced its @mentions; the tool makes the same call the browser does.
 
-Call it with `action`, `roomId` (the room acted on; omit for `create_room` and `search_messages`) and `args`. Inside `args`, camelCase or snake_case field names both work except `pin`/`unpin`, which read `message_id`; `add_member`, `set_listen_mode`, `create_room`, `update_room` and `search_messages` reject an unknown key, the others ignore it. A member's `id` is the `id` that `lightbulb_read_rooms` lists for them, not their @handle.
+Call it with `action`, `roomId` (the room acted on; omit for `create_room` and the searches) and `args`. Inside `args`, camelCase or snake_case field names both work except `pin`/`unpin`, which read `message_id`; `add_member`, `set_listen_mode`, `create_room`, `update_room`, `search_messages` and `search_sessions` reject an unknown key, the others ignore it. A member's `id` is the `id` that `lightbulb_read_rooms` lists for them, not their @handle.
 
 Removing a member needs the person to be a room owner or admin, in any room. In a channel, adding a member and updating the room need it too (except a listen-mode change on an existing agent member, which any member may make). In a DM or group chat any participant may add a member at role `member`; in a group chat any member may archive or unarchive it, but renaming it needs its owner. Otherwise the call is refused.
 
@@ -16,7 +16,10 @@ Removing a member needs the person to be a room owner or admin, in any room. In 
 | `update_room` | any of `name`, `topic`, `archived` (bool) |
 | `pin`, `unpin` | `message_id` |
 | `search_messages` | `q` (1-200 chars), optional args field `room_id`, `limit` (1-50, default 30) |
+| `search_sessions` | `q` (1-200 chars), `limit` (1-50, default 30) |
 
 A bad or missing arg comes back as `INVALID_REQUEST` naming the field.
+
+Session search covers the person's own sessions even when they are not shared; quote from an unshared session only into a room the person chose, and say it came from their session.
 
 To leave a room yourself, use `remove_member` with kind `agent` and your own id (it needs the person's owner or admin rights).

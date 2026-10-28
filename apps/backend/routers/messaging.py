@@ -272,6 +272,10 @@ AGENT_ACTIONS = {
         lambda args: (message_search.MessageSearchRequest(**args),),
         lambda auth, room, req: message_search.search(auth, req),
     ),
+    "search_sessions": (
+        lambda args: (message_search.SessionSearchRequest(**args),),
+        lambda auth, room, req: message_search.search_sessions(auth, req),
+    ),
 }
 
 

@@ -6,7 +6,7 @@ deletes within the workspace; one without a workspace has only their own. See co
 Session rows and summaries are never logged.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, StringConstraints
@@ -44,13 +44,14 @@ class ToolCall(BaseModel):
 
 
 class Upload(BaseModel):
+    mode: Literal["metadata", "full"]
     sessions: list[Session] = Field(default_factory=list, max_length=200)
     tool_calls: list[ToolCall] = Field(default_factory=list, max_length=20_000)
 
 
 async def caller(request: Request, credentials=Depends(security_optional)) -> AuthContext:
     if request.headers.get("X-Lightbulb-Proof"):
-        return (await network_login.computer_person(request))[0]
+        return (await network_login.computer_identity(request))[0]
     if credentials is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return await get_current_user(credentials)
@@ -58,8 +59,7 @@ async def caller(request: Request, credentials=Depends(security_optional)) -> Au
 
 @router.post("")
 async def upload(body: Upload, auth: AuthContext = Depends(caller)) -> dict:
-    # Summaries only come with a full upload; a metadata upload carries none to keep.
-    full = any(c.summary is not None for c in body.tool_calls)
+    full = body.mode == "full"
     rows = [
         {**s.model_dump(), "tool_calls": [c.model_dump() for c in body.tool_calls if c.session_id == s.id]}
         for s in body.sessions

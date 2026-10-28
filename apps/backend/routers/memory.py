@@ -15,7 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.services import container_auth, memory_api, memory_sync, workspace_memory
+from core.services import container_auth, evaluator, memory_api, memory_sync, workspace_memory
+from routers.sessions import caller
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,51 @@ async def recall(body: RecallBody, auth: AuthContext = Depends(get_current_user)
 async def remember(body: RememberBody, auth: AuthContext = Depends(get_current_user)) -> dict:
     owner_id = resolve_owner_id(auth)
     return await _guard(memory_api.remember(owner_id, **body.model_dump(), on_behalf_of=auth.user_id))
+
+
+class ApproveBody(BaseModel):
+    scope: Literal["me", "team"] | None = None  # default: team in a workspace, me for a solo person
+
+
+async def _draft(draft_id: str, auth: AuthContext) -> dict:
+    """The caller's still-proposed draft; anyone else's (or a settled one) is 404, never 403."""
+    d = await evaluator.find_draft(draft_id, user_id=auth.user_id, workspace_id=auth.org_id)
+    if not d or d.get("status") != "proposed":
+        raise HTTPException(status_code=404, detail="draft not found")
+    return d
+
+
+@router.get("/drafts")
+async def list_drafts(auth: AuthContext = Depends(caller)) -> dict:
+    return {"drafts": await evaluator.list_drafts(user_id=auth.user_id, workspace_id=auth.org_id)}
+
+
+@router.post("/drafts/{draft_id}/approve")
+async def approve_draft(draft_id: str, body: ApproveBody | None = None, auth: AuthContext = Depends(caller)) -> dict:
+    d = await _draft(draft_id, auth)
+    if d["kind"] != "lesson":  # a finding may hold a secret: it can only be dismissed
+        raise HTTPException(status_code=422, detail="Only lessons can be approved.")
+    scope = (body and body.scope) or ("team" if auth.org_id else "me")
+    # The evaluator keeps no repo or title on a draft, so the subject is its kind.
+    subject = d["kind"]
+    if auth.org_id:
+        out = await _guard(
+            memory_api.remember(
+                auth.org_id, subject=subject, fact=d["text"], kind="lesson", scope=scope, on_behalf_of=auth.user_id
+            )
+        )
+        await evaluator.set_draft_status(d, "approved")  # only once remember returned
+        return {"queued": out["queued"]}
+    await evaluator.set_draft_status(d, "approved")
+    evidence = d.get("evidence") or []
+    source = {"harness": "workspace", "on_behalf_of": None, "repo": None, "session": evidence[0] if evidence else None}
+    return {"subject": subject, "fact": d["text"], "kind": "lesson", "scope": scope, "source": source}
+
+
+@router.post("/drafts/{draft_id}/dismiss", status_code=204)
+async def dismiss_draft(draft_id: str, auth: AuthContext = Depends(caller)) -> Response:
+    await evaluator.set_draft_status(await _draft(draft_id, auth), "dismissed")
+    return Response(status_code=204)
 
 
 @internal_router.post("/recall/{owner_id}")

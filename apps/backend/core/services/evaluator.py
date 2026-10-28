@@ -168,6 +168,37 @@ async def list_drafts(
     return sorted((r for r in rows if r.get("status") == status), key=lambda r: r.get("created", ""), reverse=True)
 
 
+async def find_draft(draft_id: str, *, user_id: str, workspace_id: str | None) -> dict | None:
+    """The caller's draft by id (a workspace member sees the workspace's), else None."""
+    if workspace_id:
+        rows = await store._query(f"WDRAFTS#{workspace_id}", begins_with="D#")
+        row = next((r for r in rows if r.get("id") == draft_id), None)
+    else:
+        row = await store._get(f"DRAFTS#{user_id}", f"D#{draft_id}")
+    return {k: v for k, v in row.items() if k not in ("pk", "sk")} if row else None
+
+
+async def set_draft_status(draft: dict, status: str) -> None:
+    """Both copies (the author's and the workspace mirror), so neither list shows it again."""
+    table = store._table()
+    keys = [{"pk": f"DRAFTS#{draft['user_id']}", "sk": f"D#{draft['id']}"}]
+    if draft.get("workspace_id"):
+        keys.append({"pk": f"WDRAFTS#{draft['workspace_id']}", "sk": f"D#{draft['user_id']}#{draft['id']}"})
+    for key in keys:
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key=key,
+                UpdateExpression="SET #s = :s",
+                ConditionExpression="attribute_exists(pk)",  # never resurrect a draft the user wiped
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":s": status},
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+
+
 async def delete_drafts(user_id: str) -> int:
     """The user's drafts, their ingest markers and watermark (the monthly counter stays)."""
     table = store._table()

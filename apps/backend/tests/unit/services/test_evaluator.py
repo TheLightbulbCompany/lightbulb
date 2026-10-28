@@ -420,3 +420,44 @@ async def test_a_workspace_collect_mirrors_only_lessons_drawn_from_its_sessions(
     # the rest stay the author's: listed for them in the workspace, never to their teammates
     mine = {d["id"] for d in await evaluator.list_drafts(user_id="u", workspace_id="org_x")}
     assert mine == {rid("a"), rid("b"), rid("c"), rid("d")}
+
+
+async def test_forget_session_drops_its_marker_events_and_evidence(agentcore):
+    from core.repositories import messaging_repo as store
+
+    table = store._table()
+    esid, t = evaluator.event_session_id(CLI_ID), datetime(2026, 10, 27, 12, tzinfo=UTC)
+    table.put_item(Item={"pk": "EVAL#u", "sk": f"S#{CLI_ID}"})
+    only = {
+        "id": "d1",
+        "user_id": "u",
+        "evidence": [CLI_ID],
+        "status": "proposed",
+        "workspace_id": "org_x",
+        "mirrored": True,
+    }
+    both = {"id": "d2", "user_id": "u", "evidence": [CLI_ID, "s2"], "status": "proposed", "mirrored": False}
+    other_ws = {"id": "d3", "user_id": "u", "evidence": [CLI_ID], "status": "proposed", "workspace_id": "org_y"}
+    for d in (only, both, other_ws):
+        table.put_item(Item={"pk": "DRAFTS#u", "sk": f"D#{d['id']}", **d})
+    table.put_item(Item={"pk": "WDRAFTS#org_x", "sk": "D#u#d1", **only})
+    agentcore.add_response("list_events", {"events": [
+        {"eventId": "e1", "memoryId": MEM, "actorId": "u", "sessionId": esid, "eventTimestamp": t, "payload": []}]},
+        {"memoryId": MEM, "sessionId": esid, "actorId": "u", "includePayloads": False})  # fmt: skip
+    agentcore.add_response("delete_event", {"eventId": "e1"},
+                           {"memoryId": MEM, "sessionId": esid, "eventId": "e1", "actorId": "u"})  # fmt: skip
+    await evaluator.forget_session("u", CLI_ID, workspace_id="org_x")
+    get = lambda pk, sk: table.get_item(Key={"pk": pk, "sk": sk}).get("Item")  # noqa: E731
+    assert get("EVAL#u", f"S#{CLI_ID}") is None  # the id can be ingested again
+    assert get("DRAFTS#u", "D#d1") is None and get("WDRAFTS#org_x", "D#u#d1") is None  # cited only it: gone
+    assert get("DRAFTS#u", "D#d2")["evidence"] == ["s2"]  # keeps the other session
+    assert get("DRAFTS#u", "D#d3")["evidence"] == [CLI_ID]  # another workspace's: not this caller's here
+
+
+async def test_forget_session_never_raises_and_still_drops_the_marker(agentcore):
+    from core.repositories import messaging_repo as store
+
+    store._table().put_item(Item={"pk": "EVAL#u", "sk": "S#s1"})
+    agentcore.add_client_error("list_events", "ThrottledException")
+    await evaluator.forget_session("u", "s1", workspace_id=None)
+    assert "Item" not in store._table().get_item(Key={"pk": "EVAL#u", "sk": "S#s1"})

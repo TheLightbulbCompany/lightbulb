@@ -323,6 +323,54 @@ async def delete_drafts(user_id: str, *, workspace_id: str | None = None) -> int
     return len(drafts)
 
 
+def _delete_session_events(client, memory_id: str, user_id: str, sid: str) -> int:
+    esid = event_session_id(sid)
+    events = _pages(
+        client.list_events, "events", memoryId=memory_id, sessionId=esid, actorId=user_id, includePayloads=False
+    )
+    for event in events:
+        client.delete_event(memoryId=memory_id, sessionId=esid, eventId=event["eventId"], actorId=user_id)
+    return len(events)
+
+
+async def _uncite(user_id: str, sid: str, workspace_id: str | None) -> None:
+    """Drop the session from the evidence of the person's drafts (free, and this workspace's); a
+    draft left with no evidence goes, both copies."""
+    table = store._table()
+    for d in await store._query(f"DRAFTS#{user_id}", begins_with="D#"):
+        if d.get("workspace_id") not in (None, workspace_id) or sid not in (d.get("evidence") or []):
+            continue
+        rest = [e for e in d["evidence"] if e != sid]
+        keys = [{"pk": d["pk"], "sk": d["sk"]}]
+        if d.get("mirrored"):  # an unmirrored draft has no workspace copy
+            keys.append({"pk": f"WDRAFTS#{d['workspace_id']}", "sk": f"D#{user_id}#{d['id']}"})
+        for key in keys:
+            if rest:
+                await run_in_thread(
+                    table.update_item, Key=key, UpdateExpression="SET evidence = :e",
+                    ConditionExpression="attribute_exists(pk)", ExpressionAttributeValues={":e": rest},
+                )  # fmt: skip
+            else:
+                await _rm(**key)
+
+
+async def forget_session(user_id: str, sid: str, *, workspace_id: str | None) -> None:
+    """What the evaluator holds of one deleted session: its ingest marker (so the id can be ingested
+    again), its events in the sessions memory, and its place in the person's drafts' evidence (a
+    draft citing only it goes). Reflections AgentCore already drew from its episode span the person's
+    sessions, are not attributable to this one, and stay until the person's wipe. Never raises: each
+    part is logged on failure and the others still run."""
+
+    async def events() -> None:
+        if memory_id := settings.AGENTCORE_SESSIONS_MEMORY_ID:
+            await run_in_thread(_delete_session_events, _client(), memory_id, user_id, sid)
+
+    parts = (_rm(f"EVAL#{user_id}", f"S#{sid}"), events(), _uncite(user_id, sid, workspace_id))
+    for name, result in zip(("marker", "events", "drafts"), await asyncio.gather(*parts, return_exceptions=True)):
+        if isinstance(result, Exception):
+            logger.warning("forget session %s failed: %s", name, type(result).__name__)
+
+
 async def delete_workspace_drafts(workspace_id: str) -> int:
     """Every draft collected in this workspace, both copies, mirrored or not, and the due rows (the
     workspace is deleted). Its people are the ones its session and draft rows name, so this runs

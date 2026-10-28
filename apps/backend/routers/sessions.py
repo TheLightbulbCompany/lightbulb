@@ -99,8 +99,16 @@ async def list_mine(since: str | None = None, auth: AuthContext = Depends(caller
 
 @router.delete("/{session_id}", status_code=204)
 async def delete(session_id: str, auth: AuthContext = Depends(caller)) -> Response:
+    """The session's rows and object, then what the evaluator holds of it: its ingest marker, its
+    events and its place in drafts' evidence (a draft citing only it goes). Reflections already drawn
+    from it are not attributable to one session and stay until the person's wipe. The evaluator's
+    part never fails the delete."""
     if not await session_store.delete_session(session_id, user_id=auth.user_id, workspace_id=auth.org_id):
         raise HTTPException(status_code=404, detail="session not found")
+    try:
+        await evaluator.forget_session(auth.user_id, session_id, workspace_id=auth.org_id)
+    except Exception as e:
+        logger.warning("session forget failed: %s", type(e).__name__)
     return Response(status_code=204)
 
 

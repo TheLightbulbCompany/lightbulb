@@ -377,3 +377,18 @@ def test_a_cli_session_id_with_a_colon_round_trips_through_upload_list_and_share
     assert got["session"]["id"] == sid and [c["summary"] for c in got["tool_calls"]] == ["x"]
     assert client.delete(f"/api/v1/sessions/{sid}").status_code == 204
     assert client.post("/api/v1/sessions", json={"sessions": [session("a/b")], "mode": "metadata"}).status_code == 422
+
+
+def test_delete_forgets_the_session_in_the_evaluator_and_its_failure_is_still_204(app, s3):
+    from unittest.mock import AsyncMock
+
+    c = as_(app, "user_ada", "org_1")
+    for sid in ("a", "b"):
+        c.post("/api/v1/sessions", json={"sessions": [session(sid)], "mode": "metadata"})
+    with patch("routers.sessions.evaluator.forget_session", new=AsyncMock()) as forget:
+        assert c.delete("/api/v1/sessions/a").status_code == 204
+        forget.assert_awaited_once_with("user_ada", "a", workspace_id="org_1")
+        assert c.delete("/api/v1/sessions/a").status_code == 404
+        forget.assert_awaited_once()  # nothing deleted: nothing to forget
+    with patch("routers.sessions.evaluator.forget_session", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        assert c.delete("/api/v1/sessions/b").status_code == 204

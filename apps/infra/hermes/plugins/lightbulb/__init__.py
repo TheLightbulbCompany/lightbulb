@@ -531,7 +531,8 @@ def _workspace(args: dict, *, session_id: str = "", **_kw) -> str:
     act_args = dict(args.get("args") or {})
     if args.get("action") == "create_room" and not (act_args.get("clientRoomId") or act_args.get("client_room_id")):
         act_args["clientRoomId"] = str(uuid.uuid5(
-            uuid.NAMESPACE_URL, f"lightbulb-agent-act:{ctx.get('runId') or ctx.get('eventId')}:{next(_counter)}"))
+            uuid.NAMESPACE_URL, f"lightbulb-agent-act:{ctx.get('runId') or ctx.get('eventId')}:create_room:"
+            f"{json.dumps(act_args, sort_keys=True)}"))
     body = {"action": args.get("action"), "roomId": args.get("roomId"), "args": act_args}
     try:
         return json.dumps(_post(f"{ctx['apiUrl'].rstrip('/')}/api/v1/messaging/agent-act",

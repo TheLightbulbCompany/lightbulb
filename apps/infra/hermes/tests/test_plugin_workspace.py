@@ -54,9 +54,12 @@ def test_a_refusal_passes_the_backends_message_through(turn, monkeypatch):
 def test_create_room_gets_a_stable_client_id_unless_given(turn):
     lightbulb._workspace({"action": "create_room", "args": {"name": "a"}}, session_id=SESSION)
     lightbulb._workspace({"action": "create_room", "args": {"name": "b", "clientRoomId": "mine"}}, session_id=SESSION)
-    first, second = (b["args"] for _, _, b in turn)
+    lightbulb._workspace({"action": "create_room", "args": {"name": "a"}}, session_id=SESSION)
+    lightbulb._workspace({"action": "create_room", "args": {"name": "c"}}, session_id=SESSION)
+    first, second, third, fourth = (b["args"] for _, _, b in turn)
     assert str(uuid.UUID(first["clientRoomId"])) == first["clientRoomId"]
     assert second["clientRoomId"] == "mine"
+    assert third["clientRoomId"] == first["clientRoomId"] != fourth["clientRoomId"]
 
 
 def test_args_sent_as_a_string_is_a_readable_answer_not_a_crash(turn):

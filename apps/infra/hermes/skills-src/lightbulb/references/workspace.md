@@ -6,7 +6,7 @@ Why not edit the data yourself: on 18 Oct a hand-written member row skipped the 
 
 Call it with `action`, `roomId` (the room acted on; omit for `create_room` and the searches) and `args`. Inside `args`, camelCase or snake_case field names both work except `pin`/`unpin`, which read `message_id`; `add_member`, `set_listen_mode`, `create_room`, `update_room`, `search_messages` and `search_sessions` reject an unknown key, the others ignore it. A member's `id` is the `id` that `lightbulb_read_rooms` lists for them, not their @handle.
 
-Removing a member needs the person to be a room owner or admin, in any room. In a channel, adding a member and updating the room need it too (except a listen-mode change on an existing agent member, which any member may make). In a DM or group chat any participant may add a member at role `member`; in a group chat any member may archive or unarchive it, but renaming it needs its owner. Otherwise the call is refused.
+Removing a member needs the person to be a room owner or admin, in any room. In a channel, adding a member and updating the room need it too (except the Activity feed's topic, which any member may update on its own, and a listen-mode change on an existing agent member, which any member may make). In a DM or group chat any participant may add a member at role `member`; in a group chat any member may archive or unarchive it, but renaming it needs its owner. Otherwise the call is refused.
 
 | action | args |
 |---|---|

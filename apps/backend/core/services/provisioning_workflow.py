@@ -125,7 +125,7 @@ def resource_status(resource: dict) -> str | None:
 class WorkflowRefused(RuntimeError):
     """A refusal the caller renders: ``not_eligible``, ``requirements_pending``,
     ``service_unavailable``, ``invalid_configuration``,
-    ``no_company_stripe_account``, ``no_company``, ``cannot_cancel``,
+    ``no_company_stripe_account``, ``services_account_needed``, ``no_company``, ``cannot_cancel``,
     ``needs_review_first``, ``reserved_env_name`` (raised by
     ``provisioning_landing.land_credentials``, not this module -- imported
     locally there to avoid a circular import)."""
@@ -226,13 +226,21 @@ def _drifted(before: dict, after: dict) -> bool:
 
 async def account_id_for(owner_id: str) -> str:
     """The company Stripe account every provisioning call is made on. Public
-    so the container catalog route reads it the same way ``start`` does."""
+    so the container catalog route reads it the same way ``start`` does.
+    Which account is ``company_stripe.projects_account_of``'s call."""
+    from core.services import company_stripe
+
     row = await billing_repo.get_by_owner_id(owner_id) or {}
-    account_id = row.get("company_stripe_account_id")
-    if not account_id:
+    if not row.get("company_stripe_account_id"):
         raise WorkflowRefused(
             "no_company_stripe_account",
             "Set up your company's Stripe account first — providers are created on it.",
+        )
+    account_id = company_stripe.projects_account_of(row)
+    if not account_id:
+        raise WorkflowRefused(
+            "services_account_needed",
+            "Setting up services needs a services account — add one from the Stripe card in Settings → Connections.",
         )
     return account_id
 
@@ -400,10 +408,6 @@ async def start(
 
     from core.services import company_stripe
 
-    if (await billing_repo.get_by_owner_id(owner_id) or {}).get("company_stripe_source") == "api_key":
-        raise WorkflowRefused(
-            "not_eligible", "A pasted API key can't set up services — create or connect a Stripe account instead"
-        )
     # "Start provisioning only after the projects capability is active" — a
     # return from hosted onboarding proves nothing. Cleared by "Finish Stripe setup".
     if not await company_stripe.projects_ready(account_id=account_id):

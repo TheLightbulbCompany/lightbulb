@@ -76,6 +76,7 @@ def account(monkeypatch):
             return_value={
                 "owner_id": "org_a",
                 "company_stripe_account_id": "acct_1",
+                "company_stripe_source": "created",
                 "company_stripe_project_id": "proj_1",
             }
         ),
@@ -1007,7 +1008,9 @@ async def test_an_account_scoped_service_needs_no_project():
 @pytest.mark.asyncio
 async def test_a_missing_project_is_created_then_stored(monkeypatch):
     monkeypatch.setattr(
-        mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_account_id": "acct_1"})
+        mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"company_stripe_account_id": "acct_1", "company_stripe_source": "created"}),
     )
     store = AsyncMock(return_value={"company_stripe_project_id": "proj_new"})
     monkeypatch.setattr(mod.billing_repo, "set_company_stripe_project_id", store)
@@ -1029,7 +1032,12 @@ async def test_losing_the_project_race_adopts_the_winners_project(monkeypatch):
     monkeypatch.setattr(
         mod.billing_repo,
         "get_by_owner_id",
-        AsyncMock(side_effect=[{"company_stripe_account_id": "acct_1"}, {"company_stripe_project_id": "proj_winner"}]),
+        AsyncMock(
+            side_effect=[
+                {"company_stripe_account_id": "acct_1", "company_stripe_source": "created"},
+                {"company_stripe_project_id": "proj_winner"},
+            ]
+        ),
     )
     monkeypatch.setattr(mod.billing_repo, "set_company_stripe_project_id", AsyncMock(return_value=None))
     with (
@@ -1047,7 +1055,9 @@ async def test_a_lost_race_with_no_visible_winner_retries_rather_than_using_ours
     """Proceeding on our own losing Project would land this company's next
     credential in a Project the winner never sees."""
     monkeypatch.setattr(
-        mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_account_id": "acct_1"})
+        mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"company_stripe_account_id": "acct_1", "company_stripe_source": "created"}),
     )
     monkeypatch.setattr(mod.billing_repo, "set_company_stripe_project_id", AsyncMock(return_value=None))
     row = _approved(state="connecting_provider")
@@ -1067,7 +1077,9 @@ async def test_an_uncertain_project_create_parks_the_row(monkeypatch):
     """`create_project` is a POST like any other: an unknown outcome must not
     become a second Project on the next pass."""
     monkeypatch.setattr(
-        mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_account_id": "acct_1"})
+        mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"company_stripe_account_id": "acct_1", "company_stripe_source": "created"}),
     )
     row = _row(state="connecting_provider", approval=mod.snapshot_of(SERVICE, PROVIDER, CONFIG))
     with (
@@ -1938,4 +1950,55 @@ async def test_start_refuses_a_pasted_api_key_account(monkeypatch):
         await mod.start(
             owner_id="org_a", provider_name="posthog", service_id="svc_analytics", configuration=CONFIG, issue_id=None
         )
-    assert exc.value.code == "not_eligible"
+    assert exc.value.code == "services_account_needed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "row, expected",
+    [
+        ({"company_stripe_account_id": "acct_main", "company_stripe_source": "created"}, "acct_main"),
+        (
+            {
+                "company_stripe_account_id": "acct_main",
+                "company_stripe_source": "connected",
+                "company_stripe_projects_account_id": "acct_svc",
+            },
+            "acct_svc",
+        ),
+        (
+            {
+                "company_stripe_account_id": "acct_main",
+                "company_stripe_source": "api_key",
+                "company_stripe_projects_account_id": "acct_svc",
+            },
+            "acct_svc",
+        ),
+    ],
+)
+async def test_account_id_for_resolves_the_account_projects_runs_on(monkeypatch, row, expected):
+    monkeypatch.setattr(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    assert await mod.account_id_for("org_a") == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["connected", "api_key"])
+async def test_account_id_for_refuses_without_a_services_account(monkeypatch, source):
+    """A connected v1 Standard account is refused by Accounts v2 and by
+    Projects (prod 2026-10-27), so it needs a services account."""
+    monkeypatch.setattr(
+        mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"company_stripe_account_id": "acct_main", "company_stripe_source": source}),
+    )
+    with pytest.raises(mod.WorkflowRefused) as exc:
+        await mod.account_id_for("org_a")
+    assert exc.value.code == "services_account_needed"
+
+
+@pytest.mark.asyncio
+async def test_account_id_for_refuses_with_no_binding(monkeypatch):
+    monkeypatch.setattr(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={}))
+    with pytest.raises(mod.WorkflowRefused) as exc:
+        await mod.account_id_for("org_a")
+    assert exc.value.code == "no_company_stripe_account"

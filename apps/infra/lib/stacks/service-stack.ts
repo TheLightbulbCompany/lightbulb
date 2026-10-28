@@ -1803,6 +1803,12 @@ export class ServiceStack extends cdk.Stack {
           ? `https://api.${rootDomain}/api/v1/company/stripe/connect/callback`
           : `https://api-dev.${rootDomain}/api/v1/company/stripe/connect/callback`,
       STRIPE_CONNECT_CLIENT_ID: props.stripeConnectClientId ?? "",
+      // Platform publishable key (pk_…, public) for Connect embedded
+      // onboarding, from the STRIPE_PUBLISHABLE_KEY_{DEV,PROD} repo variables.
+      // Empty ⇒ the Stripe card falls back to the hosted Account Link.
+      STRIPE_PUBLISHABLE_KEY: env === "dev"
+        ? (process.env.STRIPE_PUBLISHABLE_KEY_DEV ?? "")
+        : (process.env.STRIPE_PUBLISHABLE_KEY_PROD ?? ""),
       // Provider catalog partition. dev reads/writes Stripe's `testing`
       // partition, prod the real one. NOT a payment-mode switch — Stripe's own
       // caveat: "Selecting a DEV or TESTING catalog doesn't mean 'no real

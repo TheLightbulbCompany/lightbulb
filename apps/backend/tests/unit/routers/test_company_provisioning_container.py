@@ -70,7 +70,13 @@ def _account(monkeypatch):
     monkeypatch.setattr(
         billing_repo,
         "get_by_owner_id",
-        AsyncMock(return_value={"owner_id": "org_a", "company_stripe_account_id": "acct_1"}),
+        AsyncMock(
+            return_value={
+                "owner_id": "org_a",
+                "company_stripe_account_id": "acct_1",
+                "company_stripe_source": "created",
+            }
+        ),
     )
 
 

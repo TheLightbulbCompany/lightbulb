@@ -115,7 +115,7 @@ async def resolve_company_name(owner_id: str) -> str:
     return (company or {}).get("name") or owner_id
 
 
-async def create_company_account(*, owner_id: str, email: str, company_name: str) -> str:
+async def create_company_account(*, owner_id: str, email: str, company_name: str, kind: str = "company") -> str:
     """Create the account shell. ``identity`` carries only the country —
     entity type and everything else are collected by Stripe in hosted
     onboarding (``requirements_collector`` defaults to ``stripe``). Fresh
@@ -128,7 +128,8 @@ async def create_company_account(*, owner_id: str, email: str, company_name: str
         "identity": {"country": "us"},
         "configuration": account_configuration(),
         "defaults": ACCOUNT_DEFAULTS,
-        "metadata": {"owner_id": owner_id, "kind": "company"},
+        # kind "company_services" = the services account (see projects_account_of).
+        "metadata": {"owner_id": owner_id, "kind": kind},
     }
     # v2 rejects an empty contact_email; Stripe collects one in onboarding.
     if email:
@@ -172,6 +173,31 @@ async def create_company_onboarding_link(*, account_id: str, update: bool = Fals
         options=accounts_v2_options(),
     )
     return link.url
+
+
+def projects_account_of(row: dict | None) -> str | None:
+    """The ONE answer to "which account does Stripe Projects run on": the
+    services account when there is one, else the main account when the
+    platform created it. A `connected` account is v1 Standard, which Accounts
+    v2 refuses (`v1_account_instead_of_v2_account`) and Projects answers 403
+    (prod, 2026-10-27); an `api_key` row has no platform grant. Both need a
+    services account; None says so."""
+    row = row or {}
+    if row.get("company_stripe_projects_account_id"):
+        return row["company_stripe_projects_account_id"]
+    if row.get("company_stripe_source") == "created":
+        return row.get("company_stripe_account_id")
+    return None
+
+
+async def create_account_session(*, account_id: str) -> str:
+    """A client secret for Connect embedded onboarding (v1 Account Sessions
+    accept v2 ids). Never log the return value."""
+    session = await asyncio.to_thread(
+        _client().v1.account_sessions.create,
+        {"account": account_id, "components": {"account_onboarding": {"enabled": True}}},
+    )
+    return session.client_secret
 
 
 async def request_projects_capability(*, account_id: str) -> None:

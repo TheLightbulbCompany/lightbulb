@@ -443,3 +443,40 @@ async def test_request_projects_capability_adds_the_developer_configuration():
     args = client.v2.core.accounts.update.call_args.args
     assert args[0] == "acct_1"
     assert args[1] == {"configuration": {"developer": {"capabilities": {"projects": {"requested": True}}}}}
+
+
+@pytest.mark.asyncio
+async def test_account_session_enables_account_onboarding():
+    from core.services import company_stripe as mod
+
+    client = MagicMock()
+    client.v1.account_sessions.create = MagicMock(return_value=SimpleNamespace(client_secret="cs_1"))
+    with patch.object(mod, "_client", return_value=client):
+        assert await mod.create_account_session(account_id="acct_1") == "cs_1"
+    assert client.v1.account_sessions.create.call_args.args[0] == {
+        "account": "acct_1",
+        "components": {"account_onboarding": {"enabled": True}},
+    }
+
+
+@pytest.mark.parametrize(
+    "row, expected",
+    [
+        ({"company_stripe_account_id": "acct_m", "company_stripe_source": "created"}, "acct_m"),
+        ({"company_stripe_account_id": "acct_m", "company_stripe_source": "connected"}, None),
+        ({"company_stripe_account_id": "acct_m", "company_stripe_source": "api_key"}, None),
+        (
+            {
+                "company_stripe_account_id": "acct_m",
+                "company_stripe_source": "connected",
+                "company_stripe_projects_account_id": "acct_s",
+            },
+            "acct_s",
+        ),
+        (None, None),
+    ],
+)
+def test_projects_account_of(row, expected):
+    from core.services import company_stripe as mod
+
+    assert mod.projects_account_of(row) == expected

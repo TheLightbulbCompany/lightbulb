@@ -372,7 +372,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  (409 name_taken, 429 rate_limited). Pinned by apps/infra/hermes/tests/test_voice_skill.py.
   - Provisioning rail ....... references/money.md
                               <- apps/backend/routers/company_provisioning.py (container routes, refusal codes);
-                                 core/services/provisioning_workflow.py (STATES); core/services/owner_facts.py (the `provisioning` facts list)
+                                 core/services/provisioning_workflow.py (STATES, account_id_for's refusals incl.
+                                 services_account_needed); core/services/owner_facts.py (the `provisioning` facts list)
   - Buying things ........... references/money.md ("Buying things")
                               <- plugins/lightbulb/__init__.py (`request_purchase`, PURCHASE_SCHEMA); backend
                                  routers/company_link_wallet.py (agent door, refusal codes), core/services/purchases.py (policy),

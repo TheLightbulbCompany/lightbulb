@@ -328,8 +328,10 @@ async def delete_person_memory(user_id: str, *, resweep_after_s: float = RESWEEP
 # ponytail: per-scope cap, newest-first after the cap; add a cursor when a workspace hits it.
 _LIST_CAP = 200
 
-# The only confirmation mark AgentCore keeps (custom record metadata is dropped, spike S2). Written
-# only by the backend's vouched copy; agents see it in recall as part of the fact text.
+# The confirmation mark, in the text so agents see it in recall. Written only by the backend's
+# vouched copy. (AWS: a record created WITHOUT memoryStrategyId keeps its custom metadata as-is, and
+# indexed keys are filterable -- the entries mirror relies on it; confirmed only on a deployed run,
+# docs/research/2026-10-28-inventory-workspace-code.md "Open at deploy time" item 1.)
 CONFIRMED_PREFIX = "Confirmed by a person: "
 _MAX_TEXT = 16000  # AgentCore's MemoryContentTextString max length
 

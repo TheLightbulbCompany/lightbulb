@@ -247,6 +247,7 @@ def test_delete_forgets_the_entry_and_drops_the_mirror(member):
     forget = AsyncMock()
     drop = AsyncMock()
     with (
+        patch("routers.memory.workspace_memory.check_deletable", AsyncMock()),
         patch("routers.memory.workspace_memory.delete_memory", AsyncMock()),
         patch("routers.memory.memory_sync.entry_for", AsyncMock(return_value="e7")),
         patch("routers.memory.memory_sync.drop_mirror", drop),
@@ -360,12 +361,38 @@ async def test_forget_queues_when_the_call_raises():
     queue.assert_awaited_once_with("org_a", "memory.forget", {"entry": "e7"})
 
 
+def test_another_members_private_mirror_is_404_before_any_forget(member, monkeypatch):
+    rid = "mem-" + "a1" * 20
+    order = []
+    client = MagicMock()
+    client.batch_delete_memory_records.side_effect = lambda **kw: order.append("deleted") or {"failedRecords": []}
+    monkeypatch.setattr(workspace_memory.settings, "AGENTCORE_MEMORY_ID", "mem-1", raising=False)
+    monkeypatch.setattr(workspace_memory, "_client", lambda: client)
+    forget = AsyncMock(side_effect=lambda *a: order.append("forget"))
+    with (
+        patch("routers.memory.memory_sync.entry_for", AsyncMock(return_value="e7")),
+        patch("routers.memory.memory_sync.drop_mirror", AsyncMock()),
+        patch("routers.memory.memory_api.forget", forget),
+    ):
+        client.get_memory_record.return_value = {
+            "memoryRecord": {"memoryRecordId": rid, "namespaces": ["/owners/org_a:user_ana/"]}
+        }
+        assert member.delete(f"/api/v1/memory/{rid}").status_code == 404  # user_ana's note, user_me asking
+        assert order == []
+        client.get_memory_record.return_value = {
+            "memoryRecord": {"memoryRecordId": rid, "namespaces": ["/owners/org_a:user_me/"]}
+        }
+        assert member.delete(f"/api/v1/memory/{rid}").status_code == 204
+    assert order == ["forget", "deleted"]
+
+
 def test_delete_sends_the_forget_before_deleting_the_record_and_survives_a_failing_call(member):
     rid = "mem-" + "a1" * 20
     order = []
     queue = AsyncMock(side_effect=lambda *a: order.append("queued"))
     rm = AsyncMock(side_effect=lambda *a: order.append("deleted"))
     with (
+        patch("routers.memory.workspace_memory.check_deletable", AsyncMock()),
         patch("routers.memory.workspace_memory.delete_memory", rm),
         patch("routers.memory.memory_sync.entry_for", AsyncMock(return_value="e7")),
         patch("routers.memory.memory_sync.drop_mirror", AsyncMock()),

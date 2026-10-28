@@ -849,6 +849,7 @@ async def test_tab_delete_of_a_mirrored_record_forgets_its_entry_and_drops_both_
     queue, delete = AsyncMock(), AsyncMock()
     monkeypatch.setattr("core.services.network_member.call_op", AsyncMock(return_value=None))  # parked
     monkeypatch.setattr("core.services.network_member.queue_op", queue)
+    monkeypatch.setattr(routes.workspace_memory, "check_deletable", AsyncMock())  # in the caller's scope
     monkeypatch.setattr(routes.workspace_memory, "delete_memory", delete)
     agentcore.add_response(  # the route deleted the record already: drop_mirror tolerates it
         "batch_delete_memory_records",

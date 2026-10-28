@@ -441,17 +441,29 @@ async def list_memories(owner_id: str, user_id: str) -> dict:
     return await run_in_thread(run)
 
 
-async def delete_memory(owner_id: str, user_id: str, record_id: str) -> None:
-    """Delete one fact from the viewer's private scope or the team scope -- extracted facts and
-    mirrored log entries alike (any member: D2)."""
+def _deletable(owner_id: str, user_id: str, record_id: str):
+    """(client, memory id) once ``record_id`` is in a scope this viewer may delete from: their own
+    private scope or the team scope (any member: D2). LookupError otherwise."""
     scopes = (*_scopes(owner_id, user_id), namespaces_for(owner_id, None)["entries"])
     memory_id = settings.AGENTCORE_MEMORY_ID
     if not memory_id:
         raise LookupError(record_id)
+    client = _client()
+    _owned(client, memory_id, record_id, scopes)
+    return client, memory_id
+
+
+async def check_deletable(owner_id: str, user_id: str, record_id: str) -> None:
+    """The scope check alone, for a caller that acts (the log forget) before the delete."""
+    await run_in_thread(_deletable, owner_id, user_id, record_id)
+
+
+async def delete_memory(owner_id: str, user_id: str, record_id: str) -> None:
+    """Delete one fact from the viewer's private scope or the team scope -- extracted facts and
+    mirrored log entries alike (any member: D2)."""
 
     def run() -> None:
-        client = _client()
-        _owned(client, memory_id, record_id, scopes)
+        client, memory_id = _deletable(owner_id, user_id, record_id)
         _delete_one(client, memory_id, record_id)
 
     await run_in_thread(run)

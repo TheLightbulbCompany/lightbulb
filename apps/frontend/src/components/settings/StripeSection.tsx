@@ -82,7 +82,9 @@ export function StripeSection({ canManage }: { canManage: boolean }) {
                     ? "Authorized · unavailable to agents"
                     : connected
                       ? "Connected"
-                      : unavailable
+                      : stripe.status === "reconnect_required"
+                        ? "Needs reconnecting"
+                        : unavailable
                         ? "Not available yet"
                         : "Not connected"}
                   {stripe.acquisition === "direct_oauth"

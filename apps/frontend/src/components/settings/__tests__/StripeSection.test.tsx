@@ -135,7 +135,7 @@ describe("StripeSection — the consolidated Stripe card", () => {
     expect(screen.queryByText(/pick the same account/)).toBeNull();
   });
 
-  it("says why the agent grant needs a reconnect", async () => {
+  it("shows a dead agent grant as needing a reconnect, and says why", async () => {
     get.mockResolvedValue(COMPANY_BOUND);
     h.connections = [
       {
@@ -151,6 +151,12 @@ describe("StripeSection — the consolidated Stripe card", () => {
     expect(
       await screen.findByText("Stripe ended the sign-in (invalid_grant). Reconnect to continue."),
     ).toBeInTheDocument();
+    const status = screen.getByText(/Needs reconnecting · OAuth/);
+    expect(screen.queryByText(/Not connected/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Reconnect Stripe" })).toBeInTheDocument();
+    // The status dot sits beside the Agent tools text block; it must not read as healthy.
+    const dot = status.closest(".flex.items-start")?.querySelector("span[aria-hidden='true']");
+    expect(dot?.className).not.toContain("bg-[var(--ok)]");
   });
 
   it("keeps Disconnect but does not claim an unsupported old agent grant works", async () => {

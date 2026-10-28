@@ -2,12 +2,14 @@
 
 # ruff: noqa: F811 -- `table` is the repo suite's moto fixture, imported and then requested by name.
 
+import asyncio
 import json
 from unittest.mock import patch
 
 import boto3
 import pytest
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 
 from core.auth import AuthContext
@@ -29,7 +31,10 @@ def s3(table):
 
 @pytest.fixture
 def app(s3):
+    from main import messaging_validation_error_handler
+
     app = FastAPI()
+    app.add_exception_handler(RequestValidationError, messaging_validation_error_handler)  # main's, as deployed
     app.include_router(router.router, prefix="/api/v1/sessions")
     return app
 
@@ -197,3 +202,35 @@ def test_bad_ids_are_refused(app):
         ).status_code
         == 422
     )
+
+
+def test_reupload_under_other_tier_leaves_no_orphans(app, s3, table):
+    full = lambda: {"sessions": [session()], "tool_calls": [call(summary="s")], "mode": "full"}  # noqa: E731
+    pks = lambda: sorted(i["pk"] for i in table.scan()["Items"])  # noqa: E731
+    for first, second in (("org_1", None), ("org_1", "org_2")):
+        as_(app, "user_ada", first).post("/api/v1/sessions", json=full())
+        as_(app, "user_ada", second).post("/api/v1/sessions", json=full())
+        want = ["WSESSIONS#org_2"] if second else []
+        assert sorted(p for p in pks() if p.startswith("WSESSIONS#")) == want
+        assert keys(s3) == [f"sessions/{'workspace' if second else 'free'}/user_ada/s1.json"]
+        assert asyncio.run(session_store.delete_sessions("user_ada")) == 1
+        assert pks() == [] and keys(s3) == []
+
+
+def test_over_limit_upload_is_422(app):
+    client = as_(app, "user_ada")
+    long = {"sessions": [session()], "tool_calls": [call(summary="x" * 2001)], "mode": "full"}
+    r = client.post("/api/v1/sessions", json=long)
+    assert r.status_code == 422 and "xxx" not in r.text  # the rejected summary is not echoed
+    many = {"sessions": [session()], "tool_calls": [call(seq=i) for i in range(5001)], "mode": "full"}
+    assert client.post("/api/v1/sessions", json=many).status_code == 422
+
+
+def test_body_user_and_workspace_ids_are_ignored(app, s3):
+    client = as_(app, "user_ada")
+    row = session(user_id="user_eve", workspace_id="org_9")
+    body = {"sessions": [row], "tool_calls": [], "mode": "metadata", "user_id": "user_eve", "workspace_id": "org_9"}
+    assert client.post("/api/v1/sessions", json=body).json() == {"stored": 1}
+    [mine] = client.get("/api/v1/sessions").json()["sessions"]
+    assert mine["user_id"] == "user_ada" and "workspace_id" not in mine
+    assert as_(app, "user_eve", "org_9").get("/api/v1/sessions").json()["sessions"] == []

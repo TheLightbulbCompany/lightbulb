@@ -617,6 +617,9 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
         return JSONResponse(status_code=problem.status_code, content=problem.body())
+    if request.url.path.startswith("/api/v1/sessions"):
+        # uploaded sessions: FastAPI's default 422 would echo tool-call summaries.
+        return JSONResponse(status_code=422, content={"detail": "Invalid sessions upload."})
     return await request_validation_exception_handler(request, exc)
 
 

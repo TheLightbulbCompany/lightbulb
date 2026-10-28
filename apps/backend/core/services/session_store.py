@@ -47,8 +47,14 @@ async def put_sessions(user_id: str, rows: list[dict], full: bool, workspace_id:
     """Store (or replace: same id, same row and object) each session. A row may carry its
     ``tool_calls``; they are kept, with their summaries, only when ``full``. Returns the count."""
     table = store._table()
+    s3 = _s3()
     now = utc_now_iso()
     for row in rows:
+        # Same id re-uploaded under another tier or workspace: the old copies go first, or they
+        # outlive the row that names them (and forget-me could not find them).
+        old = await store._get(_user_pk(user_id), f"S#{row['id']}")
+        if old and old.get("workspace_id") != workspace_id:
+            await _delete(old, s3)
         item = {k: row.get(k) for k in _FIELDS}
         item.update(user_id=user_id, full=full, uploaded_at=now)
         if workspace_id:
@@ -56,9 +62,9 @@ async def put_sessions(user_id: str, rows: list[dict], full: bool, workspace_id:
         key = _key(user_id, row["id"], workspace_id)
         if full:
             body = json.dumps({"session": item, "tool_calls": row.get("tool_calls", [])})
-            await run_in_thread(_s3().put_object, Bucket=settings.OWNER_STATE_BUCKET, Key=key, Body=body.encode())
+            await run_in_thread(s3.put_object, Bucket=settings.OWNER_STATE_BUCKET, Key=key, Body=body.encode())
         else:  # a metadata re-upload replaces a full one: the old object must not outlive it
-            await run_in_thread(_s3().delete_object, Bucket=settings.OWNER_STATE_BUCKET, Key=key)
+            await run_in_thread(s3.delete_object, Bucket=settings.OWNER_STATE_BUCKET, Key=key)
         await run_in_thread(table.put_item, Item={"pk": _user_pk(user_id), "sk": f"S#{row['id']}", **item})
         if workspace_id:
             await run_in_thread(
@@ -78,19 +84,21 @@ async def list_sessions(
     return rows[:LIST_CAP]
 
 
-async def _delete(item: dict) -> None:
+async def _delete(item: dict, s3=None) -> None:
     table = store._table()
+    s3 = s3 or _s3()
     owner, sid, ws = item["user_id"], item["id"], item.get("workspace_id")
     await run_in_thread(table.delete_item, Key={"pk": _user_pk(owner), "sk": f"S#{sid}"})
     if ws:
         await run_in_thread(table.delete_item, Key={"pk": _ws_pk(ws), "sk": f"S#{owner}#{sid}"})
-    await run_in_thread(_s3().delete_object, Bucket=settings.OWNER_STATE_BUCKET, Key=_key(owner, sid, ws))
+    await run_in_thread(s3.delete_object, Bucket=settings.OWNER_STATE_BUCKET, Key=_key(owner, sid, ws))
 
 
 async def delete_sessions(user_id: str) -> int:
     """Everything this user uploaded (account deletion, ``lightbulb`` forget-me)."""
     items = await store._query(_user_pk(user_id), begins_with="S#")
-    await asyncio.gather(*(_delete(i) for i in items))
+    s3 = _s3()
+    await asyncio.gather(*(_delete(i, s3) for i in items))
     return len(items)
 
 

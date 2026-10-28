@@ -18,7 +18,7 @@ router = APIRouter()
 
 Id = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{1,128}$")]  # it becomes an S3 key
 Text = Annotated[str, StringConstraints(max_length=2000)]
-Summary = Annotated[str, StringConstraints(max_length=20_000)]
+Summary = Annotated[str, StringConstraints(max_length=2000)]
 
 
 class Session(BaseModel):
@@ -46,7 +46,7 @@ class ToolCall(BaseModel):
 class Upload(BaseModel):
     mode: Literal["metadata", "full"]
     sessions: list[Session] = Field(default_factory=list, max_length=200)
-    tool_calls: list[ToolCall] = Field(default_factory=list, max_length=20_000)
+    tool_calls: list[ToolCall] = Field(default_factory=list, max_length=5000)
 
 
 async def caller(request: Request, credentials=Depends(security_optional)) -> AuthContext:

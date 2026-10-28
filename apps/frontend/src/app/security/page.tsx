@@ -8,6 +8,9 @@ import { JsonLd, breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
 // Every line here is either in the Privacy Policy (section 15 and "How can you
 // review, update, or delete the data we collect") or one of the three provider
 // paths a workspace can choose. Do not add a claim the policy does not make.
+// The memory, capture, upload and evaluator rows are covered by the privacy
+// policy rewrite that must land before this page ships; until then the rule
+// above stands for every other line.
 export const metadata = pageMetadata({
   title: "What happens to your data — Lightbulb",
   description:
@@ -58,7 +61,7 @@ const CLAIMS: { claim: string; evidence: string }[] = [
   },
   {
     claim: "Agents ask before they spend",
-    evidence: "Spend limits and approvals are in the product today. An agent over its limit waits for a person to approve.",
+    evidence: "Spend gates and approvals are shipped.",
   },
   {
     claim: "Teammates see presence, not your sessions or files",

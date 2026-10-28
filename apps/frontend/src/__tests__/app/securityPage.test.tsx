@@ -45,6 +45,9 @@ describe("/security", () => {
     for (const name of ["past.dev", "Beacon", "Mem0", "Hindsight", "Honcho", "Graphiti", "Supermemory"]) {
       expect(text).not.toContain(name);
     }
-    expect(text).not.toMatch(/HIPAA|SAML|!/);
+    // The page's own denial ("we do not hold ... such as SOC 2") is the one allowed mention.
+    const claims = text.replace(/We do not hold a security certification such as SOC 2 today\./, "");
+    expect(claims).not.toMatch(/SOC ?2|SAML|HIPAA/);
+    expect(text).not.toContain("!");
   });
 });

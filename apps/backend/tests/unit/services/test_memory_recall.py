@@ -8,6 +8,7 @@ import pytest
 from botocore.validate import validate_parameters
 
 from core.services import memory_models, memory_recall, workspace_memory
+from tests.unit.services.agentcore_filters import check_filters
 
 MODEL = boto3.client("bedrock-agentcore", region_name="us-east-1").meta.service_model
 NS = workspace_memory.namespaces_for("own1", "user_a")
@@ -44,6 +45,7 @@ class FakeClient:
     def _do(self, op, shape, kw):
         self.calls.append((op, kw))
         validate_parameters(kw, MODEL.operation_model(shape).input_shape)
+        check_filters(kw.get("metadataFilters") or kw.get("searchCriteria", {}).get("metadataFilters"), shape)
         rows = self.handler(op, kw)
         for row in rows:  # what the service returns: every required member, nothing it never sends
             assert set(SUMMARY.required_members) <= set(row) <= set(SUMMARY.members), row
@@ -362,9 +364,9 @@ async def test_as_of_filters_turns_and_entries_by_creation(monkeypatch):
     await _run(as_of=AS_OF)
     before = [
         {
-            "left": {"metadataKey": "createdAt"},
+            "left": {"metadataKey": "x-amz-agentcore-memory-createdAt"},
             "operator": "BEFORE",
-            "right": {"metadataValue": {"dateTimeValue": AS_OF}},
+            "right": {"metadataValue": {"dateTimeValue": "2026-03-01T00:00:00Z"}},
         }
     ]
     for ns in (NS["turns"], NS["entries"]):
@@ -372,3 +374,8 @@ async def test_as_of_filters_turns_and_entries_by_creation(monkeypatch):
         assert kw["searchCriteria"]["metadataFilters"] == before
     await _run()
     assert all("metadataFilters" not in kw["searchCriteria"] for kw in c.where("retrieve", NS["turns"])[1:])
+
+
+def test_as_of_is_sent_as_iso_utc_and_a_naive_time_is_utc():
+    assert memory_recall._iso_utc(datetime(2026, 3, 1, 9, 30)) == "2026-03-01T09:30:00Z"
+    assert memory_recall._iso_utc(datetime.fromisoformat("2026-03-01T10:30:00+01:00")) == "2026-03-01T09:30:00Z"

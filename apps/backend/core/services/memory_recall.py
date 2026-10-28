@@ -32,12 +32,19 @@ _gates: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # one semaphore
 _entity_cache: dict[tuple[str, str], tuple[float, set[str]]] = {}
 
 
-def _flt(key: str, op: str, value: str | float | datetime | None = None) -> dict:
+def _flt(key: str, op: str, value: str | float | None = None) -> dict:
     out: dict = {"left": {"metadataKey": key}, "operator": op}
     if value is not None:
-        field = {str: "stringValue", datetime: "dateTimeValue"}.get(type(value), "numberValue")
+        field = "stringValue" if isinstance(value, str) else "numberValue"
+        if key.startswith("x-amz-agentcore-memory-"):  # dateTimeValue is reserved for the system fields
+            field = "dateTimeValue"
         out["right"] = {"metadataValue": {field: value}}
     return out
+
+
+def _iso_utc(at: datetime) -> str:
+    """ISO-8601 in UTC (``2026-01-01T00:00:00Z``); a naive time is UTC."""
+    return at.replace(tzinfo=at.tzinfo or UTC).astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _as_of_variants(as_of: datetime | None) -> list[list[dict]]:
@@ -116,7 +123,8 @@ async def _search_part(client, memory_id, namespaces, part, limit, as_of, includ
         for extra in variants:
             jobs.append(("claim", retrieve(namespaces["facts"], [_flt("status", "EQUALS_TO", status), *extra])))
     # Turns and entries have no validity range: as of a moment is what existed by then.
-    created = [_flt("createdAt", "BEFORE", as_of)] if as_of else []
+    # The system field: a bare ``createdAt`` is not indexed and AgentCore refuses it.
+    created = [_flt("x-amz-agentcore-memory-createdAt", "BEFORE", _iso_utc(as_of))] if as_of else []
     jobs.append(("turn", retrieve(namespaces["turns"], created)))
     jobs.append(("entry", retrieve(namespaces["entries"], created)))
     if include_private and "private" in namespaces:

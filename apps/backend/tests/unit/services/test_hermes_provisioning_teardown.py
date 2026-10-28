@@ -19,6 +19,30 @@ ROW = {
 }
 
 
+@pytest.fixture
+def table():
+    """The messaging table the ``TEARDOWN#`` rows live in (moto)."""
+    from unittest.mock import patch
+
+    import boto3
+    from moto import mock_aws
+
+    from core.repositories import messaging_repo
+
+    with mock_aws():
+        t = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="msg",
+            KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+            AttributeDefinitions=[
+                {"AttributeName": "pk", "AttributeType": "S"},
+                {"AttributeName": "sk", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        with patch.object(messaging_repo, "_table", return_value=t):
+            yield t
+
+
 @pytest.fixture(autouse=True)
 def no_browser_state(monkeypatch):
     monkeypatch.setattr("core.repositories.container_repo.get_browser_state", AsyncMock(return_value=None))
@@ -266,21 +290,47 @@ def _parked(monkeypatch, answers):
 
 
 @pytest.mark.asyncio
-async def test_a_parked_member_keeps_the_runtime_until_the_forget_lands(monkeypatch):
+async def test_a_parked_member_keeps_the_runtime_until_the_forget_lands(monkeypatch, table):
     import asyncio
+    import time
 
     calls = _parked(monkeypatch, [False, False, True])
     report: dict = {}
     await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True, report=report)
     assert report == {"runtime": "scheduled"} and "runtime" not in calls
+    (row,) = table.scan()["Items"]  # durable before the task runs: a restart leaves the sweep this
+    assert row["pk"] == "TEARDOWN#" and row["ownerId"] == "org_a" and row["author"] == "memberkey"
+    assert row["row"] == ROW and row["dueAt"] > time.time() + 150
     (task,) = hermes_provisioning._runtime_teardowns
     await asyncio.wait_for(task, 1)
     assert calls[calls.index("try:True") :] == ["try:True", "runtime"]
     assert calls.count("try:False") == 2 and calls.index("memory:org_a") < calls.index("runtime")
+    assert table.scan()["Items"] == []
 
 
 @pytest.mark.asyncio
-async def test_a_member_that_never_answers_still_loses_its_runtime_after_the_window(monkeypatch):
+async def test_the_sweep_runs_a_past_due_teardown_and_deletes_its_row(monkeypatch, table):
+    """The backend task stopped inside the window: the next sweep tick finishes the teardown."""
+    import time
+
+    from core.services import memory_api
+
+    calls = _parked(monkeypatch, [True])
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+    now = int(time.time())
+    base = {"pk": "TEARDOWN#", "ownerId": "org_a", "row": ROW, "author": "memberkey", "expiresAt": now + 999}
+    table.put_item(Item={**base, "sk": f"org_a#{ROW['agentcore_runtime_arn']}", "dueAt": now - 1})
+    table.put_item(Item={**base, "sk": "org_a#not-yet", "dueAt": now + 999})
+    monkeypatch.setattr(memory_api.settings, "AGENTCORE_MEMORY_ID", "", raising=False)
+    monkeypatch.setattr(memory_api.container_repo, "scan_all", AsyncMock(return_value=[]))
+    monkeypatch.setattr(memory_api.evaluator, "collect_due", AsyncMock(return_value=0))
+    await memory_api.sweep_once()
+    assert calls == ["try:True", "runtime"]
+    assert [i["sk"] for i in table.scan()["Items"]] == ["org_a#not-yet"]
+
+
+@pytest.mark.asyncio
+async def test_a_member_that_never_answers_still_loses_its_runtime_after_the_window(monkeypatch, table):
     import asyncio
 
     calls = _parked(monkeypatch, [])
@@ -291,7 +341,7 @@ async def test_a_member_that_never_answers_still_loses_its_runtime_after_the_win
 
 
 @pytest.mark.asyncio
-async def test_a_workspace_provisioned_again_mid_window_keeps_its_names(monkeypatch):
+async def test_a_workspace_provisioned_again_mid_window_keeps_its_names(monkeypatch, table):
     """The new boot secret carries the old member key over: no late forget, and only the captured
     runtime and its gate token are deleted -- never the owner-keyed secret, state or profiles."""
     import asyncio

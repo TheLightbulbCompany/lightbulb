@@ -99,6 +99,12 @@ async def sweep_once() -> int:
     """Sync every workspace whose last sync is older than ``SWEEP_INTERVAL_S`` (returns how many ran),
     then collect due drafts. One at a time, each behind its owner's lease, and one failure never
     stops the rest."""
+    from core.services import hermes_provisioning  # lazy: import cycle
+
+    try:  # an owner wipe's teardown whose backend task stopped inside its window
+        await hermes_provisioning.run_due_teardowns()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("memory sweep: due teardowns failed error=%s", type(exc).__name__)
     memory_id = settings.AGENTCORE_MEMORY_ID
     ran = 0
     # ponytail: one containers-table scan per pass; keep an index of memory owners if the fleet grows.

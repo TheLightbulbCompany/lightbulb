@@ -606,22 +606,72 @@ async def _superseded(owner_id: str, arn: str | None) -> bool:
 _runtime_teardowns: set[asyncio.Task] = set()
 FORGET_RETRY_S = 20
 FORGET_WINDOW_S = 180
+# The durable copy of a scheduled teardown, for a backend task that stops inside the window.
+# Due after the in-process window plus a try's 90 s ingress floor, so the sweep does not race it.
+TEARDOWN_PK = "TEARDOWN#"
+TEARDOWN_DUE_S = 200
+TEARDOWN_TTL_S = 30 * 86400
+_TEARDOWN_ROW_KEYS = ("owner_id", "id", "agentcore_runtime_arn", "gateway_token", "bedrock_gate_token_hash")
 
 
-async def _forget_then_teardown(owner_id: str, container: dict, author: str) -> None:
+def _teardown_key(owner_id: str, container: dict) -> dict:
+    return {"pk": TEARDOWN_PK, "sk": f"{owner_id}#{container.get('agentcore_runtime_arn') or ''}"}
+
+
+async def _schedule_teardown(owner_id: str, container: dict, author: str) -> None:
+    """Write the ``TEARDOWN#`` row, then start the in-process task. A failed write is logged and
+    the task still runs: only the restart safety net is lost."""
+    from core.repositories import messaging_repo
+
+    # What the forget's invoke and the teardown read: the runtime, its bearer and gate token.
+    row = {k: container[k] for k in _TEARDOWN_ROW_KEYS if container.get(k)}
+    now = int(time.time())
+    item = {
+        **_teardown_key(owner_id, row),
+        "ownerId": owner_id,
+        "row": row,
+        "author": author,
+        "dueAt": now + TEARDOWN_DUE_S,
+        "expiresAt": now + TEARDOWN_TTL_S,
+    }
+    try:
+        await run_in_thread(messaging_repo._table().put_item, Item=item)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("owner wipe: teardown row not written owner=%s error=%s", owner_id, type(exc).__name__)
+    task = asyncio.create_task(_forget_then_teardown(owner_id, row, author))
+    _runtime_teardowns.add(task)
+    task.add_done_callback(_runtime_teardowns.discard)
+
+
+async def run_due_teardowns() -> int:
+    """The sweep's half: a ``TEARDOWN#`` row past due means its backend task stopped. One forget
+    try, then the teardown (same guard), then the row goes. Returns how many ran."""
+    from core.repositories import messaging_repo
+
+    ran = 0
+    for item in await messaging_repo._query(TEARDOWN_PK):
+        now = time.time()
+        if int(item.get("dueAt") or 0) > now or int(item.get("expiresAt") or 0) <= now:
+            continue
+        await _forget_then_teardown(str(item["ownerId"]), dict(item["row"]), str(item["author"]), window_s=0)
+        ran += 1
+    return ran
+
+
+async def _forget_then_teardown(owner_id: str, container: dict, author: str, *, window_s: float | None = None) -> None:
     """An owner wipe whose cloud member was parked: retry ``memory.forget_author`` against the
     captured row (the containers row is already deleted; an invoke cold-starts the runtime), then
     tear the runtime down whatever happened. Never raises. If the owner id was provisioned again
     meanwhile (``_superseded``), the late forget would tombstone the new workspace's entries and
     the owner-keyed deletes would take its boot secret, network state and profiles: then only the
-    captured runtime and its gate token go.
-    ponytail: in-process like workspace_memory's tail, so a backend task stopping inside the
-    window leaks the runtime; a durable follow-up (SFN wait) if that ever shows up."""
+    captured runtime and its gate token go. Its ``TEARDOWN#`` row is deleted once it is done; a
+    teardown that raises keeps the row for the sweep."""
+    from core.repositories import messaging_repo
     from core.services import container_rpc
 
     arn = container.get("agentcore_runtime_arn")
     retry_s = FORGET_RETRY_S
-    deadline = time.monotonic() + FORGET_WINDOW_S
+    deadline = time.monotonic() + (FORGET_WINDOW_S if window_s is None else window_s)
     forgot = superseded = False
     while not forgot:
         if superseded := await _superseded(owner_id, arn):
@@ -638,10 +688,11 @@ async def _forget_then_teardown(owner_id: str, container: dict, author: str) -> 
         if superseded or await _superseded(owner_id, arn):
             await _delete_runtime_and_bearer(owner_id, container)
             logger.warning("owner wipe: owner provisioned again; only the old runtime deleted owner=%s", owner_id)
-            return
-        await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=True)
-        logger.info("owner wipe: runtime torn down owner=%s forgot=%s", owner_id, forgot)
-    except Exception:  # noqa: BLE001 -- nothing awaits this task
+        else:
+            await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=True)
+            logger.info("owner wipe: runtime torn down owner=%s forgot=%s", owner_id, forgot)
+        await run_in_thread(messaging_repo._table().delete_item, Key=_teardown_key(owner_id, container))
+    except Exception:  # noqa: BLE001 -- nothing awaits this task; a kept row is the sweep's retry
         logger.exception("owner wipe: scheduled runtime teardown failed owner=%s", owner_id)
 
 
@@ -709,10 +760,15 @@ async def delete_workspace_runtime(
             # While the runtime and its member key still exist; never raises.
             owed = await workspace_memory.forget_workspace_authored(owner_id)
         if owed:
-            # Parked or failing: the runtime outlives this request until the member forgets.
-            task = asyncio.create_task(_forget_then_teardown(owner_id, container, owed))
-            _runtime_teardowns.add(task)
-            task.add_done_callback(_runtime_teardowns.discard)
+            # Parked or failing: the runtime outlives this request until the member forgets. The
+            # browser goes now, while its state row (deleted below) still names its session.
+            from core.services import browser_control
+
+            try:
+                await browser_control.teardown(owner_id, container, delete_state=True)
+            except Exception:  # noqa: BLE001 -- like teardown_hermes_runtime's delete_profiles case
+                logger.warning("Browser teardown failed for owner=%s", owner_id)
+            await _schedule_teardown(owner_id, container, owed)
         else:
             await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=delete_profiles)
         if report is not None:

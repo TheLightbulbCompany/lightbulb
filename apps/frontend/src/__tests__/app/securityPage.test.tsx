@@ -29,6 +29,13 @@ describe("/security", () => {
       for (const cell of cells) expect((cell.textContent ?? "").trim()).not.toBe("");
     }
     expect(table.textContent).toContain("a computer that stays offline forever keeps what it held");
+    // Memory stays on members' computers on the free network only: a workspace keeps a searchable copy.
+    expect(table.textContent).toContain(
+      "On the free network, memory lives on members' computers and moves only between them",
+    );
+    expect(table.textContent).toContain(
+      "In a workspace, the workspace's always-on member keeps a copy, and the facts it mirrors for search are reachable only by that member and our backend. A workspace wipe deletes them.",
+    );
   });
 
   it("says what leaves your machine: memory, capture and upload", () => {

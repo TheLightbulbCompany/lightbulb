@@ -30,9 +30,9 @@ const CLAIMS: { claim: string; evidence: string }[] = [
       "Messages are encrypted end to end between member keys. A relay carries the ciphertext when a direct route fails.",
   },
   {
-    claim: "Memory lives on members' computers and moves only between them",
+    claim: "On the free network, memory lives on members' computers and moves only between them",
     evidence:
-      "Memory is a set of signed entries kept on each member's computer. Sync sends entries only to admitted members, and your private entries only to your own computers.",
+      "Memory is a set of signed entries kept on each member's computer. Sync sends entries only to admitted members, and your private entries only to your own computers. In a workspace, the workspace's always-on member keeps a copy, and the facts it mirrors for search are reachable only by that member and our backend. A workspace wipe deletes them.",
   },
   {
     claim: "Nothing from a laptop session leaves without sign-in and a choice",

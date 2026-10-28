@@ -483,6 +483,16 @@ async def _archive_metronome_customer(customer_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _runtime_detail(report: dict) -> str:
+    """The runtime step's detail; "scheduled" when a parked member keeps the runtime a while."""
+    if report.get("runtime") == "scheduled":
+        return (
+            "containers row + channel-links removed; agentcore runtime + boot secret + S3 profiles "
+            "teardown scheduled (after the cloud member forgets its entries, at most 3 minutes)"
+        )
+    return "agentcore runtime + boot secret + S3 profiles + containers row + channel-links removed"
+
+
 async def _step(steps: list[WipeStep], *, system: str, action: str, fn: Callable[[], Awaitable[str | None]]) -> None:
     """Run one teardown collaborator, in its own try/except.
 
@@ -964,8 +974,9 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
             # Every other caller (entitlement_teardown on a lapsed card, debug's routine
             # reprovision) leaves it False and keeps the owner's memory/skills/SOUL.md/
             # auth.json. Do not re-broaden it.
-            row_at_death = await delete_workspace_runtime(owner_id, delete_profiles=True)
-            detail = "agentcore runtime + boot secret + S3 profiles + containers row + channel-links removed"
+            report: dict = {}
+            row_at_death = await delete_workspace_runtime(owner_id, delete_profiles=True, report=report)
+            detail = _runtime_detail(report)
             # FINAL SWEEP — the last moment any gate-token hash is reachable.
             # ``delete_workspace_runtime`` returns the row's own ALL_OLD image, so
             # this covers exactly what step 2b could not see: a hash minted

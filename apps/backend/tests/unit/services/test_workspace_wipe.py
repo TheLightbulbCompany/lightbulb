@@ -334,7 +334,7 @@ async def test_execute_finds_and_deletes_runtime_under_org_id(ws_mocks):
     )
 
     assert report.dry_run is False
-    ws_mocks.delete_runtime.assert_awaited_once_with(ORG_ID, delete_profiles=True)
+    ws_mocks.delete_runtime.assert_awaited_once_with(ORG_ID, delete_profiles=True, report={})
     ws_mocks.voice_wipe.assert_awaited_once_with(ORG_ID)
     by_system = {s.system: s for s in report.steps}
     assert by_system["runtime"].status == "ok"
@@ -874,7 +874,7 @@ async def test_self_serve_sole_member_wipes_workspace_and_cancels_stripe(ws_mock
     assert not [s for s in report.steps if s.status == "failed"]
     assert report.billing_preserved is False
     ws_mocks.stripe_delete.assert_awaited_once_with(ORG_ID)  # cancels the subscription, then the customer
-    ws_mocks.delete_runtime.assert_awaited_once_with(ORG_ID, delete_profiles=True)
+    ws_mocks.delete_runtime.assert_awaited_once_with(ORG_ID, delete_profiles=True, report={})
     ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
     ws_mocks.clerk_delete_user.assert_awaited_once_with(MEMBER_A)
     ws_mocks.clerk_delete_org.assert_awaited_once_with(ORG_ID)

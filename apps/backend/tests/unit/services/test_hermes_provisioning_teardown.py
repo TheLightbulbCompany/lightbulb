@@ -190,7 +190,7 @@ async def test_teardown_s3_delete_failure_is_also_best_effort(monkeypatch):
     await hermes_provisioning.teardown_hermes_runtime("org_a", container_row=ROW, delete_profiles=True)
 
 
-def _seam(monkeypatch, *, row):
+def _seam(monkeypatch, *, row, owed=None):
     """delete_workspace_runtime with every collaborator stubbed; returns the call log."""
     calls: list[str] = []
     monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row))
@@ -202,6 +202,7 @@ def _seam(monkeypatch, *, row):
 
     async def _forget(owner_id):
         calls.append(f"forget:{owner_id}")
+        return owed  # the member key when the forget is owed (member parked)
 
     monkeypatch.setattr(hermes_provisioning, "teardown_hermes_runtime", _teardown)
     monkeypatch.setattr("core.services.workspace_memory.forget_workspace_authored", _forget)
@@ -232,6 +233,61 @@ async def test_the_seam_wipes_workspace_memory_with_the_profiles_even_on_a_row_l
     await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True)
     # The cloud member forgets what it signed while it still runs; a row-less retry has no runtime.
     assert calls == (["forget:org_a", "runtime"] if row else []) + ["reap", "memory:org_a"]
+
+
+@pytest.mark.asyncio
+async def test_a_warm_member_forgets_and_the_runtime_goes_in_the_request(monkeypatch):
+    calls = _seam(monkeypatch, row=ROW)
+    report: dict = {}
+    await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True, report=report)
+    assert calls == ["forget:org_a", "runtime", "reap", "memory:org_a"] and report == {"runtime": "done"}
+    assert not hermes_provisioning._runtime_teardowns
+
+
+def _parked(monkeypatch, answers):
+    """A parked member: the seam schedules the teardown; ``answers`` is each forget try's outcome."""
+    import asyncio
+
+    calls = _seam(monkeypatch, row=ROW, owed="memberkey")
+    monkeypatch.setattr(hermes_provisioning, "FORGET_RETRY_S", 0.01)
+    monkeypatch.setattr(hermes_provisioning, "FORGET_WINDOW_S", 0.05)
+    tries = iter(answers)
+
+    async def _call(owner_id, method, params, *, target, **kw):
+        assert (method, params, target) == ("memory.forget_author", {"author": "memberkey"}, ROW)
+        ok = next(tries, False)
+        calls.append(f"try:{ok}")
+        if not ok:
+            raise asyncio.TimeoutError
+        return {"forgotten": 2}
+
+    monkeypatch.setattr("core.services.container_rpc.call", _call)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_a_parked_member_keeps_the_runtime_until_the_forget_lands(monkeypatch):
+    import asyncio
+
+    calls = _parked(monkeypatch, [False, False, True])
+    report: dict = {}
+    await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True, report=report)
+    assert report == {"runtime": "scheduled"} and "runtime" not in calls
+    (task,) = hermes_provisioning._runtime_teardowns
+    await asyncio.wait_for(task, 1)
+    assert calls[calls.index("try:True") :] == ["try:True", "runtime"]
+    assert calls.count("try:False") == 2 and calls.index("memory:org_a") < calls.index("runtime")
+
+
+@pytest.mark.asyncio
+async def test_a_member_that_never_answers_still_loses_its_runtime_after_the_window(monkeypatch):
+    import asyncio
+
+    calls = _parked(monkeypatch, [])
+    await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True)
+    (task,) = hermes_provisioning._runtime_teardowns
+    await asyncio.wait_for(task, 1)
+    assert calls[-1] == "runtime" and "try:True" not in calls and calls.count("try:False") >= 2
 
 
 @pytest.mark.asyncio

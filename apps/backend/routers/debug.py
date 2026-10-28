@@ -218,8 +218,10 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # ``account_wipe`` are the ONLY two terminal callers that pass True (M6-R42).
     runtime_succeeded = False
     try:
-        await delete_workspace_runtime(owner_id, delete_profiles=True)
-        deleted["runtime"] = True
+        report: dict = {}
+        await delete_workspace_runtime(owner_id, delete_profiles=True, report=report)
+        # "scheduled": a parked member keeps the runtime until it forgets its entries (<= 3 min).
+        deleted["runtime"] = "scheduled" if report.get("runtime") == "scheduled" else True
         runtime_succeeded = True
     except Exception as e:
         logger.warning("runtime teardown failed for %s: %s", owner_id, e)

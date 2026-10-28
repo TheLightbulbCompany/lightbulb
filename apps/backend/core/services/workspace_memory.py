@@ -245,21 +245,23 @@ async def delete_owner_memory(owner_id: str, *, resweep_after_s: float = RESWEEP
     )
 
 
-async def forget_workspace_authored(owner_id: str) -> None:
+async def forget_workspace_authored(owner_id: str) -> str | None:
     """The owner wipe's half that needs the runtime: tombstone, through the cloud member, every
     entry it signed (imported facts, workspace remembers), so the tombstones reach members'
     computers. ``delete_workspace_runtime`` awaits this BEFORE it deletes the runtime and the boot
     secret holding the member key. Never raises: parked, it is owed and the runtime woken, and the
-    sweep retries while the runtime lives."""
+    member key is returned so the caller can keep the runtime until the forget lands. None when
+    it was sent, or there was nothing to send."""
     from core.services import agentcore_runtime, memory_api  # lazy: import cycles
 
     try:
         key = await agentcore_runtime.network_member_key(owner_id)
     except Exception as exc:  # noqa: BLE001 -- a teardown must not stop here
         logger.warning("owner wipe: member key unreadable owner=%s error=%s", owner_id, type(exc).__name__)
-        return
-    if key:  # None: never a network member, so it signed nothing
-        await memory_api.forward_forget_author(owner_id, key)
+        return None
+    if key and not await memory_api.forward_forget_author(owner_id, key):  # no key: it signed nothing
+        return key
+    return None
 
 
 async def _forget_authored(owner_id: str, user_id: str, memory_api, network_login) -> None:

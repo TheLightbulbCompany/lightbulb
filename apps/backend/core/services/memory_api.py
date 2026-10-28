@@ -265,16 +265,18 @@ async def _forget_author_now(owner_id: str, author: str) -> None:
         raise RuntimeError("memory.forget_author unavailable: the workspace's member is parked")
 
 
-async def forward_forget_author(owner_id: str, author: str) -> None:
+async def forward_forget_author(owner_id: str, author: str) -> bool:
     """The owner wipe's forget of every entry the cloud member signed (imported facts, workspace
     remembers), sent through that member so its tombstones replicate to members' computers. Never
-    raises: parked or failing, it is owed (``A#<key>``) and the runtime woken, like the member wipe."""
+    raises: parked or failing, it is owed (``A#<key>``) and the runtime woken, like the member wipe.
+    True when the member took it now."""
     try:
         await _forget_author_now(owner_id, author)
-        return
+        return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("owner wipe forget_author owed owner=%s error=%s", owner_id, type(exc).__name__)
     await _owe(owner_id, f"A#{author}", "owner wipe")
+    return False
 
 
 async def retry_member_wipes(owner_id: str) -> int:

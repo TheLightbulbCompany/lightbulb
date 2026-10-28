@@ -159,7 +159,7 @@ class TestDeleteUserData:
         # ``delete_profiles=True`` is this endpoint's answer to the EFS ``rm -rf`` it replaces:
         # the owner's S3 profile prefix IS their workspace content, and the e2e harness's
         # empty-slate contract breaks silently if the next provision restores it.
-        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True)
+        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True, report={})
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         # The WORKSPACE row (org-keyed) goes; the caller's identity row stays.
         mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("org_test_456")
@@ -391,7 +391,7 @@ class TestDeleteUserData:
         # Critical: teardown WAS attempted despite no container row, and with delete_profiles --
         # this, ``account_wipe`` and ``workspace_wipe`` are the only three terminal callers
         # that pass it (M6-R42).
-        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True)
+        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True, report={})
         assert res.json()["deleted"]["runtime"] is True
 
     @pytest.mark.asyncio

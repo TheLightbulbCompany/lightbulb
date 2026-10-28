@@ -588,7 +588,41 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
             logger.warning("hermes teardown: could not delete S3 profiles for owner=%s", owner_id, exc_info=True)
 
 
-async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = False) -> dict | None:
+_runtime_teardowns: set[asyncio.Task] = set()
+FORGET_RETRY_S = 20
+FORGET_WINDOW_S = 180
+
+
+async def _forget_then_teardown(owner_id: str, container: dict, author: str) -> None:
+    """An owner wipe whose cloud member was parked: retry ``memory.forget_author`` against the
+    captured row (the containers row is already deleted; an invoke cold-starts the runtime), then
+    tear the runtime down whatever happened. Never raises.
+    ponytail: in-process like workspace_memory's tail, so a backend task stopping inside the
+    window leaks the runtime; a durable follow-up (SFN wait) if that ever shows up."""
+    from core.services import container_rpc
+
+    retry_s = FORGET_RETRY_S
+    deadline = time.monotonic() + FORGET_WINDOW_S
+    forgot = False
+    while not forgot:
+        try:
+            await container_rpc.call(owner_id, "memory.forget_author", {"author": author}, target=container)
+            forgot = True
+        except Exception as exc:  # noqa: BLE001 -- still parked or failing: try again inside the window
+            logger.info("owner wipe: forget_author retry owner=%s error=%s", owner_id, type(exc).__name__)
+            if time.monotonic() + retry_s > deadline:
+                break
+            await asyncio.sleep(retry_s)
+    try:
+        await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=True)
+        logger.info("owner wipe: runtime torn down owner=%s forgot=%s", owner_id, forgot)
+    except Exception:  # noqa: BLE001 -- nothing awaits this task
+        logger.exception("owner wipe: scheduled runtime teardown failed owner=%s", owner_id)
+
+
+async def delete_workspace_runtime(
+    owner_id: str, *, delete_profiles: bool = False, report: dict | None = None
+) -> dict | None:
     """THE TEARDOWN SEAM. Tear a workspace's runtime down and delete its containers row.
 
     Every teardown in the system reaches AWS through this function -- entitlement
@@ -611,7 +645,10 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
       4. Sweep the owner's ``channel_links`` rows (non-fatal).
       5. (``delete_profiles`` only) wipe the owner's workspace memory. Raises on failure. Its
          network half runs first, before step 1: the cloud member forgets the entries it signed
-         (``workspace_memory.forget_workspace_authored``), which needs the live runtime.
+         (``workspace_memory.forget_workspace_authored``), which needs the live runtime. A parked
+         member owes it: step 1 then runs in a background task (``_forget_then_teardown``) after
+         the forget, or after ``FORGET_WINDOW_S`` regardless. ``report["runtime"]`` (when a dict
+         is passed) says ``"done"`` or ``"scheduled"``.
 
     ``delete_profiles`` (M6-R42) defaults to **False** and must stay that way: this
     function is shared by NON-terminal callers -- ``entitlement_teardown`` (a lapsed or
@@ -640,12 +677,21 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
 
     container = await container_repo.get_by_owner_id(owner_id)
     if container:
+        owed = None
         if delete_profiles:
             from core.services import workspace_memory
 
             # While the runtime and its member key still exist; never raises.
-            await workspace_memory.forget_workspace_authored(owner_id)
-        await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=delete_profiles)
+            owed = await workspace_memory.forget_workspace_authored(owner_id)
+        if owed:
+            # Parked or failing: the runtime outlives this request until the member forgets.
+            task = asyncio.create_task(_forget_then_teardown(owner_id, container, owed))
+            _runtime_teardowns.add(task)
+            task.add_done_callback(_runtime_teardowns.discard)
+        else:
+            await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=delete_profiles)
+        if report is not None:
+            report["runtime"] = "scheduled" if owed else "done"
 
     deleted = await container_repo.delete(owner_id)
 

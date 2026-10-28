@@ -30,8 +30,8 @@ interface Row {
 }
 
 // Budgets meter Lightbulb credits (the openrouter-gate). ChatGPT and BYO-key
-// owners never pass the gate, so nothing is metered: the feature is off for them.
-export const usesOwnProvider = (providerChoice: string | null | undefined) =>
+// owners never pass the gate, so nothing is metered: the editor is off for them.
+const usesOwnProvider = (providerChoice: string | null | undefined) =>
   providerChoice === "chatgpt_oauth" || providerChoice === "byo_key";
 
 const usd = (cents: number) => `$${(cents / 100).toFixed(2)}`;

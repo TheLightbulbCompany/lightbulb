@@ -65,10 +65,9 @@ vi.mock("@clerk/nextjs", () => ({
   UserButton: () => <div data-testid="user-button" />,
 }));
 
-const billing = vi.hoisted(() => ({ account: null as { provider_choice: string | null } | null }));
 vi.mock("@/hooks/useBilling", () => ({
   useBilling: () => ({
-    account: billing.account,
+    account: null,
     isLoading: false,
     error: null,
     isSubscribed: false,
@@ -82,7 +81,6 @@ describe("Settings nav — the six groups of the one Settings page", () => {
   beforeEach(() => {
     clerk.membership = null; // default: personal owner = admin
     clerk.isLoaded = true;
-    billing.account = null;
     nav.panel = null;
     nav.extra = "";
     nav.replace.mockClear();
@@ -114,17 +112,6 @@ describe("Settings nav — the six groups of the one Settings page", () => {
     expect(within(navEl).getByText("Billing")).toBeInTheDocument(); // PLAN AND USAGE
     expect(within(navEl).getByText("Desktop")).toBeInTheDocument(); // ADVANCED
     expect(within(navEl).getByText("Marketplace")).toBeInTheDocument(); // ADVANCED
-  });
-
-  it("shows Budgets for managed owners and hides it for ChatGPT/BYO-key owners", () => {
-    const { unmount } = render(<SettingsPage />);
-    let navEl = screen.getByRole("navigation", { name: /settings navigation/i });
-    expect(within(navEl).getByText("Budgets")).toBeInTheDocument();
-    unmount();
-    billing.account = { provider_choice: "byo_key" };
-    render(<SettingsPage />);
-    navEl = screen.getByRole("navigation", { name: /settings navigation/i });
-    expect(within(navEl).queryByText("Budgets")).toBeNull();
   });
 
   it("renders Desktop as an icon-bearing action rather than a section label", () => {

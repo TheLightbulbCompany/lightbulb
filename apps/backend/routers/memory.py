@@ -55,6 +55,8 @@ async def delete_memory(record_id: str, auth: AuthContext = Depends(get_current_
     # The entries mirror and the log entry are found through the facts record's link row.
     entry = await memory_sync.entry_for(owner_id, record_id) if _RECORD_ID.fullmatch(record_id) else None
     if entry:  # first, so a failed record delete leaves a retry that still finds the link
+        # The scope check before the forget: another member's private mirror is a 404, untouched.
+        await _act(workspace_memory.check_deletable, auth, record_id)
         await _guard(memory_api.forget(owner_id, entry))
     await _act(workspace_memory.delete_memory, auth, record_id)
     if entry:

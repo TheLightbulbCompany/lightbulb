@@ -19,6 +19,30 @@ ROW = {
 }
 
 
+@pytest.fixture
+def table():
+    """The messaging table the ``TEARDOWN#`` rows live in (moto)."""
+    from unittest.mock import patch
+
+    import boto3
+    from moto import mock_aws
+
+    from core.repositories import messaging_repo
+
+    with mock_aws():
+        t = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="msg",
+            KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+            AttributeDefinitions=[
+                {"AttributeName": "pk", "AttributeType": "S"},
+                {"AttributeName": "sk", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        with patch.object(messaging_repo, "_table", return_value=t):
+            yield t
+
+
 @pytest.fixture(autouse=True)
 def no_browser_state(monkeypatch):
     monkeypatch.setattr("core.repositories.container_repo.get_browser_state", AsyncMock(return_value=None))
@@ -190,13 +214,22 @@ async def test_teardown_s3_delete_failure_is_also_best_effort(monkeypatch):
     await hermes_provisioning.teardown_hermes_runtime("org_a", container_row=ROW, delete_profiles=True)
 
 
-def _seam(monkeypatch, *, row):
+def _seam(monkeypatch, *, row, owed=None):
     """delete_workspace_runtime with every collaborator stubbed; returns the call log."""
     calls: list[str] = []
     monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row))
     monkeypatch.setattr("core.repositories.container_repo.delete", AsyncMock(return_value=row))
     monkeypatch.setattr("core.repositories.container_repo.delete_browser_state", AsyncMock())
-    monkeypatch.setattr(hermes_provisioning, "teardown_hermes_runtime", AsyncMock())
+
+    async def _teardown(*a, **kw):
+        calls.append("runtime")
+
+    async def _forget(owner_id):
+        calls.append(f"forget:{owner_id}")
+        return owed  # the member key when the forget is owed (member parked)
+
+    monkeypatch.setattr(hermes_provisioning, "teardown_hermes_runtime", _teardown)
+    monkeypatch.setattr("core.services.workspace_memory.forget_workspace_authored", _forget)
     monkeypatch.setattr(hermes_provisioning, "_delete_profile_prefix_objects", lambda *a: None)
     monkeypatch.setattr("core.services.paperclip_agent_lifecycle.pause_owner_automation", AsyncMock())
 
@@ -222,14 +255,122 @@ async def test_the_seam_wipes_workspace_memory_with_the_profiles_even_on_a_row_l
     AFTER the reap, which needs this call's deleted-row image."""
     calls = _seam(monkeypatch, row=row)
     await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True)
-    assert calls == ["reap", "memory:org_a"]
+    # The cloud member forgets what it signed while it still runs; a row-less retry has no runtime.
+    assert calls == (["forget:org_a", "runtime"] if row else []) + ["reap", "memory:org_a"]
+
+
+@pytest.mark.asyncio
+async def test_a_warm_member_forgets_and_the_runtime_goes_in_the_request(monkeypatch):
+    calls = _seam(monkeypatch, row=ROW)
+    report: dict = {}
+    await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True, report=report)
+    assert calls == ["forget:org_a", "runtime", "reap", "memory:org_a"] and report == {"runtime": "done"}
+    assert not hermes_provisioning._runtime_teardowns
+
+
+def _parked(monkeypatch, answers):
+    """A parked member: the seam schedules the teardown; ``answers`` is each forget try's outcome."""
+    import asyncio
+
+    calls = _seam(monkeypatch, row=ROW, owed="memberkey")
+    monkeypatch.setattr(hermes_provisioning, "FORGET_RETRY_S", 0.01)
+    monkeypatch.setattr(hermes_provisioning, "FORGET_WINDOW_S", 0.05)
+    tries = iter(answers)
+
+    async def _call(owner_id, method, params, *, target, **kw):
+        assert (method, params, target) == ("memory.forget_author", {"author": "memberkey"}, ROW)
+        ok = next(tries, False)
+        calls.append(f"try:{ok}")
+        if not ok:
+            raise asyncio.TimeoutError
+        return {"forgotten": 2}
+
+    monkeypatch.setattr("core.services.container_rpc.call", _call)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_a_parked_member_keeps_the_runtime_until_the_forget_lands(monkeypatch, table):
+    import asyncio
+    import time
+
+    calls = _parked(monkeypatch, [False, False, True])
+    report: dict = {}
+    await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True, report=report)
+    assert report == {"runtime": "scheduled"} and "runtime" not in calls
+    (row,) = table.scan()["Items"]
+    table.put_item(
+        Item={"pk": "MEMWIPE#org_a", "sk": "A#memberkey"}
+    )  # what the stubbed forget owed  # durable before the task runs: a restart leaves the sweep this
+    assert row["pk"] == "TEARDOWN#" and row["ownerId"] == "org_a" and row["author"] == "memberkey"
+    assert row["row"] == ROW and row["dueAt"] > time.time() + 150
+    (task,) = hermes_provisioning._runtime_teardowns
+    await asyncio.wait_for(task, 1)
+    assert calls[calls.index("try:True") :] == ["try:True", "runtime"]
+    assert calls.count("try:False") == 2 and calls.index("memory:org_a") < calls.index("runtime")
+    assert table.scan()["Items"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_runs_a_past_due_teardown_and_deletes_its_row(monkeypatch, table):
+    """The backend task stopped inside the window: the next sweep tick finishes the teardown."""
+    import time
+
+    from core.services import memory_api
+
+    calls = _parked(monkeypatch, [True])
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+    now = int(time.time())
+    base = {"pk": "TEARDOWN#", "ownerId": "org_a", "row": ROW, "author": "memberkey", "expiresAt": now + 999}
+    table.put_item(Item={**base, "sk": f"org_a#{ROW['agentcore_runtime_arn']}", "dueAt": now - 1})
+    table.put_item(Item={**base, "sk": "org_a#not-yet", "dueAt": now + 999})
+    monkeypatch.setattr(memory_api.settings, "AGENTCORE_MEMORY_ID", "", raising=False)
+    monkeypatch.setattr(memory_api.container_repo, "scan_all", AsyncMock(return_value=[]))
+    monkeypatch.setattr(memory_api.evaluator, "collect_due", AsyncMock(return_value=0))
+    await memory_api.sweep_once()
+    assert calls == ["try:True", "runtime"]
+    assert [i["sk"] for i in table.scan()["Items"]] == ["org_a#not-yet"]
+
+
+@pytest.mark.asyncio
+async def test_a_member_that_never_answers_still_loses_its_runtime_after_the_window(monkeypatch, table):
+    import asyncio
+
+    calls = _parked(monkeypatch, [])
+    await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True)
+    (task,) = hermes_provisioning._runtime_teardowns
+    await asyncio.wait_for(task, 1)
+    assert calls[-1] == "runtime" and "try:True" not in calls and calls.count("try:False") >= 2
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_provisioned_again_mid_window_keeps_its_names(monkeypatch, table):
+    """The new boot secret carries the old member key over: no late forget, and only the captured
+    runtime and its gate token are deleted -- never the owner-keyed secret, state or profiles."""
+    import asyncio
+
+    calls = _parked(monkeypatch, [False, True])
+    await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True)
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={**ROW, "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/r2"}),
+    )
+    deleted, revoked = [], AsyncMock()
+    monkeypatch.setattr(hermes_provisioning, "_delete_runtime", deleted.append)
+    monkeypatch.setattr("core.billing.bedrock_gate_tokens.delete_gate_token_rows", revoked)
+    monkeypatch.setattr(hermes_provisioning, "_delete_boot_secret", lambda *a: calls.append("secret"))
+    (task,) = hermes_provisioning._runtime_teardowns
+    await asyncio.wait_for(task, 1)
+    assert deleted == [ROW["agentcore_runtime_arn"]]
+    revoked.assert_awaited_once_with(["hash-1"])
+    assert "try:True" not in calls and "runtime" not in calls and "secret" not in calls
 
 
 @pytest.mark.asyncio
 async def test_a_reprovision_keeps_workspace_memory(monkeypatch):
     calls = _seam(monkeypatch, row=ROW)
     await hermes_provisioning.delete_workspace_runtime("org_a")
-    assert "memory:org_a" not in calls
+    assert "memory:org_a" not in calls and "forget:org_a" not in calls
 
 
 @pytest.mark.asyncio
@@ -251,7 +392,7 @@ async def test_teardown_pauses_paperclip_automation_and_a_paperclip_failure_neve
     monkeypatch.setattr("core.services.paperclip_agent_lifecycle.pause_owner_automation", pause)
     await hermes_provisioning.delete_workspace_runtime("org_a")
     pause.assert_awaited_once_with("org_a")
-    assert calls == ["reap"]
+    assert calls == ["runtime", "reap"]
 
 
 @pytest.mark.asyncio

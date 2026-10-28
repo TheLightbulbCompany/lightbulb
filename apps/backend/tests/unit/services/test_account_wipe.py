@@ -362,6 +362,17 @@ def wipe_mocks():
 
 
 @pytest.mark.asyncio
+async def test_a_parked_members_runtime_step_says_scheduled(wipe_mocks):
+    async def _parked(owner_id, *, delete_profiles=False, report=None):
+        report["runtime"] = "scheduled"
+
+    wipe_mocks.delete_workspace_runtime.side_effect = _parked
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    (step,) = [s for s in report.steps if s.system == "runtime"]
+    assert step.status == "ok" and "teardown scheduled" in step.detail
+
+
+@pytest.mark.asyncio
 async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     """(a) Every collaborator succeeds -> every step is "ok" (the company step
     is "refused" — never a delete), in the exact spec-mandated order, with
@@ -381,7 +392,7 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     wipe_mocks.paperclip_user_delete_fn.assert_awaited_once_with(
         paperclip_user_id="pc_user_abc", email="owner@example.com", env="dev"
     )
-    wipe_mocks.delete_workspace_runtime.assert_awaited_once_with(OWNER_ID, delete_profiles=True)
+    wipe_mocks.delete_workspace_runtime.assert_awaited_once_with(OWNER_ID, delete_profiles=True, report={})
     wipe_mocks.voice_wipe.assert_awaited_once_with(OWNER_ID)
     # The Bedrock footprint is NOT the wipe's job any more — delete_user_service
     # reaps it at the seam. Stubbing that method (above) is what stops these.
@@ -526,7 +537,7 @@ async def test_the_wipe_delegates_the_bedrock_footprint_to_the_seam(wipe_mocks):
     wipe_mocks.bedrock_role_delete.assert_not_awaited()
 
     # The seam is reached exactly once, and it is what carries the reap.
-    wipe_mocks.delete_workspace_runtime.assert_awaited_once_with(OWNER_ID, delete_profiles=True)
+    wipe_mocks.delete_workspace_runtime.assert_awaited_once_with(OWNER_ID, delete_profiles=True, report={})
 
     # The containers row is still read exactly TWICE for the whole wipe: the
     # upfront identifier snapshot, and the gate-token step's strongly-consistent
@@ -1307,7 +1318,7 @@ async def test_gate_tokens_are_gone_before_delete_user_service_runs(wipe_mocks, 
         _put_gate_row(real_ddb, h)
     surviving_at_ecs_teardown: list[str] = []
 
-    async def _delete_user_service(owner_id, *, delete_profiles=False):
+    async def _delete_user_service(owner_id, *, delete_profiles=False, report=None):
         surviving_at_ecs_teardown.extend(sorted(_gate_rows(real_ddb)))
 
     wipe_mocks.delete_workspace_runtime.side_effect = _delete_user_service
@@ -1365,7 +1376,7 @@ async def test_final_sweep_deletes_a_hash_minted_after_the_gate_token_step(wipe_
     _put_gate_row(real_ddb, "hash-minted-after-the-step")
     _put_gate_row(real_ddb, "hash-someone-else", owner_id="user_other")
 
-    async def _delete_user_service(owner_id, *, delete_profiles=False):
+    async def _delete_user_service(owner_id, *, delete_profiles=False, report=None):
         return _container_row(
             bedrock_gate_token_hash="hash-minted-after-the-step",
             bedrock_gate_superseded_hashes=["hash-current"],
@@ -1427,7 +1438,7 @@ async def test_wipe_deletes_a_pending_brief_written_after_the_snapshot(wipe_mock
 
     # The submission lands mid-wipe — hung off the container teardown, which is
     # simply a step known to run after the up-front snapshot and before this one.
-    async def _teardown_that_races_a_submission(owner_id, *, delete_profiles=False):
+    async def _teardown_that_races_a_submission(owner_id, *, delete_profiles=False, report=None):
         _put_pending_brief(real_ddb, OWNER_ID)
 
     wipe_mocks.delete_workspace_runtime.side_effect = _teardown_that_races_a_submission

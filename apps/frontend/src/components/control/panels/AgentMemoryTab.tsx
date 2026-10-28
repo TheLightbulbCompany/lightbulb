@@ -9,6 +9,7 @@ import { sessionPermalink } from "@/components/messaging/messageLinks";
 
 interface Memory {
   id: string; text: string; createdAt: string; confirmed: boolean;
+  source?: "room" | "network"; // network: a mirrored log entry, which cannot be shared or confirmed
   status?: "current" | "contested" | "replaced";
   history?: { value: string; speaker: string; occurredAt: string }[];
 }
@@ -136,11 +137,11 @@ export function AgentMemoryTab() {
           {m.confirmed ? <span className="text-[var(--live)]">Confirmed</span> : null}
           {m.status === "contested" ? <span className="text-[var(--alert)]">Contested</span> : null}
           {added.get(m.id)?.scope === scope ? <span>Pending</span> : null}
-          {kind === "private" ? (
+          {kind === "private" && m.source !== "network" ? (
             <button type="button" className={BTN} disabled={busy.has(m.id)}
               onClick={() => act(m.id, () => api.post(`/memory/${m.id}/share`, {}), (r) => hold(m, r.id))}>Share with team</button>
           ) : null}
-          {kind === "team" && !m.confirmed ? (
+          {kind === "team" && !m.confirmed && m.source !== "network" ? (
             <button type="button" className={BTN} disabled={busy.has(m.id)}
               onClick={() => act(m.id, () => api.post(`/memory/${m.id}/confirm`, {}), (r) => hold(m, r.id))}>Confirm</button>
           ) : null}

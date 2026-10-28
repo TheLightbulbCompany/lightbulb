@@ -118,11 +118,21 @@ def test_prefetch_caps_injected_block(mod, backend):
     assert len(json.dumps(big)) <= 6000 and big["results"]
 
 
-def test_remember_redacts_subject_and_fact(mod, backend):
-    provider(mod, FakeClient()).handle_tool_call(
-        "remember", {"subject": "key sk-abc123", "fact": "uses sk-def456", "kind": "fact"})
-    body = backend.calls[-1][2]
-    assert "abc123" not in body["subject"] and "def456" not in body["fact"]
+def test_remember_sends_a_secret_unchanged_and_returns_the_refusal(mod, backend, monkeypatch):
+    import urllib.error
+
+    sent = []
+
+    def refuse(req, timeout=None):
+        sent.append(json.loads(req.data))
+        body = io.BytesIO(json.dumps({"detail": "Not remembered: secret:aws_key"}).encode())
+        raise urllib.error.HTTPError(req.full_url, 422, "Unprocessable", {}, body)
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", refuse)
+    args = {"subject": "aws key", "fact": "AKIAIOSFODNN7EXAMPLE sk-def456", "kind": "fact"}
+    out = json.loads(provider(mod, FakeClient()).handle_tool_call("remember", args))
+    assert sent[0]["subject"] == "aws key" and sent[0]["fact"] == "AKIAIOSFODNN7EXAMPLE sk-def456"
+    assert out == {"error": "Not remembered: secret:aws_key"}
 
 
 def test_sync_turn_prefixes_speaker_on_events(mod, tmp_path):

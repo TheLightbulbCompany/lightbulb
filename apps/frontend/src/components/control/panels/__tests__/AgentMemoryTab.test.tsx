@@ -52,6 +52,17 @@ const route = (drafts: unknown = { drafts: [] }) =>
     url === "/memory/drafts" ? drafts : url === "/sessions" ? { sessions: [{ id: "s1" }] } : LIST);
 
 describe("AgentMemoryTab", () => {
+  it("offers Share and Confirm on room rows but not on mirrored log entries", async () => {
+    const entry = { id: "mem-e1", text: "deploy: Fridays only", createdAt: "2026-10-01T00:00:00+00:00", confirmed: false, source: "network" };
+    const mine = { id: "mem-e2", text: "me: prefers email", createdAt: "2026-10-01T00:00:00+00:00", confirmed: false, source: "network" };
+    mockGet.mockResolvedValue({ ...LIST, private: [mine, LIST.private[0]], team: [entry, { ...LIST.team[1], source: "room" }] });
+    renderTab();
+    expect(await screen.findByText("deploy: Fridays only")).toBeInTheDocument();
+    expect(screen.getByText("me: prefers email")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Confirm" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Share with team" })).toHaveLength(1);
+  });
+
   it("renders Only you and Team with Confirmed on mem-t1 only", async () => {
     renderTab();
     expect(await screen.findByText("I am allergic to nuts")).toBeInTheDocument();

@@ -20,6 +20,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
 from core.services import evaluator, memory_recall, memory_stages, memory_sync, network_member, workspace_memory
+from core.services.secret_shaped import secret_pattern, secret_shaped
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,12 @@ async def sweep_once() -> int:
     """Sync every workspace whose last sync is older than ``SWEEP_INTERVAL_S`` (returns how many ran),
     then collect due drafts. One at a time, each behind its owner's lease, and one failure never
     stops the rest."""
+    from core.services import hermes_provisioning  # lazy: import cycle
+
+    try:  # an owner wipe's teardown whose backend task stopped inside its window
+        await hermes_provisioning.run_due_teardowns()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("memory sweep: due teardowns failed error=%s", type(exc).__name__)
     memory_id = settings.AGENTCORE_MEMORY_ID
     ran = 0
     # ponytail: one containers-table scan per pass; keep an index of memory owners if the fleet grows.
@@ -172,8 +179,12 @@ async def remember(
     on_behalf_of: str | None = None,
 ) -> dict:
     """``{"queued": bool, "neighbours": [...]}``; the write is ``memory.remember`` on the member.
-    Raises ``Refused`` when the member refuses it, or (parked) when it looks like a secret: a queued
-    row is plaintext at rest until the member can refuse it itself."""
+    Raises ``Refused`` for a credential-shaped value before any call or queue (``secret:<name>``,
+    the CLI's own names), when the member refuses it, or (parked) when it mentions a secret at all:
+    a queued row is plaintext at rest until the member can refuse it itself."""
+    text = f"{subject}\n{fact}"
+    if name := secret_pattern(text):  # before anything leaves: neighbours, the member, the queue
+        raise Refused(f"secret:{name}")
     params = {"subject": subject, "fact": fact, "kind": kind, "scope": scope}
     if replaces:
         params["replaces"] = replaces
@@ -182,7 +193,7 @@ async def remember(
     near = await neighbours(owner_id, subject)
     answer = await network_member.call_op(owner_id, "memory.remember", params)
     if answer is None:
-        if evaluator._SECRET.search(f"{subject}\n{fact}"):
+        if secret_shaped(text):  # parked: a bare keyword is enough not to hold it at rest
             raise Refused("secret")
         await network_member.queue_op(owner_id, "memory.remember", params)
     elif answer.get("stored") is False:
@@ -229,27 +240,49 @@ async def forget_on_behalf_of(owner_id: str, user_id: str) -> int:
 OWED_WIPE_S = 30 * 86400  # how long a forward owed to a parked member is retried
 
 
-def _owed_key(owner_id: str, user_id: str) -> dict:
-    return {"pk": f"MEMWIPE#{owner_id}", "sk": f"U#{user_id}"}
+async def _owe(owner_id: str, sk: str, what: str) -> None:
+    """One durable retry row (``MEMWIPE#<owner>`` / ``U#<user>`` for a member wipe's forward,
+    ``A#<key>`` for an owner wipe's forget of the cloud member's own entries) and a wake. Never raises."""
+    from core.repositories import messaging_repo
+
+    try:
+        item = {"pk": f"MEMWIPE#{owner_id}", "sk": sk, "expiresAt": int(time.time()) + OWED_WIPE_S}
+        await run_in_thread(messaging_repo._table().put_item, Item=item)
+        await network_member.wake(owner_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("%s forward could not be owed owner=%s error=%s", what, owner_id, type(exc).__name__)
 
 
 async def forward_on_behalf_of(owner_id: str, user_id: str) -> None:
     """The member wipe's forward. Never raises: a parked or unavailable member gets one durable
     retry row (``MEMWIPE#<owner>`` / ``U#<user>``) and a wake, and the sweep finishes the forward
     once the runtime is warm. The rest of the wipe, and the empty-workspace teardown after it, go on."""
-    from core.repositories import messaging_repo
-
     try:
         await forget_on_behalf_of(owner_id, user_id)
         return
     except Exception as exc:  # noqa: BLE001
         logger.warning("member wipe forward owed owner=%s error=%s", owner_id, type(exc).__name__)
+    await _owe(owner_id, f"U#{user_id}", "member wipe")
+
+
+async def _forget_author_now(owner_id: str, author: str) -> None:
+    """``memory.forget_author`` on the member itself, or raise: no queue, so the caller can owe it."""
+    if await network_member.call_op(owner_id, "memory.forget_author", {"author": author}) is None:
+        raise RuntimeError("memory.forget_author unavailable: the workspace's member is parked")
+
+
+async def forward_forget_author(owner_id: str, author: str) -> bool:
+    """The owner wipe's forget of every entry the cloud member signed (imported facts, workspace
+    remembers), sent through that member so its tombstones replicate to members' computers. Never
+    raises: parked or failing, it is owed (``A#<key>``) and the runtime woken, like the member wipe.
+    True when the member took it now."""
     try:
-        item = {**_owed_key(owner_id, user_id), "expiresAt": int(time.time()) + OWED_WIPE_S}
-        await run_in_thread(messaging_repo._table().put_item, Item=item)
-        await network_member.wake(owner_id)
+        await _forget_author_now(owner_id, author)
+        return True
     except Exception as exc:  # noqa: BLE001
-        logger.error("member wipe forward could not be owed owner=%s error=%s", owner_id, type(exc).__name__)
+        logger.warning("owner wipe forget_author owed owner=%s error=%s", owner_id, type(exc).__name__)
+    await _owe(owner_id, f"A#{author}", "owner wipe")
+    return False
 
 
 async def retry_member_wipes(owner_id: str) -> int:
@@ -258,11 +291,15 @@ async def retry_member_wipes(owner_id: str) -> int:
 
     done = 0
     try:
-        for row in await messaging_repo._query(f"MEMWIPE#{owner_id}", begins_with="U#"):
+        for row in await messaging_repo._query(f"MEMWIPE#{owner_id}"):
             if int(row.get("expiresAt") or 0) <= time.time():
                 continue
+            kind, _, who = row["sk"].partition("#")
+            send = {"U": forget_on_behalf_of, "A": _forget_author_now}.get(kind)
+            if send is None:
+                continue
             try:
-                await forget_on_behalf_of(owner_id, row["sk"].removeprefix("U#"))
+                await send(owner_id, who)
             except Exception:  # noqa: BLE001 -- still parked: the next pass tries again
                 continue
             await run_in_thread(messaging_repo._table().delete_item, Key={"pk": row["pk"], "sk": row["sk"]})

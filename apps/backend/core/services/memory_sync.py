@@ -14,9 +14,10 @@ from; the one thing written there is that person's own (``me``) log entries.
    re-imported).
 3. events -> turns: conversational payloads become searchable turn records.
 
-State lives in the messaging table under the owner: ``MEMSYNC`` (watermarks), ``MEMLINK#<facts
-record>`` (entry id, text hash), ``MEMENTRY#<entry>`` (its mirrored record, and the facts record it
-was imported from) and ``MEMTURN#<turn>`` (a mirrored turn, until its event has expired).
+State lives in the messaging table under the owner: ``MEMSYNC`` (watermarks), ``MEMLINK#<record>``
+(a facts record's entry id and text hash, or a mirrored record's entry id and ``mirror``),
+``MEMENTRY#<entry>`` (its mirrored record, and the facts record it was imported from) and
+``MEMTURN#<turn>`` (a mirrored turn, until its event has expired).
 AgentCore assigns record ids itself and ``requestIdentifier`` only correlates results, so a write
 is idempotent by these rows (one already mirrored is skipped) and by ``clientToken`` per batch.
 Nothing here logs record or entry text.
@@ -222,7 +223,8 @@ async def _import_facts(owner_id: str, memory_id: str, ns: str, state: dict, sta
 
 
 async def entry_for(owner_id: str, record_id: str) -> str | None:
-    """The log entry a facts record was imported as (its ``MEMLINK`` row), if any."""
+    """The log entry a record stands for: the one a facts record was imported as, or the one a
+    mirrored record copies (both ``MEMLINK`` rows), if any."""
     return (await run_in_thread(_get, owner_id, f"MEMLINK#{record_id}")).get("entry")
 
 
@@ -280,6 +282,8 @@ def _create_entry_records(client, owner_id: str, memory_id: str, entries: list[d
         # not: a tombstone or a replace finds its record only through this row.
         for ok in resp.get("successfulRecords", []):
             _put(owner_id, f"MEMENTRY#{ok['requestIdentifier']}", arec=ok["memoryRecordId"])
+            # The way back, so a tab delete of the mirror finds (and forgets) its entry.
+            _put(owner_id, f"MEMLINK#{ok['memoryRecordId']}", entry=ok["requestIdentifier"], mirror=True)
         _write_ok(resp, "entry")
 
 
@@ -302,8 +306,8 @@ def _delete_for_tombstone(client, owner_id: str, memory_id: str, entry_id: str) 
             "tombstoned",
             gone_ok=True,
         )
-    if row.get("facts_rec"):
-        _t().delete_item(Key=_key(owner_id, f"MEMLINK#{row['facts_rec']}"))
+    for rec in ids:
+        _t().delete_item(Key=_key(owner_id, f"MEMLINK#{rec}"))
     if row:
         _t().delete_item(Key=_key(owner_id, f"MEMENTRY#{entry_id}"))
 

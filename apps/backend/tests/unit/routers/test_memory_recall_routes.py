@@ -185,6 +185,21 @@ def test_parked_remember_of_a_secret_is_refused_and_never_queued(member):
     queue.assert_not_awaited()
 
 
+def test_a_credential_shaped_fact_is_refused_before_any_call_or_queue(member):
+    near, call, queue = AsyncMock(return_value=[]), AsyncMock(return_value=None), AsyncMock()  # parked
+    with (
+        patch.object(memory_api, "neighbours", near),
+        patch.object(memory_api.network_member, "call_op", call),
+        patch.object(memory_api.network_member, "queue_op", queue),
+    ):
+        r = member.post(
+            "/api/v1/memory/remember",
+            json={"subject": "ci", "fact": "use ghp_" + "a" * 36 + " for pushes", "kind": "fact"},
+        )
+    assert r.status_code == 422 and r.json()["detail"] == "Not remembered: secret:vendor_key"
+    near.assert_not_awaited(), call.assert_not_awaited(), queue.assert_not_awaited()
+
+
 async def test_hosted_remember_tool_raises_the_refusal_as_a_tool_error(monkeypatch):
     from mcp.server.mcpserver.exceptions import ToolError
 
@@ -224,7 +239,7 @@ def test_list_includes_status_and_history(monkeypatch):
         app.dependency_overrides.clear()
     assert item["status"] == "current" and item["speaker"] == "Ana"
     assert item["history"] == [{"value": "8080", "speaker": "Bo", "occurredAt": "2026-10-02T00:00:00+00:00"}]
-    assert item["source"]["sourceId"] == "mem-t1"
+    assert item["source"] == "room"
 
 
 def test_delete_forgets_the_entry_and_drops_the_mirror(member):
@@ -232,6 +247,7 @@ def test_delete_forgets_the_entry_and_drops_the_mirror(member):
     forget = AsyncMock()
     drop = AsyncMock()
     with (
+        patch("routers.memory.workspace_memory.check_deletable", AsyncMock()),
         patch("routers.memory.workspace_memory.delete_memory", AsyncMock()),
         patch("routers.memory.memory_sync.entry_for", AsyncMock(return_value="e7")),
         patch("routers.memory.memory_sync.drop_mirror", drop),
@@ -345,12 +361,38 @@ async def test_forget_queues_when_the_call_raises():
     queue.assert_awaited_once_with("org_a", "memory.forget", {"entry": "e7"})
 
 
+def test_another_members_private_mirror_is_404_before_any_forget(member, monkeypatch):
+    rid = "mem-" + "a1" * 20
+    order = []
+    client = MagicMock()
+    client.batch_delete_memory_records.side_effect = lambda **kw: order.append("deleted") or {"failedRecords": []}
+    monkeypatch.setattr(workspace_memory.settings, "AGENTCORE_MEMORY_ID", "mem-1", raising=False)
+    monkeypatch.setattr(workspace_memory, "_client", lambda: client)
+    forget = AsyncMock(side_effect=lambda *a: order.append("forget"))
+    with (
+        patch("routers.memory.memory_sync.entry_for", AsyncMock(return_value="e7")),
+        patch("routers.memory.memory_sync.drop_mirror", AsyncMock()),
+        patch("routers.memory.memory_api.forget", forget),
+    ):
+        client.get_memory_record.return_value = {
+            "memoryRecord": {"memoryRecordId": rid, "namespaces": ["/owners/org_a:user_ana/"]}
+        }
+        assert member.delete(f"/api/v1/memory/{rid}").status_code == 404  # user_ana's note, user_me asking
+        assert order == []
+        client.get_memory_record.return_value = {
+            "memoryRecord": {"memoryRecordId": rid, "namespaces": ["/owners/org_a:user_me/"]}
+        }
+        assert member.delete(f"/api/v1/memory/{rid}").status_code == 204
+    assert order == ["forget", "deleted"]
+
+
 def test_delete_sends_the_forget_before_deleting_the_record_and_survives_a_failing_call(member):
     rid = "mem-" + "a1" * 20
     order = []
     queue = AsyncMock(side_effect=lambda *a: order.append("queued"))
     rm = AsyncMock(side_effect=lambda *a: order.append("deleted"))
     with (
+        patch("routers.memory.workspace_memory.check_deletable", AsyncMock()),
         patch("routers.memory.workspace_memory.delete_memory", rm),
         patch("routers.memory.memory_sync.entry_for", AsyncMock(return_value="e7")),
         patch("routers.memory.memory_sync.drop_mirror", AsyncMock()),

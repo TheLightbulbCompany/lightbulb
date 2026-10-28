@@ -156,7 +156,8 @@ export function AgentMemoryTab() {
         </div>
         {m.history?.map((h, i) => (
           <p key={i} className="mt-1 text-xs text-[var(--fg-mute)]">
-            Was {h.value} · {h.speaker} · {new Date(h.occurredAt).toLocaleDateString()}
+            {/* A contested record's other side is a current value too, not an old one. */}
+            {m.status === "contested" ? "Also:" : "Was"} {h.value} · {h.speaker} · {new Date(h.occurredAt).toLocaleDateString()}
           </p>
         ))}
       </li>
@@ -212,7 +213,7 @@ export function AgentMemoryTab() {
       {suggested.length ? (
         <section className="mt-4">
           <h3 className="label-caps text-[var(--fg-mute)]">Suggested</h3>
-          <p className="mb-1 text-xs text-[var(--fg-mute)]">Lessons drawn from your uploaded sessions. Approve to add one to memory.</p>
+          <p className="mb-1 text-xs text-[var(--fg-mute)]">Lessons drawn from uploaded sessions. Approve to add one to memory.</p>
           <ul>{suggested.map(draftRow)}</ul>
         </section>
       ) : null}

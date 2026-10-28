@@ -17,7 +17,7 @@ from botocore.exceptions import BotoCoreError, ClientError, ParamValidationError
 
 from core.dynamodb import run_in_thread
 from core.services import memory_models, workspace_memory
-from core.services.memory_stages import Candidate, compose, from_record, rrf, time_window
+from core.services.memory_stages import _CURRENT_KINDS, Candidate, compose, from_record, rrf, time_window
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +32,10 @@ _gates: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # one semaphore
 _entity_cache: dict[tuple[str, str], tuple[float, set[str]]] = {}
 
 
-def _flt(key: str, op: str, value: str | float | None = None) -> dict:
+def _flt(key: str, op: str, value: str | float | datetime | None = None) -> dict:
     out: dict = {"left": {"metadataKey": key}, "operator": op}
     if value is not None:
-        field = "stringValue" if isinstance(value, str) else "numberValue"
+        field = {str: "stringValue", datetime: "dateTimeValue"}.get(type(value), "numberValue")
         out["right"] = {"metadataValue": {field: value}}
     return out
 
@@ -115,8 +115,10 @@ async def _search_part(client, memory_id, namespaces, part, limit, as_of, includ
     for status in ("current", "contested"):
         for extra in variants:
             jobs.append(("claim", retrieve(namespaces["facts"], [_flt("status", "EQUALS_TO", status), *extra])))
-    jobs.append(("turn", retrieve(namespaces["turns"], [])))
-    jobs.append(("entry", retrieve(namespaces["entries"], [])))
+    # Turns and entries have no validity range: as of a moment is what existed by then.
+    created = [_flt("createdAt", "BEFORE", as_of)] if as_of else []
+    jobs.append(("turn", retrieve(namespaces["turns"], created)))
+    jobs.append(("entry", retrieve(namespaces["entries"], created)))
     if include_private and "private" in namespaces:
         for extra in variants:
             jobs.append(("claim", retrieve(namespaces["private"], extra)))
@@ -179,7 +181,12 @@ async def recall(
             ranking = []
             for row in rows:
                 c = _as_current(from_record(row, kind_default), as_of)
-                if c.status == "replaced" or (start and c.occurred_at < start) or (end and c.occurred_at > end):
+                # The window ("today", "in May") dates what was said, so it narrows turns and entries;
+                # a current claim's creation date says nothing about the time asked about.
+                dated = c.kind not in _CURRENT_KINDS
+                if c.status == "replaced" or (
+                    dated and ((start and c.occurred_at < start) or (end and c.occurred_at > end))
+                ):
                     continue
                 by_id.setdefault(c.id, c)
                 ranking.append(c.id)

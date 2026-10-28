@@ -21,12 +21,18 @@ def _meta(**kw):
 
 
 def _rec(rid, text, ts="2026-02-01T00:00:00Z", **meta):
-    return {
+    """A MemoryRecordSummary as Retrieve/ListMemoryRecords return it (``createdAt``, no ``timestamp``)."""
+    out = {
         "memoryRecordId": rid,
         "content": {"text": text},
-        "timestamp": datetime.fromisoformat(ts),
-        "metadata": _meta(**meta),
+        "memoryStrategyId": "s",
+        "namespaces": ["/x/"],
+        "createdAt": datetime.fromisoformat(ts),
     }
+    return {**out, "metadata": _meta(**meta)} if meta else out
+
+
+SUMMARY = MODEL.shape_for("MemoryRecordSummary")
 
 
 class FakeClient:
@@ -38,7 +44,10 @@ class FakeClient:
     def _do(self, op, shape, kw):
         self.calls.append((op, kw))
         validate_parameters(kw, MODEL.operation_model(shape).input_shape)
-        return {"memoryRecordSummaries": self.handler(op, kw)}
+        rows = self.handler(op, kw)
+        for row in rows:  # what the service returns: every required member, nothing it never sends
+            assert set(SUMMARY.required_members) <= set(row) <= set(SUMMARY.members), row
+        return {"memoryRecordSummaries": rows}
 
     def retrieve_memory_records(self, **kw):
         return self._do("retrieve", "RetrieveMemoryRecords", kw)
@@ -328,3 +337,38 @@ async def test_recall_caps_entities_at_five_per_part(monkeypatch):
     c = _use(monkeypatch, FakeClient(handler))
     await memory_recall.recall(memory_id=MEM, namespaces=NS, question=" ".join(names))
     assert len([kw for o, kw in c.calls if o == "list" and kw.get("metadataFilters")]) == 5
+
+
+@pytest.mark.asyncio
+async def test_time_window_never_drops_a_current_claim(monkeypatch):
+    # Created long before "today": the claim is still what is true now.
+    claim = _rec("c", "Ann: release date: Friday", ts="2026-01-05T00:00:00Z", kind="claim", status="current")
+    old_turn = _rec("t", "Ann: shipping today?", ts="2026-01-05T00:00:00Z")
+    _use(
+        monkeypatch,
+        FakeClient(
+            lambda op, kw: (
+                [claim] if kw["namespace"] == NS["facts"] else [old_turn] if kw["namespace"] == NS["turns"] else []
+            )
+        ),
+    )
+    page = await memory_recall.recall(memory_id=MEM, namespaces=NS, question="can we ship today?")
+    assert _texts(page) == ["Ann: release date: Friday"]
+
+
+@pytest.mark.asyncio
+async def test_as_of_filters_turns_and_entries_by_creation(monkeypatch):
+    c = _use(monkeypatch, FakeClient())
+    await _run(as_of=AS_OF)
+    before = [
+        {
+            "left": {"metadataKey": "createdAt"},
+            "operator": "BEFORE",
+            "right": {"metadataValue": {"dateTimeValue": AS_OF}},
+        }
+    ]
+    for ns in (NS["turns"], NS["entries"]):
+        (kw,) = c.where("retrieve", ns)
+        assert kw["searchCriteria"]["metadataFilters"] == before
+    await _run()
+    assert all("metadataFilters" not in kw["searchCriteria"] for kw in c.where("retrieve", NS["turns"])[1:])

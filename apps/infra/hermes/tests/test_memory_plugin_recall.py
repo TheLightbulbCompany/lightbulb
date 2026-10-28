@@ -175,3 +175,24 @@ def test_tools_return_a_short_error_when_the_backend_fails(mod, backend):
     p = provider(mod, FakeClient())
     assert "error" in json.loads(p.handle_tool_call("remember", {"subject": "s", "fact": "f", "kind": "fact"}))
     assert "error" in json.loads(p.handle_tool_call("workspace_memory_search", {"query": "x"}))
+
+
+def test_dm_recall_names_the_person_and_a_room_does_not(mod, backend):
+    provider(mod, FakeClient(), user_id="user_2abc", chat_type="dm").prefetch(said("launch?"))
+    provider(mod, FakeClient(), user_id="user_2abc", chat_type="group").prefetch(said("launch?"))
+    provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "launch"})
+    dm, group, room = (c[2] for c in recalls(backend))
+    assert dm["member"] == "user_2abc"
+    assert "member" not in group and "member" not in room
+
+
+def test_remember_refusal_is_surfaced_to_the_agent(mod, backend, monkeypatch):
+    import urllib.error
+
+    def refuse(req, timeout=None):
+        body = io.BytesIO(json.dumps({"detail": "Not remembered: secret:aws_key"}).encode())
+        raise urllib.error.HTTPError(req.full_url, 422, "Unprocessable", {}, body)
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", refuse)
+    out = json.loads(provider(mod, FakeClient()).handle_tool_call("remember", {"subject": "s", "fact": "f", "kind": "fact"}))
+    assert out == {"error": "Not remembered: secret:aws_key"}

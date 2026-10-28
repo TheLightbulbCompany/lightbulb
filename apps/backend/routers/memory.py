@@ -108,6 +108,11 @@ class RememberBody(BaseModel):
     replaces: list[str] | None = Field(default=None, max_length=50)
 
 
+class InternalRecallBody(RecallBody):
+    # The person in a 1:1 DM (the plugin's ``_member``): adds their private scope, as before the log.
+    member: str | None = Field(default=None, max_length=200)
+
+
 class InternalRememberBody(RememberBody):
     on_behalf_of: str | None = Field(default=None, max_length=200)
 
@@ -176,10 +181,15 @@ async def dismiss_draft(draft_id: str, auth: AuthContext = Depends(caller)) -> R
 
 
 @internal_router.post("/recall/{owner_id}")
-async def internal_recall(owner_id: str, body: RecallBody, request: Request) -> dict:
-    """Recall for the workspace's agents: team scope only, never a person's private one."""
+async def internal_recall(owner_id: str, body: InternalRecallBody, request: Request) -> dict:
+    """Recall for the workspace's agents: the team scope, plus the private scope of ``member`` (sent
+    only from a 1:1 DM with that person). No question expansion: the plugin waits seconds, not a model call."""
     await container_auth._require_hook_token(owner_id, request)
-    return await _guard(memory_api.recall_page(owner_id, None, **body.model_dump()))
+    fields = body.model_dump()
+    member = fields.pop("member")
+    if member is not None and not workspace_memory._MEMBER_ID.fullmatch(member):
+        raise HTTPException(status_code=422, detail="member must be a user id")
+    return await _guard(memory_api.recall_page(owner_id, member, **fields, use_expand=False))
 
 
 @internal_router.post("/remember/{owner_id}")

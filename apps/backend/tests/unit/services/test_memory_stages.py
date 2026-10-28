@@ -90,7 +90,7 @@ def test_from_record_maps_metadata_and_speaker():
         {
             "memoryRecordId": "r1",
             "content": {"text": "Ann: db version: 16 (since 2026-09-01)"},
-            "timestamp": 1_790_000_000,
+            "createdAt": datetime.fromtimestamp(1_790_000_000, UTC),
             "metadata": {
                 "kind": {"stringValue": "claim"},
                 "entity": {"stringValue": "db"},
@@ -109,6 +109,7 @@ def test_from_record_maps_metadata_and_speaker():
         "current",
     )
     assert c.valid_from == datetime.fromtimestamp(1_790_000_000, UTC)
+    assert c.occurred_at == datetime.fromtimestamp(1_790_000_000, UTC)  # MemoryRecordSummary.createdAt
     assert from_record({"content": {"text": "plain"}}, "entry").kind == "entry"
     assert count_tokens("abcdefgh") == 2
 

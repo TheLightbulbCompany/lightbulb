@@ -226,13 +226,18 @@ describe("AgentMemoryTab", () => {
           status: "contested", speaker: "Ana",
           history: [{ value: "8080", speaker: "Bo", occurredAt: "2026-09-30T00:00:00+00:00" }],
         },
-        { ...LIST.team[0], status: "current", history: [] },
+        {
+          ...LIST.team[0], status: "current",
+          history: [{ value: "York", speaker: "Cy", occurredAt: "2026-09-01T00:00:00+00:00" }],
+        },
       ],
     });
     renderTab();
     expect(await screen.findByText("API port is 9090")).toBeInTheDocument();
+    expect(screen.getByText(/Was York/)).toBeInTheDocument(); // a current value's replaced one
     expect(screen.getByText("Contested")).toBeInTheDocument();
-    expect(screen.getByText(/Was 8080/)).toHaveTextContent(/Bo/);
+    expect(screen.getByText(/Also: 8080/)).toHaveTextContent(/Bo/); // the other side, not an old value
+    expect(screen.queryByText(/Was 8080/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: "Contested only" }));
     expect(screen.getByText("API port is 9090")).toBeInTheDocument();
     expect(screen.queryByText("Warehouse is in Leeds")).not.toBeInTheDocument();
@@ -259,6 +264,7 @@ describe("AgentMemoryTab", () => {
     renderTab();
     expect(await screen.findByText("Run migrations before the seed")).toBeInTheDocument();
     expect(screen.getByText("Suggested")).toBeInTheDocument();
+    expect(screen.getByText(/Lessons drawn from uploaded sessions\./)).toBeInTheDocument();
     expect(screen.getByText("lesson")).toBeInTheDocument();
     expect(screen.getByText("finding")).toBeInTheDocument();
     const link = await screen.findByRole("link", { name: "s1" });

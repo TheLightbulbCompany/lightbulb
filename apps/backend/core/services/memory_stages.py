@@ -85,7 +85,7 @@ def from_record(summary: dict, kind_default: str) -> Candidate:
         id=record_id,
         kind=kind,
         content=text,
-        occurred_at=_when(summary.get("timestamp")) or datetime.fromtimestamp(0, UTC),
+        occurred_at=_when(summary.get("createdAt")) or datetime.fromtimestamp(0, UTC),
         status=status,
         speaker=speaker,
         entity=_meta(metadata, "entity") or _meta(metadata, "subject"),

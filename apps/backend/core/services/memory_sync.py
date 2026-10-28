@@ -478,8 +478,10 @@ async def sync_workspace(owner_id: str, *, memory_id: str, namespaces: dict[str,
         await run_in_thread(_release_lease, owner_id)
 
 
-async def sync_if_stale(owner_id: str, *, memory_id: str, namespaces: dict[str, str], max_age_s: int = 60) -> None:
+async def sync_if_stale(owner_id: str, *, memory_id: str, namespaces: dict[str, str], max_age_s: int = 60) -> bool:
+    """True when a sync ran (the last one was older than ``max_age_s``)."""
     state = await run_in_thread(_get, owner_id, _STATE)
     if time.time() - int(state.get("synced_at") or 0) < max_age_s:
-        return
+        return False
     await sync_workspace(owner_id, memory_id=memory_id, namespaces=namespaces)
+    return True

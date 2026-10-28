@@ -42,6 +42,7 @@ import logging
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -260,8 +261,12 @@ class AgentCoreMemoryProvider(MemoryProvider):
                 "task board over a remembered fact.")
 
     def _search(self, question: str, budget: int) -> List[dict]:
-        """The backend's recall results (contested facts first); a failed or malformed reply raises."""
-        return _page(_backend(self._owner, "recall", {"question": question[:_QUERY_MAX], "budget_tokens": budget}))
+        """The backend's recall results (contested facts first); a failed or malformed reply raises.
+        In a 1:1 DM the person is named, so their private memory is included."""
+        body = {"question": question[:_QUERY_MAX], "budget_tokens": budget}
+        if self._member:
+            body["member"] = self._member
+        return _page(_backend(self._owner, "recall", body))
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         # Hermes keys recall on the persisted user text and skips it for a trivial prompt
@@ -377,6 +382,15 @@ class AgentCoreMemoryProvider(MemoryProvider):
             body["replaces"] = [str(i) for i in args["replaces"]]
         try:
             return json.dumps(_backend(self._owner, "remember", body), ensure_ascii=False)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 422:  # refused (a secret, too long, team memory off): the agent is told why
+                try:
+                    reason = str(json.loads(exc.read() or b"{}").get("detail") or "")
+                except (ValueError, AttributeError):
+                    reason = ""
+                return json.dumps({"error": reason or "memory refused this fact"}, ensure_ascii=False)
+            logger.warning("memory remember failed: %s", type(exc).__name__)
+            return json.dumps({"error": "could not save to memory right now"})
         except Exception as exc:
             logger.warning("memory remember failed: %s", type(exc).__name__)
             return json.dumps({"error": "could not save to memory right now"})

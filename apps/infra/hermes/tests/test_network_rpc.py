@@ -104,3 +104,38 @@ def test_leave_runs_team_leave(net):
     net.answer(**{"team.leave": {"left": True}})
     assert _rpc("network.leave") == {"ok": True, "payload": {"left": True}}
     assert _sent(net, "team.leave")[0]["op"] == "team.leave"
+
+
+# The backend's memory.* calls (core/services/memory_sync.py, memory_api.py): one engine op each.
+MEMORY_CALLS = {
+    "memory.import": ({"entries": [{"subject": "api port", "fact": "8080", "kind": "fact", "scope": "team",
+                                    "when": 1790000000, "key": "k1",
+                                    "source": {"harness": "workspace", "repo": None, "session": None,
+                                               "on_behalf_of": "Ana"}, "replaces": []}]},
+                      {"ids": ["e1"], "refused": []}),
+    "memory.list": ({"since_seq": 7}, {"entries": [{"id": "e1", "author": "k", "tombstone": True, "seq": 8}],
+                                       "next": 8}),
+    "memory.remember": ({"subject": "s", "fact": "f", "kind": "fact", "scope": "me", "on_behalf_of": "user_a"},
+                        {"stored": False, "refused": "too_long", "neighbours": []}),
+    "memory.forget": ({"entry": "e1"}, {}),
+    "memory.forget_author": ({"author": "k" * 52}, {"forgotten": 3}),
+}
+
+
+def test_memory_ops_reach_the_engine_with_their_params_unchanged(net):
+    for method, (params, answer) in MEMORY_CALLS.items():
+        net.answer(**{method: answer})
+        assert _rpc(method, params) == {"ok": True, "payload": answer}, method
+        assert _sent(net, method)[-1] == {"op": method, **params}, method
+
+
+def test_memory_op_refused_by_the_engine_is_ok_false(net):
+    net.answer(**{"memory.import": {"ok": False, "error": "bad_request"}})
+    answer = _rpc("memory.import", {"entries": [{"kind": "claim"}]})
+    assert answer["ok"] is False and answer["error"]["code"] == "bad_request"
+
+
+def test_memory_ops_when_off_answer_unavailable(net, monkeypatch):
+    monkeypatch.setattr(bridge, "NETWORK_KEY", "")
+    for method, (params, _) in MEMORY_CALLS.items():
+        assert _rpc(method, params)["error"]["code"] == "UNAVAILABLE", method

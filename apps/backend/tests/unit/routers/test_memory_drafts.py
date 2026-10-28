@@ -70,7 +70,7 @@ def _clear():
 
 def test_approve_in_workspace_signs_as_workspace_with_approver(table):
     c = _as("user_bo", "org_a")
-    call = AsyncMock(return_value={"id": "e1"})
+    call = AsyncMock(return_value={"stored": True, "entry_id": "e1", "neighbours": []})
     with (
         patch.object(memory_api, "neighbours", AsyncMock(return_value=[])),
         patch.object(memory_api.network_member, "call_op", call),
@@ -91,6 +91,19 @@ def test_approve_in_workspace_failure_reverts_both_rows_to_proposed(table):
     c = _as("user_bo", "org_a")
     with patch.object(memory_api, "remember", AsyncMock(side_effect=RuntimeError("down"))):
         assert c.post("/api/v1/memory/drafts/d1/approve", json={}).status_code == 502
+    assert table.rows[("WDRAFTS#org_a", "D#user_ana#d1")]["status"] == "proposed"
+    assert table.rows[("DRAFTS#user_ana", "D#d1")]["status"] == "proposed"
+
+
+def test_approve_refused_by_the_member_reverts_the_draft_to_proposed(table):
+    c = _as("user_bo", "org_a")
+    refused = {"stored": False, "refused": "secret:github_token", "neighbours": []}
+    with (
+        patch.object(memory_api, "neighbours", AsyncMock(return_value=[])),
+        patch.object(memory_api.network_member, "call_op", AsyncMock(return_value=refused)),
+    ):
+        r = c.post("/api/v1/memory/drafts/d1/approve", json={})
+    assert r.status_code == 422 and "secret:github_token" in r.json()["detail"]
     assert table.rows[("WDRAFTS#org_a", "D#user_ana#d1")]["status"] == "proposed"
     assert table.rows[("DRAFTS#user_ana", "D#d1")]["status"] == "proposed"
 

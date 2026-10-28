@@ -532,7 +532,9 @@ _MEMORY_OPS = ("memory.import", "memory.list", "memory.remember", "memory.forget
 
 
 def _memory_op(method: str):
-    return lambda params, **_kwargs: _net(method, method, params)
+    # The backend's own timeout (memory.import asks 60 s), not the 10 s engine default.
+    return lambda params, timeout_ms=RPC_DEFAULT_TIMEOUT_MS, **_kwargs: _net(
+        method, "", run=lambda: network.ask(method, params, timeout_ms / 1000))
 
 
 RPC_METHODS.update({m: _memory_op(m) for m in _MEMORY_OPS})

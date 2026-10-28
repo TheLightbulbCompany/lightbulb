@@ -139,3 +139,13 @@ def test_memory_ops_when_off_answer_unavailable(net, monkeypatch):
     monkeypatch.setattr(bridge, "NETWORK_KEY", "")
     for method, (params, _) in MEMORY_CALLS.items():
         assert _rpc(method, params)["error"]["code"] == "UNAVAILABLE", method
+
+
+def test_memory_op_passes_the_backends_timeout_to_the_engine(net, monkeypatch):
+    seen = []
+    real = network.ask
+    monkeypatch.setattr(network, "ask", lambda op, body=None, timeout_s=10.0: seen.append((op, timeout_s)) or real(op, body, timeout_s))
+    net.answer(**{"memory.import": {"ids": [], "refused": []}})
+    status, body = server._rpc({"method": "memory.import", "params": {"entries": []}, "timeoutMs": 60000})
+    assert status == 200 and body["ok"] is True
+    assert [t for op, t in seen if op == "memory.import"] == [60.0]  # not the engine's 10 s default

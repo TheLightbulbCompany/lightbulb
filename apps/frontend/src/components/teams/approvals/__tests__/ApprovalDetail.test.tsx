@@ -130,7 +130,10 @@ describe("ApprovalDetail (ported)", () => {
     render(<ApprovalDetail approvalId={ID} />);
     expect(screen.queryByRole("button", { name: "Set up Stripe" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Connect existing" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Open Stripe settings" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open Stripe settings" })).toHaveAttribute(
+      "href",
+      "/settings?panel=connections",
+    );
     // Exactly one Approve: the card's own, not the hidden generic row's.
     expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Request revision" })).toBeNull();

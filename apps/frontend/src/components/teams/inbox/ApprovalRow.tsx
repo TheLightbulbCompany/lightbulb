@@ -9,7 +9,7 @@ import { useApi } from "@/lib/api";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { isTauri, openExternalUrl } from "@/lib/externalAuth";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
-import { handleShellLinkClick, navigateShell, teamsDetailUrl, teamsPanelUrl } from "@/lib/shellNav";
+import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import {
   approvalLabel,
@@ -76,12 +76,12 @@ export function ApprovalRow({
   /**
    * Open the tab SYNCHRONOUSLY (the click is the only moment the browser lets
    * us), point it at the URL minted for THIS click, and — only where the
-   * hand-off IS the decision (P0a's Stripe card) — approve after. A
-   * `window.open` after the `await` is blocked by Safari, and approving a
-   * hand-off the owner never saw is the failure that matters here.
+   * hand-off IS the decision — approve after. A `window.open` after the
+   * `await` is blocked by Safari, and approving a hand-off the owner never
+   * saw is the failure that matters here.
    *
-   * On the provisioning rail `thenApprove` is false: opening a provider's
-   * OAuth page or a checkout is not consent, so Approve stays a second click.
+   * Every caller today passes `thenApprove` false: opening a provider's OAuth
+   * page or a checkout is not consent, so Approve stays a second click.
    */
   function openMintedUrl(fetchUrl: () => Promise<string | null | undefined>, thenApprove: boolean) {
     // `disabled={busy}` only takes effect on the next render, so two clicks in
@@ -283,11 +283,12 @@ export function ApprovalRow({
             ) : (
               <>
                 {/* The Stripe doors live once, on the Stripe card in Settings →
-                    Connections; this card only points there. */}
+                    Connections; this card only points there. Settings is its
+                    own route, so a plain link, not a shell swap. */}
                 {isCompanyStripeApproval(approval) && (
-                  <EditorialButton size="sm" disabled={busy} onClick={() => navigateShell(teamsPanelUrl("accounts"))}>
+                  <a className="editorial-btn editorial-btn--primary editorial-btn--sm" href="/settings?panel=connections">
                     Open Stripe settings
-                  </EditorialButton>
+                  </a>
                 )}
                 <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
                   Approve

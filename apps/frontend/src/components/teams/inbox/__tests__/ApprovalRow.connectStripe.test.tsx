@@ -12,8 +12,6 @@ const post = vi.fn();
 const get = vi.fn();
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post, get }) }));
 
-const { navigateShell } = vi.hoisted(() => ({ navigateShell: vi.fn() }));
-vi.mock("@/lib/shellNav", async (orig) => ({ ...(await orig<typeof import("@/lib/shellNav")>()), navigateShell }));
 
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
 import type { Approval } from "@/components/teams/shared/types";
@@ -32,7 +30,6 @@ beforeEach(() => {
   reject.mockReset().mockResolvedValue(undefined);
   post.mockReset();
   get.mockReset();
-  navigateShell.mockReset();
 });
 
 describe("ApprovalRow company_stripe", () => {
@@ -44,9 +41,11 @@ describe("ApprovalRow company_stripe", () => {
     for (const name of ["Set up Stripe", "Connect existing", "Connect your Stripe", "Open Accounts"]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
-    fireEvent.click(screen.getByRole("button", { name: "Open Stripe settings" }));
-    expect(navigateShell).toHaveBeenCalledWith("/chat?panel=teams-accounts");
-    expect(approve).not.toHaveBeenCalled();
+    // Settings → Connections, where the Stripe card lives.
+    expect(screen.getByRole("link", { name: "Open Stripe settings" })).toHaveAttribute(
+      "href",
+      "/settings?panel=connections",
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
     await waitFor(() => expect(approve).toHaveBeenCalledWith("a-stripe"));

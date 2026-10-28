@@ -369,6 +369,11 @@ export class ContainerStack extends cdk.Stack {
         },
       ],
     });
+    // The ARN reference orders the role before the memory, but the role's policy is its own
+    // resource: without this, UpdateMemory checked a role that could not yet invoke the model
+    // ("Role does not have access for the specified model", dev deploy, 28 Oct 2026).
+    const memoryExecutionPolicy = memoryExecutionRole.node.tryFindChild("DefaultPolicy");
+    if (memoryExecutionPolicy) this.workspaceMemory.node.addDependency(memoryExecutionPolicy);
     this.workspaceMemory.applyRemovalPolicy(config.removalPolicy);
 
     // Uploaded coding sessions, in a resource of their own: AgentCore runs every strategy over every

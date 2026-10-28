@@ -35,5 +35,5 @@ def test_retire_grant_dry_run_writes_nothing_apply_marks_and_clears():
         mark.assert_not_called()
         clear.assert_not_called()
         asyncio.run(s._retire_grant("org_1", apply=True))
-        mark.assert_awaited_once_with("org_1", "google")
+        mark.assert_awaited_once_with("org_1", "google", "lightbulb_retired_grant")
         assert clear.await_args.args[3] == {"disconnect_all": True, "accounts": ["a@b.c"]}

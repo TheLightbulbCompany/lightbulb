@@ -17,16 +17,61 @@ class ReconnectRequired(RuntimeError):
     """The workspace has no usable, refreshable grant for this provider."""
 
 
-async def _mark_reconnect(owner_id: str, provider_key: str) -> None:
+def _secret_values(value, key: str = "") -> list[str]:
+    """Every string under a ``*token*`` / ``*secret*`` key, at any depth (a BYO credential can
+    carry ``client_secret``, a DCR one ``client_information.client_secret``)."""
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in _secret_values(v, str(k).lower())]
+    if isinstance(value, list):
+        return [s for v in value for s in _secret_values(v, key)]
+    return [value] if isinstance(value, str) and value and ("token" in key or "secret" in key) else []
+
+
+async def _refresh_reason(owner_id: str, provider_key: str, exc: Exception, credential: dict) -> str:
+    """Why the provider refused the refresh, secret-free: the OAuth ``error`` (+ description)
+    from the body, else the HTTP status. Every token or secret the refresh could have sent --
+    the credential's own, and the OAuth app's client secret from its store -- is redacted, in
+    case a provider echoes one back."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            body = exc.response.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict) and isinstance(body.get("error"), str):
+            reason = body["error"]
+            if isinstance(body.get("error_description"), str):
+                reason += f": {body['error_description']}"
+        else:
+            reason = f"http_{exc.response.status_code}"
+    else:
+        reason = f"refresh_error: {exc}"
+    secrets = _secret_values(credential)
+    try:
+        secrets.append((await oauth_dance._oauth_client(owner_id, provider_key))[1])
+    except Exception:  # noqa: BLE001 -- no app means no app secret to redact
+        pass
+    for secret in sorted({s for s in secrets if s}, key=len, reverse=True):
+        reason = reason.replace(secret, "[redacted]")
+    return reason[:200]
+
+
+async def _mark_reconnect(owner_id: str, provider_key: str, reason: str = "unspecified") -> None:
     """Flip the row, then make the flip visible: agents' facts, the profiles' MCP entry, and one
     Needs-you item per member. Only the transition files the item, so a repeat stays silent."""
     from core.services.owner_facts import write_owner_facts
 
     row = await integrations_repo.get(owner_id, provider_key)
     first = (row or {}).get("status") != "reconnect_required"
-    await integrations_repo.set_status(owner_id, provider_key, "reconnect_required")
+    await integrations_repo.set_status(owner_id, provider_key, "reconnect_required", reason=reason)
     await write_owner_facts(owner_id)  # best-effort: drops it from the agents' connected_integrations
     if first:
+        logger.warning(
+            "integration reconnect_required owner=%s provider=%s reason=%s",
+            owner_id,
+            provider_key,
+            reason,
+            extra={"owner_id": owner_id, "provider": provider_key, "reconnect_reason": reason},
+        )
         await _announce_reconnect(owner_id, provider_key)
 
 
@@ -79,7 +124,7 @@ async def get(owner_id: str, provider_key: str) -> str:
             raise ReconnectRequired(provider_key)
         credential = await integration_secret_store.get(owner_id, provider_key)
         if not credential or not credential.get("access_token"):
-            await _mark_reconnect(owner_id, provider_key)
+            await _mark_reconnect(owner_id, provider_key, "no_access_token")
             raise ReconnectRequired(provider_key)
 
         expiry = credential.get("token_expiry")
@@ -89,20 +134,24 @@ async def get(owner_id: str, provider_key: str) -> str:
                 if expires_at.tzinfo is None:
                     raise ValueError("naive token expiry")
             except (TypeError, ValueError) as exc:
-                await _mark_reconnect(owner_id, provider_key)
+                await _mark_reconnect(owner_id, provider_key, "bad_expiry")
                 raise ReconnectRequired(provider_key) from exc
             if expires_at <= datetime.now(timezone.utc) + timedelta(minutes=1):
                 if not credential.get("refresh_token"):
-                    await _mark_reconnect(owner_id, provider_key)
+                    await _mark_reconnect(owner_id, provider_key, "no_refresh_token")
                     raise ReconnectRequired(provider_key)
                 try:
                     credential = await oauth_dance.refresh(owner_id, provider_key, credential)
                 except ValueError as exc:
-                    await _mark_reconnect(owner_id, provider_key)
+                    await _mark_reconnect(
+                        owner_id, provider_key, await _refresh_reason(owner_id, provider_key, exc, credential)
+                    )
                     raise ReconnectRequired(provider_key) from exc
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code in (400, 401):
-                        await _mark_reconnect(owner_id, provider_key)
+                        await _mark_reconnect(
+                            owner_id, provider_key, await _refresh_reason(owner_id, provider_key, exc, credential)
+                        )
                         raise ReconnectRequired(provider_key) from exc
                     raise
                 await integration_secret_store.put(owner_id, provider_key, credential)

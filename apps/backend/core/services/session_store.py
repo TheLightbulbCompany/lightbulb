@@ -10,12 +10,15 @@ Nothing here is logged: summaries and rows are the person's.
 
 import asyncio
 import json
+import re
 
 import boto3
 
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo as store
+from core.repositories import usage_repo
+from core.services.usage_service import _current_period
 
 LIST_CAP = 500
 _FIELDS = (
@@ -55,6 +58,14 @@ async def put_sessions(user_id: str, rows: list[dict], full: bool, workspace_id:
         old = await store._get(_user_pk(user_id), f"S#{row['id']}")
         if old and old.get("workspace_id") != workspace_id:
             await _delete(old, s3)
+        if workspace_id:  # the member's usage carries what their agents spent; a re-upload adds only the change
+            kept = old if old and old.get("workspace_id") == workspace_id else {}
+            dp = int(row.get("prompt_tokens") or 0) - int(kept.get("prompt_tokens") or 0)
+            dc = int(row.get("completion_tokens") or 0) - int(kept.get("completion_tokens") or 0)
+            started = str(row.get("started") or "")[:7]
+            if dp or dc:
+                period = started if re.fullmatch(r"\d{4}-\d{2}", started) else _current_period()
+                await usage_repo.add_capture_tokens(workspace_id, f"member:{user_id}:{period}", dp, dc)
         item = {k: row.get(k) for k in _FIELDS}
         item.update(user_id=user_id, full=full, uploaded_at=now)
         if workspace_id:
@@ -102,13 +113,37 @@ async def delete_sessions(user_id: str) -> int:
     return len(items)
 
 
-async def delete_session(session_id: str, *, user_id: str | None, workspace_id: str | None) -> bool:
-    """Delete one session if it is the caller's own, or (for a member) the workspace's."""
+async def get_session(session_id: str, *, user_id: str | None, workspace_id: str | None) -> dict | None:
+    """The stored row if it is the caller's own, or (for a member) the workspace's."""
     item = await store._get(_user_pk(user_id), f"S#{session_id}") if user_id else None
     if item is None and workspace_id:
         rows = await store._query(_ws_pk(workspace_id), begins_with="S#")
         item = next((r for r in rows if r["id"] == session_id), None)
+    return item
+
+
+async def delete_session(session_id: str, *, user_id: str | None, workspace_id: str | None) -> bool:
+    """Delete one session if it is the caller's own, or (for a member) the workspace's."""
+    item = await get_session(session_id, user_id=user_id, workspace_id=workspace_id)
     if item is None:
         return False
     await _delete(item)
     return True
+
+
+async def read_shared(owner: str, session_id: str) -> dict | None:
+    """What a share link shows: the session's metadata (no user or workspace id) and, when it
+    was uploaded full, its tool calls. None when the session is gone."""
+    item = await store._get(_user_pk(owner), f"S#{session_id}")
+    if item is None:
+        return None
+    calls: list = []
+    if item.get("full"):
+        obj = await run_in_thread(
+            _s3().get_object, Bucket=settings.OWNER_STATE_BUCKET, Key=_key(owner, session_id, item.get("workspace_id"))
+        )
+        calls = json.loads(obj["Body"].read()).get("tool_calls", [])
+    return {
+        "session": {k: v for k, v in _meta(item).items() if k not in ("user_id", "workspace_id")},
+        "tool_calls": calls,
+    }

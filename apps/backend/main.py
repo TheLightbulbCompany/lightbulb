@@ -1084,6 +1084,7 @@ app.include_router(memory_router.router, prefix="/api/v1/memory", tags=["memory"
 from routers import sessions as sessions_router  # noqa: E402
 
 app.include_router(sessions_router.router, prefix="/api/v1/sessions", tags=["sessions"])
+app.include_router(sessions_router.shared_router, prefix="/api/v1/shared", tags=["sessions"])
 
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402

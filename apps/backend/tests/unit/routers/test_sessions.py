@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import time
 from unittest.mock import patch
 
 import boto3
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from core.auth import AuthContext
 from core.config import settings
+from core.repositories import usage_repo
 from core.services import session_store
 from routers import sessions as router
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401
@@ -29,6 +31,22 @@ def s3(table):
         yield client
 
 
+@pytest.fixture(autouse=True)
+def usage_table(table):
+    """The usage-counters table, in the same moto context as the messaging one."""
+    boto3.resource("dynamodb", region_name="us-east-1").create_table(
+        TableName="test-usage-counters",
+        KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}, {"AttributeName": "period", "KeyType": "RANGE"}],
+        AttributeDefinitions=[
+            {"AttributeName": "owner_id", "AttributeType": "S"},
+            {"AttributeName": "period", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    with patch("core.dynamodb._table_prefix", "test-"), patch.object(settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "k" * 32):
+        yield
+
+
 @pytest.fixture
 def app(s3):
     from main import messaging_validation_error_handler
@@ -36,6 +54,7 @@ def app(s3):
     app = FastAPI()
     app.add_exception_handler(RequestValidationError, messaging_validation_error_handler)  # main's, as deployed
     app.include_router(router.router, prefix="/api/v1/sessions")
+    app.include_router(router.shared_router, prefix="/api/v1/shared")
     return app
 
 
@@ -234,3 +253,66 @@ def test_body_user_and_workspace_ids_are_ignored(app, s3):
     [mine] = client.get("/api/v1/sessions").json()["sessions"]
     assert mine["user_id"] == "user_ada" and "workspace_id" not in mine
     assert as_(app, "user_eve", "org_9").get("/api/v1/sessions").json()["sessions"] == []
+
+
+def test_usage_includes_capture_tokens_per_agent(app, s3):
+    client = as_(app, "user_ada", "org_1")
+    body = {"sessions": [session("a"), session("b", completion_tokens=5)], "tool_calls": [], "mode": "metadata"}
+    client.post("/api/v1/sessions", json=body)
+    client.post("/api/v1/sessions", json=body)  # a re-upload is the same session, not more tokens
+    as_(app, "user_bob", "org_1").post(
+        "/api/v1/sessions", json={"sessions": [session("c")], "tool_calls": [], "mode": "metadata"}
+    )
+    as_(app, "user_eve").post(  # no workspace: nothing to bill
+        "/api/v1/sessions", json={"sessions": [session("d")], "tool_calls": [], "mode": "metadata"}
+    )
+    usage = {m["user_id"]: m for m in asyncio.run(usage_repo.get_member_usage("org_1", "2026-10"))}
+    assert set(usage) == {"user_ada", "user_bob"}
+    assert (usage["user_ada"]["capture_prompt_tokens"], usage["user_ada"]["capture_completion_tokens"]) == (20, 25)
+    assert (usage["user_bob"]["capture_prompt_tokens"], usage["user_bob"]["capture_completion_tokens"]) == (10, 20)
+    assert usage["user_ada"]["request_count"] == 0  # not an LLM request
+
+
+def share(client, sid="s1"):
+    return client.post(f"/api/v1/sessions/{sid}/share")
+
+
+def test_share_link_expires_in_7_days(app, s3):
+    client = as_(app, "user_ada", "org_1")
+    client.post(
+        "/api/v1/sessions", json={"sessions": [session()], "tool_calls": [call(summary="ran tests")], "mode": "full"}
+    )
+    with (
+        patch.object(settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "k" * 32),
+        patch.object(settings, "FRONTEND_URL", "https://app.example"),
+    ):
+        r = share(client)
+        assert r.status_code == 200 and r.json()["url"].startswith("https://app.example/shared/")
+        token = r.json()["url"].rsplit("/", 1)[1]
+        anon = TestClient(app)
+        got = anon.get(f"/api/v1/shared/{token}")
+        assert got.status_code == 200
+        assert "user_id" not in got.text and "org_1" not in got.text
+        assert got.json()["session"]["id"] == "s1"
+        assert [c["summary"] for c in got.json()["tool_calls"]] == ["ran tests"]
+        now = time.time()
+        with patch("time.time", return_value=now + 7 * 86400 - 60):
+            assert anon.get(f"/api/v1/shared/{token}").status_code == 200
+        with patch("time.time", return_value=now + 7 * 86400 + 60):
+            assert anon.get(f"/api/v1/shared/{token}").status_code == 404
+        body, _, sig = token.partition(".")
+        assert anon.get(f"/api/v1/shared/{body}.{'0' * len(sig)}").status_code == 404  # forged
+        assert anon.get("/api/v1/shared/garbage").status_code == 404
+        client.delete("/api/v1/sessions/s1")
+        assert anon.get(f"/api/v1/shared/{token}").status_code == 404  # session gone
+
+
+def test_share_requires_member_or_owner(app, s3):
+    assert share(TestClient(app)).status_code == 401  # before any override is set
+    as_(app, "user_ada", "org_1").post(
+        "/api/v1/sessions", json={"sessions": [session()], "tool_calls": [], "mode": "metadata"}
+    )
+    assert share(as_(app, "user_eve", "org_2")).status_code == 404  # another workspace
+    assert share(as_(app, "user_eve")).status_code == 404
+    assert share(as_(app, "user_ada", "org_1")).status_code == 200  # owner
+    assert share(as_(app, "user_bob", "org_1")).status_code == 200  # workspace member

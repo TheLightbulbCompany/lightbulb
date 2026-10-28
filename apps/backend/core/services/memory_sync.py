@@ -406,7 +406,7 @@ def _mirror_turns(client, owner_id: str, memory_id: str, ns: str, after: str | N
         )
         expires = int(time.time()) + _TURN_TTL_S
         for ok in resp.get("successfulRecords", []):
-            _put(owner_id, f"MEMTURN#{ok['requestIdentifier']}", ttl=expires)
+            _put(owner_id, f"MEMTURN#{ok['requestIdentifier']}", expiresAt=expires)  # the table's TTL key
         _write_ok(resp, "turn")
     return len(records), (newest.isoformat() if newest > floor else after)
 

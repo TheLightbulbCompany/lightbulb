@@ -23,7 +23,7 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import connection_service
+from core.services import connection_service, workspace_memory
 from core.services.provision_dispatch import dispatch_provision
 from core.services.credentials import integration_secret_store
 
@@ -275,6 +275,8 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             ("integrations", _wipe_integrations),
             ("ws-connections", lambda: connection_service.delete_all_for_user(user_id)),
             ("users", lambda: user_repo.delete(user_id)),
+            # The person's own memory data: sessions, drafts, episodes, computer keys.
+            ("person-memory", lambda: workspace_memory.delete_person_memory(user_id)),
             # The WORKSPACE row (keyed by the owner id) carries the company,
             # its onboarding generation/funnel and the starter roster (INV-10).
             # Left behind, the next fresh provision would RECONCILE-ADOPT the

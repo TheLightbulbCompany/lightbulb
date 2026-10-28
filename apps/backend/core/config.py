@@ -382,6 +382,9 @@ class Settings(BaseSettings):
     # The env's shared AgentCore Memory (CDK ContainerStack.workspaceMemory). Empty = no workspace
     # memory: no per-owner grant, no AGENTCORE_MEMORY_ID in the runtime env, no wipe.
     AGENTCORE_MEMORY_ID: str = ""
+    # The env's uploaded-sessions AgentCore Memory (CDK ContainerStack.sessionsMemory): the evaluator's
+    # episodes and reflections, apart from the workspace memory. Empty = no evaluator.
+    AGENTCORE_SESSIONS_MEMORY_ID: str = ""
     # Haiku-class model that splits a recall question into the facts it needs (memory_models.expand);
     # the same id container-stack.ts gives AgentCore extraction (MEMORY_EXTRACT_MODEL).
     MEMORY_EXPAND_MODEL: str = "us.anthropic.claude-haiku-4-5-20251001-v1:0"

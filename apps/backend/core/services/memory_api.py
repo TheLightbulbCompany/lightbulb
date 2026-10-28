@@ -94,12 +94,13 @@ def _synced(task: asyncio.Task) -> None:
 
 
 async def sweep_once() -> int:
-    """Sync every workspace whose last sync is older than ``SWEEP_INTERVAL_S``; returns how many ran.
-    One at a time, each behind its owner's lease, and one failure never stops the rest."""
+    """Sync every workspace whose last sync is older than ``SWEEP_INTERVAL_S`` (returns how many ran),
+    then collect due drafts. One at a time, each behind its owner's lease, and one failure never
+    stops the rest."""
     memory_id = settings.AGENTCORE_MEMORY_ID
-    if not memory_id:
-        return 0
     ran = 0
+    if not memory_id:
+        return await _collect_due(ran)
     # ponytail: one containers-table scan per pass; keep an index of memory owners if the fleet grows.
     for row in await container_repo.scan_all():
         owner_id = row.get("owner_id") or ""
@@ -110,6 +111,15 @@ async def sweep_once() -> int:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("memory sweep failed owner=%s error=%s", owner_id, type(exc).__name__)
+    return await _collect_due(ran)
+
+
+async def _collect_due(ran: int) -> int:
+    """The evaluator's half of the sweep: reflections that were not ready at ingest become drafts."""
+    try:
+        await evaluator.collect_due()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("memory sweep draft collect failed: %s", type(exc).__name__)
     return ran
 
 
@@ -191,6 +201,27 @@ async def _send_or_queue(owner_id: str, op: str, params: dict) -> None:
 
 async def forget(owner_id: str, entry_id: str) -> None:
     await _send_or_queue(owner_id, "memory.forget", {"entry": entry_id})
+
+
+async def forget_on_behalf_of(owner_id: str, user_id: str) -> int:
+    """Forget every entry the workspace wrote on ``user_id``'s behalf (the member wipe), found by
+    paging ``memory.list``: each row carries its source. Raises when the member is parked: the list
+    cannot be read, and a wipe that skipped it would keep the person's notes."""
+    since, sent = 0, 0
+    while True:
+        answer = await network_member.call_op(owner_id, "memory.list", {"since_seq": since}, 30.0)
+        if answer is None:
+            raise RuntimeError("memory.list unavailable: the workspace's member is parked")
+        rows = answer.get("entries") or []
+        for row in rows:
+            op = row.get("op") or {}
+            if op.get("t") == "remember" and (op.get("source") or {}).get("on_behalf_of") == user_id:
+                await forget(owner_id, row["id"])
+                sent += 1
+        nxt = int(answer.get("next") or since)
+        if not rows or nxt <= since:
+            return sent
+        since = nxt
 
 
 async def forget_author(owner_id: str, author: str) -> None:

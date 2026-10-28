@@ -38,6 +38,17 @@ def _fake_client(record_pages: list[tuple[list[str], bool]], sessions: dict[str,
     return fake
 
 
+@pytest.fixture(autouse=True)
+def no_workspace_rows(monkeypatch):
+    """The owner wipe also deletes the workspace's session and draft rows (tests/unit/services/test_evaluator.py)."""
+    from unittest.mock import AsyncMock
+
+    from core.services import evaluator, session_store
+
+    monkeypatch.setattr(session_store, "delete_workspace_sessions", AsyncMock(return_value=0))
+    monkeypatch.setattr(evaluator, "delete_workspace_drafts", AsyncMock(return_value=0))
+
+
 @pytest.fixture
 def configured(monkeypatch):
     monkeypatch.setattr(workspace_memory.settings, "AGENTCORE_MEMORY_ID", "mem-1", raising=False)
@@ -93,8 +104,9 @@ async def test_a_record_that_fails_to_delete_fails_the_wipe(monkeypatch, configu
     fake = _fake_client([(["r1", "r2"], False)], {})
     fake.batch_delete_memory_records.return_value = {"successfulRecords": [], "failedRecords": [{"id": "r2"}]}
     monkeypatch.setattr(workspace_memory, "_client", lambda: fake)
-    with pytest.raises(RuntimeError, match="1 of 2 records"):
+    with pytest.raises(RuntimeError) as failed:
         await workspace_memory.delete_owner_memory("org_x", resweep_after_s=0)
+    assert "1 of 2 records" in str(failed.value.__cause__)
 
 
 @pytest.mark.asyncio
@@ -217,7 +229,7 @@ def no_evaluator_wipe(monkeypatch):
     """The member wipe also clears sessions, drafts and episodes (tests/unit/services/test_evaluator.py)."""
     from unittest.mock import AsyncMock
 
-    from core.services import evaluator, network_login, session_store
+    from core.services import evaluator, memory_api, network_login, session_store
 
     for mod, name in (
         (session_store, "delete_sessions"),
@@ -225,12 +237,14 @@ def no_evaluator_wipe(monkeypatch):
         (evaluator, "delete_episodes"),
         (network_login, "computer_keys"),  # no signed-in computer: no forget_author forward
         (network_login, "forget_keys"),
+        (memory_api, "forget_on_behalf_of"),
     ):
         monkeypatch.setattr(mod, name, AsyncMock(return_value=[] if name == "computer_keys" else 0))
 
 
+@pytest.mark.usefixtures("no_evaluator_wipe")
 async def test_member_wipe_runs_every_step_when_one_fails(monkeypatch):
-    from core.services import evaluator, session_store
+    from core.services import evaluator, memory_api, session_store
 
     ran = []
 
@@ -246,11 +260,11 @@ async def test_member_wipe_runs_every_step_when_one_fails(monkeypatch):
     monkeypatch.setattr(workspace_memory, "_wipe", lambda *a, **k: ok("wipe"))
     monkeypatch.setattr(workspace_memory, "_client", MagicMock())
     monkeypatch.setattr(session_store, "delete_sessions", boom)
-    monkeypatch.setattr(evaluator, "delete_drafts", lambda u: ok("drafts"))
-    monkeypatch.setattr(evaluator, "delete_episodes", lambda u, **k: ok("episodes"))
+    monkeypatch.setattr(evaluator, "delete_drafts", lambda u, **k: ok("drafts"))
+    monkeypatch.setattr(memory_api, "forget_on_behalf_of", lambda o, u: ok("on behalf"))
     with pytest.raises(RuntimeError, match="OSError"):
         await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)
-    assert ran == ["wipe", "sessions", "drafts", "episodes"]
+    assert ran == ["wipe", "sessions", "drafts", "on behalf"]
 
 
 @pytest.mark.usefixtures("no_evaluator_wipe")
@@ -277,3 +291,45 @@ async def test_member_wipe_forwards_forget_author(monkeypatch):
     with pytest.raises(RuntimeError, match="OSError"):
         await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)
     assert sent == [("org_x", "k1"), ("org_x", "k2"), ("org_x", "k3")]
+
+
+async def test_owner_wipe_deletes_the_workspaces_sessions_and_drafts_without_memory(monkeypatch):
+    """Rows and objects go even in an env with no memory, and without any member webhook."""
+    from core.services import evaluator, session_store
+
+    monkeypatch.setattr(workspace_memory.settings, "AGENTCORE_MEMORY_ID", "", raising=False)
+    await workspace_memory.delete_owner_memory("org_x")
+    session_store.delete_workspace_sessions.assert_awaited_once_with("org_x")
+    evaluator.delete_workspace_drafts.assert_awaited_once_with("org_x")
+
+
+async def test_forget_on_behalf_of_pages_the_log_and_forgets_only_that_persons_entries():
+    from unittest.mock import AsyncMock, patch
+
+    from core.services import memory_api
+
+    def row(seq, eid, who, t="remember"):
+        op = {"t": t, "subject": "s", "fact": "f", "kind": "fact", "scope": "me",
+              "source": {"harness": "workspace", "on_behalf_of": who}}  # fmt: skip
+        return {"id": eid, "author": "ws", "seq": seq, "op": op, "at": 1}
+
+    pages = {
+        0: {"entries": [row(1, "a1", "user_a"), row(2, "b1", "user_b"),
+                        {"id": "x", "author": "ws", "tombstone": True, "seq": 3}], "next": 3},
+        3: {"entries": [row(4, "a2", "user_a")], "next": 4},
+        4: {"entries": [], "next": 4},
+    }  # fmt: skip
+
+    async def call_op(owner_id, op, params, timeout=30.0):
+        if op == "memory.list":
+            return pages[params["since_seq"]]
+        return {}
+
+    forget = AsyncMock()
+    with patch.object(memory_api.network_member, "call_op", call_op), patch.object(memory_api, "forget", forget):
+        assert await memory_api.forget_on_behalf_of("org_x", "user_a") == 2
+    assert [c.args for c in forget.await_args_list] == [("org_x", "a1"), ("org_x", "a2")]
+
+    parked = AsyncMock(return_value=None)
+    with patch.object(memory_api.network_member, "call_op", parked), pytest.raises(RuntimeError, match="parked"):
+        await memory_api.forget_on_behalf_of("org_x", "user_a")

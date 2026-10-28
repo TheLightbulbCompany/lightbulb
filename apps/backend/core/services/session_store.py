@@ -5,14 +5,19 @@ A metadata row per session in the messaging table, in the uploader's partition
 (WSESSIONS#<workspace> / S#<user>#<id>, so one member cannot overwrite another's row).
 A full upload also puts the session and its tool calls as one JSON object in S3 at
 sessions/<free|workspace>/<user>/<id>.json: those two prefixes are what the lifecycle rules key on.
+The rows expire with them (``expiresAt``, the table's TTL: 30 days free, 365 in a workspace, from
+the upload), and until DynamoDB removes one an expired row reads as gone.
 Nothing here is logged: summaries and rows are the person's.
 """
 
 import asyncio
 import json
 import re
+import time
+from datetime import datetime
 
 import boto3
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
@@ -21,6 +26,7 @@ from core.repositories import usage_repo
 from core.services.usage_service import _current_period
 
 LIST_CAP = 500
+RETENTION_DAYS = {False: 30, True: 365}  # by "in a workspace": the S3 lifecycle rules' ages
 _FIELDS = (
     "id", "harness", "computer", "repo", "branch", "started", "ended", "prompt_tokens", "completion_tokens",
 )  # fmt: skip
@@ -43,7 +49,18 @@ def _s3():
 
 
 def _meta(item: dict) -> dict:
-    return {k: v for k, v in item.items() if k not in ("pk", "sk")}
+    return {k: v for k, v in item.items() if k not in ("pk", "sk", "expiresAt")}
+
+
+def _live(item: dict | None) -> dict | None:
+    """The row, or None once past its retention (DynamoDB's TTL deletes it up to days later)."""
+    if item is None or int(item.get("expiresAt") or 0) and int(item["expiresAt"]) <= time.time():
+        return None
+    return item
+
+
+def _expires_at(uploaded_at: str, in_workspace: bool) -> int:
+    return int(datetime.fromisoformat(uploaded_at).timestamp()) + RETENTION_DAYS[in_workspace] * 86400
 
 
 async def put_sessions(user_id: str, rows: list[dict], full: bool, workspace_id: str | None = None) -> int:
@@ -67,7 +84,7 @@ async def put_sessions(user_id: str, rows: list[dict], full: bool, workspace_id:
                 period = started if re.fullmatch(r"\d{4}-\d{2}", started) else _current_period()
                 await usage_repo.add_capture_tokens(workspace_id, f"member:{user_id}:{period}", dp, dc)
         item = {k: row.get(k) for k in _FIELDS}
-        item.update(user_id=user_id, full=full, uploaded_at=now)
+        item.update(user_id=user_id, full=full, uploaded_at=now, expiresAt=_expires_at(now, bool(workspace_id)))
         if workspace_id:
             item["workspace_id"] = workspace_id
         key = _key(user_id, row["id"], workspace_id)
@@ -89,7 +106,7 @@ async def list_sessions(
 ) -> list[dict]:
     """The workspace's sessions if ``workspace_id`` is given, else the user's own; newest first."""
     pk = _ws_pk(workspace_id) if workspace_id else _user_pk(user_id or "")
-    rows = [_meta(i) for i in await store._query(pk, begins_with="S#")]
+    rows = [_meta(i) for i in await store._query(pk, begins_with="S#") if _live(i)]
     rows = [r for r in rows if not since or (r.get("started") or "") >= since]
     rows.sort(key=lambda r: r.get("started") or "", reverse=True)
     return rows[:LIST_CAP]
@@ -105,9 +122,20 @@ async def _delete(item: dict, s3=None) -> None:
     await run_in_thread(s3.delete_object, Bucket=settings.OWNER_STATE_BUCKET, Key=_key(owner, sid, ws))
 
 
-async def delete_sessions(user_id: str) -> int:
-    """Everything this user uploaded (account deletion, ``lightbulb`` forget-me)."""
+async def delete_sessions(user_id: str, *, workspace_id: str | None = None) -> int:
+    """Everything this user uploaded (account deletion, ``lightbulb`` forget-me), or with
+    ``workspace_id`` only what they uploaded in that workspace (removed from it)."""
     items = await store._query(_user_pk(user_id), begins_with="S#")
+    if workspace_id:
+        items = [i for i in items if i.get("workspace_id") == workspace_id]
+    s3 = _s3()
+    await asyncio.gather(*(_delete(i, s3) for i in items))
+    return len(items)
+
+
+async def delete_workspace_sessions(workspace_id: str) -> int:
+    """Every member's sessions in this workspace, rows and objects (the workspace is deleted)."""
+    items = await store._query(_ws_pk(workspace_id), begins_with="S#")
     s3 = _s3()
     await asyncio.gather(*(_delete(i, s3) for i in items))
     return len(items)
@@ -116,16 +144,16 @@ async def delete_sessions(user_id: str) -> int:
 async def get_session(session_id: str, *, user_id: str | None, workspace_id: str | None) -> dict | None:
     """The stored row if it is the caller's own, or (for a member) the workspace's."""
     item = await store._get(_user_pk(user_id), f"S#{session_id}") if user_id else None
-    if item is None and workspace_id:
+    if _live(item) is None and workspace_id:
         rows = await store._query(_ws_pk(workspace_id), begins_with="S#")
         item = next((r for r in rows if r["id"] == session_id), None)
-    return item
+    return _live(item)
 
 
-async def delete_session(session_id: str, *, user_id: str | None, workspace_id: str | None) -> bool:
-    """Delete one session if it is the caller's own, or (for a member) the workspace's."""
+async def delete_session(session_id: str, *, user_id: str, workspace_id: str | None) -> bool:
+    """Delete one of the caller's own sessions (a teammate's reads, but is not theirs to delete)."""
     item = await get_session(session_id, user_id=user_id, workspace_id=workspace_id)
-    if item is None:
+    if item is None or item.get("user_id") != user_id:
         return False
     await _delete(item)
     return True
@@ -134,14 +162,21 @@ async def delete_session(session_id: str, *, user_id: str | None, workspace_id: 
 async def read_shared(owner: str, session_id: str) -> dict | None:
     """What a share link shows: the session's metadata (no user or workspace id) and, when it
     was uploaded full, its tool calls. None when the session is gone."""
-    item = await store._get(_user_pk(owner), f"S#{session_id}")
+    item = _live(await store._get(_user_pk(owner), f"S#{session_id}"))
     if item is None:
         return None
     calls: list = []
     if item.get("full"):
-        obj = await run_in_thread(
-            _s3().get_object, Bucket=settings.OWNER_STATE_BUCKET, Key=_key(owner, session_id, item.get("workspace_id"))
-        )
+        try:
+            obj = await run_in_thread(
+                _s3().get_object,
+                Bucket=settings.OWNER_STATE_BUCKET,
+                Key=_key(owner, session_id, item.get("workspace_id")),
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
+                return None  # the lifecycle rule removed it first: as gone as the row
+            raise
         calls = json.loads(obj["Body"].read()).get("tool_calls", [])
     return {
         "session": {k: v for k, v in _meta(item).items() if k not in ("user_id", "workspace_id")},

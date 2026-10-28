@@ -185,7 +185,7 @@ def test_list_sessions_scoped_to_workspace(app, s3):
     assert ids(as_(app, "user_eve", "org_3")) == []
 
 
-def test_delete_owner_or_workspace_member_only(app, s3):
+def test_delete_uploader_only(app, s3):
     as_(app, "user_ada", "org_1").post(
         "/api/v1/sessions", json={"sessions": [session("a")], "tool_calls": [call("a", summary="s")], "mode": "full"}
     )
@@ -193,7 +193,11 @@ def test_delete_owner_or_workspace_member_only(app, s3):
         "/api/v1/sessions", json={"sessions": [session("a")], "tool_calls": [], "mode": "metadata"}
     )
     assert as_(app, "user_eve", "org_2").delete("/api/v1/sessions/a").status_code == 404
-    assert as_(app, "user_bob", "org_1").delete("/api/v1/sessions/a").status_code == 204  # any member
+    # A teammate reads Ada's session but may not delete it.
+    assert len(as_(app, "user_bob", "org_1").get("/api/v1/sessions").json()["sessions"]) == 1
+    assert as_(app, "user_bob", "org_1").delete("/api/v1/sessions/a").status_code == 404
+    assert keys(s3) == ["sessions/workspace/user_ada/a.json"]
+    assert as_(app, "user_ada", "org_1").delete("/api/v1/sessions/a").status_code == 204
     assert keys(s3) == []
     assert as_(app, "user_bob", "org_1").get("/api/v1/sessions").json()["sessions"] == []
     assert as_(app, "user_ada", "org_1").delete("/api/v1/sessions/a").status_code == 404
@@ -307,15 +311,15 @@ def test_share_link_expires_in_7_days(app, s3):
         assert anon.get(f"/api/v1/shared/{token}").status_code == 404  # session gone
 
 
-def test_share_requires_member_or_owner(app, s3):
+def test_share_requires_the_uploader(app, s3):
     assert share(TestClient(app)).status_code == 401  # before any override is set
     as_(app, "user_ada", "org_1").post(
         "/api/v1/sessions", json={"sessions": [session()], "tool_calls": [], "mode": "metadata"}
     )
     assert share(as_(app, "user_eve", "org_2")).status_code == 404  # another workspace
     assert share(as_(app, "user_eve")).status_code == 404
-    assert share(as_(app, "user_ada", "org_1")).status_code == 200  # owner
-    assert share(as_(app, "user_bob", "org_1")).status_code == 200  # workspace member
+    assert share(as_(app, "user_ada", "org_1")).status_code == 200  # the uploader
+    assert share(as_(app, "user_bob", "org_1")).status_code == 404  # a teammate reads it, never publishes it
 
 
 def test_upload_full_triggers_ingest_and_metadata_does_not(app, s3):
@@ -332,3 +336,44 @@ def test_upload_full_triggers_ingest_and_metadata_does_not(app, s3):
         assert ingest.await_args.args[2][0]["tool"] == "Bash"
     with patch("routers.sessions.evaluator.ingest_session", new=AsyncMock(side_effect=RuntimeError("boom"))):
         assert c.post("/api/v1/sessions", json={"mode": "full", **body}).status_code == 200  # never fails the upload
+
+
+def test_rows_expire_with_their_retention_and_read_as_gone_once_past_it(app, s3, table):
+    as_(app, "user_ada", "org_1").post("/api/v1/sessions", json={"sessions": [session("w")], "mode": "metadata"})
+    as_(app, "user_dee").post("/api/v1/sessions", json={"sessions": [session("f")], "mode": "metadata"})
+    rows = {i["sk"]: i for i in table.scan()["Items"]}
+    now = time.time()
+    assert abs(int(rows["S#w"]["expiresAt"]) - (now + 365 * 86400)) < 60  # the table's TTL attribute
+    assert abs(int(rows["S#f"]["expiresAt"]) - (now + 30 * 86400)) < 60
+    assert all("expiresAt" not in r for r in as_(app, "user_dee").get("/api/v1/sessions").json()["sessions"])
+    with patch("time.time", return_value=now + 31 * 86400):  # DynamoDB may not have removed it yet
+        assert as_(app, "user_dee").get("/api/v1/sessions").json()["sessions"] == []
+        assert asyncio.run(session_store.get_session("f", user_id="user_dee", workspace_id=None)) is None
+        assert asyncio.run(session_store.read_shared("user_dee", "f")) is None
+        assert len(as_(app, "user_ada", "org_1").get("/api/v1/sessions").json()["sessions"]) == 1
+
+
+def test_a_share_link_whose_object_aged_out_is_404(app, s3):
+    client = as_(app, "user_ada")
+    client.post("/api/v1/sessions", json={"sessions": [session()], "tool_calls": [call(summary="x")], "mode": "full"})
+    with patch.object(settings, "FRONTEND_URL", "https://app.example"):
+        token = share(client).json()["url"].rsplit("/", 1)[1]
+    s3.delete_object(Bucket=BUCKET, Key="sessions/free/user_ada/s1.json")  # the lifecycle rule ran first
+    assert TestClient(app).get(f"/api/v1/shared/{token}").status_code == 404
+
+
+def test_a_cli_session_id_with_a_colon_round_trips_through_upload_list_and_share(app, s3):
+    sid = "claude:abc"  # the CLI's "<harness>:<id>"
+    client = as_(app, "user_ada", "org_1")
+    r = client.post(
+        "/api/v1/sessions", json={"sessions": [session(sid)], "tool_calls": [call(sid, summary="x")], "mode": "full"}
+    )
+    assert r.status_code == 200
+    assert [s["id"] for s in client.get("/api/v1/sessions").json()["sessions"]] == [sid]
+    assert keys(s3) == [f"sessions/workspace/user_ada/{sid}.json"]  # unencoded in the key, as in the API
+    with patch.object(settings, "FRONTEND_URL", "https://app.example"):
+        token = share(client, sid).json()["url"].rsplit("/", 1)[1]
+    got = TestClient(app).get(f"/api/v1/shared/{token}").json()
+    assert got["session"]["id"] == sid and [c["summary"] for c in got["tool_calls"]] == ["x"]
+    assert client.delete(f"/api/v1/sessions/{sid}").status_code == 204
+    assert client.post("/api/v1/sessions", json={"sessions": [session("a/b")], "mode": "metadata"}).status_code == 422

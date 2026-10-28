@@ -539,12 +539,15 @@ async def queue_op(owner_id: str, op: str, params: dict) -> None:
     from core.repositories import messaging_repo
 
     sk = f"MEMOP#{int(time.time() * 1000):013d}#{uuid.uuid4().hex[:8]}"
-    item = {"pk": _op_pk(owner_id), "sk": sk, "op": op, "params": json.dumps(params)}
+    # Params can carry fact text: a runtime parked past the window loses the op, not the privacy.
+    expires = int(time.time()) + OP_TTL_S
+    item = {"pk": _op_pk(owner_id), "sk": sk, "op": op, "params": json.dumps(params), "expiresAt": expires}
     await run_in_thread(messaging_repo._table().put_item, Item=item)
 
 
 _MAX_ATTEMPTS = 5
 _CLAIM_S = 120
+OP_TTL_S = 30 * 86400  # a queued op's lifetime (``expiresAt``: the messaging table's TTL attribute)
 
 
 async def drain_ops(owner_id: str) -> int:

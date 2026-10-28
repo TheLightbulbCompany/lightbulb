@@ -701,6 +701,14 @@ async def preview_wipe(owner_id: str) -> WipeReport:
             detail="the owner's message search index",
         )
     )
+    steps.append(
+        WipeStep(
+            system="person_memory",
+            action="delete_person_memory",
+            status="would_delete",
+            detail="uploaded sessions, drafts, episodes and computer keys",
+        )
+    )
 
     paperclip_rows = [
         label
@@ -1053,6 +1061,16 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         return await message_search.delete_owner_index(owner_id)
 
     await _step(steps, system="search", action="drop_owner_index", fn=_s9a3)
+
+    async def _s9a4() -> str:
+        # The person's own memory data, in no workspace's keeping: uploaded sessions, drafts and
+        # evaluator rows, episodes, the computer-key registry (workspace_memory.delete_person_memory).
+        from core.services import workspace_memory
+
+        await workspace_memory.delete_person_memory(owner_id)
+        return "sessions, drafts, episodes and computer keys removed"
+
+    await _step(steps, system="person_memory", action="delete_person_memory", fn=_s9a4)
 
     # Both of this owner's items in paperclip-companies, not just the company
     # row: the funnel answer lives in the SAME table under the prefixed key

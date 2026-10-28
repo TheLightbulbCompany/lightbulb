@@ -668,3 +668,25 @@ async def test_repeated_turn_sync_creates_nothing_new(table, agentcore):
     assert (await run(Member()))["turns"] == 1
     events()  # the same event sits on the watermark: it is listed again, and skipped
     assert (await run(Member()))["turns"] == 0
+
+
+async def test_a_queued_op_expires_after_thirty_days(table):
+    import time
+
+    await network_member.queue_op(OWNER, "memory.remember", {"fact": "x"})
+    (row,) = table.scan()["Items"]
+    assert abs(int(row["expiresAt"]) - (time.time() + 30 * 86400)) < 60  # the messaging table's TTL attribute
+
+
+async def test_mirrored_turn_rows_expire(table, agentcore):
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": []})
+    agentcore.add_response(
+        "list_sessions", {"sessionSummaries": [{"sessionId": "s1", "actorId": OWNER, "createdAt": T0}]}
+    )
+    payload = [{"conversational": {"role": "USER", "content": {"text": "Ana: hi"}}}]
+    agentcore.add_response("list_events", {"events": [
+        {"memoryId": MEM, "actorId": OWNER, "sessionId": "s1", "eventId": "ev1", "eventTimestamp": T0, "payload": payload}]})  # fmt: skip
+    turn = memory_sync._turn_id("s1", "ev1", 0)
+    agentcore.add_response("batch_create_memory_records", created((turn, rid("t1"))))
+    await run(Member())
+    assert int(memory_sync._get(OWNER, f"MEMTURN#{turn}")["expiresAt"]) > T0.timestamp()

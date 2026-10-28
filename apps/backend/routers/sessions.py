@@ -26,7 +26,9 @@ shared_router = APIRouter()
 
 SHARE_TTL = 7 * 86400
 
-Id = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{1,128}$")]  # it becomes an S3 key
+# The CLI's ids are "<harness>:<id>" (claude:3f2a...), kept as given: ":" is safe in an S3 key and a
+# DynamoDB sort key, and "/" (the only character that could reshape the key) is still refused.
+Id = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._:-]{1,128}$")]  # it becomes an S3 key
 Text = Annotated[str, StringConstraints(max_length=2000)]
 Summary = Annotated[str, StringConstraints(max_length=2000)]
 
@@ -114,7 +116,8 @@ async def share(session_id: str, auth: AuthContext = Depends(caller)) -> dict:
     """A link anyone can open for 7 days. The token names the owner, session and expiry; only the
     server can sign it, so none can be changed or extended."""
     item = await session_store.get_session(session_id, user_id=auth.user_id, workspace_id=auth.org_id)
-    if item is None or not settings.PAPERCLIP_SERVICE_TOKEN_KEY:
+    # Only the uploader may publish their session: a teammate reads it, nothing more.
+    if item is None or item.get("user_id") != auth.user_id or not settings.PAPERCLIP_SERVICE_TOKEN_KEY:
         raise HTTPException(status_code=404, detail="session not found")
     payload = f"{item['user_id']}|{session_id}|{int(time.time()) + SHARE_TTL}"
     body = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")

@@ -53,7 +53,9 @@ def test_compose_stops_at_budget():
     full = compose(cands, 10_000, T)
     budget = full["usedEvidenceTokens"] // 2
     page = compose(cands, budget, T)
-    assert 0 < len(page["results"]) < 5
+    n = len(page["results"])
+    assert 2 <= n < 5
+    assert compose(cands[: n + 1], 10_000, T)["usedEvidenceTokens"] > budget
     assert page["usedEvidenceTokens"] <= budget
     assert [r["sources"][0]["sourceId"] for r in page["results"]] == ["c0", "c1", "c2", "c3"][: len(page["results"])]
 
@@ -109,3 +111,28 @@ def test_from_record_maps_metadata_and_speaker():
     assert c.valid_from == datetime.fromtimestamp(1_790_000_000, UTC)
     assert from_record({"content": {"text": "plain"}}, "entry").kind == "entry"
     assert count_tokens("abcdefgh") == 2
+
+
+def test_from_record_parses_contested_form():
+    text = "Contested: Ann: db version: 16 (Ann, 2026-09-01) vs Sam: db version: 14 (Sam, 2026-08-01)"
+    c = from_record({"memoryRecordId": "x", "content": {"text": text}, "metadata": {}}, "claim")
+    assert (c.status, c.speaker) == ("contested", "Ann")
+    other = cand("o", "db version: 14", entity="db", attribute="version")
+    ok = cand("k", "Redis: 3 nodes", entity="redis", attribute="nodes")
+    page = compose([c, other, ok], 10_000, T)
+    by_id = {r["sources"][0]["sourceId"]: r for r in page["results"]}
+    assert by_id["x"]["history"] == [
+        {"value": "db version: 14", "speaker": "Sam", "occurredAt": "2026-08-01T00:00:00+00:00"}
+    ]
+    assert by_id["x"]["sources"][0]["speaker"] == "Ann"
+    assert by_id["k"]["status"] == "current"
+
+
+def test_from_record_entry_keeps_subject_and_metadata_author():
+    meta = {"subject": {"stringValue": "Redis"}, "author": {"stringValue": "Bo"}}
+    c = from_record({"content": {"text": "Redis: 3 nodes"}, "metadata": meta}, "entry")
+    assert (c.speaker, c.entity) == ("Bo", "Redis")
+    assert from_record({"content": {"text": "Redis: 3 nodes"}}, "entry").speaker == ""
+    a = cand("a", "Postgres Version: 16", kind="entry", entity="Postgres Version")
+    b = cand("b", "Postgres Version: 15", kind="entry", entity="postgres version")
+    assert {r["status"] for r in compose([a, b], 10_000, T)["results"]} == {"contested"}

@@ -14,6 +14,8 @@ from dateutil import parser as dateparser
 _CURRENT_KINDS = {"claim", "observation", "rule", "anchor", "mention"}
 _SPEAKER = re.compile(r"^([A-Z][\w'.-]*(?: [A-Z][\w'.-]*)?): (?=\S)")
 _SINCE = re.compile(r"^(?P<claim>.*?) \(since (?P<since>[^;()]*)(?P<tail>;.*)?\)$", re.S)
+_SIDE = re.compile(r"^(?P<name>[^:]+): (?P<claim>.*) \((?P<who>[^()]*?), (?P<date>[^()]*)\)$", re.S)
+_SPEAKER_KINDS = _CURRENT_KINDS | {"turn"}
 _EXCERPT_CHARS = 280
 
 
@@ -61,20 +63,29 @@ def _when(value: object) -> datetime | None:
 def from_record(summary: dict, kind_default: str) -> Candidate:
     metadata = summary.get("metadata") or {}
     text = (summary.get("content") or {}).get("text", "")
-    speaker_match = _SPEAKER.match(text)
+    kind = _meta(metadata, "kind") or kind_default
+    contested = text.startswith("Contested: ")
+    speaker = ""
+    if contested:
+        side = _SIDE.match(text.removeprefix("Contested: ").split(" vs ", 1)[0] + " (x, y)")
+        speaker = side["name"] if side else ""
+    elif kind in _SPEAKER_KINDS and (m := _SPEAKER.match(text)):
+        speaker = m.group(1)
+    elif kind == "entry":
+        speaker = _meta(metadata, "author")
     valid_to = _when(_meta(metadata, "validTo"))
-    status = _meta(metadata, "status") or "current"
+    status = "contested" if contested else _meta(metadata, "status") or "current"
     if valid_to and status == "current":
         status = "replaced"
     record_id = summary.get("memoryRecordId", "")
     return Candidate(
         id=record_id,
-        kind=_meta(metadata, "kind") or kind_default,
+        kind=kind,
         content=text,
         occurred_at=_when(summary.get("timestamp")) or datetime.fromtimestamp(0, UTC),
         status=status,
-        speaker=speaker_match.group(1) if speaker_match else "",
-        entity=_meta(metadata, "entity"),
+        speaker=speaker,
+        entity=_meta(metadata, "entity") or _meta(metadata, "subject"),
         attribute=_meta(metadata, "attribute"),
         valid_from=_when(_meta(metadata, "validFrom")),
         valid_to=valid_to,
@@ -93,6 +104,21 @@ def rrf(rankings: list[list[str]], k: int = 60) -> list[tuple[str, float]]:
 
 def _parse(text: str) -> tuple[str, list[dict]]:
     """Return (claim text without the since/was tail, history). Never raises."""
+    if text.startswith("Contested: "):
+        sides = text.removeprefix("Contested: ").split(" vs ", 1)
+        first = _SIDE.match(sides[0] + " (x, y)")
+        second = _SIDE.match(sides[1]) if len(sides) == 2 else None
+        history = []
+        if second:
+            stamp = _when(second["date"])
+            history.append(
+                {
+                    "value": second["claim"],
+                    "speaker": second["name"],
+                    "occurredAt": stamp.isoformat() if stamp else second["date"],
+                }
+            )
+        return (first["claim"] if first else sides[0]), history
     match = _SINCE.match(text)
     if not match:
         return text, []
@@ -111,9 +137,10 @@ def _parse(text: str) -> tuple[str, list[dict]]:
 
 def _key_and_value(c: Candidate) -> tuple[str, str]:
     claim, _ = _parse(c.content)
-    claim = _SPEAKER.sub("", claim, count=1) if c.speaker else claim
+    if c.speaker and claim.startswith(f"{c.speaker}: "):
+        claim = claim[len(c.speaker) + 2 :]
     subject, _, value = claim.partition(": ")
-    key = f"{c.entity} {c.attribute}" if c.entity and c.attribute else subject
+    key = f"{c.entity} {c.attribute}" if c.entity else subject
     return " ".join(key.casefold().split()), value.strip().casefold()
 
 

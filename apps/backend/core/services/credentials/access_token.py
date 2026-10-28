@@ -55,7 +55,7 @@ async def _refresh_reason(owner_id: str, provider_key: str, exc: Exception, cred
     return reason[:200]
 
 
-async def _mark_reconnect(owner_id: str, provider_key: str, reason: str = "unknown") -> None:
+async def _mark_reconnect(owner_id: str, provider_key: str, reason: str = "unspecified") -> None:
     """Flip the row, then make the flip visible: agents' facts, the profiles' MCP entry, and one
     Needs-you item per member. Only the transition files the item, so a repeat stays silent."""
     from core.services.owner_facts import write_owner_facts

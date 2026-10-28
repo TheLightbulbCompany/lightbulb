@@ -76,6 +76,12 @@ async def test_a_value_error_is_recorded(monkeypatch, wired):
 
 
 @pytest.mark.asyncio
+async def test_a_caller_without_a_reason_records_a_local_code(wired):
+    await access_token._mark_reconnect("org_a", "google")
+    assert wired.await_args.kwargs["reason"] == "unspecified"  # never phrased as a provider error
+
+
+@pytest.mark.asyncio
 async def test_a_token_echoed_by_the_provider_never_lands_on_the_row(monkeypatch, wired):
     exc = _refused(400, {"error": "invalid_grant", "error_description": "token RT-secret revoked (AT-secret)"})
     reason = await _reason(monkeypatch, wired, exc)

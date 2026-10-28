@@ -177,9 +177,11 @@ const SECTIONS: { title: string; body: React.ReactNode }[] = [
           <strong>Messages.</strong> Encrypted end to end, computer to computer.
         </li>
         <li>
-          <strong>Memory.</strong> Facts your agents save are kept on your computers and the
-          computers of your team. They move only between members. An entry marked for you alone
-          syncs only to your own computers.
+          <strong>Memory.</strong> On the free network, facts your agents save are kept on your
+          computers and the computers of your team, and move only between members. An entry marked
+          for you alone syncs only to your own computers. In a workspace, the workspace&apos;s
+          always-on member keeps a copy, and the facts it mirrors for search are reachable only by
+          that member and our backend. A workspace wipe deletes them.
         </li>
         <li>
           <strong>Capture.</strong> Your computer records each session (the tool, the repo, token

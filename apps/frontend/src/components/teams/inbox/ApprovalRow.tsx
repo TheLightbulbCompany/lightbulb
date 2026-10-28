@@ -10,7 +10,6 @@ import { closePendingTab, navigatePendingTab, openPendingTab } from "@/component
 import { isTauri, openExternalUrl } from "@/lib/externalAuth";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { handleShellLinkClick, navigateShell, teamsDetailUrl, teamsPanelUrl } from "@/lib/shellNav";
-import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import {
   approvalLabel,
@@ -49,10 +48,6 @@ export function ApprovalRow({
 }) {
   const { approve, reject } = useApprovalMutations();
   const api = useApi();
-  // "Connect your Stripe" / "Set up Stripe" need the Connect client id and an
-  // unbound company (same gate as CompanyStripeSection). Otherwise the card
-  // sends the owner to Accounts (Settings → Connections).
-  const { data: stripeStatus } = useCompanyStripeStatus();
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
@@ -197,44 +192,7 @@ export function ApprovalRow({
         )}
         {isActionable && !rejecting && (
           <div className="flex shrink-0 gap-2">
-            {isCompanyStripeApproval(approval) && !stripeStatus ? (
-              // Status not loaded yet: offer neither door set, or a load
-              // would briefly read as "provisioning off" and show Approve.
-              <EditorialButton size="sm" disabled>
-                Loading…
-              </EditorialButton>
-            ) : isCompanyStripeApproval(approval) && !stripeStatus?.account_id && stripeStatus?.connect_configured ? (
-              <>
-                <EditorialButton
-                  size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    openMintedUrl(
-                      async () =>
-                        ((await api.get("/company/stripe/connect/start")) as { authorize_url: string })
-                          .authorize_url,
-                      true,
-                    )
-                  }
-                >
-                  Connect your Stripe
-                </EditorialButton>
-                {/* Onboarding is embedded in the Stripe card, which a row is too
-                    small to hold: approve, then take the owner there. */}
-                <EditorialButton
-                  size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    run(async () => {
-                      await approve(approval.id);
-                      navigateShell(teamsPanelUrl("accounts"));
-                    })
-                  }
-                >
-                  Set up Stripe
-                </EditorialButton>
-              </>
-            ) : isProviderConsentApproval(approval) || isProviderInformationApproval(approval) ? (
+            {isProviderConsentApproval(approval) || isProviderInformationApproval(approval) ? (
               // Their own action button lives with the form below — a limit or
               // a set of answers has to travel with the click.
               null
@@ -324,16 +282,11 @@ export function ApprovalRow({
               </>
             ) : (
               <>
+                {/* The Stripe doors live once, on the Stripe card in Settings →
+                    Connections; this card only points there. */}
                 {isCompanyStripeApproval(approval) && (
                   <EditorialButton size="sm" disabled={busy} onClick={() => navigateShell(teamsPanelUrl("accounts"))}>
-                    {/* Same rule as the Stripe card: a connected/api_key
-                        binding runs Projects on a separate services account. */}
-                    {stripeStatus?.account_id &&
-                    stripeStatus.source !== "created" &&
-                    stripeStatus.projects_ready === false &&
-                    !stripeStatus.services_account_id
-                      ? "Add a services account"
-                      : "Open Accounts"}
+                    Open Stripe settings
                   </EditorialButton>
                 )}
                 <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>

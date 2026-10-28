@@ -2,6 +2,7 @@
 
 # ruff: noqa: F811 -- `table` is the repo suite's moto fixture, imported and then requested by name.
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -171,8 +172,53 @@ async def test_member_wipe_removes_sessions_drafts_episodes(agentcore):
     )
     agentcore.add_response("batch_delete_memory_records", {"successfulRecords": [], "failedRecords": []},
                            {"memoryId": MEM, "records": [{"memoryRecordId": rid("rf")}, {"memoryRecordId": rid("ep")}]})  # fmt: skip
-    with patch.object(workspace_memory, "_wipe", return_value=None):
+    agentcore.add_response("list_sessions", {"sessionSummaries": []}, {"memoryId": MEM, "actorId": "user_a"})
+    with patch.object(workspace_memory, "_wipe", return_value=None), patch.object(workspace_memory, "_tail"):
         await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)
     assert await session_store.list_sessions(user_id="user_a") == []
     assert await evaluator.list_drafts(user_id="user_a") == []
     assert await evaluator.list_drafts(workspace_id="org_x") == []
+
+
+async def test_delete_episodes_removes_events_and_records(agentcore):
+    from unittest.mock import AsyncMock
+
+    t = datetime(2026, 10, 27, 12, tzinfo=UTC)
+    agentcore.add_response(
+        "list_memory_records", listing(rec("rf", "x", t)), {"memoryId": MEM, "namespace": "/users/u/"}
+    )
+    agentcore.add_response(
+        "list_memory_records", listing(rec("ep", "x", t)), {"memoryId": MEM, "namespace": "/users/u/episodes/"}
+    )
+    agentcore.add_response("batch_delete_memory_records", {"successfulRecords": [], "failedRecords": []})
+    agentcore.add_response("list_sessions", {"sessionSummaries": [
+        {"sessionId": "s1", "actorId": "u", "createdAt": t}]}, {"memoryId": MEM, "actorId": "u"})  # fmt: skip
+    agentcore.add_response("list_events", {"events": [
+        {"eventId": "e1", "memoryId": MEM, "actorId": "u", "sessionId": "s1", "eventTimestamp": t, "payload": []}]},
+        {"memoryId": MEM, "sessionId": "s1", "actorId": "u", "includePayloads": False})  # fmt: skip
+    agentcore.add_response("delete_event", {"eventId": "e1"},
+                           {"memoryId": MEM, "sessionId": "s1", "eventId": "e1", "actorId": "u"})  # fmt: skip
+    with patch.object(workspace_memory, "_tail", new=AsyncMock()) as tail:
+        assert await evaluator.delete_episodes("u", resweep_after_s=0) == 2
+        await asyncio.sleep(0)
+    assert tail.await_args.args[2] == ["/users/u/", "/users/u/episodes/"]
+
+
+async def test_cap_reservation_is_atomic(table):
+    from core.repositories import messaging_repo as store
+
+    t = store._table()
+    key = {"pk": "MEMCAP#u#2026-10", "sk": "COUNT"}
+    t.put_item(Item={**key, "n": evaluator.FREE_MONTHLY_CAP - 1})
+    assert await evaluator._reserve_cap(t, key) is True  # noqa: SLF001
+    assert await evaluator._reserve_cap(t, key) is False  # noqa: SLF001
+    assert int(t.get_item(Key=key)["Item"]["n"]) == evaluator.FREE_MONTHLY_CAP
+
+
+async def test_concurrent_same_session_ingests_once(agentcore):
+    agentcore.add_response("create_event", event_ok())
+    results = await asyncio.gather(
+        evaluator.ingest_session("u", sess(), calls(1), workspace_id=None),
+        evaluator.ingest_session("u", sess(), calls(1), workspace_id=None),
+    )
+    assert sorted(results) == [False, True]

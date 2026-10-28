@@ -402,6 +402,7 @@ async def test_membership_created_join_error_still_acks_webhook_2xx(lifecycle_io
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("no_evaluator_wipe")
 async def test_membership_deleted_calls_archive_member(async_client, monkeypatch):
     """``organizationMembership.deleted`` should drive
     ``PaperclipProvisioning.archive_member`` scoped to THAT org, so a
@@ -444,6 +445,7 @@ async def test_membership_deleted_calls_archive_member(async_client, monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("no_evaluator_wipe")
 async def test_membership_deleted_retryable_failure_enqueues(async_client, monkeypatch):
     """Paperclip 5xx during ``archive_member`` should enqueue a
     pending-updates retry row keyed on ``op="archive_member"``.
@@ -501,6 +503,7 @@ async def test_membership_deleted_retryable_failure_enqueues(async_client, monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("no_evaluator_wipe")
 async def test_membership_deleted_non_retryable_failure_swallowed(async_client, monkeypatch):
     """4xx (non-429) on archive_member should NOT enqueue a retry —
     the user is already gone from Clerk, and Clerk redelivery would
@@ -551,6 +554,7 @@ async def test_membership_deleted_non_retryable_failure_swallowed(async_client, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("no_evaluator_wipe")
 async def test_membership_deleted_non_retryable_fence_failure_is_swallowed(async_client, monkeypatch):
     """If the defensive ``remove_member`` call after a non-retryable archive
     failure itself raises, we still return 200 — the webhook must not
@@ -595,6 +599,7 @@ async def test_membership_deleted_non_retryable_fence_failure_is_swallowed(async
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("no_evaluator_wipe")
 async def test_membership_deleted_retryable_fence_failure_is_swallowed(async_client, monkeypatch):
     """On retryable archive failure, the handler tries ``remove_member``
     BEFORE enqueueing the retry to close the auth-bypass window. If
@@ -763,6 +768,7 @@ async def test_user_created_persist_failure_is_non_fatal(async_client, monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("no_evaluator_wipe")
 async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     """Two retries from svix on the same Clerk event must NOT both
     drive provisioning — verify the second delivery returns early
@@ -1069,8 +1075,8 @@ async def test_membership_events_republish_the_network_member_list(lifecycle_io,
     publish.assert_awaited_once_with("org_acme")
 
 
-@pytest.fixture(autouse=True)
-def _no_evaluator_wipe(monkeypatch):
+@pytest.fixture
+def no_evaluator_wipe(monkeypatch):
     """The member wipe also clears sessions, drafts and episodes (tests/unit/services/test_evaluator.py)."""
     from unittest.mock import AsyncMock
 

@@ -14,10 +14,13 @@ import asyncio
 import re
 from datetime import datetime
 
+from botocore.exceptions import ClientError
+
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo as store
-from core.services.workspace_memory import _BATCH, _client, _pages
+from core.services import workspace_memory
+from core.services.workspace_memory import _BATCH, _client, _delete_events, _pages
 
 FREE_MONTHLY_CAP = 50
 _SECRET = re.compile(r"secret|credential|token|\bkeys?\b|api[_ -]?key|password", re.I)
@@ -61,26 +64,59 @@ async def ingest_session(user_id: str, session: dict, tool_calls: list[dict], *,
         return False
     sid = session["id"]
     table = store._table()
-    if await store._get(f"EVAL#{user_id}", f"S#{sid}"):
+    marker = {"pk": f"EVAL#{user_id}", "sk": f"S#{sid}"}
+    # Reserve before writing, so concurrent uploads cannot both pass: the marker once per session,
+    # then (free accounts) one slot of the monthly cap.
+    if not await _put_new(table, marker):
         return False  # ponytail: a re-upload is not re-ingested (duplicate events would duplicate episodes)
     cap_key = {"pk": f"MEMCAP#{user_id}#{utc_now_iso()[:7]}", "sk": "COUNT"}
-    if workspace_id is None:
-        used = await store._get(cap_key["pk"], "COUNT")
-        if used and int(used.get("n", 0)) >= FREE_MONTHLY_CAP:
-            return False
+    if workspace_id is None and not await _reserve_cap(table, cap_key):
+        await run_in_thread(table.delete_item, Key=marker)
+        return False
     events = _events(session, tool_calls)
     client = _client()
-    for i in range(0, len(events), _BATCH):  # one CreateEvent per <=100 payloads, stamped at the first
-        chunk = events[i : i + _BATCH]
+    try:
+        for i in range(0, len(events), _BATCH):  # one CreateEvent per <=100 payloads, stamped at the first
+            chunk = events[i : i + _BATCH]
+            await run_in_thread(
+                client.create_event,
+                memoryId=memory_id, actorId=user_id, sessionId=sid, eventTimestamp=chunk[0][0], payload=[p for _, p in chunk],
+            )  # fmt: skip
+    except Exception:
+        await run_in_thread(table.delete_item, Key=marker)  # a failed ingest neither counts nor blocks the retry
+        if workspace_id is None:
+            await run_in_thread(
+                table.update_item, Key=cap_key, UpdateExpression="ADD n :m", ExpressionAttributeValues={":m": -1}
+            )
+        raise
+    return True
+
+
+async def _put_new(table, item: dict) -> bool:
+    """put_item only if the key is new; False when it already exists."""
+    try:
+        await run_in_thread(table.put_item, Item=item, ConditionExpression="attribute_not_exists(pk)")
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+    return True
+
+
+async def _reserve_cap(table, key: dict) -> bool:
+    """Take one slot of the monthly cap atomically; False when none is left."""
+    try:
         await run_in_thread(
-            client.create_event,
-            memoryId=memory_id, actorId=user_id, sessionId=sid, eventTimestamp=chunk[0][0], payload=[p for _, p in chunk],
-        )  # fmt: skip
-    await run_in_thread(table.put_item, Item={"pk": f"EVAL#{user_id}", "sk": f"S#{sid}"})
-    if workspace_id is None:
-        await run_in_thread(
-            table.update_item, Key=cap_key, UpdateExpression="ADD n :one", ExpressionAttributeValues={":one": 1}
+            table.update_item,
+            Key=key,
+            UpdateExpression="ADD n :one",
+            ConditionExpression="attribute_not_exists(n) OR n < :cap",
+            ExpressionAttributeValues={":one": 1, ":cap": FREE_MONTHLY_CAP},
         )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
     return True
 
 
@@ -100,17 +136,20 @@ async def collect_drafts(user_id: str, *, workspace_id: str | None) -> int:
     records = await run_in_thread(_reflections, _client(), memory_id, user_id)
     new = [r for r in records if _ts(str(r.get("createdAt"))) > since] if records else []
     sessions = {r["id"] for r in await store._query(f"SESSIONS#{user_id}", begins_with="S#")}
+    created = 0
     for r in new:
         text = r.get("content", {}).get("text", "")
         meta = " ".join(str(v) for v in (r.get("metadata") or {}).values())
-        named = [s for s in sessions if s in text or s in meta]
+        named = [s for s in sessions if re.search(rf"(?<![\w.-]){re.escape(s)}(?![\w.-])", f"{text} {meta}")]
         item = {
             "id": r["memoryRecordId"], "user_id": user_id, "kind": "finding" if _SECRET.search(text) else "lesson",
             "text": text, "evidence": sorted(named), "status": "proposed", "created": utc_now_iso(),
         }  # fmt: skip
         if workspace_id:
             item["workspace_id"] = workspace_id
-        await run_in_thread(table.put_item, Item={"pk": f"DRAFTS#{user_id}", "sk": f"D#{item['id']}", **item})
+        if not await _put_new(table, {"pk": f"DRAFTS#{user_id}", "sk": f"D#{item['id']}", **item}):
+            continue  # already collected (maybe approved since): never reset it
+        created += 1
         if workspace_id:
             await run_in_thread(
                 table.put_item, Item={"pk": f"WDRAFTS#{workspace_id}", "sk": f"D#{user_id}#{item['id']}", **item}
@@ -118,7 +157,7 @@ async def collect_drafts(user_id: str, *, workspace_id: str | None) -> int:
     if new:
         newest = max(_ts(str(r.get("createdAt"))) for r in new)
         await run_in_thread(table.put_item, Item={"pk": f"EVAL#{user_id}", "sk": "WATERMARK", "at": newest.isoformat()})
-    return len(new)
+    return created
 
 
 async def list_drafts(
@@ -164,9 +203,23 @@ def _delete_episodes(client, memory_id: str, user_id: str) -> int:
     return len(ids)
 
 
-async def delete_episodes(user_id: str) -> int:
-    """Every record in both of the user's namespaces (episodes and reflections)."""
+async def delete_episodes(
+    user_id: str, *, resweep_after_s: float = workspace_memory.RESWEEP_AFTER_S, still_gone=None
+) -> int:
+    """Every record in both of the user's namespaces and every raw event written under their actor
+    id, then one late re-sweep of records (extraction may still be in flight), as the private-scope wipe."""
     memory_id = settings.AGENTCORE_MEMORY_ID
     if not memory_id:
         return 0
-    return await run_in_thread(_delete_episodes, _client(), memory_id, user_id)
+    client = _client()
+    count = await run_in_thread(_delete_episodes, client, memory_id, user_id)
+    await run_in_thread(_delete_events, client, user_id, memory_id)
+    base = _ns(user_id)
+    task = asyncio.create_task(
+        workspace_memory._tail(
+            f"user={user_id}", memory_id, [base, f"{base}episodes/"], [], resweep_after_s, still_gone
+        )
+    )
+    workspace_memory._tails.add(task)
+    task.add_done_callback(workspace_memory._tails.discard)
+    return count

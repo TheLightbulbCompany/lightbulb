@@ -147,6 +147,7 @@ async def test_owner_wipe_also_deletes_every_member_scope_and_nothing_of_a_prefi
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("no_evaluator_wipe")
 async def test_member_wipe_deletes_only_that_members_private_scope(monkeypatch, configured):
     fake = _scoped_client(
         {"/owners/org_x/": ["team"], "/owners/org_x:user_a/": ["a1"], "/owners/org_x:user_ab/": ["ab1"]},
@@ -166,6 +167,7 @@ async def test_member_wipe_deletes_only_that_members_private_scope(monkeypatch, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("verdict", [True, False, RuntimeError("ddb down")])
+@pytest.mark.usefixtures("no_evaluator_wipe")
 async def test_member_tail_runs_only_while_the_member_is_still_gone(monkeypatch, configured, verdict):
     fake = _scoped_client({"/owners/org_x:user_a/": ["a1"]}, actors=["org_x:user_a"])
     monkeypatch.setattr(workspace_memory, "_client", lambda: fake)
@@ -192,8 +194,8 @@ async def test_member_wipe_skips_ids_that_can_have_no_private_scope(monkeypatch,
         await workspace_memory.delete_member_memory("org_x:user_z", "user_a")
 
 
-@pytest.fixture(autouse=True)
-def _no_evaluator_wipe(monkeypatch):
+@pytest.fixture
+def no_evaluator_wipe(monkeypatch):
     """The member wipe also clears sessions, drafts and episodes (tests/unit/services/test_evaluator.py)."""
     from unittest.mock import AsyncMock
 
@@ -201,3 +203,27 @@ def _no_evaluator_wipe(monkeypatch):
 
     for mod, name in ((session_store, "delete_sessions"), (evaluator, "delete_drafts"), (evaluator, "delete_episodes")):
         monkeypatch.setattr(mod, name, AsyncMock(return_value=0))
+
+
+async def test_member_wipe_runs_every_step_when_one_fails(monkeypatch):
+    from core.services import evaluator, session_store
+
+    ran = []
+
+    async def boom(*a, **k):
+        ran.append("sessions")
+        raise OSError("down")
+
+    async def ok(name):
+        ran.append(name)
+        return 0
+
+    monkeypatch.setattr(workspace_memory.settings, "AGENTCORE_MEMORY_ID", "mem-test-000001", raising=False)
+    monkeypatch.setattr(workspace_memory, "_wipe", lambda *a, **k: ok("wipe"))
+    monkeypatch.setattr(workspace_memory, "_client", MagicMock())
+    monkeypatch.setattr(session_store, "delete_sessions", boom)
+    monkeypatch.setattr(evaluator, "delete_drafts", lambda u: ok("drafts"))
+    monkeypatch.setattr(evaluator, "delete_episodes", lambda u, **k: ok("episodes"))
+    with pytest.raises(RuntimeError, match="OSError"):
+        await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)
+    assert ran == ["wipe", "sessions", "drafts", "episodes"]

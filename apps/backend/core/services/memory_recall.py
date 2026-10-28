@@ -1,0 +1,188 @@
+"""Recall over AgentCore: expand the question, search each part several ways, fuse, rerank, compose.
+
+The one function the workspace's room agents, hosted tools and Memory tab read memory through.
+Logs stage timings only -- never the question or record text.
+"""
+
+import asyncio
+import logging
+import re
+import time
+from dataclasses import replace
+from datetime import UTC, datetime
+from functools import partial
+
+from botocore.exceptions import BotoCoreError, ClientError
+
+from core.dynamodb import run_in_thread
+from core.services import memory_models, workspace_memory
+from core.services.memory_stages import Candidate, compose, from_record, rrf, time_window
+
+logger = logging.getLogger(__name__)
+
+MAX_PARTS = 5
+MAX_ENTITIES = 5
+RERANK_TOP = 100
+MIN_POSITIVE = 5
+ENTITY_TTL_S = 60.0
+_entity_cache: dict[tuple[str, str], tuple[float, set[str]]] = {}
+
+
+def _flt(key: str, op: str, value: str | float | None = None) -> dict:
+    out: dict = {"left": {"metadataKey": key}, "operator": op}
+    if value is not None:
+        field = "stringValue" if isinstance(value, str) else "numberValue"
+        out["right"] = {"metadataValue": {field: value}}
+    return out
+
+
+def _as_of_variants(as_of: datetime | None) -> list[list[dict]]:
+    if as_of is None:
+        return [[]]
+    e = as_of.timestamp()
+    start = _flt("validFrom", "LESS_THAN_OR_EQUALS", e)
+    return [[start, _flt("validTo", "NOT_EXISTS")], [start, _flt("validTo", "GREATER_THAN", e)]]
+
+
+async def _call(label: str, fn, **kwargs) -> list[dict]:
+    """One AgentCore read in a thread; a failure loses that arm only."""
+    try:
+        return await run_in_thread(fn, **kwargs)
+    except (ClientError, BotoCoreError) as exc:
+        logger.warning("memory recall %s failed: %s", label, type(exc).__name__)
+        return []
+
+
+def _retrieve(client, memory_id: str, namespace: str, query: str, limit: int, filters: list[dict]) -> list[dict]:
+    criteria = {"searchQuery": query, "topK": limit}  # the plugin comment: counted by topK, not maxResults
+    if filters:
+        criteria["metadataFilters"] = filters
+    resp = client.retrieve_memory_records(memoryId=memory_id, namespace=namespace, searchCriteria=criteria)
+    return resp.get("memoryRecordSummaries", [])
+
+
+def _list(client, memory_id: str, namespace: str, filters: list[dict]) -> list[dict]:
+    extra = {"metadataFilters": filters} if filters else {}
+    return workspace_memory._pages(
+        client.list_memory_records, "memoryRecordSummaries", memoryId=memory_id, namespace=namespace, **extra
+    )
+
+
+async def _entities(client, memory_id: str, facts_ns: str) -> set[str]:
+    key = (memory_id, facts_ns)
+    hit = _entity_cache.get(key)
+    if hit and time.monotonic() - hit[0] < ENTITY_TTL_S:
+        return hit[1]
+    rows = await _call("entities", partial(_list, client, memory_id, facts_ns, []))
+    names = {e for r in rows if (e := ((r.get("metadata") or {}).get("entity") or {}).get("stringValue"))}
+    _entity_cache[key] = (time.monotonic(), names)
+    return names
+
+
+def _named(part: str, entities: set[str]) -> list[str]:
+    hits = [e for e in sorted(entities) if re.search(rf"(?<!\w){re.escape(e)}(?!\w)", part, re.I)]
+    return hits[:MAX_ENTITIES]
+
+
+async def _search_part(client, memory_id, namespaces, part, limit, as_of, include_private, entities) -> list:
+    """Every arm for one part: (kind_default, summaries) per arm, in a fixed order."""
+    variants = _as_of_variants(as_of)
+    jobs: list[tuple[str, object]] = []
+
+    def retrieve(ns: str, filters: list[dict]):
+        return partial(_retrieve, client, memory_id, ns, part, limit, filters)
+
+    for status in ("current", "contested"):
+        for extra in variants:
+            jobs.append(("claim", retrieve(namespaces["facts"], [_flt("status", "EQUALS_TO", status), *extra])))
+    jobs.append(("turn", retrieve(namespaces["turns"], [])))
+    jobs.append(("entry", retrieve(namespaces["entries"], [])))
+    if include_private and "private" in namespaces:
+        jobs.append(("claim", retrieve(namespaces["private"], [])))
+    for entity in _named(part, entities):
+        for extra in variants:
+            jobs.append(
+                (
+                    "claim",
+                    partial(
+                        _list, client, memory_id, namespaces["facts"], [_flt("entity", "EQUALS_TO", entity), *extra]
+                    ),
+                )
+            )
+    results = await asyncio.gather(*(_call("search", fn) for _, fn in jobs))
+    return [(kind, rows) for (kind, _), rows in zip(jobs, results, strict=True)]
+
+
+def _as_current(c: Candidate, as_of: datetime | None) -> Candidate:
+    # A fact replaced after ``as_of`` was still current at ``as_of``.
+    if as_of and c.status == "replaced" and c.valid_to and c.valid_to > as_of:
+        return replace(c, status="current", valid_to=None)
+    return c
+
+
+async def recall(
+    *,
+    memory_id: str,
+    namespaces: dict[str, str],
+    question: str,
+    as_of: datetime | None = None,
+    budget_tokens: int = 8000,
+    limit: int = 100,
+    include_private: bool = False,
+    use_rerank: bool = True,
+    use_expand: bool = True,
+) -> dict:
+    now = datetime.now(UTC)
+    when = as_of or now
+    t0 = time.monotonic()
+    parts = (await memory_models.expand(question))[:MAX_PARTS] if use_expand else [question]
+    t1 = time.monotonic()
+
+    client = workspace_memory._client()
+    entities = await _entities(client, memory_id, namespaces["facts"])
+    per_part = await asyncio.gather(
+        *(_search_part(client, memory_id, namespaces, p, limit, as_of, include_private, entities) for p in parts)
+    )
+    t2 = time.monotonic()
+
+    start, end = time_window(question, when)
+    by_id: dict[str, Candidate] = {}
+    rankings: list[list[str]] = []
+    for arms in per_part:
+        for kind_default, rows in arms:
+            ranking = []
+            for row in rows:
+                c = _as_current(from_record(row, kind_default), as_of)
+                if c.status == "replaced" or (start and c.occurred_at < start) or (end and c.occurred_at > end):
+                    continue
+                by_id.setdefault(c.id, c)
+                ranking.append(c.id)
+            if ranking:
+                rankings.append(ranking)
+    fused = rrf(rankings)[:RERANK_TOP]
+    ordered = [replace(by_id[i], fused=score) for i, score in fused]
+    t3 = time.monotonic()
+
+    ranked = (
+        await memory_models.rerank(question, [c.content for c in ordered], len(ordered))
+        if use_rerank and ordered
+        else None
+    )
+    if ranked is not None:
+        ordered = [replace(ordered[i], fused=score) for i, score in ranked]
+        positive = [c for c in ordered if c.fused > 0]
+        if len(positive) < MIN_POSITIVE:
+            ordered = positive
+    t4 = time.monotonic()
+
+    page = compose(ordered, budget_tokens, when)
+    t5 = time.monotonic()
+    logger.info(
+        "memory recall expansionMs=%d searchMs=%d fuseMs=%d rerankMs=%d composeMs=%d",
+        (t1 - t0) * 1000,
+        (t2 - t1) * 1000,
+        (t3 - t2) * 1000,
+        (t4 - t3) * 1000,
+        (t5 - t4) * 1000,
+    )
+    return page

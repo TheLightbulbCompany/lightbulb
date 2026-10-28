@@ -56,6 +56,15 @@ def owner_namespace(owner_id: str) -> str:
     return f"/owners/{owner_id}/"
 
 
+def namespaces_for(owner_id: str, user_id: str | None) -> dict[str, str]:
+    """The namespaces recall reads for ``owner_id``; ``private`` only when ``user_id`` is given."""
+    team = owner_namespace(owner_id)
+    out = {"facts": team, "turns": f"{team}turns/", "entries": f"{team}entries/"}
+    if user_id:
+        out["private"] = f"/owners/{owner_id}:{user_id}/"
+    return out
+
+
 def _client():
     return boto3.client(
         "bedrock-agentcore",

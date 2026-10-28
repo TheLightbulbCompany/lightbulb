@@ -1,5 +1,6 @@
 """/api/v1/memory/drafts: the evaluator's proposed lessons become memory entries when a person approves."""
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -32,7 +33,10 @@ def table():
     }
 
     def update(Key, ExpressionAttributeValues, **_):
-        if rows[(Key["pk"], Key["sk"])]["status"] != ExpressionAttributeValues[":from"]:
+        if (
+            ":from" in ExpressionAttributeValues
+            and rows[(Key["pk"], Key["sk"])]["status"] != ExpressionAttributeValues[":from"]
+        ):
             raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
         rows[(Key["pk"], Key["sk"])]["status"] = ExpressionAttributeValues[":s"]
 
@@ -107,7 +111,6 @@ def test_approve_solo_returns_entry_for_local_store(table):
     assert r.status_code == 200
     assert r.json() == {
         "subject": "lesson", "fact": "Run migrations first", "kind": "lesson", "scope": "me",
-        "source": {"harness": "workspace", "on_behalf_of": None, "repo": None, "session": "s1"},
     }  # fmt: skip
     assert table.rows[("DRAFTS#user_solo", "D#d9")]["status"] == "approved"
 
@@ -130,3 +133,11 @@ def test_other_callers_draft_is_404(table):
 def test_a_finding_cannot_be_approved(table):
     table.rows[("WDRAFTS#org_a", "D#user_ana#d1")]["kind"] = "finding"
     assert _as("user_bo", "org_a").post("/api/v1/memory/drafts/d1/approve", json={}).status_code == 422
+
+
+def test_mirror_out_of_step_is_forced_to_the_author_rows_status(table):
+    table.rows[("WDRAFTS#org_a", "D#user_ana#d1")]["status"] = "dismissed"  # the mirror drifted
+    d = _draft()
+    assert asyncio.run(evaluator.set_draft_status(d, "approved")) is True
+    assert table.rows[("DRAFTS#user_ana", "D#d1")]["status"] == "approved"
+    assert table.rows[("WDRAFTS#org_a", "D#user_ana#d1")]["status"] == "approved"

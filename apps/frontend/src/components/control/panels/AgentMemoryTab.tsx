@@ -108,7 +108,12 @@ export function AgentMemoryTab() {
 
   // The approved entry reaches the list above ~60 s later; it is not faked into it.
   async function settle(d: Draft, verb: "approve" | "dismiss") {
-    await act(d.id, () => api.post(`/memory/drafts/${d.id}/${verb}`, {}), () => {
+    const run = () =>
+      (api.post(`/memory/drafts/${d.id}/${verb}`, {}) as Promise<unknown>).catch((e: { status?: number }) => {
+        if (e?.status === 404 || e?.status === 409) void refetchDrafts(); // settled elsewhere: it should disappear
+        throw e;
+      });
+    await act(d.id, run, () => {
       setSettled((x) => new Set(x).add(d.id));
       void refetchDrafts();
     });

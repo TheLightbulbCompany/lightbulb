@@ -161,13 +161,11 @@ async def approve_draft(draft_id: str, body: ApproveBody | None = None, auth: Au
                     auth.org_id, subject=subject, fact=d["text"], kind="lesson", scope=scope, on_behalf_of=auth.user_id
                 )
             )
-        except BaseException:
+        except BaseException:  # BaseException: the revert must also run when the request is cancelled
             await evaluator.set_draft_status(d, "proposed", frm="approved")
             raise
         return {"queued": out["queued"]}
-    evidence = d.get("evidence") or []
-    source = {"harness": "workspace", "on_behalf_of": None, "repo": None, "session": evidence[0] if evidence else None}
-    return {"subject": subject, "fact": d["text"], "kind": "lesson", "scope": scope, "source": source}
+    return {"subject": subject, "fact": d["text"], "kind": "lesson", "scope": scope}
 
 
 @router.post("/drafts/{draft_id}/dismiss", status_code=204)

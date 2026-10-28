@@ -290,4 +290,15 @@ describe("AgentMemoryTab", () => {
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/memory/drafts/d2/dismiss", {}));
     await waitFor(() => expect(screen.queryByText("Token in a log line")).not.toBeInTheDocument());
   });
+
+  it("refetches the drafts and shows the error when a draft was settled elsewhere", async () => {
+    route(DRAFTS);
+    mockPost.mockRejectedValue(Object.assign(new Error("draft already settled"), { status: 409 }));
+    renderTab();
+    await screen.findByText("Run migrations before the seed");
+    route({ drafts: [DRAFTS.drafts[1]] });
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("already settled");
+    await waitFor(() => expect(screen.queryByText("Run migrations before the seed")).not.toBeInTheDocument());
+  });
 });

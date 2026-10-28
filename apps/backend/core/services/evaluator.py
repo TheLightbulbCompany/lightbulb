@@ -11,6 +11,7 @@ Nothing here logs session text, summaries or reflection text.
 """
 
 import asyncio
+import logging
 import re
 from datetime import datetime
 
@@ -21,6 +22,8 @@ from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo as store
 from core.services import workspace_memory
 from core.services.workspace_memory import _BATCH, _client, _delete_events, _pages
+
+logger = logging.getLogger(__name__)
 
 FREE_MONTHLY_CAP = 50
 _SECRET = re.compile(r"secret|credential|token|\bkeys?\b|api[_ -]?key|password", re.I)
@@ -181,28 +184,41 @@ async def find_draft(draft_id: str, *, user_id: str, workspace_id: str | None) -
 async def set_draft_status(draft: dict, status: str, *, frm: str = "proposed") -> bool:
     """Move the draft ``frm`` -> ``status`` in both copies (the author's and the workspace mirror).
 
-    Conditional on the current status, so two callers cannot both win: False if the author's row is
-    not in ``frm`` (someone settled it first, or the user wiped it). The mirror follows the author's row.
+    The author's row is the arbiter: the update is conditional on its current status, so two callers
+    cannot both win (False if it is not in ``frm``: settled first, or the user wiped it). Once it flips,
+    the mirror is written to the same status whatever it held.
     """
     table = store._table()
-    keys = [{"pk": f"DRAFTS#{draft['user_id']}", "sk": f"D#{draft['id']}"}]
+    names, vals = {"#s": "status"}, {":s": status}
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"pk": f"DRAFTS#{draft['user_id']}", "sk": f"D#{draft['id']}"},
+            UpdateExpression="SET #s = :s",
+            ConditionExpression="#s = :from",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues={**vals, ":from": frm},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
     if draft.get("workspace_id"):
-        keys.append({"pk": f"WDRAFTS#{draft['workspace_id']}", "sk": f"D#{draft['user_id']}#{draft['id']}"})
-    for i, key in enumerate(keys):
+        mirror = {"pk": f"WDRAFTS#{draft['workspace_id']}", "sk": f"D#{draft['user_id']}#{draft['id']}"}
         try:
             await run_in_thread(
-                table.update_item,
-                Key=key,
-                UpdateExpression="SET #s = :s",
-                ConditionExpression="#s = :from",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={":s": status, ":from": frm},
-            )
+                table.update_item, Key=mirror, UpdateExpression="SET #s = :s",
+                ConditionExpression="#s = :from", ExpressionAttributeNames=names,
+                ExpressionAttributeValues={**vals, ":from": frm},
+            )  # fmt: skip
         except ClientError as e:
             if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
-            if i == 0:
-                return False
+            logger.warning("draft mirror out of step id=%s; forcing status=%s", draft["id"], status)
+            await run_in_thread(
+                table.update_item, Key=mirror, UpdateExpression="SET #s = :s",
+                ExpressionAttributeNames=names, ExpressionAttributeValues=vals,
+            )  # fmt: skip
     return True
 
 

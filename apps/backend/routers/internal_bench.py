@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import os
 import re
+import time
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Request
@@ -36,7 +37,8 @@ from core.services.memory_sync import _chunks, _strings, _token, _write_ok
 router = APIRouter()
 
 _DEV = ("dev", "local", "test")
-_TEXT_MAX = 100_000  # Content.text, as the runtime plugin cuts it
+_TEXT_MAX = 100_000  # an event's Content.text, as the runtime plugin cuts it
+_RECORD_TEXT_MAX = 16_000  # a memory record's content.text (BatchCreateMemoryRecords)
 _SESSION = "[^a-zA-Z0-9-_]"
 
 
@@ -140,7 +142,7 @@ def _ingest(client, memory_id: str, owner: str, turns: list[BenchTurn]) -> dict:
         {
             "requestIdentifier": hashlib.sha256(f"{owner}:{t.session_id}:{t.ordinal}".encode()).hexdigest(),
             "namespaces": [ns],
-            "content": {"text": f"{t.speaker}: {t.text}"[:_TEXT_MAX]},
+            "content": {"text": f"{t.speaker}: {t.text}"[:_RECORD_TEXT_MAX]},
             "timestamp": _utc(t.at),
             "metadata": {
                 **_strings(speaker=t.speaker, session=t.session_id),
@@ -203,9 +205,15 @@ async def recall(owner_id: str, body: BenchRecallBody, request: Request) -> dict
 def _delete(client, memory_id: str, owner: str) -> int:
     """The bench owner's records and events only (no drafts or sessions: it has none)."""
     ns = list(workspace_memory.namespaces_for(owner, None).values())
-    records = workspace_memory._delete_records(client, f"bench={owner}", memory_id, ns)
     workspace_memory._delete_events(client, owner, memory_id)
-    return records
+    for attempt in range(3):  # deletes are eventually consistent: a record can fail once
+        try:
+            return workspace_memory._delete_records(client, f"bench={owner}", memory_id, ns)
+        except RuntimeError:
+            if attempt == 2:
+                raise
+            time.sleep(10)
+    return 0
 
 
 @router.delete("/{owner_id}/projects/{bench_owner}")

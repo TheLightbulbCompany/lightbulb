@@ -183,3 +183,12 @@ def test_valid_to_zero_is_a_current_value_with_and_without_as_of():
         memory_recall._flt("validFrom", "LESS_THAN_OR_EQUALS", AT.timestamp()),
         memory_recall._flt("validTo", "EQUALS_TO", 0.0),
     ] in variants
+
+
+def test_a_long_turn_is_cut_to_a_records_limit_not_an_events(dev):
+    http, client, _ = dev
+    long = [{**TURNS[0], "text": "x" * 20_000}]
+    http.post("/api/v1/internal/bench/org_a/ingest", json={"bench_owner": "bench-abc", "turns": long})
+    rec = client.batch_create_memory_records.call_args.kwargs["records"][0]
+    assert len(rec["content"]["text"]) == 16_000
+    assert len(client.create_event.call_args.kwargs["payload"][0]["conversational"]["content"]["text"]) > 16_000

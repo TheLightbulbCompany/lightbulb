@@ -19,7 +19,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({
         path === "/budgets/overview"
           ? overview
           : path === "/agents"
-            ? { agents: [{ id: "ag1", name: "Friday" }, { id: "ag2", name: "Atlas" }] }
+            ? { agents: [{ id: "ag1", name: "Friday" }, { id: "ag2", name: "Atlas", spentMonthlyCents: 9 }] }
             : undefined,
       isLoading: false,
       mutate: vi.fn(),
@@ -67,6 +67,11 @@ describe("BudgetsPanel", () => {
     render(<BudgetsPanel />);
     expect(screen.getByText("Atlas")).toBeInTheDocument();
     expect(screen.getByText(/no limit/i)).toBeInTheDocument();
+  });
+
+  it("shows an unlimited agent's spend from the agent itself", () => {
+    render(<BudgetsPanel />);
+    expect(screen.getByText("$0.09 spent")).toBeInTheDocument();
   });
 
   it("admin sets an agent budget in dollars, PATCHed as cents", async () => {

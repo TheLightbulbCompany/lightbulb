@@ -114,7 +114,7 @@ export function BudgetsPanel() {
 function BudgetsEditor({ isAdmin }: { isAdmin: boolean }) {
   const { read, patch } = useTeamsApi();
   const overview = read<{ policies?: Policy[] }>("/budgets/overview");
-  const agents = read<{ agents?: { id: string; name: string }[] }>("/agents");
+  const agents = read<{ agents?: { id: string; name: string; spentMonthlyCents?: number }[] }>("/agents");
   const [error, setError] = useState<string | null>(null);
 
   const policies = overview.data?.policies ?? [];
@@ -127,7 +127,7 @@ function BudgetsEditor({ isAdmin }: { isAdmin: boolean }) {
   }
   for (const a of agents.data?.agents ?? []) {
     const p = byAgent.get(a.id);
-    rows.push({ scopeType: "agent", id: a.id, name: a.name, amount: p?.amount ?? 0, observed: p?.observedAmount ?? 0 });
+    rows.push({ scopeType: "agent", id: a.id, name: a.name, amount: p?.amount ?? 0, observed: p?.observedAmount ?? a.spentMonthlyCents ?? 0 });
   }
 
   async function save(row: Row, cents: number) {

@@ -125,4 +125,30 @@ Misses are classified in the session ledger (beam-cli-loop.md). The top cause in
   - **Result: no gain; do not fold.** Overall 88.61, paired vs 89.62: -1.01 [-2.66, +0.59]. Knowledge update fell to 76.88, -8.75 [-20.00, +1.25]: worse, though inside the noise. Information extraction -1.93 [-5.89, +1.46]; multi-session +3.23 [-2.71, +10.38]; the rest within about 1.3 points.
   - **Run:** verified, 0 failed; 1,173 paid calls, 12,869,611 input (8,320,512 cached), 100,282 output; 24.9 min.
 
+## Free engine, shipped page (v0.7.1)
+
+This run uses cli feat/recall-page 35c2fa5, with the bench ops (dated ingest, as_of) on top. The answerer reads exactly what an agent gets: the daemon's `page` text for a question. That page holds up to 50 facts and 50 turn excerpts (800-character matched windows), cut by the daemon's own 100 results / 8,000 tokens trim, with each line's author and date. There is no bench-side excerpt option. Pages averaged 7,980 tokens (max 8,197); the runner passes the page through as it came.
+
+| Category | Re-answer (b) | Shipped 0.7.0 page | Generous 800 (arrays) | **Shipped page v0.7.1** | Paired vs 89.62 [95%] |
+|---|---:|---:|---:|---:|---:|
+| abstention | 97.50 | 100.00 | 98.75 | 98.75 [96.2, 100.0] | 0.00 |
+| contradiction_resolution | 69.38 | 50.94 | 67.81 | 66.88 [62.5, 70.9] | -0.94 [-3.12, +1.25] |
+| event_ordering | 98.78 | 99.94 | 99.94 | 99.94 [99.8, 100.0] | 0.00 |
+| information_extraction | 89.69 | 56.35 | 85.62 | 81.77 [72.9, 89.5] | -3.85 [-9.48, +0.52] |
+| instruction_following | 91.88 | 75.00 | 96.25 | 95.62 [90.6, 99.4] | -0.62 [-6.25, +6.25] |
+| knowledge_update | 85.62 | 48.75 | 85.62 | **68.12 [53.8, 81.9]** | **-17.50 [-30.00, -7.50]** |
+| multi_session_reasoning | 64.63 | 20.57 | 68.80 | 68.30 [57.0, 79.0] | -0.50 [-9.14, +8.00] |
+| preference_following | 98.12 | 97.50 | 100.00 | 100.00 | 0.00 |
+| summarization | 98.25 | 91.67 | 98.42 | 98.04 | -0.38 [-2.15, +1.48] |
+| temporal_reasoning | 92.50 | 97.50 | 95.00 | 96.88 | +1.88 [-3.12, +7.50] |
+| **overall (micro)** | **88.63** | **73.82** | **89.62** | **87.43 [84.8, 89.8]** | **-2.19 [-4.14, -0.46]** |
+
+- **Reading.** The shipped page goes from 73.82 to 87.43 (+13.6). That is 1.2 points below like-for-like (b), inside the noise.
+- **Against the arrays.** It is 2.19 points below the same evidence given as arrays (89.62), and that gap is outside the noise. All of it is knowledge update (-17.5, outside the noise); every other category is within the noise.
+- **Why knowledge update drops.** In 6 of the 7 knowledge-update questions that lost half a point or more, the gold value sits inside one long "Contested:" line. That line joins every fact sharing a subject with " vs ", stale value first, dated "15 Mar" without a year.
+  - Example (2_knowledge_update_0): "weather app: … 1,000 daily call limit (bench, 15 Mar) vs …", and the answer gives 1,000 against the gold 1,200.
+  - The note-taker reuses broad subjects ("weather app"), so unrelated facts get grouped as contested.
+  - The arrays gave the answerer separate results, with ISO dates and the turn excerpts.
+- **Run:** verified, 0 failed; 1,168 paid calls, 11,958,257 input (8,344,704 cached), 99,270 output; 22.9 min.
+
 Results files: `benchmarks/beam/results/100k/`, stripped to ids, answers, verdicts and scores (no recall pages, questions or gold text). `verify.py` recomputes all six.

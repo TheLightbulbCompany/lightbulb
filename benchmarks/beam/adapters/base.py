@@ -52,6 +52,12 @@ def evidence_tokens(result: dict) -> int:
 
 def recall_json(page: RecallPage) -> dict:
     """The page as the answer model reads it: results in rank order while they fit."""
+    if [r.get("kind") for r in page.results] == ["page"]:
+        # A backend's own page, already trimmed by it (free engine v0.7.1: its trim_evidence is
+        # the page's only cutter): the answerer reads it exactly as an agent gets it.
+        used = evidence_tokens(page.results[0])
+        return {"asOf": utc_iso(page.as_of) if page.as_of else None, "usedEvidenceTokens": used,
+                "results": page.results}
     kept, used = [], 0
     for result in page.results[:RECALL_LIMIT]:
         tokens = evidence_tokens(result)

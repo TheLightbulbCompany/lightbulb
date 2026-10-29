@@ -66,3 +66,8 @@ def test_run_py_uses_the_named_backend(monkeypatch):
         adapters.load("nope")
     args = run.parse_arguments(["--backend", "fake", "--split", "100k"])
     assert args.backend == "fake"
+
+
+def test_a_backends_own_page_is_read_as_it_came():
+    page = recall_json(RecallPage([{"kind": "page", "content": "x" * 36_000}], AT))
+    assert len(page["results"]) == 1 and page["usedEvidenceTokens"] == 9_000

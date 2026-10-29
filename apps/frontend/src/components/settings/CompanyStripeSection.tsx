@@ -44,6 +44,30 @@ export type CompanyStripeStatus = {
 
 type OnboardingTarget = "main" | "services";
 
+/** Stripe's component lives in an iframe and can't read our CSS variables, so
+ *  hand it the theme's resolved values (light or dark). Unset tokens are
+ *  dropped so Stripe keeps its own default for them. */
+function connectAppearance() {
+  const s = getComputedStyle(document.documentElement);
+  const token = (name: string) => s.getPropertyValue(name).trim();
+  const variables = Object.fromEntries(
+    Object.entries({
+      colorBackground: token("--plane-pane"),
+      offsetBackgroundColor: token("--plane-raised"),
+      formBackgroundColor: token("--plane-raised"),
+      colorText: token("--fg"),
+      colorSecondaryText: token("--fg-soft"),
+      colorBorder: token("--plane-edge"),
+      colorPrimary: token("--link"),
+      colorDanger: token("--alert"),
+      buttonSecondaryColorBackground: token("--plane-raised"),
+      buttonSecondaryColorBorder: token("--plane-edge"),
+      buttonSecondaryColorText: token("--fg"),
+    }).filter(([, v]) => v),
+  );
+  return { variables };
+}
+
 /** Stripe's embedded account onboarding, inside the card. Incremental
  *  (`currently_due`), and the same component handles requirements that come
  *  due later. */
@@ -60,6 +84,7 @@ function EmbeddedOnboarding({
   const [connect] = useState(() =>
     loadConnectAndInitialize({
       publishableKey,
+      appearance: connectAppearance(),
       fetchClientSecret: async () => {
         try {
           const r = (await api.post("/company/stripe/account-session", { target })) as { client_secret: string };

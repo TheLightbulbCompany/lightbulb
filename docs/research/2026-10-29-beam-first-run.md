@@ -101,4 +101,24 @@ Misses are classified in the session ledger (beam-cli-loop.md). The top cause in
 - **Change 1 (cli loop/turn-excerpt-window 3e291ac, on main 10eb2ac).** A turn's excerpt is the 240-character window with the most question words.
   - **It did not move the two weak categories.** Both stay inside the noise. In none of the 20 targeted misses did the gold reach the page: 240 characters is too short for these multi-part answers, wherever the window sits.
   - **Run:** verified, 0 failed; 1,174 paid calls, 11,735,379 input (8,312,832 cached), 96,849 output; 25.5 min.
-- **Change 2 (loop/turn-excerpt-length):** `excerpt_chars` on recall (default 240), asked at 800. Result below.
+- **Change 2 (cli loop/turn-excerpt-length 0209a77, on top of change 1).** `memory.recall` takes `excerpt_chars` (default 240, so the shipped page is unchanged). Asked at 800, pages now fill the budget (7,851 of 8,000 tokens on average).
+
+| Category | Re-answer (b) | Free engine | + matched 800-char excerpts | Paired delta vs free [95%] | Delta vs (b) |
+|---|---:|---:|---:|---:|---:|
+| information_extraction | 89.69 | 81.82 | 85.62 [78.4, 92.0] | +3.80 [+0.73, +7.03] | -4.07 |
+| knowledge_update | 85.62 | 80.62 | 85.62 [74.4, 95.0] | +5.00 [0.00, +12.50] | 0.00 |
+| multi_session_reasoning | 64.63 | 64.86 | 68.80 [57.6, 79.4] | +3.94 [-2.25, +11.62] | +4.17 |
+| contradiction_resolution | 69.38 | 69.06 | 67.81 | -1.25 [-4.38, +1.88] | -1.57 |
+| instruction_following | 91.88 | 93.12 | 96.25 | | +4.37 |
+| **overall (micro)** | **88.63** | **87.86** | **89.62 [87.3, 91.8]** | **+1.76 [+0.44, +3.20]** | **+0.99** |
+
+  - **Reading.** Paired over the same 400 questions, the change moves information extraction (+3.8) and the overall (+1.8) outside the noise. Knowledge update reaches the edge of it (+5.0, lower bound 0). Multi-session is up but inside the noise.
+  - **Against the like-for-like column (b).** The free engine with this change is now level with past.dev's memory overall: 89.62 vs 88.63, a difference inside the noise.
+  - **Confounds.**
+    - The answers are fresh samples on changed pages, so some of the delta is answer and judge noise.
+    - The bench binary also carries main's #90 (the embedding model looked up per store).
+  - **Lexical check.** The 20 targeted misses still show the gold as "nowhere". These golds are long prose, so the lexical check under-counts them.
+  - **Caveat, unchanged.** This is the generous recall (50 facts + 50 excerpts, now 800 characters each). The shipped page row (73.82) is the product as an agent gets it today.
+  - **Run:** verified, 0 failed; 1,189 paid calls, 12,885,631 input (8,410,368 cached), 100,517 output; 23.9 min.
+
+Results files: `benchmarks/beam/results/100k/`, stripped to ids, answers, verdicts and scores (no recall pages, questions or gold text). `verify.py` recomputes all six.

@@ -35,7 +35,12 @@ from core.services.paperclip_provisioning import (
     build_paperclip_provisioning,
     close_paperclip_provisioning,
 )
-from core.services.paperclip_agent_lifecycle import _rows, pause_owner_automation, resume_owner_automation
+from core.services.paperclip_agent_lifecycle import (
+    _heartbeat_enabled,
+    _rows,
+    pause_owner_automation,
+    resume_owner_automation,
+)
 from core.services.provision_gate import evaluate_provision_gate, should_arm_nightly_ceo
 from core.services.trial_cap import utc_today
 
@@ -414,13 +419,9 @@ async def arm_nightly_ceo(owner_id: str) -> str:
             # different workspace under this workspace's billing account.
             if row is None or row.status != "active" or row.org_id != owner_id:
                 return _arm_status("company_not_active")
-            starters = row.starter_agent_ids or {}
             ceo_id = ceo_agent_id(row)
             if not ceo_id:
                 return _arm_status("friday_not_seeded")
-            specialists = [agent_id for key, agent_id in starters.items() if key != "ceo" and agent_id]
-            if not starters:  # a legacy roster: its specialists are the seeded agents besides the CEO
-                specialists = [agent_id for agent_id in row.seeded_agent_ids or [] if agent_id and agent_id != ceo_id]
             admin = provisioning._admin
             admin_cookie = await get_admin_session_cookie(admin._http)
 
@@ -429,8 +430,16 @@ async def arm_nightly_ceo(owner_id: str) -> str:
             async def put(agent_id: str, heartbeat: dict) -> None:
                 await admin.set_agent_heartbeat(session_cookie=admin_cookie, agent_id=agent_id, heartbeat=heartbeat)
 
-            for agent_id in specialists:
-                await put(agent_id, SPECIALIST_HEARTBEAT)
+            # Every live non-CEO agent, hired ones included; one with its own enabled schedule keeps it.
+            for agent in _rows(
+                await admin.list_agents(session_cookie=admin_cookie, company_id=row.company_id), "agents"
+            ):
+                if (
+                    agent.get("id") not in (None, ceo_id)
+                    and agent.get("status") != "terminated"
+                    and not _heartbeat_enabled(agent)
+                ):
+                    await put(agent["id"], SPECIALIST_HEARTBEAT)
             if (account or {}).get("nightly_ceo_opted_out"):
                 await put(ceo_id, {"enabled": False})
                 return _arm_status("opted_out")

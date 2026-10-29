@@ -1134,7 +1134,7 @@ async def test_org_created_webhook_keys_the_trial_on_the_creator(
 _SPECIALISTS = {"engineering": "eng1", "finance": "fin1"}
 
 
-def _arm_provisioning(row):
+def _arm_provisioning(row, extra_agents=()):
     """A fake PaperclipProvisioning whose authoritative owner resolver returns
     ``row`` (``find_org_owner`` too, so a test can prove the arm never reads it)."""
     fake = MagicMock()
@@ -1143,6 +1143,10 @@ def _arm_provisioning(row):
     fake._repo.resolve_owner_row = AsyncMock(return_value=row)
     fake._admin = MagicMock()  # ._http is just an attribute access
     fake._admin.set_agent_heartbeat = AsyncMock(return_value={})
+    ids = row and (list((row.starter_agent_ids or {}).values()) or row.seeded_agent_ids) or []
+    fake._admin.list_agents = AsyncMock(
+        return_value={"agents": [{"id": i} for i in dict.fromkeys(ids) if i] + list(extra_agents)}
+    )
     fake._admin.list_routines = AsyncMock(return_value=[])
     fake._admin.create_routine = AsyncMock(side_effect=lambda **kw: {"id": f"r-{kw['idempotency_key'][-2:]}"})
     fake._admin.create_routine_trigger = AsyncMock(return_value={})
@@ -1257,21 +1261,26 @@ async def test_arm_legacy_roster_arms_its_other_seeded_agents_as_specialists():
 
 
 @pytest.mark.asyncio
-async def test_arm_starter_roster_ignores_its_seeded_agents():
+async def test_arm_arms_hired_agents_and_skips_enabled_and_terminated():
     from core.services.paperclip_provisioning import SPECIALIST_HEARTBEAT
 
-    row = _company_row(starter_ids={"ceo": "starter-ceo", **_SPECIALISTS})
-    row.seeded_agent_ids = ["starter-ceo", "eng1", "fin1", "other1"]
-    provisioning = _arm_provisioning(row)
+    extra = [
+        {"id": "hired1"},
+        {"id": "own1", "runtimeConfig": {"heartbeat": {"enabled": True, "intervalSec": 60}}},
+        {"id": "off1", "runtimeConfig": {"heartbeat": {"enabled": False}}},
+        {"id": "dead1", "status": "terminated"},
+    ]
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "starter-ceo", **_SPECIALISTS}), extra)
     assert await _arm(provisioning, _paid_account()) == "armed"
     assert _heartbeats(provisioning) == {
         "starter-ceo": _ceo_heartbeat(28800),
         "eng1": SPECIALIST_HEARTBEAT,
         "fin1": SPECIALIST_HEARTBEAT,
+        "hired1": SPECIALIST_HEARTBEAT,
+        "off1": SPECIALIST_HEARTBEAT,
     }
 
 
-@pytest.mark.asyncio
 async def test_arm_live_trial_wakes_every_12_hours():
     provisioning = _arm_provisioning(_company_row())
     trial = {"owner_id": "org_p", "subscription_status": "trial_local", "trial_end": _LIVE_TRIAL_END}

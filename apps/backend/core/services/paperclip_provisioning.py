@@ -83,9 +83,8 @@ STARTER_CAPABILITIES = {
     "ceo": (
         "Sets direction, splits work across the team, reports back."
         "\n\n"
-        "Owns the company's goals and the plan. When the owner asks for something, first restate the "
-        "outcome in one line, then decide who does it: do it yourself only if it's a decision or a "
-        "summary, otherwise create a task for the right specialist and tell the owner who has it. Keeps "
+        "Owns the company's goals and the plan. Answers the owner and does quick work itself; delegates "
+        "specialist work to the right teammate with what done means, and follows it to done. Keeps "
         "BRIEF.md and the goals current, checks on stalled tasks, and posts a short progress note when "
         "work lands. Tools when connected: Google Workspace or Microsoft 365 (calendar, mail, docs), "
         "Notion, Linear."

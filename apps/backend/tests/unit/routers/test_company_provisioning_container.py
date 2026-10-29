@@ -70,7 +70,13 @@ def _account(monkeypatch):
     monkeypatch.setattr(
         billing_repo,
         "get_by_owner_id",
-        AsyncMock(return_value={"owner_id": "org_a", "company_stripe_account_id": "acct_1"}),
+        AsyncMock(
+            return_value={
+                "owner_id": "org_a",
+                "company_stripe_account_id": "acct_1",
+                "company_stripe_source": "created",
+            }
+        ),
     )
 
 
@@ -618,27 +624,3 @@ def test_the_paid_gate_runs_before_the_body_is_trusted(monkeypatch, client):
     )
     resp = client.post(f"{BASE}/requests", headers=HDRS, json={"provider": "NOPE!", "service": "x y"})
     assert resp.status_code == 402
-
-
-@pytest.fixture(autouse=True)
-def _rail_on(monkeypatch):
-    """The flag defaults OFF (every /v2/provisioning write 500s today). These
-    tests exercise the rail itself, so they run with it on; the one test that
-    covers the off path flips it back."""
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
-
-
-def test_catalog_is_empty_and_ineligible_while_the_rail_is_off_without_calling_stripe(client, monkeypatch):
-    """Gating only `start` would let the agent be OFFERED a service it can
-    never get. With the rail off the catalog answers empty + a reason, before
-    eligibility or the catalog are read."""
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", False)
-    with (
-        patch.object(mod.api, "eligibility", AsyncMock()) as elig,
-        patch.object(mod.api, "catalog_services", AsyncMock()) as services,
-    ):
-        resp = client.get("/api/v1/company/provisioning/u/org_a/catalog", headers=HDRS)
-    assert resp.status_code == 200
-    assert resp.json() == {"services": [], "eligible": False, "requirements": [], "reason": "provisioning_unavailable"}
-    elig.assert_not_awaited()
-    services.assert_not_awaited()

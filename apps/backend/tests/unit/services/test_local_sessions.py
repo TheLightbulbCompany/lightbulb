@@ -147,34 +147,14 @@ async def test_agent_invocation_is_room_bound_typed_and_revocable(db, monkeypatc
     assert (await service.list_resources(caller, ROOM)).sessions[0].session_id == sid
     with pytest.raises(ApiProblem):
         await service.list_resources(caller, OTHER_ROOM)
-    # An agent commands only for the session's own human: a teammate's message or a routine
-    # (no requester) may read the session but never drive it.
+    # An agent reads the session but never commands it, whoever woke it: it messages through the engine.
     from dataclasses import replace as _replace
 
-    for requester in (BOB.user_id, None):
+    for requester in (ALICE.user_id, BOB.user_id, None):
         other = _replace(caller, requester_id=requester)
         assert (await service.list_events(other, ROOM, sid)).events == []
-        with pytest.raises(ApiProblem, match="owner"):
+        with pytest.raises(ApiProblem, match="Only a person"):
             await service.submit_command(other, ROOM, sid, command(service))
-    receipt = await service.submit_command(caller, ROOM, sid, command(service))
-    public = receipt.model_dump(by_alias=True)
-    assert public["actor"] == {"kind": "agent", "id": agent}
-    assert "actorUserId" not in public and "grant" not in str(public)
-    assert public["invocationExpiresAt"] == caller.expires_at
-    db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#agent#{agent}"})
-    with pytest.raises(ApiProblem):
-        await service.get_command(caller, ROOM, sid, receipt.request_id)
-    # The real transaction must independently fence removal after authorization.
-    checks = repo.room_conditions(OWNER, ALICE.user_id, public)
-    from botocore.exceptions import ClientError
-
-    with pytest.raises(ClientError):
-        await messaging_repo._transact(checks)
-
-    # Dispatch reconstructs a typed agent, never a human lookalike.
-    stored = await repo.get_command(OWNER, sid, receipt.request_id)
-    restored = service.command_caller(OWNER, stored)
-    assert isinstance(restored, grants.AgentInvocation) and restored.requester_id == ALICE.user_id
     from dataclasses import replace
 
     with pytest.raises(ApiProblem):
@@ -586,9 +566,7 @@ async def test_command_idempotency_ordering_and_receipt_provenance(db):
     attempts = []
     cancellations = []
 
-    async def competing_admit(
-        row, enrollment, receipt, *, allow_offline=False, extra=(), source_pairing=None, **kwargs
-    ):
+    async def competing_admit(row, enrollment, receipt, *, allow_offline=False, extra=(), **kwargs):
         attempts.append((row["commandSeq"], row["revision"], receipt["requestId"]))
         # Force stale application snapshots, but serialize only Moto's transaction
         # execution: Moto does not support concurrent writes from worker threads.
@@ -603,7 +581,6 @@ async def test_command_idempotency_ordering_and_receipt_provenance(db):
                     receipt,
                     allow_offline=allow_offline,
                     extra=extra,
-                    source_pairing=source_pairing,
                     **kwargs,
                 )
             except ClientError as exc:
@@ -1323,15 +1300,25 @@ def test_a_session_that_ended_before_its_first_message_is_not_listed():
         # It had a live terminal: its first events take up to a minute to arrive, so zero events
         # does not mean nothing happened in it.
         s("held", "ended", 0, held=True),
-        # Ended on purpose (owner ruling 2026-10-08): never listed, whatever it holds.
+        # Ended on purpose: listed until removed (owner ruling 2026-10-27).
         s("left", "ended", 3, on_purpose=True),
         s("left-held", "ended", 0, held=True, on_purpose=True),
         s("left-codex", "ended", 0, provider="codex", on_purpose=True),
-        # A fork ended on purpose still stands in for its origin: the origin does not come back.
+        # A fork ended on purpose stands in for its origin: the origin does not come back.
         s("origin", "ended", 5),
         s("fork", "ended", 2, on_purpose=True, forked_from="origin"),
     ]
-    assert [x.session_id for x in service._without_moved(found)] == ["starting", "used", "unread", "codex", "held"]
+    assert [x.session_id for x in service._without_moved(found)] == [
+        "starting",
+        "used",
+        "unread",
+        "codex",
+        "held",
+        "left",
+        "left-held",
+        "left-codex",
+        "fork",
+    ]
 
 
 @pytest.mark.asyncio

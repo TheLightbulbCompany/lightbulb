@@ -169,7 +169,7 @@ fn mac_name() -> Option<String> {
 pub fn options(app: &tauri::AppHandle) -> Value {
     json!({
         "name": mac_name(),
-        "sharing": crate::local_sessions::enrollment::sharing_on(app),
+        "sharing": crate::local_sessions::enrollment::state_dir(app).is_ok_and(|d| crate::local_sessions::enrollment::sharing_on(&d)),
         "folders": approved_folders(),
         "tools": tools(&home()),
         "cli": crate::cli::status(),
@@ -182,9 +182,16 @@ fn listed(options: &[Value], value: &Option<String>) -> bool {
         .map_or(true, |v| options.iter().any(|o| o["id"] == v))
 }
 
-/// The exact argv the holder runs: fixed binary, closed flags, prompt after `--`.
-fn argv(program: &Path, start: &Start) -> Vec<String> {
+/// The exact argv the holder runs: fixed binary, closed flags, prompt after `--`. `daemon`: Codex's
+/// shared daemon runs, and the session's folder. Then Codex runs as a TUI client of the daemon, in
+/// that folder (a `--remote` client starts its thread in the daemon's own folder otherwise), so a
+/// second client rejoins this thread instead of forking a private writer (spec 2026-10-26 (e) 7).
+fn argv(program: &Path, start: &Start, daemon: Option<&Path>) -> Vec<String> {
     let mut argv = vec![program.to_string_lossy().into_owned()];
+    if let (true, Some(folder)) = (start.tool == "codex", daemon) {
+        argv.extend(["--remote".into(), "unix://".into(), "-C".into(), folder.to_string_lossy().into_owned(),
+            "-c".into(), "check_for_update_on_startup=false".into()]);
+    }
     if let Some(model) = &start.model {
         argv.extend([
             (if start.tool == "codex" {
@@ -197,7 +204,9 @@ fn argv(program: &Path, start: &Start) -> Vec<String> {
         ]);
     }
     if start.tool == "codex" {
-        argv.push("--no-daemon".into());
+        if daemon.is_none() {
+            argv.push("--no-daemon".into());
+        }
         // Explicitly override a Mac's global config: a missing selection must
         // never inherit approval_policy=never + danger-full-access (YOLO mode).
         argv.extend(["--sandbox".into(), "workspace-write".into()]);
@@ -286,7 +295,11 @@ fn validate(params: Value, home: &Path) -> Result<(Start, PathBuf, Vec<String>),
         "TOOL_UNAVAILABLE",
         "The CLI is not installed on this Mac.".into(),
     ))?;
-    let argv = argv(&program, &start);
+    let daemon = start.tool == "codex" && crate::local_sessions::codex::daemon_socket(home).is_some();
+    if start.tool == "codex" && !daemon {
+        crate::log("[session-start] Codex's shared daemon is not running: this start is a private --no-daemon writer");
+    }
+    let argv = argv(&program, &start, daemon.then_some(folder.as_path()));
     Ok((start, folder, argv))
 }
 
@@ -355,14 +368,13 @@ pub async fn start(
         };
         let scope = shared_scope(&app, &cancel)?;
         crate::log(&format!("[session-start] {start_id} {tool} in {}", folder.display()));
-        let argv = held_argv(&argv, Some((start_id.as_str(), scope.as_str())));
         let place = folder.file_name().map_or_else(|| folder.display().to_string(), |n| n.to_string_lossy().into_owned());
-        start_held(folder, argv)
+        launch(folder, argv, &start_id, &scope)
             .await
             .map_err(|e| ("LAUNCH_FAILED", format!("The session didn't start: {e}")))?;
         // Started from elsewhere with no window: tell the owner at this Mac (spec §5.2).
         let label = if tool == "codex" { "Codex" } else { "Claude Code" };
-        let _ = crate::notify::native_notify(
+        let _ = crate::notify::show(
             format!("{label} started in {place}"),
             Some("End it from its panel in Lightbulb.".into()),
             Some(format!("start-{start_id}")),
@@ -381,13 +393,14 @@ pub async fn start(
 }
 
 fn shared_scope(app: &tauri::AppHandle, cancel: &watch::Receiver<bool>) -> Result<String, Failure> {
-    if !crate::local_sessions::enrollment::sharing_on(app) {
+    let dir = crate::local_sessions::enrollment::state_dir(app).map_err(|_| ("SHARING_OFF", "Turn on session sharing in the Lightbulb app on this Mac first.".to_string()))?;
+    if !crate::local_sessions::enrollment::sharing_on(&dir) {
         return Err(("SHARING_OFF", "Turn on session sharing in the Lightbulb app on this Mac first.".into()));
     }
     if *cancel.borrow() {
         return Err(("CANCELLED", "The start was cancelled.".into()));
     }
-    crate::local_sessions::enrollment::launch_scope(app)
+    crate::local_sessions::enrollment::launch_scope(&dir)
         .map_err(|_| ("SHARING_OFF", "Turn on session sharing in Lightbulb on this Mac first.".to_string()))
 }
 
@@ -402,6 +415,25 @@ pub(crate) async fn start_held(
     tauri::async_runtime::spawn_blocking(move || crate::holder::manager::start(&folder, &argv))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// A linked start in a new holder. A Codex on the shared daemon learns its thread from the daemon
+/// (`codex::start_on_daemon`): its start hook runs there, without this holder's environment.
+async fn launch(folder: PathBuf, argv: Vec<String>, start_id: &str, scope: &str) -> Result<crate::holder::manager::HolderInfo, String> {
+    use crate::local_sessions::codex;
+    let mut argv = argv;
+    if codex::on_daemon(&argv) {
+        let link = Some((start_id.to_owned(), scope.to_owned()));
+        match codex::start_on_daemon(&home(), folder.clone(), argv.clone(), link).await {
+            // Nothing launched yet: the private writer a start was before the daemon.
+            Err(e) if e == codex::UNAVAILABLE => {
+                crate::log(&format!("[session-start] {e}: this start is a private --no-daemon writer"));
+                argv = codex::private_argv(&argv);
+            }
+            held => return held,
+        }
+    }
+    start_held(folder, held_argv(&argv, Some((start_id, scope)))).await
 }
 
 /// The argv a holder runs for a start. With a start link, `/bin/sh` exports the link with its own
@@ -433,10 +465,9 @@ pub fn terminal_options(app: tauri::AppHandle) -> Value {
 pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Value, String> {
     let (start, folder, argv) = validate(params, &home()).map_err(|(_, message)| message)?;
     // Sessions started here are shared (ruling 8): without sharing there is nowhere to show it.
-    let scope = crate::local_sessions::enrollment::launch_scope(&app)
+    let scope = crate::local_sessions::enrollment::state_dir(&app).and_then(|d| crate::local_sessions::enrollment::launch_scope(&d))
         .map_err(|_| "Turn on session sharing in Lightbulb on this Mac first.".to_string())?;
-    let argv = held_argv(&argv, Some((start.start_id.as_str(), scope.as_str())));
-    let info = start_held(folder, argv).await?;
+    let info = launch(folder, argv, &start.start_id, &scope).await?;
     crate::log(&format!("[session-start] held {} {}", start.start_id, start.tool));
     Ok(json!({"holderId": info.id, "tool": start.tool}))
 }
@@ -497,7 +528,7 @@ pub(crate) fn cli_start(
     {
         return Err("Malformed request.".into());
     }
-    let scope = crate::local_sessions::enrollment::launch_scope(app).map_err(|_| {
+    let scope = crate::local_sessions::enrollment::state_dir(app).and_then(|d| crate::local_sessions::enrollment::launch_scope(&d)).map_err(|_| {
         "Session sharing is off in Lightbulb on this Mac. Turn it on in Settings → Desktop → Session sharing, then run this again.".to_string()
     })?;
     let home = home();
@@ -550,6 +581,7 @@ mod tests {
                 Some("plan"),
                 "--dangerously-skip-permissions",
             ),
+            None,
         );
         assert_eq!(
             claude,
@@ -566,6 +598,7 @@ mod tests {
         let codex = argv(
             Path::new("/bin/codex"),
             &start("codex", None, Some("on-request"), ""),
+            None,
         );
         assert_eq!(
             codex,
@@ -580,10 +613,31 @@ mod tests {
         );
     }
 
+    /// On the shared daemon a held Codex is a TUI client in the session's folder, never a
+    /// `--no-daemon` writer that a second client would fork (spec 2026-10-26 (e) 7); the permission
+    /// flags stay, since a NEW remote thread takes them.
+    #[test]
+    fn session_start_codex_on_the_daemon_is_a_client_in_its_folder() {
+        let mut codex = start("codex", Some("gpt-6-luna"), Some("on-request"), "fix it");
+        codex.effort = Some("high".into());
+        let held = argv(Path::new("/bin/codex"), &codex, Some(Path::new("/work/app")));
+        assert_eq!(
+            held,
+            ["/bin/codex", "--remote", "unix://", "-C", "/work/app", "-c", "check_for_update_on_startup=false",
+                "-m", "gpt-6-luna", "--sandbox", "workspace-write", "--ask-for-approval", "on-request",
+                "-c", "model_reasoning_effort=\"high\"", "--", "fix it"]
+        );
+        assert!(crate::local_sessions::codex::on_daemon(&held));
+        assert!(!crate::local_sessions::codex::on_daemon(&argv(Path::new("/bin/codex"), &codex, None)));
+        // Claude has no daemon form.
+        assert_eq!(argv(Path::new("/bin/claude"), &start("claude", None, None, ""), Some(Path::new("/w"))),
+            ["/bin/claude", "--permission-mode", "manual"]);
+    }
+
     #[test]
     fn session_start_defaults_override_unsafe_global_permissions() {
         assert_eq!(
-            argv(Path::new("/bin/codex"), &start("codex", None, None, "")),
+            argv(Path::new("/bin/codex"), &start("codex", None, None, ""), None),
             [
                 "/bin/codex",
                 "--no-daemon",
@@ -594,13 +648,13 @@ mod tests {
             ]
         );
         assert_eq!(
-            argv(Path::new("/bin/claude"), &start("claude", None, None, "")),
+            argv(Path::new("/bin/claude"), &start("claude", None, None, ""), None),
             ["/bin/claude", "--permission-mode", "manual"]
         );
         let mut codex = start("codex", Some("gpt-6-luna"), Some("on-request"), "");
         codex.effort = Some("high".into());
         assert_eq!(
-            argv(Path::new("/bin/codex"), &codex),
+            argv(Path::new("/bin/codex"), &codex, None),
             [
                 "/bin/codex",
                 "-m",
@@ -692,8 +746,8 @@ mod tests {
         let claude = Path::new("/Users/a/.local/share/claude/versions/2.1.293");
         let codex = Path::new("/opt/homebrew/bin/codex");
         // New session and a remote start.
-        assert!(classic(&held_argv(&argv(claude, &start("claude")), link)));
-        assert!(!classic(&held_argv(&argv(codex, &start("codex")), link)));
+        assert!(classic(&held_argv(&argv(claude, &start("claude"), None), link)));
+        assert!(!classic(&held_argv(&argv(codex, &start("codex"), None), link)));
         // `lightbulb claude …` (the shell switch routes a plain `claude` here), whatever the person adds.
         for args in [&[][..], &["--resume", "abc"], &["attach", "8ed71738"], &["--", "codex"]] {
             let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();

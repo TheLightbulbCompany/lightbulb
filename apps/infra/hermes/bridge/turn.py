@@ -1023,7 +1023,8 @@ ROOM_EVENT_KINDS = ("user_request", "room_event")
 # agent_mail (Task 20) and paperclip_run (Task 21, fix round C3) carry no room: no
 # participants, no frame channel, no thread, no run block — only a target agent and
 # (optionally, see I1) a sessionKey. Both get the same non-room short-circuit below.
-NON_ROOM_KINDS = ("agent_mail", "paperclip_run")
+# network_message: an inbound network message, built in process by bridge.network (never HTTP).
+NON_ROOM_KINDS = ("agent_mail", "paperclip_run", "network_message")
 EVENT_KINDS = ROOM_EVENT_KINDS + NON_ROOM_KINDS
 
 
@@ -2045,6 +2046,12 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None, spo
         # paperclip_run (Task 21, fix round C3) carries no room either -- same "room #None"
         # bug the agent_mail branch already fixed, now generalised.
         identity = f"You are {name}, answering a Paperclip run trigger. Reply as yourself. {_repo_rule(agent_id)}\n{CHAT_STYLE}"
+    elif event_kind == "network_message":
+        from bridge import network  # the agent's name is its declared network session's title
+        name = next((s.get("title") for s in network.sessions() if s.get("agentId") == agent_id), None) or "an agent"
+        label = (body.get("message") or {}).get("label") or "someone on the network"
+        identity = (f"You are {name}, answering a network message from {label}. "
+                    f"Reply with lightbulb_network if a reply is needed. {_repo_rule(agent_id)}")
     elif spoken:
         room = ctx["room"]
         identity = (
@@ -2088,18 +2095,41 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None, spo
 #: How a chat message reads: like a person typing in Slack, not a report. Every typed room turn and
 #: every Paperclip run (which posts to chat with lightbulb-post.sh) carries it; a spoken turn has its
 #: own rules (references/voice.md) and mail is not chat. Owner, 2026-10-15: agent posts "should feel
-#: like a person". A constant, so the cached prompt prefix holds.
+#: like a person". Owner 2026-10-20, same complaint: our SOUL.md replaces Hermes's
+#: DEFAULT_AGENT_IDENTITY (agent/system_prompt.py:494), the only place Hermes says how to talk, so
+#: this restates that voice spec in plain prose (a prompt full of bullets gets bullets back) with a
+#: few register examples. It rides the ephemeral prompt, not a config platform hint, because a
+#: session's stored system prompt is reused for its life (_session_tip) and would never see a hint.
+#: A constant, so the cached prompt prefix holds. Examples stay fictional: this reaches every tenant.
 CHAT_STYLE = (
-    "When you write a chat message (your reply in a room or DM, or a post with lightbulb-post.sh), "
-    "write like a coworker typing in Slack, not like a report. Answer first. Keep it short and match "
-    "the length and tone of the message you are answering: a casual question gets a casual reply of a "
-    "sentence or two. Use plain sentences: no headings, tables or bold labels, and a short list only "
-    "when the person asked for several things. Leave out your process: no timestamps, counts, method "
-    "notes, lists of sources you checked, or what you did not do, unless the person needs it to act. "
-    "If something blocked you, say what it was and what you need, once. Ask at most one question. "
+    "You work in a team chat app, in rooms and DMs much like Slack. The people here are your coworkers "
+    "and the other agents are your colleagues. When you write a chat message (your reply in a room or "
+    "DM, or a post with lightbulb-post.sh), talk the way a sharp, friendly coworker types in chat, not "
+    "like a report. Match the length of your reply to the weight of the ask: a one-line question gets "
+    "a one-line answer, a quick aside gets a quick reaction, and finished work gets a few sentences on "
+    "what changed, what you checked and what is left. Lead with the answer. No filler such as \"Great "
+    "question\" or \"I'd be happy to\", no restating the request, and no replay of your process, the "
+    "tools you used or the sources you checked. Write plain first-person sentences, with no headings, "
+    "tables or bold labels, and a list only when someone asked for several things. Say only what you "
+    "know: call something done when you saw that it worked, say \"sent it, haven't checked it landed\" "
+    "when you did not check, and \"not sure yet, checking\" is a fine answer. If something blocked "
+    "you, say what it was and what you need, once. If you think an idea is wrong, say so briefly and "
+    "why; agree because it is right, not to please. Do what was asked, and ask before you rewrite or "
+    "redo someone else's work. Answer the question and do quick work yourself, in this turn. Create a "
+    "task only for goal or project work, or work that will outlive this conversation (hours or days, or "
+    "waiting on someone); file it under that goal or project and say in one line who has it. When the "
+    "request is clear, just do it; do not ask to confirm first. When a tool or the platform refuses an "
+    "action, say which action failed and the reason it gave, then carry on with what you can do; never "
+    "file a task to get around a refusal. Ask at most one question. Your SOUL.md and voice notes set your "
+    "personality. A few exchanges that show the register (never copy their wording): \"did the Acme "
+    "invoice go out?\" gets \"Yes, this morning. They haven't opened it yet.\" \"can you clean up the "
+    "launch doc\" gets \"Sure, which part? The pricing section is the stalest, so I'd start there.\" "
+    "\"interesting idea, agents applying to jobs on linkedin\" gets \"Ha, fun one. Even as a stunt post "
+    "it could get attention.\" \"fix the weekly report\" gets \"Fixed. I reran it and the traffic row "
+    "has real numbers now; signups still have no data source, so that row stays blank.\" "
     "Fields a task asks you to report go in the task or a document, not the chat message. Anything "
     "long or structured goes in a document, as the lightbulb skill's references/chat-vs-document.md "
-    "says, with one short chat line that links it. In a room or DM reply (never in a feed post), when "
+    "says, with one short chat line beside it. In a room or DM reply (never in a feed post), when "
     "you ask the person to choose between things you can name, do not list the options in prose: end "
     "the message with one card, a fenced code block whose language tag is openui-lang holding the two "
     "lines root = Stack([q]) and q = Choice(\"Your question?\", [\"Option A\", \"Option B\"]), with two "
@@ -2588,6 +2618,9 @@ def _resolve_session_key(agent_id: str, body: dict) -> str:
     identity itself) so a mail/paperclip turn and a room turn all agree on what session
     they're in — a mail turn used to fall back to f"{room.get('id')}:{agent_id}" ==
     "None:<agent>" for every thread, colliding them all into one Hermes session."""
+    if body.get("eventKind") == "network_message":
+        # One Hermes session per sender thread, never per event.
+        return f"agent:{agent_id}:lightbulb:network:{body['sessionKey']}"
     if body.get("sessionKey"):
         return body["sessionKey"]
     if body.get("eventKind") in NON_ROOM_KINDS:
@@ -2613,8 +2646,8 @@ def _turn_user_message(body: dict) -> str:
     event_kind = body.get("eventKind")
     if event_kind == "agent_mail":
         return f"{msg.get('fromAddress') or 'unknown sender'}: {text}"
-    if event_kind == "paperclip_run":
-        return text
+    if event_kind in ("paperclip_run", "network_message"):
+        return text  # a network record's `framed` text is already marked as peer input
     refs = "; ".join(f"{'Codex' if r.get('provider') == 'codex' else 'Claude Code'} · {r.get('title') or 'Session'} "
                      f"({r.get('status')}) [{r.get('sessionId')}]" for r in body.get("referencedSessions") or [])
     # A session chip is a reference: read it with lightbulb_local_sessions; it was not messaged.
@@ -2693,8 +2726,13 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
         secrets.update(overlay or {})
         # The owner bearer is boot-fetched, never trusted from an agent-editable profile .env.
         secrets.pop("LIGHTBULB_GATE_BEARER", None)
-        if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
-            secrets["LIGHTBULB_GATE_BEARER"] = os.environ["AWS_BEARER_TOKEN_BEDROCK"]
+        # The backend writes each agent's OWN gate bearer to its profile .env (metering is per
+        # agent); it wins over the boot one, which stays the fallback for a profile without it.
+        # An agent editing this can only name a bearer it already knows -- its own.
+        agent_bearer = secrets.pop("LIGHTBULB_AGENT_GATE_BEARER", None)
+        gate_bearer = agent_bearer or os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+        if gate_bearer:
+            secrets["LIGHTBULB_GATE_BEARER"] = gate_bearer
         # The bearer stays in the secret scope -- config.yaml's ${LIGHTBULB_GATE_BEARER} resolves
         # through get_secret -- but never reaches a shell child: exfiltrated, it spends the
         # owner's managed credits from anywhere (audit P1-3).
@@ -3701,9 +3739,19 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
         str(run_id or ""), agent_id, getattr(frames, "browser_frame", None) if run_id else None, family, room_id,
     )
     logins = website_logins.prompt_scope(agent_id, room_id, turn_thread_root(body), lambda: run_aborted(run_id))
-    # The room's own key reaches the shell beside the session's: paperclip-api.sh binds an issue to
-    # the ROOM conversation even from a call or a side session, so its wakes land in the room.
-    room_env = {"LIGHTBULB_ROOM_SESSION_KEY": session_key} if ROOM_SESSION_RE.match(session_key) else None
+    # The room's own key (and the message that started the turn) reach the shell beside the
+    # session's: paperclip-api.sh writes them into a task's From section, even from a call or a
+    # side session, so the task's own run can report back to that room.
+    room_env = None
+    if ROOM_SESSION_RE.match(session_key):
+        room_env = {"LIGHTBULB_ROOM_SESSION_KEY": session_key}
+        message = body.get("message") or {}
+        if message_id := message.get("messageId"):
+            room_env["LIGHTBULB_ROOM_MESSAGE_ID"] = str(message_id)
+        author = message.get("author") or body.get("sender") or {}  # a voice turn names its speaker as sender
+        if author.get("kind") == "human" and author.get("id"):
+            # Who asked: an assignee outside the room reports to their DM instead (lightbulb-post --user).
+            room_env["LIGHTBULB_ROOM_REQUESTER_ID"] = str(author["id"])
     if cdp := browser_control.cdp_url():  # opencli in the shell drives the run's browser
         room_env = {**(room_env or {}), "OPENCLI_CDP_ENDPOINT": cdp}
     with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
@@ -3826,19 +3874,14 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
     return "completed", None, reply, usage
 
 
-def _run_native_paperclip(identity: dict, request: dict, conversation: str | None = None) -> tuple[str, str | None, str, dict]:
-    """Execute the native adapter's already-rendered prompt without room re-rendering -- in its
-    own issue session, or in `conversation`, the room conversation bound to the issue: its
-    session, lock, shell and working folder, with the room's transcript as history. Nothing is
-    posted to the room for it: Paperclip gets the answer as the run's result, and the room's next
-    turn sees the exchange in its history. The agent may still post to any room it sits in with
-    send_room_message, as a routine post (hop 1, no run id)."""
+def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:
+    """Execute the native adapter's already-rendered prompt in the run's own session, without room
+    re-rendering. Nothing is posted to a room for it: Paperclip gets the answer as the run's
+    result. The agent may still post to any room it sits in (lightbulb-post.sh or
+    send_room_message), as a routine post (hop 1, no run id)."""
     agent_id = identity["agentId"]
     run_id = identity["runId"]
-    session_id = conversation or identity["sessionId"]
-    # A run in the room conversation that owns the issue can ask that room for a sign-in or a
-    # code (spec 2026-10-15 §2.4); a run in the issue's own session has nobody to ask (no_room).
-    room_id = conversation.rsplit(":", 1)[-1] if conversation and ROOM_SESSION_RE.match(conversation) else None
+    session_id = identity["sessionId"]
     try:
         import run_agent  # noqa: F401
     except ImportError:
@@ -3875,17 +3918,16 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
     if cdp := browser_control.cdp_url():  # opencli in the shell drives the run's browser
         env["OPENCLI_CDP_ENDPOINT"] = cdp
     # Same-session Paperclip retries must not replace another active desktop ledger.
-    logins = website_logins.prompt_scope(agent_id, room_id, None, lambda: paperclip_run_aborted(run_id))
+    logins = website_logins.prompt_scope(agent_id, None, None, lambda: paperclip_run_aborted(run_id))
     token = identity.get("localSessionToken")
     ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id,
-           "runId": run_id, "sessionKey": session_id, "roomId": room_id,
+           "runId": run_id, "sessionKey": session_id, "roomId": None,
            "localSessionToken": token, "family": "paperclip"}
     # Paperclip runs need the same brokered MCP bearers as room turns. Without
     # this scope, ${MCP_POSTHOG_ACCESS_TOKEN} stays literal and PostHog returns 401.
     with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         try:
-            room = {"room": {"id": session_id.rsplit(":", 1)[-1]}} if conversation else {}
-            agent = _construct_agent(agent_id, {"sessionKey": session_id, **room}, None, session_id)
+            agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
             attach_agent(run_id, agent)
             if paperclip_run_aborted(run_id):
                 return "cancelled", None, "", dict(ZERO_USAGE)
@@ -3894,19 +3936,8 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
                 # Hermes's github skill in view, an issue run clones into its conversation folder
                 rules = "\n\n".join(filter(None, (_repo_rule(agent_id), identity.get("issueId") and worktrees.prompt_line(agent_id, identity["issueId"], task_worktrees))))
                 system = with_profile_agents_md(agent_id, f"{request['instructions']}\n\n{rules}\n{CHAT_STYLE}")
-                if conversation:
-                    # As _converse runs a room key: its own transcript, observed rows split out.
-                    text = f"{BOUND_WAKE_HEADER.format(issue=identity.get('issueId'))}\n\n{request['input']}"
-                    agent.ephemeral_system_prompt = system
-                    history, observed = _room_history(agent)
-                    result = _run_conversation(
-                        agent, agent_id, session_id, user_message=_with_observed(text, observed),
-                        system_message=None, conversation_history=history or None,
-                        **({"persist_user_message": text} if observed else {}),
-                    )
-                else:
-                    result = _run_conversation(agent, agent_id, session_id,
-                                               user_message=request["input"], system_message=system)
+                result = _run_conversation(agent, agent_id, session_id,
+                                           user_message=request["input"], system_message=system)
                 _post_turn.agent = agent
             except Exception:
                 if paperclip_run_aborted(run_id):
@@ -3990,179 +4021,20 @@ def _await_post_turn_writes(agent, ceiling: float = POST_TURN_CEILING_S) -> None
         log.warning("post-turn wait failed; saving now", exc_info=True)
 
 
-# ---- one conversation per piece of work ------------------------------------------------------
-# Rooms and Paperclip both start agent work, and Paperclip cannot see a room turn: an issue a room
-# turn filed or claimed looks unowned to its stranded-issue reconciler, which dispatches a run that
-# used to open a fresh issue session and redo the work (ISOA-680 -> duplicate PR #3712). The
-# paperclip skill's helper records `issueId -> room session key` when a room conversation creates,
-# updates or checks out an issue (`<profile>/lightbulb-issue-bindings/<issueId>.json`, synced with
-# the profile), and Paperclip's run for that issue lands in that conversation instead.
-ISSUE_BINDINGS_DIR = "lightbulb-issue-bindings"
-#: A binding whose boundAt (refreshed by every helper write) is older than this is ignored and removed. The helper removes one itself
-#: when the issue goes done/cancelled; this catches an issue closed some other way.
-ISSUE_BINDING_TTL_S = 14 * 86400
-_ISSUE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
-#: The run id the helper attaches to a room shell's writes to this issue while the bridge holds
-#: Paperclip's run for it in the bound conversation (read by paperclip-api.sh). Without it every
-#: run-less write to the in_progress issue 401s: Paperclip stamped the run as the issue's
-#: execution lock when it started it. Under .lightbulb-turn/, which never syncs.
-ISSUE_RUN_FILE = "paperclip-run.{issue}"
-BOUND_WAKE_HEADER = ("[Paperclip woke you for issue {issue}. This conversation owns that issue, so the wake "
-                     "runs here instead of in a separate session. Nothing you write in this turn is posted to "
-                     "the room: record progress on the issue itself.]")
-BOUND_WAKE_STEER = ("[Paperclip woke you for issue {issue}, which this conversation is already working on. No "
-                    "separate run was started: Paperclip run {run} is attached to your Paperclip writes for that "
-                    "issue until this turn ends. Carry on here. Do not mention this note in the room unless it "
-                    "changes your answer.]")
-
-
-def _issue_binding_path(agent_id: str, issue_id: str) -> Path:
-    return _profile_dir(agent_id) / ISSUE_BINDINGS_DIR / f"{issue_id}.json"
-
-
-def issue_conversation(agent_id: str, issue_id: str | None) -> str | None:
-    """The room session key bound to `issue_id` for this agent, or None."""
-    if not issue_id or not _ISSUE_ID_RE.fullmatch(issue_id):
-        return None
-    path = _issue_binding_path(agent_id, issue_id)
-    try:
-        binding = json.loads(path.read_text(encoding="utf-8"))
-        key = binding.get("sessionKey")
-        # Aged by the boundAt the helper writes, never the file mtime: a profile restore resets that.
-        expired = time.time() - float(binding.get("boundAt")) > ISSUE_BINDING_TTL_S
-    except (OSError, ValueError, AttributeError):
-        return None
-    except TypeError:  # no boundAt: not a binding the helper wrote
-        expired = True
-    if expired:
-        path.unlink(missing_ok=True)
-        return None
-    # The agent's own shell can write this file: only its own room conversations are accepted.
-    if not isinstance(key, str) or not ROOM_SESSION_RE.match(key) or not key.startswith(f"agent:{agent_id}:"):
-        return None
-    return key
-
-
-def _issue_origin(agent_id: str, issue_id: str) -> str | None:
-    """The call or side session that bound `issue_id` to its room (the helper's `origin`), or None
-    when the room's own turn did. Only this agent's own call or side keys are accepted: the
-    agent's shell can write the file."""
-    try:
-        origin = json.loads(_issue_binding_path(agent_id, issue_id).read_text(encoding="utf-8")).get("origin")
-    except (OSError, ValueError, AttributeError):
-        return None
-    pattern = rf"agent:{re.escape(agent_id)}:lightbulb:(call|side):[A-Za-z0-9._-]{{1,128}}"
-    return origin if isinstance(origin, str) and re.fullmatch(pattern, origin) else None
-
-
-def _live_room_run(session_key: str) -> str | None:
-    """A room run of this conversation that still takes steers: the running one, else a queued one."""
-    with _RUNS_LOCK:
-        live = [(e["state"] == "running", rid) for rid, e in RUNS.items()
-                if e.get("sessionKey") == session_key and not e.get("kind") and not e["aborted"]
-                and e["state"] in ("queued", "running")]
-    return max(live)[1] if live else None
-
-
-def _room_member(session_key: str) -> bool | None:
-    """True when the agent is a current member of the bound room and the room takes posts; False
-    only on the endpoint's own definite no -- 404 (room gone, agent removed) or 409 (archived);
-    None for anything else (401/403 from a rotated hook token, 5xx, network): cannot tell."""
-    agent_id, room_id = session_key.split(":")[1], session_key.rsplit(":", 1)[-1]
-    try:
-        sync._get_backend_bytes(f"rooms/{OWNER}/{room_id}/agents/{agent_id}")
-        return True
-    except urllib.error.HTTPError as exc:
-        return False if exc.code in (404, 409) else None
-    except Exception:  # noqa: BLE001
-        log.warning("room membership check failed for %s", session_key, exc_info=True)
-        return None
-
-
-@contextlib.contextmanager
-def _issue_run_published(agent_id: str, issue_id: str, run_id: str):
-    path = _profile_dir(agent_id) / TURN_CONTEXT_DIRNAME / ISSUE_RUN_FILE.format(issue=issue_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(run_id, encoding="utf-8")
-    try:
-        yield
-    finally:
-        path.unlink(missing_ok=True)
-
-
-#: How often a Paperclip run attached to a live room run checks whether that run has ended.
-ROOM_RUN_POLL_S = 1.0
-
-
-def _await_room_run(run_id: str, room_run_id: str) -> tuple[str, str | None, str, dict]:
-    """Hold the Paperclip run open for as long as the room run it was steered into lives, so
-    Paperclip sees a live execution path (and does not dispatch again) and the issue's run lock
-    stays the one the room's writes carry. Its usage is the room run's, reported on run.ended."""
-    with _RUNS_LOCK:  # no agent of its own ever attaches, so nothing else moves it off "queued"
-        if run_id in RUNS:
-            RUNS[run_id]["state"] = "running"
-    while not paperclip_run_aborted(run_id):
-        with _RUNS_LOCK:
-            room = RUNS.get(room_run_id)
-            state, outcome = (room or {}).get("state", "ended"), (room or {}).get("outcome")
-        if state == "ended":
-            if outcome in (None, "completed"):
-                return ("completed", None, f"Handled in the room conversation that owns this issue "
-                        f"(room run {room_run_id}).", dict(ZERO_USAGE))
-            if outcome == "aborted":
-                return "cancelled", None, "", dict(ZERO_USAGE)
-            return "failed", "room_turn_failed", "", dict(ZERO_USAGE)
-        time.sleep(ROOM_RUN_POLL_S)
-    return "cancelled", None, "", dict(ZERO_USAGE)
-
-
-def _run_paperclip_session(identity: dict, request: dict, conversation: str | None) -> tuple[str, str | None, str, dict]:
+def _run_paperclip_session(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:
+    """Every Paperclip run, an issue's included, runs in its own session, as stock Paperclip does
+    (owner ruling 2026-10-18: the task is the record; a room is told only when it is done or needs
+    the person, by the task's run posting to the room named in its From section)."""
     agent_id, run_id = identity["agentId"], identity["runId"]
     _start_desktop_turn(_profile_dir(agent_id), {
         "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
-        "sessionKey": conversation or identity["sessionId"], "family": "paperclip",
+        "sessionKey": identity["sessionId"], "family": "paperclip",
     })
     try:
-        return _run_native_paperclip(identity, request, conversation)
+        return _run_native_paperclip(identity, request)
     finally:
         cancel_run_desktop(run_id)
         _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
-
-
-def _route_paperclip_run(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:
-    """A Paperclip run for an issue a room conversation owns joins that conversation: steered into
-    its live turn (or into the live side turn that took the issue), else run as a turn of its own in it. Anything else -- no binding, the agent no
-    longer in the room, the backend unable to say -- runs in the issue's own session as before."""
-    agent_id, run_id, issue_id = identity["agentId"], identity["runId"], identity.get("issueId")
-    conversation = issue_conversation(agent_id, issue_id)
-    if conversation is None:
-        return _run_paperclip_session(identity, request, None)
-    with _issue_run_published(agent_id, issue_id, run_id):
-        # A call or side session took the issue: its wake joins THAT session while it runs (a side
-        # turn takes steers; a call does not), never the room's own turn, whose job is another one.
-        origin = _issue_origin(agent_id, issue_id)
-        if origin and ":lightbulb:call:" in origin:
-            # A spoken turn takes no wake (the agent would talk about it on the call): wait for the
-            # call's current turn, which holds the call's lock, then run in the room conversation,
-            # as when a call held the room's lock. Never alongside the turn that took the issue.
-            with _turn_lock(agent_id, origin):
-                pass
-            origin = None
-        live = _live_room_run(origin or conversation)  # a live room run is itself proof of membership
-        steer = f"{BOUND_WAKE_STEER.format(issue=issue_id, run=run_id)}\n\n{request['input']}"
-        # The wake's text is no person's request: the room run's grant drops to the Paperclip run's
-        # own (it names no requester) or to none, as a steer by anyone but the requester does.
-        lowered = identity.get("localSessionToken") or ""
-        if live and steer_run(live, steer.encode()[:MAX_FOLLOWUP_TEXT_BYTES].decode("utf-8", "ignore"), grant=lowered):
-            log.info("paperclip run %s joined room run %s", run_id, live)
-            return _await_room_run(run_id, live)
-        member = _room_member(conversation)
-        if member:
-            log.info("paperclip run %s runs in its bound room conversation", run_id)
-            return _run_paperclip_session(identity, request, conversation)
-    if member is False:  # removed from the room, or it was archived/deleted: the binding is dead
-        _issue_binding_path(agent_id, issue_id).unlink(missing_ok=True)
-    return _run_paperclip_session(identity, request, None)
 
 
 def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) -> None:
@@ -4185,7 +4057,7 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
             if paperclip_run_aborted(run_id):
                 outcome = "cancelled"
             else:
-                outcome, error, output, usage = _route_paperclip_run(identity, request)
+                outcome, error, output, usage = _run_paperclip_session(identity, request)
         except Exception as exc:  # noqa: BLE001 -- return the class, never exception text/prompt data
             if paperclip_run_aborted(run_id):
                 outcome, error = "cancelled", None
@@ -4232,7 +4104,9 @@ def _remember_turn(session_key: str, info: dict) -> None:
             DELEGATION_TURN.setdefault(record["delegation_id"], info)
 
 
-def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, reserved: bool = False) -> None:
+def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, reserved: bool = False) -> str:
+    """Runs one turn; returns its outcome ("completed", "error", "aborted"). Never raises for an
+    in-turn failure: bridge.network reads the outcome to decide whether a message was read."""
     run = body.get("run") or {}
     run_id = run.get("runId")
     has_run = bool(run_id)  # agent_mail (Task 20) carries no run block: no callbacks, no frames
@@ -4244,9 +4118,6 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                             room.get("id"), agent_id, run_id, thread_root, session_key=session_key)
     if has_run:
         register_run(run_id)  # idempotent: a no-op if server.py already registered it pre-dispatch
-        with _RUNS_LOCK:  # what _live_room_run finds a Paperclip wake's conversation by
-            if run_id in RUNS:
-                RUNS[run_id]["sessionKey"] = session_key
         from bridge import followups  # lazy: followups imports this module
 
         followups.ensure_started()
@@ -4288,9 +4159,6 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                 hermes_key = side_session_key(agent_id, run_id)
                 log.info("turn %s runs beside its busy room in %s", run_id, hermes_key)
                 body = {**body, "sessionKey": hermes_key, ROOM_KEY_FIELD: session_key}
-                with _RUNS_LOCK:  # a Paperclip wake steers into the room's own turn, never this one
-                    if run_id in RUNS:
-                        RUNS[run_id]["sessionKey"] = hermes_key
             # Fix round (Critical 1): the file is keyed by ctx["sessionKey"], which must equal the
             # session_id _construct_agent hands the AIAgent (both this function's `session_key`) --
             # the plugin's tool handler reads it back by the session_id Hermes gives it.
@@ -4399,3 +4267,4 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                  " silent" if error_kind == SILENT else "", took, len(reply))
     finally:
         _end_turn()
+    return outcome

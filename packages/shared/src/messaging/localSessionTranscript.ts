@@ -1,11 +1,12 @@
 import type { LocalSessionEvent } from "./types";
+import { sessionChanges } from "./localSessionOverview";
 
 /**
  * The transcript model shared by the web pane and the iOS screen: turns the
  * canonical event stream of a shared Claude Code / Codex session into the
  * rows each TUI draws. Pure — no React, no DOM.
  */
-export type LocalSessionProvider = "claude" | "codex";
+export type LocalSessionProvider = "claude" | "codex" | "cursor" | "grok";
 export type TranscriptRow =
   | { kind: "prompt"; seq: number; text: string; who: string | null; ts?: string }
   | { kind: "prose"; seq: number; text: string; final: boolean }
@@ -13,11 +14,13 @@ export type TranscriptRow =
   | { kind: "thinking"; seq: number; text: string; ts?: string; ms?: number }
   | { kind: "tool"; seq: number; call: LocalSessionEvent; result?: LocalSessionEvent }
   | { kind: "notice"; seq: number; text: string }
-  | { kind: "lifecycle"; seq: number; lifecycle: NonNullable<LocalSessionEvent["lifecycle"]>; text: string }
+  /** `changes`: on a main-transcript turn end, what that turn's edits changed (Codex's "N files changed"). */
+  | { kind: "lifecycle"; seq: number; lifecycle: NonNullable<LocalSessionEvent["lifecycle"]>; text: string; changes?: TurnChanges }
   /** A background subagent's end, as its parent saw it: one line that points at its row. */
   | { kind: "subagent"; seq: number; id: string; text: string; failed: boolean; ms?: number }
   /** A subagent, inline where it was launched; it expands into `buildRows(events, subagent.id)`. `earlier`: launched before the loaded window. */
   | { kind: "agent"; seq: number; subagent: SessionSubagent; earlier?: boolean };
+export interface TurnChanges { files: number; added: number; removed: number }
 export type ToolTranscriptRow = Extract<TranscriptRow, { kind: "tool" }>;
 export type ThinkingTranscriptRow = Extract<TranscriptRow, { kind: "thinking" }>;
 /**
@@ -34,7 +37,15 @@ export const PREVIEW_LINES = 3;
 export const GLYPH = {
   claude: { prompt: "❯", bullet: "⏺", output: "⎿", thinking: "✻", working: "✻" },
   codex: { prompt: "›", bullet: "•", output: "└", thinking: "•", working: "•" },
+  // Cursor and Grok CLI mirror no transcript yet (agent network phase 2): plain glyphs.
+  cursor: { prompt: "›", bullet: "•", output: "└", thinking: "•", working: "•" },
+  grok: { prompt: "›", bullet: "•", output: "└", thinking: "•", working: "•" },
 } as const;
+
+/** A provider's glyphs; one this build does not know draws Codex's plain set, never crashes. */
+export function sessionGlyph(provider: string): (typeof GLYPH)[keyof typeof GLYPH] {
+  return GLYPH[provider as keyof typeof GLYPH] ?? GLYPH.codex;
+}
 
 // Strips terminal escape sequences (color codes, cursor moves) that ride
 // along in raw tool output — they render as garbage in a <pre>.
@@ -256,7 +267,10 @@ export function buildRows(events: readonly LocalSessionEvent[], scope?: string):
   const rows: TranscriptRow[] = [];
   let proseItem: string | undefined;
   let prevTs: string | undefined;
-  for (const e of events) {
+  // Where the current turn's events start: a turn's changes are its edits, subagents' included.
+  let turnFrom = 0;
+  for (const [i, e] of events.entries()) {
+    if (e.lifecycle === "turn_start" && !e.subagent) turnFrom = i;
     const marker = isSubagentMarker(e) && !!e.subagent;
     const child = e.subagent ? byId.get(e.subagent) : undefined;
     // A subagent launched before this window still gets its row, where its first event lands.
@@ -336,7 +350,10 @@ export function buildRows(events: readonly LocalSessionEvent[], scope?: string):
         const prose = [...rows].reverse().find((r): r is Extract<TranscriptRow, { kind: "prose" }> => r.kind === "prose");
         if (prose) prose.final = true;
       }
-      if (e.lifecycle !== "turn_end" || e.text) rows.push({ kind: "lifecycle", seq: e.seq, lifecycle: e.lifecycle, text: e.text });
+      const files = e.lifecycle === "turn_end" && scope === undefined ? sessionChanges(events.slice(turnFrom, i)) : [];
+      const changes = files.length ? { files: files.length, added: files.reduce((n, f) => n + f.added, 0), removed: files.reduce((n, f) => n + f.removed, 0) } : undefined;
+      if (e.lifecycle !== "turn_end" || e.text || changes) rows.push({ kind: "lifecycle", seq: e.seq, lifecycle: e.lifecycle, text: e.text, ...(changes ? { changes } : {}) });
+      if (e.lifecycle === "turn_end" || e.lifecycle === "turn_aborted") turnFrom = i + 1;
       proseItem = undefined;
     }
   }
@@ -824,8 +841,10 @@ function formatMs(text: string): string {
 export function lifecycleLabel(row: Extract<TranscriptRow, { kind: "lifecycle" }>): string {
   switch (row.lifecycle) {
     case "turn_end": {
+      // Codex's "Worked for 3m · 4 files changed +120 −8", from the turn's own edit events.
       const worked = formatMs(row.text);
-      return worked ? `Worked for ${worked}` : "";
+      const c = row.changes;
+      return [worked && `Worked for ${worked}`, c && `${c.files} ${c.files === 1 ? "file" : "files"} changed +${c.added} −${c.removed}`].filter(Boolean).join(" · ");
     }
     case "turn_aborted": return "Interrupted";
     case "compaction": return "Context compacted";
@@ -844,4 +863,40 @@ export function pendingApproval(events: readonly LocalSessionEvent[]): string | 
     if (e.kind === "lifecycle" && !e.subagent) return e.lifecycle === "approval_pending" ? e.text ?? "" : null;
   }
   return null;
+}
+
+/** One AskUserQuestion question, as Claude Code's picker draws it: options numbered from 1. */
+export interface SessionQuestion { question: string; options: string[]; multiSelect: boolean }
+
+/** The question a waiting Claude session is asking: its latest AskUserQuestion call with no answer yet.
+ *  Null when the session waits on anything else, or a question has no options to pick. */
+export function pendingQuestion(events: readonly LocalSessionEvent[]): SessionQuestion[] | null {
+  if (pendingApproval(events) === null) return null;
+  const call = [...events].reverse().find(e => e.kind === "tool" && e.role !== "tool" && !e.subagent && e.tool?.name === "AskUserQuestion");
+  if (!call?.itemId || events.some(e => e.role === "tool" && e.parentId === call.itemId)) return null;
+  const raw = (call.tool?.input as { questions?: unknown } | undefined)?.questions;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const questions = raw.map((q: { question?: unknown; options?: unknown; multiSelect?: unknown }) => ({
+    question: typeof q?.question === "string" ? q.question : "",
+    options: Array.isArray(q?.options) ? q.options.map((o: { label?: unknown }) => (typeof o?.label === "string" ? o.label : "")) : [],
+    multiSelect: q?.multiSelect === true,
+  }));
+  // The picker takes one digit per option: 1-9.
+  return questions.every(q => q.question && q.options.length > 0 && q.options.length <= 9 && q.options.every(Boolean)) ? questions : null;
+}
+
+const RIGHT = "\x1b[C";
+/**
+ * The keys that answer `questions` with `picks` (0-based option indexes per question) in Claude Code's
+ * picker, one keystroke per entry: each needs its own write, as a chunk "21" is not two keys. Observed on
+ * Claude Code 2.1.310: a single-select question takes its option's digit and moves on (with one question,
+ * that submits); a multi-select one toggles by digit and moves on with →; with more than one question, or
+ * any multi-select, a review screen follows whose default is "Submit answers", taken with Enter.
+ */
+export function questionKeys(questions: readonly SessionQuestion[], picks: readonly (readonly number[])[]): string[] {
+  const keys = questions.flatMap((q, i) => {
+    const digits = (picks[i] ?? []).map(n => String(n + 1));
+    return q.multiSelect ? [...digits, RIGHT] : digits.slice(0, 1);
+  });
+  return questions.length > 1 || questions.some(q => q.multiSelect) ? [...keys, "\r"] : keys;
 }

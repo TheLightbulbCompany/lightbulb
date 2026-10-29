@@ -1,0 +1,38 @@
+[package]
+name = "lightbulb-core"
+version = "0.1.0"
+edition = "2021"
+description = "Lightbulb session network client and CLI, without Tauri."
+publish = false
+
+# The holder and print-env today; the CLI words follow with cli.rs.
+[[bin]]
+name = "lightbulb"
+path = "src/main.rs"
+
+# No tauri, ever: this crate builds without it
+# (docs/superpowers/plans/2026-10-21-lightbulb-core-crate-split.md).
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
+sha2 = "0.10"
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+ed25519-dalek = { version = "2", features = ["pem", "pkcs8", "rand_core"] }
+rand = "0.8"
+jsonwebtoken = "9"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+portable-pty = "0.9"
+vt100 = "0.16"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+wiremock = "0.6"

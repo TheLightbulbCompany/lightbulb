@@ -3,9 +3,11 @@
 **Chat is for talking about the work. A document is for the work itself.**
 
 An 8,000-character answer in chat cannot be skimmed, found again, reviewed or
-versioned. A deliverable goes in a Paperclip **issue document** on a task; chat
-gets a short summary with the document's link, and the app turns that link
-into a card (title, task, preview, Open) right in the conversation.
+versioned. In a chat turn, a deliverable is a file attached to your reply,
+with a short summary in chat. When the work already is a task, it goes in a
+Paperclip **issue document** on that task; chat gets a short summary with the
+document's link, and the app turns that link into a card (title, task,
+preview, Open) right in the conversation.
 
 The **Library** lists issue documents, work products and attachments, and
 nothing else. A deliverable written in chat, in a task comment or in the task
@@ -17,8 +19,8 @@ say "the full doc is in the task thread": write the document, then link it.
 | What was asked | Deliver as |
 |---|---|
 | A fact, a number, yes/no, an opinion, a link | A chat reply |
-| Research, a plan, a draft, a report, a spec, an analysis | A document on a task, plus a short chat summary with its link |
-| Something to do later, by someone, or repeatedly | A task, plus a one-line chat confirmation |
+| Research, a plan, a draft, a report, a spec, an analysis | A file attached to your reply, plus a short chat summary; a document on the task if the work already is one |
+| Goal or project work, or work that outlives the conversation (later, by someone else, or repeatedly) | A task under that goal or project, plus a one-line chat confirmation |
 | A spreadsheet, PDF or image | An attachment (`MEDIA:` line) or an uploaded work product |
 
 Write a document when **any two** of these hold:
@@ -34,27 +36,37 @@ Write a document when **any two** of these hold:
 This holds in a DM too. Where you are only changes the chat part: in a channel,
 keep the summary short and take the back-and-forth into the thread.
 
-## How (the stock issue-documents API)
+## How
 
-All writes go through the paperclip helper. Chat turns have no run id; the
-helper omits the header, and every call below works without one.
+**In a chat turn**, write the document yourself as a file in this
+conversation's folder (`.md`, or `.docx`/`.pdf`) and put `MEDIA:<absolute
+path>` on its own line in your reply; the room shows it as an attachment
+(limits: `references/platform-primitives.md` "Send a file in chat").
 
-1. **Pick the task.** If the conversation is about an existing task (it was
-   named or linked), put the document on it. Otherwise create one task per
-   deliverable, assigned to yourself, **with an explicit `--status backlog`**
-   so no new run starts (you do the work in this turn):
+**When the work is a task** (the stock issue-documents API), all writes go
+through the paperclip helper. The room turn files the task; the task's own run
+writes the document.
 
-   ```bash
-   /app/skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" \
-     --title "Habits 365: research & demo video plan" \
-     --assignee "<your agent id>" --status backlog
-   ```
+1. **In the room turn, file the task.** If the conversation is about an
+   existing task (it was named or linked), comment the new ask on it instead.
+   Otherwise, for goal or project work (the paperclip skill's webchat rule),
+   create one task, assigned to yourself (an assigned
+   task starts on its own; filing your own new task is not the paperclip
+   skill's "take a task that is not yours", and Paperclip accepts it from a
+   room turn), with the full context on stdin: what was asked, by whom, and
+   what done means. The helper adds the **From** section (this room, and a
+   link to the message) by itself:
 
-   Keep the returned `id` and `identifier` (`HAB-12`). A task another agent
-   owns, or one `in_progress` under a live run, refuses a document write from
-   chat: file a subtask under it instead (`subtask … --parent <id>`).
+```bash
+/app/skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" \
+  --title "Habits 365: research & demo video plan" --assignee "<your agent id>" <<'EOF'
+<what was asked, by whom, what done means>
+EOF
+```
 
-2. **Write the document.** Shape and voice: `references/documents.md`. Key: short, lowercase, `[a-z0-9][a-z0-9_-]*`
+   Reply with the acknowledgement (below) and stop.
+
+2. **In the task's run, write the document.** Shape and voice: `references/documents.md`. Key: short, lowercase, `[a-z0-9][a-z0-9_-]*`
    (`research`, `video-plan`; `plan` for a plan). Build the body with `jq`:
 
    ```bash
@@ -75,34 +87,38 @@ helper omits the header, and every call below works without one.
    skill's `references/interactions.md` "When a person must decide"). Never
    assign the task to the person as the way to ask.
 
-4. **Reply in chat** with at most five lines: what it is, the link, the two or
-   three takeaways that matter, and the next step. The link is the document
-   path `/<PREFIX>/issues/<IDENTIFIER>#document-<key>`, where the prefix is the
-   identifier's letters (`HAB-12` → `/HAB/issues/HAB-12#document-research`).
-   Never paste the document body into chat.
+4. **Post the result to the room in the task's From section**, one message of
+   at most five lines: what it is, the link, the two or three takeaways that
+   matter, and the next step
+   (`/app/skills/lightbulb/scripts/lightbulb-post.sh --room <roomId>`, the text on stdin through a quoted heredoc).
+   The link is the document path `/<PREFIX>/issues/<IDENTIFIER>#document-<key>`,
+   where the prefix is the identifier's letters
+   (`HAB-12` → `/HAB/issues/HAB-12#document-research`). Never paste the
+   document body into chat.
 
 ## What it sounds like
 
-**Acknowledge** only when the work continues after this turn (you filed a task
-a later run will finish). Your reply is then the acknowledgement, and the
-finished document is announced with `scripts/lightbulb-post.sh`:
+Say these in your own words, the way you would type them to a coworker. The
+lines below show the register, not a script: never start every message the
+same way ("On it", "Done:", "Got it").
 
-> On it. I'll research Habits 365 and put together 5–7 demo video ideas as a doc on a task; I'll post it here in about 10 minutes.
+**Acknowledge** in the room turn that filed the task: one line saying who has
+it, with the task link, and when they can expect it if that is useful.
 
-**Progress**, only if it runs past what you promised, in the thread:
+> I'll dig into Habits 365 and come back with a few demo video ideas, tracking it in [HAB-12](/HAB/issues/HAB-12).
 
-> Quick update: the competitor scan is done, and I'm now drafting the video concepts. About 5 more minutes.
+**Running late**, only if it runs past what you promised: one line in the
+thread with the new time, never a step-by-step update (paperclip SKILL.md
+"Telling the person about task work").
 
-**Deliver:**
+**Deliver** (the task's run, posting to the From room): what you found in a
+sentence or two, the link, and the one thing you need from them, if any.
+Plain sentences; a list only when there really are several separate points.
 
-> Done: [Habits 365: research & demo video plan](/HAB/issues/HAB-12#document-research)
-> 1. Their hook is "never break a streak", so lead with that.
-> 2. Competitors don't show the widget; that's our video #2.
-> 3. Videos 1 and 4 need screen recordings from you.
-> Pick 2 concepts and I'll script them.
+> Their whole pitch is "never break a streak", and none of their competitors show the widget, so I built the ideas around that: [video plan](/HAB/issues/HAB-12#document-research). Two of them need screen recordings from you. Which ones do you want me to script first?
 
-The answer is in chat (the takeaways), the detail is one click away, and it
-ends with a clear next step.
+The answer is in chat, the detail is one click away, and the person knows what
+happens next.
 
 ## The first run
 
@@ -111,10 +127,11 @@ first turn on it may run before `BRIEF.md` reaches your home; follow this
 anyway. `BRIEF.md` carries the same contract once it lands. The person should
 see work done and make one decision:
 
-1. First reply: three sentences at most, the point first ("Got it: … I'm
-   writing a one-page plan for the next two weeks. It'll be here in a few
-   minutes.").
-2. One result message: the plan as a document (above), one approval from the
+1. First reply: three sentences at most, the point first, in your own words
+   (for example: say what you understood and that a one-page plan for the next
+   two weeks is coming in a few minutes).
+2. One result message, posted to `#general` by the plan task's own run (the task's
+   **From** section): the plan as a document (above), one approval from the
    `request_approval` tool linked to the plan's task (`companyPlan: true` for
    the plan if you are the root CEO, else a plain approval for the plan's first
    concrete action), given as the `link` it returns (it renders as an Approve card

@@ -79,49 +79,6 @@ def test_available_only_with_memory_id_and_owner(mod, monkeypatch):
     assert not mod.AgentCoreMemoryProvider().is_available()
 
 
-def test_prefetch_uses_the_exact_owner_namespace_and_never_namespace_path(mod):
-    client = FakeClient(records=["launch codename is PERIWINKLE-42"])
-    out = provider(mod, client).prefetch("x" * 20000)
-    (op, kw), = client.calls
-    assert op == "retrieve" and kw["memoryId"] == MEMORY_ID
-    assert kw["namespace"] == f"/owners/{OWNER}/"
-    # topK caps the count; maxResults only pages (it returned 10 records when set to 5).
-    assert "namespacePath" not in kw and kw["searchCriteria"]["topK"] == 5
-    assert len(kw["searchCriteria"]["searchQuery"]) == 10000  # botocore max
-    assert "- launch codename is PERIWINKLE-42" in out
-
-
-def test_prefetch_searches_the_spoken_line_and_skips_a_trivial_one(mod):
-    """Hermes passes the persisted user text, turn-context JSON line included: recall must search
-    what was said, and a bare "thanks" must not cost a RetrieveMemoryRecords call."""
-    from bridge import turn
-
-    def said(text):
-        return turn._turn_input({"sender": {"id": "u1", "displayName": "Aden"},
-                                 "message": {"messageId": "m1", "text": text},
-                                 "room": {"id": "r1", "kind": "channel"}, "participants": []})
-    client = FakeClient()
-    p = provider(mod, client)
-    p.prefetch(said("what is our launch codename?"))
-    (_, kw), = client.calls
-    assert kw["searchCriteria"]["searchQuery"] == "Aden: what is our launch codename?"
-    assert p.prefetch(said("thanks!")) == "" and len(client.calls) == 1
-    # A delegation follow-up has no speaker label: recall still runs, on the whole notice.
-    notice = "[IMPORTANT: the research task finished: Q3 revenue was up 12%]"
-    p.prefetch(turn._turn_input({"followUp": {"text": notice}, "sender": {"id": "u1", "displayName": "Aden"},
-                                 "message": {"messageId": "m2", "text": ""},
-                                 "room": {"id": "r1", "kind": "channel"}, "participants": []}))
-    assert client.calls[-1][1]["searchCriteria"]["searchQuery"] == notice
-
-
-def test_prefetch_swallows_any_error(mod):
-    assert not provider(mod, FakeClient(fail=True)).prefetch("codename?")
-
-
-def test_prefetch_with_no_records_is_empty(mod):
-    assert not provider(mod, FakeClient()).prefetch("codename?")
-
-
 def test_client_has_short_timeouts_and_one_retry(mod, monkeypatch):
     seen = {}
     fake_boto3 = types.SimpleNamespace(client=lambda service, **kw: seen.update(service=service, **kw) or FakeClient())
@@ -194,28 +151,20 @@ def test_sanitized_session_id_fits_the_api_pattern(mod):
         assert re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9-_]*", sid) and len(sid) <= 100
 
 
-def test_one_search_tool_and_a_short_prompt_line(mod):
+def test_two_tools_and_a_short_prompt_line(mod):
     p = mod.AgentCoreMemoryProvider()
-    (schema,) = p.get_tool_schemas()
-    assert schema["name"] == "workspace_memory_search" and schema["parameters"]["required"] == ["query"]
+    remember, search = p.get_tool_schemas()
+    assert search["name"] == "workspace_memory_search" and search["parameters"]["required"] == ["query"]
+    assert remember["name"] == "remember"
     block = p.system_prompt_block()
     assert "shared" in block and "workspace_memory_search" in block and "\n" not in block
 
 
 # ---- the search tool: recall the agent asks for by topic --------------------------------
-def test_search_tool_reads_both_dm_scopes_with_a_bigger_top_k(mod):
-    client = FakeClient(by_ns={PRIVATE_NS: ["p1"], TEAM_NS: ["Demos 5-8 are recorded in Supademo"]})
-    out = json.loads(provider(mod, client, **DM).handle_tool_call("workspace_memory_search", {"query": "demo videos"}))
-    assert out == {"results": ["p1", "Demos 5-8 are recorded in Supademo"]}
-    assert {c[1]["searchCriteria"]["topK"] for c in client.calls} == {10}
-    assert all(c[1]["searchCriteria"]["searchQuery"] == "demo videos" for c in client.calls)
-
-
 @pytest.mark.parametrize("args", [{}, {"query": "  "}, None])
 def test_search_tool_needs_a_query(mod, args):
     client = FakeClient()
     assert "error" in json.loads(provider(mod, client).handle_tool_call("workspace_memory_search", args))
-    assert client.calls == []
 
 
 def test_search_tool_answers_an_error_not_an_exception_when_memory_is_off(mod, monkeypatch):
@@ -223,13 +172,6 @@ def test_search_tool_answers_an_error_not_an_exception_when_memory_is_off(mod, m
     monkeypatch.delenv("AGENTCORE_MEMORY_ID")
     p._memory_id = ""
     assert "error" in json.loads(p.handle_tool_call("workspace_memory_search", {"query": "demos"}))
-
-
-def test_near_duplicate_facts_take_one_slot(mod):
-    """Prod 2026-10-15: one outreach preference stored three times filled 3 of 5 recall slots."""
-    pref = "Leonardo Gordon prefers to send only 3-5 carefully personalized outreach messages"
-    client = FakeClient(records=[pref + " (2026-10-13)", pref + ", from his founder account", pref, "other fact"])
-    assert provider(mod, client).prefetch("outreach?").splitlines() == [f"- {pref} (2026-10-13)", "- other fact"]
 
 
 # ---- the live task board -----------------------------------------------------------------
@@ -299,13 +241,6 @@ def test_no_paperclip_identity_means_no_board_and_no_request(mod, board, monkeyp
     assert mod.board_snapshot() == "" and board.urls == []
 
 
-def test_prefetch_carries_recall_then_the_board(mod, board):
-    out = provider(mod, FakeClient(records=["Prasiddha is creating 7 demo videos"])).prefetch("what next?")
-    recall, snapshot = out.split("\n\n")
-    assert recall == "- Prasiddha is creating 7 demo videos"
-    assert snapshot.startswith("Task board right now") and "ISOA-591" in snapshot
-
-
 def test_a_trivial_prompt_reads_neither_memory_nor_board(mod, board):
     client = FakeClient()
     assert provider(mod, client).prefetch("thanks") == "" and client.calls == [] and board.urls == []
@@ -336,24 +271,8 @@ def test_every_other_turn_writes_the_team_actor(mod, kw):
     client = FakeClient()
     p = provider(mod, client, **kw)
     p.sync_turn("our codename is PERIWINKLE-42", "noted")
-    p.prefetch("codename?")
-    assert [c[1].get("actorId") for c in client.calls if c[0] == "create"] == [OWNER]
-    assert [c[1]["namespace"] for c in client.calls if c[0] == "retrieve"] == [TEAM_NS]
+    assert [c[1].get("actorId") for c in client.calls] == [OWNER]
     assert "private" not in p.system_prompt_block()
-
-
-def test_dm_recall_reads_both_scopes_private_first_deduped_and_capped(mod):
-    client = FakeClient(by_ns={PRIVATE_NS: ["p1", "shared", "p2"], TEAM_NS: ["shared", "t1", "t2", "t3"]})
-    out = provider(mod, client, **DM).prefetch("what do you know?")
-    assert sorted(c[1]["namespace"] for c in client.calls) == sorted([PRIVATE_NS, TEAM_NS])
-    assert out.splitlines() == ["- p1", "- shared", "- p2", "- t1", "- t2"]
-
-
-@pytest.mark.parametrize("failing,kept", [(PRIVATE_NS, "- team fact"), (TEAM_NS, "- private fact")])
-def test_one_failing_scope_still_returns_the_other(mod, failing, kept):
-    by_ns = {PRIVATE_NS: ["private fact"], TEAM_NS: ["team fact"]}
-    by_ns[failing] = TimeoutError("read timeout")
-    assert provider(mod, FakeClient(by_ns=by_ns), **DM).prefetch("anything new?") == kept
 
 
 def test_dm_prompt_says_recall_is_private_and_not_to_save_it(mod):

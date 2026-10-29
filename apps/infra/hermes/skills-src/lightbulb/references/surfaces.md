@@ -14,7 +14,7 @@
 | Workspace search | thelightbulb.company/chat (desktop workspace header) | Click **Search agents, issues, and projects**, or press **⌘/Ctrl K**, to open the workspace command palette. It opens on **Conversations** — every channel and DM, plus "Message <name>" for anyone in the workspace — then Navigate, Agents, Issues and Projects |
 | Agent inspector | thelightbulb.company/chat (opening an agent) | Overview · Dashboard · Runs · Instructions · Memory · Tools · Schedule. Usage, Skills, Model & Credits and Connections are not tabs in chat — they are sections of Settings (below) |
 | Connections | thelightbulb.company/settings → **Connections** (the **Settings** gear at the bottom of the workspace rail; link: `/settings?panel=connections`) | One list of what the team is connected to: third-party services, Google accounts, Stripe, website sign-ins and browser extensions; then **Guardrails** ("ask me first" switches, recorded but not yet enforced) and **Revoke everything**. This is the door for "hook up <service>". |
-| Browser | thelightbulb.company/chat (Browser rail button; when you start browsing, a live preview appears under your working card and clicking it opens the panel) | The workspace's shared **AgentCore cloud browser**, not a person's Mac browser. People and agents use it **at the same time, like a shared screen**: a person clicks and types straight into the live view while you work — there is no take-control, hand-back or Done step, so never ask anyone to click one. When a person has just used it, your next browser action waits until they have been quiet for a few seconds and then asks for a fresh `browser_snapshot`: take it, because the page may have changed under them. Sign-ins save **automatically** (a few seconds after a person stops using it, shortly after agents stop browsing, and on **Stop**) and are shared with workspace members and agents. **Starting and stopping:** the browser starts on its own when a person opens the Browser panel (the panel says "Starting the browser…"; there is nothing for them to click) and when you use a browser tool, and it stops after 30 minutes with nobody using or watching it. A person's **Stop** is the exception: the browser then stays stopped, even with the panel open, until a person clicks **Start browser** or an agent browses — your next browser action starts it again with the saved sign-ins. **Website sign-ins** (Connections, or the key button on the Browser panel's bar) lists one row per site: the saved usernames whose passwords the browser vault fills for every agent, and whether the shared browser has a saved session for the site ("Browser session saved": its last save holds a login-type cookie, which a site can also set for a visitor who never signed in, so do not tell the owner it proves a sign-in). Admins add a login, fix its username, replace its password or remove it there, and **Sign out** signs the shared browser out of that site (it answers "An agent is using the browser" while a run is browsing — they try again after your turn). An agent that meets a login with nothing saved asks through `browser_vault_save_login`, which puts a secure form in the owner's Activity; the password never passes through chat or the agent. Otherwise ask the person to sign in themselves in the Browser panel. Never ask for, read back or repeat a password. **A verification code or CAPTCHA is the person's to type, into the live view** (owner ruling 2026-10-07): `browser_vault_enter_code` posts the line that sends them to the Browser panel — on a computer, the phone has no live view — and waits up to six minutes for the page to move on; its result then says whether they did (take a fresh `browser_snapshot` and continue) or nobody came (say so in one line and stop; they can type it any time and tell you to continue). For a CAPTCHA post that line yourself and end your turn. Never ask for a code in chat, never put one in a form, and never ask again for a login that is already saved. Saving covers supported cookies/localStorage; do not promise every site's login, IndexedDB or open-page memory persists. **Which tool:** page content (open, read, click, type in a web page) → `browser_navigate`/`browser_snapshot`/`browser_click`/`browser_type`/`browser_console` (any URL, including `chrome://` and `chrome-extension://` pages; `browser_console` with an expression runs page JS); raw CDP — other tabs, iframes, cookies, downloads, anything the page tools lack → `browser_cdp`; a JavaScript `alert`/`confirm`/`prompt` (a snapshot lists it under pending dialogs) → `browser_dialog` accept or dismiss; anything that is Chrome itself — the toolbar, the Extensions (puzzle) menu and an extension's popup, the "Add extension" dialog, permission prompts, recording → `computer_use` (the browser's real screen, mouse and keyboard: `capture` first, then `click`, `type`, `key` like `ctrl+l`, `scroll`). **Operating `computer_use`:** `capture` gives you the screenshot itself — look at it and click by pixel coordinates. This screen has **no numbered elements** (a capture lists 0), so `element` indices never work and `mode` `ax` shows nothing; ignore the tool's own "click by element index" advice. Pass `capture_after: true` on a click, type, key or scroll to see the result in the same call; capture again only after something changed, never twice on an unchanged screen, and never send a capture to `vision_analyze` — you already have the image. Take every coordinate from the **latest** capture, never from memory or an older one: the screen moves, and it shows whichever tab is in front. Screenshots are large, so use `computer_use` only for Chrome itself and go back to the page tools as soon as the Chrome step is done; never write coordinates or capture details into memory or notes. **Your own tab:** each run browses in its own tab, so other agents can browse at the same time in theirs; your run's tabs close when it ends. **Extensions** come from the Chrome Web Store. Install one yourself: open its Web Store page, click "Add to Chrome", take a `computer_use` capture and click "Add extension" in Chrome's dialog. It runs at once but is **gone at the next browser start unless it is in the workspace list** — to keep it, ask: `lightbulb-api.sh POST /api/v1/browser/extensions/u/$ISOL8_OWNER_ID/requests '{"idOrUrl":"<store link or 32-letter id>","agentId":"<your $PAPERCLIP_AGENT_ID>"}'` (`201` `{"status":"requested"}` puts an Add item in every member's Activity, `{"status":"installed"}` means it is already listed, `400` says why not: not on the store, not Manifest V3, the 9-extension limit). Members can also add one from the Browser panel's puzzle button or **Connections → Browser extensions**. Operate an extension with `computer_use`: puzzle icon → the extension → its button. Extension keyboard shortcuts do **not** work (Chrome's own shortcuts take them) — click instead. **Recording** (a tab-recorder extension): start it from its popup, drive the tab with the page tools, stop it from the popup; a recorded tab keeps recording while another tab is in front. **Downloads** land in `/opt/amazon/genesis1p-tools/var/` on the browser's machine (`chrome://downloads` lists each file's path); `browser_cdp` `Browser.setDownloadBehavior` `{"behavior":"allow","downloadPath":"/tmp/dl","eventsEnabled":true}` puts them where you choose. A text file is readable by opening its `file://` path in a tab and reading the page (a `file://` folder URL lists its files); `Network.loadNetworkResource` refuses `file://`, and getting a binary file (a video) out of the browser into your own machine is untested — say so rather than promise it. **Chrome's own "Save password?" is off** (nothing Chrome saves survives a restart); after a person signs in, the browser offers "Save this login for the workspace?" into Website sign-ins — that bar is for people, never click it; you sign in with the vault as above. It is not permission to use local Chrome. |
+| Browser | thelightbulb.company/chat (Browser rail button; when you start browsing, a live preview appears under your working card and clicking it opens the panel) | The workspace's shared **AgentCore cloud browser**, not a person's Mac browser. People and agents use it **at the same time, like a shared screen**: a person clicks and types straight into the live view while you work — there is no take-control, hand-back or Done step, so never ask anyone to click one. When a person has just used it, your next browser action waits until they have been quiet for a few seconds and then asks for a fresh `browser_snapshot`: take it, because the page may have changed under them. Sign-ins save **automatically** (a few seconds after a person stops using it, shortly after agents stop browsing, and on **Stop**) and are shared with workspace members and agents. **Starting and stopping:** the browser starts on its own when a person opens the Browser panel (the panel says "Starting the browser…"; there is nothing for them to click) and when you use a browser tool, and it stops after 30 minutes with nobody using or watching it. A person's **Stop** is the exception: the browser then stays stopped, even with the panel open, until a person clicks **Start browser** or an agent browses — your next browser action starts it again with the saved sign-ins. **Website sign-ins** (Connections, or the key button on the Browser panel's bar) lists one row per site: the saved usernames whose passwords the browser vault fills for every agent, and whether the shared browser has a saved session for the site ("Browser session saved": its last save holds a login-type cookie, which a site can also set for a visitor who never signed in, so do not tell the owner it proves a sign-in). Admins add a login, fix its username, replace its password or remove it there, and **Sign out** signs the shared browser out of that site (it answers "An agent is using the browser" while a run is browsing — they try again after your turn). An agent that meets a login with nothing saved asks through `browser_vault_save_login`, which puts a secure form in the owner's Activity; the password never passes through chat or the agent. Otherwise ask the person to sign in themselves in the Browser panel. Never ask for, read back or repeat a password. **A verification code or CAPTCHA is the person's to type, into the live view** (owner ruling 2026-10-07): `browser_vault_enter_code` posts the line that sends them to the Browser panel — on a computer, the phone has no live view — and waits up to six minutes for the page to move on; its result then says whether they did (take a fresh `browser_snapshot` and continue) or nobody came (say so in one line and stop; they can type it any time and tell you to continue). For a CAPTCHA post that line yourself and end your turn. Never ask for a code in chat, never put one in a form, and never ask again for a login that is already saved. Saving covers supported cookies/localStorage; do not promise every site's login, IndexedDB or open-page memory persists. **Which tool:** page content (open, read, click, type in a web page) → `browser_navigate`/`browser_snapshot`/`browser_click`/`browser_type`/`browser_console` (any URL, including `chrome://` and `chrome-extension://` pages; `browser_console` with an expression runs page JS); raw CDP — other tabs, iframes, cookies, downloads, anything the page tools lack → `browser_cdp`; a JavaScript `alert`/`confirm`/`prompt` (a snapshot lists it under pending dialogs) → `browser_dialog` accept or dismiss; anything that is Chrome itself — the toolbar, the Extensions (puzzle) menu and an extension's popup, the "Add extension" dialog, permission prompts, recording → `computer_use` (the browser's real screen, mouse and keyboard: `capture` first, then `click`, `type`, `key` like `ctrl+l`, `scroll`). **Operating `computer_use`:** `capture` gives you the screenshot itself — look at it and click by pixel coordinates. This screen has **no numbered elements** (a capture lists 0), so `element` indices never work and `mode` `ax` shows nothing; ignore the tool's own "click by element index" advice. Pass `capture_after: true` on a click, type, key or scroll to see the result in the same call; capture again only after something changed, never twice on an unchanged screen, and never send a capture to `vision_analyze` — you already have the image. Take every coordinate from the **latest** capture, never from memory or an older one: the screen moves, and it shows whichever tab is in front. Screenshots are large, so use `computer_use` only for Chrome itself and go back to the page tools as soon as the Chrome step is done; never write coordinates or capture details into memory or notes. **Your own tab:** each run browses in its own tab, so other agents can browse at the same time in theirs; your run's tabs close when it ends, except a tab on a sign-in page (a login, a 2-step check, an approval prompt): it stays open for the person, so a phone approval or a code they type into the live view still completes after your turn. Every tab shares one set of sign-ins, so a sign-in a person finishes there reaches every agent's tab at once: in your next turn open the site and check before you sign in again — starting a new sign-in cancels the one waiting on their approval. **Extensions** come from the Chrome Web Store. Install one yourself: open its Web Store page, click "Add to Chrome", take a `computer_use` capture and click "Add extension" in Chrome's dialog. It runs at once but is **gone at the next browser start unless it is in the workspace list** — to keep it, ask: `lightbulb-api.sh POST /api/v1/browser/extensions/u/$ISOL8_OWNER_ID/requests '{"idOrUrl":"<store link or 32-letter id>","agentId":"<your $PAPERCLIP_AGENT_ID>"}'` (`201` `{"status":"requested"}` puts an Add item in every member's Activity, `{"status":"installed"}` means it is already listed, `400` says why not: not on the store, not Manifest V3, the 9-extension limit). Members can also add one from the Browser panel's puzzle button or **Connections → Browser extensions**. Operate an extension with `computer_use`: puzzle icon → the extension → its button. Extension keyboard shortcuts do **not** work (Chrome's own shortcuts take them) — click instead. **Recording** (a tab-recorder extension): start it from its popup, drive the tab with the page tools, stop it from the popup; a recorded tab keeps recording while another tab is in front. **Downloads** land in `/opt/amazon/genesis1p-tools/var/` on the browser's machine (`chrome://downloads` lists each file's path); `browser_cdp` `Browser.setDownloadBehavior` `{"behavior":"allow","downloadPath":"/tmp/dl","eventsEnabled":true}` puts them where you choose. A text file is readable by opening its `file://` path in a tab and reading the page (a `file://` folder URL lists its files); `Network.loadNetworkResource` refuses `file://`, and getting a binary file (a video) out of the browser into your own machine is untested — say so rather than promise it. **Chrome's own "Save password?" is off** (nothing Chrome saves survives a restart); after a person signs in, the browser offers "Save this login for the workspace?" into Website sign-ins — that bar is for people, never click it; you sign in with the vault as above. It is not permission to use local Chrome. |
 | Teams | thelightbulb.company/chat (Teams panel) | The company board: agents, tasks (issues), threads — where work is assigned and tracked. It is a panel inside the workspace, NOT a standalone URL: `thelightbulb.company/teams` is a 404, so never send the owner there. Its API (`/api/v1/teams/*`) is owner-only as well — it takes the owner's browser session, never your container token, and `lightbulb-api.sh` refuses it before sending. You manage the same objects (routines, tasks, agents, projects) through the Paperclip API, never by calling Teams routes and never by opening the Teams UI in your browser tool |
 | Inbox (retired) | — | There is no Inbox tab any more: everything it showed is in Activity's **For you**. Old links (`?panel=teams-inbox`, `teams-approvals`, `teams-activity`) open Activity. Tasks are on Work |
 | Tasks | thelightbulb.company/chat (Teams panel, Work) | Every work item, as a board (the default) or a list. The list groups by Goal, Project, Agent, Status, Priority or Parent; a **Goal** heading reads "N of M done" and opens that goal's own page, and **New goal** / **New project** appear while grouped that way |
@@ -97,17 +97,16 @@ board yourself. Never quote a prize-pot number: the pot is internal until the
 founders publish it.
 # Shared local-session workspace notices
 
-**Which sessions are shared**: on a Mac where its owner turned session sharing on, a Claude
-Code or Codex session is shared when it was started in Lightbulb (**New session**, a remote
-start, a pick-up, a resume, `lightbulb claude` / `lightbulb codex` in any folder), when **Share
-every new session** was on as it started, or when its person chose **Share to Lightbulb** in it
-(a line above the Claude Code prompt, or the `lightbulb` plugin's share skill in Claude Code and
-Codex). Every other session is only its person's: nothing of it leaves the Mac, and you cannot
-see or message it. A shared session is shared whole, from its start. Its person can stop
-sharing one session or turn sharing off for the Mac. When a
-person pairs a Mac, **Share every new session** starts off (they can turn it on there or later
-in Settings); while it is on, a plain `claude` or `codex` typed in a new terminal tab runs
-through Lightbulb.
+**Which sessions are shared**: a Mac has one sharing switch (**Share my sessions with my
+workspace** when it is paired, **Session sharing** in Settings → Desktop; on by default at
+pairing). While it is on, every new Claude Code or Codex session is shared: one started in
+Lightbulb (**New session**, a remote start, a pick-up, a resume, `lightbulb claude` /
+`lightbulb codex`), and a plain `claude` or `codex` typed in a new terminal tab, which runs
+through Lightbulb. An older session is shared when its person chooses **Share to Lightbulb** in
+it (a line above the Claude Code prompt, or the `lightbulb` plugin's share skill in Claude Code
+and Codex). A session that is not shared is only its person's: nothing of it leaves the Mac,
+and you cannot see or message it. A shared session is shared whole, from its start. Its person
+can set one session to **Only me** or turn sharing off for the Mac.
 A running session shows its live terminal when Lightbulb started it, when it is a Claude Code
 background session, or when it is a plain Codex session (Codex's own background service runs
 it, and Lightbulb opens one more Codex terminal on the same conversation). A running session with no live
@@ -164,13 +163,13 @@ Claude app, the Codex app, an IDE) has no terminal to show, so Lightbulb shows i
 The person who owns it can press **Open in a terminal**. Their Mac starts a copy of that
 conversation in a live terminal, in the same folder (it must be an approved folder). The copy
 has the whole history so far; the app's own session keeps running separately. The new terminal
-is a normal shared session, so teammates can watch it, ask to join and type.
+is a normal shared session, so teammates can watch it, and type while its owner lets teammates control it.
 
 Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
 opening one from that list opens the session in that room's right column.
 Opening a session from the sidebar Sessions section or from a session link
 instead fills the middle with the sharer's DM beside it. A running session
-shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input (the box returns only if the Mac refuses remote typing). A viewer who cannot type sees a "Watching · Ask to join" line instead. An ended session that Lightbulb hosted keeps its final screen, read-only, under "Ended · <time>"
+shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input (the box returns only if the Mac refuses remote typing). A viewer who cannot type sees a "Watching · Only <owner> can type in this session." line instead. An ended session that Lightbulb hosted keeps its final screen, read-only, under "Ended · <time>"
 with Resume, for as long as the owner's Lightbulb app runs; once the app quits or restarts the
 panel says the screen is gone, still with Resume. Nothing of the screen is saved anywhere. A
 session whose Mac is offline shows "Mac offline" with Resume greyed out, the follow-up box, and
@@ -203,14 +202,16 @@ Starting the same conversation again on the Mac lists it again.
 
 **Claude Code or Codex without the Mac app** (Linux, Windows, or a Mac with no
 Lightbulb app): the person installs the `lightbulb` plugin from the public
-marketplace `TheLightbulbCompany/lightbulb-plugin`. It gives the hosted
-`lightbulb` MCP server and the `lightbulb-session-sharing` skill. It does not
-share sessions; only the Mac app does that. Claude Code:
+marketplace `TheLightbulbCompany/lightbulb-plugin`. It gives skills and hooks
+(the `lightbulb-session-sharing` skill among them). The `lightbulb` MCP server
+comes from the network engine: the install line
+`curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh`,
+then `lightbulb login` to add the workspace tools. The plugin does not share
+sessions; only the Mac app does that. Claude Code:
 `claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin`, then
 `claude plugin install lightbulb@lightbulb`. Codex:
 `codex plugin marketplace add TheLightbulbCompany/lightbulb-plugin`, then
-`codex plugin add lightbulb@lightbulb` and `codex mcp login lightbulb`. On first
-use they sign in to Lightbulb and choose the workspace. On a Mac that runs the
+`codex plugin add lightbulb@lightbulb`. On a Mac that runs the
 Lightbulb app, tell them not to add this marketplace: the app installs its own
 copy under the same name `lightbulb`.
 
@@ -255,8 +256,8 @@ only**. When you are mentioned there, the people are talking about the session, 
 answer in that chat as a normal reply, after you `read` the session with
 `lightbulb_local_sessions` (the session is in your turn's `sessions` list under the same
 title). Never send a chat message into the session, and never send the session work because
-of a chat message: a person who wants the session to do something types in its terminal (if
-admitted) or uses **Ask to join**. Setting the session to **Only me** empties the chat of everyone but its owner;
+of a chat message: a person who wants the session to do something types in its terminal (while
+**Let teammates control this session** is on) or asks its owner. Setting the session to **Only me** empties the chat of everyone but its owner;
 ending the session makes the chat read-only. Session chats do not appear in search.
 
 **Access** is where the owner sets **Let teammates control this session** (follow-ups and permission
@@ -295,26 +296,19 @@ person outside the workspace sees **Ask to join** (signed out, it signs them up
 first). The owner gets the same Needs-you item, naming them with their email,
 plus an email. **Allow** also makes them a member of the workspace (an ordinary
 member, never an admin) with that session's controls; a **Decline** is not
-announced to them. The owner turns this off per session with **Viewers can ask
-to join** under **Who can see this** (on by default). There is no join link on
-the page.
+announced to them. Link viewers can always ask; there is no switch for it and no
+join link on the page.
 
-**Ask to join**: a teammate who cannot send to someone's session taps **Ask to
-join** (it then reads **Requested**, with "Waiting for <owner> to answer."). A
-request does not time out: it stays open until the owner answers or the session
-ends or restarts. After ten minutes without an answer the person can tap **Ask
-again**, which notifies the owner again ("<name> is still waiting to join
-<session>"), at most once every ten minutes; **Ask to pick up** works the same
-way. If the session restarts first, the person reads "Your request closed before
-<owner> answered" and can ask again. The owner gets a Needs-you Activity item,
-"<name> wants to join <session>", with **Allow** and **Decline**, plus a
-notification. Allow lets just that person send follow-ups and answer permission
-prompts; the rest of the workspace stays read-only. Decline shows the person
-"<owner> declined your request.", and they may ask again. The owner removes an
-allowed person under **Access** → **People you let in**. Asking, allowing,
-declining and removing are logged in the transcript. Everything is cleared when
-the session ends. Only people ask and are allowed: you cannot ask to join, and
-an allowed person's permission never extends to an agent acting for them.
+**Teammates and control**: membership is the trust. A workspace member types into
+someone's session, sends follow-ups and answers its permission prompts only while
+its owner has **Let teammates control this session** on, with no ask and no Allow;
+while it is off they watch. Members never ask to join (only an outside viewer of an
+**Anyone with the link** page does, above). **Ask to pick up** is separate: a
+teammate asks when **Let people continue** is off; after ten minutes without an
+answer they can **Ask again**. The owner removes a person let in from the public page
+under **Access** → **People you let in**. Asking, allowing, declining and removing
+are logged in the transcript, and everything is cleared when the session ends. You
+cannot ask to join, and a person's permission never extends to an agent acting for them.
 
 **Live terminal**: a running held session shows its real terminal in the
 session panel (desktop app on the owner's Mac; the owner types there, **End**
@@ -325,9 +319,9 @@ renderer and Codex sessions in Codex's inline mode (no alternate screen), so a
 watcher can scroll back through such a session's earlier output (a Claude Code
 background session still shows only the current screen; in a Codex session the
 mouse wheel scrolls the terminal, not Codex's own fullscreen transcript);
-while no frame has arrived it says "Connecting…", and after 30 s of silence "Reconnecting…". The owner, anyone accepted through **Ask to join**, or everyone when
+while no frame has arrived it says "Connecting…", and after 30 s of silence "Reconnecting…". The owner, a link viewer let in through **Ask to join**, or every member when
 **Let teammates control this session** is on can type straight into it,
-including answering the tool's own prompts; others watch read-only and see a "Watching · Ask to join" line. There is no message
+including answering the tool's own prompts; others watch read-only and see a "Watching · Only <owner> can type in this session." line. There is no message
 box under a live terminal. Setting the session to **Only me** or removing someone cuts their
 input at once, and so does leaving the workspace; while a teammate types, every view shows
 "<name> typing" and the cursor in their colour. You never get the screen or keyboard: you cannot watch or type into a

@@ -208,7 +208,7 @@ async def test_switch_matrix_rewrites_profiles_without_stopping_the_session(monk
 
     assert world.provider_of_profiles() == {EXPECTED_PROVIDER[to]}
     assert world.calls == []  # no UpdateAgentRuntime, no StopRuntimeSession on a pure switch
-    assert set(_boot(boot_secrets)) == {"hookToken", "gatewayToken", "bedrockBearer"}
+    assert set(_boot(boot_secrets)) == {"hookToken", "gatewayToken", "bedrockBearer", "networkKey"}
 
 
 @pytest.mark.asyncio
@@ -258,7 +258,7 @@ async def test_retired_switch_keys_in_the_boot_secret_are_dropped_without_a_rest
 
     await hp.reconcile_runtime("org_a")
     assert world.calls == []
-    assert set(_boot(boot_secrets)) == {"hookToken", "gatewayToken", "bedrockBearer"}
+    assert set(_boot(boot_secrets)) == {"hookToken", "gatewayToken", "bedrockBearer", "networkKey"}
 
 
 @pytest.mark.asyncio

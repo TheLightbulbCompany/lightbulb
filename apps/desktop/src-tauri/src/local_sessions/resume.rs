@@ -4,7 +4,9 @@
 //! The relay loop hands this task the `resume` list from a heartbeat acknowledgement. The backend
 //! decided who may resume and in which mode; this side checks what only this Mac knows: sharing is
 //! on, the CLI is installed, the session's folder still exists, and nothing already runs that
-//! conversation (two `claude --resume` processes would fork it). Anyone but this Mac's own human
+//! conversation (two `claude --resume` processes would fork it). A conversation the provider's own
+//! daemon still runs (a Claude background job, a Codex app-server thread) is shown again instead
+//! (`reattach`). Anyone but this Mac's own human
 //! gets plan mode whatever the request says. It starts the provider in a holder the way New
 //! session does. A refusal is reported to the backend once; it never touches a mirror.
 use super::transport::relay_log;
@@ -27,6 +29,33 @@ pub(super) struct Wanted {
     mode: String,
     /// A live mirror on this Mac already holds this conversation.
     running: bool,
+    /// That mirror, when the provider's own daemon hosts the conversation (a Claude background
+    /// job, a Codex app-server thread): Lightbulb shows it again instead of starting it twice.
+    hosted: Option<Hosted>,
+    /// The requested conversation continues as `conversation_id` (`latest`): another session's
+    /// row, which no run started here can settle this request on.
+    continued: bool,
+}
+
+/// A live mirror whose conversation runs in the provider's own daemon. Closing a held Claude
+/// terminal can move its conversation into a background job (`claude bg-spare`, prod 2026-10-26):
+/// it runs on, so Resume shares that mirror again and its attach holder shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Hosted {
+    key: String,
+    session_id: Option<String>,
+    /// The generation the relay last acknowledged: the one its row is at.
+    generation: String,
+    shared: bool,
+    /// Its run is not the one the relay has: its registration is a new process's, which is what
+    /// answers a waiting resume (`session_resume.on_register`). A same-generation one answers none.
+    fresh: bool,
+    /// The provider's id for it: what `claude attach` takes.
+    job: String,
+    /// Its mirror ended because the daemon retired the job's process (`bg retire …: idle-prompt`,
+    /// prod 2026-10-26). The job and its conversation remain: attaching starts a new process, whose
+    /// registration answers the resume. Never `claude --resume` it (a second branch).
+    retired: bool,
 }
 
 // One sender per running relay host, as for pick-up snapshots: the relay loop only offers.
@@ -42,10 +71,22 @@ pub(super) fn channel() -> mpsc::Receiver<Vec<Wanted>> {
 
 /// Called from the relay loop with an acknowledgement's `resume` key (absent on an older backend).
 pub(super) fn offer(resume: &Value, mirrors: &BTreeMap<String, Mirror>) {
+    let config = claude_config(&home_dir());
     let wanted = tag(resume, |provider, conversation| {
-        mirrors
-            .values()
-            .any(|m| m.ended_at.is_none() && m.native.provider == provider && m.native.conversation == conversation)
+        let mut newest = latest(&config, provider, conversation);
+        // Only while the transcript cannot say (it is gone): a readable one that did not move on
+        // means its person kept using it, and the continuation is a branch beside it. Then a live
+        // session that remembers `conversation` as one of its earlier ids is where it went.
+        if newest == conversation && provider == "claude" && super::snapshot::find_transcript(&config, conversation).is_none() {
+            if let Some(m) = mirrors
+                .values()
+                .find(|m| m.ended_at.is_none() && m.native.provider == provider && m.native.aliases.iter().any(|a| a == conversation))
+            {
+                newest.clone_from(&m.native.conversation);
+            }
+        }
+        let running = live(mirrors, provider, &newest);
+        (newest, running)
     });
     if wanted.is_empty() {
         return;
@@ -55,7 +96,50 @@ pub(super) fn offer(resume: &Value, mirrors: &BTreeMap<String, Mirror>) {
     }
 }
 
-fn tag(resume: &Value, running: impl Fn(&str, &str) -> bool) -> Vec<Wanted> {
+/// Whether a live mirror holds `conversation` (Some), and whether its provider's daemon hosts it.
+fn live(mirrors: &BTreeMap<String, Mirror>, provider: &str, conversation: &str) -> Option<Option<Hosted>> {
+    let held = |m: &&Mirror| m.native.provider == provider && m.native.conversation == conversation;
+    let retired = |m: &&Mirror| m.native.job.as_deref().and_then(crate::holder::manager::attach_provider) == Some("claude");
+    let (key, m) = mirrors
+        .iter()
+        .find(|(_, m)| m.ended_at.is_none() && held(m))
+        .or_else(|| mirrors.iter().find(|(_, m)| held(m) && retired(m)))?;
+    Some(m.native.job.clone().map(|job| Hosted {
+        key: key.clone(),
+        session_id: m.session_id.clone(),
+        generation: m.registration.acknowledged.clone().unwrap_or_else(|| m.generation.clone()),
+        shared: !m.withheld(),
+        fresh: m.registration.acknowledged.as_ref().is_some_and(|known| *known != m.generation),
+        job,
+        retired: m.ended_at.is_some(),
+    }))
+}
+
+/// The newest conversation `conversation` continues as. ←, `/background` and a peer reply move a
+/// Claude conversation into a background job under a NEW id and write a `continued-in` row to the
+/// origin's transcript; `claude --resume` of that origin is allowed and starts a second live branch
+/// of it (how "ship-agent-network-phase-1 (2)" appeared). So Resume follows the chain as `/resume`
+/// does: to a continuation whose transcript exists, while nothing was typed in the origin after it.
+pub(crate) fn latest(config: &Path, provider: &str, conversation: &str) -> String {
+    let mut id = conversation.to_owned();
+    if provider != "claude" {
+        return id;
+    }
+    for _ in 0..8 {
+        let next = super::snapshot::find_transcript(config, &id)
+            .and_then(|path| super::claude::continued_in(&path))
+            .filter(|next| *next != id && super::snapshot::find_transcript(config, next).is_some());
+        match next {
+            Some(next) => id = next,
+            None => break,
+        }
+    }
+    id
+}
+
+/// `running` names the conversation a resume of `conversation` acts on (`latest`), and whether a
+/// live mirror holds it.
+fn tag(resume: &Value, running: impl Fn(&str, &str) -> (String, Option<Option<Hosted>>)) -> Vec<Wanted> {
     let uuid = |v: &Value| v.as_str().filter(|s| uuid::Uuid::parse_str(s).is_ok()).map(str::to_owned);
     let text = |v: &Value, max: usize, or: &str| v.as_str().unwrap_or(or).chars().take(max).collect::<String>();
     resume
@@ -66,8 +150,9 @@ fn tag(resume: &Value, running: impl Fn(&str, &str) -> bool) -> Vec<Wanted> {
         .filter_map(|e| {
             let provider = e["provider"].as_str().filter(|p| matches!(*p, "claude" | "codex"))?.to_owned();
             // A UUID can never be read as a flag by the CLI it is handed to.
-            let conversation_id = uuid(&e["conversationId"])?;
-            let running = running(&provider, &conversation_id);
+            let requested = uuid(&e["conversationId"])?;
+            let (conversation_id, running) = running(&provider, &requested);
+            let continued = conversation_id != requested;
             Some(Wanted {
                 resume_id: uuid(&e["resumeId"])?,
                 session_id: uuid(&e["sessionId"])?,
@@ -77,7 +162,10 @@ fn tag(resume: &Value, running: impl Fn(&str, &str) -> bool) -> Vec<Wanted> {
                 mode: if e["mode"] == "default" { "default".into() } else { "plan".into() },
                 provider,
                 conversation_id,
-                running,
+                // A retired job runs nothing until it is attached.
+                running: running.as_ref().is_some_and(|h| h.as_ref().is_none_or(|h| !h.retired)),
+                hosted: running.flatten(),
+                continued,
             })
         })
         .collect()
@@ -85,11 +173,29 @@ fn tag(resume: &Value, running: impl Fn(&str, &str) -> bool) -> Vec<Wanted> {
 
 /// The exact argv: the fixed installed binary, the conversation, and a mode no looser than the
 /// owner's default. Anyone but this Mac's own human gets plan mode, whatever the request says.
-fn argv(program: &Path, w: &Wanted, own: bool) -> Vec<String> {
+/// `daemon`: Codex's shared daemon runs. Then the holder is one more client that rejoins the thread
+/// the daemon runs (`codex::resume_on_daemon` loads it first, with this mode), so every client sees
+/// ONE thread. Only without a daemon is it a private `--no-daemon` writer.
+/// `kept`: the Claude permission mode the session last ran in (`last_claude_mode`). This Mac's own
+/// human resumes in it, as `claude --resume` in their terminal would; anyone else in plan.
+fn argv(program: &Path, w: &Wanted, own: bool, daemon: bool, kept: Option<&str>) -> Vec<String> {
     let plan = !own || w.mode != "default";
     let program = program.to_string_lossy().into_owned();
+    if w.provider == "codex" && daemon {
+        // As `holder::manager::CODEX_ATTACH_SCRIPT` rejoins: no permission flags (a remote resume
+        // refuses them), and no update prompt over the conversation.
+        return vec![
+            program,
+            "--remote".into(),
+            "unix://".into(),
+            "-c".into(),
+            "check_for_update_on_startup=false".into(),
+            "resume".into(),
+            w.conversation_id.clone(),
+        ];
+    }
     if w.provider == "codex" {
-        // Root options before the subcommand; `--no-daemon` as New session starts Codex.
+        // Root options before the subcommand.
         vec![
             program,
             "--no-daemon".into(),
@@ -106,9 +212,35 @@ fn argv(program: &Path, w: &Wanted, own: bool) -> Vec<String> {
             "--resume".into(),
             w.conversation_id.clone(),
             "--permission-mode".into(),
-            (if plan { "plan" } else { "manual" }).into(),
+            (if plan { "plan" } else { claude_mode(kept) }).into(),
         ]
     }
+}
+
+/// The `--permission-mode` that keeps a session's last mode. Never one that skips every prompt
+/// (`bypassPermissions`, `dontAsk`): a click in a browser does not grant that; those, and a session
+/// with no mode on record, resume in `manual`.
+fn claude_mode(kept: Option<&str>) -> &'static str {
+    match kept {
+        Some("acceptEdits") => "acceptEdits",
+        Some("auto") => "auto",
+        Some("plan") => "plan",
+        _ => "manual",
+    }
+}
+
+/// The permission mode a Claude session last ran in: its transcript's last `permission-mode` row
+/// (Claude writes one whenever the mode is set or changed).
+fn last_claude_mode(claude_config: &Path, conversation: &str) -> Option<String> {
+    let transcript = super::snapshot::find_transcript(claude_config, conversation)?;
+    BufReader::new(fs::File::open(transcript).ok()?)
+        .lines()
+        .map_while(std::result::Result::ok)
+        .filter(|line| line.contains("\"permission-mode\""))
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .filter(|row| row["type"] == "permission-mode")
+        .filter_map(|row| row["permissionMode"].as_str().map(str::to_owned))
+        .last()
 }
 
 /// The folder the session last ran in, from its own transcript (Claude) or rollout (Codex), if it
@@ -141,11 +273,18 @@ fn codex_cwd(home: &Path, thread: &str) -> Option<PathBuf> {
     row["payload"]["cwd"].as_str().map(PathBuf::from)
 }
 
-static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+/// The local-sessions dir a resume checks sharing in.
+/// None inside: the dir was unavailable, so every resume is refused as SHARING_OFF.
+static STATE_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-/// From the app's setup: a resume is shown in the app, so starting one needs it.
+/// From the app's setup.
 pub(crate) fn install(app: &tauri::AppHandle) {
-    let _ = APP.set(app.clone());
+    let _ = STATE_DIR.set(super::enrollment::state_dir(app).ok());
+}
+
+/// From `serve`, which has no app.
+pub(crate) fn install_dir(dir: PathBuf) {
+    let _ = STATE_DIR.set(Some(dir));
 }
 
 pub(super) struct Resumer {
@@ -166,14 +305,18 @@ pub(super) async fn run(mut rx: mpsc::Receiver<Vec<Wanted>>, me: Resumer) {
             if !handled.insert(wanted.resume_id.clone()) {
                 continue;
             }
-            let Some(app) = APP.get().cloned() else {
+            let Some(dir) = STATE_DIR.get() else {
                 handled.remove(&wanted.resume_id);
                 continue;
             };
             let short = &wanted.session_id[..8];
-            match start(&app, &wanted, &me).await {
-                Ok(true) => relay_log(&format!("{short} resumed")),
-                Ok(false) => relay_log(&format!("{short} already runs in a holder; its registration answers the resume")),
+            match start(dir.as_deref(), &wanted, &me).await {
+                Ok(Some(true)) => relay_log(&format!("{short} resumed")),
+                Ok(Some(false)) => relay_log(&format!("{short} already runs; its registration answers the resume")),
+                // Nothing will answer it yet: the next acknowledgement asks again.
+                Ok(None) => {
+                    handled.remove(&wanted.resume_id);
+                }
                 Err(code) => {
                     relay_log(&format!("{short} resume refused: {code}"));
                     if let Err(e) = report(&me, &wanted, code).await {
@@ -190,33 +333,84 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
-async fn start(app: &tauri::AppHandle, w: &Wanted, me: &Resumer) -> std::result::Result<bool, &'static str> {
-    if !super::enrollment::sharing_on(app) {
+/// Some(true): started or shown again. Some(false): a registration answers it. None: ask again.
+async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Result<Option<bool>, &'static str> {
+    if !dir.is_some_and(super::enrollment::sharing_on) {
         return Err("SHARING_OFF");
     }
     let own = w.by_user_id == me.human;
+    // Never `--resume` a continued origin (a second live branch of it). Its continuation is its own
+    // session: shown again when it runs here, and this request is refused so it settles.
+    if w.continued {
+        // Settled only once the continuation is shown: a failed reattach is the refusal, and one
+        // that waits (not bound yet) is asked again.
+        if let Some(hosted) = &w.hosted {
+            if reattach(me, hosted, own).await?.is_none() && !hosted.shared {
+                return Ok(None);
+            }
+        }
+        return Err("CONTINUED");
+    }
+    // A retired job removed since (`claude rm`) has nothing to attach: it resumes as any other.
+    let jobs = claude_config(&home_dir()).join("jobs");
+    if let Some(hosted) = w.hosted.as_ref().filter(|h| !h.retired || jobs.join(&h.job).is_dir()) {
+        return reattach(me, hosted, own).await;
+    }
+    // A background job Claude still lists (its mirror is gone or never knew the job) is attached,
+    // never refused as running elsewhere: `free` below would find it in the same listing.
+    if w.provider == "claude" {
+        if let Some(job) = claude::background_job(&home_dir(), &w.conversation_id).await {
+            reopen(job).await?;
+            return Ok(Some(true));
+        }
+    }
     let want = w.clone();
     let Some((folder, argv)) = tauri::async_runtime::spawn_blocking(move || prepare(&want, own, &home_dir()))
         .await
         .map_err(|_| "LAUNCH_FAILED")??
     else {
-        return Ok(false);
+        return Ok(Some(false));
     };
     // `running` only knows held sessions: a private `claude --resume` / `codex resume` of the same
     // conversation is invisible to the mirrors. Two writers on one transcript fork it, so a resume
     // that cannot prove the conversation is free does not start.
     free(running_conversations(home_dir(), w.provider.clone()).await, &w.conversation_id)?;
-    crate::session_start::start_held(folder, argv).await.map_err(|e| {
+    let mut argv = argv;
+    let mut daemon = codex::on_daemon(&argv);
+    if daemon {
+        let loaded = match codex::daemon_socket(&home_dir()) {
+            Some(socket) => codex::resume_on_daemon(&socket, &w.conversation_id, &folder, !own || w.mode != "default").await,
+            None => Err(codex::UNAVAILABLE.to_owned()),
+        };
+        match loaded {
+            Ok(()) => {}
+            // A daemon that is gone or stalled: the private writer it always was.
+            Err(e) if e == codex::UNAVAILABLE => {
+                relay_log(&format!("{} resume: {e}, so it starts as a private --no-daemon writer", &w.session_id[..8]));
+                argv = self::argv(Path::new(&argv[0]), w, own, false, None);
+                daemon = false;
+            }
+            Err(e) => {
+                relay_log(&format!("{} resume on the Codex daemon refused: {e}", &w.session_id[..8]));
+                return Err(if e == codex::LOOSER { "ALREADY_RUNNING" } else { "LAUNCH_FAILED" });
+            }
+        }
+    }
+    let held = crate::session_start::start_held(folder, argv).await.map_err(|e| {
         relay_log(&format!("{} resume launch failed: {e}", &w.session_id[..w.session_id.len().min(8)]));
         "LAUNCH_FAILED"
     })?;
+    if daemon {
+        // Its start hook runs in the daemon, not under this holder: the thread is known already.
+        crate::holder::manager::bind_thread(&held, &w.conversation_id);
+    }
     let who = if own { "You".to_owned() } else { w.by_name.clone() };
     let how = if own && w.mode == "default" {
         "End it from its panel in Lightbulb."
     } else {
         "In plan mode. End it from its panel in Lightbulb."
     };
-    let _ = crate::notify::native_notify(
+    let _ = crate::notify::show(
         format!("{who} resumed {}", w.title),
         Some(how.into()),
         Some(format!("resume-{}", w.resume_id)),
@@ -224,7 +418,47 @@ async fn start(app: &tauri::AppHandle, w: &Wanted, me: &Resumer) -> std::result:
         None,
     )
     .await;
-    Ok(true)
+    Ok(Some(true))
+}
+
+/// The conversation runs on in its provider's daemon: share its mirror again, and the relay loop
+/// registers its run (that registration answers the resume) and starts an attach holder for
+/// whoever watches. A run its person paused is unpaused first, as the share skill does: its
+/// register carries `unshared` over. Only this Mac's own human may undo their own pause.
+async fn reattach(me: &Resumer, hosted: &Hosted, own: bool) -> std::result::Result<Option<bool>, &'static str> {
+    if !hosted.shared {
+        if !own {
+            return Err("SHARING_OFF");
+        }
+        // A mirror the relay has not bound yet cannot be unpaused, and sharing it would let its first
+        // registration settle the resume with the row still paused: wait until it is bound.
+        let Some(sid) = &hosted.session_id else {
+            return Ok(None);
+        };
+        let unpause = json!({"sessionId": sid, "generation": hosted.generation, "decision": "unpause"});
+        post(me, "/api/v1/messaging/native-session-decisions", &unpause).await.map_err(|e| {
+            relay_log(&format!("{} unpause for resume failed: {e}", &sid[..sid.len().min(8)]));
+            "LAUNCH_FAILED"
+        })?;
+        super::transport::ask_share(&hosted.key, true);
+    }
+    if hosted.retired {
+        reopen(hosted.job.clone()).await?;
+        return Ok(Some(true));
+    }
+    Ok(hosted.fresh.then_some(!hosted.shared))
+}
+
+/// `claude attach <job>` in an attach holder: it starts a retired job's process again.
+async fn reopen(job: String) -> std::result::Result<(), &'static str> {
+    let shown = job.clone();
+    tauri::async_runtime::spawn_blocking(move || super::screen::reopen(&job))
+        .await
+        .map_err(|_| "LAUNCH_FAILED")?
+        .map_err(|e| {
+            relay_log(&format!("attach {shown} for resume failed: {e}"));
+            "LAUNCH_FAILED"
+        })
 }
 
 /// Every conversation a local `provider` process runs now, held or private: the provider's own
@@ -237,13 +471,26 @@ async fn running_conversations(home: PathBuf, provider: String) -> std::result::
     } else {
         claude::running_conversations(&home).await?
     };
-    let args = native_output(Path::new("/bin/ps"), &["-axo", "args="]).await?;
-    ids.extend(
-        args.lines()
-            .filter(|line| line.contains(provider.as_str()))
-            .flat_map(|line| line.split_whitespace().map(str::to_owned).collect::<Vec<_>>()),
-    );
+    let args = native_output(Path::new("/bin/ps"), &["-axo", "pid=,args="]).await?;
+    let holders: HashSet<u32> = tauri::async_runtime::spawn_blocking(|| crate::holder::manager::list().into_iter().map(|h| h.pid).collect())
+        .await
+        .map_err(|_| "holder list unavailable")?;
+    ids.extend(named_in(&args, &provider, &holders));
     Ok(ids)
+}
+
+/// Every word of each `ps -axo pid=,args=` line that mentions `provider`, except a holder's own
+/// line. A holder's arguments name the provider and `--resume <conversation>` it started, and a
+/// holder whose provider ended stays up to show its last picture until the app quits: read as a
+/// running conversation, it refused Resume with ALREADY_RUNNING on a session nobody could type
+/// into (prod 2026-10-22). A live holder is `prepare`'s to answer, and its provider child has a
+/// line of its own here.
+fn named_in(ps: &str, provider: &str, holders: &HashSet<u32>) -> Vec<String> {
+    ps.lines()
+        .filter_map(|line| line.trim_start().split_once(' '))
+        .filter(|(pid, args)| args.contains(provider) && !pid.parse().is_ok_and(|pid: u32| holders.contains(&pid)))
+        .flat_map(|(_, args)| args.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
+        .collect()
 }
 
 /// Ok when nothing runs `conversation`; ALREADY_RUNNING when something does; LAUNCH_FAILED when
@@ -269,6 +516,12 @@ fn prepare(w: &Wanted, own: bool, home: &Path) -> std::result::Result<Option<(Pa
     if w.running {
         return Err("ALREADY_RUNNING");
     }
+    // As the Claude app gates its own Resume (`liveOwnershipRefusal`): any live process Claude's
+    // records name for this id -- a terminal parked in the agent view included -- is a writer, and
+    // `--resume` beside it is a second branch. Its row stays live meanwhile, and shows its tail.
+    if w.provider == "claude" && claude::Holders::read(&claude_config(home)).holds(&w.conversation_id, true, None) {
+        return Err("ALREADY_RUNNING");
+    }
     if !crate::session_start::tools(home).iter().any(|t| t["id"] == w.provider.as_str()) {
         return Err("TOOL_UNAVAILABLE");
     }
@@ -277,7 +530,12 @@ fn prepare(w: &Wanted, own: bool, home: &Path) -> std::result::Result<Option<(Pa
     // The folder it last ran in must still be approved now, as for New session and the CLI: the
     // owner may have removed it from File access after the session ended.
     let folder = approved_folder(&folder, &crate::session_start::approved_now())?;
-    Ok(Some((folder, argv(&program, w, own))))
+    let daemon = w.provider == "codex" && codex::daemon_socket(home).is_some();
+    if w.provider == "codex" && !daemon {
+        relay_log(&format!("{} resume: Codex's shared daemon is not running, so it starts as a private --no-daemon writer", &w.session_id[..8]));
+    }
+    let kept = (w.provider == "claude").then(|| last_claude_mode(&claude_config(home), &w.conversation_id)).flatten();
+    Ok(Some((folder, argv(&program, w, own, daemon, kept.as_deref()))))
 }
 
 pub(crate) fn claude_config(home: &Path) -> PathBuf {
@@ -293,13 +551,18 @@ pub(crate) fn approved_folder(folder: &Path, approved: &[PathBuf]) -> std::resul
 }
 
 async fn report(me: &Resumer, w: &Wanted, code: &str) -> Result<()> {
+    let path = format!("/api/v1/desktop/session-resume/{}/failed", w.session_id);
+    post(me, &path, &json!({"resumeId": w.resume_id, "code": code})).await
+}
+
+async fn post(me: &Resumer, path: &str, body: &Value) -> Result<()> {
     let token = crate::device_token::mint_device_token(
         &me.key_pem,
         &me.device,
         &me.owner,
         crate::device_token::DEVICE_TOKEN_LIFETIME_SECS,
     )?;
-    let url = format!("{}/api/v1/desktop/session-resume/{}/failed", me.api.trim_end_matches('/'), w.session_id);
+    let url = format!("{}{path}", me.api.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
@@ -308,16 +571,16 @@ async fn report(me: &Resumer, w: &Wanted, code: &str) -> Result<()> {
     let status = client
         .post(url)
         .bearer_auth(token)
-        .json(&json!({"resumeId": w.resume_id, "code": code}))
+        .json(body)
         .send()
         .await
-        .map_err(|_| "resume report failed")?
+        .map_err(|_| "request failed")?
         .status()
         .as_u16();
     if (200..300).contains(&status) {
         Ok(())
     } else {
-        Err(format!("resume report returned {status}"))
+        Err(format!("{path} returned {status}"))
     }
 }
 
@@ -340,41 +603,79 @@ mod tests {
             title: "Fix login".into(),
             mode: mode.into(),
             running: false,
+            hosted: None,
+            continued: false,
         }
     }
 
     #[test]
     fn resume_offer_reads_the_relay_entry_and_sees_a_running_conversation() {
         let ack: Value = serde_json::from_str(ACK).unwrap();
-        assert_eq!(tag(&ack["resume"], |_, _| false), vec![wanted("claude", "plan")]);
-        let held = tag(&ack["resume"], |provider, conversation| provider == "claude" && conversation == CONV);
+        assert_eq!(tag(&ack["resume"], |_, c| (c.to_owned(), None)), vec![wanted("claude", "plan")]);
+        let held = tag(&ack["resume"], |provider, conversation| (conversation.to_owned(), (provider == "claude" && conversation == CONV).then_some(None)));
         assert!(held[0].running);
         let mut odd = ack["resume"].clone();
         odd[0]["conversationId"] = json!("--dangerously-skip-permissions");
-        assert!(tag(&odd, |_, _| false).is_empty(), "a conversation id that is not a UUID is refused");
+        assert!(tag(&odd, |_, c| (c.to_owned(), None)).is_empty(), "a conversation id that is not a UUID is refused");
         let mut shell = ack["resume"].clone();
         shell[0]["provider"] = json!("bash");
-        assert!(tag(&shell, |_, _| false).is_empty());
+        assert!(tag(&shell, |_, c| (c.to_owned(), None)).is_empty());
         let mut loose = ack["resume"].clone();
         loose[0]["mode"] = json!("bypassPermissions");
-        assert_eq!(tag(&loose, |_, _| false)[0].mode, "plan", "anything but default reads as plan");
+        assert_eq!(tag(&loose, |_, c| (c.to_owned(), None))[0].mode, "plan", "anything but default reads as plan");
+    }
+
+    /// On Codex's shared daemon a resume is one more client that rejoins the thread the daemon
+    /// runs (`codex::resume_on_daemon` loaded it with the mode), never a `--no-daemon` writer that
+    /// forks it; a remote resume takes no permission flags (Codex refuses them).
+    #[test]
+    fn resume_argv_on_the_codex_daemon_rejoins_the_thread() {
+        let held = argv(Path::new("/bin/codex"), &wanted("codex", "default"), false, true, None);
+        assert_eq!(held, ["/bin/codex", "--remote", "unix://", "-c", "check_for_update_on_startup=false", "resume", CONV]);
+        assert!(codex::on_daemon(&held));
+        assert!(!held.iter().any(|a| a == "--no-daemon" || a == "--sandbox" || a == "--ask-for-approval"));
+        // Without a daemon it is the private writer it always was.
+        assert!(!codex::on_daemon(&argv(Path::new("/bin/codex"), &wanted("codex", "default"), false, false, None)));
+        assert_eq!(argv(Path::new("/bin/claude"), &wanted("claude", "default"), true, true, None)[1], "--resume");
     }
 
     #[test]
     fn resume_argv_gives_anyone_but_this_macs_human_plan_mode() {
         let claude = Path::new("/bin/claude");
-        assert_eq!(argv(claude, &wanted("claude", "default"), false), ["/bin/claude", "--resume", CONV, "--permission-mode", "plan"]);
-        assert_eq!(argv(claude, &wanted("claude", "default"), true), ["/bin/claude", "--resume", CONV, "--permission-mode", "manual"]);
-        assert_eq!(argv(claude, &wanted("claude", "plan"), true)[4], "plan");
+        assert_eq!(argv(claude, &wanted("claude", "default"), false, false, None), ["/bin/claude", "--resume", CONV, "--permission-mode", "plan"]);
+        assert_eq!(argv(claude, &wanted("claude", "default"), true, false, None), ["/bin/claude", "--resume", CONV, "--permission-mode", "manual"]);
+        assert_eq!(argv(claude, &wanted("claude", "plan"), true, false, None)[4], "plan");
+        // The owner's own resume keeps the mode the session last ran in; never one that skips every prompt.
+        for (kept, flag) in [("auto", "auto"), ("acceptEdits", "acceptEdits"), ("plan", "plan"), ("default", "manual"), ("bypassPermissions", "manual"), ("dontAsk", "manual")] {
+            assert_eq!(argv(claude, &wanted("claude", "default"), true, false, Some(kept))[4], flag, "{kept}");
+        }
+        assert_eq!(argv(claude, &wanted("claude", "default"), false, false, Some("auto"))[4], "plan", "a teammate's resume is plan");
+        assert_eq!(argv(claude, &wanted("claude", "plan"), true, false, Some("auto"))[4], "plan", "a plan request stays plan");
         let codex = Path::new("/bin/codex");
         assert_eq!(
-            argv(codex, &wanted("codex", "default"), false),
+            argv(codex, &wanted("codex", "default"), false, false, None),
             ["/bin/codex", "--no-daemon", "--sandbox", "read-only", "--ask-for-approval", "on-request", "resume", CONV]
         );
-        assert_eq!(argv(codex, &wanted("codex", "default"), true)[3], "workspace-write");
+        assert_eq!(argv(codex, &wanted("codex", "default"), true, false, None)[3], "workspace-write");
         // A resumed Claude Code session runs in the classic renderer, as a new one does (owner ruling 2026-10-07).
         let classic = |argv: &[String]| crate::holder::run::provider_environment(vec![], argv).iter().any(|(k, _)| k == crate::holder::run::CLASSIC_RENDERER);
-        assert!(classic(&argv(claude, &wanted("claude", "default"), true)) && !classic(&argv(codex, &wanted("codex", "default"), true)));
+        assert!(classic(&argv(claude, &wanted("claude", "default"), true, false, None)) && !classic(&argv(codex, &wanted("codex", "default"), true, false, None)));
+    }
+
+    #[test]
+    fn resume_reads_the_mode_the_session_last_ran_in() {
+        let home = tempfile::tempdir().unwrap();
+        let claude = home.path().join(".claude");
+        let project = claude.join("projects/-work");
+        fs::create_dir_all(&project).unwrap();
+        assert_eq!(last_claude_mode(&claude, CONV), None, "no transcript");
+        fs::write(project.join(format!("{CONV}.jsonl")), concat!(
+            "{\"type\":\"permission-mode\",\"permissionMode\":\"default\"}\n",
+            "{\"type\":\"user\",\"permissionMode\":\"plan\",\"message\":\"\\\"permission-mode\\\"\"}\n",
+            "{\"type\":\"permission-mode\",\"permissionMode\":\"auto\"}\n",
+            "not json \"permission-mode\"\n",
+        )).unwrap();
+        assert_eq!(last_claude_mode(&claude, CONV).as_deref(), Some("auto"));
     }
 
     #[test]
@@ -423,8 +724,144 @@ mod tests {
             "an unreadable listing proves nothing: refuse");
     }
 
+    /// An ended holder stays up with `claude --resume <conv>` in its arguments to show the last
+    /// picture: that is not the conversation running (prod 2026-10-22, "Not resumed: it is already
+    /// running on your Mac" until the app was quit). A private `claude --resume` still is.
+    #[test]
+    fn resume_ps_scan_ignores_holder_processes_but_not_a_private_resume() {
+        let ps = format!(
+            "  7571 /Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop holder /tmp/h/52.sock -- /Users/a/.local/share/claude/versions/2.1.308 --resume {CONV} --permission-mode manual\n\
+             812 /usr/bin/vim notes.txt\n"
+        );
+        let holders = HashSet::from([7571]);
+        assert!(free(Ok(named_in(&ps, "claude", &holders)), CONV).is_ok(), "an ended holder runs nothing");
+        let private = format!("{ps} 9001 /Users/a/.local/share/claude/versions/2.1.308 --resume {CONV}\n");
+        assert_eq!(free(Ok(named_in(&private, "claude", &holders)), CONV), Err("ALREADY_RUNNING"));
+        assert_eq!(free(Ok(named_in(&ps, "claude", &HashSet::new())), CONV), Err("ALREADY_RUNNING"), "the old scan's refusal");
+    }
+
     #[test]
     fn resume_prepare_refuses_a_conversation_another_run_already_holds() {
+        let mut w = wanted("claude", "plan");
+        w.running = true;
+        assert_eq!(prepare(&w, true, Path::new("/nonexistent")), Err("ALREADY_RUNNING"));
+    }
+
+    #[test]
+    fn resume_prepare_refuses_an_id_a_live_claude_process_holds_even_parked() {
+        // A terminal that parked the conversation in the agent view still names it, and `claude
+        // agents` does not list it: `free` cannot see it. Claude's records can.
+        let home = tempfile::tempdir().unwrap();
+        claude::tests::live_record(&home.path().join(".claude"), CONV, Some("251719c2"));
+        assert_eq!(prepare(&wanted("claude", "plan"), true, home.path()), Err("ALREADY_RUNNING"));
+        claude::tests::live_record(&home.path().join(".claude"), "99999999-2222-4333-8444-555555555555", None);
+        assert_ne!(prepare(&wanted("claude", "plan"), true, home.path()), Err("ALREADY_RUNNING"), "nothing holds it now");
+    }
+
+    fn hosted_mirrors(job: Option<&str>, shared: bool) -> BTreeMap<String, Mirror> {
+        let mut m = super::super::transport::tests::test_mirror(CONV, "gen-2");
+        m.native.provider = "claude".into();
+        m.native.job = job.map(str::to_owned);
+        m.session_id = Some("bbbbbbbb-2222-4222-8222-222222222222".into());
+        m.registration.acknowledged = Some("gen-1".into());
+        m.shared = shared;
+        BTreeMap::from([("k".repeat(64), m)])
+    }
+
+    /// Prod 2026-10-26: the held terminal closed, Claude moved the conversation into background
+    /// job 70f755ac, and Resume answered "already running on your Mac" with no way back.
+    #[test]
+    fn resume_sees_a_conversation_its_providers_daemon_hosts() {
+        let job = hosted_mirrors(Some("70f755ac"), false);
+        assert_eq!(
+            live(&job, "claude", CONV),
+            Some(Some(Hosted { key: "k".repeat(64), session_id: Some("bbbbbbbb-2222-4222-8222-222222222222".into()), generation: "gen-1".into(), shared: false, fresh: true, job: "70f755ac".into(), retired: false })),
+            "the run the relay knows, at the generation its row is at"
+        );
+        // A Codex app-server thread is hosted the same way (its job is the thread id).
+        let mut codex = hosted_mirrors(Some(CONV), true);
+        codex.values_mut().for_each(|m| m.native.provider = "codex".into());
+        assert!(live(&codex, "codex", CONV).flatten().is_some_and(|h| h.shared));
+        // A private terminal (`claude --resume`, `codex --no-daemon`): running, nothing to attach.
+        assert_eq!(live(&hosted_mirrors(None, true), "claude", CONV), Some(None));
+        let mut ended = hosted_mirrors(None, true);
+        ended.values_mut().for_each(|m| m.ended_at = Some(1));
+        assert_eq!(live(&ended, "claude", CONV), None, "an ended terminal session runs nothing");
+    }
+
+    /// Prod 2026-10-26, "Product Cleanup" (job 251719c2): Claude's daemon retired the job's idle
+    /// process (`bg retire 251719c2: idle-prompt, idle 61m`), so its mirror ended and the row
+    /// offered Resume. `claude agents --json` still listed the blocked job, `free` found it, and
+    /// Resume said "still running on your Mac … End it there". The job is attached instead: that
+    /// starts its process again (a new pid, so a new generation) and shows it.
+    #[test]
+    fn resume_attaches_a_background_job_whose_process_the_daemon_retired() {
+        let mut ended = hosted_mirrors(Some("251719c2"), true);
+        ended.values_mut().for_each(|m| m.ended_at = Some(1));
+        let hosted = live(&ended, "claude", CONV).flatten().expect("a retired job is still attachable");
+        assert!(hosted.retired && hosted.job == "251719c2" && hosted.shared);
+        let ack: Value = serde_json::from_str(ACK).unwrap();
+        let w = &tag(&ack["resume"], |p, c| (c.to_owned(), live(&ended, p, c)))[0];
+        assert!(w.hosted.is_some() && !w.running, "attached, never refused as running");
+        // A live mirror of the conversation wins over its ended one.
+        let mut both = ended.clone();
+        both.extend(hosted_mirrors(Some("251719c2"), true).into_iter().map(|(_, m)| ("l".repeat(64), m)));
+        assert!(live(&both, "claude", CONV).flatten().is_some_and(|h| !h.retired));
+        // The listing names the job even with no pid: that is the job to attach, not a refusal.
+        let rows: Vec<Value> = serde_json::from_value(json!([
+            {"id": "ae0e0fa4", "kind": "background", "sessionId": "ae0e0fa4-30b4-47c2-ab61-9c71f2002199", "state": "working"},
+            {"id": "251719c2", "kind": "background", "sessionId": CONV, "state": "working"},
+            {"kind": "interactive", "sessionId": "33333333-3333-4333-8333-333333333333", "pid": 1}
+        ])).unwrap();
+        assert_eq!(claude::job_of(&rows, CONV).as_deref(), Some("251719c2"));
+        assert_eq!(claude::job_of(&rows, "33333333-3333-4333-8333-333333333333"), None, "a terminal session is not a job");
+    }
+
+    /// 70f755ac continued in ae0e0fa4 (←): resuming 70f755ac with `claude --resume` would start
+    /// a second live branch of it, so a resume acts on ae0e0fa4.
+    #[test]
+    fn resume_follows_a_continued_conversation_to_its_newest_continuation() {
+        let config = tempfile::tempdir().unwrap();
+        let project = config.path().join("projects/-work");
+        fs::create_dir_all(&project).unwrap();
+        let (a, b, c) = (CONV, "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333");
+        let row = |from: &str, to: &str| format!("{{\"type\":\"continued-in\",\"sessionId\":\"{from}\",\"continuedInSessionId\":\"{to}\"}}\n");
+        fs::write(project.join(format!("{a}.jsonl")), format!("{{\"type\":\"user\"}}\n{}", row(a, b))).unwrap();
+        fs::write(project.join(format!("{b}.jsonl")), format!("{{\"type\":\"assistant\"}}\n{}{{\"type\":\"ai-title\"}}\n", row(b, c))).unwrap();
+        assert_eq!(latest(config.path(), "claude", a), b, "a continuation whose transcript is missing is not followed");
+        fs::write(project.join(format!("{c}.jsonl")), "{\"type\":\"user\"}\n").unwrap();
+        assert_eq!(latest(config.path(), "claude", a), c, "the whole chain");
+        assert_eq!(latest(config.path(), "codex", a), a, "a Codex thread keeps one id for life");
+        // Typed in after the continuation: the origin is a real branch of its own.
+        fs::write(project.join(format!("{a}.jsonl")), format!("{}{{\"type\":\"user\"}}\n", row(a, b))).unwrap();
+        assert_eq!(latest(config.path(), "claude", a), a);
+    }
+
+    #[tokio::test]
+    async fn resume_reattaches_a_daemon_hosted_conversation_instead_of_refusing_it() {
+        let me = Resumer { api: "http://127.0.0.1:9".into(), key_pem: String::new(), device: "d".into(), owner: "o".into(), human: "user_bob".into() };
+        let hosted = |shared: bool, sid: Option<&str>| Hosted { key: format!("{}{}{}", "e".repeat(62), u8::from(shared), u8::from(sid.is_some())), session_id: sid.map(str::to_owned), generation: "gen-1".into(), shared, fresh: true, job: "70f755ac".into(), retired: false };
+        // Shared already: its registration answers the resume; nothing starts.
+        assert_eq!(reattach(&me, &hosted(true, Some("s")), true).await, Ok(Some(false)));
+        // Its run is the one the relay has: no registration answers the resume, so it is asked again.
+        assert_eq!(reattach(&me, &Hosted { fresh: false, ..hosted(true, Some("s")) }, true).await, Ok(None));
+        // Paused by its person: only that person's own Resume shares it again.
+        assert_eq!(reattach(&me, &hosted(false, Some("s")), false).await, Err("SHARING_OFF"));
+        let unbound = hosted(false, None);
+        assert_eq!(reattach(&me, &unbound, true).await, Ok(None), "not bound yet: asked again, nothing shared");
+        assert_eq!(super::super::transport::asked(&unbound.key), None);
+        // A run the relay has, paused: the unpause must land first, or nothing is shared.
+        assert_eq!(reattach(&me, &hosted(false, Some("s")), true).await, Err("LAUNCH_FAILED"));
+        assert_eq!(super::super::transport::asked(&hosted(false, Some("s")).key), None);
+        // A continued origin is never started again: its request settles as CONTINUED.
+        let continued = Wanted { continued: true, ..wanted("claude", "plan") };
+        assert_eq!(start(Some(Path::new("/nonexistent")), &continued, &me).await, Err("SHARING_OFF"), "sharing is checked first");
+        let ack: Value = serde_json::from_str(ACK).unwrap();
+        let next = "22222222-2222-4222-8222-222222222222";
+        let tagged = tag(&ack["resume"], |_, _| (next.to_owned(), None));
+        assert!(tagged[0].continued && tagged[0].conversation_id == next, "it acts on the continuation, and knows it");
+        assert!(!tag(&ack["resume"], |_, c| (c.to_owned(), None))[0].continued);
+        // With no daemon to attach to, a running conversation is still refused.
         let mut w = wanted("claude", "plan");
         w.running = true;
         assert_eq!(prepare(&w, true, Path::new("/nonexistent")), Err("ALREADY_RUNNING"));

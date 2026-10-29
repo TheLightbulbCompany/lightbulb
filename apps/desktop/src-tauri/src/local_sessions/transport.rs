@@ -142,6 +142,9 @@ pub(super) struct Host {
     /// Whether the relay on this socket lists `endedStartId`; None until one of its acks has
     /// said. Per connection, like every feature: a reconnect can reach another relay version.
     relay_reads_ended_start: Option<bool>,
+    /// Claude background sessions whose process is gone and that nothing else holds yet, since
+    /// when: a daemon respawn kills the worker before its successor writes a record.
+    unheld: BTreeMap<String, Instant>,
     /// Sessions whose heartbeat fields moved between heartbeats: one goes out
     /// early rather than up to ten seconds late.
     heartbeat_dirty: BTreeSet<String>,
@@ -198,6 +201,13 @@ pub(super) fn asked(key: &str) -> Option<(bool, bool)> {
 /// pressed stop and the loop has not applied that yet.
 pub(super) fn stopped(key: &str, mirror: &Mirror) -> bool {
     asked(key).is_some_and(|(shared, _)| !shared) || mirror.withheld()
+}
+
+/// Shared once and then stopped (Only me) on this Mac: it still registers and heartbeats, as
+/// `shared: false`, so it stays in its owner's own list as "Only you" while it runs. Nothing of
+/// it is uploaded and it takes nothing. A session never shared registers nothing (2026-10-26).
+fn paused(mirror: &Mirror) -> bool {
+    mirror.withheld() && mirror.session_id.is_some()
 }
 
 type Verify = fn(PathBuf, NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>>;
@@ -296,6 +306,10 @@ async fn settle_unknown(dir: &Path, home: &Path, verify: Verify, ask: &Ask) -> R
     }
     Ok(receipt)
 }
+
+/// How long a Claude background session may go unheld before its row ends: a daemon respawn
+/// kills the worker and a spare takes the conversation over within a second (2026-10-26, 140 ms).
+const JOB_HANDOVER: Duration = Duration::from_secs(3);
 
 /// How long a per-session verdict (a stale generation, a relay rejection) keeps that session out
 /// of rotation. Connections are long-lived now, so "for this connection" could mean hours; this
@@ -427,9 +441,17 @@ impl Host {
         if !mirror.registration.pending || mirror.dirty || reset_end {
             mirror.registration.pending = true;
             // Durable before the first send: retry this exact generation/CAS
-            // predecessor until ACK, even when discovery has already found C.
-            mirror.persist(&self.dir.join(format!("{key}.json")))?;
+            // predecessor until ACK, even when discovery has already found C. A generation the
+            // relay already acknowledged risks nothing on a lost write, so a full disk never keeps
+            // a reconnect's sessions off the relay.
+            let path = self.dir.join(format!("{key}.json"));
+            if !reset_end && mirror.registration.acknowledged.as_ref() == Some(&mirror.generation) {
+                mirror.persist(&path)?;
+            } else {
+                mirror.persist_durable(&path)?;
+            }
         }
+        mirror.registration.sent_withheld = mirror.withheld();
         let mut frame = registration(mirror);
         if let Some(origin) = origin {
             frame["session"]["forkedFrom"] = json!(origin);
@@ -511,12 +533,33 @@ impl Host {
         let scope = self.dir.clone();
         for mut native in reconciled {
             let key = native_key(&native);
+            // A continuation is the same conversation under a new id: its earlier ids are its
+            // origin's, then the origin's own.
+            if let Some(origin) = native.forked_from.clone() {
+                let mut chain = self
+                    .mirrors
+                    .values()
+                    .find(|m| m.native.provider == native.provider && m.native.profile == native.profile && m.native.conversation == origin)
+                    .map(|m| m.native.aliases.clone())
+                    .unwrap_or_default();
+                chain.retain(|id| *id != origin && *id != native.conversation);
+                chain.push(origin);
+                native.aliases = chain;
+            }
             // Started with Lightbulb (it has a holder: `lightbulb claude|codex`, New session, a
-            // remote start, a resume, a pick-up), or moved to the background (←) out of a shared
-            // session: shared from its start.
+            // remote start, a resume, a pick-up), or continued by its person (←, `/background`) out
+            // of a shared session they used: shared from its start. Not when a peer's message or
+            // another agent moved it on (Claude backgrounds an idle terminal to answer a peer):
+            // that job was listed as a session nobody started (2026-10-26). Not out of one that
+            // never had a prompt (no transcript) either.
             let ours = native.holder.is_some()
-                || native.forked_from.as_deref().is_some_and(|origin| {
-                    self.mirrors.values().any(|m| m.shared && m.native.provider == native.provider && m.native.conversation == origin)
+                || native.forked_by_person == Some(true) && native.forked_from.as_deref().is_some_and(|origin| {
+                    self.mirrors.values().any(|m| {
+                        m.shared
+                            && m.native.transcript.is_some()
+                            && m.native.provider == native.provider
+                            && m.native.conversation == origin
+                    })
                 });
             let before = self
                 .mirrors
@@ -530,8 +573,17 @@ impl Host {
             if let Some(mirror) = self.mirrors.get_mut(&key) {
                 // Its holder or its lineage was found after its mirror was made. Never for a
                 // session the relay has heard of: its person stopped sharing it, and stays asked.
-                if ours && !mirror.shared && mirror.session_id.is_none() {
+                // Except a continuation: it stays private until its own first turn says who moved
+                // it on (an old human turn in its origin says nothing about a peer's background),
+                // and its person's turn shares it then, unless they stopped sharing it.
+                let decided = mirror.native.forked_by_person.is_none() && native.forked_by_person == Some(true);
+                let stopped = STOPPED_AT.lock().is_ok_and(|s| s.contains_key(&key));
+                if ours && !mirror.shared && (mirror.session_id.is_none() || decided && !stopped) {
                     mirror.shared = true;
+                    // A private register in flight, or one the relay holds: register again.
+                    if mirror.registration.pending || mirror.session_id.is_some() {
+                        invalidate = true;
+                    }
                 }
                 if mirror.ended_at.is_some() {
                     // The session is over: a hook or its own pid said so, and a
@@ -617,6 +669,13 @@ impl Host {
                 if native.forked_from.is_none() && mirror.native.process == native.process {
                     native.forked_from.clone_from(&mirror.native.forked_from);
                 }
+                if native.forked_by_person.is_none() && mirror.native.process == native.process {
+                    native.forked_by_person = mirror.native.forked_by_person;
+                }
+                // Nor its earlier ids, once its origin's mirror is reaped.
+                if mirror.native.process == native.process && mirror.native.aliases.len() > native.aliases.len() {
+                    native.aliases.clone_from(&mirror.native.aliases);
+                }
                 // Discovery cannot read the last assistant message; only a Stop hook
                 // carries it, so a listing must not blank it.
                 if native.last_assistant_message.is_none() {
@@ -627,9 +686,11 @@ impl Host {
                 // Discovery sees a running Claude process as busy even while its
                 // PermissionRequest hook is holding a prompt. Keep the hook's
                 // stronger status until that exact hold is released.
+                // (Not a daemon hold: Codex's app-server status is the truth, and `codex_hold`
+                // follows it.)
                 if mirror.native.process == native.process
                     && matches!(native.status.as_str(), "busy" | "idle" | "waiting-approval")
-                    && mirror.waiting.as_ref().is_some_and(|prompt| prompt.held.is_some())
+                    && mirror.waiting.as_ref().and_then(|prompt| prompt.held.as_ref()).is_some_and(|held| !daemon_held(held))
                 {
                     native.status = "waiting-approval".into();
                 }
@@ -689,7 +750,9 @@ impl Host {
                 // Its end is no longer news; whatever has not been sent must not be.
                 self.ended_pending.retain(|pending| pending != &key);
             }
+            let withheld = self.stopped_now(&key);
             let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
+            codex_hold(mirror, withheld);
             if start_links::bind(&scope, &mirror.native, &mirror.generation)? {
                 invalidate = true;
             }
@@ -851,10 +914,7 @@ impl Host {
     /// One hook datagram. Returns the key whose mirror moved, so the caller can
     /// send an early heartbeat instead of waiting out the ten-second cadence.
     fn apply_hook(&mut self, event: &lifecycle::HookEvent) -> Result<Option<String>> {
-        let provider = match event.provider {
-            lifecycle::Provider::Claude => "claude",
-            lifecycle::Provider::Codex => "codex",
-        };
+        let provider = event.provider.as_str();
         // An unknown session is not an error: a start hook wakes discovery, and the
         // 60s sweep picks up anything whose start was missed. An ended one is over.
         let Some(key) = self
@@ -969,6 +1029,11 @@ impl Host {
                         }
                         (held, private_send, input)
                     });
+                // A Codex hold comes from its daemon, not a hook: a hook's report of the same prompt
+                // must not replace the answerable one.
+                if self.mirrors.get(&key).and_then(|m| m.waiting.as_ref()?.held.as_ref()).is_some_and(daemon_held) {
+                    return Ok(None);
+                }
                 let prompt = WaitingPrompt {
                     id: event.tool_use_id.clone(),
                     tool: event.tool_name.clone(),
@@ -999,7 +1064,17 @@ impl Host {
                 Ok(Some(key))
             }
             lifecycle::Transition::Ended(reason) => {
-                self.end_session(&key, reason)?;
+                // This process's end, not its conversation's: a background job's worker ends on a
+                // daemon respawn or retire, and another process may hold the conversation. Liveness
+                // ends the row once nothing does. A person's own exit still ends it here.
+                let m = &self.mirrors[&key].native;
+                let handed_over = provider == "claude"
+                    && reason != lifecycle::ON_PURPOSE
+                    && (m.job.is_some()
+                        || claude::Holders::read(&super::resume::claude_config(&self.home)).holds(&m.conversation, false, Some(m.process.pid)));
+                if !handed_over {
+                    self.end_session(&key, reason)?;
+                }
                 Ok(Some(key))
             }
             lifecycle::Transition::Release(id) => {
@@ -1264,7 +1339,8 @@ impl Host {
             else {
                 continue;
             };
-            if mirror.ended_at.is_some() || approval::deliver(&reply, None) {
+            // A daemon hold has no hook channel: discovery follows the daemon (`codex_hold`).
+            if reply == CODEX_DAEMON || mirror.ended_at.is_some() || approval::deliver(&reply, None) {
                 continue;
             }
             let Ok(before) = serde_json::to_value(&*mirror) else { continue };
@@ -1293,21 +1369,54 @@ impl Host {
                 && (native.provider != "claude"
                     || native.job.is_some()
                     || claude::still_registered(home, native.process.pid, &native.conversation))
+                // A Codex thread its shared daemon dropped is stopped though the daemon runs on.
+                && (native.provider != "codex" || codex::loaded(&native.process, &native.conversation) != Some(false))
         };
+        // A row's life is its conversation's, not its pid's: Claude moves one conversation across
+        // pids (a daemon respawn, the agent view's restart, a second terminal's `--resume`, a
+        // `/resume` in another pid). While another live process holds it, the row stays and
+        // discovery re-points it at that process (`observe`: a successor, same session id).
+        // Claude's records are read at most once a tick, and only when a Claude mirror's own
+        // process no longer answers for it: the cost is records + mirrors, never their product.
+        let holders = std::cell::OnceCell::new();
+        let held = |native: &NativeSession| {
+            native.provider == "claude"
+                && holders
+                    .get_or_init(|| claude::Holders::read(&super::resume::claude_config(home)))
+                    .holds(&native.conversation, false, Some(native.process.pid))
+        };
+        let now = Instant::now();
+        let mut unheld = std::mem::take(&mut self.unheld);
         let gone: Vec<(String, &str)> = self
             .mirrors
             .iter()
-            .filter(|(_, m)| {
-                m.ended_at.is_none()
+            .filter(|(key, m)| {
+                let ends = m.ended_at.is_none()
                     && !runs(&m.native)
                     // While a successor waits for `advance`, `native` is the dead
                     // predecessor and the successor is the session that is running.
                     && m.registration.successor.as_ref().is_none_or(|next| !runs(next))
+                    && !held(&m.native);
+                // A background job ends only once nothing has held it for a while, nor written
+                // its transcript: a respawn kills the worker before its successor's record exists.
+                let job = m.native.provider == "claude" && m.native.job.is_some();
+                if !ends || !job {
+                    unheld.remove(*key);
+                    return ends;
+                }
+                let since = *unheld.entry((*key).clone()).or_insert(now);
+                let written = m.native.transcript.as_deref().and_then(|t| fs::metadata(t).ok()?.modified().ok());
+                let quiet = written.is_none_or(|at| at.elapsed().is_ok_and(|d| d >= JOB_HANDOVER));
+                now.duration_since(since) >= JOB_HANDOVER && quiet
             })
             // A process still running left the conversation on purpose; only a vanished
             // process with no end event of its own is an unexpected end.
             .map(|(key, m)| (key.clone(), if still_running(&m.native.process) { "exited" } else { "process-exited" }))
             .collect();
+        for (key, _) in &gone {
+            unheld.remove(key);
+        }
+        self.unheld = unheld;
         for (key, reason) in gone {
             if let Err(error) = self.end_session(&key, reason) {
                 relay_log(&format!("{} end not recorded: {error}", short(&key)));
@@ -1419,6 +1528,7 @@ impl Host {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            unheld: BTreeMap::new(),
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -1443,6 +1553,8 @@ impl Host {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let home = self.home.clone();
         self.rediscover = Some(wake.clone());
+        // Follows the shared Codex daemon's thread events (codex.rs); aborted with discovery.
+        let codex_watch = tokio::spawn(codex::watch(self.home.clone(), wake.clone()));
         let discovery = async move {
             // A 60s backstop, not the status source: hooks and the pid check drive
             // status now. A wake (a start hook, an enrollment change) runs it sooner,
@@ -1455,6 +1567,8 @@ impl Host {
                 }
                 last = Instant::now();
                 let (claude, codex) = tokio::join!(claude::discover(&home), codex::discover(&home));
+                // Cursor and Grok CLI: whatever their hooks recorded (agent network phase 2).
+                let hooked: Result<Vec<NativeSession>> = Ok(super::hooked::discover(&super::hooked::dir()));
                 // One provider's broken listing must not hide the other's sessions,
                 // so the pass is the union of whatever answered.
                 // Liveness reads the raw Claude listing, not the sessions that captured: a row
@@ -1464,7 +1578,7 @@ impl Host {
                     Err(e) => (Err(e), None),
                 };
                 let claude_ok = listed.is_some();
-                let listings = [claude, codex];
+                let listings = [claude, codex, hooked];
                 let providers = listings.len();
                 let mut found = vec![];
                 let mut failures = vec![];
@@ -1595,6 +1709,7 @@ impl Host {
         let mut discovery = tokio::spawn(discovery);
         tokio::select! {_ = &mut discovery=>{},_ = network=>{}}
         discovery.abort();
+        codex_watch.abort();
     }
 
     pub(super) async fn supervise(
@@ -1722,6 +1837,8 @@ impl Host {
                     self.workspace_key = Some(key.clone());
                 }
             }
+            // Git, gh and subagent counts for the rows: started here, read off the loop.
+            super::signals::tick(&self.mirrors, &self.home);
             laps.lap("workspace scan");
             if anchor.as_ref().is_some_and(|a| a.now().is_none()) {
                 anchor = None;
@@ -1752,10 +1869,19 @@ impl Host {
                 ) {
                     let sent = Instant::now();
                     let wall = SystemTime::now();
-                    let body = if recovering_ended.contains(&key) {
-                        self.begin_ended_recovery(&key)?
+                    let begun = if recovering_ended.contains(&key) {
+                        self.begin_ended_recovery(&key)
                     } else {
-                        self.begin_registration(&key)?
+                        self.begin_registration(&key)
+                    };
+                    // Not saved (a full disk): this session waits, the connection and every
+                    // other session stay.
+                    let body = match begun {
+                        Ok(body) => body,
+                        Err(error) => {
+                            quarantine(&mut quarantined, &mut registered, &mut sent_batches, &key, &error);
+                            continue;
+                        }
                     };
                     // Ended recovery overrides the wire reason without changing the
                     // native verdict; only a changed native verdict needs another register.
@@ -2031,7 +2157,11 @@ impl Host {
                             // An ended mirror's draining register carries no start identity.
                             let current_start_id = start_links::linked(&self.dir, &mirror.native, &mirror.generation)
                                 .filter(|_| mirror.ended_at.is_none());
-                            if advanced || native_restriction != mirror.native.restriction || start_id != current_start_id {
+                            if advanced
+                                || native_restriction != mirror.native.restriction
+                                || start_id != current_start_id
+                                || mirror.registration.sent_withheld != mirror.withheld()
+                            {
                                 registered.remove(&key);
                             } else {
                                 registered.insert(key.clone());
@@ -2382,15 +2512,30 @@ impl Host {
             && anchor
                 .and_then(ClockAnchor::now)
                 .is_some_and(|now| cmd.authorized_at(now));
-        let native = if eligible {
-            self.verified(&mirror.native).await.ok()
-        } else {
+        let native = if !eligible {
             None
+        } else if cmd.kind == "end" {
+            // End needs this process to be the one that was verified (its pid and start time,
+            // proved again before the stop below) and, for an interactive Claude, still on this
+            // conversation (`/resume` and `/clear` switch it in place). A full verification runs
+            // `claude --version` and lsof (1-3 s) and held every End back by that much.
+            match end_identity(&mirror.native) {
+                Some(native) if end_moved(&self.home, &crate::holder::manager::socket_dir(), &native) => {
+                    *why = "session moved";
+                    return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
+                }
+                native => native,
+            }
+        } else {
+            self.verified(&mirror.native).await.ok()
         };
         let Some(native) = native else {
             *why = if eligible { "native session unverified" } else { "stale generation, expired, stopping or not shared" };
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         };
+        // A fresh capture knows nothing of the holder Lightbulb runs the session in: that is the
+        // mirror's. Without it a held Codex reads as one off its daemon and every send is refused.
+        let native = NativeSession { holder: native.holder.clone().or_else(|| mirror.native.holder.clone()), ..native };
         if live && (native.provider != "codex" || native.status != "busy" || native.socket.is_none()
             || native.active_turn != cmd.expected_turn_id)
         {
@@ -2469,17 +2614,27 @@ impl Host {
             }
             // ponytail: `claude stop` is awaited here, on the relay loop, for up to 5 s (a holder's
             // End for up to 2 s): no heartbeat goes meanwhile. Off-loop when that is ever seen.
-            let sent = match (native.holder.clone(), job) {
-                (Some(id), _) => tokio::task::spawn_blocking(move || crate::holder::manager::list().into_iter().find(|h| h.id == id)
-                    .map(|holder| crate::holder::manager::end(&holder)).is_some()).await.unwrap_or(false),
-                (None, Some(job)) => match provider_program(&self.home, "claude") {
+            // A background job is stopped by Claude's daemon even when a holder of ours shows it
+            // (`claude attach`): ending only that client left the job running with no row.
+            let claude_job = job.filter(|job| native.provider == "claude" && crate::holder::manager::attach_provider(job) == Some("claude"));
+            if let (Some(id), Some(_)) = (&native.holder, claude_job) {
+                crate::holder::manager::end_asked_now(id);
+            }
+            let sent = match (native.holder.clone(), claude_job) {
+                (_, Some(job)) => match provider_program(&self.home, "claude") {
                     Some(program) => native_output(&program, &["stop", job]).await.is_ok(),
                     None => false,
                 },
+                (Some(id), None) => tokio::task::spawn_blocking(move || crate::holder::manager::list().into_iter().find(|h| h.id == id)
+                    .map(|holder| crate::holder::manager::end(&holder)).is_some()).await.unwrap_or(false),
                 (None, None) => unsafe { libc::kill(native.process.pid as libc::pid_t, libc::SIGTERM) == 0 },
             };
-            if !sent && native.holder.is_none() {
-                crate::holder::manager::end_asked_forget(&cmd.session_id);
+            if !sent {
+                match (&native.holder, claude_job) {
+                    (None, _) => crate::holder::manager::end_asked_forget(&cmd.session_id),
+                    (Some(id), Some(_)) => crate::holder::manager::end_asked_forget(id),
+                    _ => {}
+                }
             }
             return journal.finish(&cmd.session_id, &cmd.request_id, sent.then(|| cmd.request_id.clone()), false);
         }
@@ -2495,6 +2650,14 @@ impl Host {
         }
         // From this point failure/cancellation is unknown, never a retry/rejection.
         *why = "";
+        // Cursor and Grok CLI: the letter waits for the session's next hook, and its receipt
+        // stays unknown until that hook hands it over (`hooked::drain` settles it applied). An
+        // agent that stopped taking turns (a usage limit) never told anyone it had the message.
+        if super::hooked::provider(&native.provider) {
+            let receipt = journal.path(&cmd.session_id, &cmd.request_id);
+            let _ = super::hooked::deliver(&super::hooked::dir(), &native, &cmd.request_id, &text, Some(&receipt));
+            return self.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation).await;
+        }
         if let Some(socket) = &mut socket {
             let from = claude::sender_handle(cmd.own, cmd.label.as_ref().and_then(|l| l.handle.as_deref()));
             let _ = claude::send(socket, &text, &from).await;
@@ -2544,6 +2707,11 @@ impl Host {
             .waiting
             .as_ref()
             .and_then(|w| w.held.clone().filter(|held| answerable(held, w.shipped_full, cmd)));
+        // A Codex hold is answered over its daemon (`codex::answer`), named by the request's item.
+        let codex = held
+            .as_ref()
+            .is_some_and(|held| mirror.native.provider == "codex" && daemon_held(held))
+            .then(|| (mirror.native.clone(), mirror.waiting.as_ref().and_then(|w| w.id.clone())));
         let live = mirror.generation == cmd.expected_generation
             && mirror.registration.successor.is_none()
             && mirror.ended_at.is_none()
@@ -2557,9 +2725,10 @@ impl Host {
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
         let confined = |held: &approval::Held| {
-            enrollment::hook_path()
-                .parent()
-                .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
+            codex.is_some()
+                || enrollment::hook_path()
+                    .parent()
+                    .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
         };
         let Some(held) = held.filter(|held| live && confined(held)) else {
             return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
@@ -2576,7 +2745,14 @@ impl Host {
                 }
             }),
         };
-        if !approval::deliver(&held.reply, Some(&answer)) {
+        let delivered = match &codex {
+            Some((native, Some(item))) => codex::answer(&self.home, native, item, &held.input_digest, &answer.decision, cmd.mode.as_deref())
+                .await
+                .unwrap_or(false),
+            Some((_, None)) => false,
+            None => approval::deliver(&held.reply, Some(&answer)),
+        };
+        if !delivered {
             return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
         }
         // Answered: the prompt is gone and the session works (or is told no).
@@ -2588,6 +2764,62 @@ impl Host {
         self.heartbeat_dirty.insert(key);
         journal.finish(&cmd.session_id, &cmd.request_id, Some(held.id), false)
     }
+}
+
+/// A Codex thread's open approval, held the way a Claude hook holds a prompt (spec 2026-10-26 (f),
+/// gap 12). Its daemon replays it to any client that joins the thread, so the app answers it over
+/// the app-server (`codex::answer`), with no hook in between. Discovery owns the hold: once the
+/// daemon no longer holds the request (answered in the terminal, the turn moved on, sharing
+/// stopped), the prompt is let go.
+fn codex_hold(mirror: &mut Mirror, withheld: bool) {
+    if mirror.native.provider != "codex" || mirror.ended_at.is_some() {
+        return;
+    }
+    let thread = mirror.native.conversation.clone();
+    let open = codex::open_request(&thread)
+        .filter(|_| mirror.native.status == "waiting-approval" && !withheld)
+        .and_then(|request| codex::approval(&request));
+    let Some(open) = open else {
+        if mirror.waiting.as_ref().and_then(|w| w.held.as_ref()).is_some_and(daemon_held) {
+            mirror.waiting = None;
+        }
+        return;
+    };
+    let id = codex::approval_id(&thread, &open.item);
+    if mirror.waiting.as_ref().and_then(|w| w.held.as_ref()).is_some_and(|h| h.id == id) {
+        return;
+    }
+    let summary = redact(open.summary.trim());
+    // Exact as a Claude shell prompt is: the summary IS the whole command line.
+    let exact = summary == open.summary.trim() && approval::exact(open.tool, &open.input, None, None);
+    let held = approval::Held {
+        id,
+        input_digest: approval::digest(&open.input),
+        reply: CODEX_DAEMON.into(),
+        exact,
+        modes: if open.session { vec!["session".into()] } else { vec![] },
+        full: open.full,
+        similar: None,
+    };
+    let prompt = WaitingPrompt {
+        id: Some(open.item),
+        tool: Some(open.tool.into()),
+        summary: summary.clone(),
+        held: Some(held),
+        private_send: None,
+        input: open.full.then_some(open.input),
+        shipped_full: false,
+    };
+    mirror.queue.push(approval_row(&summary, &prompt));
+    mirror.waiting = Some(prompt);
+}
+
+/// The reply "channel" of a prompt Codex's daemon holds (`codex_hold`): it has no hook socket.
+/// Never a path `approval::reply_allowed` admits, so no hook report can carry it in.
+const CODEX_DAEMON: &str = "codex-daemon";
+
+fn daemon_held(held: &approval::Held) -> bool {
+    held.reply == CODEX_DAEMON
 }
 
 /// Does this command answer exactly this held prompt, with an option it offered?
@@ -2622,6 +2854,9 @@ fn approval_row(text: &str, prompt: &WaitingPrompt) -> Value {
             "modes": held.modes,
         },
     });
+    if let Some(similar) = &held.similar {
+        row["tool"]["input"]["similar"] = json!(similar);
+    }
     row
 }
 
@@ -2784,10 +3019,34 @@ fn registration(mirror: &Mirror) -> Value {
         "providerVersion":mirror.native.version,"status":mirror.native.status,"activeTurnId":mirror.native.active_turn,"controlUnavailableReason":mirror.native.control_unavailable_reason(),
         "title":mirror.native.title,"cwdName":mirror.native.cwd_name,"holderId":mirror.native.holder,
         "workspace":mirror.workspace.summary()}});
+    if mirror.withheld() {
+        body["session"]["shared"] = json!(false);
+    }
+    super::session_states::add_attention(&mut body["session"], &mirror.native);
     if let Some(previous) = &mirror.previous_generation {
         body["previousGeneration"] = json!(previous);
     }
     body
+}
+
+/// An End's check of the session it stops: still live and unrestricted, and its process the one
+/// verified before (pid and start time). The cheap half of `verify_identity`.
+fn end_identity(native: &NativeSession) -> Option<NativeSession> {
+    (native.status != "ended" && native.restriction.is_none()).then(|| super::hooked::verify(native).ok()).flatten()
+}
+
+/// Whether the process an End would stop left this row's conversation in place: an interactive
+/// Claude switched by `/resume` or `/clear` (its pid record names another), or a held Codex TUI
+/// switched by `/new` or `/resume` (its holder is bound to another thread). One small file each;
+/// no record, no evidence.
+fn end_moved(home: &Path, holders: &Path, native: &NativeSession) -> bool {
+    match native.provider.as_str() {
+        "claude" => native.job.is_none() && !claude::still_registered(home, native.process.pid, &native.conversation),
+        "codex" => native.holder.as_deref()
+            .and_then(|id| crate::holder::manager::bound_thread(holders, id))
+            .is_some_and(|thread| thread != native.conversation),
+        _ => false,
+    }
 }
 
 /// `Host::verify` in production: `verify_identity`, timed.
@@ -2803,6 +3062,9 @@ fn verify_native(home: PathBuf, native: NativeSession) -> std::pin::Pin<Box<dyn 
 async fn verify_identity(home: &Path, native: &NativeSession) -> Result<NativeSession> {
     if native.status == "ended" || native.restriction.is_some() {
         return Err("control unavailable".into());
+    }
+    if super::hooked::provider(&native.provider) {
+        return super::hooked::verify(native);
     }
     let program = if native.provider == "codex" {
         codex::program(home)
@@ -2896,7 +3158,7 @@ fn registration_due_with_recovery(
         .find(|(key, mirror)| {
             (mirror.ended_at.is_none() || recovering_ended.contains(*key))
                 // A withheld session registers nothing, whatever it still waits on.
-                && !stopped(key, mirror)
+                && (!stopped(key, mirror) || paused(mirror))
                 && !registered.contains(*key)
                 && !quarantine_active(quarantined, key)
         })
@@ -3001,13 +3263,13 @@ fn device_heartbeats_with_controls(
     let mut frames = vec![];
     let mut sessions: Vec<Value> = vec![];
     for (key, m) in mirrors.iter().filter(|(key, m)| {
-        registered.contains(*key) && m.ended_at.is_none() && !stopped(key, m) && m.session_id.is_some()
+        registered.contains(*key) && m.ended_at.is_none() && (!stopped(key, m) || paused(m)) && m.session_id.is_some()
     }) {
         let entry = json!({"sessionId":m.session_id,"generation":m.generation,
             "status":m.native.status,"activeTurnId":m.native.active_turn,
             "controlUnavailableReason":m.native.control_unavailable_reason(),
             "title":m.native.title,"cwdName":m.native.cwd_name,
-            "lastAssistantMessage":m.native.last_assistant_message,
+            "lastAssistantMessage":if m.withheld() { None } else { m.native.last_assistant_message.as_deref() },
             "workspace":m.workspace.summary()});
         // Only to a relay that said it reads them: an older one rejects the whole frame.
         let mut entry = entry;
@@ -3025,6 +3287,8 @@ fn device_heartbeats_with_controls(
             entry["terminal"] = json!(m.native.terminal());
             super::session_states::add_reason(&mut entry, &m.native);
         }
+        super::session_states::add_attention(&mut entry, &m.native);
+        super::signals::add(&mut entry, key, m);
         // This session's own holder takes the app panel's size (its HELLO said so): a holder an
         // older build started does not, though this Mac advertises remoteResize. Only to a relay
         // that lists remoteResize.
@@ -3362,7 +3626,10 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
+            attention: Default::default(),
         }
     }
 
@@ -3438,6 +3705,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            unheld: BTreeMap::new(),
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -3453,17 +3721,48 @@ pub(super) mod tests {
         let outside = test_native("5eed0001-0000-4000-8000-000000000001");
         let mut held = test_native("5eed0002-0000-4000-8000-000000000002");
         held.holder = Some("ab12cd34".into());
+        held.transcript = Some(dir.path().join("held.jsonl"));
+        // A held terminal nobody prompted: Claude starts a job from it to take another session's message.
+        let mut idle_held = test_native("5eed0005-0000-4000-8000-000000000005");
+        idle_held.holder = Some("ab12cd35".into());
+        let mut peer_job = test_native("5eed0006-0000-4000-8000-000000000006");
+        peer_job.forked_from = Some(idle_held.conversation.clone());
         // ← out of a session that is shared, and out of one that is not.
         let mut fork = test_native("5eed0003-0000-4000-8000-000000000003");
         fork.forked_from = Some(held.conversation.clone());
+        fork.forked_by_person = Some(true);
         let mut private_fork = test_native("5eed0004-0000-4000-8000-000000000004");
         private_fork.forked_from = Some(outside.conversation.clone());
-        host.observe(vec![outside.clone(), held.clone()], &BTreeSet::new()).unwrap();
-        host.observe(vec![outside.clone(), held.clone(), fork.clone(), private_fork.clone()], &BTreeSet::new()).unwrap();
-        let shared: Vec<bool> = [&outside, &held, &fork, &private_fork].iter().map(|n| host.mirrors[&native_key(n)].shared).collect();
-        assert_eq!(shared, [false, true, true, false]);
+        private_fork.forked_by_person = Some(true);
+        // A peer's message moved the shared session on (its continuation's first prompt is the peer's).
+        let mut peer_fork = test_native("5eed0007-0000-4000-8000-000000000007");
+        peer_fork.forked_from = Some(held.conversation.clone());
+        host.observe(vec![outside.clone(), held.clone(), idle_held.clone()], &BTreeSet::new()).unwrap();
+        host.observe(vec![outside.clone(), held.clone(), idle_held.clone(), fork.clone(), private_fork.clone(), peer_job.clone(), peer_fork.clone()], &BTreeSet::new()).unwrap();
+        let shared: Vec<bool> = [&outside, &held, &fork, &private_fork, &peer_job, &peer_fork].iter().map(|n| host.mirrors[&native_key(n)].shared).collect();
+        assert_eq!(shared, [false, true, true, false, false, false], "a job out of a terminal nobody prompted, or moved on by a peer, is not the person's");
+        // The continuation remembers the id it had before.
+        assert_eq!(host.mirrors[&native_key(&fork)].native.aliases, [held.conversation.clone()]);
+        // Undecided (no turn of its own yet) is private, also once the relay has heard of it; its
+        // person's first turn then shares it and registers it again. A peer's never does.
+        let peer_key = native_key(&peer_fork);
+        host.mirrors.get_mut(&peer_key).unwrap().session_id = Some("5eed0007-5e55-4000-8000-000000000007".into());
+        let mut by_person = peer_fork.clone();
+        by_person.forked_by_person = Some(true);
+        let invalidated = host.observe(vec![held.clone(), by_person], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&peer_key].shared && invalidated.contains(&peer_key));
+        // The same while its first, private register is still in flight (no id yet).
+        let mut late = test_native("5eed0008-0000-4000-8000-000000000008");
+        late.forked_from = Some(held.conversation.clone());
+        host.observe(vec![held.clone(), late.clone()], &BTreeSet::new()).unwrap();
+        let late_key = native_key(&late);
+        assert!(!host.mirrors[&late_key].shared);
+        host.mirrors.get_mut(&late_key).unwrap().registration.pending = true;
+        late.forked_by_person = Some(true);
+        let invalidated = host.observe(vec![held.clone(), late], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&late_key].shared && invalidated.contains(&late_key), "its private register must go again");
 
-        // Only its person's: it registers, heartbeats and uploads nothing, and takes nothing.
+        // Only its person's and never shared: it registers, heartbeats and uploads nothing, and takes nothing.
         let key = native_key(&outside);
         let sid = "5eed0001-5e55-4000-8000-000000000001";
         let shared_keys: BTreeSet<String> = host.mirrors.iter().filter(|(_, m)| m.shared).map(|(k, _)| k.clone()).collect();
@@ -3477,7 +3776,11 @@ pub(super) mod tests {
         let listed = |host: &Host| {
             device_heartbeats(&host.mirrors, &every, false).unwrap().iter().any(|f| f["sessions"].as_array().is_some_and(|s| s.iter().any(|e| e["sessionId"] == sid)))
         };
-        assert!(!listed(&host));
+        // Known to the relay (shared once): it stays in its owner's list as Only you, with no text.
+        let entry = |host: &Host| device_heartbeats(&host.mirrors, &every, false).unwrap()[0]["sessions"].as_array().unwrap().iter().find(|e| e["sessionId"] == sid).cloned();
+        assert!(entry(&host).is_some_and(|e| e["lastAssistantMessage"].is_null()));
+        assert_eq!(registration(&host.mirrors[&key])["session"]["shared"], false);
+        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()).as_deref(), Some(key.as_str()));
         assert!(host.refuses_frame(&json!({"sessionId": sid})), "no terminal frame, watch or typed input");
 
         // Its person shares it: the whole session, from its start. It registers again.
@@ -3487,17 +3790,48 @@ pub(super) mod tests {
         assert_eq!(asked(&key), None);
         assert!(host.mirrors[&key].shared && host.mirrors[&key].cursor.offset == 0);
         assert!(listed(&host) && !host.refuses_frame(&json!({"sessionId": sid})));
+        assert!(registration(&host.mirrors[&key])["session"].get("shared").is_none(), "absent: the owner's own choice stands");
         assert!(host.mirrors.get_mut(&key).unwrap().next_batch().unwrap().is_some());
         assert!(private_read::<Mirror>(&dir.path().join(format!("{key}.json"))).unwrap().shared, "durable");
 
         // And stops: at once, and a holder found for it later does not undo that.
         ask_share(&key, false);
         assert!(host.share_tick().is_empty());
-        assert!(host.mirrors[&key].withheld() && !listed(&host));
+        assert!(host.mirrors[&key].withheld() && listed(&host), "paused: still its owner's, as Only you");
         let mut found = outside.clone();
         found.holder = Some("cd34ab12".into());
         host.observe(vec![found], &BTreeSet::new()).unwrap();
         assert!(!host.mirrors[&key].shared, "its person stopped sharing it");
+    }
+
+    #[test]
+    fn local_sessions_end_sees_a_conversation_that_moved_out_of_its_process() {
+        let home = tempfile::tempdir().unwrap();
+        let holders = home.path().join("h");
+        fs::create_dir_all(home.path().join(".claude/sessions")).unwrap();
+        fs::create_dir_all(&holders).unwrap();
+        const THREAD: &str = "019a1b2c-0000-7000-8000-000000000000";
+        const OTHER: &str = "019a1b2c-0000-7000-8000-0000000000ff";
+        let mut codex = test_native(THREAD);
+        codex.provider = "codex".into();
+        codex.holder = Some("c0dec0de".into());
+        assert!(!end_moved(home.path(), &holders, &codex), "no bound thread: no evidence");
+        fs::write(holders.join("c0dec0de.thread"), THREAD).unwrap();
+        assert!(!end_moved(home.path(), &holders, &codex));
+        fs::write(holders.join("c0dec0de.thread"), OTHER).unwrap();
+        assert!(end_moved(home.path(), &holders, &codex), "/new or /resume bound the holder to another thread");
+        codex.holder = None;
+        assert!(!end_moved(home.path(), &holders, &codex), "not held: the full verification decides");
+
+        let mut claude = test_native(THREAD);
+        claude.provider = "claude".into();
+        let record = home.path().join(format!(".claude/sessions/{}.json", claude.process.pid));
+        fs::write(&record, json!({"sessionId": THREAD}).to_string()).unwrap();
+        assert!(!end_moved(home.path(), &holders, &claude));
+        fs::write(&record, json!({"sessionId": OTHER}).to_string()).unwrap();
+        assert!(end_moved(home.path(), &holders, &claude));
+        claude.job = Some("1234abcd".into());
+        assert!(!end_moved(home.path(), &holders, &claude), "a job is stopped by its id");
     }
 
     #[tokio::test]
@@ -3512,6 +3846,12 @@ pub(super) mod tests {
         mirror.shared = false; // Only me
         mirror.native.provider = "claude".into();
         mirror.native.process = process(child.id()).unwrap();
+        // Claude's record of this pid names the conversation, as a live session's does.
+        let conversation = mirror.native.conversation.clone();
+        let sessions = dir.path().join(".claude/sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let pid = child.id();
+        let record = |conversation: &str| fs::write(sessions.join(format!("{pid}.json")), json!({"pid": pid, "sessionId": conversation}).to_string()).unwrap();
         let mut host = test_host(dir.path(), vec![("own-end", mirror)]);
         host.verify = unchanged;
         let at = epoch_secs();
@@ -3522,7 +3862,14 @@ pub(super) mod tests {
         let refused = host.command(&command("r1", "interrupt", json!("turn-1"), 1), Some(&anchor)).await.unwrap();
         assert_eq!(refused.outcome, "rejected", "their own, and still refused: only End is carried out");
         assert!(child.try_wait().unwrap().is_none());
-        let ended = host.command(&command("r2", "end", Value::Null, 2), Some(&anchor)).await.unwrap();
+        // Same pid, but Claude switched it to another conversation (`/resume`, `/clear`) before the
+        // next liveness tick: End is refused, never sent to the conversation that moved in.
+        record("99999999-9999-4999-8999-999999999999");
+        let moved = host.command(&command("r1b", "end", Value::Null, 2), Some(&anchor)).await.unwrap();
+        assert_eq!(moved.outcome, "rejected");
+        assert!(child.try_wait().unwrap().is_none(), "no signal reached the process");
+        record(&conversation);
+        let ended = host.command(&command("r2", "end", Value::Null, 3), Some(&anchor)).await.unwrap();
         assert_eq!(ended.outcome, "applied");
         assert!(!child.wait().unwrap().success(), "SIGTERM reached its process");
         assert!(!host.mirrors["own-end"].shared, "ending it shared nothing");
@@ -3571,6 +3918,17 @@ pub(super) mod tests {
         assert_ne!(host.command(&failed, Some(&anchor)).await.unwrap().outcome, "applied");
         assert!(crate::holder::manager::end_asked(JOB).is_none(), "a later crash is not an end its person asked for");
         assert!(child.try_wait().unwrap().is_none());
+
+        // A job a holder of ours shows (`claude attach`, the page watching it): Claude's daemon
+        // still stops the job. Ending only that client left the job running with no row.
+        fs::write(bin.join("claude"), "#!/bin/sh\necho \"$@\" > \"$0.args\"\n").unwrap();
+        host.mirrors.get_mut("job-end").unwrap().native.holder = Some("a77ac4ed".into());
+        let mut shown = command("r7", "end", Value::Null, 5);
+        shown.session_id = JOB.into();
+        assert_eq!(host.command(&shown, Some(&anchor)).await.unwrap().outcome, "applied");
+        assert_eq!(fs::read_to_string(bin.join("claude.args")).unwrap().trim(), "stop 1234abcd");
+        assert!(crate::holder::manager::end_asked("a77ac4ed").is_some(), "the end that follows is one its person asked for");
+        crate::holder::manager::end_asked_forget("a77ac4ed");
         child.kill().unwrap();
         child.wait().unwrap();
     }
@@ -3706,7 +4064,9 @@ pub(super) mod tests {
         mirror.shared = false;
         mirror.pending = None;
         assert!(mirror.next_batch().unwrap().is_none());
-        assert_eq!(due(&mirrors), None);
+        // It still registers, as Only you, so its owner keeps it in their list.
+        assert_eq!(due(&mirrors), Some("plain".to_string()));
+        assert_eq!(registration(&mirrors["plain"])["session"]["shared"], false);
     }
 
     #[test]
@@ -3795,6 +4155,38 @@ pub(super) mod tests {
             "createdAt":at,"deliverBy":at + 30,"held":false,"providerMessageId":null}}), "alice").unwrap();
         assert_eq!(host.command(&send, Some(&anchor)).await.unwrap().outcome, "rejected");
         assert!(!dir.path().join("codex.args").exists(), "nothing was queued");
+    }
+
+    #[tokio::test]
+    async fn local_sessions_a_send_to_a_held_codex_is_queued_although_verification_drops_the_holder() {
+        // Verification recaptures the session, and a capture never names a holder.
+        fn recaptured(_: PathBuf, native: NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>> {
+            Box::pin(async move { Ok(NativeSession { holder: None, ..native }) })
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("codex");
+        fs::write(&bin, "#!/bin/sh\necho \"$@\" > \"$0.args\"\n").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut mirror = test_mirror("5eed000f-0000-4000-8000-00000000000f", "g1");
+        mirror.session_id = Some(SID.into());
+        mirror.native.app = false;
+        mirror.native.process.executable = bin.clone();
+        mirror.native.holder = Some("01648c21".into()); // `lightbulb codex`: on the daemon, in a holder
+        let rollout = dir.path().join("rollout.jsonl"); // the send anchors at the rollout's end
+        fs::write(&rollout, "{}\n").unwrap();
+        mirror.native.transcript = Some(rollout);
+        assert_eq!(mirror.native.terminal_reason(), None);
+        let mut host = test_host(dir.path(), vec![("held", mirror)]);
+        host.verify = recaptured;
+        let at = epoch_secs();
+        let anchor = ClockAnchor { server: at, round_trip: 0.0, at: Instant::now(), wall: SystemTime::now() };
+        let send = parse_command(&json!({"command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
+            "expectedTurnId":null,"sessionId":SID,"roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched",
+            "createdAt":at,"deliverBy":at + 30,"held":false,"providerMessageId":null}}), "alice").unwrap();
+        let _ = host.command(&send, Some(&anchor)).await;
+        let args = fs::read_to_string(dir.path().join("codex.args")).expect("the send was queued on the daemon");
+        assert!(args.starts_with("queue --thread"), "{args}");
     }
 
     #[test]
@@ -4198,7 +4590,8 @@ pub(super) mod tests {
                 assert_eq!(host.apply_hook(&hook(provider.clone(), "Stop", SID)).unwrap(), Some(key.clone()));
                 assert_eq!(host.mirrors[&key].native.status, "idle");
                 assert_eq!(host.apply_hook(&hook(provider.clone(), "SessionEnd", SID)).unwrap(), Some(key.clone()));
-                assert!(host.mirrors[&key].ended_at.is_some());
+                // A background job's worker ending is not its conversation's end: liveness decides.
+                assert_eq!(host.mirrors[&key].ended_at.is_some(), provider == lifecycle::Provider::Codex);
             }
         }
     }
@@ -4464,7 +4857,7 @@ pub(super) mod tests {
                 input_digest: "d".repeat(64),
                 reply: String::new(),
                 exact: true,
-                modes: vec![], full: false,
+                modes: vec![], full: false, similar: None,
             }),
             private_send: None,
             input: None,
@@ -5012,6 +5405,172 @@ pub(super) mod tests {
         assert!(host.mirrors[SID].ended_at.is_some());
     }
 
+    /// A Claude conversation's row as the relay knows it: registered at `gen-1`, "Only me" (paused
+    /// on the Mac), titled, on a process that has just gone. `job`: a daemon background session.
+    fn moved_row(dir: &Path, job: Option<&str>) -> (Host, String, Process) {
+        let mut native = test_native(SID);
+        native.provider = "claude".into();
+        native.app = false;
+        native.job = job.map(str::to_owned);
+        native.title = Some("Ship row life".into());
+        native.process.pid = 2_147_483_000; // gone
+        let gone = native.process.clone();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = native.clone();
+        mirror.session_id = Some("5eed0007-5e55-4000-8000-000000000007".into());
+        mirror.registration.acknowledged = Some("gen-1".into());
+        mirror.shared = false;
+        let key = native_key(&native);
+        (test_host(dir, vec![(key.as_str(), mirror)]), key, gone)
+    }
+
+    /// The same conversation, now on this test process: what discovery lists after the move.
+    fn moved_to_here(host: &Host, key: &str) -> NativeSession {
+        let mut native = host.mirrors[key].native.clone();
+        native.process = process(std::process::id()).unwrap();
+        native
+    }
+
+    /// The row re-points: same mirror, same Lightbulb session id, same sharing and title, no end
+    /// told, and its next registration chains from the generation the relay has.
+    fn assert_repointed(host: &mut Host, key: &str) {
+        let now = process(std::process::id()).unwrap().generation();
+        let m = &host.mirrors[key];
+        assert!(m.ended_at.is_none() && host.ended_pending.is_empty(), "no end between the two processes");
+        assert_eq!(m.session_id.as_deref(), Some("5eed0007-5e55-4000-8000-000000000007"));
+        assert!(m.withheld(), "still Only me");
+        assert_eq!(m.generation, now);
+        let frame = host.begin_registration(key).unwrap();
+        assert_eq!(frame["previousGeneration"], "gen-1", "a continuation of the run the relay has, not a sibling");
+        assert_eq!(frame["session"]["shared"], false);
+        assert_eq!(frame["session"]["title"], "Ship row life");
+        assert_eq!(host.mirrors.values().filter(|m| m.native.conversation == SID).count(), 1, "one row");
+    }
+
+    #[test]
+    fn local_sessions_a_daemon_respawn_keeps_one_row() {
+        // `claude respawn`: the daemon kills the worker, and the new one is in its roster ~140 ms
+        // before it writes its own record (2026-10-26). The old worker's SessionEnd is its own end.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, gone) = moved_row(dir.path(), Some("65ebc88a"));
+        let mut end = hook(lifecycle::Provider::Claude, "SessionEnd", SID);
+        end.source_process = Some(lifecycle::HookProcess::of(&gone));
+        end.reason = Some("other".into());
+        host.apply_hook(&end).unwrap();
+        host.liveness_tick();
+        assert!(host.mirrors[&key].ended_at.is_none(), "the gap before the successor's record is no end");
+        let me = process(std::process::id()).unwrap();
+        fs::create_dir_all(dir.path().join(".claude/daemon")).unwrap();
+        fs::write(dir.path().join(".claude/daemon/roster.json"), json!({"workers":{"65ebc88a":{"pid":me.pid,
+            "procStart":claude::proc_start(me.birth_micros),"sessionId":SID,"replPid":me.pid}}}).to_string()).unwrap();
+        host.unheld.values_mut().for_each(|at| *at = Instant::now().checked_sub(Duration::from_secs(60)).unwrap());
+        host.liveness_tick();
+        assert!(host.mirrors[&key].ended_at.is_none(), "the daemon runs it");
+        let next = moved_to_here(&host, &key);
+        host.observe(vec![next], &BTreeSet::new()).unwrap();
+        assert_repointed(&mut host, &key);
+    }
+
+    #[test]
+    fn local_sessions_liveness_reads_claudes_records_once_a_tick_whatever_the_mirrors() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, _, _) = moved_row(dir.path(), None);
+        for n in 0..5 {
+            let mut m = test_mirror(SID, "gen-x");
+            m.native.provider = "claude".into();
+            m.native.conversation = format!("0000000{n}-0000-4000-8000-00000000000{n}");
+            m.native.process.pid = 2_147_483_000;
+            host.mirrors.insert(native_key(&m.native), m);
+        }
+        let reads = || claude::tests::HOLDER_READS.with(std::cell::Cell::get);
+        let before = reads();
+        host.liveness_tick();
+        assert_eq!(reads() - before, 1, "six gone Claude mirrors, one read");
+        let before = reads();
+        host.liveness_tick();
+        assert_eq!(reads(), before, "nothing left to decide, nothing read");
+    }
+
+    #[test]
+    fn local_sessions_the_agent_views_restart_keeps_one_row() {
+        // The agent view restarts a stopped job with `fork:false`: the same id on a new pid, which
+        // writes its own record.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, _) = moved_row(dir.path(), Some("ae0e0fa4"));
+        claude::tests::live_record(&dir.path().join(".claude"), SID, None);
+        host.liveness_tick();
+        host.unheld.values_mut().for_each(|at| *at = Instant::now().checked_sub(Duration::from_secs(60)).unwrap());
+        host.liveness_tick();
+        assert!(host.mirrors[&key].ended_at.is_none());
+        let next = moved_to_here(&host, &key);
+        host.observe(vec![next], &BTreeSet::new()).unwrap();
+        assert_repointed(&mut host, &key);
+    }
+
+    #[test]
+    fn local_sessions_a_resume_in_another_pid_moves_the_row_and_ends_the_one_it_left() {
+        // Pid P ran X; `/resume Y` in P rewrites P's record to Y. Y's own process had gone: Y's row
+        // moves to P, X's ends (nothing holds X).
+        const X: &str = "0000000a-0000-4000-8000-00000000000a";
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, _) = moved_row(dir.path(), None);
+        let mut x = test_mirror(X, "x-1");
+        x.native.provider = "claude".into();
+        x.native.conversation = X.into();
+        let x_key = native_key(&x.native);
+        host.mirrors.insert(x_key.clone(), x);
+        claude::tests::live_record(&dir.path().join(".claude"), SID, None);
+        host.liveness_tick();
+        assert_eq!(host.mirrors[&x_key].ended_reason.as_deref(), Some("exited"), "P left X");
+        assert!(host.mirrors[&key].ended_at.is_none(), "P holds Y now");
+        host.ended_pending.clear();
+        let next = moved_to_here(&host, &key);
+        host.observe(vec![next], &BTreeSet::new()).unwrap();
+        assert_repointed(&mut host, &key);
+    }
+
+    #[test]
+    fn local_sessions_a_retired_job_ends_after_its_handover_and_its_revive_is_the_same_row() {
+        // `bg retire …: idle-prompt`: the worker goes and nothing holds the conversation (a "done"
+        // job). The row ends -- Resume attaches it (#4404) -- and the revive on a claimed spare
+        // (a new pid, hours later) is the same row again.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, _) = moved_row(dir.path(), Some("251719c2"));
+        host.liveness_tick();
+        assert!(host.mirrors[&key].ended_at.is_none(), "not on the first tick: a respawn may be under way");
+        host.unheld.values_mut().for_each(|at| *at = Instant::now().checked_sub(Duration::from_secs(60)).unwrap());
+        host.liveness_tick();
+        assert_eq!(host.mirrors[&key].ended_reason.as_deref(), Some("process-exited"));
+        assert!(host.unheld.is_empty());
+        let next = moved_to_here(&host, &key);
+        host.observe(vec![next], &BTreeSet::new()).unwrap();
+        let m = &host.mirrors[&key];
+        assert!(m.ended_at.is_none() && m.withheld() && m.session_id.as_deref() == Some("5eed0007-5e55-4000-8000-000000000007"));
+        let frame = host.begin_registration(&key).unwrap();
+        assert_eq!(frame["previousGeneration"], "gen-1");
+        assert_eq!(host.mirrors.len(), 1);
+    }
+
+    #[test]
+    fn local_sessions_an_attach_client_is_not_a_new_process_of_the_conversation() {
+        // `claude attach` is a PTY client of the job's worker and writes no record (checked live,
+        // 2026-10-26): the row stays on the worker, generation and all, while it comes and goes.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, _) = moved_row(dir.path(), Some("65ebc88a"));
+        let here = moved_to_here(&host, &key);
+        host.observe(vec![here.clone()], &BTreeSet::new()).unwrap();
+        host.mirrors.get_mut(&key).unwrap().registered();
+        let generation = host.mirrors[&key].generation.clone();
+        let mut client = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        host.liveness_tick();
+        host.observe(vec![here.clone()], &BTreeSet::new()).unwrap();
+        client.kill().unwrap();
+        client.wait().unwrap();
+        host.liveness_tick();
+        assert!(host.mirrors[&key].ended_at.is_none());
+        assert_eq!(host.mirrors[&key].generation, generation);
+    }
+
     #[test]
     fn local_sessions_an_ended_session_still_drains_its_last_transcript_bytes() {
         let dir = tempfile::tempdir().unwrap();
@@ -5203,7 +5762,7 @@ pub(super) mod tests {
             summary: "list_targets {}".into(),
             held: Some(approval::Held {
                 id: id.clone(), input_digest: "d".repeat(64), reply: String::new(),
-                exact: true, modes: vec![], full: false,
+                exact: true, modes: vec![], full: false, similar: None,
             }),
             private_send: None,
             input: None,
@@ -5228,7 +5787,7 @@ pub(super) mod tests {
         let input = json!({"file_path":"/w/a.rs","old_string":"a","new_string":"b"});
         let prompt = WaitingPrompt { id: None, tool: Some("Edit".into()), summary: "Edit a.rs".into(),
             held: Some(approval::Held { id: id.clone(), input_digest: approval::digest(&input), reply: String::new(),
-                exact: false, modes: vec![], full: true }),
+                exact: false, modes: vec![], full: true, similar: None }),
             private_send: None, input: Some(input.clone()), shipped_full: false };
         let row = approval_row("", &prompt);
         assert!(row["tool"]["input"].get("full").is_none() && row["tool"]["input"].get("input").is_none(),
@@ -5275,7 +5834,7 @@ pub(super) mod tests {
             let raw = json!({"command":"make\nmake test"});
             let shown = if shown_digest_ok { raw.clone() } else { json!({"command":"make"}) };
             let held = approval::Held { id: id.clone(), input_digest: approval::digest(&raw),
-                reply: reply.to_string_lossy().into_owned(), exact: false, modes: vec![], full: true };
+                reply: reply.to_string_lossy().into_owned(), exact: false, modes: vec![], full: true, similar: None };
             private_write(&hooks.join(format!("{id}.json")),
                 &json!({"approvalId":id,"inputDigest":held.input_digest,"input":shown})).unwrap();
             host.apply_hook(&lifecycle::HookEvent {
@@ -5301,7 +5860,7 @@ pub(super) mod tests {
             "text":"private body","requestId":uuid::Uuid::new_v4().to_string()});
         let prompt = WaitingPrompt { id: None, tool: Some("mcp__lightbulb_native_sessions__send".into()),
             summary: "Lightbulb message".into(), held: Some(approval::Held {
-                id: id.clone(), input_digest: digest, reply: String::new(), exact: true, modes: vec![], full: false,
+                id: id.clone(), input_digest: digest, reply: String::new(), exact: true, modes: vec![], full: false, similar: None,
             }), private_send: Some(detail.clone()), input: None, shipped_full: false };
         mirror.waiting = Some(prompt.clone());
         let batch = json!({"type":"local.session.events","sessionId":SID,"generation":"gen-1",
@@ -5328,7 +5887,7 @@ pub(super) mod tests {
             input_digest: "d".repeat(64),
             reply: reply.to_string_lossy().into_owned(),
             exact: true,
-            modes: vec![], full: false,
+            modes: vec![], full: false, similar: None,
         };
         let event = lifecycle::HookEvent {
             tool_name: Some("Bash".into()),
@@ -5366,6 +5925,44 @@ pub(super) mod tests {
         assert!(host.mirrors[&key].waiting.is_none());
     }
 
+    /// Gap 12: a Codex thread's open approval, read from its daemon, is held like a hook's prompt
+    /// (tagged, answerable, the whole command shipped) and let go once the daemon no longer holds it.
+    #[test]
+    fn local_sessions_a_codex_daemon_approval_is_held_and_let_go_with_the_daemon() {
+        let thread = "01a17b15-0000-7000-8000-00000000c0de";
+        let mut mirror = test_mirror(thread, "gen-1");
+        mirror.native.status = "waiting-approval".into();
+        let request = json!({"method":"item/commandExecution/requestApproval","id":0,"params":{"threadId":thread,"turnId":"u",
+            "itemId":"exec-1","startedAtMs":1,"command":"/bin/zsh -lc 'mkdir -p /tmp/x'","cwd":"/tmp",
+            "availableDecisions":["accept","acceptForSession","decline","cancel"]}});
+        codex::remember_approval(thread, Some(request));
+        codex_hold(&mut mirror, true);
+        assert!(mirror.waiting.is_none() && mirror.queue.is_empty(), "a session that is not shared waits for its terminal");
+        codex_hold(&mut mirror, false);
+        let input = json!({"command":"/bin/zsh -lc 'mkdir -p /tmp/x'"});
+        let waiting = mirror.waiting.clone().unwrap();
+        let held = waiting.held.clone().unwrap();
+        assert_eq!(held.id, codex::approval_id(thread, "exec-1"));
+        assert_eq!(held.input_digest, approval::digest(&input));
+        assert!(held.exact && held.full && daemon_held(&held));
+        assert_eq!(held.modes, vec!["session"]);
+        assert_eq!((waiting.id.as_deref(), waiting.input.as_ref()), (Some("exec-1"), Some(&input)));
+        let row = &mirror.queue[0];
+        assert_eq!((row["lifecycle"].as_str(), row["itemId"].as_str()), (Some("approval_pending"), Some(held.id.as_str())));
+        assert_eq!(row["tool"]["input"]["modes"], json!(["session"]));
+        codex_hold(&mut mirror, false);
+        assert_eq!(mirror.queue.len(), 1, "rediscovered, it is the same prompt");
+        // Answered in the terminal: the daemon holds nothing, the prompt goes.
+        mirror.native.status = "busy".into();
+        codex::remember_approval(thread, None);
+        codex_hold(&mut mirror, false);
+        assert!(mirror.waiting.is_none());
+        // A hook's held prompt is never the daemon's to drop.
+        mirror.waiting = Some(WaitingPrompt { held: Some(approval::Held { reply: "/x/appr.sock".into(), ..held }), ..waiting });
+        codex_hold(&mut mirror, false);
+        assert!(mirror.waiting.is_some());
+    }
+
     #[test]
     fn local_sessions_a_held_prompt_the_hook_lets_go_stays_waiting_but_untagged() {
         let dir = tempfile::tempdir().unwrap();
@@ -5376,7 +5973,7 @@ pub(super) mod tests {
         let id = format!("appr-{}", uuid::Uuid::new_v4().simple());
         let reply = hooks.join(format!("{id}.sock"));
         let _hook_side = std::os::unix::net::UnixDatagram::bind(&reply).unwrap();
-        let held = approval::Held { id: id.clone(), input_digest: "d".repeat(64), reply: reply.to_string_lossy().into_owned(), exact: true, modes: vec![], full: false };
+        let held = approval::Held { id: id.clone(), input_digest: "d".repeat(64), reply: reply.to_string_lossy().into_owned(), exact: true, modes: vec![], full: false, similar: None };
         host.apply_hook(&lifecycle::HookEvent {
             tool_name: Some("Bash".into()),
             waiting_text: Some("ls".into()),
@@ -5446,7 +6043,7 @@ pub(super) mod tests {
             input_digest: cmd.input_digest.clone().unwrap(),
             reply: String::new(),
             exact: true,
-            modes: vec!["acceptEdits".into()], full: false,
+            modes: vec!["acceptEdits".into()], full: false, similar: None,
         };
         assert!(answerable(&held, true, &cmd));
         assert!(!answerable(&approval::Held { exact: false, ..held.clone() }, true, &cmd), "inexact is deny-only");
@@ -5688,7 +6285,10 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
+            attention: Default::default(),
         }
     }
     #[tokio::test]
@@ -5943,6 +6543,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            unheld: BTreeMap::new(),
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -5978,7 +6579,10 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         let key = native_key(&native);
         let mirror = Mirror {
@@ -6103,7 +6707,10 @@ pub(super) mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         let mirror = Mirror {
             workspace: workspace::State::default(),
@@ -6143,6 +6750,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            unheld: BTreeMap::new(),
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -6845,6 +7453,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            unheld: BTreeMap::new(),
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,

@@ -210,7 +210,7 @@ nudge, or flag) carries a one-line reason comment -- never a bare status flip.
    `suggest_tasks` card (mechanics: `references/interactions.md`) on a
    single rolling issue titled "Board review": search for an open one
    assigned to you first (`?q=Board+review&status=todo,in_progress,in_review,blocked`),
-   reuse it if found, else create one (`--assignee` yourself). Set it
+   reuse it if found, else create one (`--assignee` yourself, `--status backlog`). Set it
    `in_review`. Do not open a new "Board review" issue per wake.
 
 **Close the loop.** Before exiting, leave ONE comment on "Board hygiene"
@@ -219,9 +219,11 @@ summarising this wake's mutations -- issue id + action for each (e.g.
 the budget above produced none. Leave the issue `in_progress` -- never
 `done` -- so the next timer wake finds it and checks it out again.
 
-**Room posts are your call.** `send_room_message` works from a Paperclip run
-and posts to any room you sit in, when something there is worth saying. This
-checklist's own summary still goes on "Board hygiene" as above.
+**Room posts: results, not progress.** `send_room_message` works from a
+Paperclip run and posts to any room you sit in. Post when work finished that
+the room should know about (what you did and why it matters) or when you need
+someone there; never a status update. This checklist's own summary still goes
+on "Board hygiene" as above.
 
 **Carried from the retired nightly routine.** Three lines earned their keep;
 everything else about that routine (title, daily cadence as its own

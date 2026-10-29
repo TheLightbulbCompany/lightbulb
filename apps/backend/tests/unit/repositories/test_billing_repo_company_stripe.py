@@ -135,3 +135,21 @@ async def test_clearing_the_company_account_drops_the_project_pointer(billing_ta
     await billing_repo.set_company_stripe_project_id("org_a", project_id="proj_1")
     row = await billing_repo.clear_company_stripe_account("org_a", account_id="acct_1")
     assert "company_stripe_project_id" not in row
+
+
+@pytest.mark.asyncio
+async def test_services_account_binds_once_beside_the_main_and_unbinds_with_it(billing_table):
+    """Every release path (wipe, revoke-all, disconnect, deauthorize webhook)
+    goes through clear_company_stripe_account, so the services account must
+    go with the main binding."""
+    from core.repositories import billing_repo
+
+    assert await billing_repo.set_company_stripe_projects_account("org_a", account_id="acct_svc") is None
+    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="connected")
+    row = await billing_repo.set_company_stripe_projects_account("org_a", account_id="acct_svc")
+    assert row["company_stripe_projects_account_id"] == "acct_svc"
+    assert row["company_stripe_account_id"] == "acct_1" and row["company_stripe_source"] == "connected"
+    assert await billing_repo.set_company_stripe_projects_account("org_a", account_id="acct_other") is None
+    row = await billing_repo.clear_company_stripe_account("org_a", account_id="acct_1")
+    assert "company_stripe_projects_account_id" not in row
+    assert "company_stripe_projects_account_id" not in billing_table.get_item(Key={"owner_id": "org_a"})["Item"]

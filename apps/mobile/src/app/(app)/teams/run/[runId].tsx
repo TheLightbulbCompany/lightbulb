@@ -1,4 +1,4 @@
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../../../components/ui/SymbolView";
 import { Stack, useLocalSearchParams } from "expo-router";
 import {
   Animated,

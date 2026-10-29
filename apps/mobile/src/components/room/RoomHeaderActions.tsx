@@ -1,4 +1,4 @@
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../ui/SymbolView";
 import { StyleSheet, View, type LayoutChangeEvent } from "react-native";
 
 import { radii, useChatPalette } from "../../config/theme";

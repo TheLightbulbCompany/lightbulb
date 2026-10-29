@@ -453,6 +453,17 @@
   background: color-mix(in srgb, var(--cream) 95%, transparent);
 }
 
+.docs-nav-section {
+  color: color-mix(in srgb, var(--midnight) 60%, transparent);
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  margin-top: 16px;
+  padding: 0 12px;
+  text-transform: uppercase;
+  width: 100%;
+}
+
 .docs-nav a[aria-current="page"] {
   background: color-mix(in srgb, var(--midnight) 10%, transparent);
   font-weight: 700;

@@ -78,6 +78,20 @@ def build_owner_litestream_s3_policy(owner_id: str, bucket: str) -> dict:
 #: AWS's built-in managed browser. Its ARN sits under the literal ``aws`` pseudo-account
 #: (research 01 §5, from a live AccessDenied), not ours — see the resources below.
 BUILTIN_BROWSER_ID = "aws.browser.v1"
+#: The browser every workspace session starts on: the env's VPC-mode custom browser, which
+#: leaves from the NAT's fixed address (the built-in one takes a new AWS address per session,
+#: and sites such as Google sign a moved session out). The built-in one where unset.
+BROWSER_ID = settings.AGENTCORE_BROWSER_ID or BUILTIN_BROWSER_ID
+
+
+def browser_arns(region: str, account_id: str) -> list[str]:
+    """The workspace browser's ARN, plus the built-in one: a session started there before the
+    move must still be reachable until it ends. A custom browser's ARN is ours, under
+    ``browser-custom/``."""
+    builtin = f"arn:aws:bedrock-agentcore:{region}:aws:browser/{BUILTIN_BROWSER_ID}"
+    if BROWSER_ID == BUILTIN_BROWSER_ID:
+        return [builtin]
+    return [f"arn:aws:bedrock-agentcore:{region}:{account_id}:browser-custom/{BROWSER_ID}", builtin]
 
 
 def build_owner_logs_policy(owner_id: str, account_id: str) -> dict:
@@ -144,11 +158,9 @@ async def ensure_owner_browser_policy(owner_id: str, profile_id: str) -> None:
                     # computer_use (cua_driver.py): real mouse/keyboard/screenshots (Chrome's own UI).
                     "bedrock-agentcore:InvokeBrowser",
                 ],
-                # ONLY the built-in browser. `{account}:browser/*` is the ARN shape for a
-                # CUSTOM browser, which we never create; it is also outside the CDK
-                # permissions boundary, so granting it authorizes nothing and merely reads
-                # as though the boundary covered it.
-                "Resource": f"arn:aws:bedrock-agentcore:{region}:aws:browser/{BUILTIN_BROWSER_ID}",
+                # ONLY the workspace browser (and the built-in one): both, and nothing wider,
+                # sit inside the CDK permissions boundary.
+                "Resource": browser_arns(region, account_id),
             },
             {
                 "Sid": "AgentCoreBrowserOwnProfile",

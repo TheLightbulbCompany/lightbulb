@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 
 from core.config import settings
@@ -114,7 +115,9 @@ async def ensure_agentcore_trust(owner_id: str, role_name: str, account_id: str)
 #: 2026-10-09, was 4 h): a person typing wakes the runtime ahead of the send (routers/messaging
 #: typing prewake), so a parked session costs no visible cold start, and an idle microVM is spend.
 #: A running turn or follow-up reports HealthyBusy on /ping, which AgentCore never counts as idle.
-IDLE_TIMEOUT_S = 30 * 60
+#: 15 min (2026-10-27 cost review): ~95% of the AgentCore bill was idle warm memory, mostly this
+#: tail after heartbeat wakes. Reaches a live runtime only on its next roll (lifecycle drift).
+IDLE_TIMEOUT_S = 15 * 60
 #: AWS's hard ceiling for a microVM session; the backend rolls sessions at a quiet point before it.
 MAX_LIFETIME_S = 8 * 60 * 60
 
@@ -150,6 +153,34 @@ def derive_vault_token(owner_id: str, row_id: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
+def _read_secret(sm, name: str) -> dict | None:
+    """The boot secret's JSON; None when absent, or scheduled for deletion
+    (``create_or_update_secret`` retries that)."""
+    try:
+        return json.loads(sm.get_secret_value(SecretId=name)["SecretString"])
+    except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
+        return None
+
+
+async def network_member_key(owner_id: str) -> str | None:
+    """The workspace's PUBLIC member key: the engine's key spelling (lowercase base32, no padding,
+    of the Ed25519 public key whose seed is ``networkKey`` -- the sidecar's ``identity.key``), so
+    the author of every entry the cloud member signed. None when there is no boot secret or key."""
+    import boto3
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+
+    def _read() -> str | None:
+        seed = (_read_secret(sm, boot_secret_name(owner_id)) or {}).get("networkKey")
+        if not seed:
+            return None
+        public = Ed25519PrivateKey.from_private_bytes(base64.b64decode(seed)).public_key().public_bytes_raw()
+        return base64.b32encode(public).decode().lower().rstrip("=")
+
+    return await run_in_thread(_read)
+
+
 async def write_boot_secret(
     owner_id: str,
     *,
@@ -166,7 +197,12 @@ async def write_boot_secret(
 
     Only the credentials are compared: an older secret still carrying a retired key
     (``providerChoice``/``providerSwitchFrozen``, or ``vaultToken`` -- which the execution role
-    could read) is rewritten without it, and without that reading as a boot change."""
+    could read) is rewritten without it, and without that reading as a boot change.
+
+    ``networkKey`` is the workspace's member key on the ``lightbulb`` network (read by the
+    network sidecar, and by no backend module but this one; ``network_member_key`` derives
+    its public half). It is carried over from the prior
+    secret and minted only when absent, so a reconcile never rotates it; a mint is a boot change."""
     import boto3
 
     from core.secrets_manager import create_or_update_secret
@@ -180,10 +216,10 @@ async def write_boot_secret(
     sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
 
     def _converge() -> bool:
-        try:
-            prior = json.loads(sm.get_secret_value(SecretId=name)["SecretString"])
-        except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
-            prior = None  # absent, or scheduled for deletion (create_or_update_secret retries that)
+        prior = _read_secret(sm, name)
+        # ponytail: two concurrent FIRST mints race and the last write wins; both report a
+        # boot change, so the restarted session reads the winner. A CAS needs a version check.
+        payload["networkKey"] = (prior or {}).get("networkKey") or base64.b64encode(os.urandom(32)).decode()
         if prior == payload:
             return False
         create_or_update_secret(sm, name, json.dumps(payload))

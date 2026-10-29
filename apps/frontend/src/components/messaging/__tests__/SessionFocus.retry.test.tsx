@@ -6,7 +6,7 @@ import { SessionFocus } from "../SessionFocus";
 vi.mock("../LocalSessionPanel", () => ({ LocalSessionPanel: ({ session }: { session: LocalSession }) => <p>{session.title}</p> }));
 const session = { sessionId: "s1", humanUserId: "alice", provider: "claude", status: "ended", title: "Recovered session" } as LocalSession;
 function setup(getLocalSession = vi.fn<SessionSource["client"]["getLocalSession"]>(), onEvent?: SessionSource["onEvent"]) {
-  const props = { focus: { sessionId: "s1" }, entries: [], loading: false, hintRevision: 0, onEvent,
+  const props = { focus: { sessionId: "s1" }, entries: [], hintRevision: 0, onEvent,
     client: { getLocalSession } as unknown as SessionSource["client"],
     resolveSessionOwner: () => ({ ownerName: "Alice", own: false }), onAccessLost: vi.fn(), onClose: vi.fn() };
   return { ...render(<SessionFocus {...props} />), props, getLocalSession };
@@ -48,7 +48,7 @@ it("keeps a slow fetch alive through several hints and coalesces revalidation", 
   const get = vi.fn<SessionSource["client"]["getLocalSession"]>().mockImplementationOnce(() => new Promise(r => { resolve = r; })).mockImplementation(() => new Promise(() => {}));
   const view = setup(get);
   for (let hintRevision = 1; hintRevision <= 4; hintRevision += 1) {
-    await act(async () => { view.rerender(<SessionFocus {...view.props} hintRevision={hintRevision} loading={hintRevision % 2 === 1} />); });
+    await act(async () => { view.rerender(<SessionFocus {...view.props} hintRevision={hintRevision} />); });
   }
   expect(get).toHaveBeenCalledTimes(1);
   await act(async () => { resolve(session); });
@@ -121,7 +121,7 @@ it.each(["404", "exhaustion"] as const)("does not refetch a settled %s on ordina
   const calls = failure === "404" ? 1 : 3;
   expect(get).toHaveBeenCalledTimes(calls);
   for (let i = 0; i < 2; i += 1) {
-    await act(async () => { view.rerender(<SessionFocus {...view.props} loading />); });
+    await act(async () => { view.rerender(<SessionFocus {...view.props} entries={[]} />); });
     await act(async () => { view.rerender(<SessionFocus {...view.props} />); });
   }
   expect(get).toHaveBeenCalledTimes(calls);

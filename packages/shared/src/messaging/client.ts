@@ -16,6 +16,7 @@ import type {
   MemberPrefsRequest,
   MessagePage,
   MessageSearchResponse,
+  SessionSearchResponse,
   PatchRoomRequest,
   ReadCursorRequest,
   ReadCursorResponse,
@@ -30,7 +31,6 @@ import type {
   UpsertRoomMemberRequest,
   WorkspaceSessions,
   LocalSession,
-  PrivateSendApproval,
   LocalSessionEventPage,
   LocalSessionCommand,
   LocalSessionCommandReceipt,
@@ -96,7 +96,6 @@ export interface MessagingClient {
   openSessionChat(sessionId: string): Promise<RoomDetail>;
   /** Owner-only display name; null restores the provider title. */
   setLocalSessionDisplayTitle(sessionId: string, displayTitle: string | null): Promise<LocalSession>;
-  getPrivateSendApproval(sessionId: string): Promise<PrivateSendApproval>;
   listLocalSessionEvents(sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
   submitLocalSessionCommand(sessionId: string, request: LocalSessionCommand, replacesRequestId?: string): Promise<LocalSessionCommandReceipt>;
   getLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
@@ -138,7 +137,6 @@ export interface MessagingClient {
   createSessionCopy(token: string, challenge: string): Promise<SessionCopyCode>;
   /** Owner-only: let workspace members see this session's token meter. */
   setLocalSessionUsageSharing(sessionId: string, enabled: boolean): Promise<LocalSession>;
-  setLocalSessionAskToJoin(sessionId: string, enabled: boolean): Promise<LocalSession>;
   /** Short-lived links to a session's snapshot, for the Mac that will continue it. Safe to repeat with the same id. */
   requestLocalSessionPickup(sessionId: string, pickupId: string): Promise<LocalSessionPickupTicket>;
   reportLocalSessionPickupOutcome(sessionId: string, pickupId: string, outcome: LocalSessionPickupOutcome): Promise<void>;
@@ -168,6 +166,8 @@ export interface MessagingClient {
   deleteRoom(roomId: string): Promise<void>;
   searchMessages(query: string, options?: { roomId?: string; limit?: number }): Promise<MessageSearchResponse>;
   warmSearch(): Promise<void>;
+  /** What was said in the coding sessions the caller may read. */
+  searchSessions(query: string, options?: { limit?: number }): Promise<SessionSearchResponse>;
   setPin(roomId: string, messageId: string, pinned: boolean): Promise<RoomDetail>;
   setTyping(request: TypingRequest): Promise<void>;
   abortRun(runId: string): Promise<AbortRunResponse>;
@@ -207,7 +207,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     },
     openSessionChat: (sessionId) => api.post(`${sessionPath(sessionId)}/chat`, {}) as Promise<RoomDetail>,
     setLocalSessionDisplayTitle: (sessionId, displayTitle) => api.patch(`${sessionPath(sessionId)}/display-title`, { displayTitle }) as Promise<LocalSession>,
-    getPrivateSendApproval: (sessionId) => api.get(`${sessionPath(sessionId)}/private-send-approval`) as Promise<PrivateSendApproval>,
     listLocalSessionEvents: (sessionId, afterSeq, limit = 50) => api.get(
       `${sessionPath(sessionId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ) as Promise<LocalSessionEventPage>,
@@ -236,7 +235,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     // POST: the token rides in the body, never a URL a log would keep.
     createSessionCopy: (token, challenge) => api.post("/session-links/copies", { token, challenge }) as Promise<SessionCopyCode>,
     setLocalSessionUsageSharing: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/usage-sharing`, { enabled }) as Promise<LocalSession>,
-    setLocalSessionAskToJoin: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/ask-to-join`, { enabled }) as Promise<LocalSession>,
     requestLocalSessionPickup: (sessionId, pickupId) => api.post(`${sessionPath(sessionId)}/pickups`, { pickupId }) as Promise<LocalSessionPickupTicket>,
     reportLocalSessionPickupOutcome: async (sessionId, pickupId, outcome) => { await api.post(`${sessionPath(sessionId)}/pickups/${encodeURIComponent(pickupId)}/outcome`, outcome); },
     listLocalSessionAudit: (sessionId) => api.get(`${sessionPath(sessionId)}/audit`) as Promise<{ entries: LocalSessionAuditEntry[] }>,
@@ -321,6 +319,10 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     async warmSearch() {
       await api.post("/messaging/search/warm", {});
     },
+    searchSessions: (query, options) => api.post("/messaging/sessions/search", {
+      q: query,
+      ...(options?.limit ? { limit: options.limit } : {}),
+    }) as Promise<SessionSearchResponse>,
     setPin: (roomId, messageId, pinned) => (pinned
       ? api.put(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`, {})
       : api.del(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`)) as Promise<RoomDetail>,

@@ -32,6 +32,10 @@ pub(super) struct JoinRequest {
     pub action: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// A held session send's sender as delivery names it ("Aden's Codex"); a join with `text`
+    /// is one with a held send (Task 7b).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 fn join_kind() -> String {
@@ -57,6 +61,7 @@ pub(super) struct Entry {
 }
 
 static PRESENCE: Mutex<BTreeMap<String, Entry>> = Mutex::new(BTreeMap::new());
+
 
 /// Tests share the one global map; each takes this first.
 #[cfg(test)]
@@ -153,6 +158,7 @@ pub(super) fn decided(sid: &str, payload: &Value, session: &Value) {
             }
         }
     }
+    drop(map);
 }
 
 #[cfg(test)]

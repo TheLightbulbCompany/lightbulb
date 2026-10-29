@@ -232,7 +232,7 @@ async def test_a_connected_row_with_no_grant_flips_to_reconnect_required(monkeyp
     monkeypatch.setattr(access_token.integrations_repo, "set_status", set_status)
     with pytest.raises(access_token.ReconnectRequired):
         await access_token.get("org_a", "microsoft365")
-    set_status.assert_awaited_once_with("org_a", "microsoft365", "reconnect_required")
+    set_status.assert_awaited_once_with("org_a", "microsoft365", "reconnect_required", reason="no_access_token")
 
 
 @pytest.mark.asyncio

@@ -56,7 +56,9 @@ async def capable(transport, sid, remote_input=True):
 
 
 async def admit(sid, person=BOB):
-    await service.request_join(person, sid)
+    from tests.unit.services.test_local_session_controls import seed_ask
+
+    await seed_ask(person, sid)
     await service.decide_join(ALICE, sid, person.user_id, "allow")
 
 

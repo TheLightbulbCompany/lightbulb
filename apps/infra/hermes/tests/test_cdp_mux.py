@@ -21,6 +21,7 @@ class FakeChrome:
         self.connects, self.targets, self.closed, self.seen = 0, ["person"], [], []
         self.casting, self.inputs, self.burst, self.shown = [], [], 3, []
         self.stages, self.uploads = [], []  # stages None: a desktop that predates staging
+        self.urls = {}  # targetId -> url, for targets created with one
         self.server = serve(self.handle, "127.0.0.1", 0)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"ws://127.0.0.1:{self.server.socket.getsockname()[1]}/automation"
@@ -37,9 +38,10 @@ class FakeChrome:
             if method == "Target.createTarget":
                 target = f"T{len(self.seen)}"  # unique even after a tab is removed
                 self.targets.append(target)
+                self.urls[target] = p.get("url") or "about:blank"
                 reply["result"] = {"targetId": target}
             elif method == "Target.getTargets":
-                reply["result"] = {"targetInfos": [{"targetId": t, "type": "page", "url": "about:blank"} for t in self.targets]}
+                reply["result"] = {"targetInfos": [{"targetId": t, "type": "page", "url": self.urls.get(t, "about:blank")} for t in self.targets]}
             elif method == "Target.attachToTarget":
                 session = "S-" + p["targetId"]
                 ws.send(json.dumps({"method": "Target.attachedToTarget",
@@ -166,6 +168,25 @@ def test_close_run_closes_its_tabs_and_clients_only(chrome):
     assert sorted(chrome.closed) == sorted(t for t in mine if t != b_tab)
     with pytest.raises(ConnectionClosed):
         a.call("Target.getTargets")
+
+
+def test_close_run_leaves_a_tab_waiting_on_a_sign_in(chrome):
+    """Google's "Verify it's you" waits on the person's phone after the turn ends (prod 2026-10-26)."""
+    a = Client("run-a")
+    a.call("Target.createTarget", {"url": "https://accounts.google.com/v3/signin/challenge/dp?TL=x"})
+    a.call("Target.createTarget", {"url": "https://search.google.com/search-console/about"})
+    challenge, console = (t for t, u in chrome.urls.items() if u.startswith("https://"))
+    cdp_mux.close_run("run-a")
+    assert _wait(lambda: console in chrome.closed)
+    assert challenge not in chrome.closed
+
+
+def test_signing_in_url():
+    assert cdp_mux.signing_in_url("https://accounts.google.com/v3/signin/accountchooser?continue=x")
+    assert cdp_mux.signing_in_url("https://login.microsoftonline.com/common/oauth2/v2.0/authorize")
+    assert cdp_mux.signing_in_url("https://github.com/sessions/two-factor/app")
+    assert not cdp_mux.signing_in_url("https://example.com/authors?next=/login")  # never the query
+    assert not cdp_mux.signing_in_url("about:blank")
 
 
 def test_a_new_generation_on_a_new_session_drops_every_client(chrome):

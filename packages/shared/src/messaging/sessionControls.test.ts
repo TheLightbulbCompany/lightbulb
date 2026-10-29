@@ -2,6 +2,8 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "../api/error";
+
 import { auditLine, canControlSession, useSessionApproval, useShownInputMatches, sessionFacts, usageLine, withAuditNotices } from "./sessionControls";
 import type { LocalSession, LocalSessionAuditEntry, LocalSessionCommandReceipt, LocalSessionEvent } from "./types";
 
@@ -117,7 +119,8 @@ describe("useSessionApproval", () => {
   const mount = (p: object) => {
     const submit = vi.fn<(id: string, command: object) => Promise<LocalSessionCommandReceipt>>(async () => ({ state: "dispatched" }) as LocalSessionCommandReceipt);
     const sha = vi.fn(async () => "abc");
-    const { result } = renderHook(() => useSessionApproval({ submitLocalSessionCommand: submit }, session({ sessionId: "s1", generation: "g1", pendingApproval: p } as Partial<LocalSession>), () => "r1", sha));
+    const row = session({ sessionId: "s1", generation: "g1", pendingApproval: p } as Partial<LocalSession>);
+    const { result } = renderHook(() => useSessionApproval({ submitLocalSessionCommand: submit }, row, () => "r1", sha));
     return { result, submit, sha };
   };
 
@@ -128,6 +131,58 @@ describe("useSessionApproval", () => {
     expect(submit).toHaveBeenLastCalledWith("s1", expect.objectContaining({ kind: "approve", decision: "allow", shownDigest: "abc" }));
     await act(() => result.current.answer({ decision: "deny" }));
     expect(submit.mock.calls[1][1]).not.toHaveProperty("shownDigest");
+  });
+
+  const conflict = () => new ApiError(409, { code: "LOCAL_SESSION_CONFLICT" }, "Session changed. Try again.");
+  const live = (p?: object) => session({ sessionId: "s1", generation: "g1", status: p ? "waiting-approval" : "busy", pendingApproval: p } as Partial<LocalSession>);
+  const mountWith = (getLocalSession: () => Promise<LocalSession>) => {
+    const submit = vi.fn<(id: string, command: object) => Promise<LocalSessionCommandReceipt>>(async () => { throw conflict(); });
+    const hook = renderHook(({ s }) => useSessionApproval({ submitLocalSessionCommand: submit, getLocalSession: vi.fn(getLocalSession) }, s, () => "r1", async () => "abc"),
+      { initialProps: { s: live(pending) } });
+    return { ...hook, submit };
+  };
+
+  it("a conflict while the prompt is still open keeps the card, with a Try again note", async () => {
+    const { result } = mountWith(async () => live(pending));
+    await act(() => result.current.answer({ decision: "deny" }));
+    expect(result.current.pending).toEqual(pending);
+    expect(result.current.state?.error).toBe("Could not send the answer. Try again.");
+  });
+
+  it("a conflict after the prompt closed hides the card; the same prompt on a later row shows again", async () => {
+    const { result, rerender } = mountWith(async () => live());
+    await act(() => result.current.answer({ decision: "deny" }));
+    expect(result.current.pending).toBeUndefined();
+    rerender({ s: live(pending) });
+    expect(result.current.pending).toEqual(pending);
+  });
+
+  it("A's rejected receipt arriving after the row moved to prompt B leaves B's card up", async () => {
+    let settle: (r: LocalSessionCommandReceipt) => void = () => {};
+    const submit = vi.fn(() => new Promise<LocalSessionCommandReceipt>(resolve => { settle = resolve; }));
+    const b = { ...pending, approvalId: "b1" };
+    const { result, rerender } = renderHook(({ s }) => useSessionApproval({ submitLocalSessionCommand: submit }, s, () => "r1", async () => "abc"),
+      { initialProps: { s: live(pending) } });
+    let answered: Promise<void> = Promise.resolve();
+    act(() => { answered = result.current.answer({ decision: "deny" }); });
+    rerender({ s: live(b) });
+    await act(async () => { settle({ state: "rejected" } as LocalSessionCommandReceipt); await answered; });
+    expect(result.current.pending).toEqual(b);
+  });
+
+  it("an unsupported answer keeps the card with the server's reason", async () => {
+    const refused = mount(pending);
+    refused.submit.mockRejectedValueOnce(new ApiError(409, { code: "LOCAL_SESSION_UNSUPPORTED" }, "This prompt can only be approved in the terminal."));
+    await act(() => refused.result.current.answer({ decision: "allow" }));
+    expect(refused.result.current.pending).toEqual(pending);
+    expect(refused.result.current.state?.error).toBe("This prompt can only be approved in the terminal.");
+  });
+
+  it("an answer the Mac rejects (answered in the terminal first) removes the card", async () => {
+    const { result, submit } = mount(pending);
+    submit.mockResolvedValueOnce({ state: "rejected" } as LocalSessionCommandReceipt);
+    await act(() => result.current.answer({ decision: "deny" }));
+    expect(result.current.pending).toBeUndefined();
   });
 
   it("an approval from an older Mac (no full) sends no digest", async () => {

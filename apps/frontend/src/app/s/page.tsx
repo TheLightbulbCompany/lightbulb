@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { SignInButton, SignUpButton, useAuth, useClerk } from "@clerk/nextjs";
-import { AppSyncEventsClient, createMessagingClient, type LiveEvent, type SessionLinkCode, type SessionLinkJoinAsk, type SessionLinkPage, type SessionLinkViewing } from "@lightbulb/shared";
+import { AppSyncEventsClient, createMessagingClient, type LiveEvent, type SessionLinkCode, type SessionLinkJoinAsk, type SessionLinkPage, type SessionLinkViewing, sessionAgentName } from "@lightbulb/shared";
 import { ApiError, BACKEND_URL, useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { capture, markWorkspaceDoor } from "@/lib/analytics";
@@ -369,7 +369,7 @@ export default function SessionLinkPageRoute() {
   return <main className={`mx-auto p-4 ${watching ? "max-w-5xl" : "max-w-3xl"}`}>
     <header className="mb-4">
       <h1 className="text-lg font-semibold">{page.title?.trim() || "A shared session"}</h1>
-      <p className="text-sm text-muted-foreground">{page.ownerFirstName}&apos;s {page.provider === "claude" ? "Claude Code" : "Codex"} session · {page.state === "live" ? "Live" : page.state === "ended" ? "Ended" : "Offline"}</p>
+      <p className="text-sm text-muted-foreground">{page.ownerFirstName}&apos;s {sessionAgentName(page.provider)} session · {page.state === "live" ? "Live" : page.state === "ended" ? "Ended" : "Offline"}</p>
       <CodeLine code={page.code} />
       {page.me.member && page.sessionId && <a href={sessionPermalink(page.sessionId)}>Open in Lightbulb</a>}
     </header>

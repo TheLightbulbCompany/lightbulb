@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, type ReactNode } from "react";
-import { sessionChanges, sessionPlan, type LocalSessionEvent, type PlanStatus } from "@lightbulb/shared";
+import { sessionChanges, sessionPlan, type LocalSessionEvent, type PlanStatus, type SessionChanges } from "@lightbulb/shared";
 
 const MARK: Record<PlanStatus, string> = { pending: "◻", in_progress: "◼", completed: "✔" };
 const SAID: Record<PlanStatus, string> = { pending: "To do", in_progress: "In progress", completed: "Done" };
@@ -11,8 +11,11 @@ const SAID: Record<PlanStatus, string> = { pending: "To do", in_progress: "In pr
  * task list, Codex's update_plan) and what it changed. Both come from the
  * loaded history, so "Load older" can add earlier edits.
  */
-export function SessionOverview({ events, changesAction, expanded = false }: {
+export function SessionOverview({ events, git, changesAction, expanded = false }: {
   events: readonly LocalSessionEvent[];
+  /** Git's count from the session's Mac (`LocalSession.changes`): it outranks the events' totals, and
+   *  stands alone when no edit event names a file (a shell edit, a checkout, codegen). No paths leave the Mac. */
+  git?: SessionChanges;
   /** What the reader can do with the changes (e.g. "Commit & open PR"); shown inside "What changed". */
   changesAction?: ReactNode;
   /** Both sections start open: the reader came here for them (Details → Changes). */
@@ -20,10 +23,11 @@ export function SessionOverview({ events, changesAction, expanded = false }: {
 }) {
   const plan = useMemo(() => sessionPlan(events), [events]);
   const changes = useMemo(() => sessionChanges(events), [events]);
-  if (!plan?.length && !changes.length) return null;
+  if (!plan?.length && !changes.length && !git) return null;
   const done = plan?.filter(step => step.status === "completed").length ?? 0;
-  const added = changes.reduce((n, f) => n + f.added, 0);
-  const removed = changes.reduce((n, f) => n + f.removed, 0);
+  const files = git?.files ?? changes.length;
+  const added = git?.additions ?? changes.reduce((n, f) => n + f.added, 0);
+  const removed = git?.deletions ?? changes.reduce((n, f) => n + f.removed, 0);
   return <div className="local-session-overview">
     {plan && plan.length > 0 && <details open={expanded || done < plan.length}>
       <summary className="native-session-toggle">Plan · {done} of {plan.length} done</summary>
@@ -33,11 +37,12 @@ export function SessionOverview({ events, changesAction, expanded = false }: {
         </li>)}
       </ul>
     </details>}
-    {changes.length > 0 && <details open={expanded}>
+    {files > 0 && <details open={expanded}>
       <summary className="native-session-toggle">
-        What changed · {changes.length} {changes.length === 1 ? "file" : "files"}
+        What changed · {files} {files === 1 ? "file" : "files"}
         <span className="local-session-add">+{added}</span><span className="local-session-del">−{removed}</span>
       </summary>
+      {git && <p className="text-caption text-muted-foreground">from git, since the session started{changes.length ? "; the files below are the edits its transcript shows" : ""}</p>}
       {changesAction && <div className="my-1 flex flex-wrap items-center gap-2">{changesAction}</div>}
       <ul className="local-session-changes">
         {changes.map(file => <li key={file.path}>

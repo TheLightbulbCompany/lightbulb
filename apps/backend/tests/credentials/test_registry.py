@@ -31,7 +31,14 @@ def test_direct_oauth_provider_shape():
     assert p.actor == "cli"
     assert p.refresh_owner == "actor"
     assert p.oauth.token_url == "https://oauth2.googleapis.com/token"
-    assert "https://www.googleapis.com/auth/gmail.modify" in p.oauth.scopes
+    assert p.oauth.scopes == [
+        "openid",
+        "email",
+        "profile",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/drive",
+    ]
     assert p.wiring.materializer == "gog_cli"
 
 
@@ -54,20 +61,16 @@ def test_posthog_oauth_requests_full_scope_set():
     assert len(scopes) == len(set(scopes))  # no duplicate scope slipped into the yaml
 
 
-def test_google_is_byo_required():
-    from core.services.credentials import registry
-
+def test_google_is_a_platform_app_not_byo():
     g = registry.get_provider("google")
-    assert g.byo_required is True
-    assert g.byo_setup_url == "https://console.cloud.google.com/apis/credentials"
-    assert not hasattr(g, "allow_byo_app")
+    assert g.byo_required is False
+    assert g.byo_setup_url is None
+    assert g.oauth.platform_app == "google"
 
 
-def test_no_provider_is_byo_required_except_google_and_x():
-    from core.services.credentials import registry
-
+def test_no_provider_is_byo_required_except_x():
     byo = [k for k, v in registry.all_providers().items() if v.byo_required]
-    assert byo == ["google", "x"]
+    assert byo == ["x"]
 
 
 def test_x_is_byo_direct_oauth_cli_provider():
@@ -566,9 +569,9 @@ def test_meta_ads_rides_platform_app_not_dcr():
 
 def test_meta_ads_requests_every_documented_scope():
     """ads_mcp_management is what gates the MCP endpoint itself — dropping it (or
-    any of the seven Meta's Get Started lists) yields a token the server refuses.
+    any of the six Meta's Get Started lists) yields a token the server refuses.
 
-    pages_manage_metadata is the eighth, and is NOT from that list: it is what
+    pages_manage_metadata is the seventh, and is NOT from that list: it is what
     Meta requires to POST {page-id}/subscribed_apps, which is how a Page trigger
     binds to our webhook (inbound_triggers._meta_pages). pages_show_list only
     lists Pages; it does not authorize binding one. Pinned here because dropping
@@ -580,10 +583,8 @@ def test_meta_ads_requests_every_documented_scope():
         "ads_read",
         "ads_management",
         "business_management",
-        "catalog_management",
         "pages_show_list",
         "pages_manage_metadata",
-        "instagram_basic",
     }
     assert p.oauth.scope_separator == " "
 

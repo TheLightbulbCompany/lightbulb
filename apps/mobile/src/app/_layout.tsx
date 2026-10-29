@@ -1,15 +1,5 @@
 import { ClerkProvider } from "@clerk/expo";
-import {
-  Lora_400Regular,
-  Lora_400Regular_Italic,
-  Lora_500Medium,
-  Lora_700Bold_Italic,
-} from "@expo-google-fonts/lora";
-import {
-  SourceSans3_400Regular,
-  SourceSans3_500Medium,
-  SourceSans3_600SemiBold,
-} from "@expo-google-fonts/source-sans-3";
+import { Inter_400Regular, Inter_600SemiBold } from "@expo-google-fonts/inter";
 import { useFonts } from "expo-font";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -51,20 +41,21 @@ function useNavigationTheme() {
 const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
 // Hold the splash screen until fonts are ready so the first frame renders in
-// Source Sans 3 / Lora rather than flashing system fonts.
+// Satoshi / Inter rather than flashing system fonts.
 SplashScreen.preventAutoHideAsync().catch(() => {
   // Reloads / fast refresh can reject this; the splash is already hidden.
 });
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
-    SourceSans3_400Regular,
-    SourceSans3_500Medium,
-    SourceSans3_600SemiBold,
-    Lora_400Regular,
-    Lora_400Regular_Italic,
-    Lora_500Medium,
-    Lora_700Bold_Italic,
+    // Keys are the family names `fonts` in config/theme.ts passes around.
+    "Satoshi-Regular": require("../../assets/fonts/satoshi/Satoshi-Regular.ttf"),
+    "Satoshi-Medium": require("../../assets/fonts/satoshi/Satoshi-Medium.ttf"),
+    "Satoshi-Bold": require("../../assets/fonts/satoshi/Satoshi-Bold.ttf"),
+    "Satoshi-Italic": require("../../assets/fonts/satoshi/Satoshi-Italic.ttf"),
+    "Satoshi-BoldItalic": require("../../assets/fonts/satoshi/Satoshi-BoldItalic.ttf"),
+    Inter_400Regular,
+    Inter_600SemiBold,
   });
   // On font-load failure we still proceed — unknown fontFamily names fall
   // back to system fonts. Never leave the user on a blank screen.

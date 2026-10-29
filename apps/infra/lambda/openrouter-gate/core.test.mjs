@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handleRequest, prepareBody } from './core.mjs';
+import { createHash } from 'node:crypto';
+import { handleRequest, prepareBody, authenticateOwner } from './core.mjs';
 
 const policy = { revision: 'test-1', models: ['anthropic/claude-sonnet-4.5', 'openrouter/auto'], auto: { allowed_models: ['anthropic/claude-sonnet-4.5'], cost_tier: 'low' }, max_price: { prompt: 0.5, completion: 2 }, max_prompt_tokens: 100000 };
 const env = { TOKENS_TABLE: 'tokens', BILLING_TABLE: 'billing', FAST_GATE_TABLE: 'fast', OPENROUTER_KEYS_TABLE: 'keys', REQUESTS_TABLE: 'requests', RESERVE_ESTIMATE_MICROCENTS: '300000', RESERVE_TTL_SECONDS: '1200', MODEL_POLICY_JSON: JSON.stringify(policy), MAX_BODY_BYTES: '100000', MAX_OUTPUT_TOKENS: '8192', OPENROUTER_MARKUP: '1.2' };
@@ -27,10 +28,24 @@ function fixture({ token = 'good', status = 'active', balance = 1000000, provide
     error(err) { calls.errors.push(err); },
   };
   const deps = { ddb, env, log: line => calls.logs.push(JSON.parse(line)), secrets: { async getSecretValue() { return { SecretString: 'sk-or-secret' }; } }, forwardImpl: async (p) => { calls.forwards.push(p); p.writeHead(200, { 'content-type': 'text/event-stream' }); p.write(Buffer.from('data: {"id":"gen-1","choices":[]}\n\n')); p.end(); return { status: 200, generationId: 'gen-1' }; } };
-  const event = (body = { model: policy.models[0], messages: [{ role: 'user', content: 'Hi' }], stream: true }) => ({ rawPath: '/v1/chat/completions', requestContext: { http: { method: 'POST' } }, headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+  const event = (body = { model: policy.models[0], messages: [{ role: 'user', content: 'Hi' }], stream: true }, headers = {}) => ({ rawPath: '/v1/chat/completions', requestContext: { http: { method: 'POST' } }, headers: { authorization: `Bearer ${token}`, ...headers }, body: JSON.stringify(body) });
   return { calls, deps, responder, event };
 }
 
+test('authenticateOwner resolves a per-agent bearer to {ownerId, agentId}; a legacy owner bearer gets agentId null; unknown 401s; denied 403s', async () => {
+  const hashOf = (t) => createHash('sha256').update(t).digest('hex');
+  const byHash = {
+    [hashOf('agent')]: { owner_id: AV('owner-1'), agent_id: AV('agent-7') },
+    [hashOf('owner')]: { owner_id: AV('owner-1') },
+    [hashOf('denied')]: { owner_id: AV('owner-1'), agent_id: AV('agent-7'), denied: { BOOL: true } },
+  };
+  const ddb = { async getItem(p) { return { Item: byHash[p.Key.token_hash.S] }; } };
+  const ev = (t) => ({ headers: { authorization: `Bearer ${t}` } });
+  assert.deepEqual(await authenticateOwner(ev('agent'), ddb, env), { ownerId: 'owner-1', agentId: 'agent-7' });
+  assert.deepEqual(await authenticateOwner(ev('owner'), ddb, env), { ownerId: 'owner-1', agentId: null });
+  await assert.rejects(authenticateOwner(ev('forged'), ddb, env), { status: 401 });
+  await assert.rejects(authenticateOwner(ev('denied'), ddb, env), { status: 403 });
+});
 test('rejects unknown bearer before billing or upstream', async () => { const f = fixture({ token: 'wrong' }); await handleRequest(f.event(), f.responder, f.deps); assert.equal(f.calls.errors[0].status, 401); assert.equal(f.calls.forwards.length, 0); });
 test('zero-price model records a free outbox without a Metronome reservation', async () => { const f = fixture({ balance: null }); f.deps.env = { ...env, MODEL_POLICY_JSON: JSON.stringify({ ...policy, models: ['nvidia/nemotron-3-ultra-550b-a55b:free'], max_price: { prompt: 0, completion: 0 } }) }; await handleRequest(f.event({ model: 'nvidia/nemotron-3-ultra-550b-a55b:free', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors.length, 0, f.calls.errors[0]?.message); assert.equal(f.calls.forwards.length, 1); assert.equal(f.calls.puts.length, 1); assert.equal(f.calls.puts[0].Item.reservation_microcents.N, '0'); assert.equal(f.calls.puts[0].Item.billing_mode.S, 'free'); });
 test('trial_local owner may use only the zero-price policy without a provider choice or Metronome contract', async () => { const f = fixture({ balance: null, status: 'trial_local', provider: 'none' }); f.deps.env = { ...env, MODEL_POLICY_JSON: JSON.stringify({ ...policy, models: ['nvidia/nemotron-3-ultra-550b-a55b:free'], max_price: { prompt: 0, completion: 0 } }) }; await handleRequest(f.event({ model: 'nvidia/nemotron-3-ultra-550b-a55b:free', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors.length, 0, f.calls.errors[0]?.message); assert.equal(f.calls.forwards.length, 1); });
@@ -108,18 +123,19 @@ test('prepareBody passes the policy provider routing through and keeps deny', ()
   assert.deepEqual(prepareBody(dsBody(), deepseek, 'owner-1', env).provider, { max_price: deepseek.max_price, data_collection: 'deny' });
   for (const provider of [{ order: 'deepinfra' }, { ignore: [1] }, { allow_fallbacks: 'yes' }, { data_collection: 'allow' }]) assert.throws(() => prepareBody(dsBody(), { ...deepseek, provider }, 'owner-1', env), e => e.status === 503);
 });
-test('an upstream 402 for a capped owner stamps the capped day and returns the daily-cap 429', async () => {
-  const f = await runDs(cappedOwners.base, dsBody(), f => { f.deps.forwardImpl = async p => { p.writeHead(402, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":"key limit"}')); p.end(); return { status: 402, preGeneration: true }; }; });
-  assert.equal(f.calls.head.status, 429);
-  const error = JSON.parse(Buffer.concat(f.calls.chunks).toString());
-  assert.equal(error.error.code, 'trial_daily_cap');
-  assert.equal(error.error.message, 'Lightbulb: daily limit reached — resets at midnight UTC');
-  const stamp = f.calls.updates.find(u => u.TableName === 'billing');
-  assert.equal(stamp.Key.owner_id.S, 'owner-1');
-  assert.equal(stamp.ExpressionAttributeValues[':day'].S, today());
-  const capHit = f.calls.logs.find(entry => entry['openrouter.gate.cap_hit'] === 1);
-  assert.equal(capHit.tier, 'base');
-  assert.ok(f.calls.updates.some(u => u.TableName === 'requests' && u.ExpressionAttributeValues[':released']));
+const upstream402 = (keyInfoImpl) => f => { f.deps.keyInfoImpl = keyInfoImpl; f.deps.forwardImpl = async p => { p.writeHead(402, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":"insufficient credits"}')); p.end(); return { status: 402, preGeneration: true }; }; };
+test('a capped 402 on an empty account (the key has money left) is the paging 503, never a day-long cap', async () => {
+  const f = await runDs(cappedOwners.trial, dsBody(), upstream402(async () => ({ limit: 0.25, limit_remaining: 0.25, usage_daily: 0 })));
+  assert.equal(f.calls.head.status, 503);
+  assert.equal(JSON.parse(Buffer.concat(f.calls.chunks).toString()).error.code, 'provider_unavailable');
+  assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
+  assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1));
+});
+test('a capped 402 is the account, never the key: a nearly spent key still pages instead of capping', async () => {
+  const f = await runDs(cappedOwners.base, dsBody(), upstream402(async () => ({ limit: 0.25, limit_remaining: 0.001, usage_daily: 0.249 })));
+  assert.equal(f.calls.head.status, 503);
+  assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
+  assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1));
 });
 const liveKeyLimit = '{"error":{"message":"Key limit exceeded (daily limit). Manage it using https://openrouter.ai/settings/keys","code":403}}';
 const keyLimit403 = (keyInfoImpl) => f => { f.deps.keyInfoImpl = keyInfoImpl; f.deps.forwardImpl = async p => { p.writeHead(403, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":{"message":"Upstream returned 403"}}')); p.end(liveKeyLimit); return { status: 403, preGeneration: true }; }; };
@@ -216,4 +232,44 @@ test('every other path still 404s', async () => {
   const f = fixture();
   await handleRequest(modelsEvent('/v1/embeddings'), f.responder, f.deps);
   assert.equal(f.calls.errors[0].status, 404);
+});
+
+test('auto-routed request records the model that answered, and an unlisted model is still refused', async () => {
+  const f = fixture();
+  f.deps.forwardImpl = async p => { p.writeHead(200, { 'content-type': 'text/event-stream' }); p.end(); return { status: 200, generationId: 'gen-1', model: 'anthropic/claude-sonnet-4.5' }; };
+  await handleRequest(f.event({ model: 'openrouter/auto', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps);
+  assert.equal(f.calls.errors.length, 0);
+  assert.ok(f.calls.updates.some(u => u.ExpressionAttributeValues?.[':model']?.S === 'anthropic/claude-sonnet-4.5'));
+  const g = fixture();
+  await handleRequest(g.event({ model: 'evil/model', messages: [{ role: 'user', content: 'Hi' }], stream: true }), g.responder, g.deps);
+  assert.equal(g.calls.errors[0].status, 400);
+  assert.equal(g.calls.errors[0].message, 'Model not allowed');
+});
+
+// Real cost x markup stamped on the requests row (microcents = USD x 1e6 x markup, as settlement's debit_microcents).
+const costStamp = f => f.calls.updates.find(u => u.ExpressionAttributeValues?.[':cost']);
+test('a completed stream stamps cost_microcents = ceil(usage.cost x 1e6 x markup) on the requests row', async () => {
+  const f = fixture();
+  f.deps.forwardImpl = async p => { p.writeHead(200, { 'content-type': 'text/event-stream' }); p.end(); return { status: 200, generationId: 'gen-1', cost: 0.00123 }; };
+  await handleRequest(f.event(), f.responder, f.deps);
+  const u = costStamp(f);
+  assert.equal(u.TableName, 'requests');
+  assert.match(u.UpdateExpression, /cost_microcents/);
+  assert.equal(u.ExpressionAttributeValues[':cost'].N, '1476'); // 1230 x 1.2
+});
+test('a stream cut before the usage chunk leaves cost_microcents absent, never 0', async () => {
+  const f = fixture();
+  await handleRequest(f.event(), f.responder, f.deps); // default forwardImpl returns no cost
+  assert.equal(costStamp(f), undefined);
+  assert.equal(JSON.stringify(f.calls.updates).includes('cost_microcents'), false);
+});
+test('the requests row carries agent_id for a per-agent bearer and omits it for an owner bearer', async () => {
+  const f = fixture();
+  const get = f.deps.ddb.getItem;
+  f.deps.ddb.getItem = async p => p.TableName === 'tokens' ? { Item: { owner_id: AV('owner-1'), agent_id: AV('agent-7') } } : get(p);
+  await handleRequest(f.event(), f.responder, f.deps);
+  assert.equal(f.calls.puts[0].Item.agent_id.S, 'agent-7');
+  const g = fixture();
+  await handleRequest(g.event(), g.responder, g.deps);
+  assert.equal('agent_id' in g.calls.puts[0].Item, false);
 });

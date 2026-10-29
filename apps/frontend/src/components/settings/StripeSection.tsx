@@ -11,6 +11,7 @@ import {
   accountLabel,
   useProvisioningRail,
 } from "@/components/settings/ProvisionedResources";
+import { reconnectReasonLine } from "@/components/settings/reconnectReason";
 import { useConnections } from "@/hooks/useConnections";
 
 /**
@@ -81,7 +82,9 @@ export function StripeSection({ canManage }: { canManage: boolean }) {
                     ? "Authorized · unavailable to agents"
                     : connected
                       ? "Connected"
-                      : unavailable
+                      : stripe.status === "reconnect_required"
+                        ? "Needs reconnecting"
+                        : unavailable
                         ? "Not available yet"
                         : "Not connected"}
                   {stripe.acquisition === "direct_oauth"
@@ -94,6 +97,9 @@ export function StripeSection({ canManage }: { canManage: boolean }) {
                 "Not available yet"
               )}
             </p>
+            {stripe && reconnectReasonLine(stripe) && (
+              <p className="text-xs text-[var(--midnight-muted)] mt-0.5">{reconnectReasonLine(stripe)}</p>
+            )}
             <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
               What your agents can do in Stripe. A separate sign-in from the company account —
               agents only ever hold this grant, never the account credential.

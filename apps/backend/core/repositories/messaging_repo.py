@@ -22,6 +22,8 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     STREAM#<key>    META                               reverse mapping AppSync onSubscribe reads
     OWNER#<owner>   OPERATION#<id>                     async runtime op status/result
     OWNER#<owner>   WORK#OPERATION#<id>                one-shot outbox for runtime work
+    OWNER#<owner>   NETWAKE                            network doorbell: tokenHash (sha256), lastWakeAt (no TTL)
+    OWNER#<owner>   WORK#NETWAKE#<ulid>                one-shot outbox: wake the parked workspace's network sidecar
     OWNER#<owner>   WORKSPACE                          opaque AppSync channel-path segment
     WORKSPACE#<ws>  META                               owner of the path segment (AppSync onPublish reads it)
     WORKSPACE#<ws>  MEMBER#<user>                      the user may subscribe /ws/<ws>/sessions (onSubscribe
@@ -234,6 +236,14 @@ def operation_sk(operation_id: str) -> str:
 
 def work_operation_sk(operation_id: str) -> str:
     return f"WORK#OPERATION#{operation_id}"
+
+
+def netwake_sk() -> str:
+    return "NETWAKE"
+
+
+def work_netwake_sk(ulid: str) -> str:
+    return f"WORK#NETWAKE#{ulid}"
 
 
 def followup_sk(follow_up_id: str) -> str:
@@ -450,6 +460,9 @@ async def _transact(items: list[dict]) -> None:
 
 def _is_cancelled(exc: ClientError) -> bool:
     return exc.response.get("Error", {}).get("Code") == "TransactionCanceledException"
+
+
+is_cancelled = _is_cancelled  # the public name for callers outside this module
 
 
 async def _paginate(**kwargs: Any) -> list[dict]:
@@ -996,6 +1009,7 @@ async def create_message(
     acting_human_id: str | None = None,
     extra_conditions: list[dict] | None = None,
     via: str | None = None,
+    text_reply_key: str | None = None,
     session_mentions: list[str] | None = None,
     session_target_labels: dict[str, str] | None = None,
     addressing: dict | None = None,
@@ -1073,6 +1087,9 @@ async def create_message(
             }
             if via:
                 message["via"] = via
+            if text_reply_key:
+                # A member's text posted to the room: where an agent's reply is texted back (text_relay).
+                message["textReplyKey"] = text_reply_key
             if acting_human_id:
                 # The accountable human behind a system-authored post (hosted MCP receipts read it).
                 message["actorUserId"] = acting_human_id
@@ -3324,6 +3341,9 @@ async def delete_room_partition(room_id: str) -> int:
 
 async def delete_owner_partition(owner_id: str) -> int:
     """Delete owner rows, reverse streams and retained local-session history."""
+    from core.services import agent_keys
+
+    await agent_keys.delete_for_owner(owner_id)  # their lookup rows sit outside this partition
     streams = await _query(owner_pk(owner_id), begins_with="USERSTREAM#")
     count = 0
     for s in streams:
@@ -3428,3 +3448,103 @@ async def finalize_decision(
 async def get_decision(room_id: str, message_id: str) -> dict | None:
     row = await _get(room_pk(room_id), decision_sk(message_id))
     return row.get("decision") if row else None
+
+
+# ---------------------------------------------------------------------------
+# device login (`lightbulb join`): one row per code hash, plus a pointer row per user code
+# ---------------------------------------------------------------------------
+
+
+def device_login_key(code_hash: str) -> dict:
+    return {"pk": f"DEVICELOGIN#{code_hash}", "sk": f"DEVICELOGIN#{code_hash}"}
+
+
+def device_login_code_key(user_code: str) -> dict:
+    return {"pk": f"DEVICELOGINCODE#{user_code}", "sk": f"DEVICELOGINCODE#{user_code}"}
+
+
+async def create_device_login(code_hash: str, user_code: str, fields: dict, expires_at: int) -> None:
+    """Both rows or neither; a user-code collision cancels the transaction (ClientError)."""
+    new = "attribute_not_exists(pk)"
+    await _transact(
+        [
+            {
+                "Put": {
+                    "TableName": settings.MESSAGING_TABLE,
+                    "Item": {**device_login_key(code_hash), **fields, "userCode": user_code, "expiresAt": expires_at},
+                    "ConditionExpression": new,
+                }
+            },
+            {
+                "Put": {
+                    "TableName": settings.MESSAGING_TABLE,
+                    "Item": {**device_login_code_key(user_code), "codeHash": code_hash, "expiresAt": expires_at},
+                    "ConditionExpression": new,
+                }
+            },
+        ]
+    )
+
+
+async def get_device_login(code_hash: str) -> dict | None:
+    key = device_login_key(code_hash)
+    return await _get(key["pk"], key["sk"])
+
+
+async def get_device_login_by_user_code(user_code: str) -> dict | None:
+    key = device_login_code_key(user_code)
+    pointer = await _get(key["pk"], key["sk"])
+    return await get_device_login(pointer["codeHash"]) if pointer else None
+
+
+async def claim_device_login(code_hash: str, owner_id: str, user_id: str) -> bool:
+    """Bind a pending login to one approver (workspace + person). True when the claim is
+    ours (new or already ours), False when someone else holds it or the row is gone."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key=device_login_key(code_hash),
+            UpdateExpression="SET approverUserId = :u, approverOwnerId = :o",
+            ConditionExpression=(
+                "attribute_exists(pk) AND (attribute_not_exists(approverUserId)"
+                " OR (approverUserId = :u AND approverOwnerId = :o))"
+            ),
+            ExpressionAttributeValues={":u": user_id, ":o": owner_id},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+
+
+async def finish_device_login(code_hash: str, user_id: str, result: dict) -> None:
+    await run_in_thread(
+        _table().update_item,
+        Key=device_login_key(code_hash),
+        UpdateExpression="SET #s = :approved, #r = :r",
+        ConditionExpression="approverUserId = :u",
+        ExpressionAttributeNames={"#s": "status", "#r": "result"},
+        ExpressionAttributeValues={":approved": "approved", ":r": _ddb_safe(result), ":u": user_id},
+    )
+
+
+async def take_device_login(code_hash: str, *, approved_only: bool) -> dict | None:
+    """Delete the login (and its user-code pointer); return the deleted row. With
+    ``approved_only`` only an approved row is taken, so two racing polls get it once."""
+    kwargs: dict[str, Any] = {"Key": device_login_key(code_hash), "ReturnValues": "ALL_OLD"}
+    if approved_only:
+        kwargs.update(
+            ConditionExpression="#s = :approved",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":approved": "approved"},
+        )
+    try:
+        old = (await run_in_thread(_table().delete_item, **kwargs)).get("Attributes")
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return None
+    if old and old.get("userCode"):
+        await run_in_thread(_table().delete_item, Key=device_login_code_key(old["userCode"]))
+    return _plain(old) if old else None

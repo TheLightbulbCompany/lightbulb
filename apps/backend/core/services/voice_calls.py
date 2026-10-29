@@ -297,7 +297,9 @@ Then pick whatever fits the request:
 - Answer: after checking, reply in two or three short spoken sentences, starting with what it is about.
 - Ask: if you cannot tell what is wanted, ask one short clarifying question instead of guessing.
 - Hand it off: if it is work that should go on after the call (writing or building something, a job that runs for a long time), say so in one sentence and make sure it gets done by creating a Paperclip task for yourself or for the teammate who owns it:
-  printf '%s' "<what to do>" | /opt/hermes-skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "<short title>" --assignee "<your or the owner's agent id; yours is $PAPERCLIP_AGENT_ID>" --status todo
+  /opt/hermes-skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "<short title>" --assignee "<your or the owner's agent id; yours is $PAPERCLIP_AGENT_ID>" --status todo <<'EOF'
+<what to do>
+EOF
   Only promise to follow up if you actually created that task.
 - Cannot: if you lack the access or the tool, say which one, in one sentence.
 Your reply is spoken: no markdown, no lists, no code, no links, no ids. Never claim an action succeeded before it did.
@@ -485,7 +487,8 @@ async def _runtime(
 def _voice_requester(members: list[dict], owner_id: str, speaker_id: str) -> str | None:
     """Who a voice run's local-session grant is FOR: the speaker, only when they are a human member of
     this workspace seated in the room (the C8 rule). A Meet speaker (``meet:<room>`` or a label) is
-    never a member, so its grant names nobody and every session is "ask"; never the inviting owner."""
+    never a member, so its grant names nobody (it reads only workspace-wide rooms); never the inviting
+    owner."""
     member = next((m for m in members if m.get("kind") == "human" and m["id"] == speaker_id), None)
     return speaker_id if member and messaging_repo.member_home(member, owner_id) == owner_id else None
 
@@ -908,7 +911,7 @@ async def steer_voice_run(
         return None
     name = _meet_label(speaker_name) if speaker_id.startswith("meet:") else await _speaker_name(speaker_id)
     # The run's local-session grant must not outrank its least-privileged speaker: a steer by anyone
-    # but the run's latest speaker drops it to no requester (every session "ask") for the rest of the
+    # but the run's latest speaker drops it to no requester (no rooms read as them) for the rest of the
     # run. Only ever lowered: a steer never carries a grant naming anyone, and the bridge swaps it in.
     grant = None
     if speaker_id != row.get("speakerUserId"):

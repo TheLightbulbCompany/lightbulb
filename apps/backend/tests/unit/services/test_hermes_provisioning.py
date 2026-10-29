@@ -86,7 +86,7 @@ def test_the_request_has_no_efs_leg_and_points_at_the_hermes_image():
     assert req["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"].endswith("hermes-agent-arm64:h-v1")
     assert req["networkConfiguration"]["networkMode"] == "VPC"
     assert req["protocolConfiguration"]["serverProtocol"] == "HTTP"
-    assert req["lifecycleConfiguration"]["idleRuntimeSessionTimeout"] == 30 * 60
+    assert req["lifecycleConfiguration"]["idleRuntimeSessionTimeout"] == 15 * 60
     assert req["tags"]["ManagedBy"] == "lightbulb-backend"
 
 
@@ -1057,7 +1057,7 @@ async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monke
     assert request["networkConfiguration"]["networkMode"] == "VPC"
     assert request["environmentVariables"]
     assert request["protocolConfiguration"] == {"serverProtocol": "HTTP"}
-    assert request["lifecycleConfiguration"]["idleRuntimeSessionTimeout"] == 30 * 60
+    assert request["lifecycleConfiguration"]["idleRuntimeSessionTimeout"] == 15 * 60
 
 
 # --- N1/M4-R39: provision_hermes_runtime gets the same freshness guard as prepare -----------
@@ -2232,3 +2232,49 @@ async def test_the_roster_fan_out_reads_the_line_once(monkeypatch):
     line.assert_awaited_once_with("owner_1")
     numbers = [c.kwargs["inputs"].front_desk_number_for(c.args[1]["id"]) for c in write.await_args_list]
     assert numbers == [None, "+1555", None, None, None, None]
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_provision_mints_the_network_key_and_sessions_json(monkeypatch):
+    """prepare_hermes_workspace makes every workspace a network member: the boot secret gets a
+    member key and ``<owner>/network/sessions.json`` is written (empty roster before step 0
+    seeds it; write_profiles republishes it after)."""
+    import json
+
+    import boto3
+    from moto import mock_aws
+
+    _patch_owner_aws(monkeypatch, existing_row=None)
+    objects: dict[str, bytes] = {}
+    monkeypatch.setattr(hermes_provisioning.settings, "OWNER_STATE_BUCKET", "bucket")
+    monkeypatch.setattr("core.services.hermes_profiles.put_owner_object", lambda k, b: objects.__setitem__(k, b))
+    monkeypatch.setattr("core.services.hermes_profiles.get_owner_object", lambda k: objects.get(k))
+    monkeypatch.setattr(
+        "core.services.hermes_profiles.owner_object_size", lambda k: len(objects[k]) if k in objects else None
+    )
+    monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value={"name": "Acme"}))
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[]))
+    wake = {"url": "https://api/x", "token": "org_a.t"}  # the doorbell's own tests: test_network_wake.py
+    monkeypatch.setattr("core.services.network_member._wake", AsyncMock(return_value=wake))
+    # The members list the sessions file carries (no Paperclip workspace in this test).
+    monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=[]))
+
+    with mock_aws():
+        sm = boto3.client("secretsmanager", region_name="us-east-1")
+        assert await hermes_provisioning.prepare_hermes_workspace("org_a") is True
+        boot = json.loads(sm.get_secret_value(SecretId=hermes_provisioning.boot_secret_name("org_a"))["SecretString"])
+        assert boot["networkKey"]
+        assert json.loads(objects["org_a/network/sessions.json"]) == {
+            "workspace": "Acme",
+            "sessions": [],
+            "wake": wake,
+            "members": [],
+            "revoked_keys": [],
+        }
+
+        # A reconcile keeps the key and refreshes sessions.json (#4359: workspaces always carry members).
+        objects["org_a/network/sessions.json"] = b'{"workspace": "Acme", "sessions": [], "kept": true}'
+        assert await hermes_provisioning.prepare_hermes_workspace("org_a") is False
+        again = json.loads(sm.get_secret_value(SecretId=hermes_provisioning.boot_secret_name("org_a"))["SecretString"])
+        assert again["networkKey"] == boot["networkKey"]
+        assert "kept" not in json.loads(objects["org_a/network/sessions.json"])

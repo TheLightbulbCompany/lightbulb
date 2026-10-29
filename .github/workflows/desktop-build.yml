@@ -31,6 +31,15 @@
 # (~/Library/pnpm/store), both on local disk. Every network step (tauri-action,
 # notarytool, stapler, gh release) gets three tries.
 
+# Disk budget (.github/scripts/mac-runner-disk.sh): this Mac hit 0 bytes mid-link twice
+# (ENOSPC in `ld`) with a 16 GB Rust cache plus ~6 GB of _work. Every Mac job (here and in
+# mobile-release.yml) starts with a pre-flight (under 10 GB free: prune; still under 6 GB: fail
+# with a clear message) and ends with an `if: always()` prune: the Rust target dirs lose
+# incremental/ and bundle/ and are wiped if still over budget (prod 6 GB, test 4 GB), and the
+# workspace's node_modules, vendored sidecars, .next/.expo and RUNNER_TEMP dmg/ipa leftovers go.
+# The pnpm store stays. It only touches ~/.cache/lightbulb-desktop, $GITHUB_WORKSPACE and
+# $RUNNER_TEMP.
+#
 name: desktop-build
 'on':
   pull_request:
@@ -68,13 +77,14 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: Disk pre-flight
+      run: bash .github/scripts/mac-runner-disk.sh preflight
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
     # Its own dir: pull-request code never writes into the signed builds' target dir.
     - name: Use the persistent Rust target dir
       run: |-
         DIR="$HOME/.cache/lightbulb-desktop/target-test"
-        if [ -d "$DIR" ] && [ "$(du -sg "$DIR" | cut -f1)" -gt 30 ]; then rm -rf "$DIR"; fi
         echo "CARGO_TARGET_DIR=$DIR" >> "$GITHUB_ENV"
     # TAURI_CONFIG stubs the sidecar bundle so tauri-build does not demand binaries
     # that only the signed build jobs vendor.
@@ -84,11 +94,17 @@ jobs:
     # The holder and the `lightbulb` command end to end: real binary, real pty.
     - name: Cargo test (held sessions)
       run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path
-        apps/desktop/src-tauri/Cargo.toml --test holder --test cli
+        apps/desktop/src-tauri/Cargo.toml --test cli
+    # The holder lives in lightbulb-core; its macOS-only tests run here, not on Linux.
+    - name: Cargo test (lightbulb-core)
+      run: cargo test --manifest-path apps/desktop/Cargo.toml -p lightbulb-core
     # Run separately and unfiltered: a shared name filter matches none of the example's tests.
     - name: Cargo test (probe example)
       run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path
         apps/desktop/src-tauri/Cargo.toml --example local_session_probe
+    - name: Prune runner disk
+      if: always()
+      run: bash .github/scripts/mac-runner-disk.sh prune
   build-desktop-prod:
     name: BuildDesktopProd
     if: github.event_name == 'workflow_dispatch'
@@ -99,6 +115,8 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: Disk pre-flight
+      run: bash .github/scripts/mac-runner-disk.sh preflight
     - name: Setup pnpm
       uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       with:
@@ -115,32 +133,32 @@ jobs:
     - name: Use the persistent Rust target dir
       run: |-
         DIR="$HOME/.cache/lightbulb-desktop/target"
-        # ponytail: a size cap, not an LRU; past 30 GB the next build starts cold.
-        if [ -d "$DIR" ] && [ "$(du -sg "$DIR" | cut -f1)" -gt 30 ]; then rm -rf "$DIR"; fi
         echo "CARGO_TARGET_DIR=$DIR" >> "$GITHUB_ENV"
     - name: Install dependencies
       run: pnpm install
+    # tauri.conf.json and capabilities/default.json ARE the prod flavor (dev is the
+    # tauri.dev.conf.json overlay + capabilities/dev.json, opt-in), so only the version and
+    # targets are patched here.
     - name: Patch tauri.conf.json for prod
       run: |-
         TAURI_CFG=apps/desktop/src-tauri/tauri.conf.json
-        # ONE updater endpoint, on the live domain. isol8.co is being retired
-        # outright, so a fallback pointing at it would be dead weight -- and a
-        # dead first-choice endpoint only slows the update check down. Desktop
-        # apps installed before the cutover cannot self-update and need a
-        # manual reinstall; that is accepted (the install base is internal).
-        jq --arg url "https://thelightbulb.company/chat" \
-           --arg updateUrl "https://thelightbulb.company/api/desktop/update/{{target}}/{{current_version}}" \
-           --arg version "0.4.${{ github.run_number }}" '
+        jq --arg version "0.4.${{ github.run_number }}" '
           .version = $version |
-          .bundle.targets = ["app"] |
-          .build.devUrl = $url |
-          .build.frontendDist = $url |
-          .app.windows[0].url = $url |
-          .plugins.updater.endpoints = [$updateUrl]
+          .bundle.targets = ["app"]
         ' "$TAURI_CFG" > "$TAURI_CFG.new"
         mv "$TAURI_CFG.new" "$TAURI_CFG"
         echo "Patched tauri.conf.json:"
-        jq '{version, devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity: .bundle.macOS.signingIdentity, updaterEndpoints: .plugins.updater.endpoints}' "$TAURI_CFG"
+        jq '{version, devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity: .bundle.macOS.signingIdentity, updaterEndpoints: .plugins.updater.endpoints, capabilities: .app.security.capabilities}' "$TAURI_CFG"
+    # The hosted page can call every local command its origin is granted. Refuse to build
+    # a prod app that loads, or grants IPC to, anything but the prod origin.
+    - name: Check the prod build is prod-only
+      run: |-
+        set -euo pipefail
+        D=apps/desktop/src-tauri
+        jq -e '.app.security.capabilities == ["default"]' "$D/tauri.conf.json"
+        jq -e '.remote.urls == ["https://thelightbulb.company/*"]' "$D/capabilities/default.json"
+        jq -e '[.build.devUrl, .build.frontendDist, .app.windows[].url, .plugins.updater.endpoints[]]
+          | all(startswith("https://thelightbulb.company/"))' "$D/tauri.conf.json"
     - name: Vendor browser sidecar (aarch64-apple-darwin)
       run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh aarch64-apple-darwin
     - name: Set up signing keychain
@@ -197,7 +215,8 @@ jobs:
           -name '*.dylib' -o \
           -name '*.so' -o \
           -name 'spawn-helper' -o \
-          -name 'node-*-apple-darwin' \
+          -name 'node-*-apple-darwin' -o \
+          -name 'lightbulb' \
         \) -type f -print0 > "$CANDIDATES"
         while IFS= read -r -d '' f; do
           if file -b "$f" | grep -q "Mach-O"; then
@@ -247,10 +266,9 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         LIGHTBULB_CALLBACK_URL: https://thelightbulb.company/auth/desktop-callback
-        # Point the native node-host + pairing client at PROD. Without these
-        # the compile-time defaults in lib.rs fall back to dev, so the prod
-        # app's "computer access" half pairs against dev while the chat UI +
-        # Friday run on prod — they never connect.
+        # PROD, explicitly. These match lib.rs's compile-time defaults (prod since the
+        # open-source release); set here so a default change can never silently
+        # point the shipped app's pairing half somewhere else.
         LIGHTBULB_API_BASE: https://api.thelightbulb.company
         LIGHTBULB_WS_URL: wss://bv.thelightbulb.company/api/v1/gateway/ws
     - name: Build desktop app (aarch64-apple-darwin, try 2)
@@ -270,10 +288,9 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         LIGHTBULB_CALLBACK_URL: https://thelightbulb.company/auth/desktop-callback
-        # Point the native node-host + pairing client at PROD. Without these
-        # the compile-time defaults in lib.rs fall back to dev, so the prod
-        # app's "computer access" half pairs against dev while the chat UI +
-        # Friday run on prod — they never connect.
+        # PROD, explicitly. These match lib.rs's compile-time defaults (prod since the
+        # open-source release); set here so a default change can never silently
+        # point the shipped app's pairing half somewhere else.
         LIGHTBULB_API_BASE: https://api.thelightbulb.company
         LIGHTBULB_WS_URL: wss://bv.thelightbulb.company/api/v1/gateway/ws
     - name: Build desktop app (aarch64-apple-darwin, try 3)
@@ -291,10 +308,9 @@ jobs:
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         LIGHTBULB_CALLBACK_URL: https://thelightbulb.company/auth/desktop-callback
-        # Point the native node-host + pairing client at PROD. Without these
-        # the compile-time defaults in lib.rs fall back to dev, so the prod
-        # app's "computer access" half pairs against dev while the chat UI +
-        # Friday run on prod — they never connect.
+        # PROD, explicitly. These match lib.rs's compile-time defaults (prod since the
+        # open-source release); set here so a default change can never silently
+        # point the shipped app's pairing half somewhere else.
         LIGHTBULB_API_BASE: https://api.thelightbulb.company
         LIGHTBULB_WS_URL: wss://bv.thelightbulb.company/api/v1/gateway/ws
     - name: Build, sign + notarize DMG (headless)
@@ -344,9 +360,48 @@ jobs:
         done
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # `brew install --cask thelightbulbcompany/tap/lightbulb`: write this release's version and
+    # the archive's sha256 (GitHub's own asset digest, so the bytes that were uploaded) into the
+    # tap. The cask's source is packaging/homebrew-tap/Casks/lightbulb.rb. The tap is pushed with
+    # a deploy key (write access to TheLightbulbCompany/homebrew-tap only); skipped while
+    # HOMEBREW_TAP_DEPLOY_KEY is unset.
+    - name: Bump the Homebrew tap
+      run: |-
+        set -euo pipefail
+        if [ -z "${HOMEBREW_TAP_DEPLOY_KEY:-}" ]; then
+          echo "::notice::HOMEBREW_TAP_DEPLOY_KEY is not set; skipping the Homebrew tap bump."
+          exit 0
+        fi
+        VERSION="0.4.${{ github.run_number }}"
+        SHA=$(gh api "repos/TheLightbulbCompany/lightbulb/releases/tags/desktop-v${VERSION}" \
+          --jq '.assets[] | select(.name | endswith("_aarch64.app.tar.gz")) | .digest' | sed 's/^sha256://')
+        echo "$SHA" | grep -Eqx '[0-9a-f]{64}'
+        TAP="$RUNNER_TEMP/homebrew-tap"
+        KEY="$RUNNER_TEMP/homebrew-tap-key"
+        rm -rf "$TAP"
+        # This Mac is persistent and runs pull-request code: the key lives in RUNNER_TEMP for this
+        # step only (removed by the cleanup step below, whatever happens), never in ~/.ssh.
+        ( umask 077; printf '%s\n' "$HOMEBREW_TAP_DEPLOY_KEY" > "$KEY" )
+        export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$RUNNER_TEMP/homebrew-tap-known-hosts"
+        git clone --depth 1 git@github.com:TheLightbulbCompany/homebrew-tap.git "$TAP"
+        mkdir -p "$TAP/Casks"
+        sed -e "s/^  version \".*\"/  version \"${VERSION}\"/" -e "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" \
+          packaging/homebrew-tap/Casks/lightbulb.rb > "$TAP/Casks/lightbulb.rb"
+        cd "$TAP"
+        git add Casks/lightbulb.rb
+        git diff --cached --quiet && { echo "Tap already at $VERSION"; exit 0; }
+        git -c user.name="lightbulb-release" -c user.email="hello@thelightbulb.company" commit -m "lightbulb ${VERSION}"
+        for i in 1 2 3; do git push origin HEAD && exit 0; [ "$i" = 3 ] && exit 1; sleep $((i * 10)); done
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
     # Persistent runner: never leave the Apple signing key on disk between runs.
     - name: Clean up signing keychain
       if: always()
       run: |-
         rm -f "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+        rm -rf "$RUNNER_TEMP/homebrew-tap" "$RUNNER_TEMP/homebrew-tap-key" "$RUNNER_TEMP/homebrew-tap-known-hosts"
         security delete-keychain "$RUNNER_TEMP/lightbulb-build.keychain-db" || true
+    - name: Prune runner disk
+      if: always()
+      run: bash .github/scripts/mac-runner-disk.sh prune

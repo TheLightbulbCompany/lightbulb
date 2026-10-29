@@ -103,6 +103,17 @@ def _check_url(url: str) -> tuple[str, str, int | None]:
     return parts.scheme, parts.hostname, port
 
 
+async def pinned_request(client: httpx.AsyncClient, method: str, url: str, **kwargs) -> httpx.Request:
+    """A request to a checked public URL, connected to the address we resolved (never re-resolved)."""
+    scheme, host, port = _check_url(url)
+    ip = await _resolve(host)
+    parts = urlsplit(url)
+    ip_host = f"[{ip}]" if ":" in ip else ip
+    pinned = urlunsplit((scheme, ip_host + (f":{port}" if port else ""), parts.path or "/", parts.query, ""))
+    headers = {**kwargs.pop("headers", {}), "Host": parts.netloc}
+    return client.build_request(method, pinned, headers=headers, extensions={"sni_hostname": host}, **kwargs)
+
+
 async def safe_get(url: str, *, accept: str) -> tuple[str, bytes, str]:
     """GET a public http(s) URL. Returns (final_url, body[:MAX_BYTES], content_type)."""
     async with asyncio.timeout(TIMEOUT_S):
@@ -110,19 +121,7 @@ async def safe_get(url: str, *, accept: str) -> tuple[str, bytes, str]:
             transport=_TRANSPORT, timeout=TIMEOUT_S, follow_redirects=False, trust_env=False
         ) as client:
             for _ in range(MAX_REDIRECTS + 1):
-                scheme, host, port = _check_url(url)
-                ip = await _resolve(host)
-                parts = urlsplit(url)
-                ip_host = f"[{ip}]" if ":" in ip else ip
-                pinned = urlunsplit(
-                    (scheme, ip_host + (f":{port}" if port else ""), parts.path or "/", parts.query, "")
-                )
-                request = client.build_request(
-                    "GET",
-                    pinned,
-                    headers={"Host": parts.netloc, "User-Agent": USER_AGENT, "Accept": accept},
-                    extensions={"sni_hostname": host},
-                )
+                request = await pinned_request(client, "GET", url, headers={"User-Agent": USER_AGENT, "Accept": accept})
                 response = await client.send(request, stream=True)
                 try:
                     if response.is_redirect:

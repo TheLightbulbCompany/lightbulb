@@ -171,7 +171,7 @@ async def request_resume(
             if not store._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return sessions._session_public(updated, me)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -201,7 +201,7 @@ async def revoke_resume(auth: AuthContext, session_id: str, user_id: str) -> ses
             if not store._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return sessions._session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -283,7 +283,7 @@ async def mark_failed(row: dict, failed: ResumeFailed) -> None:
                 raise
     else:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-    await publish_resources_changed(row["ownerId"], row["humanUserId"])
+    await publish_resources_changed(row["ownerId"], row["humanUserId"], session_id=row["sessionId"])
 
 
 async def on_register(previous: dict | None, row: dict) -> list[dict]:

@@ -179,6 +179,8 @@ jest.mock(
     clearLastNotificationResponse: jest.fn(),
     setNotificationHandler: jest.fn(),
     setBadgeCountAsync: jest.fn(async () => true),
+    setNotificationChannelAsync: jest.fn(async () => null),
+    AndroidImportance: { HIGH: 4 },
   }),
   { virtual: true },
 );

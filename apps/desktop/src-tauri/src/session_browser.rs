@@ -226,7 +226,7 @@ async fn bind_or_report(port: u16, report: impl FnOnce(String)) -> Option<TcpLis
 pub async fn serve(app: tauri::AppHandle) {
     let Some(listener) = bind_or_report(PORT, |text| {
         tauri::async_runtime::spawn(async move {
-            crate::notify::native_notify("Lightbulb".into(), Some(text), None, None, None).await;
+            crate::notify::show("Lightbulb".into(), Some(text), None, None, None).await;
         });
     })
     .await
@@ -320,14 +320,15 @@ fn source_of(app: &tauri::AppHandle, local: SocketAddr, peer: SocketAddr) -> Res
     if chain.is_empty() {
         return Err(NOT_SHARED.into());
     }
-    let scope = crate::local_sessions::enrollment::session_scope(app).map_err(|_| NOT_SHARED.to_string())?;
+    let scope = crate::local_sessions::enrollment::state_dir(app).and_then(|d| crate::local_sessions::enrollment::session_scope(&d)).map_err(|_| NOT_SHARED.to_string())?;
     crate::local_sessions::shared_session_for(&scope, &chain)
 }
 
 async fn still_shared(app: &tauri::AppHandle, session: &str) -> bool {
     let (app, session) = (app.clone(), session.to_string());
     tokio::task::spawn_blocking(move || {
-        crate::local_sessions::enrollment::session_scope(&app)
+        crate::local_sessions::enrollment::state_dir(&app)
+            .and_then(|d| crate::local_sessions::enrollment::session_scope(&d))
             .is_ok_and(|scope| crate::local_sessions::session_still_shared(&scope, &session))
     })
     .await

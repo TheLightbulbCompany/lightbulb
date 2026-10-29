@@ -52,6 +52,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Disk budget for this Mac: see .github/scripts/mac-runner-disk.sh and desktop-build.yml.
+      - name: Disk pre-flight
+        working-directory: .
+        run: bash .github/scripts/mac-runner-disk.sh preflight
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
 
@@ -123,3 +128,8 @@ jobs:
       - name: Clean up API key + artifact
         if: always()
         run: rm -f credentials/AuthKey_SZ68D5WBR2.p8 "$RUNNER_TEMP/lightbulb.ipa" || true
+
+      - name: Prune runner disk
+        if: always()
+        working-directory: .
+        run: bash .github/scripts/mac-runner-disk.sh prune

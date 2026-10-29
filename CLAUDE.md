@@ -703,13 +703,17 @@ one call that deprovisions — is reachable from the owner's typed-confirmation
 route and nowhere else, and teardown never reaches it (spec §3.6, proved by
 `tests/unit/services/test_wipe_never_deprovisions.py`).
 
-**The rail is OFF by default** — `STRIPE_PROVISIONING_ENABLED` (CDK env, default
-`false` in both envs) refuses `start()`/`on_approved()`, freezes `advance()`,
-empties the CEO agent's catalog with `reason: provisioning_unavailable`, and hides the
-Connect doors (the Domain & Site panel was deleted 2026-10-14 with the dead Growth/Company tabs). It stays off until Stripe ships
-delegated connected-account creation + KYC (isol8, Inc. is the Connect
-platform and cannot connect to itself, and `POST /v2/provisioning/*` 500s for
-us). Everything else a company-Stripe binding powers — the Money tabs, the
+**The rail is always on — no feature flag** (owner ruling 2026-10-28; `STRIPE_PROVISIONING_ENABLED`
+is deleted, and the Link wallet's `LINK_WALLET_ENABLED` with it — Link is on whenever
+`LINK_CLIENT_ID`/`_SECRET`/`LINK_PUBLISHABLE_KEY` are set, and 404s and hides otherwise).
+What gates it is configuration and readiness: the Connect doors show whenever
+`STRIPE_CONNECT_CLIENT_ID` is set, and a workflow starts only for an eligible, entitled
+owner whose account's `projects` capability is active (`company_stripe.projects_ready`,
+`projects_ready` on the status route, "Finish Stripe setup" on the card), after the
+owner's approval. It runs the guide's `2026-09-30.preview` contract
+(`provider_connection_requests`, explicit `livemode` on resources and payment,
+`reveal_access_configuration`).
+`create_resource` always sends `livemode` (Stripe's default is LIVE). Every created account requests the developer configuration (`projects`) and the Accounts v2 calls pin the preview unless `STRIPE_ACCOUNTS_V2_VERSION` overrides; the status route reports `projects_ready` for created and connected accounts (a pasted key can never have it), and the setup link adds the capability to an account made without it. Everything else a company-Stripe binding powers — the Money tabs, the
 revenue rollup, card status, the CEO agent's "Stripe connected" awareness — is plain
 v1 and runs on the **API-key path**: the owner pastes a restricted key
 (`POST /company/stripe/api-key`, Read on Charges/Customers/Products/Prices/
@@ -730,7 +734,7 @@ generator and no EFS file I/O. What replaced it:
 
 | Where | Purpose |
 |------|---------|
-| `core/services/hermes_provisioning.py` | The AgentCore lifecycle. `prepare_hermes_workspace` mints the hook/gateway tokens + gate bearer into ONE Secrets Manager boot secret; `provision_hermes_runtime` creates the runtime; `roll_runtime_image` re-specs it onto a new image; `teardown_hermes_runtime` / `delete_workspace_runtime` is **THE teardown seam** every caller shares. `build_hermes_runtime_request` sets `lifecycleConfiguration` to a **30 min idle / 8 h max** session and carries **no `filesystemConfigurations`** — profiles are S3. The one retry it does is IAM trust propagation (`ensure_agentcore_trust` runs seconds before `CreateAgentRuntime`, and AgentCore rejects a freshly-trusted role for up to a minute). |
+| `core/services/hermes_provisioning.py` | The AgentCore lifecycle. `prepare_hermes_workspace` mints the hook/gateway tokens + gate bearer into ONE Secrets Manager boot secret; `provision_hermes_runtime` creates the runtime; `roll_runtime_image` re-specs it onto a new image; `teardown_hermes_runtime` / `delete_workspace_runtime` is **THE teardown seam** every caller shares. `build_hermes_runtime_request` sets `lifecycleConfiguration` to a **15 min idle / 8 h max** session and carries **no `filesystemConfigurations`** — profiles are S3. The one retry it does is IAM trust propagation (`ensure_agentcore_trust` runs seconds before `CreateAgentRuntime`, and AgentCore rejects a freshly-trusted role for up to a minute). |
 | `core/services/hermes_profiles.py` | The per-profile config writer. A Hermes profile IS a complete `$HERMES_HOME`, merged over `DEFAULT_CONFIG` **alone** with no inheritance from a root home — so every generated file must be complete. Secrets never land in `config.yaml` (it carries `${VAR}` references; the per-profile `.env` is the store), and the non-negotiables an agent could edit out of its own config live in the managed overlay, which wins at the leaf after env expansion. |
 | `core/services/agentcore_runtime.py` | The AWS-shaped primitives the above compose: `runtime_name_for`, the boot secret (`LIGHTBULB_SECRET_ID`), `ensure_agentcore_trust`, and the `IDLE_TIMEOUT_S`/`MAX_LIFETIME_S` constants. |
 | `core/services/runtime_transport.py` | **One way to reach a workspace, and only one.** `InvokeAgentRuntime` carries a `{path, method, headers, body}` envelope the bridge unwraps. `containers.runtime_host` is not consulted — there is nothing to classify. The session id is derived from the OWNER id on purpose: AgentCore creates a new microVM per distinct `runtimeSessionId`, and two live sessions for one workspace means two writers on one S3 prefix, which corrupts the replica set **silently** (reproduced 2026-09-16 — divergent histories, every later restore hangs with no error). One id is NOT enough on its own: N concurrent invokes on a session with no compute get N microVMs (no 409; dev repro + two prod splits, 2026-09-25), so a cold start is **single-flight** — a `__session__#<owner>` row in the containers table holds a `warm_until` estimate and a 120 s wake lease, and one caller wakes the session with a `health` RPC while the rest wait. Every stop MUST go through `hermes_provisioning.stop_runtime_session`, which clears that row (a test enforces it); a bare `StopRuntimeSession` leaves the estimate reading warm over a dead session. Detection query: `docs/runbooks/runtime-split-brain-detection.md`. |
@@ -874,8 +878,10 @@ its own palette), `lib/clerkAppearance.ts` (`var()` tokens with brand fallbacks,
 `*Brand.ts` vendor marks, and tests (`__tests__/`, `*.test.*`, which hold
 literals as fixtures) —
 `src/__tests__/brandTokens.test.ts` enforces it,
-`node scripts/brand-tokens-scan.mjs` lists offenders. Fonts: Source Sans 3 (UI) /
-Lora (prose) / mono for code only.
+`node scripts/brand-tokens-scan.mjs` lists offenders. Fonts: Satoshi (headers, navigation, UI
+accents) / Inter (message bodies, prose) / mono for code only (#4375). The phone
+mirrors it through `apps/mobile/src/config/theme.ts`'s `fonts` tokens (static Satoshi
+TTFs in `apps/mobile/assets/fonts/satoshi/`; native nav bars keep the system font).
 
 **`packages/shared` (`@lightbulb/shared`) is load-bearing:** the framework-neutral
 API client (`createApiClient`), the dependency-free AppSync live-event client
@@ -929,7 +935,12 @@ that will mislead you otherwise:
   viewer and refuses the next at authentication, so the page holds exactly one DCV client
   (`panels/sharedLiveView.tsx`): the panel shows the real display, previews a `captureStream()`
   copy, and a refused viewer says "Being watched elsewhere" instead of retrying. The backend owns sessions and hands each run a signed
-  CDP address, which the bridge serves to agent-browser on loopback. Saved state
+  CDP address, which the bridge serves to agent-browser on loopback. Each env has a VPC-mode
+  AgentCore browser (`ContainerStack.workspaceBrowser`; its own security group, out on 80/443
+  only) that leaves from the NAT's fixed address; the built-in `aws.browser.v1` leaves from a new
+  AWS address every session, and sites such as Google sign a moved session out. An env uses it
+  once it is in `service-stack.ts`'s `VPC_BROWSER_ENVS` (which sets `AGENTCORE_BROWSER_ID`), and
+  only after its runtimes are rolled onto a bridge that accepts a custom browser's CDP URL. Saved state
   lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
   the existing containers table at `__browser__#<owner>` (survives reprovision).
   It does not use the retired OpenClaw live-view WS or
@@ -1200,7 +1211,7 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
                                  ├─ ensure the owner's role (+ memory/browser grants), ensure AgentCore trust
                                  ├─ write_profiles — one complete $HERMES_HOME per roster agent to
                                  │  s3://$OWNER_STATE_BUCKET/<owner>/hermes/<agent>/
-                                 └─ CreateAgentRuntime (VPC mode, 30 min idle / 8h max, no filesystem)
+                                 └─ CreateAgentRuntime (VPC mode, 15 min idle / 8h max, no filesystem)
                                        └─ bounded poll to READY; a CREATE_FAILED runtime is deleted
                                           and its ARN cleared, never reused
                             0b. arm_nightly_ceo — PATCHes the CEO's Paperclip timer heartbeat
@@ -1276,7 +1287,7 @@ The managed model is not in code: it comes from the GitHub Actions variables `OP
 - **Settlement** is the `openrouter-settlement` Lambda (5-minute schedule): it reads each generation's real cost from OpenRouter, debits the fast-gate, and is the **Metronome writer for inference** (ingest deduplicated by generation id; voice calls ingest from the backend's `voice_calls` close instead). Metronome is a ledger, not a valve (its threshold alerts poll on a ≥3-minute tick and it never blocks usage).
 - **Lockstep constants — never move one alone:** the markup lives once in repo-root `openrouter-pricing.json` (read by the gate stack, the settlement debit and `scripts/setup_metronome_openrouter_pricing.py`); `RESERVE_ESTIMATE_MICROCENTS` (`metronome_gate.py`) is the paid-balance floor every door predicting admission must subtract.
 - **The gates** (`gate_chat`, the Teams guards, `routers/container.py`'s status/recover paths) are read-only checks on those rows. **They are UX** — the limit card instead of a failed run. The historical "no pre-send reserve" rule applies to the BACKEND (off the inference path, where a reserve is unenforceable guesswork — one existed, caused a 15-defect review, and was deleted); the gate's reservation is different in kind: it lives on the only path in/out.
-- **The runtime's own bounds** are the AgentCore session lifecycle: 30 min idle, **8 h max lifetime** (AWS's hard ceiling), and the backend rolls sessions at a quiet point before it. That is a wall-clock ceiling on a runaway loop, not a token one — Hermes's agentic loop still has no step/tool-call/token cap, so this is **insurance, not the fence**.
+- **The runtime's own bounds** are the AgentCore session lifecycle: 15 min idle, **8 h max lifetime** (AWS's hard ceiling), and the backend rolls sessions at a quiet point before it. That is a wall-clock ceiling on a runaway loop, not a token one — Hermes's agentic loop still has no step/tool-call/token cap, so this is **insurance, not the fence**.
 
 A parked trial workspace is woken by the **invoke**, not by a poll: AWS parks the microVM after `IDLE_TIMEOUT_S` and starts it again on the next `InvokeAgentRuntime`, so every gated door is a door onto an invoke rather than a `desiredCount` change. The row still reads `running` throughout (nothing observable changes), which is why `wake_policy` infers parking from `last_interactive_at` and treats its own answer as a report.
 
@@ -1506,7 +1517,7 @@ leaf), `skills-src/` + `build-skills.sh`, and its own
 Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (shipped 2026-08-30 — a fresh install relative to the old `co.isol8.desktop`; devices re-pair). Product name: **Lightbulb**; crate/binary `lightbulb-desktop`; keychain service and app-support dirs follow the bundle id; default docs folder `~/Lightbulb`; env vars `LIGHTBULB_API_BASE`/`LIGHTBULB_WS_URL`/`LIGHTBULB_CALLBACK_URL`. `LIGHTBULB_WS_URL` is compile-time-only (`option_env!` in `lib.rs`, set per env by `desktop-build.yml`) and now points at the `bv[-env]` **machine gateway relay** (`wss://bv[-env].thelightbulb.company/api/v1/gateway/ws`), not the old `ws[-env]` API Gateway door — it seeds the Mac node client's URL directly; the CLI node's loopback proxy instead reads the relay URL live from `/desktop/pair`'s `relayUrl` field (`gatewayUrl` there stays on `ws[-env]` for the local-session relay).
 
 - Rust host at `apps/desktop/src-tauri/src/`: `lib.rs`, `main.rs`, `bootstrap.rs`, `device_token.rs`, `file_access.rs`, `keychain.rs`, `node_client.rs`, `node_invoke.rs`, `notify.rs` (native macOS notifications over `UNUserNotificationCenter` via `objc2-user-notifications` — NOT `tauri-plugin-notification`, whose `NSUserNotificationCenter` backend is deprecated and never registered the app; the webview calls the `native_notify` command and gets clicks back as `notification:clicked`; launch registers the app provisionally — no prompt, but always listed in System Settings → Notifications — and `MessageNotifications` raises the real macOS prompt through `notification_permission` once after sign-in, with no in-app ask in front of it (a browser waits for the first click, which is all its own prompt needs); provisional counts as not asked, and `native_notify` answers false unless macOS permission is granted — macOS accepts requests from a switched-off app and silently shows nothing, so without that check the toast fallback never fires), `pair_client.rs`, `pair_state.rs`, `proxy.rs`, `screen.rs`, `subprocess.rs`, `tray.rs`
-- Embedded web view: dev flavor points at `https://dev.thelightbulb.company/chat`; the prod job **patches the URL to `https://thelightbulb.company/chat`** (and the updater endpoint) at build time in `desktop-build.yml`
+- **Flavors: prod is the default, dev is opt-in.** `tauri.conf.json` + `capabilities/default.json` + `lib.rs`'s compile-time defaults are PROD (`https://thelightbulb.company/chat`, `api.`, `bv.`), so a plain `cargo tauri build` from the open-source tree never lands on our internal environment. Dev is `pnpm dev` / `pnpm build:dev` in `apps/desktop`: `--config src-tauri/tauri.dev.conf.json` (dev URLs, enables only `capabilities/dev.json`) plus the dev `LIGHTBULB_*` env. A capability's `remote.urls` is which websites may call all the app's local commands, so each flavor grants exactly its own origin; `flavor_origin_tests` in `lib.rs` and a `desktop-build.yml` jq step fail if a prod build lists another
 - Sidecars (the `lightbulb-browser-service` launcher shim plus per-arch `node` and `openclaw-host`, and the pinned `chrome-devtools-mcp` that shared sessions run with that `node`) ship as bundle **resources** in `Contents/Resources/bin/`, never externalBin: a script in `Contents/MacOS` is signed via xattrs, which the updater tarball drops, and that broke every auto-updated install's seal. They are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
 - Protocol handler: `lightbulbai://` deep links (via `tauri-plugin-deep-link`); single-instance lock (`tauri-plugin-single-instance`)
 - Signed DMG for macOS (arm64), built by the standalone `.github/workflows/desktop-build.yml` on a self-hosted macOS runner (label `macos-desktop`) — **prod only, on a manual dispatch** (`gh workflow run desktop-build.yml --ref main`), publishing `desktop-v0.4.*` GitHub Releases consumed by the Tauri auto-updater. There is no dev build (owner decision 2026-10-04): test the desktop app on prod, or build and run it locally against the dev API. Pull requests still run the Rust tests (`TestDesktop`).

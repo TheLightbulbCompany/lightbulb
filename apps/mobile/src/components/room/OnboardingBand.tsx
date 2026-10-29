@@ -12,7 +12,7 @@ import {
 } from "@lightbulb/shared";
 import { router, useFocusEffect } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
-import { SymbolView, type SFSymbol } from "expo-symbols";
+import { SymbolView, type SFSymbol } from "../ui/SymbolView";
 import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
 import { AppState, Linking, Pressable, Share, StyleSheet, Text, View } from "react-native";
 

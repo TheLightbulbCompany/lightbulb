@@ -4,7 +4,7 @@ import { DocsNav } from "@/components/docs/DocsNav";
 import { getAllDocs } from "@/content/docs";
 
 export default function DocsLayout({ children }: { children: React.ReactNode }) {
-  const items = getAllDocs().map(({ slug, title }) => ({ slug, title }));
+  const items = getAllDocs().map(({ slug, title, section }) => ({ slug, title, section }));
   return (
     <main className="ld-page min-h-screen">
       <Navbar />

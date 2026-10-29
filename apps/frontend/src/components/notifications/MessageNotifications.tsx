@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
-import { isDesktopApp, nativeNotify, notificationPermission, onDesktopToast } from "@/lib/desktopNotify";
+import { desktopDeviceId, isDesktopApp, nativeNotify, notificationPermission, onDesktopToast, onSessionNoticeClick } from "@/lib/desktopNotify";
 import { notifySuccess } from "@/lib/notify";
 import type { RoomSummary } from "@lightbulb/shared";
 import { claimRunNotice, setRoomView } from "./roomView";
@@ -82,30 +82,46 @@ export function MessageNotifications(props: {
     return () => { cancelled = true; stopWaiting(); };
   }, [userId]);
 
+  // A Mac request notification (held message, agent ask) opens the session it is about.
+  useEffect(() => onSessionNoticeClick((sessionId) => current.current.onOpenSession?.(sessionId)), []);
+
   useEffect(() => {
     const seen = new Set<string>();
     let stopped = false;
     const unlisten = onEvent((event) => {
       if (event.type === "workspace.session.attention") {
         // One of YOUR shared sessions is waiting for you or finished: the phone's banner, verbatim.
-        const { sessionId, state, push } = event.payload;
+        const { sessionId, state, push, level, sound, onlyUnfocused } = event.payload;
         if (seen.has(event.eventId)) return;
         seen.add(event.eventId);
-        const watching = current.current.activeSessionId === sessionId &&
-          document.visibilityState === "visible" && document.hasFocus();
+        // Off and badge-only never banner (the Dock and tab count carry badge-only).
+        if (level !== undefined && level !== "banner") return;
+        const focused = document.visibilityState === "visible" && document.hasFocus();
+        const watching = current.current.activeSessionId === sessionId && focused;
         if (watching) return;
-        capture("notification_shown", { channel: "web", kind: `session_${state}` });
-        const onClick = () => {
-          capture("notification_clicked", { channel: "web", kind: `session_${state}` });
-          current.current.onOpenSession?.(sessionId);
-        };
-        void nativeNotify(push.title, push.body, { onClick, tag: event.eventId }).then((shown) => {
-          if (shown || stopped) return;
-          notifySuccess(push.title, {
-            dedupeKey: `session:${event.eventId}`,
-            description: push.body || undefined,
-            action: { label: "Open", onClick },
+        // In a browser the page's focus is the app's; the desktop app asks its own windows (native_notify).
+        if (onlyUnfocused && focused && !isDesktopApp()) return;
+        const show = () => {
+          capture("notification_shown", { channel: "web", kind: `session_${state}` });
+          const onClick = () => {
+            capture("notification_clicked", { channel: "web", kind: `session_${state}` });
+            current.current.onOpenSession?.(sessionId);
+          };
+          void nativeNotify(push.title, push.body, { onClick, tag: event.eventId, sound, onlyUnfocused }).then((shown) => {
+            if (shown || stopped) return;
+            notifySuccess(push.title, {
+              dedupeKey: `session:${event.eventId}`,
+              description: push.body || undefined,
+              action: { label: "Open", onClick },
+            });
           });
+        };
+        const { held, hostDeviceId } = event.payload;
+        if (!held || !hostDeviceId || !isDesktopApp()) { show(); return; }
+        // The Mac that hosts a held send posts its own notification, with Allow and Decline,
+        // when macOS lets it; with notifications off there, the window's toast still shows.
+        void Promise.all([desktopDeviceId(), notificationPermission()]).then(([here, allowed]) => {
+          if (!stopped && (here !== hostDeviceId || allowed !== "granted")) show();
         });
         return;
       }

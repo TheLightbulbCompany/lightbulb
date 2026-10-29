@@ -64,7 +64,7 @@ async def test_a_teammate_asks_once_and_only_the_owner_hears(transport):
     assert again.pickup_request == "pending"
     assert (await stored(sid))["revision"] == revision  # no second write
     assert [(n["user"], n["state"], n["title"]) for n in log["notices"]] == [
-        (ALICE.user_id, "join_request", f"Bob wants to pick up {sid[:8]}")
+        (ALICE.user_id, "join_request", "Bob wants to pick up a session")
     ]
     assert log["notices"][0]["body"] == (
         "Allow lets everyone in the workspace pick up this session on their Mac. It uploads the whole "

@@ -33,8 +33,18 @@ let isSubscribed: boolean;
 vi.mock("@/components/messaging/TrialRecapCard", () => ({ TrialRecapCard: () => null }));
 vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: billingAccount, isSubscribed }) }));
 vi.mock("@clerk/nextjs", () => ({
-  useUser: () => ({ user: { fullName: "Ada Lovelace" } }),
+  useUser: () => ({
+    user: {
+      fullName: "Ada Lovelace",
+      // Newest first, as Clerk lists them: the active workspace is NOT the first membership.
+      organizationMemberships: [{ organization: { name: "Newer Workspace" } }, { organization: { name: "Acme" } }],
+    },
+  }),
+  useOrganization: () => ({ organization: { id: "org_acme", name: "Acme" } }),
+  useOrganizationList: () => ({ userMemberships: { data: memberships }, setActive }),
 }));
+let memberships: { organization: { id: string; name: string } }[] = [];
+const setActive = vi.fn().mockResolvedValue(undefined);
 let freshlyInstalledAgentId: string | null;
 const setFreshlyInstalled = vi.fn();
 const openMarketplace = vi.fn();
@@ -62,6 +72,33 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("WorkspaceSidebar", () => {
+  it("titles the sidebar with the active workspace, not the newest membership", () => {
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: "Acme" })).toBeTruthy();
+    expect(screen.queryByText("Newer Workspace")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Acme/ })).toBeNull();
+  });
+
+  it("lets someone in two workspaces switch from the title", async () => {
+    memberships = [
+      { organization: { id: "org_new", name: "Newer Workspace" } },
+      { organization: { id: "org_acme", name: "Acme" } },
+    ];
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    try {
+      render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+      const trigger = screen.getByRole("button", { name: /Acme/ });
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: "mouse" });
+      fireEvent.click(await screen.findByRole("menuitemradio", { name: "Newer Workspace" }));
+      await vi.waitFor(() => expect(setActive).toHaveBeenCalledWith({ organization: "org_new" }));
+      await vi.waitFor(() => expect(assign).toHaveBeenCalledWith("/chat"));
+    } finally {
+      memberships = [];
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("renders message-first navigation with the account row and no Workspace tools block", () => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
     expect(screen.getAllByRole("navigation", { name: "Conversations" })).toHaveLength(1);

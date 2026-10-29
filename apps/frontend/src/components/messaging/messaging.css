@@ -64,8 +64,12 @@
 .room-message-actions button { border-radius: 4px; }
 .room-quick-reactions { display: inline-flex; gap: 2px; }
 .room-quick-reactions button { min-width: 28px; }
-.room-message-content { flex: 1; min-width: 0; line-height: var(--text-ui--line-height); }
-.room-message-content > :is(.prose, [class*="prose"]) { font-family: var(--font-sans); font-size: var(--text-ui); line-height: var(--text-ui--line-height); }
+.room-message-content { flex: 1; min-width: 0; font-family: var(--font-body); line-height: var(--text-ui--line-height); }
+.room-message-byline,
+.room-message-actions,
+.room-message-content :is(button, input, select, textarea),
+.room-reply { font-family: var(--font-sans); }
+.room-message-content > :is(.prose, [class*="prose"]) { font-family: inherit; font-size: var(--text-ui); line-height: var(--text-ui--line-height); }
 .room-message-content p { margin-top: 0; margin-bottom: 4px; font-size: var(--text-ui); line-height: var(--text-ui--line-height); }
 .room-author { cursor: pointer; text-align: left; font-weight: 700; }
 .room-author:hover { text-decoration: underline; }
@@ -260,8 +264,11 @@
 .native-session-dot-waiting-approval { background: var(--warn); }
 .native-session-dot-offline { background: var(--border); }
 .native-session-dot-ended { background: var(--border); opacity: 0.5; }
-/* Sidebar session row: the tool logo, with the status dot as a corner badge. */
+/* Sidebar session row: the owner's face, with the tool logo as a small corner badge (no ring: the row tints on hover and when current). */
 .session-tool-badge { position: relative; display: inline-flex; flex-shrink: 0; }
+.session-owner-face { position: relative; display: inline-flex; flex-shrink: 0; }
+.session-tool-badge--corner { position: absolute; right: -5px; bottom: -5px; }
+.session-tool-badge--corner svg { width: 11px; height: 11px; }
 .native-session-prompt-row { display: flex; gap: 8px; align-items: flex-start; }
 .native-session-prompt-row .native-session-glyph { padding-top: 8px; font-family: var(--font-mono), ui-monospace, monospace; }
 .native-session-composer textarea { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; }
@@ -323,8 +330,10 @@
 /* Roster rows (someone with no DM yet) have no overflow trigger to hide, so
    without this their content stretches into the width every real row reserves
    for one -- the two kinds of row then disagree on where a label ends. Matches
-   .room-directory-actions' size-9 button, and the 44px touch floor below. */
+   .room-directory-actions' size-9 button, and the 44px touch floor below. A
+   session already has that overflow trigger; never reserve a second empty slot. */
 .room-directory-row--roster::after { content: ""; flex: none; width: 2.25rem; }
+.room-directory-row--roster:has(.room-directory-actions)::after { display: none; }
 .room-directory-row--roster:has(.session-rename-trigger)::after { display: none; }
 .room-directory-row:hover .room-directory-actions, .room-directory-actions:focus-visible, .room-directory-actions[data-state="open"] { opacity: 1; }
 @media (hover: none) { .room-directory-actions { opacity: 1; } }
@@ -340,7 +349,7 @@
    loud dot; the title shimmers while it works; a session that is gone is faded; rename and
    remove wait for hover, as Happy keeps them behind a swipe. */
 .session-unread--waiting { background: var(--warn); }
-.session-row-time { flex: none; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.session-row-time { flex: none; max-width: 5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .session-row--gone .room-directory-entry { opacity: .6; }
 .session-row--gone .session-tool-badge { filter: grayscale(1); }
 .session-row .session-rename-trigger { opacity: 0; }
@@ -761,3 +770,10 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 /* mermaid sizes each node for its label at ITS font size (13px), then puts the text in a <p>; the message prose rule
    above (`.room-message-content p`, 15px) would restyle that <p> and clip the last letter of every label. */
 .openui-diagram foreignObject p { font-size: inherit; line-height: inherit; margin: 0; }
+
+/* A Claude question answered from the session view: one fieldset per question. */
+.local-session-question { display: grid; gap: 8px; }
+.local-session-question fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+
+/* A session search hit's turn (LocalSessionPanel focusSeq). */
+.native-session-row[data-search-hit] { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 6px; }

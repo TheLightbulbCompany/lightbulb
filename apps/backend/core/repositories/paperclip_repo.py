@@ -38,6 +38,7 @@ from typing import Literal, Optional
 from boto3.dynamodb.conditions import Key
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.encryption import decrypt, encrypt
 from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
@@ -274,6 +275,15 @@ _WORKSPACE_PLAIN_FIELDS = (
     "automation_paused_routine_versions",
     "automation_pause_token",
 )
+_WORKSPACE_OPTIONAL_FIELDS = (
+    "company_id",
+    "provisioner_user_id",
+    "member_user_ids",
+    "seeded_agent_ids",
+    "starter_agent_ids",
+    *_WORKSPACE_PLAIN_FIELDS,
+    *_WORKSPACE_ISO_FIELDS,
+)
 
 
 class PaperclipRepo:
@@ -302,12 +312,19 @@ class PaperclipRepo:
         condition: str | None = None,
         condition_values: dict | None = None,
     ) -> None:
-        """Whole-item put of a workspace row — replaces the row entirely.
+        """Write every ``PaperclipWorkspace`` field of a workspace row.
 
-        ⚠️ WRITER-SAFETY: this is a raw ``PutItem`` — any field NOT set on
-        ``ws`` is ABSENT from the new item, which silently WIPES a previously
-        written value (``onboarding_generation``, ``funnel_state``, members,
-        ...). Every caller MUST carry forward the row's existing fields unless
+        One ``UpdateItem`` that SETs each field ``ws`` carries and REMOVEs each
+        one it does not, so it replaces the dataclass's fields exactly like a
+        whole-item put did. Attributes the dataclass does not model (the
+        per-agent ``agent_keys`` map, ``agent_cost_remainder``) are never
+        written here: they change only through their own nested
+        ``SET``/``REMOVE`` paths, so a stale snapshot cannot erase a concurrent
+        write to them.
+
+        ⚠️ WRITER-SAFETY: any dataclass field NOT set on ``ws`` is REMOVED,
+        which silently WIPES a previously written value
+        (``onboarding_generation``, ``funnel_state``, members, ...). Every caller MUST carry forward the row's existing fields unless
         it is deliberately establishing them fresh (the G2 mint site in
         ``paperclip_provisioning.provision_org``). Prefer the conditional
         ``UpdateItem`` methods below for any single-field write.
@@ -344,12 +361,23 @@ class PaperclipRepo:
             value = getattr(ws, name)
             if value is not None:
                 item[name] = value.isoformat()
-        put_kwargs: dict = {"Item": item}
+        del item["user_id"]
+        names = {f"#f{i}": k for i, k in enumerate(item)}
+        values = {f":f{i}": v for i, v in enumerate(item.values())}
+        expr = "SET " + ", ".join(f"#f{i} = :f{i}" for i in range(len(item)))
+        absent = [k for k in _WORKSPACE_OPTIONAL_FIELDS if k not in item]
+        if absent:
+            names.update({f"#r{i}": k for i, k in enumerate(absent)})
+            expr += " REMOVE " + ", ".join(f"#r{i}" for i in range(len(absent)))
+        kwargs: dict = {
+            "Key": {"user_id": ws.org_id},
+            "UpdateExpression": expr,
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": {**values, **(condition_values or {})},
+        }
         if condition:
-            put_kwargs["ConditionExpression"] = condition
-            if condition_values:
-                put_kwargs["ExpressionAttributeValues"] = condition_values
-        await run_in_thread(self._table().put_item, **put_kwargs)
+            kwargs["ConditionExpression"] = condition
+        await run_in_thread(self._table().update_item, **kwargs)
         publish_status_changed(ws.org_id)
 
     async def get_workspace(self, org_id: str, *, consistent_read: bool = False) -> Optional[PaperclipWorkspace]:
@@ -1035,6 +1063,139 @@ class PaperclipRepo:
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return
+
+    async def get_agent_key(self, org_id: str, agent_id: str) -> str | None:
+        """The plaintext Paperclip API key stored for ``agent_id``, or None when
+        absent or undecryptable (an ``ENCRYPTION_KEY`` change; the key is re-mintable)."""
+        resp = await run_in_thread(
+            self._table().get_item,
+            Key={"user_id": org_id},
+            ProjectionExpression="agent_keys.#a",
+            ExpressionAttributeNames={"#a": agent_id},
+            ConsistentRead=True,
+        )
+        token = ((resp.get("Item") or {}).get("agent_keys") or {}).get(agent_id)
+        if not token:
+            return None
+        try:
+            return decrypt(token)
+        except ValueError:
+            logger.warning("paperclip_repo.get_agent_key: undecryptable key org=%s agent=%s", org_id, agent_id)
+            return None
+
+    async def put_agent_key(self, org_id: str, agent_id: str, plaintext: str) -> str | None:
+        """Store ``agent_id``'s key, create-only, and return the key that is stored.
+
+        A concurrent writer who stored first wins and its key is returned (the
+        caller revokes its own duplicate). An undecryptable stored key is
+        overwritten. None when ``org_id`` has no workspace row: a key with no
+        row to live on is never written anywhere else.
+        """
+        table = self._table()
+        exc = table.meta.client.exceptions.ConditionalCheckFailedException
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": org_id},
+                UpdateExpression="SET agent_keys = :empty",
+                ConditionExpression="attribute_exists(#s) AND attribute_not_exists(agent_keys)",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":empty": {}},
+            )
+        except exc:
+            pass
+        kwargs = {
+            "Key": {"user_id": org_id},
+            "UpdateExpression": "SET agent_keys.#a = :v",
+            "ExpressionAttributeNames": {"#s": "status", "#a": agent_id},
+            "ExpressionAttributeValues": {":v": encrypt(plaintext)},
+        }
+        try:
+            await run_in_thread(
+                table.update_item,
+                ConditionExpression="attribute_exists(#s) AND attribute_not_exists(agent_keys.#a)",
+                **kwargs,
+            )
+            return plaintext
+        except exc:
+            winner = await self.get_agent_key(org_id, agent_id)
+            if winner is not None:
+                return winner
+        # The stored key is undecryptable (overwrite it) or there is no row (this fails too).
+        try:
+            await run_in_thread(table.update_item, ConditionExpression="attribute_exists(#s)", **kwargs)
+            return plaintext
+        except exc:
+            return None
+
+    async def delete_agent_key(self, org_id: str, agent_id: str) -> None:
+        """Drop ``agent_id``'s stored key (agent delete). Idempotent."""
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": org_id},
+                UpdateExpression="REMOVE agent_keys.#a",
+                ConditionExpression="attribute_exists(agent_keys)",
+                ExpressionAttributeNames={"#a": agent_id},
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return
+
+    async def add_agent_cost_remainder(self, org_id: str, key: str, delta: int, *, need: int = 0) -> dict | None:
+        """Atomically add ``delta`` microcents to ``agent_cost_remainder[key]``; return the whole map.
+
+        Internal sub-cent carry for Paperclip cost events (Paperclip owns the budget and stores
+        integer cents). ``need`` > 0 makes the write conditional on the bucket holding at least
+        that much (the claim before a post, with a negative ``delta``). None when the row is missing
+        or the condition fails.
+
+        Uses ``SET #k = if_not_exists(#k, :zero) + :d``, NOT ``ADD``: DynamoDB's ``ADD`` action does
+        not operate on a nested document path, so ``ADD agent_cost_remainder.#k`` throws a
+        ValidationException on real DynamoDB (moto does not enforce this). The SET form is the
+        supported atomic nested increment.
+        """
+        table = self._table()
+        exc = table.meta.client.exceptions.ConditionalCheckFailedException
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": org_id},
+                UpdateExpression="SET agent_cost_remainder = :empty",
+                ConditionExpression="attribute_exists(user_id) AND attribute_not_exists(agent_cost_remainder)",
+                ExpressionAttributeValues={":empty": {}},
+            )
+        except exc:
+            pass
+        cond = "attribute_exists(user_id)"
+        values: dict = {":d": delta, ":zero": 0}
+        if need:
+            cond += " AND agent_cost_remainder.#k >= :need"
+            values[":need"] = need
+        try:
+            resp = await run_in_thread(
+                table.update_item,
+                Key={"user_id": org_id},
+                UpdateExpression="SET agent_cost_remainder.#k = if_not_exists(agent_cost_remainder.#k, :zero) + :d",
+                ConditionExpression=cond,
+                ExpressionAttributeNames={"#k": key},
+                ExpressionAttributeValues=values,
+                ReturnValues="ALL_NEW",
+            )
+        except exc:
+            return None
+        return resp["Attributes"]["agent_cost_remainder"]
+
+    async def prune_agent_cost_remainder(self, org_id: str, keys: list[str]) -> None:
+        if not keys:
+            return
+        names = {f"#k{i}": k for i, k in enumerate(keys)}
+        await run_in_thread(
+            self._table().update_item,
+            Key={"user_id": org_id},
+            UpdateExpression="REMOVE " + ", ".join(f"agent_cost_remainder.{n}" for n in names),
+            ExpressionAttributeNames=names,
+        )
 
     async def claim_first_contact(self, org_id: str, *, onboarding_generation: str) -> bool:
         """Conditional ``first_contact_state -> sending``, generation-fenced.

@@ -6,7 +6,7 @@
  * read as "Lightbulb is setting things up" rather than an anonymous spinner.
  *
  * Text, casing and tracking mirror web's `Logo.tsx` / `.brand-logo`
- * (`<span …>LIGHTBULB</span>`) — uppercase Lora Medium in midnight, tracked
+ * (`<span …>LIGHTBULB</span>`) — uppercase Satoshi Medium in midnight, tracked
  * +0.18em (3.96 at 22px). §03: weight below 400 is never used, and 700 is not
  * the spec — 500 is.
  */

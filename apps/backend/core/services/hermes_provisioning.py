@@ -35,7 +35,7 @@ the CREATE_FAILED ARN clear (``expected_field=``): it must not wipe a newer, hea
 recorded after deleting the same dead runtime.
 
 Boot secret (M4-R4/R5): the runtime's ``environmentVariables`` carry NO credential value. One JSON
-secret, ``agentcore_runtime.boot_secret_name(owner_id)`` = ``{"hookToken","gatewayToken","bedrockBearer"}``,
+secret, ``agentcore_runtime.boot_secret_name(owner_id)`` = ``{"hookToken","gatewayToken","bedrockBearer"}`` plus the network member key,
 is written via ``agentcore_runtime.write_boot_secret`` and only its NAME travels in the env, under
 ``agentcore_runtime.BOOT_SECRET_ENV_VAR`` — the bridge resolves it at boot with the runtime's own
 execution role. ``provision_hermes_runtime`` never re-fetches this name from anywhere: it is a pure
@@ -154,6 +154,12 @@ def build_hermes_runtime_env(
     # ignores it.
     if memory_id:
         env["AGENTCORE_MEMORY_ID"] = memory_id
+    # The network sidecar verifies members' sign-in proofs against this PUBLIC key (not a
+    # credential): ``<kid>:<base64url>``. Absent: the engine's baked-in keys only.
+    if settings.NETWORK_PROOF_KEY:
+        from core.services import network_proof
+
+        env["LIGHTBULB_ISSUER_KEY"] = network_proof.public_key()["env"]
     # The bridge's per-microVM turn cap; absent keeps the image default (4).
     if max_concurrent_turns:
         env["LIGHTBULB_MAX_CONCURRENT_TURNS"] = str(int(max_concurrent_turns))
@@ -168,7 +174,7 @@ def build_hermes_runtime_env(
                 # Lockstep: the SAME constant the owner's IAM grant and the backend's own
                 # session calls use. Three independent literals here would fail silently
                 # and split (a 403 on start, or a permanently dead panel).
-                "AGENTCORE_BROWSER_ID": browser_sessions.BUILTIN_BROWSER_ID,
+                "AGENTCORE_BROWSER_ID": browser_sessions.BROWSER_ID,
                 "AGENTCORE_PROFILE_ID": browser_profile_id,
                 # The CLI's own default is 3600; a turn's session lives 4-15 s.
                 "AGENTCORE_SESSION_TIMEOUT": "900",
@@ -473,23 +479,31 @@ def _delete_boot_secret(owner_id: str) -> None:
 def _delete_profile_prefix_objects(owner_id: str) -> None:
     """Delete every S3 object under ``<owner>/hermes/`` -- the whole Hermes home, every agent's
     profile plus the root ``auth.json``. Only called by ``teardown_hermes_runtime`` when
-    ``delete_profiles=True`` (an account wipe, never a rollback). Paginated (S3's own 1000-key
-    batch cap), sync — call via ``run_in_thread``. Mirrors ``hermes_profiles.delete_profile``'s
-    own pagination shape."""
+    ``delete_profiles=True`` (an account wipe, never a rollback). Sync — call via
+    ``run_in_thread``."""
+    from core.services.hermes_profiles import root_home_prefix
+
+    _delete_prefixes(
+        [
+            root_home_prefix(owner_id),
+            f"marketplace-installs/{owner_id}/",
+            f"browser-state/{owner_id}/",
+            f"{owner_id}/browser-extensions/",
+        ]
+    )
+
+
+def _delete_prefixes(prefixes: list[str]) -> None:
+    """Delete every owner-state object under each prefix. Paginated (S3's own 1000-key batch
+    cap); raises on a partial delete. A no-op without a bucket. Sync — call via
+    ``run_in_thread``."""
     if not settings.OWNER_STATE_BUCKET:
         return
     import boto3
 
-    from core.services.hermes_profiles import root_home_prefix
-
     client = boto3.client("s3")
     paginator = client.get_paginator("list_objects_v2")
-    for prefix in (
-        root_home_prefix(owner_id),
-        f"marketplace-installs/{owner_id}/",
-        f"browser-state/{owner_id}/",
-        f"{owner_id}/browser-extensions/",
-    ):
+    for prefix in prefixes:
         for page in paginator.paginate(Bucket=settings.OWNER_STATE_BUCKET, Prefix=prefix):
             keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
             if keys:
@@ -511,7 +525,9 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
          cold-start; skipping this can leave it presenting a dead credential until AWS reaps it.
       2. ``DeleteAgentRuntime``.
       3. Revoke the row's own ``bedrock_gate_token_hash`` (the live bearer generation).
-      4. Delete the ONE JSON boot secret.
+      4. Delete the ONE JSON boot secret, and the workspace's ``<owner>/network/`` state
+         (whatever ``delete_profiles`` says: the member key dies with the secret, so the state
+         that key signed is dead too).
       5. (``delete_profiles`` only) delete every object under ``<owner>/hermes/`` in S3.
 
     ``delete_profiles=False`` is the default and what a reprovision wants -- S3 profiles are
@@ -526,8 +542,6 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
     already-read row, never re-read here (a wipe's caller already holds the authoritative
     ``ALL_OLD`` image; a rollback's caller already read it strongly consistent).
     """
-    from core.billing.bedrock_gate_tokens import delete_gate_token_rows
-
     from core.services import browser_control
 
     try:
@@ -540,6 +554,33 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
     arn = container_row.get("agentcore_runtime_arn")
     if arn:
         await stop_runtime_session(owner_id, arn)  # best-effort; never raises
+    await _delete_runtime_and_bearer(owner_id, container_row)
+
+    try:
+        await run_in_thread(_delete_boot_secret, owner_id)
+    except Exception:  # noqa: BLE001 — best-effort cleanup
+        logger.warning("hermes teardown: could not delete boot secret for owner=%s", owner_id, exc_info=True)
+    from core.services.network_member import network_prefix
+
+    try:
+        await run_in_thread(_delete_prefixes, [network_prefix(owner_id)])
+    except Exception:  # noqa: BLE001 — best-effort cleanup
+        logger.warning("hermes teardown: could not delete network state for owner=%s", owner_id, exc_info=True)
+
+    if delete_profiles:
+        try:
+            await run_in_thread(_delete_profile_prefix_objects, owner_id)
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            logger.warning("hermes teardown: could not delete S3 profiles for owner=%s", owner_id, exc_info=True)
+
+
+async def _delete_runtime_and_bearer(owner_id: str, container_row: dict) -> None:
+    """``DeleteAgentRuntime`` on the row's runtime and revoke the row's gate token: the two names
+    that belong to this runtime alone, not to the owner. Best-effort; never raises."""
+    from core.billing.bedrock_gate_tokens import delete_gate_token_rows
+
+    arn = container_row.get("agentcore_runtime_arn")
+    if arn:
         try:
             await run_in_thread(_delete_runtime, arn)
         except Exception:  # noqa: BLE001 — best-effort: the runtime may already be gone
@@ -554,19 +595,115 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
         except Exception:  # noqa: BLE001 — best-effort: a stranded row is a known, accepted risk elsewhere too
             logger.warning("hermes teardown: could not revoke gate token for owner=%s", owner_id, exc_info=True)
 
+
+async def _superseded(owner_id: str, arn: str | None) -> bool:
+    """A new workspace was provisioned under this owner id after the wipe deleted the row: its
+    boot secret carries the old member key over, so every owner-keyed name is now ITS."""
+    row = await container_repo.get_by_owner_id(owner_id)
+    return bool(row) and row.get("agentcore_runtime_arn") != arn
+
+
+_runtime_teardowns: set[asyncio.Task] = set()
+FORGET_RETRY_S = 20
+FORGET_WINDOW_S = 180
+# The durable copy of a scheduled teardown, for a backend task that stops inside the window.
+# Due after the in-process window plus a try's 90 s ingress floor, so the sweep does not race it.
+TEARDOWN_PK = "TEARDOWN#"
+TEARDOWN_DUE_S = 200
+TEARDOWN_TTL_S = 30 * 86400
+_TEARDOWN_ROW_KEYS = ("owner_id", "id", "agentcore_runtime_arn", "gateway_token", "bedrock_gate_token_hash")
+
+
+def _teardown_key(owner_id: str, container: dict) -> dict:
+    return {"pk": TEARDOWN_PK, "sk": f"{owner_id}#{container.get('agentcore_runtime_arn') or ''}"}
+
+
+async def _schedule_teardown(owner_id: str, container: dict, author: str) -> None:
+    """Write the ``TEARDOWN#`` row, then start the in-process task. A failed write is logged and
+    the task still runs: only the restart safety net is lost."""
+    from core.repositories import messaging_repo
+
+    # What the forget's invoke and the teardown read: the runtime, its bearer and gate token.
+    row = {k: container[k] for k in _TEARDOWN_ROW_KEYS if container.get(k)}
+    now = int(time.time())
+    item = {
+        **_teardown_key(owner_id, row),
+        "ownerId": owner_id,
+        "row": row,
+        "author": author,
+        "dueAt": now + TEARDOWN_DUE_S,
+        "expiresAt": now + TEARDOWN_TTL_S,
+    }
     try:
-        await run_in_thread(_delete_boot_secret, owner_id)
-    except Exception:  # noqa: BLE001 — best-effort cleanup
-        logger.warning("hermes teardown: could not delete boot secret for owner=%s", owner_id, exc_info=True)
+        await run_in_thread(messaging_repo._table().put_item, Item=item)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("owner wipe: teardown row not written owner=%s error=%s", owner_id, type(exc).__name__)
+    task = asyncio.create_task(_forget_then_teardown(owner_id, row, author))
+    _runtime_teardowns.add(task)
+    task.add_done_callback(_runtime_teardowns.discard)
 
-    if delete_profiles:
+
+async def run_due_teardowns() -> int:
+    """The sweep's half: a ``TEARDOWN#`` row past due means its backend task stopped. One forget
+    try, then the teardown (same guard), then the row goes. Returns how many ran."""
+    from core.repositories import messaging_repo
+
+    ran = 0
+    for item in await messaging_repo._query(TEARDOWN_PK):
+        now = time.time()
+        if int(item.get("dueAt") or 0) > now or int(item.get("expiresAt") or 0) <= now:
+            continue
+        await _forget_then_teardown(str(item["ownerId"]), dict(item["row"]), str(item["author"]), window_s=0)
+        ran += 1
+    return ran
+
+
+async def _forget_then_teardown(owner_id: str, container: dict, author: str, *, window_s: float | None = None) -> None:
+    """An owner wipe whose cloud member was parked: retry ``memory.forget_author`` against the
+    captured row (the containers row is already deleted; an invoke cold-starts the runtime), then
+    tear the runtime down whatever happened. Never raises. If the owner id was provisioned again
+    meanwhile (``_superseded``), the late forget would tombstone the new workspace's entries and
+    the owner-keyed deletes would take its boot secret, network state and profiles: then only the
+    captured runtime and its gate token go. Its ``TEARDOWN#`` row is deleted once it is done; a
+    teardown that raises keeps the row for the sweep."""
+    from core.repositories import messaging_repo
+    from core.services import container_rpc
+
+    arn = container.get("agentcore_runtime_arn")
+    retry_s = FORGET_RETRY_S
+    deadline = time.monotonic() + (FORGET_WINDOW_S if window_s is None else window_s)
+    forgot = superseded = False
+    while not forgot:
+        if superseded := await _superseded(owner_id, arn):
+            break
         try:
-            await run_in_thread(_delete_profile_prefix_objects, owner_id)
-        except Exception:  # noqa: BLE001 — best-effort cleanup
-            logger.warning("hermes teardown: could not delete S3 profiles for owner=%s", owner_id, exc_info=True)
+            await container_rpc.call(owner_id, "memory.forget_author", {"author": author}, target=container)
+            forgot = True
+            try:  # the owed row the forget answered (its sweep never runs once the row is gone)
+                key = {"pk": f"MEMWIPE#{owner_id}", "sk": f"A#{author}"}
+                await run_in_thread(messaging_repo._table().delete_item, Key=key)
+            except Exception as exc:  # noqa: BLE001 -- it expires on its own
+                logger.warning("owner wipe: owed row not deleted owner=%s error=%s", owner_id, type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 -- still parked or failing: try again inside the window
+            logger.info("owner wipe: forget_author retry owner=%s error=%s", owner_id, type(exc).__name__)
+            if time.monotonic() + retry_s > deadline:
+                break
+            await asyncio.sleep(retry_s)
+    try:
+        if superseded or await _superseded(owner_id, arn):
+            await _delete_runtime_and_bearer(owner_id, container)
+            logger.warning("owner wipe: owner provisioned again; only the old runtime deleted owner=%s", owner_id)
+        else:
+            await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=True)
+            logger.info("owner wipe: runtime torn down owner=%s forgot=%s", owner_id, forgot)
+        await run_in_thread(messaging_repo._table().delete_item, Key=_teardown_key(owner_id, container))
+    except Exception:  # noqa: BLE001 -- nothing awaits this task; a kept row is the sweep's retry
+        logger.exception("owner wipe: scheduled runtime teardown failed owner=%s", owner_id)
 
 
-async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = False) -> dict | None:
+async def delete_workspace_runtime(
+    owner_id: str, *, delete_profiles: bool = False, report: dict | None = None
+) -> dict | None:
     """THE TEARDOWN SEAM. Tear a workspace's runtime down and delete its containers row.
 
     Every teardown in the system reaches AWS through this function -- entitlement
@@ -587,7 +724,12 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
          reporting success: the runtime is already gone, so a raise honestly means
          "teardown incomplete, retry me", and every step is idempotent.
       4. Sweep the owner's ``channel_links`` rows (non-fatal).
-      5. (``delete_profiles`` only) wipe the owner's workspace memory. Raises on failure.
+      5. (``delete_profiles`` only) wipe the owner's workspace memory. Raises on failure. Its
+         network half runs first, before step 1: the cloud member forgets the entries it signed
+         (``workspace_memory.forget_workspace_authored``), which needs the live runtime. A parked
+         member owes it: step 1 then runs in a background task (``_forget_then_teardown``) after
+         the forget, or after ``FORGET_WINDOW_S`` regardless. ``report["runtime"]`` (when a dict
+         is passed) says ``"done"`` or ``"scheduled"``.
 
     ``delete_profiles`` (M6-R42) defaults to **False** and must stay that way: this
     function is shared by NON-terminal callers -- ``entitlement_teardown`` (a lapsed or
@@ -616,7 +758,26 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
 
     container = await container_repo.get_by_owner_id(owner_id)
     if container:
-        await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=delete_profiles)
+        owed = None
+        if delete_profiles:
+            from core.services import workspace_memory
+
+            # While the runtime and its member key still exist; never raises.
+            owed = await workspace_memory.forget_workspace_authored(owner_id)
+        if owed:
+            # Parked or failing: the runtime outlives this request until the member forgets. The
+            # browser goes now, while its state row (deleted below) still names its session.
+            from core.services import browser_control
+
+            try:
+                await browser_control.teardown(owner_id, container, delete_state=True)
+            except Exception:  # noqa: BLE001 -- like teardown_hermes_runtime's delete_profiles case
+                logger.warning("Browser teardown failed for owner=%s", owner_id)
+            await _schedule_teardown(owner_id, container, owed)
+        else:
+            await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=delete_profiles)
+        if report is not None:
+            report["runtime"] = "scheduled" if owed else "done"
 
     deleted = await container_repo.delete(owner_id)
 
@@ -703,6 +864,7 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
         gateway_token=gateway_token,
         bedrock_bearer=bedrock_bearer,
     )
+    await _ensure_network_member(owner_id)
 
     # m2: the one step that mints three credentials and writes a secret was otherwise invisible
     # in the provision log. Never logs a value -- only which tokens were reused vs freshly minted.
@@ -719,6 +881,26 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
         # A no-op on a first provision (no company yet).
         await sync_paperclip_adapter_config(owner_id)
     return boot_changed
+
+
+async def _ensure_network_member(owner_id: str) -> None:
+    """Write ``sessions.json``, so every workspace is a member of the ``lightbulb`` network from
+    provision on, and rewrite it when it exists so each provision, reconcile and roll carries the
+    current ``members`` (the people the workspace's agents answer; a file written before that
+    field existed would otherwise leave the gate off and hold every member's message).
+    Best-effort: a network hiccup never fails a provision. On a fresh provision the roster is
+    still empty here; ``write_profiles`` republishes it once the roster is seeded."""
+    if not settings.OWNER_STATE_BUCKET:
+        return
+    from core.services import network_member
+
+    try:
+        if await network_member.sessions_exist(owner_id):
+            await network_member.publish_sessions(owner_id)
+        else:
+            await network_member.write_sessions(owner_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("network sessions write failed for owner=%s", owner_id, exc_info=True)
 
 
 async def sync_paperclip_adapter_config(owner_id: str) -> None:
@@ -1213,12 +1395,28 @@ async def resolve_profile_inputs(owner_id: str) -> ProfileInputs:
     )
 
 
+async def agent_gate_bearer(owner_id: str, agent_id: str) -> str | None:
+    """This agent's own openrouter-gate bearer, for its profile ``.env`` (metering attributes
+    inference to the agent). A row with no id yet (pre-prepare) mints none: the agent then
+    presents the owner-level boot bearer."""
+    from core.billing.bedrock_gate_tokens import mint_agent_gate_token
+
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    if not (row and row.get("id")):
+        return None
+    return await mint_agent_gate_token(
+        owner_id, agent_id, row_id=row["id"], generation=int(row.get("gate_bearer_generation") or 0)
+    )
+
+
 async def write_profile_for_agent(
     owner_id: str,
     agent_row: dict,
     *,
     soul_md_override: str | None = None,
     inputs: ProfileInputs | None = None,
+    publish: bool = True,
+    roster_fan_out: bool = False,
 ) -> None:
     """The per-agent Hermes profile write (M6-R23): owner-level inputs (``resolve_profile_inputs``)
     plus this one agent's own Paperclip API key -> ``write_agent_profile`` -> ``upload_profile``.
@@ -1284,6 +1482,7 @@ async def write_profile_for_agent(
         files = write_agent_profile(
             owner_id,
             agent_row,
+            gate_bearer=await agent_gate_bearer(owner_id, agent_id),
             provider_choice=inputs.provider_choice,
             paperclip_api_key=paperclip_api_key,
             integrations=inputs.integrations,
@@ -1299,7 +1498,15 @@ async def write_profile_for_agent(
     if soul_md_override is not None:
         files.soul_md = soul_md_override
     await upload_profile(owner_id, agent_id, files)
+    if not roster_fan_out:  # ``write_profiles`` runs at provision, before any connect; every other writer comes later
+        from core.services.credentials import hermes_cli
+
+        await hermes_cli.seed_new_profile(owner_id, agent_id)  # never raises
     await _stage_owner_facts(owner_id, [agent_id], inputs, refresh_roster=lone_agent)
+    if publish:  # ``write_profiles`` publishes once, after its whole fan-out
+        from core.services import network_member
+
+        await network_member.publish_sessions(owner_id)  # never raises
 
 
 async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None) -> None:
@@ -1368,6 +1575,9 @@ async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None
     from core.services.owner_facts import write_owner_facts
 
     await write_owner_facts(owner_id)  # best-effort, never raises
+    from core.services import network_member
+
+    await network_member.publish_sessions(owner_id)  # the agent's network address follows the name
 
 
 async def write_profiles(owner_id: str) -> None:
@@ -1416,7 +1626,13 @@ async def write_profiles(owner_id: str) -> None:
             else None
         )
         keep = current if current and not hermes_profiles.is_generated_soul(current) else None
-        await write_profile_for_agent(owner_id, agent, soul_md_override=keep, inputs=inputs)
+        await write_profile_for_agent(
+            owner_id, agent, soul_md_override=keep, inputs=inputs, publish=False, roster_fan_out=True
+        )
+
+    from core.services import network_member
+
+    await network_member.publish_sessions(owner_id)
 
 
 async def _stage_owner_facts(

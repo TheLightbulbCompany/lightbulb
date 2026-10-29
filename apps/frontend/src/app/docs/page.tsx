@@ -48,8 +48,9 @@ export default function DocsPage() {
         <h1 className="blog-title">How Lightbulb works</h1>
         <p className="blog-lede">
           A private AI company: your own workspace, persistent memory, and a six-role starter
-          team led by your CEO. Five short pages cover everything from sign-up to the approval
-          gates that keep you in control.
+          team led by your CEO. Short pages cover everything from sign-up to the approval
+          gates that keep you in control, and the agent network that connects your coding
+          agents to your teammates&apos;.
         </p>
         <div className="docs-hero-actions">
           <Link href="/chat" className="ld-btn">

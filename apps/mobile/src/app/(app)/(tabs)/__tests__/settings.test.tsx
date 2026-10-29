@@ -322,6 +322,34 @@ describe("deleting an Apple-billed account", () => {
     alertSpy.mockRestore();
   });
 
+  it("on Android, says where to cancel and offers no deep link (it would open Google Play)", async () => {
+    const { Alert, Platform } = jest.requireActual("react-native");
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const os = Platform.OS;
+    Platform.OS = "android";
+    try {
+      mockAccountFixture = {
+        is_subscribed: true,
+        subscription_status: "active",
+        subscription_source: "apple_iap",
+        trial_end: null,
+        provider_choice: "openrouter_managed",
+        byo_provider: null,
+      };
+      await render(<Settings />);
+      expect(await screen.findByText(/on the iPhone or iPad that bought it/)).toBeTruthy();
+      expect(screen.queryByText("Manage subscription")).toBeNull();
+      fireEvent.press(await screen.findByText("Delete account"));
+      const [title, body, buttons] = alertSpy.mock.calls[0] as [string, string, { text: string }[]];
+      expect(title).toMatch(/cancel your subscription first/i);
+      expect(body).toMatch(/iPhone or iPad that bought it/);
+      expect(buttons.map((b) => b.text)).toEqual(["Not now", "Delete anyway"]);
+    } finally {
+      Platform.OS = os;
+      alertSpy.mockRestore();
+    }
+  });
+
   it("goes straight to the normal confirmation for a Stripe subscriber", async () => {
     const { Alert } = jest.requireActual("react-native");
     const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});

@@ -5,6 +5,7 @@
 #   - openclaw-host-<triple>/                     (per-arch npm install)
 #   - lightbulb-browser-service-<triple>          (per-arch launcher shim)
 #   - chrome-devtools-mcp/                        (pinned npm install, any arch)
+#   - lightbulb                                   (the network engine, arm64)
 #
 # All of them ship as bundle RESOURCES (Contents/Resources/bin/), never
 # externalBin: a script in Contents/MacOS is signed via xattrs, which the
@@ -52,6 +53,10 @@ OPENCLAW_VERSION="2026.8.1"
 # arch-independent copy and nothing for the pre-sign step to sign); engines
 # wants node ^22.12.0, which NODE_VERSION satisfies.
 CHROME_DEVTOOLS_MCP_VERSION="1.10.1"
+# The network engine (TheLightbulbCompany/cli): the one `lightbulb` MCP server, bundled as
+# Contents/Resources/bin/lightbulb (engine.rs installs it when none or an older one is installed).
+ENGINE_TAG="v0.6.6"
+ENGINE_SHA256="eb3b5c0dd9f71e28111722733c7085de72d9e58e57d351a2e452860167c48c67"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
@@ -106,6 +111,58 @@ EOF
             --os=darwin
     )
     node "$SCRIPT_DIR/verify-browser-pin.mjs" "$HOST_DIR/node_modules/openclaw"
+
+    local BEFORE_KB
+    BEFORE_KB="$(du -sk "$HOST_DIR" | cut -f1)"
+    host_prune_list "$HOST_DIR" "$NPM_CPU" | while IFS= read -r p; do rm -rf "$p"; done
+    # Run the real host (node run + each command family Hermes uses), then make sure
+    # nothing it did brought a pruned path back.
+    # The smoke runs the vendored node, so it needs a host of the same arch.
+    if [ "$NPM_CPU" = "$(uname -m | sed 's/x86_64/x64/')" ]; then
+        "$BIN_DIR/node-${TRIPLE}" "$SCRIPT_DIR/smoke-node-host.mjs" "$BIN_DIR/node-${TRIPLE}" "$HOST_DIR"
+    else
+        echo "==> skipping the openclaw-host-${TRIPLE} smoke on a $(uname -m) host"
+    fi
+    if [ -n "$(host_prune_list "$HOST_DIR" "$NPM_CPU")" ]; then
+        echo "pruned openclaw-host paths are present:" >&2
+        host_prune_list "$HOST_DIR" "$NPM_CPU" | head -20 >&2
+        exit 1
+    fi
+    echo "==> openclaw-host-${TRIPLE}: ${BEFORE_KB} KB -> $(du -sk "$HOST_DIR" | cut -f1) KB"
+}
+
+# Paths in the openclaw install that the node host never loads. Printed one per line,
+# existing ones only; the vendor step deletes them and then fails if any are still here.
+# The PR that added this list carries the proof of non-use for each entry; re-prove
+# before widening it:
+#  - claude-agent-sdk-darwin-*: the bundled `claude` binary. Only the Agent SDK's query()
+#    spawns it, and only extensions/anthropic/agent-sdk.runtime.js imports the SDK, for
+#    agent turns (cli-backend, executionMode "agent"). A node host runs no agent turns.
+#  - cua-driver-darwin-*: loaded only by cua-computer's loadCuaDriverSdk() for computer
+#    actions. The node host declares no computer.* command and the backend grants none.
+#  - openclaw/docs: read only by docs-path (agent prompts, `openclaw docs`), which returns
+#    null when the dir is absent.
+#  - tree-sitter-bash native build (prebuilds, src, bindings, binding.gyp): openclaw loads
+#    only tree-sitter-bash.wasm through web-tree-sitter.
+#  - other platforms' native addons: fs-safe and pi-tui pick theirs by process.platform/arch.
+#  - source maps and type declarations: nothing enables source maps; Node never loads a
+#    .d.ts. TypeScript's own lib .d.ts files are kept (its compiler reads them).
+host_prune_list() {
+    local NM="$1/node_modules" CPU="$2" p
+    {
+        printf '%s\n' "$NM"/@anthropic-ai/claude-agent-sdk-darwin-* \
+            "$NM"/@trycua/cua-driver-darwin-* \
+            "$NM/openclaw/docs" \
+            "$NM"/tree-sitter-bash/{prebuilds,src,bindings,binding.gyp} \
+            "$NM/@earendil-works/pi-tui/native/win32"
+        for p in "$NM"/openclaw/dist/native/* "$NM"/@openclaw/fs-safe/dist/native/* \
+                 "$NM"/@earendil-works/pi-tui/native/darwin/prebuilds/*; do
+            [ "${p##*/}" = "darwin-${CPU}" ] || printf '%s\n' "$p"
+        done
+        find "$NM" -path "$NM/typescript" -prune -o -type f \
+            \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' \
+               -o \( -name '*.map' ! -name '*.wasm.map' \) \) -print
+    } | while IFS= read -r p; do if [ -e "$p" ]; then printf '%s\n' "$p"; fi; done
 }
 
 # Write a per-triple launcher shim. It is a resource like node +
@@ -165,6 +222,20 @@ EOF
     printf 'CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1\nCHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS=1\n' > "$DIR/mcp.env"
 }
 
+# The engine release is arm64 only; its tools.json must match the backend's copy.
+vendor_engine() {
+    echo "==> Vendoring the lightbulb engine ${ENGINE_TAG}"
+    local TARBALL="$TMP_DIR/lightbulb-macos-arm64.tar.gz"
+    curl -fsSL -o "$TARBALL" "https://github.com/TheLightbulbCompany/cli/releases/download/${ENGINE_TAG}/lightbulb-macos-arm64.tar.gz"
+    echo "${ENGINE_SHA256}  ${TARBALL}" | shasum -a 256 -c -
+    tar -xzf "$TARBALL" -C "$BIN_DIR" lightbulb
+    chmod +x "$BIN_DIR/lightbulb"
+    # The arm64 binary runs only on an arm64 Mac: an Intel host vendors it unchecked.
+    if [ "$(uname -m)" = "arm64" ]; then
+        "$BIN_DIR/lightbulb" mcp --tools-json | cmp - "$TAURI_DIR/../../backend/core/services/network_tools.json"
+    fi
+}
+
 # CI passes a single target triple; local dev (no args) vendors both
 # so `cargo tauri dev` works on either arch without re-running.
 TARGET="${1:-}"
@@ -189,6 +260,7 @@ case "$TARGET" in
         ;;
 esac
 vendor_chrome_devtools_mcp
+vendor_engine
 
 rm -rf "$TMP_DIR"
 echo "==> Sidecars vendored at $BIN_DIR"

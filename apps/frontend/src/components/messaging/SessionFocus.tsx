@@ -2,9 +2,10 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, X } from "lucide-react";
-import { ApiError, sessionEndable, sessionTitle, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
+import { ApiError, sessionAgentName, sessionEndable, sessionTitle, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { LocalSessionPanel } from "./LocalSessionPanel";
+import { preloadTerminal } from "./SessionTerminalView";
 import { SessionChat } from "./SessionChat";
 import { SessionToolIcon } from "./SessionToolIcon";
 import { SessionRenameButton } from "./SessionRenameButton";
@@ -13,7 +14,7 @@ import type { Person } from "./NativeSessionTranscript";
 import type { SidebarSession } from "./roomSections";
 
 /** `sessionId: null` is a new, not-yet-started session (NewSessionView), or with `all` the All sessions list. */
-export interface SessionFocusTarget { sessionId: string | null; all?: boolean; chat?: boolean }
+export interface SessionFocusTarget { sessionId: string | null; all?: boolean; chat?: boolean; seq?: number }
 
 export type SessionChatLayout = "push" | "overlay" | "screen";
 const CHAT_WIDTH = 344;
@@ -39,14 +40,14 @@ const SESSION_BODY = ".session-terminal-scroll, .session-terminal-wait, .local-s
  * Focus placement: a shared session lives in the workspace, not in a room
  * (owner ruling 2026-09-24), so it fills the middle of the Messages panel on
  * its own. The workspace session list is the one source of what is shared,
- * but it excludes ended sessions -- one missing from it (once the list has
- * settled) is fetched directly, so an ended session (or one opened before the
- * list has ever loaded) still opens with its real status. "No longer shared"
+ * but it excludes ended sessions -- one missing from it is fetched directly, at
+ * once (not after the list settles), so a link opens on its own row and an ended
+ * session still opens with its real status. "No longer shared"
  * is reserved for a genuine 404.
  */
-export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner, onEvent, chatOpen = false, onChatOpenChange, onChatRoom, onRemove }: {
+export function SessionFocus({ focus, entries, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner, onEvent, chatOpen = false, onChatOpenChange, onChatRoom, onRemove }: {
   onEvent?: SessionSource["onEvent"];
-  focus: { sessionId: string }; entries: readonly SidebarSession[]; loading: boolean; hintRevision: number;
+  focus: { sessionId: string; seq?: number }; entries: readonly Omit<SidebarSession, "owner">[]; hintRevision: number;
   client: SessionSource["client"]; resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean };
   onAccessLost: () => void; onClose: () => void;
   /** Workspace humans and agents, for naming prompt authors and receipts. */
@@ -66,7 +67,6 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   const entry = (exact && exact.session.status !== "ended" ? exact : undefined)
     ?? entries.find((candidate) => candidate.session.forkedFrom === focus.sessionId)
     ?? exact;
-  const coldLoading = loading && entries.length === 0;
   const hasListedSession = Boolean(entry);
   const [retryRevision, setRetryRevision] = useState(0);
   const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean; error: boolean } | null>(null);
@@ -130,9 +130,13 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
     };
     return () => { alive = false; clearTimeout(timer); revalidate.current = null; };
   }, [hasListedSession, client, focus.sessionId]);
+  // Read by id at once, not after the list: the whole workspace list took 1.7-2.5 s and the terminal
+  // waited for it (prod 2026-10-27). Whichever answers first draws the panel; the list's row then wins.
   useEffect(() => {
-    if (!hasListedSession && !coldLoading) revalidate.current?.(fallbackHintRevision, retryRevision);
-  }, [hasListedSession, coldLoading, client, focus.sessionId, fallbackHintRevision, retryRevision]);
+    if (!hasListedSession) revalidate.current?.(fallbackHintRevision, retryRevision);
+  }, [hasListedSession, client, focus.sessionId, fallbackHintRevision, retryRevision]);
+  // The terminal's code too, while the session is read: it was its own dynamic import after the row.
+  useEffect(() => { void preloadTerminal().catch(() => { /* the view loads it again itself */ }); }, []);
   const retryFallback = () => {
     setFallback(current => current?.session ? { ...current, error: false } : null);
     setRetryRevision(v => v + 1);
@@ -141,6 +145,11 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   const kept = lastListed && (lastListed.sessionId === focus.sessionId || lastListed.forkedFrom === focus.sessionId) ? lastListed : null;
   const session = entry?.session ?? resolvedFallback?.session ?? (resolvedFallback?.notFound ? null : kept);
   const owner = entry ?? (session ? resolveSessionOwner(session.humanUserId) : null);
+  // A message another session sent arrives with that session's id as its author: name it as the terminal does ("Your Cursor", "Aden's Codex").
+  const withSessions = useMemo(() => [...(participants ?? []), ...entries.map(({ session: s }) => {
+    const who = resolveSessionOwner(s.humanUserId);
+    return { kind: "agent" as const, id: s.sessionId, displayName: `${who.own ? "Your" : `${who.ownerName.split(" ")[0]}'s`} ${sessionAgentName(s.provider)}` };
+  })], [participants, entries, resolveSessionOwner]);
   const messageOwner = session && owner && !owner.own && onMessageOwner ? () => onMessageOwner(session.humanUserId, owner.ownerName) : undefined;
   // Chat beside the terminal (PR #3807). Unread is the server's count from
   // the session list, which refetches when a chat message arrives (useWorkspaceSessions); nothing is
@@ -204,7 +213,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
         <Button variant="ghost" onClick={retryFallback}>Try again</Button>
       </div>}
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
-        client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={participants} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} />
+        client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={withSessions} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} focusSeq={focus.seq} />
         : <div className="p-4 text-ui text-muted-foreground">
           <p role="status">{resolvedFallback?.notFound ? "This session is no longer shared." : resolvedFallback?.error ? "Could not load this session." : "Opening session…"}</p>
           {resolvedFallback?.error && <Button variant="ghost" onClick={retryFallback}>Try again</Button>}

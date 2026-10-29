@@ -20,7 +20,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core.auth import get_current_user
 from core.config import settings
@@ -73,6 +73,9 @@ from routers import (
     runtime_rpc,
     sendblue_inbound,
     ses_inbound,
+    agent_keys as agent_keys_router,
+    network as network_router,
+    network_route as network_route_router,
     settings_keys,
     setup_requests,
     slack_app,
@@ -395,6 +398,7 @@ async def lifespan(app: FastAPI):
     from core.services.run_ledger import run_ledger_sweeper
     from core.services.browser_control import run_autosave_sweeper
     from core.services.session_pickup import run_pickup_sweeper
+    from core.services.memory_api import run_memory_sweeper
     from core.services.voice_calls import voice_call_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
@@ -408,6 +412,8 @@ async def lifespan(app: FastAPI):
     voice_sweeper_task = asyncio.create_task(voice_call_sweeper(voice_sweeper_stop))
     pickup_sweeper_stop = asyncio.Event()
     pickup_sweeper_task = asyncio.create_task(run_pickup_sweeper(pickup_sweeper_stop))
+    memory_sweeper_stop = asyncio.Event()
+    memory_sweeper_task = asyncio.create_task(run_memory_sweeper(memory_sweeper_stop))
     digest_stop = asyncio.Event()
     digest_task = asyncio.create_task(run_digest_sweeper(digest_stop))
     away_stop = asyncio.Event()
@@ -434,6 +440,7 @@ async def lifespan(app: FastAPI):
             "browser_autosave_sweeper": browser_autosave_task,
             "voice_call_sweeper": voice_sweeper_task,
             "session_pickup_sweeper": pickup_sweeper_task,
+            "memory_sweeper": memory_sweeper_task,
             "daily_digest": digest_task,
             "needs_you_email": away_task,
             "running_gauges": gauge_task,
@@ -473,6 +480,7 @@ async def lifespan(app: FastAPI):
     browser_autosave_stop.set()
     voice_sweeper_stop.set()
     pickup_sweeper_stop.set()
+    memory_sweeper_stop.set()
     digest_stop.set()
     away_stop.set()
     gauge_task.cancel()
@@ -490,6 +498,7 @@ async def lifespan(app: FastAPI):
                 browser_autosave_task,
                 voice_sweeper_task,
                 pickup_sweeper_task,
+                memory_sweeper_task,
                 digest_task,
                 away_task,
                 gauge_task,
@@ -506,6 +515,7 @@ async def lifespan(app: FastAPI):
             browser_autosave_task,
             voice_sweeper_task,
             pickup_sweeper_task,
+            memory_sweeper_task,
             digest_task,
             away_task,
             gauge_task,
@@ -518,6 +528,7 @@ async def lifespan(app: FastAPI):
             browser_autosave_task,
             voice_sweeper_task,
             pickup_sweeper_task,
+            memory_sweeper_task,
             digest_task,
             away_task,
             gauge_task,
@@ -614,6 +625,9 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
         return JSONResponse(status_code=problem.status_code, content=problem.body())
+    if request.url.path.startswith("/api/v1/sessions"):
+        # uploaded sessions: FastAPI's default 422 would echo tool-call summaries.
+        return JSONResponse(status_code=422, content={"detail": "Invalid sessions upload."})
     return await request_validation_exception_handler(request, exc)
 
 
@@ -891,6 +905,9 @@ app.include_router(container.router, prefix="/api/v1/container", tags=["containe
 app.include_router(container.browser_router, prefix="/api/v1/browser", tags=["browser"])
 app.include_router(container.browser_internal_router, prefix="/api/v1/internal/browser", tags=["browser"])
 app.include_router(container.provision_events_router, prefix="/api/v1/internal/provisioning", tags=["container"])
+from routers import paperclip_cost as paperclip_cost_router  # noqa: E402
+
+app.include_router(paperclip_cost_router.router, prefix="/api/v1/internal/paperclip", tags=["paperclip"])
 app.include_router(mac_cdp.router, prefix="/api/v1/internal/mac-cdp", tags=["mac-cdp"])
 
 # Workspace website logins (the store behind every agent's browser vault)
@@ -906,7 +923,16 @@ app.include_router(container_recover.router, prefix="/api/v1/container", tags=["
 # Config read/patch over the owner's roster profiles
 app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 
+app.include_router(agent_keys_router.router, prefix="/api/v1/settings/agent-keys", tags=["settings"])
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
+# Under /internal/messaging: the bridge's `_post_backend` prefixes every callback with it.
+app.include_router(network_router.internal_router, prefix="/api/v1/internal/messaging/network", tags=["settings"])
+# `lightbulb login`/`logout`/`invite --agents` and the doorbell. The CLI's routes carry no Clerk
+# token (a signed challenge, or the doorbell's bearer, is the credential); the confirm is Clerk.
+app.include_router(network_router.router, prefix="/api/v1/network", tags=["network"])
+# Hosted apps on the free network: the computer route link (on the bv door's /gateway/ path),
+# its cross-task door, the wake-up page and the bridge's app-mail notice.
+app.include_router(network_route_router.router, prefix="/api/v1", tags=["network"])
 
 # Integrations (MCP servers, ClawHub)
 app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])
@@ -1032,6 +1058,14 @@ from routers import company_policy  # noqa: E402
 
 app.include_router(company_policy.router, prefix="/api/v1/company", tags=["company-policy"])
 
+# Stripe Link Agent Wallet (every route 404s until Link's OAuth client is configured).
+from routers import company_link_wallet  # noqa: E402
+
+app.include_router(company_link_wallet.router, prefix="/api/v1/company/link-wallet", tags=["company-link-wallet"])
+app.include_router(
+    company_link_wallet.internal_router, prefix="/api/v1/internal/link-wallet", tags=["company-link-wallet"]
+)
+
 # Money reads — the stored day rollup plus live Stripe payments/customers/products.
 from routers import company_money  # noqa: E402
 
@@ -1053,6 +1087,13 @@ app.include_router(ideas_router.router, prefix="/api/v1", tags=["ideas"])
 from routers import memory as memory_router  # noqa: E402
 
 app.include_router(memory_router.router, prefix="/api/v1/memory", tags=["memory"])
+app.include_router(memory_router.internal_router, prefix="/api/v1/internal/memory", tags=["memory"])
+
+# Sessions a person uploads from the CLI, by choice (metadata or full).
+from routers import sessions as sessions_router  # noqa: E402
+
+app.include_router(sessions_router.router, prefix="/api/v1/sessions", tags=["sessions"])
+app.include_router(sessions_router.shared_router, prefix="/api/v1/shared", tags=["sessions"])
 
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402
@@ -1123,6 +1164,13 @@ async def mcp_protected_resource_metadata():
         "scopes_supported": ["user:org:read", READ_SCOPE, WRITE_SCOPE],
         "bearer_methods_supported": ["header"],
     }
+
+
+@app.get("/.well-known/openai-apps-challenge", include_in_schema=False)
+async def openai_apps_challenge():
+    if not settings.OPENAI_APPS_CHALLENGE_TOKEN:
+        return PlainTextResponse("Not Found", status_code=404)
+    return PlainTextResponse(settings.OPENAI_APPS_CHALLENGE_TOKEN)
 
 
 # Keep this last: the SDK serves /mcp and its root well-known OAuth metadata.

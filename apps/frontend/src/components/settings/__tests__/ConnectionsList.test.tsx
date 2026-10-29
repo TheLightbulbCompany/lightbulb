@@ -90,6 +90,51 @@ describe("ConnectionsList — delivery receipts", () => {
     expect(screen.getByRole("button", { name: "Disconnect Stripe" })).toBeInTheDocument();
   });
 
+  it("says why a grant needs a reconnect", () => {
+    h.connections = [
+      {
+        provider: "linear",
+        display_name: "Linear",
+        acquisition: "direct_oauth",
+        status: "reconnect_required",
+        reconnect_reason: "no_refresh_token",
+      },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(
+      screen.getByText("The saved sign-in can't be renewed (no_refresh_token). Reconnect to continue."),
+    ).toBeInTheDocument();
+  });
+
+  it("explains our own reasons in our own words, never as the provider's", () => {
+    h.connections = [
+      {
+        provider: "google",
+        display_name: "Google",
+        acquisition: "direct_oauth",
+        status: "reconnect_required",
+        reconnect_reason: "lightbulb_retired_grant",
+      },
+      {
+        provider: "linear",
+        display_name: "Linear",
+        acquisition: "direct_oauth",
+        status: "reconnect_required",
+        reconnect_reason: "unspecified",
+      },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(
+      screen.getByText("Lightbulb moved this connection to a new sign-in. Reconnect to continue."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("The saved sign-in can't be renewed (unspecified). Reconnect to continue."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/ended the sign-in/)).toBeNull();
+  });
+
   it("shows what a disconnected provider will deliver", () => {
     h.connections = [
       { provider: "github", display_name: "GitHub", acquisition: "paste_token", status: "disconnected" },

@@ -174,7 +174,7 @@ class LinkMe(ContractModel):
 class LinkPage(ContractModel):
     title: str | None
     owner_first_name: str
-    provider: Literal["claude", "codex"]
+    provider: sessions.Provider
     state: Literal["live", "ended", "offline"]
     code: LinkCode
     continuable: bool
@@ -276,7 +276,7 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
 
 # --- Ask to join from the page (06 §2, D1/D2) ---------------------------------------------------
 #
-# The same ask teammates make (local_sessions.request_join), opened to a signed-in person outside
+# The one ask to join left (owner ruling 2026-10-26: members never ask), made by a signed-in person outside
 # the workspace on an "Anyone with the link" page. The row is the session's own `joinRequests`,
 # marked `outsider` and carrying the label the owner sees. The owner's Allow
 # (local_sessions.decide_join) makes them a workspace member, then lets them use the session.
@@ -294,7 +294,8 @@ def _ask_state(auth: AuthContext | None, row: dict, link: dict, member: bool) ->
     if request and request.get("state") == "pending":
         return {"join": "pending"}
     # A declined ask reads as never asked (a decline is not announced); they may ask again.
-    return {"can_ask": not row.get("askToJoinOff")}
+    # Owner ruling 2026-10-26: link viewers may always ask (no per-session switch).
+    return {"can_ask": True}
 
 
 class JoinAsk(ContractModel):
@@ -351,7 +352,7 @@ async def ask_to_join(auth: AuthContext, token: str) -> JoinAsk:
         await sessions._notify_join_request(updated, me)
         await _email_owner(updated, label)
         await sessions._push_presence(updated)
-        await publish_resources_changed(row["ownerId"], row["humanUserId"])
+        await publish_resources_changed(row["ownerId"], row["humanUserId"], session_id=row["sessionId"])
         return JoinAsk(join="pending")
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 

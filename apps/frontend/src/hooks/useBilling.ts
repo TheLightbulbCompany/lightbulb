@@ -70,6 +70,8 @@ export interface MemberUsage {
   total_input_tokens: number;
   total_output_tokens: number;
   request_count: number;
+  capture_prompt_tokens?: number;
+  capture_completion_tokens?: number;
 }
 
 export interface UsageSummary {

@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LiveEvent } from "@lightbulb/shared";
 import { type LocalSession } from "@lightbulb/shared";
 import { LocalSessionPanel } from "../LocalSessionPanel";
@@ -7,11 +7,12 @@ import { LocalSessionPanel } from "../LocalSessionPanel";
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "alice", orgId: "org_1" }) }));
 // The terminal itself is tested in SessionTerminalView.test; here it just reports that it is live.
-const typing = vi.hoisted(() => ({ canType: true, admitted: undefined as boolean | undefined, kept: undefined as boolean | undefined, mounts: 0 }));
+const typing = vi.hoisted(() => ({ canType: true, admitted: undefined as boolean | undefined, kept: undefined as boolean | undefined, mounts: 0, typed: [] as string[], calls: 0, failOn: [] as number[], failWith: "RATE_LIMITED" as string | null }));
 vi.mock("../SessionTerminalView", async () => {
   const { useEffect } = await import("react");
-  return { SessionTerminalView: ({ onLive, onCanType, admitted, kept }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void; admitted?: boolean; kept?: boolean }) => {
+  return { SessionTerminalView: ({ onLive, onCanType, admitted, kept, keys }: { onLive: (live: boolean) => void; onCanType?: (c: boolean) => void; admitted?: boolean; kept?: boolean; keys?: { current: ((d: string) => Promise<unknown>) | null } }) => {
     typing.admitted = admitted; typing.kept = kept;
+    if (keys) keys.current = async (d) => { if (typing.failOn.includes(typing.calls++)) { const { ApiError } = await import("@lightbulb/shared"); throw typing.failWith ? new ApiError(409, { code: typing.failWith }, "refused") : new TypeError("Failed to fetch"); } typing.typed.push(d); };
     useEffect(() => { typing.mounts += 1; }, []);
     useEffect(() => { onLive(true); onCanType?.(typing.canType); }, [onLive, onCanType]);
     return <div role="region" aria-label="Live terminal (view only)"><div className="session-terminal-scroll" /></div>;
@@ -47,12 +48,12 @@ it("keeps the message box on a transcript", () => {
   expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
 });
 
-it("shows Watching · Ask to join, and no text box, under a live terminal for a teammate who may not send", async () => {
+it("shows Watching · Only Alice can type, no text box and no Ask to join, under a live terminal for a teammate who may not send", async () => {
   render(<LocalSessionPanel session={session} ownerName="Alice" own={false} client={{ ...client, requestLocalSessionJoin: vi.fn() } as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
   const terminal = await screen.findByRole("region", { name: "Live terminal (view only)" });
-  expect(below(terminal, await screen.findByText(/Watching · Only Alice can send/))).toBe(true);
+  expect(below(terminal, await screen.findByText(/Watching · Only Alice can type in this session/))).toBe(true);
   expect(screen.queryByRole("textbox")).toBeNull();
-  expect(screen.getByRole("button", { name: "Ask to join" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Ask to join" })).toBeNull();
 });
 
 it("never labels the status line as a transcript, and shows the ended and offline panels", () => {
@@ -69,6 +70,11 @@ it("never labels the status line as a transcript, and shows the ended and offlin
   expect(screen.getByText("Mac offline. Follow-ups wait up to 24 hours for this session to reconnect.")).toBeTruthy();
   expect(document.querySelector(".session-status-line")!.textContent).not.toMatch(/Transcript/);
   offline.unmount();
+  // Paused: the Mac stops heartbeating it, which is not the Mac being offline.
+  const paused = render(<LocalSessionPanel {...props} own session={{ ...session, status: "offline", shared: false }} />);
+  expect(document.querySelector(".session-state-title")!.textContent).toBe("Paused");
+  expect(screen.queryByText("Your Mac is offline")).toBeNull();
+  paused.unmount();
   render(<LocalSessionPanel {...props} own={false} session={session} />);
   expect(screen.queryByText(/Transcript/)).toBeNull();
 });
@@ -473,4 +479,160 @@ it("keeps the Browser tab read-only while the owner has paused others' input, an
   view.rerender(<LocalSessionPanel {...props} session={{ ...browsing, browser: null }} />);
   view.rerender(<LocalSessionPanel {...props} session={browsing} />);
   expect(screen.queryByRole("region", { name: "Session browser" })).toBeNull();
+});
+
+it("offers Open in a terminal for an app session, never for a Cursor or Grok CLI session", () => {
+  const app = { ...session, terminal: undefined, terminalReason: "app" as const };
+  const props = { ownerName: "Alice", own: true, client: client as never, revision: 0, onAccessLost: () => {} };
+  const claude = render(<LocalSessionPanel {...props} session={app} />);
+  expect(screen.getByRole("button", { name: "Open in a terminal" })).toBeTruthy();
+  claude.unmount();
+  render(<LocalSessionPanel {...props} session={{ ...app, provider: "cursor", terminalReason: "unknown" }} />);
+  expect(screen.queryByRole("button", { name: "Open in a terminal" })).toBeNull();
+  expect(screen.getByText(/runs in the person's own terminal/)).toBeTruthy();
+});
+
+describe("one body: the live terminal, or the conversation, never both (owner ruling 2026-10-27)", () => {
+  const events = [
+    { seq: 1, truncated: false, kind: "text", role: "user", text: "fix it" },
+    { seq: 2, truncated: false, kind: "text", role: "assistant", text: "Done." }];
+  const props = { ownerName: "Alice", own: true, client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+  it("shows only the terminal while it is live: no Conversation tab and no transcript under it", async () => {
+    client.listLocalSessionEvents.mockResolvedValue({ events, nextAfterSeq: null } as never);
+    render(<LocalSessionPanel {...props} session={{ ...session, latestEventSeq: 2 }} />);
+    await screen.findByRole("region", { name: "Live terminal (view only)" });
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.queryByRole("tab", { name: "Conversation" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Native session history" })).toBeNull();
+    expect(screen.queryByText("Done.")).toBeNull();
+    client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
+  });
+
+  it("draws the conversation once when sharing is paused, says Paused at once, and shows no frozen picture", async () => {
+    client.listLocalSessionEvents.mockResolvedValue({ events, nextAfterSeq: null } as never);
+    render(<LocalSessionPanel {...props} session={{ ...session, latestEventSeq: 2, shared: false }} />);
+    expect(await screen.findAllByText("Done.")).toHaveLength(1);
+    expect(screen.queryByRole("region", { name: "Live terminal (view only)" })).toBeNull();
+    expect(document.querySelector(".session-status-line")!.textContent).toMatch(/^Paused/);
+    client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
+  });
+
+  it("opens a search hit on its turn, then goes back to the live terminal", async () => {
+    client.listLocalSessionEvents.mockResolvedValue({ events, nextAfterSeq: null } as never);
+    render(<LocalSessionPanel {...props} session={{ ...session, latestEventSeq: 2 }} focusSeq={2} />);
+    expect(await screen.findAllByText("Done.")).toHaveLength(1);
+    expect(screen.queryByRole("region", { name: "Live terminal (view only)" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back to the live terminal" }));
+    expect(await screen.findByRole("region", { name: "Live terminal (view only)" })).toBeTruthy();
+    expect(screen.queryByText("Done.")).toBeNull();
+    client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
+  });
+});
+
+describe("a question answered from Lightbulb", () => {
+  const asking = (questions: unknown) => ({ events: [
+    { seq: 1, truncated: false, kind: "tool", role: "assistant", text: "q", itemId: "q1", tool: { name: "AskUserQuestion", status: "running", input: { questions } } },
+    { seq: 2, truncated: false, kind: "lifecycle", role: "system", text: "q", lifecycle: "approval_pending" }], nextAfterSeq: null });
+  const props = { ownerName: "Alice", own: true, client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+  const waiting = { ...session, status: "waiting-approval" as const, latestEventSeq: 2 };
+  const tea = { question: "Tea or coffee?", options: [{ label: "Tea" }, { label: "Coffee" }] };
+
+  it("types one option's digit for a single question, and no longer says to answer in the terminal", async () => {
+    typing.typed = [];
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
+    await waitFor(() => expect(typing.typed).toEqual(["2"]));
+    expect(screen.queryByText("Answer it in the live terminal below.")).toBeNull();
+    expect(await screen.findByText("Sent to the terminal.")).toBeTruthy();
+  });
+
+  it("says it could not send, and keeps the buttons, when the relay fails a key", async () => {
+    typing.typed = []; typing.calls = 0; typing.failOn = [0];
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
+    expect(await screen.findByText("Couldn't send, try again.")).toBeTruthy();
+    expect(screen.queryByText("Sent to the terminal.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Coffee" }));
+    expect(await screen.findByText("Sent to the terminal.")).toBeTruthy();
+    expect(typing.typed).toEqual(["2"]);
+  });
+
+  it("after a partial send, tries again from the key that failed, not from the first", async () => {
+    typing.typed = []; typing.calls = 0; typing.failOn = [1];
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea, { question: "Hot or cold?", options: [{ label: "Hot" }, { label: "Cold" }] }]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hot" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(await screen.findByText("Couldn't send, try again.", undefined, { timeout: 3000 })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Coffee" }).matches(":disabled")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Sent to the terminal.", undefined, { timeout: 3000 })).toBeTruthy();
+    expect(typing.typed).toEqual(["2", "1", "\r"]);
+    typing.failOn = [];
+  });
+
+  it("offers no retry when a key may have landed (lost connection), even a single-select digit", async () => {
+    typing.typed = []; typing.calls = 0; typing.failOn = [0]; typing.failWith = null;
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
+    expect(await screen.findByText("Couldn't send. Finish answering in the terminal.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Coffee" }).matches(":disabled")).toBe(true);
+    typing.failOn = []; typing.failWith = "RATE_LIMITED";
+  });
+
+  it("offers no retry on LOCAL_SESSION_OFFLINE: a sent frame whose ack was lost reads the same", async () => {
+    typing.typed = []; typing.calls = 0; typing.failOn = [0]; typing.failWith = "LOCAL_SESSION_OFFLINE";
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
+    expect(await screen.findByText("Couldn't send. Finish answering in the terminal.")).toBeTruthy();
+    typing.failOn = []; typing.failWith = "RATE_LIMITED";
+  });
+
+  it("offers no retry when a multi-select toggle failed with an unknown answer", async () => {
+    typing.typed = []; typing.calls = 0; typing.failOn = [1]; typing.failWith = "LOCAL_SESSION_CONFLICT";
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([{ question: "Add what?", multiSelect: true, options: [{ label: "Milk" }, { label: "Sugar" }, { label: "Honey" }] }]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Milk" }));
+    fireEvent.click(screen.getByRole("button", { name: "Honey" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(await screen.findByText("Couldn't send. Finish answering in the terminal.", undefined, { timeout: 3000 })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send answer" }).matches(":disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Milk" }).matches(":disabled")).toBe(true);
+    expect(typing.typed).toEqual(["1"]);
+    typing.failOn = []; typing.failWith = "RATE_LIMITED";
+  });
+
+  it("types each pick, then Enter for the review screen, for two questions", async () => {
+    typing.typed = [];
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea, { question: "Hot or cold?", options: [{ label: "Hot" }, { label: "Cold" }] }]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Coffee" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hot" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send answer" }));
+    await waitFor(() => expect(typing.typed).toEqual(["2", "1", "\r"]), { timeout: 3000 });
+  });
+
+  it("toggles a multi-select question, moves on with Right, then Enter", async () => {
+    typing.typed = [];
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([{ question: "Add what?", multiSelect: true, options: [{ label: "Milk" }, { label: "Sugar" }, { label: "Honey" }] }]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Milk" }));
+    fireEvent.click(screen.getByRole("button", { name: "Honey" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send answer" }));
+    await waitFor(() => expect(typing.typed).toEqual(["1", "3", "\x1b[C", "\r"]), { timeout: 3000 });
+  });
+
+  it("keeps the terminal line when the viewer cannot type", async () => {
+    typing.canType = false;
+    client.listLocalSessionEvents.mockResolvedValueOnce(asking([tea]) as never);
+    render(<LocalSessionPanel {...props} session={waiting} />);
+    expect(await screen.findByText(/this prompt can't be answered from here/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Coffee" })).toBeNull();
+    typing.canType = true;
+  });
 });

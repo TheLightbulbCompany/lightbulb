@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import secrets
 import time
-from typing import Annotated
+from typing import Annotated, Literal
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -77,7 +77,7 @@ async def _sync_status(owner_id: str, account_id: str) -> None:
     await billing_repo.set_company_stripe_status(owner_id, account_id=account_id, **status)
 
 
-def _status_payload(row: dict | None) -> dict:
+def _status_payload(row: dict | None, projects_ready: bool | None = None) -> dict:
     row = row or {}
     account_id = row.get("company_stripe_account_id")
     return {
@@ -87,16 +87,25 @@ def _status_payload(row: dict | None) -> dict:
         "charges_enabled": bool(row.get("company_stripe_charges_enabled")),
         "payouts_enabled": bool(row.get("company_stripe_payouts_enabled")),
         # False only for an api_key row bound with an rk_test_/sk_test_ key;
-        # the card labels that "Test mode". Connect rows follow the platform.
-        "livemode": bool(row.get("company_stripe_livemode", True)) if account_id else None,
+        # the card labels that "Test mode". Connect rows follow the platform
+        # key's own mode: a created account stores no flag, and defaulting it to
+        # True labelled a dev sandbox account live.
+        "livemode": bool(row.get("company_stripe_livemode", company_stripe.key_livemode(settings.STRIPE_SECRET_KEY)))
+        if account_id
+        else None,
         "dashboard_url": DASHBOARD_URL if account_id else None,
         # The frontend hides "Connect existing" and disables "Disconnect" when
         # this is false — both routes 503 without the platform client id.
         "connect_configured": bool(settings.STRIPE_CONNECT_CLIENT_ID),
-        # The Connect door only earns its place when provisioning is live —
-        # it is the one thing an OAuth grant does that a pasted key cannot.
-        # While off, the card offers the api_key path alone.
-        "provisioning_enabled": bool(settings.STRIPE_PROVISIONING_ENABLED),
+        # Readiness of the account Projects actually uses
+        # (`company_stripe.projects_account_of`). None = not asked (no account).
+        # False shows "Finish Stripe setup", or "Add a services account" when
+        # the main binding can't run Projects and no services account exists.
+        "projects_ready": projects_ready,
+        "services_account_id": row.get("company_stripe_projects_account_id"),
+        # Public pk for Connect embedded onboarding; None ⇒ the card uses the
+        # hosted Account Link instead.
+        "publishable_key": settings.STRIPE_PUBLISHABLE_KEY or None,
     }
 
 
@@ -109,7 +118,25 @@ async def status(auth: Annotated[AuthContext, Depends(get_current_user)]):
         # flags only ever reflect bind time. Refresh them on read; best-effort,
         # a Stripe hiccup serves the stored copy rather than a 502.
         row = await _refresh_api_key_status(row) or row
-    return _status_payload(row)
+    return _status_payload(row, await _projects_ready(row))
+
+
+async def _projects_ready(row: dict | None) -> bool | None:
+    """One Stripe read per status load, only where it can matter. Best-effort:
+    a hiccup answers None (card shows nothing extra), never a 502."""
+    row = row or {}
+    if not row.get("company_stripe_account_id"):
+        return None
+    account_id = company_stripe.projects_account_of(row)
+    if not account_id:
+        # `connected`/`api_key` with no services account: Projects can't run
+        # on the main binding, so it is not ready until one is added.
+        return False
+    try:
+        return await company_stripe.projects_ready(account_id=account_id)
+    except Exception:  # noqa: BLE001 — a read-time probe must never break the card
+        logger.warning("company_stripe: projects_ready read failed owner_id=%s", row.get("owner_id"))
+        return None
 
 
 async def _refresh_api_key_status(row: dict) -> dict | None:
@@ -258,20 +285,116 @@ async def bind_api_key(body: ApiKeyBody, auth: Annotated[AuthContext, Depends(ge
     return {"account_id": account_id, "livemode": info["livemode"]}
 
 
+class OnboardingTarget(BaseModel):
+    target: Literal["main", "services"] = "main"
+
+
+def _onboardable_account(row: dict, target: str) -> str:
+    """The platform-created account a target names: the main account only when
+    we created it, or the services account. Anything else can't be onboarded."""
+    if target == "services":
+        account_id = row.get("company_stripe_projects_account_id")
+    else:
+        account_id = row.get("company_stripe_account_id") if row.get("company_stripe_source") == "created" else None
+    if not account_id:
+        raise HTTPException(status_code=409, detail="No created Stripe account to onboard")
+    return account_id
+
+
+async def _ensure_projects_capability(target: str, account_id: str) -> None:
+    """An account created without the developer configuration lacks it;
+    request it (idempotent) so onboarding collects it. The services account is
+    always created with it."""
+    if target == "main" and not await company_stripe.projects_ready(account_id=account_id):
+        await company_stripe.request_projects_capability(account_id=account_id)
+
+
 @router.post("/onboarding-link")
-async def onboarding_link(auth: Annotated[AuthContext, Depends(get_current_user)]):
+async def onboarding_link(
+    auth: Annotated[AuthContext, Depends(get_current_user)], body: OnboardingTarget | None = None
+):
+    """Hosted Account Link: the fallback where embedded onboarding can't run
+    (no publishable key, or the desktop app)."""
+    _gate_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    await require_always_on_entitlement(owner_id, message=COMPANY_STRIPE_MESSAGE)
+    target = body.target if body else "main"
+    # Consistent: the card calls this right after /services-account wrote the id.
+    row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+    account_id = _onboardable_account(row, target)
+    try:
+        await _ensure_projects_capability(target, account_id)
+        # Already onboarded once => this is a correction, not a first onboarding.
+        # The status flags describe the main account only.
+        url = await company_stripe.create_company_onboarding_link(
+            account_id=account_id,
+            update=target == "main" and bool(row.get("company_stripe_details_submitted")),
+        )
+    except stripe.error.StripeError as e:
+        raise _stripe_failure(e) from e
+    return {"onboarding_url": url}
+
+
+@router.post("/services-account")
+async def services_account(auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Create the platform-owned account Stripe Projects runs on for an owner
+    whose main binding can't (see `company_stripe.projects_account_of`). The
+    main binding is untouched. The card then onboards it with
+    `POST /account-session {target: "services"}`."""
+    started_ms = int(time.time() * 1000)
     _gate_admin(auth)
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id, message=COMPANY_STRIPE_MESSAGE)
     row = await billing_repo.get_by_owner_id(owner_id) or {}
-    account_id = row.get("company_stripe_account_id")
-    if not account_id or row.get("company_stripe_source") != "created":
-        raise HTTPException(status_code=409, detail="No created Stripe account to onboard")
+    if row.get("company_stripe_projects_account_id"):
+        return {"account_id": row["company_stripe_projects_account_id"]}
+    if not row.get("company_stripe_account_id") or row.get("company_stripe_source") == "created":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "services_account_not_needed", "message": "This Stripe account runs services itself"},
+        )
+    company_name = await company_stripe.resolve_company_name(owner_id)
     try:
-        url = await company_stripe.create_company_onboarding_link(account_id=account_id)
+        account_id = await company_stripe.create_company_account(
+            owner_id=owner_id, email=auth.email or "", company_name=company_name, kind="company_services"
+        )
     except stripe.error.StripeError as e:
         raise _stripe_failure(e) from e
-    return {"onboarding_url": url}
+    async with owner_lifecycle.revoke_fence(owner_id, started_ms):
+        bound = await billing_repo.set_company_stripe_projects_account(owner_id, account_id=account_id)
+    if bound is None:
+        # A concurrent create won (adopt it), or the main binding went away.
+        row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+        winner = row.get("company_stripe_projects_account_id")
+        if not winner:
+            raise HTTPException(status_code=409, detail="No Stripe account bound")
+        return {"account_id": winner}
+    put_metric("company_stripe.services_account.created")
+    return {"account_id": account_id}
+
+
+@router.post("/account-session")
+async def account_session(body: OnboardingTarget, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Client secret for Connect embedded onboarding. Only for accounts the
+    platform created: the main account when its source is `created`, or the
+    services account."""
+    _gate_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    await require_always_on_entitlement(owner_id, message=COMPANY_STRIPE_MESSAGE)
+    if not settings.STRIPE_PUBLISHABLE_KEY:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "embedded_onboarding_unavailable", "message": "Embedded onboarding isn't configured"},
+        )
+    # Consistent: the card calls this right after /services-account wrote the id.
+    row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+    account_id = _onboardable_account(row, body.target)
+    try:
+        await _ensure_projects_capability(body.target, account_id)
+        client_secret = await company_stripe.create_account_session(account_id=account_id)
+    except stripe.error.StripeError as e:
+        raise _stripe_failure(e) from e
+    return {"client_secret": client_secret, "publishable_key": settings.STRIPE_PUBLISHABLE_KEY}
 
 
 @router.get("/connect/start")

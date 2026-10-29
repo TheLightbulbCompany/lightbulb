@@ -1,5 +1,5 @@
 import type { AvatarRing } from "@lightbulb/shared";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../ui/SymbolView";
 import { StyleSheet, Text, View } from "react-native";
 
 import { chatPalette, fonts, radii, type ChatPalette } from "../../config/theme";

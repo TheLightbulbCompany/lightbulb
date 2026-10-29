@@ -457,6 +457,7 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     rows = await integrations_repo.list_for_owner(owner_id)
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
+    reasons = {r["provider"]: r.get("reconnect_reason") for r in rows if r.get("status") == "reconnect_required"}
     connections = []
     for k, v in registry.all_providers().items():
         # A gate still means HIDDEN unless the provider opts into being requested,
@@ -465,7 +466,10 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
         if not registry.is_listable(v, owner_id) and k not in connected:
             continue
         byo = await _byo_active(owner_id, k)
-        connections.append(_connection_row(k, v, connected, byo, owner_id))
+        row = _connection_row(k, v, connected, byo, owner_id)
+        # Why the grant died (an OAuth error code or our own short code; never a token).
+        row["reconnect_reason"] = reasons.get(k)
+        connections.append(row)
     return {"connections": connections}
 
 
@@ -604,7 +608,7 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
             )
         await integrations_repo.put_status(owner_id, provider, "connected")
     await write_owner_facts(owner_id)  # best-effort: refresh the agents' connected_integrations manifest
-    await _resume_ideas(owner_id, provider)
+    await _after_connect(owner_id, provider)
     return {"status": "connected", "provider": provider}
 
 
@@ -786,14 +790,22 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
                 status_code=502,
                 detail="failed to apply the AWS connection to your container; please retry",
             )
-    await _resume_ideas(owner_id, provider)
+    await _after_connect(owner_id, provider)
     return {"status": "connected", "provider": provider}
 
 
-async def _resume_ideas(owner_id: str, provider: str) -> None:
-    """Wake the idea starts waiting on this service, once it reads connected and the facts list it.
-    Best-effort and outside the revoke fence: a slow Paperclip must not spend the lease, and a
-    connect never fails because a nudge did."""
+async def _after_connect(owner_id: str, provider: str) -> None:
+    """Once a service reads connected: tell an open Activity view to drop a stale Reconnect item
+    (``access_token._announce_reconnect`` filed it; the item closes when the row flips back), and
+    wake the idea starts waiting on it. Best-effort and outside the revoke fence: a slow Paperclip
+    must not spend the lease, and a connect never fails because a nudge did."""
+    try:
+        from core.services.live_events import publish_owner_users
+        from core.services.messaging import make_live_event
+
+        await publish_owner_users(owner_id, make_live_event("runtime.resource.invalidated", {"resource": "activity"}))
+    except Exception:
+        logger.warning("activity invalidation after connect failed owner=%s provider=%s", owner_id, provider)
     try:
         await ideas.resume_after_connect(owner_id, provider)
     except Exception:
@@ -1247,7 +1259,7 @@ async def oauth_callback(
         # written before the guard -- land back on the connections page with a
         # retryable error instead of a raw 500.
         return _done("error=busy", origin)
-    await _resume_ideas(owner_id, prov)
+    await _after_connect(owner_id, prov)
     if prov == "github":
         # Hand Paperclip the same token (its GITHUB_TOKEN company secret), so the PRs and
         # issues a task mentions resolve authenticated. Best-effort and AFTER the guard: the

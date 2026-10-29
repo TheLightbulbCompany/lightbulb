@@ -3,7 +3,7 @@
  * session, as ONE list sorted by last activity, plus the row's preview line and
  * the avatar's state ring. Pure: no React, no DOM, no react-native.
  */
-import { sessionArchived, sessionStatus } from "./localSessionLabels";
+import { sessionArchived, sessionArchivedByViewer, sessionStatus, sessionWaitingLine } from "./localSessionLabels";
 import type { LocalSession, RoomSummary } from "./types";
 
 export type ChatEntry =
@@ -30,7 +30,7 @@ export interface MergeChatsOptions {
 
 /**
  * Rooms (minus deleted ones) and sessions — ended ones included, they are
- * ordinary chats (owner ruling 2026-09-26) — minus three-day-offline and
+ * ordinary chats (owner ruling 2026-09-26) — minus ended-on-purpose, three-day-offline and
  * locally archived ones — an archived session comes back once it has new
  * output), newest activity first; equal times order by key so the list never
  * shuffles between renders.
@@ -46,9 +46,7 @@ export function mergeChats(
     entries.push({ kind: "room", key: `room:${room.roomId}`, at: roomActivityAt(room), room });
   }
   for (const session of sessions) {
-    if (sessionArchived(session, now)) continue;
-    const archivedAt = archivedSessions[session.sessionId];
-    if (archivedAt !== undefined && (session.latestEventSeq ?? 0) <= archivedAt) continue;
+    if (sessionArchived(session, now) || sessionArchivedByViewer(session, archivedSessions)) continue;
     entries.push({ kind: "session", key: `session:${session.sessionId}`, at: sessionActivityAt(session), session });
   }
   return entries.sort((a, b) => b.at - a.at || a.key.localeCompare(b.key));
@@ -77,10 +75,9 @@ export const plainPreview = (text: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
-/** A waiting prompt first, else the last reply, else the status word. */
-export function sessionPreview(session: Pick<LocalSession, "status" | "lastAssistantMessage">): string {
-  if (session.status === "waiting-approval") return sessionStatus["waiting-approval"];
-  return plainPreview(session.lastAssistantMessage ?? "") || sessionStatus[session.status];
+/** What it waits on first (a prompt's reason, a job's hand-off note), else the last reply, else the status word. */
+export function sessionPreview(session: Pick<LocalSession, "status" | "lastAssistantMessage" | "waitingFor" | "note">): string {
+  return sessionWaitingLine(session) ?? (plainPreview(session.lastAssistantMessage ?? "") || sessionStatus[session.status]);
 }
 
 /**
@@ -103,5 +100,5 @@ const RING_BY_STATUS: Readonly<Record<string, AvatarRing>> = {
 export const agentRingState = (status: string | null | undefined): AvatarRing | null =>
   (status ? RING_BY_STATUS[status.toLowerCase()] : undefined) ?? null;
 
-export const sessionRingState = (session: Pick<LocalSession, "status">): AvatarRing | null =>
-  session.status === "busy" ? "running" : session.status === "waiting-approval" ? "attention" : null;
+export const sessionRingState = (session: Pick<LocalSession, "status" | "waitingFor" | "note" | "done">): AvatarRing | null =>
+  sessionWaitingLine(session) !== null ? "attention" : session.status === "busy" && !session.done ? "running" : null;

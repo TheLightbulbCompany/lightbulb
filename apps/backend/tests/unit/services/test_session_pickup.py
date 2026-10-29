@@ -484,6 +484,8 @@ async def test_ticket_permission_idempotency_and_expiry(transport, s3):
     manifest = ticket["manifest"]
     assert manifest["series"] == "s1" and manifest["cwdRelative"] == "apps/backend"
     assert [p["from"] for p in manifest["parts"]] == [0, 4] and manifest["sidecars"] is None
+    # Stored as `host/org/repo`; every desktop's parser reads only URL/scp forms (prod 2026-10-26).
+    assert manifest["code"]["remote"] == "https://github.com/acme/app"
     downloads = ticket["downloads"]
     assert [d["index"] for d in downloads["transcript"]] == [0, 1] and downloads["sidecars"] is None
     assert parse_qs(urlparse(downloads["code"]["url"]).query)["X-Amz-Expires"] == ["900"]
@@ -544,7 +546,7 @@ async def test_a_reported_pick_up_is_announced_once(transport, s3):
         hint.assert_not_awaited()  # a failure writes no audit, so there is nothing to show
         await pickup.report_outcome(BOB, sid, request_id, pickup.PickupOutcome(ok=True, branch="pickup/x-1"))
         await pickup.report_outcome(BOB, sid, request_id, pickup.PickupOutcome(ok=True, branch="pickup/x-1"))
-    hint.assert_awaited_once_with(OWNER, ALICE.user_id)
+    hint.assert_awaited_once_with(OWNER, ALICE.user_id, session_id=sid)
 
 
 @pytest.mark.asyncio

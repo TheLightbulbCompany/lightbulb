@@ -75,12 +75,23 @@ pub(super) fn record_from_hook(provider: &str, hook: &Value) -> Result<()> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or("local profile unavailable")?;
-    let scope = scope_for_hook(&home, &scope)?;
+    let launcher = process(pid.parse().map_err(|_| "invalid launch pid")?)?;
+    record(&home, &start_id, &scope, provider, conversation, launcher)
+}
+
+/// A start's link to its native conversation, under the launch `scope` key. `launcher` is the
+/// process that runs the conversation: the provider the holder started, or, for a held Codex on
+/// the shared daemon, the daemon (`codex::start_on_daemon`).
+pub(super) fn record(home: &Path, start_id: &str, scope: &str, provider: &str, conversation: &str, launcher: Process) -> Result<()> {
+    if !valid_start_id(start_id) {
+        return Err("invalid launch identity".into());
+    }
+    let scope = scope_for_hook(home, scope)?;
     let link = Link {
-        start_id,
+        start_id: start_id.into(),
         provider: provider.into(),
         conversation: conversation.into(),
-        launcher: process(pid.parse().map_err(|_| "invalid launch pid")?)?,
+        launcher,
         bound_generation: None,
     };
     // Descendant sessions can inherit the launch environment. Only the first
@@ -208,7 +219,10 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         let record = Link {
             start_id: "11111111-1111-4111-8111-111111111111".into(),

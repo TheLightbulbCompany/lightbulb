@@ -198,5 +198,89 @@ class DrainTests(unittest.TestCase):
         index._sqs_client.receive_message.assert_not_called()
 
 
+SID = "33333333-3333-4333-8333-333333333333"
+SPK = f"LOCALSESSION#org_owner#{SID}"
+SESSION_TARGET = f"/{index.index_name('org_owner')}/_doc/session:{SID}:5"
+
+
+def event(**extra):
+    return {"pk": SPK, "sk": "EVENT#00000000000000000005", "seq": 5, "kind": "text", "role": "user",
+            "text": "why does the deploy fail", "createdAt": 1790000000, **extra}
+
+
+def meta(**extra):
+    return {"pk": SPK, "sk": "META", "sessionId": SID, "ownerId": "org_owner", "humanUserId": "user_a",
+            "provider": "claude", "eventSeq": 5, **extra}
+
+
+def session_job(sk="EVENT#00000000000000000005", **extra):
+    return {"ownerId": "org_owner", "sessionId": SID, "sk": sk, **extra}
+
+
+class SessionIndexerTests(unittest.TestCase):
+    def test_only_prompts_and_replies_are_indexed(self):
+        prompt = index.session_document(event(), meta())
+        self.assertEqual((prompt["kind"], prompt["authorKind"], prompt["authorId"], prompt["seq"]), ("session", "person", "user_a", 5))
+        self.assertEqual(prompt["createdAt"], "2026-09-21T14:13:20Z")
+        reply = index.session_document(event(role="assistant", text="It needs a token."), meta())
+        self.assertEqual((reply["authorKind"], reply["authorName"], reply["authorId"]), ("agent", "Claude Code", ""))
+        teammate = index.session_document(event(actor={"userId": "user_b"}), meta())
+        self.assertEqual(teammate["authorId"], "user_b")
+        for skipped in (
+            event(kind="tool", role="tool", text="$ ls\nsecret.txt"),
+            event(kind="thinking", role="assistant"),
+            event(kind="lifecycle", role="system", text="turn_end"),
+            event(role="system", text="Sharing was paused."),
+            event(role="assistant", subagent="agent-1"),
+            event(text="   "),
+        ):
+            self.assertIsNone(index.session_document(skipped, meta()), skipped)
+
+    def test_a_removed_or_missing_session_indexes_nothing(self):
+        self.assertIsNone(index.session_document(event(), meta(removedAt=1)))
+        self.assertIsNone(index.session_document(event(), None))
+
+    @patch("index._request", side_effect=[(400, b"resource_already_exists"), (200, b"{}"), (201, b"{}")])
+    @patch("index._get_row", side_effect=[event(), meta(), meta()])
+    def test_an_event_extends_an_old_index_then_writes_and_verifies(self, get_row, request):
+        index.process(session_job())
+        name = index.index_name("org_owner")
+        self.assertEqual(calls(request), [("PUT", f"/{name}"), ("PUT", f"/{name}/_mapping"), ("PUT", SESSION_TARGET)])
+        self.assertEqual(get_row.call_args_list[0].args, ("", "EVENT#00000000000000000005", SPK))
+
+    @patch("index._request", return_value=(201, b"{}"))
+    @patch("index._get_row", side_effect=[event(), meta(), meta(removedAt=1), event(), meta(removedAt=1)])
+    def test_a_removal_that_lands_after_our_write_deletes_it(self, get_row, request):
+        index.process(session_job())
+        self.assertEqual(calls(request)[-1], ("DELETE", SESSION_TARGET))
+
+    @patch("index._request", return_value=(404, b"{}"))
+    @patch("index._get_row", side_effect=[event(kind="tool", role="tool"), meta()])
+    def test_tool_output_is_never_written(self, get_row, request):
+        index.process(session_job())
+        self.assertEqual(calls(request), [("DELETE", SESSION_TARGET)])
+
+    @patch("index._request", return_value=(200, json.dumps({"items": [{"delete": {"status": 404}}]}).encode()))
+    @patch("index._get_row", return_value=meta(removedAt=1, eventSeq=1200))
+    def test_removal_deletes_every_seq_in_bulk(self, get_row, request):
+        index.process(session_job("META"))
+        self.assertEqual([c.args[:2] for c in request.call_args_list], [("POST", "/_bulk")] * 3)
+        body = request.call_args_list[-1].args[2].decode().splitlines()
+        self.assertEqual(len(body), 200)
+        self.assertEqual(json.loads(body[-1])["delete"]["_id"], f"session:{SID}:1200")
+
+    @patch("index._request")
+    @patch("index._get_row", return_value=meta())
+    def test_a_resumed_session_keeps_its_documents(self, get_row, request):
+        index.process(session_job("META"))
+        request.assert_not_called()
+
+    @patch("index._request", return_value=(200, json.dumps({"items": [{"delete": {"status": 500}}]}).encode()))
+    @patch("index._get_row", return_value=meta(removedAt=1, eventSeq=1))
+    def test_a_failed_bulk_delete_retries_the_job(self, get_row, request):
+        with self.assertRaises(RuntimeError):
+            index.process(session_job("META"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -111,7 +111,33 @@ async def post_pair(
     ctx: AuthContext = Depends(get_current_user),
 ) -> PairResponse:
     """Idempotently pre-pair the caller's two Mac devices."""
-    owner_id = resolve_owner_id(ctx)
+    return await pair_devices(
+        ctx,
+        resolve_owner_id(ctx),
+        body.tauriMacPubKey,
+        body.cliPubKey,
+        (
+            DesktopPermissionGrant(
+                screen=body.permissions.screen,
+                shell=body.permissions.shell,
+                browser=body.permissions.browser,
+                files=body.permissions.files,
+            )
+            if body.permissions is not None
+            else None
+        ),
+    )
+
+
+async def pair_devices(
+    ctx: AuthContext,
+    owner_id: str,
+    tauri_mac_pubkey: str,
+    cli_pubkey: str,
+    permissions: DesktopPermissionGrant | None,
+) -> PairResponse:
+    """Pair a Mac's two devices as ``ctx``'s member of ``owner_id``. Shared by ``/desktop/pair``
+    and the device-login approve (``routers/desktop_auth.py``), which pairs on the CLI's behalf."""
     # The member's first name (Clerk), so an agent can say "browsing on Prasiddha's Mac";
     # the user id when Clerk has none. The service appends " | Lightbulb Mac" /
     # " | Lightbulb Desktop (CLI)" itself. A re-pair (every desktop sign-in) refreshes it.
@@ -122,18 +148,9 @@ async def post_pair(
             user_id=ctx.user_id,
             owner_id=owner_id,
             display_name_base=display_name_base,
-            tauri_mac_pubkey=body.tauriMacPubKey,
-            cli_pubkey=body.cliPubKey,
-            permissions=(
-                DesktopPermissionGrant(
-                    screen=body.permissions.screen,
-                    shell=body.permissions.shell,
-                    browser=body.permissions.browser,
-                    files=body.permissions.files,
-                )
-                if body.permissions is not None
-                else None
-            ),
+            tauri_mac_pubkey=tauri_mac_pubkey,
+            cli_pubkey=cli_pubkey,
+            permissions=permissions,
         )
     except DeviceRegisteredToAnotherMember as e:
         logger.warning(

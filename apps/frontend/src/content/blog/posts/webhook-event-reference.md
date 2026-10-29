@@ -539,7 +539,7 @@ Notion, Intercom, Parallel, X, and AWS are still connected-provider entries, but
 | `preprod_artifact` | Preprod artifact | — |
 | `seer` | Seer | — |
 
-### Google Workspace (`google`) — 4 events
+### Google Workspace (`google`) — 2 events
 
 | Event ID | Label | Provider event(s) |
 | --- | --- | --- |

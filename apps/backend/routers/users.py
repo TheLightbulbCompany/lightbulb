@@ -135,16 +135,16 @@ def _prefs(row: dict | None) -> UserPrefs:
         dailySummary=user_repo.daily_summary_on(row),
         awayEmail=user_repo.away_email_on(row),
         chatTheme=user_repo.chat_theme_of(row),
-        agentSendWithoutAsking=user_repo.agent_send_without_asking(row),
         sessionsReachableFromBackgroundWork=user_repo.sessions_reachable_from_background_work(row),
+        sessionNotifications=user_repo.session_notifications(row),
     )
 
 
 @router.get("/me/prefs", response_model=UserPrefs, operation_id="get_my_prefs")
 async def get_my_prefs(auth: AuthContext = Depends(get_current_user)) -> UserPrefs:
     """The caller's per-human prefs: IANA ``timezone``, the ``dailySummary`` digest
-    toggle, the account's ``chatTheme`` (null when never set), and the two agent-session
-    switches (``agentSendWithoutAsking``, ``sessionsReachableFromBackgroundWork``; both off by default)."""
+    toggle, the account's ``chatTheme`` (null when never set), and the agent-session
+    switch ``sessionsReachableFromBackgroundWork`` (on by default)."""
     return _prefs(await user_repo.get(auth.user_id))
 
 
@@ -160,8 +160,8 @@ async def update_my_prefs(body: UserPrefsUpdate, auth: AuthContext = Depends(get
         daily_summary=body.dailySummary,
         away_email=body.awayEmail,
         chat_theme=body.chatTheme,
-        agent_send_without_asking=body.agentSendWithoutAsking,
         sessions_reachable_from_background_work=body.sessionsReachableFromBackgroundWork,
+        session_notifications=body.sessionNotifications.model_dump() if body.sessionNotifications else None,
     )
     return _prefs(await user_repo.get(auth.user_id))
 

@@ -1,0 +1,123 @@
+---
+title: "Troubleshooting"
+description: "What each lightbulb doctor line means, and fixes for messages and joins that fail."
+order: 19
+section: "Reference"
+---
+
+**Start with `lightbulb doctor`.** It prints one line per check, then `All good.` or the fix for the first check that failed (and exits 1). Fix that, run `doctor` again, and repeat.
+
+## The `doctor` lines
+
+### `Background service   not running`
+
+The background service is not answering. Fix: `lightbulb setup`. It installs the service and starts it.
+
+If `setup` then says `The old background service did not stop (pid N). Run: kill N, then lightbulb setup again.`, an old copy is still running and holds the state folder. Do what it says.
+
+### `Starts at login      no`
+
+The login item (`~/Library/LaunchAgents/company.thelightbulb.connect.plist`) is not loaded, so the service will not start at login. Fix: `lightbulb setup`.
+
+If `setup` prints `Background service: could not start it (…)`, macOS refused to load the job. Check that the file named there exists, then log out and in, and run `setup` again.
+
+### `Local network        blocked by macOS`
+
+macOS has not allowed lightbulb on the local network, so your other Macs on the same Wi-Fi cannot find this one. Fix: System Settings > Privacy & Security > Local Network, and turn on lightbulb. macOS asks once; if you missed the question, the switch is there.
+
+Joins on the same Wi-Fi still work while it is blocked, because the invite carries your Mac's addresses. Computers on other networks connect through a relay and do not need it.
+
+### `State folder         readable by others`
+
+`~/.lightbulb/connect` must be readable only by you (mode `700`, its socket `600`). Fix: `chmod 700 ~/.lightbulb/connect`. If the line stays red, the socket is too open: run `lightbulb setup` to restart the service, which makes the socket again.
+
+### An agent: `not connected` or `hooks only — tools missing (run setup)`
+
+The line is named after the agent (`Claude Code`, `Codex`, `Cursor`, `Grok CLI`, `OpenCode`). `not installed` is fine: that agent's folder does not exist.
+
+- `hooks only — tools missing (run setup)`: the hooks are there, but the `lightbulb` tool server entry is not. Fix: `lightbulb setup`.
+- `not connected`: the hooks are not there. Fix: `lightbulb setup`. If setup prints `<agent>: not connected — <file>: <error>`, that config file could not be read (for example, it is not valid JSON or TOML). Fix the file, then run `setup` again. The backup is beside it as `<file>.lightbulb-backup`.
+
+After a fix, restart the agent's open sessions so they load the tool server.
+
+### `Command name         "lightbulb" is a link to another program (run setup)`
+
+`~/.local/bin/lightbulb` points at a program that is not ours. Fix: `lightbulb setup` (or `~/.lightbulb/connect/bin/lightbulb setup` if the `lightbulb` command runs the other program). Setup replaces the link.
+
+`Command name         not installed` means there is no `~/.local/bin/lightbulb`; the fix is the same.
+
+If the line reads `~/.local/bin/lightbulb is another program's; put ~/.lightbulb/connect/bin on your PATH`, a real file (not a link) is there. Setup leaves it alone. Add `export PATH="$HOME/.lightbulb/connect/bin:$PATH"` to `~/.zshrc` and open a new terminal.
+
+### `Relay`
+
+This line is never red. It shows the relay in use: `default` (the iroh project's public relays), `yours <url>`, `team <url>`, or `none`.
+
+## Other problems
+
+### `lightbulb: command not found` after the curl install
+
+The command is in `~/.local/bin`, which a new Mac does not have on its PATH. Right after the install, `setup` prints: `Add this line to your shell profile (~/.zshrc), then open a new terminal: export PATH="$HOME/.local/bin:$PATH"`. This applies to both of you: the person who invites and the teammate who joins. Add it to `~/.zshrc`, then open a new terminal:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+```
+
+Until then, run `~/.lightbulb/connect/bin/lightbulb`.
+
+### `lightbulb version` still shows the old version after an upgrade
+
+After `brew upgrade` or `npm i -g lightbulb-cli@latest`, run `lightbulb setup`, then `lightbulb version`. If the version did not change, your PATH found the old copy in `~/.local/bin` first, and that copy ran `setup`. Run setup from the package's own binary:
+
+```sh
+"$(brew --prefix)/bin/lightbulb" setup     # Homebrew
+"$(npm prefix -g)/bin/lightbulb" setup     # npm
+```
+
+The curl install line and `lightbulb update` always replace the copy in `~/.lightbulb/connect/bin`.
+
+### `The background service did not answer in 10 s`
+
+The full text ends `If macOS is asking whether lightbulb may read a folder, click Allow, then try again.` Look for a macOS permission window, answer it, and run the command again. If no window is open, run `lightbulb doctor`.
+
+### Codex asks you to trust a hook
+
+`setup` writes Codex's hook trust for its own hooks, so Codex normally does not ask. It asks when one of our hooks shares a hook group with another tool's hook; setup then prints `Codex: the <event> hook shares a group with another tool's; Codex will ask you to trust it once (/hooks)`. Trust it in Codex with `/hooks`. Until you do, Codex skips that hook.
+
+### Two copies of the service
+
+Only one service can use the state folder; a second one waits and touches nothing. If setup says the old service did not stop, run the `kill` it prints, then `lightbulb setup`. If you uninstalled with `setup --remove` and the service came back, an open agent session started it: close your agent sessions, then run `setup --remove` again.
+
+### Teammates' computers show `offline`, or a relay is down
+
+`doctor` has no relay check. Signs that your computers cannot reach each other: `lightbulb team` shows them `· offline`, and receipts stay `queued` (`Not delivered yet: <computer> is offline.`). `~/.lightbulb/connect/daemon.log` has a line like `net: dial <key>: failed` (logged once, when a dial starts failing). See the [relay outage runbook](https://github.com/TheLightbulbCompany/cli/blob/main/docs/runbooks.md#relay-outage).
+
+## A teammate's message did not arrive
+
+Ask the sender to run `lightbulb receipt <id>` (the id is in what `send` printed). An agent can call `message_receipt`. What the answer means:
+
+| Receipt | What happened | What to do |
+|---|---|---|
+| `Not delivered yet: <computer> is offline. Lightbulb keeps trying until <time>.` | The other Mac is asleep or unreachable. | Wake it. Lightbulb retries for 24 hours. |
+| `… has not confirmed it yet` | It was sent; the other Mac has not answered. | Wait, or check the relay (above). |
+| `Sent. Stored on <computer>.` | On their Mac, waiting for the session. | The session reads it at its next step; an idle session when someone next types to it. See [how a message reaches a session](https://github.com/TheLightbulbCompany/cli/blob/main/docs/agents.md#how-a-message-reaches-a-session). |
+| `Delivered …` / `Read …` | The session got it. | Nothing. |
+| `Not sent: loop limit: …` / `paused after … agent replies` | A loop limit (see [security](/docs/agent-network-security)). | A person sends the next message, or waits 10 minutes. |
+| `Not sent: that computer is not in your team.` | The address is not a member. | Check `lightbulb team`. |
+| `Not delivered: the other computer could not be reached for 24 hours.` | Expired. | Send it again. |
+
+If the receiver cannot see the sender's session at all, check `lightbulb who --all` on both sides, and whether the session's folder is hidden (`lightbulb folder <path> on`).
+
+## `join` says the invite does not work or has expired
+
+| `join` says | Why | What to do |
+|---|---|---|
+| `This invite link does not work. Ask for a new one.` | The line was cut or changed when pasted; or the invite was replaced (`invite --new`), ended by a `remove`, or was a one-time invite already used. | Ask for a fresh line (`lightbulb invite`), and paste it whole, in single quotes. |
+| `This invite link has expired. Ask for a new one.` | One-time invites last 24 hours, others 7 days. | Ask for a fresh line. |
+| `No one from this network is online right now. …` | None of the members listed on it are reachable. | Ask them to open their laptop, then run the same command again. |
+| `The name "sam" is already used in this network. …` | Another member has that name. | Use the name it suggests, or another `--name`. |
+| `You are in "<team>". Leave it first: lightbulb leave` | This computer is already in a team. | `lightbulb leave`, then join. |
+| `That name has characters Lightbulb cannot show. …` | The name or computer name has control characters. | Use a plain name. |
+
+## Reporting an issue
+
+Run `lightbulb version` and `lightbulb doctor`. The log is `~/.lightbulb/connect/daemon.log`; it never holds message text. Never share `identity.key`. For anything else, see the [lightbulb repository](https://github.com/TheLightbulbCompany/cli). To report a vulnerability, see [SECURITY.md](https://github.com/TheLightbulbCompany/cli/blob/main/SECURITY.md).

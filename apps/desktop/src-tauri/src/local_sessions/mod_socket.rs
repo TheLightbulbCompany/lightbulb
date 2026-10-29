@@ -35,7 +35,7 @@ pub(super) enum Band {
 
 /// Every stored mirror with its key. A share or a stop the relay loop has not applied yet
 /// already counts, so an answer is never the moment before the person's own press.
-fn mirrors(scope: &Path) -> Vec<(String, Mirror)> {
+pub(super) fn mirrors(scope: &Path) -> Vec<(String, Mirror)> {
     fs::read_dir(scope)
         .into_iter()
         .flatten()

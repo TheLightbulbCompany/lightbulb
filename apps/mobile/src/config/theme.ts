@@ -258,21 +258,29 @@ export const colors = {
  * Pass these straight to `fontFamily`. If the font download fails, RN falls
  * back to the system font for unknown family names — never a crash.
  *
- * §03: Source Sans 3 for everything that is not prose (labels, buttons, tabs,
- * inputs; 400/500/600, never below 400), Lora for prose and display, platform
- * mono for code only.
+ * Mirrors the web (`globals.css`): Satoshi carries UI chrome, display type and
+ * the wordmark; Inter is reserved for reading surfaces (message bodies) so
+ * controls and message copy stay visually distinct; platform mono for code.
+ * The `lora*` keys are compatibility aliases onto Satoshi, exactly as the web
+ * keeps `--font-lora-serif` pointing at `--font-sans`.
  */
 export const fonts = {
-  sans: "SourceSans3_400Regular",
-  sansMedium: "SourceSans3_500Medium",
-  sansSemiBold: "SourceSans3_600SemiBold",
-  lora: "Lora_400Regular",
-  /** Display headings and the wordmark (§03: Lora Medium, never 700). */
-  loraMedium: "Lora_500Medium",
-  /** Prose italic — taglines, agent vibe lines. */
-  loraItalic: "Lora_400Regular_Italic",
+  sans: "Satoshi-Regular",
+  sansMedium: "Satoshi-Medium",
+  // ponytail: Satoshi ships no static 600 and the licence forbids
+  // distributing an instance cut from the variable font, so semibold uses the
+  // official Bold. Swap when Fontshare publishes a 600 face.
+  sansSemiBold: "Satoshi-Bold",
+  lora: "Satoshi-Regular",
+  /** Display headings and the wordmark (web: Satoshi 500). */
+  loraMedium: "Satoshi-Medium",
+  /** Italic — taglines, agent vibe lines. */
+  loraItalic: "Satoshi-Italic",
   /** Agent monograms. */
-  loraBoldItalic: "Lora_700Bold_Italic",
+  loraBoldItalic: "Satoshi-BoldItalic",
+  /** Reading text — message bodies (web: `--font-body`). */
+  body: "Inter_400Regular",
+  bodySemiBold: "Inter_600SemiBold",
   /** Platform monospace — code only. */
   mono: Platform.select({ ios: "Menlo", default: "monospace" }) as string,
 } as const;
@@ -322,7 +330,7 @@ export const type = {
     lineHeight: 14,
     color: colors.mute,
   },
-  /** Small uppercase labels — Source Sans 3 500, 10px, tracked 0.19em (§03/§06). */
+  /** Small uppercase labels — Satoshi 500, 10px, tracked 0.19em (§03/§06). */
   overline: {
     fontFamily: fonts.sansMedium,
     fontSize: 10,

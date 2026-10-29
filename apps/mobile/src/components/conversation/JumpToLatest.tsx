@@ -1,4 +1,4 @@
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../ui/SymbolView";
 import { StyleSheet, Text, View } from "react-native";
 
 import { fonts, spacing, type ChatPalette } from "../../config/theme";

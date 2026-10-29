@@ -29,11 +29,10 @@ Environment (required for live requests; not needed for --dry-run):
   PAPERCLIP_AGENT_ID is additionally required for `checkout`.
   PAPERCLIP_RUN_ID is optional: it exists only on heartbeat-wake runs, and the
   X-Paperclip-Run-Id header is sent only when it is set. Webchat/interactive
-  sessions have no run id — the header is omitted; never invent one. (In a
-  room turn the header also carries a Paperclip run the bridge attached to
-  this conversation for that issue.) A create/update/checkout from a room
-  turn records the issue as this conversation's: Paperclip's wakes for it
-  come back to this conversation.
+  sessions have no run id — the header is omitted; never invent one.
+  A create/subtask from a room turn appends a `## From` section to the
+  description (the room id, and a link to the message that asked), so the
+  task's own run knows which room to report back to.
 
 Subcommands (markdown / freeform text is read from stdin where noted):
 
@@ -51,8 +50,7 @@ Subcommands (markdown / freeform text is read from stdin where noted):
       STATUS: backlog|todo|in_progress|in_review|done|blocked|cancelled
       --blocked-by replaces the blocker set; pass --blocked-by "" to clear it.
       --assignee + --status todo STARTS work: it dispatches a heartbeat run
-      for the assignee; for an issue a room conversation owns, that run joins
-      the conversation (see the skill's "Webchat and interactive sessions").
+      for the assignee, in the issue's own session.
 
   monitor <issueId> --at ISO8601 [--service NAME] [--notes TEXT]
           [--timeout-at ISO8601] [--max-attempts N] [--recovery POLICY]
@@ -106,8 +104,8 @@ Subcommands (markdown / freeform text is read from stdin where noted):
               projectId?, assigneeUserId? }
       Reads an optional markdown description from stdin.
       STATUS: backlog|todo|in_progress|in_review|done|blocked|cancelled
-      With --assignee and no --status, sends an EXPLICIT backlog (see
-      "Assigning work" at the bottom) — pass --status todo to start it now.
+      With --assignee and no --status, sends todo, so it starts (see
+      "Assigning work" at the bottom) — pass --status backlog to park it.
 
   create <companyId> --title T [--goal <id>] [--status S]
          [--priority P] [--assignee <agentId>] [--blocked-by "id1,id2"]
@@ -120,8 +118,8 @@ Subcommands (markdown / freeform text is read from stdin where noted):
               projectId?, assigneeUserId? }
       Reads an optional markdown description from stdin.
       STATUS: backlog|todo|in_progress|in_review|done|blocked|cancelled
-      With --assignee and no --status, sends an EXPLICIT backlog (see
-      "Assigning work" at the bottom) — pass --status todo to start it now.
+      With --assignee and no --status, sends todo, so it starts (see
+      "Assigning work" at the bottom) — pass --status backlog to park it.
 
   confirm <issueId> --prompt P [--plan] [--title T] [--idempotency-key K]
           [--continuation none|wake_assignee|wake_assignee_on_accept]
@@ -212,13 +210,11 @@ Subcommands (markdown / freeform text is read from stdin where noted):
 Assigning work (create / subtask):
   An issue that has an assignee AND a status other than `backlog` DISPATCHES
   AN AGENT RUN the moment it is created, and a 30s server-side reconciler
-  re-dispatches it until it escalates to `blocked`. Paperclip's own create
-  default is not neutral about this: omit `status` while passing an assignee
-  and the server silently promotes the issue to `todo` — i.e. it starts.
-  So this helper sends an explicit `backlog` for `--assignee` + no `--status`.
-  Filing work to someone and starting it right now are different acts, and the
-  second one spends money — ask for it with `--status todo`, never by omission.
-  Creates with no assignee are unchanged: `status` stays omitted.
+  re-dispatches it until it escalates to `blocked`. Like Paperclip's own
+  create default, this helper sends `todo` for `--assignee` + no `--status`:
+  assigned work starts. To file assigned work for later without starting it,
+  pass `--status backlog` explicitly.
+  Creates with no assignee are unchanged: `status` stays omitted (backlog).
   `--assignee-user` files a task for a person (it shows in their Inbox); it
   never starts a run.
 
@@ -239,13 +235,13 @@ Examples:
   Review the plan document before accepting.
   MD
 
-  # File assigned work WITHOUT starting it (the default):
+  # Assign AND start it now (the default for an assigned create):
+  scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "Hotfix checkout 500" \
+    --assignee "<agentId>"
+
+  # Park assigned work for later WITHOUT starting it (must be explicit):
   scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "Ship pricing page" \
     --assignee "<agentId>" --status backlog
-
-  # Assign AND start it right now (deliberate — this spends money):
-  scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "Hotfix checkout 500" \
-    --assignee "<agentId>" --status todo
 EOF
 }
 
@@ -290,27 +286,10 @@ require_valid_status() {
 #
 # Echoes the status to put in a create/subtask body ("" = omit the field).
 #
-# WHY this exists: Paperclip's create default is NOT neutral. An issue created
-# with an assignee and NO status is silently promoted to `todo`
-# (`resolveCreateIssueStatusDefault`, packages/shared/src/validators/issue.ts),
-# and assignee + any status other than `backlog` is exactly the pair that
-# dispatches an agent run — `queueIssueAssignmentWakeup` returns early ONLY for
-# "no assignee" or "backlog". Worse, the run isn't one-shot: a 30s reconciler
-# (`reconcileStrandedAssignedIssues`) re-picks assigned todo/in_progress issues
-# with no live execution path and re-dispatches them until they escalate to
-# `blocked`. Filing three assigned tasks in one heartbeat therefore fires three
-# unasked-for runs and then keeps firing them.
-#
-# So when an assignee is given and no status is, send an EXPLICIT `backlog`
-# rather than letting the server infer. The two mistakes are not symmetric:
-# a wrongly-backlogged task sits on the board until someone moves it, while a
-# wrongly-started one spends the owner's money and re-spends it every 30s.
-# "Assign this and start it now" stays fully available — it just has to be
-# asked for (`--status todo`) instead of falling out of an omission.
-#
-# Unassigned creates keep omitting `status`: the server's default there is
-# `backlog` too, so there is nothing to fix and no reason to freeze someone
-# else's default into this script.
+# Stock Paperclip's default (`resolveCreateIssueStatusDefault`): an assigned
+# create with no status is `todo`, so the assignee starts on it; an unassigned
+# one is `backlog`. This sends that `todo` EXPLICITLY rather than omitting it.
+# `--status backlog` remains the way to file assigned work for later.
 resolve_create_status() {
   local cmd="$1" status="$2" assignee="$3"
 
@@ -321,9 +300,7 @@ resolve_create_status() {
   fi
 
   if [[ -n "$assignee" ]]; then
-    printf '%s: --assignee with no --status; filing to backlog. Pass --status todo to dispatch a run now.\n' \
-      "$cmd" >&2
-    printf 'backlog'
+    printf 'todo'
     return 0
   fi
 
@@ -360,39 +337,13 @@ send() {
   require_live_env
   require_command curl
 
-  if in_room_conversation && [[ "$has_payload" == "1" && "$method" == "POST" && "$url" =~ /api/companies/[^/?]+/issues$ ]]; then
-    local wake_status
-    wake_status="$(jq -r 'if (.assigneeAgentId // "") != "" and (.status // "todo") != "backlog"
-                          then (.status // "todo") else empty end' <<<"$payload")"
-    if [[ -n "$wake_status" ]]; then
-      create_bound_then_start "$url" "$payload" "$wake_status"
-      return 0
-    fi
-  fi
-
-  local bound_id="" bound_new=0
-  if in_room_conversation && [[ ("$method" == "PATCH" && "$url" =~ /api/issues/[^/?]+$)
-                                || ("$method" == "POST" && "$url" =~ /api/issues/[^/?]+/checkout$) ]]; then
-    # Bind BEFORE the request that can wake the assignee, so Paperclip's wake
-    # can never reach the bridge ahead of the binding. Undone if the write fails.
-    bound_id="$(issue_uuid "$url")"
-    if [[ -n "$bound_id" ]]; then
-      [[ -e "$(binding_path "$bound_id")" ]] || bound_new=1
-      write_binding "$bound_id"
-    fi
-  fi
-
   if [[ "$has_payload" == "1" ]]; then
     http_call "$method" "$url" "$payload"
   else
     http_call "$method" "$url"
   fi
-  if ! http_ok; then
-    [[ "$bound_new" == "1" ]] && rm -f "$(binding_path "$bound_id")"
-    fail_http "$method" "$url"
-  fi
+  http_ok || fail_http "$method" "$url"
 
-  [[ "$method" == "GET" ]] || record_issue_conversation "$method" "$url" "$HTTP_RESPONSE"
   cat "$HTTP_RESPONSE"
   printf '\n'
   rm -f "$HTTP_RESPONSE"
@@ -403,15 +354,12 @@ send() {
 #
 # X-Paperclip-Run-Id attributes the write to the current heartbeat run. A
 # run id exists only on heartbeat-wake runs; webchat/interactive sessions
-# have none, so the header is omitted entirely (never fabricate one) --
-# unless the Lightbulb bridge attached Paperclip's run for this issue to
-# this conversation (attached_run_id).
+# have none, so the header is omitted entirely (never fabricate one).
 HTTP_STATUS=""
 HTTP_RESPONSE=""
 http_call() {
   local method="$1" url="$2"
   local run_id="${PAPERCLIP_RUN_ID:-}"
-  [[ -n "$run_id" ]] || run_id="$(attached_run_id "$url")"
   local run_id_header=()
   if [[ -n "$run_id" ]]; then
     run_id_header=(-H "X-Paperclip-Run-Id: $run_id")
@@ -448,134 +396,38 @@ fail_http() {
   exit 1
 }
 
-# The Lightbulb bridge runs both room turns and Paperclip's runs. When a room
-# conversation creates, updates or checks out an issue, this records that the
-# issue belongs to that conversation, and the bridge lands Paperclip's later
-# wakes for it there instead of in a fresh session that redoes the work. Only
-# a room conversation records; an issue that goes done/cancelled drops its
-# record. The room is LIGHTBULB_ROOM_SESSION_KEY when the bridge set it (a call,
-# or a turn that ran beside its busy room in its own session), else
-# HERMES_SESSION_KEY.
-#
-# The record must exist BEFORE any write that can wake the assignee, or the
-# wake can reach the bridge first and start a separate session. So an issue
-# PATCH or checkout binds before it is sent, and an assigned non-backlog
-# create is split: create as `backlog` (Paperclip never wakes for backlog),
-# bind the returned id, then PATCH to the asked-for status.
+# A task filed from a room runs in its own Paperclip session, not in the room
+# (owner ruling 2026-10-18), so its description says where it came from: the
+# task's run reports done / needs-you to that room with lightbulb-post.sh
+# --room. The room is LIGHTBULB_ROOM_SESSION_KEY when the bridge set it (a
+# call, or a turn that ran beside its busy room in its own session), else
+# HERMES_SESSION_KEY; LIGHTBULB_ROOM_MESSAGE_ID is the message that started
+# the turn, when the bridge knows it.
 ROOM_SESSION_RE='^agent:[^:]+:lightbulb:channel:[0-9a-f-]{36}$'
-ISSUE_ID_RE='^[A-Za-z0-9-]{1,128}$'
-UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
 room_session_key() {
   printf '%s' "${LIGHTBULB_ROOM_SESSION_KEY:-${HERMES_SESSION_KEY:-}}"
 }
 
-in_room_conversation() {
-  [[ -n "${HERMES_HOME:-}" && "$(room_session_key)" =~ $ROOM_SESSION_RE ]]
-}
-
-binding_path() {
-  printf '%s/lightbulb-issue-bindings/%s.json' "$HERMES_HOME" "$1"
-}
-
-# write_binding ID: `boundAt` (epoch seconds, refreshed on every write) is
-# what the bridge ages the binding by -- a file's mtime is reset by every
-# profile restore.
-write_binding() {
-  local path
-  path="$(binding_path "$1")"
-  if ! { mkdir -p "${path%/*}" \
-         && jq -nc --arg key "$(room_session_key)" --arg origin "${HERMES_SESSION_KEY:-}" \
-              --argjson at "$(date +%s)" \
-              '{sessionKey: $key, boundAt: $at} + (if $origin != $key then {origin: $origin} else {} end)' \
-              >"$path"; }; then
-    printf 'note: could not record this issue for this conversation\n' >&2
-  fi
-  return 0
-}
-
-# issue_uuid URL: the issue's id for an /api/issues/<id>... URL. An identifier
-# (ISOA-680) is resolved with a GET, which never wakes anyone; empty if that
-# fails (the write then goes ahead unbound before it, bound after it).
-issue_uuid() {
-  local id="${1#*/api/issues/}"
-  id="${id%%/*}"
-  id="${id%%\?*}"
-  if [[ "$id" =~ $UUID_RE ]]; then
-    printf '%s' "$id"
+# with_from_section DESCRIPTION: DESCRIPTION plus a `## From` section when this
+# is a room turn and DESCRIPTION has none yet (never appended twice).
+with_from_section() {
+  local description="$1" key room message from
+  key="$(room_session_key)"
+  if [[ ! "$key" =~ $ROOM_SESSION_RE ]] || grep -qx '## From' <<<"$description"; then
+    printf '%s' "$description"
     return 0
   fi
-  [[ "$id" =~ $ISSUE_ID_RE ]] || return 0
-  http_call GET "$(api_base)/issues/$id"
-  if http_ok; then
-    jq -r '.id // empty' <"$HTTP_RESPONSE" 2>/dev/null | grep -E "$UUID_RE" || true
+  room="${key##*:}"
+  from="## From"$'\n'"Filed from room \`$room\`."
+  message="${LIGHTBULB_ROOM_MESSAGE_ID:-}"
+  if [[ "$message" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
+    from+=" The message that asked: /chat?panel=chat&room=$room&message=$message"
   fi
-  rm -f "$HTTP_RESPONSE"
-  return 0
-}
-
-# create_bound_then_start URL PAYLOAD STATUS: the split create described above.
-create_bound_then_start() {
-  local url="$1" payload="$2" wake_status="$3" id
-  http_call POST "$url" "$(jq -c '.status = "backlog"' <<<"$payload")"
-  http_ok || fail_http POST "$url"
-  id="$(jq -r '.id // empty' <"$HTTP_RESPONSE" 2>/dev/null || true)"
-  if [[ ! "$id" =~ $ISSUE_ID_RE ]]; then
-    printf 'create: Paperclip returned no issue id; the issue was filed as backlog.\n' >&2
-    cat "$HTTP_RESPONSE"
-    printf '\n'
-    rm -f "$HTTP_RESPONSE"
-    exit 1
+  if [[ "${LIGHTBULB_ROOM_REQUESTER_ID:-}" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
+    from+=" Asked by user \`$LIGHTBULB_ROOM_REQUESTER_ID\`."
   fi
-  rm -f "$HTTP_RESPONSE"
-  write_binding "$id"
-  local patch_url
-  patch_url="$(api_base)/issues/$id"
-  http_call PATCH "$patch_url" "$(jq -nc --arg status "$wake_status" '{status: $status}')"
-  if ! http_ok; then
-    rm -f "$(binding_path "$id")"
-    printf 'create: issue %s was filed as backlog, but moving it to %s failed.\n' "$id" "$wake_status" >&2
-    fail_http PATCH "$patch_url"
-  fi
-  record_issue_conversation PATCH "$patch_url" "$HTTP_RESPONSE"
-  cat "$HTTP_RESPONSE"
-  printf '\n'
-  rm -f "$HTTP_RESPONSE"
-}
-
-# After a successful write: refresh the binding from the response's own id (a
-# create/PATCH/checkout answers with the issue), or drop it when the issue
-# went done/cancelled. Never fails the write.
-record_issue_conversation() {
-  local method="$1" url="$2" response_file="$3"
-  in_room_conversation || return 0
-  [[ ("$method" == "POST" && "$url" =~ /api/companies/[^/?]+/issues$)
-     || ("$method" == "PATCH" && "$url" =~ /api/issues/[^/?]+$)
-     || ("$method" == "POST" && "$url" =~ /api/issues/[^/?]+/checkout$) ]] || return 0
-  local id status
-  id="$(jq -r '.id // empty' <"$response_file" 2>/dev/null)" || return 0
-  status="$(jq -r '.status // empty' <"$response_file" 2>/dev/null)" || return 0
-  [[ "$id" =~ $ISSUE_ID_RE ]] || return 0
-  if [[ "$status" == "done" || "$status" == "cancelled" ]]; then
-    rm -f "$(binding_path "$id")"
-  else
-    write_binding "$id"
-  fi
-  return 0
-}
-
-# attached_run_id URL: the run id the bridge published for the issue this URL
-# addresses (/api/issues/<id>/...) while it holds Paperclip's run for that
-# issue in this agent's room conversation; empty otherwise.
-attached_run_id() {
-  local id="${1#*/api/issues/}" run=""
-  [[ -n "${HERMES_HOME:-}" && "$id" != "$1" ]] || return 0
-  id="${id%%/*}"
-  id="${id%%\?*}"
-  [[ "$id" =~ $ISSUE_ID_RE && -r "$HERMES_HOME/.lightbulb-turn/paperclip-run.$id" ]] || return 0
-  run="$(<"$HERMES_HOME/.lightbulb-turn/paperclip-run.$id")"
-  [[ "$run" =~ ^[A-Za-z0-9_-]{1,128}$ ]] && printf '%s' "$run"
-  return 0
+  printf '%s' "${description:+$description$'\n\n'}$from"
 }
 
 # Read-only commands print their fully encoded URL in --dry-run mode. The
@@ -682,6 +534,14 @@ cmd_update() {
          end)
     '
   )"
+  # A room turn that starts an existing task gives it the room to report back to, as a create does.
+  if [[ "$dry_run" != "1" && ( "$status" == "todo" || "$status" == "in_progress" || -n "$assignee" ) \
+        && "$(room_session_key)" =~ $ROOM_SESSION_RE ]]; then
+    local description from
+    description="$(send GET "$(api_base)/issues/$issue_id" | jq -r '.description // ""')"
+    from="$(with_from_section "$description")"
+    [[ "$from" == "$description" ]] || payload="$(jq -c --arg d "$from" '. + {description: $d}' <<<"$payload")"
+  fi
   send PATCH "$(api_base)/issues/$issue_id" "$payload"
 }
 
@@ -886,7 +746,7 @@ cmd_subtask() {
   [[ -n "$parent" ]] || printf 'subtask: warning — no --parent set; subtasks should set parentId.\n' >&2
   [[ -n "$goal" ]] || printf 'subtask: warning — no --goal set; subtasks should set goalId.\n' >&2
 
-  # A person's task never starts a run, so only an agent assignee forces backlog.
+  # A person's task never starts a run, so it defaults to todo.
   if [[ -n "$assignee_user" && -z "$assignee" ]]; then
     status="${status:-todo}"
   else
@@ -894,7 +754,7 @@ cmd_subtask() {
   fi
 
   local description
-  description="$(read_stdin)"
+  description="$(with_from_section "$(read_stdin)")"
 
   local payload
   payload="$(
@@ -956,7 +816,7 @@ cmd_create() {
 
   [[ -n "$title" ]] || die 'create: --title is required.'
 
-  # A person's task never starts a run, so only an agent assignee forces backlog.
+  # A person's task never starts a run, so it defaults to todo.
   if [[ -n "$assignee_user" && -z "$assignee" ]]; then
     status="${status:-todo}"
   else
@@ -964,7 +824,7 @@ cmd_create() {
   fi
 
   local description
-  description="$(read_stdin)"
+  description="$(with_from_section "$(read_stdin)")"
 
   local payload
   payload="$(

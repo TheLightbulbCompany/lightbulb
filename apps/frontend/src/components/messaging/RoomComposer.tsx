@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, RotateCcw, Send, SquareCode, Strikethrough, X } from "lucide-react";
-import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, sessionMatches, sessionTitle, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate } from "@lightbulb/shared";
+import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, sessionMatches, sessionTitle, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate, sessionAgentName } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
@@ -227,7 +227,7 @@ function ComposerAttempt({
     ? sessionTargets.filter(({ candidate, ownerName }) => {
         const needle = trigger.query.toLocaleLowerCase();
         return candidate.handle.toLocaleLowerCase().includes(needle)
-          || (candidate.session.provider === "claude" ? "claude code" : "codex").includes(needle)
+          || sessionAgentName(candidate.session.provider).toLowerCase().includes(needle)
           || sessionMatches(candidate.session, needle, ownerName);
       }).map((option) => ({ kind: "session" as const, option }))
     : [];
@@ -549,7 +549,7 @@ function ComposerAttempt({
           <span className="text-muted-foreground text-ui">{entry.member.mentionHandle ? `@${entry.member.mentionHandle}` : "Person"}</span></span>
       </> : <>
         <span className="flex size-8 items-center justify-center rounded-md bg-muted" aria-hidden="true"><SessionToolIcon provider={entry.option.candidate.session.provider} /></span>
-        <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={sessionTitle(entry.option.candidate.session)}>{entry.option.candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {sessionTitle(entry.option.candidate.session)}</span>
+        <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={sessionTitle(entry.option.candidate.session)}>{sessionAgentName(entry.option.candidate.session.provider)} · {sessionTitle(entry.option.candidate.session)}</span>
           <span className="block truncate text-muted-foreground text-ui">{entry.option.ownerName}{entry.option.candidate.collided ? ` · ${entry.option.candidate.session.cwdName ? `${entry.option.candidate.session.cwdName} · ` : ""}${entry.option.candidate.session.sessionId.slice(0, 8)}` : ""}</span></span>
       </>} />}
     {emojiOpen && <TypeaheadList id={`${fieldId}-targets`} label="Insert an emoji" items={emojiOptions} activeIndex={activeIndex}

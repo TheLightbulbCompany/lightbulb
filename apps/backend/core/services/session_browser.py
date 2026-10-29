@@ -161,13 +161,20 @@ async def set_place(owner: str, session_id: str, where: str) -> dict:
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "The session changed while switching; try again.", retryable=True)
 
 
-async def place_from_mac(owner: str, user: str, device: str, session_id: str, where: str) -> dict:
-    """The Mac's own `lightbulb` MCP: the session the Mac proved is calling, shared and running."""
+async def place_by_native(owner: str, user: str, native_id: str, where: str) -> dict:
+    """`use_browser` from the engine's `lightbulb` MCP: the person's own shared, running session whose
+    native conversation (a Claude session id, a Codex thread id) is the calling one."""
+    ids = [row["sessionId"] for row in await repo.list_user_sessions(owner, user)]
+    # ponytail: reads every session of the person; a nativeConversationId index if anyone has thousands
+    rows = await repo.get_sessions(owner, ids) if ids else []
+    match = next((r for r in rows if r and r.get("nativeConversationId") == native_id and live_shared(r)), None)
+    if match is None:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", NOT_SHARED)
     try:
-        await shared_row(owner, user, device, session_id)
-    except DesktopError:
+        await local_sessions._enrolled(owner, user, match["deviceId"])  # sharing still on for that Mac
+    except ApiProblem:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", NOT_SHARED) from None
-    return await set_place(owner, session_id, where)
+    return await set_place(owner, match["sessionId"], where)
 
 
 async def _mark_open(owner: str, human: str, session_id: str, where: str | None, *, announce: bool) -> None:

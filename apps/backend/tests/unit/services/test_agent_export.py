@@ -1899,6 +1899,8 @@ def test_download_s3_profile_excludes_runtime_and_secret_keys(s3_hermes_bucket, 
         "memories/USER.md": b"Owner runs a bakery",
         "memories/MEMORY.md": b"agent notes",
         "memories/user_profile_overflow.txt": b"more owner context",
+        # A retired issue -> room binding: the seller's own room and issue ids.
+        "lightbulb-issue-bindings/i-1.json": b'{"sessionKey": "agent:a:lightbulb:channel:x"}',
         # Hermes's session store: every room/mail/call/Paperclip transcript.
         "state.db": b"SQLite format 3",
         "state.db-wal": b"wal",

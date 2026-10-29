@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     # CDK service-stack environment block per environment.
     PUBLIC_API_BASE: str = "http://localhost:8000"
 
+    # OpenAI's plugin portal token, served at /.well-known/openai-apps-challenge to prove we own the
+    # MCP host. Public by design. Empty: the path 404s. CDK sets it from OPENAI_APPS_CHALLENGE_TOKEN_{ENV}.
+    OPENAI_APPS_CHALLENGE_TOKEN: str = ""
+
     @property
     def frontend_host(self) -> str:
         """Hostname FRONTEND_URL is served from (e.g. ``dev.isol8.co``)."""
@@ -196,6 +200,8 @@ class Settings(BaseSettings):
     # confirm the header is arriving, then flip enforcement on. Enforcement is a
     # no-op until WS_ENFORCE_INTERNAL_SECRET is true AND a secret is configured.
     WS_INTERNAL_SECRET: str = ""
+    # Seeds the Ed25519 key that signs lightbulb login proofs (network_proof).
+    NETWORK_PROOF_KEY: str = ""
     WS_ENFORCE_INTERNAL_SECRET: bool = False
 
     # OAuth tables (set by CDK)
@@ -376,6 +382,15 @@ class Settings(BaseSettings):
     # The env's shared AgentCore Memory (CDK ContainerStack.workspaceMemory). Empty = no workspace
     # memory: no per-owner grant, no AGENTCORE_MEMORY_ID in the runtime env, no wipe.
     AGENTCORE_MEMORY_ID: str = ""
+    # The env's uploaded-sessions AgentCore Memory (CDK ContainerStack.sessionsMemory): the evaluator's
+    # episodes and reflections, apart from the workspace memory. Empty = no evaluator.
+    AGENTCORE_SESSIONS_MEMORY_ID: str = ""
+    # Haiku-class model that splits a recall question into the facts it needs (memory_models.expand);
+    # the same id container-stack.ts gives AgentCore extraction (MEMORY_EXTRACT_MODEL).
+    MEMORY_EXPAND_MODEL: str = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    # The env's VPC-mode workspace browser (CDK: ContainerStack.workspaceBrowser), which leaves
+    # from the NAT's fixed address. Empty (local, tests) = AWS's built-in browser.
+    AGENTCORE_BROWSER_ID: str = ""
 
     # Provisioned agent email (set by CDK ServiceStack). This is the BASE
     # domain (e.g. "thelightbulb.company" in prod) — each company gets its own
@@ -409,23 +424,15 @@ class Settings(BaseSettings):
     STRIPE_COMPANY_OAUTH_REDIRECT_URL: str = ""
     # Connect platform client id (ca_…). Public, not a secret.
     STRIPE_CONNECT_CLIENT_ID: str = ""
+    # The platform's publishable key (pk_…). Public, not a secret: Connect
+    # embedded onboarding initialises with it. Empty ⇒ the Stripe card falls
+    # back to the hosted Account Link.
+    STRIPE_PUBLISHABLE_KEY: str = ""
 
-    # Stripe's recommended Provisioning onboarding path: request the Accounts v2
-    # `developer` configuration with the `projects` capability on the company
-    # account (guide, "Create the connected account").
-    #
-    # DEFAULT FALSE, deliberately. Probed 2026-08-29: `configuration.developer`
-    # is an "Unknown field" for our platform under 2026-02-25.clover,
-    # 2026-08-26.dahlia AND unsafe-development, in both test and live mode, so
-    # sending it today breaks every company-account create. It is also not
-    # load-bearing — eligibility already returns is_eligible on an account
-    # without it. Flip to True once Stripe enables the field for our platform
-    # and names the Accounts API version to pin below.
-    STRIPE_PROJECTS_DEVELOPER_CONFIG: bool = False
     # The Accounts v2 API version for the account/account-link calls. The guide
     # pins them with `Stripe-Version: {{ACCOUNTS_V2_VERSION}}` and says to
-    # confirm it during preview onboarding. Empty ⇒ the SDK's own default,
-    # which is exactly today's behaviour.
+    # confirm it during preview onboarding. Empty ⇒ the provisioning preview
+    # (`company_stripe.PROVISIONING_VERSION`).
     STRIPE_ACCOUNTS_V2_VERSION: str = ""
 
     # Which Provider catalog partition this environment reads and writes:
@@ -437,14 +444,12 @@ class Settings(BaseSettings):
     # doesn't mean 'no real charges.'"
     STRIPE_PROJECTS_CATALOG: str = "prod"
 
-    # Whether the Stripe Projects provisioning rail is offered at all. OFF
-    # until Stripe ships delegated connected-account creation + hosted KYC
-    # (their words, 2026-09-03): until then every state-changing
-    # /v2/provisioning call returns 500 and an owner who approves a workflow
-    # lands in a permanent requires_review. While off, `start()` refuses and
-    # the Connect door + the Accounts / Domain & Site panels are hidden. The
-    # v1 Money surface (company_stripe_reads) does not depend on this.
-    STRIPE_PROVISIONING_ENABLED: bool = False
+    # Stripe Link Agent Wallet (agent purchases). Unconfigured (any of the three empty):
+    # every route 404s and the UI hides. CLIENT_ID/SECRET come from Link's OAuth client
+    # application; PUBLISHABLE_KEY is the Stripe pk that Link's /auth and /auth/token require.
+    LINK_CLIENT_ID: str = ""
+    LINK_CLIENT_SECRET: str = ""
+    LINK_PUBLISHABLE_KEY: str = ""
 
     # Marketplace webhook signing secrets. TWO Stripe endpoint registrations
     # deliver to POST /webhooks/stripe-marketplace, each with its own secret:

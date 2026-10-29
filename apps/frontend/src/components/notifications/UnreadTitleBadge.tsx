@@ -3,8 +3,9 @@
 import { useEffect, useRef } from "react";
 
 /**
- * Prefixes the browser tab title with the unread count while it's > 0. No
- * UI — the badge is text in `document.title`.
+ * Prefixes the browser tab title with the count while it's > 0: unread
+ * conversations plus your own sessions needing you (`sessionsNeedingYou`).
+ * No UI — the badge is text in `document.title`.
  */
 export function UnreadTitleBadge({ unread }: { unread: number }): null {
   const base = useRef("");

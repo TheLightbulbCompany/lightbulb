@@ -927,9 +927,9 @@ Terminal states: `done`, `cancelled`
 | no `status`, **with** assignee | **`todo`** | **Assignee is woken — a run starts immediately.** |
 | explicit `status` | as given | As given. |
 
-An assigned issue in any status other than `backlog` dispatches an agent run on create, and a server-side reconciler re-dispatches assigned `todo`/`in_progress` issues that have no live execution path roughly every 30 seconds until they escalate to `blocked`. So an omitted `status` on an assigned create is a decision to spend the owner's money, repeatedly.
+An assigned issue in any status other than `backlog` dispatches an agent run on create, and a server-side reconciler re-dispatches assigned `todo`/`in_progress` issues that have no live execution path roughly every 30 seconds until they escalate to `blocked`. So an assigned create starts work: that is intended for work someone asked for. To file assigned work for later, send `backlog`.
 
-**Always send `status` explicitly when the body carries an assignee.** `/app/skills/paperclip/scripts/paperclip-api.sh` enforces this: `create` / `subtask` with `--assignee` and no `--status` send an explicit `backlog`.
+`/app/skills/paperclip/scripts/paperclip-api.sh` `create` / `subtask` with `--assignee` and no `--status` send an explicit `todo`, the stock default.
 - Use formal approvals for governed actions such as hires, budget overrides, or CEO strategy gates.
 - Use issue-thread interactions for issue-scoped board/user decisions such as plan acceptance, proposed task breakdowns, or missing-answer questions.
 - Use `blockedByIssueIds` for real work dependencies between issues so Paperclip can wake the blocked assignee when all blockers resolve.

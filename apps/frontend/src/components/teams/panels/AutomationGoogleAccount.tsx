@@ -118,7 +118,7 @@ export function AutomationGoogleAccount({
           <>
             {" "}
             and will read <span className="font-medium">{account}</span>&apos;s
-            Gmail, Calendar and Drive.
+            Calendar events and Drive files.
           </>
         ) : (
           " and will read the account you pick."

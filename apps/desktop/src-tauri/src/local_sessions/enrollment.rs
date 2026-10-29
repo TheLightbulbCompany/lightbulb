@@ -136,6 +136,15 @@ pub struct Controller {
     /// Set once `/desktop/pair` answered this launch; until then every new
     /// sign-in token re-asks it for the relay door (`refresh_relay`).
     relay_checked: AtomicBool,
+    /// `serve.lock`, once this process owns the service (`serves`).
+    service: Mutex<Option<std::fs::File>>,
+    /// How `prepare` reads this Mac's key. None: the window's `load_or_generate`.
+    load_identity: Option<fn() -> Result<crate::keychain::DeviceIdentity>>,
+}
+
+/// `serve`'s key read: load only, never generate (see `keychain::load`).
+fn load_mac_identity() -> Result<crate::keychain::DeviceIdentity> {
+    crate::keychain::load(crate::keychain::KeychainSlot::Mac, crate::KEYCHAIN_SERVICE)
 }
 
 /// The enrollment captured the relay door (`gatewayUrl`) once, at enable time,
@@ -144,13 +153,10 @@ pub struct Controller {
 /// -- the same idempotent re-pair the switches path sends, with the switches
 /// last granted -- and fall back to the last pair response on disk, so an
 /// offline launch keeps what it had. The flag says `/desktop/pair` answered.
-async fn current_gateway_url(app: &tauri::AppHandle, ask: bool) -> Option<(String, bool)> {
-    let data = app.path().app_data_dir().ok()?;
-    let pair = crate::pair_state::load(&data)?;
-    let jwt = app
-        .try_state::<crate::AuthState>()
-        .and_then(|s| s.current_jwt.read().ok().map(|j| j.clone()))
-        .unwrap_or_default();
+/// `data` is the app data dir; an empty `jwt` (no window, or no sign-in yet) only reads the
+/// persisted pair state.
+async fn current_gateway_url(data: &Path, jwt: &str, ask: bool) -> Option<(String, bool)> {
+    let pair = crate::pair_state::load(data)?;
     // No recorded switches means the switches path re-pairs (and rewrites
     // pair_state) on the next token; never re-pair with an implied grant here.
     if ask && !jwt.is_empty() && pair.paired_permissions.is_some() {
@@ -164,13 +170,13 @@ async fn current_gateway_url(app: &tauri::AppHandle, ask: bool) -> Option<(Strin
             };
             let asked = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
-                crate::pair_client::pair(crate::LIGHTBULB_API_BASE, &jwt, &request),
+                crate::pair_client::pair(crate::LIGHTBULB_API_BASE, jwt, &request),
             )
             .await;
             match asked {
                 Ok(Ok(resp)) if resp.device_id_mac == pair.device_id_mac && resp.device_id_cli == pair.device_id_cli => {
                     let fresh = crate::pair_state::PairState::from_pair_response(&resp, &pair.display_name, pair.paired_permissions.clone());
-                    let _ = crate::pair_state::save(&data, &fresh);
+                    let _ = crate::pair_state::save(data, &fresh);
                     return Some((fresh.gateway_url, true));
                 }
                 Ok(Ok(_)) => transport::relay_log("re-pair named other devices; relay URL kept"),
@@ -194,9 +200,9 @@ fn adopt_gateway_url(path: &Path, url: &str) -> Result<bool> {
 
 impl Controller {
     /// Caller holds `mutation`. True when the enrollment's relay door changed.
-    async fn refresh_gateway_url(&self, app: &tauri::AppHandle, path: &Path) -> bool {
+    async fn refresh_gateway_url(&self, data: &Path, jwt: &str, path: &Path) -> bool {
         let ask = !self.relay_checked.load(Ordering::SeqCst);
-        let Some((url, answered)) = current_gateway_url(app, ask).await else {
+        let Some((url, answered)) = current_gateway_url(data, jwt, ask).await else {
             return false;
         };
         if answered {
@@ -214,8 +220,9 @@ impl Controller {
         }
         let changed = {
             let _guard = self.mutation.lock().await;
-            let path = state_dir(app)?.join("enrollment.json");
-            path.try_exists().unwrap_or(false) && self.refresh_gateway_url(app, &path).await
+            let (data, jwt) = app_auth(app)?;
+            let path = local_state_dir(&data)?.join("enrollment.json");
+            path.try_exists().unwrap_or(false) && self.refresh_gateway_url(&data, &jwt, &path).await
         };
         if changed {
             self.restore(app).await?;
@@ -230,7 +237,16 @@ impl Controller {
         same && human.is_some() && self.running.lock().is_ok_and(|running| running.is_some())
     }
 
-    fn stop(&self) {
+    /// `serve`'s controller: reads this Mac's key without ever creating one.
+    pub(crate) fn headless() -> Self {
+        Self::with_identity(load_mac_identity)
+    }
+
+    pub(crate) fn with_identity(load: fn() -> Result<crate::keychain::DeviceIdentity>) -> Self {
+        Self { load_identity: Some(load), ..Self::default() }
+    }
+
+    pub(crate) fn stop(&self) {
         if let Ok(mut running) = self.running.lock() {
             if let Some(run) = running.take() {
                 run.stop.store(true, Ordering::SeqCst);
@@ -244,20 +260,80 @@ impl Controller {
         }
     }
 
-    fn prepare(&self, app: &tauri::AppHandle, enrollment: &Enrollment) -> Result<PreparedRun> {
-        let dir = state_dir(app)?;
-        let identity = crate::keychain::load_or_generate(
-            crate::keychain::KeychainSlot::Mac,
-            crate::KEYCHAIN_SERVICE,
-        )?;
-        let pair = retained_pair(
-            crate::pair_state::load(
-                &app.path()
-                    .app_data_dir()
-                    .map_err(|_| "desktop storage unavailable")?,
-            ),
-            &identity.public_key_pem,
-        )?;
+    /// This process runs the local-sessions service: it holds `serve.lock` under the app
+    /// data dir, taken on first use and kept for the process's life. False when another
+    /// process (a `serve`, or the window app) already runs it. Err: the lock file itself is
+    /// unusable (storage), which is not a reason to become a viewer.
+    pub(crate) fn serves(&self, data: &Path) -> Result<bool> {
+        let mut held = self.service.lock().map_err(|_| "sharing state unavailable")?;
+        if held.is_none() {
+            *held = crate::headless::service_lock(data).map_err(|e| format!("serve.lock unavailable: {e}"))?;
+        }
+        Ok(held.is_some())
+    }
+
+    /// The window runs the service only when no launch agent is installed (today's single
+    /// process). With `agent` on disk, `serve` owns local sessions and the window views from
+    /// the start; a lock the window took before the agent was installed is let go.
+    pub(crate) fn window_serves(&self, data: &Path, agent: &Path) -> Result<bool> {
+        if agent.exists() {
+            // Stop any run of ours before `serve` can take the lock and start its own.
+            self.stop();
+            if let Ok(mut held) = self.service.lock() {
+                *held = None;
+            }
+            return Ok(false);
+        }
+        self.serves(data)
+    }
+
+    /// `lightbulb pair` installed the launch agent while the window runs the service: stop our
+    /// run first, then let go of `serve.lock` so `serve` takes it. True when it handed over.
+    pub(crate) async fn hand_over_to_agent(&self, data: &Path, agent: &Path) -> bool {
+        if !agent.exists() || !self.service.lock().is_ok_and(|held| held.is_some()) {
+            return false;
+        }
+        let _guard = self.mutation.lock().await;
+        let _ = self.window_serves(data, agent); // with the agent on disk: stop, then release
+        if let Ok(mut status) = self.status.lock() {
+            *status = "Local sharing runs in lightbulb-desktop serve.".into();
+        }
+        true
+    }
+
+    /// The window's 2 s look for the launch agent (`hand_over_to_agent`), for the app's life.
+    /// ponytail: a 2 s stat of one file, as `serve` watches its own; a kqueue watch if it matters.
+    pub fn watch_launch_agent(app: tauri::AppHandle) {
+        tauri::async_runtime::spawn(async move {
+            let Ok((data, _)) = app_auth(&app) else { return };
+            let agent = crate::headless::launch_agent_path();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if app.state::<Controller>().hand_over_to_agent(&data, &agent).await {
+                    crate::log("[local-sessions] launch agent installed; the window now only views");
+                }
+            }
+        });
+    }
+
+    /// The end of an enable. A viewer only records the consent: `serve` sees enrollment.json
+    /// change and starts the run itself.
+    fn finish_enable(&self, path: &Path, enrollment: Enrollment, prepared: Option<PreparedRun>, revision: u64) -> Result<()> {
+        let Some(prepared) = prepared else {
+            let human = self.human.lock().map_err(|_| "sharing state unavailable")?;
+            require_current(&human, self.revision.load(Ordering::SeqCst), revision, &enrollment)?;
+            return private_write(path, &enrollment);
+        };
+        self.publish(Some(path), enrollment, prepared, revision)
+    }
+
+    fn prepare(&self, data: &Path, enrollment: &Enrollment) -> Result<PreparedRun> {
+        let dir = local_state_dir(data)?;
+        let identity = match self.load_identity {
+            Some(load) => load()?,
+            None => crate::keychain::load_or_generate(crate::keychain::KeychainSlot::Mac, crate::KEYCHAIN_SERVICE)?,
+        };
+        let pair = retained_pair(crate::pair_state::load(data), &identity.public_key_pem)?;
         if pair.owner_id != enrollment.owner_id || pair.device_id_mac != enrollment.device_id {
             return Err("Reconnect the enrolled workspace's Mac first".into());
         }
@@ -310,7 +386,6 @@ impl Controller {
                     socket,
                     scope,
                 } = prepared;
-                let native_tools = super::native_tools::serve(scope.clone(), enrollment.clone(), identity.clone());
                 let mod_socket = super::mod_socket::serve(scope.clone(), enrollment.clone(), identity.clone());
                 // Pick-up snapshots run on their OWN task: sharing one `select!` with the
                 // relay would stall every relay frame while a snapshot does its work.
@@ -346,7 +421,7 @@ impl Controller {
                     // ends only itself.
                     let _snapshots = AbortOnDrop(tauri::async_runtime::spawn(snapshots));
                     let _resumes = AbortOnDrop(tauri::async_runtime::spawn(resumes));
-                    let _sockets = serve_sockets(vec![Box::pin(native_tools), Box::pin(mod_socket)]);
+                    let _sockets = serve_sockets(vec![Box::pin(mod_socket)]);
                     let hooks = async move {
                         let mut bytes = [0u8; 2048];
                         loop {
@@ -385,14 +460,39 @@ impl Controller {
     }
 
     pub async fn restore(&self, app: &tauri::AppHandle) -> Result<()> {
+        let (data, jwt) = app_auth(app)?;
+        if !self.window_serves(&data, &crate::headless::launch_agent_path())? {
+            let _guard = self.mutation.lock().await;
+            self.stop();
+            if let Ok(mut status) = self.status.lock() {
+                *status = "Local sharing runs in lightbulb-desktop serve.".into();
+            }
+            return Ok(());
+        }
+        self.restore_at(&data, &jwt).await
+    }
+
+    /// `serve`: share as the enrolled human, from persisted state, with no live Clerk check
+    /// (nobody signs in with no window). The consent on disk is that human's own and the relay
+    /// authenticates with this Mac's key. Unpairing the Mac, or turning sharing off from any
+    /// device, still revokes it on the server.
+    pub(crate) async fn serve_enrolled(&self, data: &Path) -> Result<()> {
+        let enrollment: Enrollment = private_read(&local_state_dir(data)?.join("enrollment.json"))?;
+        *self.human.lock().map_err(|_| "sharing state unavailable")? = Some(Some(enrollment.human_user_id));
+        self.restore_at(data, "").await
+    }
+
+    /// `data` is the app data dir. `jwt` is the window's Clerk token, empty with no window.
+    async fn restore_at(&self, data: &Path, jwt: &str) -> Result<()> {
         let _guard = self.mutation.lock().await;
-        let dir = state_dir(app)?;
+        let dir = local_state_dir(data)?;
         let path = dir.join("enrollment.json");
         if !path.try_exists().map_err(|_| "sharing state unavailable")? {
             return Ok(());
         }
-        self.refresh_gateway_url(app, &path).await;
+        self.refresh_gateway_url(data, jwt, &path).await;
         let mut enrollment: Enrollment = private_read(&path)?;
+        let paused = enrollment.paused;
         enrollment.authenticate(
             self.human
                 .lock()
@@ -400,13 +500,17 @@ impl Controller {
                 .as_ref()
                 .map(|h| h.as_deref()),
         );
-        private_write(&path, &enrollment)?;
+        // Only a change is written: a blind read-then-write here could overwrite a write the
+        // window made in between (sharing on or off while `serve` runs).
+        if enrollment.paused != paused {
+            private_write(&path, &enrollment)?;
+        }
         self.stop();
         if !enrollment.enabled || enrollment.paused || enrollment.attempt.is_some() {
             return Ok(());
         }
         let revision = self.revision.load(Ordering::SeqCst);
-        let prepared = self.prepare(app, &enrollment)?;
+        let prepared = self.prepare(data, &enrollment)?;
         let notes = reassert(&dir);
         if !notes.is_empty() {
             *self.status.lock().map_err(|_| "sharing state unavailable")? =
@@ -477,22 +581,21 @@ fn home() -> Result<PathBuf> {
 }
 /// Session sharing is on and live for this Mac's signed-in human. A remotely started
 /// session is only launched when it will be mirrored (see `session_start`).
-pub(crate) fn sharing_on(app: &tauri::AppHandle) -> bool {
-    state_dir(app)
-        .and_then(|dir| private_read::<Enrollment>(&dir.join("enrollment.json")))
+/// `state_dir` is the local-sessions dir (`state_dir(app)` in the window).
+pub(crate) fn sharing_on(state_dir: &Path) -> bool {
+    private_read::<Enrollment>(&state_dir.join("enrollment.json"))
         .is_ok_and(|e| e.enabled && !e.paused && !e.remote_disabled)
 }
 /// The workspace this Mac's sessions are shared to, if enrolled.
-pub(crate) fn enrolled_owner(app: &tauri::AppHandle) -> Option<String> {
-    let dir = state_dir(app).ok()?;
-    private_read::<Enrollment>(&dir.join("enrollment.json")).ok().map(|e| e.owner_id)
+pub(crate) fn enrolled_owner(state_dir: &Path) -> Option<String> {
+    private_read::<Enrollment>(&state_dir.join("enrollment.json")).ok().map(|e| e.owner_id)
 }
 pub(crate) fn scope_key(enrollment: &Enrollment) -> String {
     fingerprint(&json!([enrollment.owner_id, enrollment.human_user_id, enrollment.device_id]).to_string())
 }
 
-pub(crate) fn launch_scope(app: &tauri::AppHandle) -> Result<String> {
-    let enrollment: Enrollment = private_read(&state_dir(app)?.join("enrollment.json"))?;
+pub(crate) fn launch_scope(state_dir: &Path) -> Result<String> {
+    let enrollment: Enrollment = private_read(&state_dir.join("enrollment.json"))?;
     if !enrollment.enabled || enrollment.paused || enrollment.remote_disabled {
         return Err("session sharing is off".into());
     }
@@ -500,15 +603,29 @@ pub(crate) fn launch_scope(app: &tauri::AppHandle) -> Result<String> {
 }
 
 /// The dir of this Mac's shared-session mirrors (native_tools reads it), while sharing is on.
-pub(crate) fn session_scope(app: &tauri::AppHandle) -> Result<PathBuf> {
-    Ok(state_dir(app)?.join(launch_scope(app)?))
+pub(crate) fn session_scope(state_dir: &Path) -> Result<PathBuf> {
+    Ok(state_dir.join(launch_scope(state_dir)?))
 }
-fn state_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "desktop storage unavailable")?;
-    fs::create_dir_all(&app_dir).map_err(|_| "desktop storage unavailable")?;
+/// `lightbulb pair`'s write: the same private enrollment.json the window's enable writes.
+pub(crate) fn save_enrollment(state_dir: &Path, enrollment: &Enrollment) -> Result<()> {
+    private_write(&state_dir.join("enrollment.json"), enrollment)
+}
+/// The one Tauri wrapper: the window's local-sessions dir.
+pub(crate) fn state_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
+    local_state_dir(&app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?)
+}
+/// The window's app data dir and its current Clerk token (empty before sign-in).
+fn app_auth(app: &tauri::AppHandle) -> Result<(PathBuf, String)> {
+    let data = app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?;
+    let jwt = app
+        .try_state::<crate::AuthState>()
+        .and_then(|s| s.current_jwt.read().ok().map(|j| j.clone()))
+        .unwrap_or_default();
+    Ok((data, jwt))
+}
+/// `<app data>/local-sessions`, created private.
+pub(crate) fn local_state_dir(app_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(app_dir).map_err(|_| "desktop storage unavailable")?;
     let dir = app_dir.join("local-sessions");
     private_dir(&dir)?;
     Ok(dir)
@@ -567,6 +684,13 @@ pub fn hook(provider: &str) {
     let mut raw = Vec::new();
     let _ = std::io::Read::take(std::io::stdin(), 65536).read_to_end(&mut raw);
     let json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    if super::hooked::provider(provider) {
+        // Our hook command names the event (`… local-session-hook cursor stop`).
+        let event = std::env::args().nth(3).unwrap_or_default();
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let source = super::lifecycle::hook_process(provider);
+        return hooked_hook(provider, &event, json, answer, &hook_path(), &home, source.as_ref());
+    }
     let holders = if provider == "codex" && json["hook_event_name"] == "SessionStart" {
         crate::holder::manager::list()
     } else {
@@ -575,22 +699,51 @@ pub fn hook(provider: &str) {
     hook_input(provider, json, std::os::unix::process::parent_id(), &holders, answer, &hook_path());
 }
 
+/// A Cursor or Grok CLI hook (agent network phase 2): it registers its session, wakes the app,
+/// and, on a hook whose output reaches the model, hands over the letters that wait for the session.
+fn hooked_hook(provider: &str, event: &str, json: serde_json::Value, answer: std::os::unix::io::RawFd, wake: &Path, home: &Path, source: Option<&super::lifecycle::HookProcess>) {
+    let close = |fd: std::os::unix::io::RawFd| if fd >= 0 { unsafe { libc::close(fd) }; };
+    let Some(json) = super::hooked::normalize(provider, event, json) else { return close(answer) };
+    let dir = wake.with_file_name("hooked");
+    let _ = super::hooked::record(&dir, provider, &json, source, home);
+    // Before the datagram, which may start discovery of this session.
+    send_hook_datagram(wake, provider, &json);
+    let canonical = json["hook_event_name"].as_str().unwrap_or("");
+    let session = json["session_id"].as_str().unwrap_or("");
+    if answer < 0 || !super::hooked::takes_mail(provider, canonical) {
+        return close(answer);
+    }
+    let lines = super::hooked::drain(&dir, provider, session);
+    if lines.is_empty() {
+        return close(answer);
+    }
+    use std::io::Write;
+    use std::os::unix::io::FromRawFd;
+    // SAFETY: `answer` is this hook's own dup of stdout, owned and closed here.
+    let mut stdout = unsafe { fs::File::from_raw_fd(answer) };
+    let _ = stdout.write_all(super::hooked::output(provider, canonical, &lines.join("\n\n")).to_string().as_bytes());
+}
+
 /// One hook after its stdin is read; `parent` is the hook's parent process.
 fn hook_input(
     provider: &str,
-    mut json: serde_json::Value,
+    json: serde_json::Value,
     parent: u32,
     holders: &[HolderInfo],
     answer: std::os::unix::io::RawFd,
     wake: &Path,
 ) {
-    super::native_mcp::canonical_hook(&mut json);
     if answer >= 0 && super::approval::holdable(provider, &json) {
         super::approval::hold(wake, provider, &json, answer);
         return;
     }
     if answer >= 0 {
         unsafe { libc::close(answer) };
+    }
+    // Codex's PostToolUse hook told the agent about held requests, which no longer exist (agents
+    // message through the engine); an installed one says nothing and is not a lifecycle event.
+    if provider == "codex" && json["hook_event_name"] == "PostToolUse" {
+        return;
     }
     // Discovery names a held Codex by the thread its own start hook records here.
     if provider == "codex" && json["hook_event_name"] == "SessionStart" {
@@ -604,14 +757,15 @@ fn hook_input(
     send_hook_datagram(wake, provider, &json);
 }
 
-/// The holder of the provider that ran this hook: the hook's parent, or the parent's parent
-/// when the provider ran it through a shell (`sh -c '<hook command>'`).
+/// The Codex holder of the provider that ran this hook: the hook's parent, or the parent's parent
+/// when the provider ran it through a shell (`sh -c '<hook command>'`). Never another provider's
+/// holder (`codex_holder`).
 fn hook_holder(parent: u32, holders: &[HolderInfo]) -> Option<&HolderInfo> {
     let shell = process(parent).ok()?.executable.file_name().is_some_and(|name| {
         matches!(name.to_str(), Some("sh" | "bash" | "zsh" | "dash"))
     });
     let provider = if shell { super::native_tools::parent(parent).ok()?.pid } else { parent };
-    holder_of(provider, holders)
+    holder_of(provider, holders).filter(|h| codex_holder(h))
 }
 
 /// Split out from [`hook`] so tests can point it at a temp socket instead of
@@ -707,7 +861,7 @@ fn provider_status(home: &Path, executable: &Path) -> Value {
     };
     let row = |provider: &str| json!({
         "cli": super::provider_program(home, provider).is_some(),
-        "mcp": super::native_mcp::status(home, executable, provider),
+        "mcp": super::native_mcp::status(home, provider),
         "hooks": hooks(provider),
     });
     json!({"claude": row("claude"), "codex": row("codex")})
@@ -722,6 +876,11 @@ pub async fn local_sessions_set(
     human_user_id: Option<String>,
     workspace_id: Option<String>,
 ) -> Result<u64> {
+    // A viewer enrolls the same way but starts no run: `serve` picks up enrollment.json.
+    let serving = state.window_serves(
+        &app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?,
+        &crate::headless::launch_agent_path(),
+    )?;
     let revision = {
         let _human = state
             .human
@@ -767,6 +926,7 @@ pub async fn local_sessions_set(
             codex_notes.extend(
                 super::native_mcp::configure(&home()?, &installed, false)
                     .into_iter()
+                    .chain(super::hooked::configure(&home()?, &installed, false))
                     .map(|note| format!("{note}.")),
             );
             Ok(())
@@ -831,14 +991,8 @@ pub async fn local_sessions_set(
         crate::keychain::KeychainSlot::Mac,
         crate::KEYCHAIN_SERVICE,
     )?;
-    let pair = retained_pair(
-        crate::pair_state::load(
-            &app.path()
-                .app_data_dir()
-                .map_err(|_| "desktop storage unavailable")?,
-        ),
-        &identity.public_key_pem,
-    )?;
+    let app_data = app.path().app_data_dir().map_err(|_| "desktop storage unavailable")?;
+    let pair = retained_pair(crate::pair_state::load(&app_data), &identity.public_key_pem)?;
     if workspace_id.as_deref() != Some(&pair.owner_id) {
         return Err("Connect this Mac in the selected workspace first".into());
     }
@@ -897,11 +1051,16 @@ pub async fn local_sessions_set(
                 if let Ok(home) = home() {
                     let _ = codex::configure_hooks(&home, &installed, false);
                     let _ = super::native_mcp::configure(&home, &installed, false);
+                    let _ = super::hooked::configure(&home, &installed, false);
                 }
             }
-            state.prepare(&app, &enrollment)
+            if serving {
+                state.prepare(&app_data, &enrollment).map(Some)
+            } else {
+                Ok(None)
+            }
         },
-        |prepared, active| state.publish(Some(&path), active, prepared, revision),
+        |prepared, active| state.finish_enable(&path, active, prepared, revision),
     )
     .await?;
     // Codex hooks and the skill are reported, never fatal: the Claude path that
@@ -934,7 +1093,8 @@ pub async fn local_sessions_repair(
     // Retry also re-asks `/desktop/pair` for the relay door and, when it moved,
     // restarts the relay on the new one.
     state.relay_checked.store(false, Ordering::SeqCst);
-    let moved = state.refresh_gateway_url(&app, &path).await;
+    let (data, jwt) = app_auth(&app)?;
+    let moved = state.refresh_gateway_url(&data, &jwt, &path).await;
     let notes = reassert(&dir);
     *state.status.lock().map_err(|_| "sharing state unavailable")? = retried(&notes);
     drop(_guard);
@@ -947,7 +1107,7 @@ pub async fn local_sessions_repair(
 /// Every retry replaces the last one's status, so a fixed failure stops showing.
 fn retried(notes: &[String]) -> String {
     if notes.is_empty() {
-        "Setup retried; Claude Code and Codex are configured for new sessions.".into()
+        "Setup retried; Claude Code, Codex, Cursor and Grok CLI are configured for new sessions.".into()
     } else {
         format!("Setup retried; {}.", notes.join("; "))
     }
@@ -1023,7 +1183,8 @@ pub(crate) fn install_skill(state_dir: &Path, home: &Path) -> Result<Vec<PathBuf
     } else {
         vec![]
     };
-    for root in [".claude", ".codex"] {
+    // Cursor reads `~/.cursor/skills`; Grok CLI has no user skill root we know of.
+    for root in [".claude", ".codex", ".cursor"] {
         if !home.join(root).is_dir() {
             continue;
         }
@@ -1076,20 +1237,24 @@ pub(crate) fn remove_skill(state_dir: &Path, _home: &Path) -> Result<()> {
 /// launches, so a resume rewrites them rather than trusting the install that
 /// consent performed. Returns the failures for the status line; none is fatal.
 fn reassert(state_dir: &Path) -> Vec<String> {
+    match std::env::current_exe() {
+        Ok(executable) => reassert_exe(state_dir, &executable),
+        Err(_) => vec!["the desktop executable is unavailable".into()],
+    }
+}
+
+/// `reassert` naming `executable` in the hooks: the CLI passes the resolved app binary, since
+/// it may run through the `~/.local/bin/lightbulb` link, which is not a hook command.
+pub(crate) fn reassert_exe(state_dir: &Path, executable: &Path) -> Vec<String> {
     let home = match home() {
         Ok(home) => home,
         Err(reason) => return vec![reason],
     };
-    match std::env::current_exe() {
-        Ok(executable) => {
-            let mut notes = reassert_at(state_dir, &home, &executable);
-            if let Err(reason) = super::plugin::install(state_dir, &home) {
-                notes.push(format!("the lightbulb Claude plugin was not installed ({reason})"));
-            }
-            notes
-        }
-        Err(_) => vec!["the desktop executable is unavailable".into()],
+    let mut notes = reassert_at(state_dir, &home, executable);
+    if let Err(reason) = super::plugin::install(state_dir, &home) {
+        notes.push(format!("the lightbulb Claude plugin was not installed ({reason})"));
     }
+    notes
 }
 
 fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> {
@@ -1107,6 +1272,7 @@ fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> 
         }
         let _ = codex::configure_hooks(home, &installed, false);
         let _ = super::native_mcp::configure(home, &installed, false);
+        let _ = super::hooked::configure(home, &installed, false);
     }
     let mut notes = Vec::new();
     if claude {
@@ -1117,6 +1283,8 @@ fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> 
     if let Err(reason) = codex::configure_hooks(home, executable, true) {
         notes.push(format!("Codex hooks were not installed ({reason})"));
     }
+    // hooked.rs first: native_mcp takes out the `session-mcp` entry it writes for Cursor and Grok.
+    notes.extend(super::hooked::configure(home, executable, true));
     notes.extend(super::native_mcp::configure(home, executable, true));
     if moved {
         if let Err(reason) = private_write(&record, &executable) {
@@ -1225,7 +1393,7 @@ mod tests {
             socket: dir.path().join("h.sock"),
             pid: std::process::id(),
             provider_pid: outer.id(),
-            argv: vec![],
+            argv: vec!["/opt/homebrew/bin/codex".into()],
             cwd: "/".into(),
             watch: false,
             type_input: false,
@@ -1233,13 +1401,114 @@ mod tests {
         let found = hook_holder(inner, std::slice::from_ref(&holder)).map(|h| h.id.clone());
         let other = HolderInfo { provider_pid: outer.id() + 1, ..holder.clone() };
         let none = hook_holder(inner, std::slice::from_ref(&other)).is_none();
+        // The same hook from a shell inside a held Claude never names that Claude's holder.
+        let claude = HolderInfo { argv: vec!["/Users/a/.local/share/claude/versions/2.1.306".into()], ..holder.clone() };
+        let not_codex = hook_holder(inner, std::slice::from_ref(&claude)).is_none();
         for pid in children(inner).into_iter().chain([inner]) {
             unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         }
         let _ = outer.kill();
         let _ = outer.wait();
         assert_eq!(found.as_deref(), Some("ab12cd34"));
+        assert!(not_codex, "a Claude holder is never bound to a Codex thread");
         assert!(none, "a holder whose provider is another process does not match");
+    }
+
+    /// Codex's PostToolUse hook (installed for the retired held-request notice) writes nothing
+    /// and sends no lifecycle datagram.
+    #[test]
+    fn local_sessions_codex_post_tool_use_hook_says_nothing() {
+        use std::io::Read;
+        use std::os::unix::io::FromRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        let wake = dir.path().join("wake.sock");
+        let app = std::os::unix::net::UnixDatagram::bind(&wake).unwrap();
+        app.set_nonblocking(true).unwrap();
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let stdin = json!({"hook_event_name":"PostToolUse","session_id":"thread-1","tool_name":"shell"});
+        hook_input("codex", stdin, std::process::id(), &[], fds[1], &wake);
+        let mut out = String::new();
+        unsafe { fs::File::from_raw_fd(fds[0]) }.read_to_string(&mut out).unwrap();
+        assert_eq!(out, "");
+        assert!(app.recv(&mut [0u8; 64]).is_err(), "PostToolUse is not a lifecycle event");
+    }
+
+    /// Black box over hooked.rs's own Cursor and Grok writer: whatever it writes, a launch ends with
+    /// no `session-mcp` entry, and another program's `lightbulb` (the engine's) stays.
+    #[test]
+    fn cursor_and_grok_fixture_has_no_session_mcp_after_launch() {
+        let exe = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        let files = |h: &Path| [h.join(".cursor/mcp.json"), h.join(".grok/config.toml")].map(|p| fs::read_to_string(p).unwrap_or_default());
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        fs::create_dir_all(h.join(".cursor")).unwrap();
+        fs::create_dir_all(h.join(".grok")).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        // The fixture is not vacuous: hooked.rs on its own writes our entry into both.
+        let _ = super::super::hooked::configure(h, exe, true);
+        for (i, text) in files(h).iter().enumerate() {
+            assert!(text.contains("session-mcp"), "file {i}: {text}");
+        }
+        let _ = reassert_at(state.path(), h, exe);
+        for (i, text) in files(h).iter().enumerate() {
+            assert!(!text.contains("session-mcp"), "file {i} after launch: {text}");
+        }
+        // The engine's entry is someone else's: a launch keeps it.
+        let engine = json!({"mcpServers":{"lightbulb":{"command":"/Users/x/.lightbulb/connect/bin/lightbulb","args":["mcp"]}}});
+        fs::write(h.join(".cursor/mcp.json"), engine.to_string()).unwrap();
+        fs::write(h.join(".grok/config.toml"), "[mcp_servers.lightbulb]\ncommand = \"/Users/x/.lightbulb/connect/bin/lightbulb\"\nargs = [\"mcp\"]\n").unwrap();
+        let _ = reassert_at(state.path(), h, exe);
+        let [cursor, grok] = files(h);
+        assert_eq!(serde_json::from_str::<Value>(&cursor).unwrap()["mcpServers"]["lightbulb"], engine["mcpServers"]["lightbulb"]);
+        assert!(grok.contains("/Users/x/.lightbulb/connect/bin/lightbulb") && !grok.contains("session-mcp"), "{grok}");
+    }
+
+    /// Agent network phase 2: a Cursor or Grok CLI hook registers its session, wakes the app with
+    /// a Claude-shaped datagram, and hands a waiting letter over only on a hook the model reads.
+    #[test]
+    fn local_sessions_hooked_agent_hook_registers_and_hands_over_its_letters() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::io::FromRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let wake = dir.path().join("wake.sock");
+        let app = std::os::unix::net::UnixDatagram::bind(&wake).unwrap();
+        app.set_nonblocking(true).unwrap();
+        let hooked = dir.path().join("hooked");
+        let run = |provider: &str, event: &str, stdin: Value| -> String {
+            let mut fds = [0; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            // The agent stands in as this test process: its real ancestors are cargo's.
+            let me = super::super::process(std::process::id()).unwrap();
+            let source = super::super::lifecycle::HookProcess::of(&me);
+            hooked_hook(provider, event, stdin, fds[1], &wake, Path::new("/Users/a"), Some(&source));
+            let mut out = String::new();
+            unsafe { fs::File::from_raw_fd(fds[0]) }.read_to_string(&mut out).unwrap();
+            out
+        };
+        for (provider, id) in [("cursor", "conv-1"), ("grok", "grok-1")] {
+            assert_eq!(run(provider, "session-start", json!({"session_id": id, "cwd": "/w/api"})), "");
+            let mut buf = [0u8; 2048];
+            let n = app.recv(&mut buf).unwrap();
+            let event = super::super::lifecycle::parse_datagram(&buf[..n]).expect("a datagram the app reads");
+            assert_eq!((event.provider.as_str(), event.event.as_str(), event.session_id.as_str()), (provider, "SessionStart", id));
+        }
+        let sessions = super::super::hooked::discover(&hooked);
+        assert_eq!(sessions.len(), 2, "each exists from its first hook");
+        for s in &sessions {
+            super::super::hooked::deliver(&hooked, s, "r-1", "[Lightbulb teammate contribution] hi", None).unwrap();
+        }
+        // A prompt hook cannot add context: the letter stays for the next tool call.
+        assert_eq!(run("cursor", "user-prompt-submit", json!({"conversation_id": "conv-1"})), "");
+        let out: Value = serde_json::from_str(&run("cursor", "post-tool-use", json!({"conversation_id": "conv-1"}))).unwrap();
+        assert_eq!(out, json!({"additional_context": "[Lightbulb teammate contribution] hi"}));
+        assert_eq!(run("cursor", "stop", json!({"conversation_id": "conv-1"})), "", "handed over once");
+        // Grok's Stop counts only at a turn's end, and its SessionStart output is dropped.
+        assert_eq!(run("grok", "stop", json!({"session_id": "grok-1", "reason": "shutdown"})), "");
+        let out: Value = serde_json::from_str(&run("grok", "stop", json!({"session_id": "grok-1", "reason": "end_turn"}))).unwrap();
+        assert_eq!(out, json!({"decision": "block", "reason": "[Lightbulb teammate contribution] hi"}));
     }
 
     #[test]
@@ -1270,7 +1539,7 @@ mod tests {
             socket: dir.path().join("ab12cd34.sock"),
             pid: std::process::id(),
             provider_pid: codex.id(),
-            argv: vec![],
+            argv: vec!["/opt/homebrew/bin/codex".into()],
             cwd: "/".into(),
             watch: false,
             type_input: false,
@@ -1283,6 +1552,64 @@ mod tests {
         codex.kill().unwrap();
         codex.wait().unwrap();
     }
+    #[test]
+    fn window_takes_the_lock_only_without_a_launch_agent() {
+        let data = tempfile::tempdir().unwrap();
+        let agent = data.path().join("company.thelightbulb.serve.plist");
+        fs::write(&agent, "plist").unwrap();
+        let window = Controller::default();
+        assert!(!window.window_serves(data.path(), &agent).unwrap());
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_some(), "the window left serve.lock to serve");
+        fs::remove_file(&agent).unwrap();
+        assert!(window.window_serves(data.path(), &agent).unwrap());
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_none(), "the window holds serve.lock");
+    }
+
+    #[test]
+    fn window_hands_the_lock_to_a_launch_agent_installed_while_it_runs() {
+        let data = tempfile::tempdir().unwrap();
+        let agent = data.path().join("company.thelightbulb.serve.plist");
+        let window = Controller::default();
+        assert!(window.window_serves(data.path(), &agent).unwrap(), "no agent yet: the window serves");
+        assert!(!tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)));
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_none(), "still the window's");
+        fs::write(&agent, "plist").unwrap(); // `lightbulb pair` installs it
+        assert!(tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)));
+        assert!(window.running.lock().unwrap().is_none(), "stopped before the lock was let go");
+        assert_eq!(*window.status.lock().unwrap(), "Local sharing runs in lightbulb-desktop serve.");
+        assert!(crate::headless::service_lock(data.path()).unwrap().is_some(), "serve can take serve.lock");
+        assert!(!tauri::async_runtime::block_on(window.hand_over_to_agent(data.path(), &agent)), "once");
+    }
+
+    #[test]
+    fn restore_with_no_change_writes_nothing() {
+        use std::os::unix::fs::MetadataExt;
+        let data = tempfile::tempdir().unwrap();
+        let dir = local_state_dir(data.path()).unwrap();
+        let path = dir.join("enrollment.json");
+        private_write(&path, &candidate()).unwrap();
+        let before = fs::metadata(&path).unwrap().ino();
+        let window = Controller::default();
+        tauri::async_runtime::block_on(window.restore_at(data.path(), "")).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().ino(), before, "an unchanged enrollment is not rewritten");
+    }
+
+    #[test]
+    fn viewer_toggle_writes_enrollment() {
+        let dir = tempfile::tempdir().unwrap();
+        private_dir(&dir.path().join("ls")).unwrap();
+        let path = dir.path().join("ls/enrollment.json");
+        let window = Controller::default();
+        *window.human.lock().unwrap() = Some(Some("alice".into()));
+        let mut active = candidate();
+        active.enabled = true;
+        active.attempt = None;
+        window.finish_enable(&path, active.clone(), None, 0).unwrap();
+        assert_eq!(private_read::<Enrollment>(&path).unwrap(), active);
+        assert!(window.running.lock().unwrap().is_none(), "a viewer starts no run");
+        assert!(sharing_on(&dir.path().join("ls")));
+    }
+
     fn candidate() -> Enrollment {
         Enrollment {
             owner_id: "org".into(),
@@ -1866,7 +2193,7 @@ mod tests {
     #[test]
     fn local_sessions_repair_success_replaces_a_prior_failure() {
         assert_eq!(retried(&["Codex hooks were not installed (x)".into()]), "Setup retried; Codex hooks were not installed (x).");
-        assert_eq!(retried(&[]), "Setup retried; Claude Code and Codex are configured for new sessions.");
+        assert_eq!(retried(&[]), "Setup retried; Claude Code, Codex, Cursor and Grok CLI are configured for new sessions.");
     }
 
     #[test]
@@ -1893,18 +2220,16 @@ mod tests {
         fs::write(h.join(".codex/config.toml"), "").unwrap();
         assert_eq!(state("codex", "hooks"), "missing");
 
-        let server = |cmd: &str| json!({"mcpServers":{"lightbulb":{"command":cmd,"args":["session-mcp"]}}});
-        fs::write(h.join(".claude.json"), server(exe.to_str().unwrap()).to_string()).unwrap();
+        // The engine's `lightbulb` is the configured one; our old `session-mcp` entry is not.
+        let server = |cmd: &str, arg: &str| json!({"mcpServers":{"lightbulb":{"command":cmd,"args":[arg]}}});
+        fs::write(h.join(".claude.json"), server("/Users/x/.lightbulb/connect/bin/lightbulb", "mcp").to_string()).unwrap();
         assert_eq!(state("claude", "mcp"), "configured");
-        fs::write(h.join(".claude.json"), server("/other/server").to_string()).unwrap();
-        assert_eq!(state("claude", "mcp"), "collision");
-        // The hosted HTTP entry under the same name is a collision until enable replaces it.
-        fs::write(h.join(".claude.json"), json!({"mcpServers":{"lightbulb":{"type":"http","url":"https://api.flickmeon.ai/mcp"}}}).to_string()).unwrap();
-        assert_eq!(state("claude", "mcp"), "collision");
-        let toml = |cmd: &str| format!("[mcp_servers.lightbulb]\ncommand = \"{cmd}\"\nargs = [\"session-mcp\"]\n");
-        fs::write(h.join(".codex/config.toml"), toml(exe.to_str().unwrap())).unwrap();
+        fs::write(h.join(".claude.json"), server(exe.to_str().unwrap(), "session-mcp").to_string()).unwrap();
+        assert_eq!(state("claude", "mcp"), "missing");
+        let toml = |cmd: &str, arg: &str| format!("[mcp_servers.lightbulb]\ncommand = \"{cmd}\"\nargs = [\"{arg}\"]\n");
+        fs::write(h.join(".codex/config.toml"), toml("/Users/x/.lightbulb/connect/bin/lightbulb", "mcp")).unwrap();
         assert_eq!(state("codex", "mcp"), "configured");
-        fs::write(h.join(".codex/config.toml"), toml("/other/server")).unwrap();
-        assert_eq!(state("codex", "mcp"), "collision");
+        fs::write(h.join(".codex/config.toml"), toml(exe.to_str().unwrap(), "session-mcp")).unwrap();
+        assert_eq!(state("codex", "mcp"), "missing");
     }
 }

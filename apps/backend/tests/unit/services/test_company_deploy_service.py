@@ -435,7 +435,7 @@ async def test_failure_rolls_back_created_set_and_skips_seeded(monkeypatch):
     _install(monkeypatch, h, plan=plan)
     _resolve_calls, write_profile, upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
 
-    async def boom(owner_id, agent_row, *, inputs=None, soul_md_override=None):
+    async def boom(owner_id, agent_row, *, inputs=None, soul_md_override=None, publish=True):
         if agent_row["name"] == "CTO":
             raise RuntimeError("profile write exploded")
         write_profile.calls.append({"owner_id": owner_id, "agent_row": agent_row, "inputs": inputs})
@@ -527,7 +527,8 @@ class _RecordingWriteProfile:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def __call__(self, owner_id, agent_row, *, inputs=None, soul_md_override=None):
+    async def __call__(self, owner_id, agent_row, *, inputs=None, soul_md_override=None, publish=True):
+        assert publish is False  # the deploy publishes sessions.json once, after the loop
         self.calls.append({"owner_id": owner_id, "agent_row": agent_row, "inputs": inputs})
 
 
@@ -625,7 +626,7 @@ async def test_agentcore_mid_loop_failure_rolls_back_by_paperclip_delete_only(mo
     _install(monkeypatch, h, plan=plan)
     _resolve_calls, write_profile, _upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
 
-    async def boom(owner_id, agent_row, *, inputs=None, soul_md_override=None):
+    async def boom(owner_id, agent_row, *, inputs=None, soul_md_override=None, publish=True):
         if agent_row["name"] == "CTO":
             raise HermesProfileError("paperclip API key mint/read failed")
         write_profile.calls.append({"owner_id": owner_id, "agent_row": agent_row, "inputs": inputs})
@@ -800,7 +801,7 @@ async def test_claim_released_with_the_failure_as_cause(monkeypatch):
     _wire_agentcore_profile(monkeypatch)
     boom = RuntimeError("profile write failed")
 
-    async def fail_write(owner_id, agent_row, *, inputs=None, soul_md_override=None):
+    async def fail_write(owner_id, agent_row, *, inputs=None, soul_md_override=None, publish=True):
         raise boom
 
     monkeypatch.setattr(svc, "write_profile_for_agent", fail_write)
@@ -867,7 +868,7 @@ async def test_failure_does_not_burn_the_company_slot(monkeypatch):
     _install(monkeypatch, h, plan=_simple_plan())
 
     # The profile write is the step that can fail per agent now (it was the pairing RPC).
-    async def fail_write_profile(owner_id, agent, *, inputs):
+    async def fail_write_profile(owner_id, agent, *, inputs, publish=True):
         raise RuntimeError("profile write failed")
 
     monkeypatch.setattr(svc, "resolve_profile_inputs", AsyncMock(return_value=object()))

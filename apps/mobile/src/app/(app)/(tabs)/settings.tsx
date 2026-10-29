@@ -1,19 +1,21 @@
 import { useAuth, useOrganization, useUser } from "@clerk/expo";
-import { Button, HStack, LabeledContent, Section, Text, VStack } from "@expo/ui/swift-ui";
+import { Button, HStack, LabeledContent, Picker, Section, Text, VStack } from "../../../components/ui/swiftui";
 import {
   accessibilityLabel,
   background,
   font,
   foregroundStyle,
   frame,
+  pickerStyle,
   redacted,
   shapes,
+  tag,
 } from "@expo/ui/swift-ui/modifiers";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
-import { Alert, Linking, useColorScheme } from "react-native";
+import { Alert, Linking, Platform, useColorScheme } from "react-native";
 import { deepLinkToSubscriptions } from "expo-iap";
-import { ApiError, createApiClient } from "@lightbulb/shared";
+import { ApiError, createApiClient, type SessionNotifications } from "@lightbulb/shared";
 
 import { GroupedList, NavigationRow } from "../../../components/ui/GroupedList";
 import { WEB_ORIGIN } from "../../../config/domain";
@@ -23,6 +25,7 @@ import { paywallProductIds } from "../../../lib/appleIap";
 import { isAppleManaged } from "../../../lib/manageSubscription";
 import { isManagedNoChoiceAccount, MANAGED_NO_CHOICE_LABEL } from "../../../lib/managedProvider";
 import { unregisterDevice } from "../../../lib/pushDevice";
+import { prefsSaver, readSessionNotifications } from "../../../lib/sessionNotifications";
 
 // Billing here never points outside the app. This screen used to carry
 // "Upgrade on thelightbulb.company" and "Manage billing on thelightbulb.company" rows out to
@@ -283,6 +286,69 @@ function initialsOf(name: string | null | undefined, email: string): string {
 const PLACEHOLDER = [redacted("placeholder"), accessibilityLabel("Loading")];
 
 // ---------------------------------------------------------------------------
+// Session notifications: the same per-person prefs the web's Settings card edits.
+// The phone gets a push only for a kind set to Banner.
+// ---------------------------------------------------------------------------
+
+const NOTIFY_KINDS = [
+  { key: "waiting", label: "Waiting on you" },
+  { key: "finished", label: "Finished" },
+] as const;
+const NOTIFY_LEVELS = [
+  { value: "banner", label: "Banner" },
+  { value: "badge", label: "Badge only" },
+  { value: "off", label: "Off" },
+] as const;
+
+function SessionNotificationsSection({ api, menu }: { api: ReturnType<typeof createApiClient>; menu: ReturnType<typeof pickerStyle>[] }) {
+  const [prefs, setPrefs] = useState<SessionNotifications | null>(null);
+  const saver = useRef<ReturnType<typeof prefsSaver> | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      readSessionNotifications(api)
+        .then((value) => {
+          if (cancelled) return;
+          setPrefs(value);
+          saver.current = prefsSaver(api, value, setPrefs, () =>
+            Alert.alert("Notifications", "The setting could not be saved."),
+          );
+        })
+        .catch(() => undefined);
+      return () => {
+        cancelled = true;
+      };
+    }, [api]),
+  );
+  if (prefs === null) return null;
+  const save = (change: Partial<SessionNotifications>) => void saver.current?.(change);
+  const options = (items: readonly { value: string; label: string }[]) =>
+    items.map((item) => (
+      <Text key={item.value} modifiers={[tag(item.value)]}>
+        {item.label}
+      </Text>
+    ));
+  return (
+    <Section title="Session notifications">
+      {NOTIFY_KINDS.map(({ key, label }) => (
+        <Picker key={key} label={label} selection={prefs[key]} modifiers={menu}
+          onSelectionChange={(value: string) => save({ [key]: value })}>
+          {options(NOTIFY_LEVELS)}
+        </Picker>
+      ))}
+      <Picker label="Banners on the Mac" selection={prefs.onlyUnfocused ? "unfocused" : "always"} modifiers={menu}
+        onSelectionChange={(value: string) => save({ onlyUnfocused: value === "unfocused" })}>
+        {options([{ value: "always", label: "Always" }, { value: "unfocused", label: "When Lightbulb isn't focused" }])}
+      </Picker>
+      <Picker label="Sound" selection={prefs.sound ? "on" : "off"} modifiers={menu}
+        onSelectionChange={(value: string) => save({ sound: value === "on" })}>
+        {options([{ value: "on", label: "On" }, { value: "off", label: "Off" }])}
+      </Picker>
+    </Section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
@@ -297,6 +363,7 @@ export default function Settings() {
       DANGER: [foregroundStyle(p.alert)],
       ERROR: [foregroundStyle(p.alert)],
       PLACEHOLDER,
+      MENU: [pickerStyle("menu")],
       AVATAR: [
         font({ textStyle: "subheadline", weight: "semibold" }),
         foregroundStyle(p.fg),
@@ -403,6 +470,19 @@ export default function Settings() {
     // cannot be restored onto a replacement account either. So say so, and put
     // the cancellation one tap away, BEFORE the irreversible step.
     const source = state.kind === "ready" ? state.account.subscription_source : null;
+    if (isAppleManaged(source) && Platform.OS !== "ios") {
+      // On Android the subscriptions deep link opens Google Play, which cannot see an Apple
+      // subscription: say where to cancel it instead of offering a button that goes nowhere.
+      Alert.alert(
+        "Cancel your subscription first",
+        "Your subscription is billed through an Apple Account. Deleting this account does NOT cancel it. Cancel it in Settings on the iPhone or iPad that bought it first.",
+        [
+          { text: "Not now", style: "cancel" },
+          { text: "Delete anyway", style: "destructive", onPress: () => promptDeleteAccount() },
+        ],
+      );
+      return;
+    }
     if (isAppleManaged(source)) {
       Alert.alert(
         "Cancel your subscription first",
@@ -537,7 +617,14 @@ export default function Settings() {
             management, never a purchase call to action. A Stripe/web-billed
             subscriber gets neutral status text and nothing to tap, since that
             management surface is the web (App Store 3.1.3(f)). */}
-        {account.is_subscribed && isAppleManaged(account.subscription_source) ? (
+        {account.is_subscribed && isAppleManaged(account.subscription_source) && Platform.OS !== "ios" ? (
+          // Android's subscriptions deep link opens Google Play, which cannot manage an Apple subscription.
+          <Section title="Subscription">
+            <Text modifiers={m.SECONDARY}>
+              Billed through an Apple Account. Manage or cancel it on the iPhone or iPad that bought it.
+            </Text>
+          </Section>
+        ) : account.is_subscribed && isAppleManaged(account.subscription_source) ? (
           <Section
             title="Subscription"
             footer={<Text>Billed through your Apple Account. Manage or cancel in iOS Settings.</Text>}
@@ -597,6 +684,8 @@ export default function Settings() {
         <NavigationRow title="Integrations" icon="puzzlepiece.extension" onPress={() => router.push("/(app)/control/integrations")} />
         <NavigationRow title="Marketplace" icon="bag" onPress={() => router.push("/(app)/control/marketplace")} />
       </Section>
+
+      <SessionNotificationsSection api={api} menu={m.MENU} />
 
       {billingSections}
 

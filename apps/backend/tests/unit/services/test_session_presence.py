@@ -96,7 +96,7 @@ async def test_ack_lists_only_sessions_with_something_to_show_and_stays_in_the_e
         return await (quiet_query if pk.endswith("quiet") else _rows(viewers=["user_aden"]))(pk, begins_with)
 
     monkeypatch.setattr(presence.store, "_query", query)
-    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", list(rows))
+    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", "mac_a", list(rows))
     assert "quiet" not in [e["sessionId"] for e in ack["presence"]]
     assert ack["presenceAt"] == NOW * 1000 and {e["at"] for e in ack["presence"]} == {NOW * 1000}
     assert len(json.dumps(ack, separators=(",", ":")).encode()) <= sessions.MAX_ENVELOPE_BYTES
@@ -123,7 +123,7 @@ async def test_ack_never_trims_an_entry_that_holds_a_join_request(monkeypatch):
     )
     monkeypatch.setattr(presence.human_display_name, "side_effect", lambda u: "N" * 120)
     monkeypatch.setattr(presence.store, "_query", _rows(viewers=list(big)))
-    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", list(rows))
+    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", "mac_a", list(rows))
     listed = [e["sessionId"] for e in ack["presence"]]
     assert {f"r{i}" for i in range(4)} | {"p0", "p1"} <= set(listed)
     assert len(json.dumps(ack, separators=(",", ":")).encode()) <= sessions.MAX_ENVELOPE_BYTES
@@ -139,10 +139,10 @@ async def test_ack_drops_viewers_then_presence_rather_than_a_join_request(monkey
     )
     monkeypatch.setattr(presence.human_display_name, "side_effect", lambda u: "N" * 120)
     monkeypatch.setattr(presence.store, "_query", _rows(viewers=[f"user_v{i}" for i in range(30)]))
-    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", list(rows))
+    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", "mac_a", list(rows))
     assert len(ack["presence"]) == 24 and all(e["viewers"] == [] and e["joinRequests"] for e in ack["presence"])
     rows = {f"r{i}": _row(sessionId=f"r{i}", joinRequests=many) for i in range(24)}
-    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", list(rows))
+    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", "mac_a", list(rows))
     assert "presence" not in ack, "requests alone overflow: send none, so the Mac keeps every freeze"
 
 
@@ -150,7 +150,7 @@ async def test_ack_drops_viewers_then_presence_rather_than_a_join_request(monkey
 async def test_ack_survives_a_read_failure(monkeypatch):
     monkeypatch.setattr(presence.repo, "get_sessions", AsyncMock(side_effect=RuntimeError("ddb")))
     ack = {"type": "local.device.heartbeat.ack"}
-    assert await presence.ack_with_presence(ack, "org_a", ["s1"]) == ack
+    assert await presence.ack_with_presence(ack, "org_a", "mac_a", ["s1"]) == ack
 
 
 @pytest.mark.asyncio
@@ -244,12 +244,12 @@ async def test_an_ack_sized_just_under_the_limit_still_passes_the_envelope_check
     monkeypatch.setattr(presence.store, "_query", _rows(viewers=["user_aden"]))
     monkeypatch.setattr(presence.repo, "get_sessions", AsyncMock(return_value=[_row()]))
     kind = {"type": "local.device.heartbeat.ack"}
-    listed = (await presence.ack_with_presence({**kind, "pad": ""}, "org_a", ["s"]))["presence"]
+    listed = (await presence.ack_with_presence({**kind, "pad": ""}, "org_a", "mac_a", ["s"]))["presence"]
     assert listed, "the session is listed"
     # The ack's own fields fill the envelope exactly when `presenceAt` is one digit long.
     size = len(json.dumps({**kind, "pad": "", "presence": listed, "presenceAt": 0}, separators=(",", ":")).encode())
     ack = {**kind, "pad": "x" * (sessions.MAX_ENVELOPE_BYTES - size)}
-    check_envelope(await presence.ack_with_presence(ack, "org_a", ["s"]))
+    check_envelope(await presence.ack_with_presence(ack, "org_a", "mac_a", ["s"]))
 
 
 def test_a_mac_that_advertises_pickup_requests_lands_the_feature():
@@ -277,14 +277,10 @@ async def test_an_anyone_link_session_still_names_its_watchers_and_counts_link_v
     assert public["linkViewers"] == 1, "live seats only"
     workspace = await presence.entry(_row(shareLink={"audience": "workspace"}), 1)
     assert workspace["linkViewers"] == 0
-    ask = {"agentId": "agent-1", "agentName": "Friday", "requestId": "a1", "kind": "send", "text": "Run the tests"}
-    monkeypatch.setattr(presence.sessions, "pending_agent_asks", AsyncMock(return_value=[ask]))
     asked = _row(
         shareLink={"audience": "anyone", "publicId": "pub-1"},
         joinRequests={"user_zoe": {"state": "pending", "requestId": "r1"}},
         deviceFeatures=["sessionPresence", "agentMessageAsks"],
     )
-    assert [(r["name"], r.get("text")) for r in (await presence.entry(asked, 1))["joinRequests"]] == [
-        ("Friday", "Run the tests"),
-        ("Zoe", None),
-    ]
+    # An agent never asks to message a session any more: only people's asks are listed.
+    assert [(r["name"], r.get("text")) for r in (await presence.entry(asked, 1))["joinRequests"]] == [("Zoe", None)]

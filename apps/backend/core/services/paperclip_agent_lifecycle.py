@@ -447,6 +447,9 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
     await run_in_thread(hermes_profiles.delete_profile, owner_id, agent_id)
     await delete_paperclip_for_chat(owner_id=owner_id, agent_id=agent_id)
     await _refresh_facts(owner_id)  # every caller (RPC, Teams, admin): no survivor keeps a ghost teammate
+    from core.services import network_member
+
+    await network_member.publish_sessions(owner_id)  # and no network address for a deleted agent
     return {"deleted": True, "agent_id": agent_id, **preserved}
 
 
@@ -569,6 +572,7 @@ async def delete_paperclip_for_chat(
             agent_id=agent_id,
         )
         await repo.remove_starter_agent_id(owner_id, agent_id)
+        await repo.delete_agent_key(owner_id, agent_id)
     finally:
         await http.aclose()
 

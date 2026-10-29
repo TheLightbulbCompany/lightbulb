@@ -378,6 +378,21 @@ class TestOwnerBrowserPolicy:
         return fake
 
     @pytest.mark.asyncio
+    async def test_owner_browser_policy_names_the_envs_vpc_browser_and_keeps_the_built_in_one(self, monkeypatch):
+        """The env's VPC browser (fixed egress address) is where sessions start; the built-in
+        one stays so a session started there before the move can still be reached."""
+        import core.billing.bedrock_aip as mod
+
+        monkeypatch.setattr(mod, "BROWSER_ID", "lightbulb_dev_workspace_browser-Ab12Cd34Ef")
+        fake = self._put(monkeypatch)
+        await mod.ensure_owner_browser_policy("org_x", "org_x-ab12cd34ef")
+        doc = json.loads(fake.put_role_policy.call_args.kwargs["PolicyDocument"])
+        assert doc["Statement"][0]["Resource"] == [
+            "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser-custom/lightbulb_dev_workspace_browser-Ab12Cd34Ef",
+            "arn:aws:bedrock-agentcore:us-east-1:aws:browser/aws.browser.v1",
+        ]
+
+    @pytest.mark.asyncio
     async def test_owner_browser_policy_names_only_this_workspaces_profile(self, monkeypatch):
         import core.billing.bedrock_aip as mod
 
@@ -396,10 +411,8 @@ class TestOwnerBrowserPolicy:
         # The built-in browser lives under the literal `aws` pseudo-account.
         assert ":aws:browser/aws.browser.v1" in raw
         assert "bedrock-agentcore:InvokeBrowser" in raw  # computer_use
-        # NOT `{account}:browser/*` -- that is the CUSTOM-browser ARN shape, which we never
-        # create and the CDK permissions boundary does not cover, so it would authorize
-        # nothing while reading as though it did.
-        assert "877352799272:browser/*" not in raw
+        # No wildcard: the CDK permissions boundary names the env's browser and nothing wider.
+        assert "877352799272:browser/*" not in raw and "browser-custom/*" not in raw
         # Live 403 (Task 1): a start carrying profileConfiguration authorizes against the
         # PROFILE arn as well as the browser arn.
         profile_stmt = next(st for st in doc["Statement"] if "browser-profile/" in json.dumps(st["Resource"]))

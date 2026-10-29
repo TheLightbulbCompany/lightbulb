@@ -20,7 +20,7 @@ const schema = {
  */
 export function MarkdownDescription({ source }: { source: string }) {
   return (
-    <div className="prose max-w-none font-[var(--font-sans)] text-[var(--midnight-soft)] [&_h1]:font-editorial-serif [&_h2]:font-editorial-serif [&_h3]:font-editorial-serif [&_a]:text-[var(--midnight)] [&_code]:bg-[var(--cream-deep)] [&_code]:text-[var(--midnight)] [&_code]:rounded-sm [&_code]:px-1 [&_code]:py-0.5">
+    <div className="prose max-w-none text-[var(--midnight-soft)] [&_h1]:font-editorial-serif [&_h2]:font-editorial-serif [&_h3]:font-editorial-serif [&_a]:text-[var(--midnight)] [&_code]:bg-[var(--cream-deep)] [&_code]:text-[var(--midnight)] [&_code]:rounded-sm [&_code]:px-1 [&_code]:py-0.5">
       <ReactMarkdown
         rehypePlugins={[[rehypeSanitize, schema]]}
         components={{

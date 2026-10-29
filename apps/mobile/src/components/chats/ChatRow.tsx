@@ -5,14 +5,15 @@ import {
   sessionLabel,
   sessionPreview,
   sessionRingState,
-  sessionStatus,
+  sessionSignalsLine,
+  sessionStateLabel,
   sessionTitle,
   type AvatarRing,
   type LocalSession,
   type RoomSummary,
 } from "@lightbulb/shared";
 import { Link } from "expo-router";
-import { SymbolView, type SFSymbol } from "expo-symbols";
+import { SymbolView, type SFSymbol } from "../ui/SymbolView";
 import { useRef } from "react";
 import { Pressable, StyleSheet, Text, View, type ViewStyle } from "react-native";
 import ReanimatedSwipeable, {
@@ -291,10 +292,12 @@ export function SessionChatRow({
   // since it has no logo to read.
   const title = sessionTitle(session);
   const voiceOverLabel = sessionLabel(session);
-  const preview = busy
+  // Running subagents and the branch's PR (spec 2026-10-26 (f) gaps 16, 15), after what it says.
+  const signals = session.status === "ended" || session.status === "offline" ? null : sessionSignalsLine(session);
+  const preview = (busy
     ? `${own ? "" : `${ownerName} · `}working…`
-    : `${own ? "" : `${ownerName}: `}${sessionPreview(session)}`;
-  const rowLabel = `${voiceOverLabel}, ${sessionStatus[session.status]}${unread ? ", new output" : ""}${own ? "" : `, ${ownerName}`}`;
+    : `${own ? "" : `${ownerName}: `}${sessionPreview(session)}`) + (signals ? ` · ${signals}` : "");
+  const rowLabel = `${voiceOverLabel}, ${sessionStateLabel(session)}${signals ? `, ${signals}` : ""}${unread ? ", new output" : ""}${own ? "" : `, ${ownerName}`}`;
   const commit = (swipe: SwipeableMethods, action: Extract<ChatRowAction, "markRead" | "archive" | "rename">) => {
     swipe.close();
     hapticSelection();

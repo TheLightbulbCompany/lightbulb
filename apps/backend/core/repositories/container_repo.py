@@ -110,7 +110,22 @@ async def scan_all(*, consistent: bool = False) -> list[dict]:
 # the superseded list would slip past it and silently replace the list with the
 # pointer unchanged — and every hash dropped from it is a live bearer credential
 # nothing can find, expire, or deny again.
-_GATE_OWNED_FIELDS = frozenset({"bedrock_gate_token_hash", "bedrock_gate_superseded_hashes"})
+_GATE_OWNED_FIELDS = frozenset({"bedrock_gate_token_hash", "bedrock_gate_superseded_hashes", "agent_gate_token_hashes"})
+
+
+async def add_agent_gate_hash(owner_id: str, token_hash: str) -> None:
+    """Track a per-agent gate-token hash on the owner's row (string set ADD: idempotent).
+
+    A separate field from the superseded list on purpose: that list is drained by the boot-secret
+    liveness predicate, which knows only the owner-level bearer and would delete agent rows.
+    ``owner_gate_token_hashes`` includes this set, so deny and wipe reach every agent bearer."""
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="ADD agent_gate_token_hashes :h",
+        ConditionExpression="attribute_exists(owner_id)",
+        ExpressionAttributeValues={":h": {token_hash}},
+    )
 
 
 def _reject_gate_owned_fields(caller: str, fields: dict) -> None:

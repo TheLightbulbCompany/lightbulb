@@ -8,6 +8,8 @@ import { StripeSection } from "@/components/settings/StripeSection";
 import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccountsSection";
 import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsSection";
 import { BrowserExtensionsSection } from "@/components/control/panels/BrowserExtensionsSection";
+import { AgentKeysSection } from "@/components/control/panels/AgentKeysSection";
+import { LinkWalletSection } from "@/components/control/panels/LinkWalletSection";
 import { AgentGuardrails } from "@/components/settings/AgentGuardrails";
 import { useConnections } from "@/hooks/useConnections";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
@@ -62,10 +64,12 @@ export function ConnectionsPanel() {
             agent tools), so it gets a consolidated section here and is
             excluded from the generic list below. */}
         <StripeSection canManage={canManage} />
+        <LinkWalletSection canManage={canManage} />
 
         {/* Sign-ins the shared browser fills for agents (the Browser panel's menu opens here). */}
         <WebsiteLoginsSection canManage={canManage} />
         <BrowserExtensionsSection />
+        <AgentKeysSection />
 
         <ConnectionsList canManage={canManage} exclude={["stripe"]} />
 

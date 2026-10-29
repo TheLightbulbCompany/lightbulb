@@ -39,6 +39,7 @@ from core.repositories.agent_mail_inbox_repo import (
 from core.services.agent_email import mail_changed
 from core.services import photon
 from core.services.text_inbound import business_name
+from core.services.webhook_dedup import WebhookDedupResult, record_event_or_skip
 from routers.agent_mail import _require_hook_token
 
 logger = logging.getLogger(__name__)
@@ -118,16 +119,23 @@ async def send_reply(
             await set_disclosed(line["address"], customer)
         except Exception:  # noqa: BLE001 -- the text has gone; a missed mark only repeats the disclosure
             logger.warning("Could not record the disclosure to %s on line %s", customer, line["address"], exc_info=True)
-    await put_sent(
-        address=address,
-        message_id=resp.get("id") or f"photon-reply:{uuid.uuid4().hex}",
-        owner_id=owner_id,
-        agent_id=line["agent_id"],
-        to=customer,
-        subject="",
-        text=text,
-        channel="text",
+    sent_id = resp.get("id")
+    # A retried send is Photon's replay of the first (same idempotency key, same message id): record it once,
+    # on a conditional write keyed by that id, so two overlapping retries cannot both record it.
+    first = not sent_id or (
+        await record_event_or_skip(f"photon-sent:{sent_id}", source="agent_text") is WebhookDedupResult.RECORDED
     )
+    if first:
+        await put_sent(
+            address=address,
+            message_id=sent_id or f"photon-reply:{uuid.uuid4().hex}",
+            owner_id=owner_id,
+            agent_id=line["agent_id"],
+            to=customer,
+            subject="",
+            text=text,
+            channel="text",
+        )
     await mail_changed(owner_id)
     if by_human:
         await set_thread_mode(line["address"], customer, "human")

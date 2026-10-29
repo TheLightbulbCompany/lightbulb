@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { useConnections, type Connection } from "@/hooks/useConnections";
+import { reconnectReasonLine } from "@/components/settings/reconnectReason";
 import { ConnectButton } from "@/components/settings/ConnectButton";
 import { INTEGRATION_RECEIPTS } from "@/components/settings/integration-receipts";
 import {
@@ -159,7 +160,13 @@ export function ConnectionsList({ canManage, exclude }: ConnectionsListProps) {
                   "Not available on this runtime"
                 ) : (
                   <>
-                    {connected ? "Connected" : unavailable ? "Not available yet" : "Not connected"}
+                    {connected
+                      ? "Connected"
+                      : connection.status === "reconnect_required"
+                        ? "Reconnect required"
+                        : unavailable
+                          ? "Not available yet"
+                          : "Not connected"}
                     {connection.acquisition === "direct_oauth"
                       ? " · OAuth"
                       : connection.acquisition === "aws_sts"
@@ -168,6 +175,11 @@ export function ConnectionsList({ canManage, exclude }: ConnectionsListProps) {
                   </>
                 )}
               </p>
+              {reconnectReasonLine(connection) && (
+                <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
+                  {reconnectReasonLine(connection)}
+                </p>
+              )}
               {receipt && (
                 <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
                   {connected

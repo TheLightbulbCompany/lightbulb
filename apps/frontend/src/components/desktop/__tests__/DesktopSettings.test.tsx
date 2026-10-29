@@ -11,7 +11,7 @@ vi.mock("@clerk/nextjs", () => ({
 }));
 
 const api = vi.hoisted(() => {
-  const prefs = { agentSendWithoutAsking: false, sessionsReachableFromBackgroundWork: false };
+  const prefs = { sessionsReachableFromBackgroundWork: false };
   return { get: vi.fn(async () => prefs), put: vi.fn(async (_path: string, body: object) => ({ ...prefs, ...body })) };
 });
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
@@ -27,13 +27,12 @@ it("in a browser shows the download card and the account-level session switches"
   expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/api/download/desktop");
   expect(screen.getByText(/live on your Mac, so open the Lightbulb desktop app to change them/)).toBeInTheDocument();
   expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
-  const ask = await screen.findByRole("switch", { name: "Agents can message my sessions without asking" });
-  expect(ask).not.toBeChecked();
-  expect(screen.getByRole("switch", { name: /Background work/ })).not.toBeChecked();
-  expect(screen.getAllByRole("switch")).toHaveLength(2);
-  await userEvent.click(ask);
-  expect(api.put).toHaveBeenCalledWith("/users/me/prefs", { agentSendWithoutAsking: true });
-  await waitFor(() => expect(ask).toBeChecked());
+  const background = await screen.findByRole("switch", { name: /Background work/ });
+  expect(background).not.toBeChecked();
+  expect(screen.getAllByRole("switch")).toHaveLength(1);
+  await userEvent.click(background);
+  expect(api.put).toHaveBeenCalledWith("/users/me/prefs", { sessionsReachableFromBackgroundWork: true });
+  await waitFor(() => expect(background).toBeChecked());
 });
 
 it("in the desktop app shows the four cards in order and no raw org id", async () => {
@@ -55,7 +54,7 @@ it("in the desktop app shows the four cards in order and no raw org id", async (
   expect(await screen.findByText("No folders yet.")).toBeInTheDocument();
   expect(await screen.findByRole("switch", { name: "Share every new session" })).not.toBeChecked();
   // Shown once, after Session sharing, not inside it.
-  expect(await screen.findAllByRole("switch", { name: "Agents can message my sessions without asking" })).toHaveLength(1);
+  expect(await screen.findAllByRole("switch", { name: /Background work/ })).toHaveLength(1);
   const order = ["Open at login", "Agents on this Mac", "Approved folders", "Session sharing"].map((text) => screen.getByText(text));
   for (let i = 1; i < order.length; i++) {
     expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

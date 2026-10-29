@@ -28,17 +28,28 @@ those integrations are CLI-rail and will never have one.
 Google Workspace on Lightbulb is a managed CLI-rail integration. Validate its
 stored credentials with `gog auth list --check`; `gog auth status` only reports
 configuration and does not validate refresh tokens. If the task needs service-level
-proof, make a small account-scoped read-only call such as listing calendars or Drive
-files. Do not run the generic Google Workspace skill's `setup.py --check`: that
+proof, make a small account-scoped read-only call such as listing upcoming calendar events. Do not run the generic Google Workspace skill's `setup.py --check`: that
 checker only looks for a separate profile-local `google_token.json`, which
 Lightbulb's managed `gog` connection does not create. A missing file there therefore
 says nothing about the managed connection and must not be reported as disconnected.
 
-When a `gog` command fails because an API is not enabled or permission is denied
-(for example "Google Docs API has not been used in project ... or it is disabled"),
-quote the error and tell the owner exactly what to enable and where (here: the
-Google Docs API in their Google Cloud project) BEFORE you try any other route. A
-browser workaround is still allowed after that; it does not replace telling them.
+**Docs, Sheets and Drive go through `gog`, not the browser.** `gog auth list` names
+the connected accounts; pick the one that owns or can edit the file and pass it with
+`-a <email>`. Read a Doc with `gog -a <email> docs cat <docId>`, change it with
+`gog -a <email> docs write|insert <docId>` (`--help` for flags), and read it back after.
+Sheets: `gog -a <email> sheets ...`; Drive files: `gog -a <email> drive ...`. Mail:
+`gog -a <email> gmail search|get|send ...` reads, searches, drafts and sends; it never
+deletes permanently. Calendars: `gog -a <email> calendar ...` covers every calendar.
+The live
+browser is not signed in to Google, and a Google sign-in there (with its phone prompt)
+would share that account with every agent in the workspace: never start one for a file
+`gog` can reach. If no connected account can open the file, say which account needs
+access (the owner shares it, or connects that account in Connections).
+
+When a `gog` command fails with a permission error (for example 403 `insufficient
+authentication scopes`), the account was connected before mail and Drive access were
+added. Do not retry or work around it: ask the person to reconnect Google in
+Connections.
 
 ## Microsoft 365 (Microsoft Graph)
 

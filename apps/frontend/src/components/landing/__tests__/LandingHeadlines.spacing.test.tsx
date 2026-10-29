@@ -44,10 +44,10 @@ vi.mock("next/image", () => ({
 const flatten = (node: HTMLElement) => (node.textContent ?? "").replace(/\s+/g, " ").trim();
 
 describe("landing headlines survive .lb-brk being hidden", () => {
-  it("Hero keeps a space after the comma", async () => {
+  it("Hero reads as one sentence", async () => {
     const { Hero } = await import("../Hero");
     const { container } = render(<Hero />);
-    expect(flatten(container)).toContain("Your team and your AI employees, in one place.");
+    expect(flatten(container)).toContain("Message your agents the way you message your team.");
   });
 
   it("HowItWorks keeps a space between the two sentences", async () => {

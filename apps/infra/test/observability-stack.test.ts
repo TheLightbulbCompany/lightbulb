@@ -212,6 +212,8 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "openrouter.settlement.overshoot_microcents": [[]],
   // apps/infra/lambda/openrouter-gate/core.mjs (EMF, own service); P34.
   "openrouter.gate.account_refused": [[]],
+  // apps/infra/hermes/bridge/network.py (EMF, service hermes-bridge); P35.
+  "network.member_key_contested": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
   // core/services/messaging.py — create_human_message / create_agent_message.
   "messaging.message.created": [["author_kind", "has_targets", "room_kind"]],
@@ -293,6 +295,7 @@ const EMITTING_SERVICE: Record<string, string> = {
   "messaging.projector.push": "messaging-projector",
   "openrouter.settlement.overshoot_microcents": "openrouter-settlement",
   "openrouter.gate.account_refused": "openrouter-gate",
+  "network.member_key_contested": "hermes-bridge",
 };
 const DEFAULT_EMITTING_SERVICE = "lightbulb-backend";
 
@@ -359,6 +362,21 @@ describe("ObservabilityStack", () => {
     // whole-branch review fix round) + 3 x 7 per-table DDB + remaining
     // AWS-native + 2 cost
     expect(count).toBeGreaterThanOrEqual(65);
+  });
+
+  test("P35 pages on the bridge's member-key-contested stream", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-dev-P35-network-member-key-contested",
+      Namespace: "LightbulbAI",
+      MetricName: "network.member_key_contested",
+      Threshold: 1,
+      Period: 600,
+      ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      Dimensions: Match.arrayWith([
+        Match.objectLike({ Name: "service", Value: "hermes-bridge" }),
+      ]),
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
+    });
   });
 
   test("creates 1 CloudWatch dashboard", () => {
@@ -489,11 +507,11 @@ describe("ObservabilityStack", () => {
   // by SNS, and CFN still reported them CREATE_COMPLETE — only a NEW construct
   // id recreates them. Pin the ids so a later "tidy up" rename does not
   // silently recreate the same dead-letterbox situation.
-  test("alert email subscriptions use the recreated V2 construct ids", () => {
+  test("alert subscriptions use the recreated V3 construct ids", () => {
     const logicalIds = Object.keys(
       template.findResources("AWS::SNS::Subscription"),
     );
-    for (const id of ["AlertsPageEmailV2", "AlertsWarnEmailV2"]) {
+    for (const id of ["AlertsPageEmailV3", "AlertsWarnEmailV3"]) {
       // CDK appends a uniqueness hash to the logical id, so match the prefix.
       expect(logicalIds.some((logicalId) => logicalId.startsWith(id))).toBe(
         true,

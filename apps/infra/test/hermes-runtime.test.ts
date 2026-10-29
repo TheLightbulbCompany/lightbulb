@@ -79,6 +79,7 @@ function buildStacks(environment: "dev" | "prod"): {
       huddleWorkerSecret: `lightbulb/${environment}/huddle_worker_secret`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
+      networkProofKey: `isol8/${environment}/network_proof_key`,
       sesIngestSecret: `isol8/${environment}/ses_ingest_secret`,
     },
     kmsKeyArn: kmsKey.keyArn,
@@ -89,6 +90,8 @@ function buildStacks(environment: "dev" | "prod"): {
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,
       workspaceMemoryId: container.workspaceMemory.attrMemoryId,
+      sessionsMemoryId: container.sessionsMemory.attrMemoryId,
+      workspaceBrowserId: container.workspaceBrowser.attrBrowserId,
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
@@ -157,6 +160,11 @@ function flatten(value: string | string[] | undefined): string[] {
   if (value === undefined) return [];
   return Array.isArray(value) ? value : [value];
 }
+
+// The service stack names the container stack's browser through a cross-stack import.
+const CUSTOM_BROWSER_ARN = Match.objectLike({
+  "Fn::Join": ["", Match.arrayWith(["arn:aws:bedrock-agentcore:us-east-1:877352799272:browser-custom/"])],
+});
 
 describe("hermes runtime wiring", () => {
   const dev = buildStacks("dev");
@@ -256,9 +264,27 @@ describe("hermes runtime wiring", () => {
     // Profiles plus backend-owned install records; still no access to the old replicas.
     expect(flatten(profiles!.Resource)).toEqual([
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/hermes/*",
+      "arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/network/*",
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/marketplace-installs/*",
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/browser-state/*",
     ]);
+  });
+
+  // The built-in browser takes a new AWS address per session, and a moved session is signed out
+  // by sites such as Google; this one leaves from the NAT's fixed address (dev 2026-10-26).
+  it("starts every workspace session on one VPC-mode browser that may only leave on 80/443", () => {
+    dev.containerTemplate.resourceCountIs("AWS::BedrockAgentCore::BrowserCustom", 1);
+    const [browser] = Object.values(dev.containerTemplate.findResources("AWS::BedrockAgentCore::BrowserCustom"));
+    expect(browser.Properties.Name).toBe("lightbulb_dev_workspace_browser");
+    expect(browser.Properties.NetworkConfiguration.NetworkMode).toBe("VPC");
+    const sgId = browser.Properties.NetworkConfiguration.VpcConfig.SecurityGroups[0]["Fn::GetAtt"][0];
+    const sg = dev.containerTemplate.toJSON().Resources[sgId];
+    expect(sg.Properties.SecurityGroupEgress.map((r: { IpProtocol: string; FromPort: number; CidrIp: string }) =>
+      [r.IpProtocol, r.FromPort, r.CidrIp])).toEqual([["tcp", 443, "0.0.0.0/0"], ["tcp", 80, "0.0.0.0/0"]]);
+    // Both envs are switched (VPC_BROWSER_ENVS): their runtimes run a bridge that accepts the
+    // custom browser's CDP URL (prod rolled onto h-2026.10.26-4519359 first).
+    expect(JSON.stringify(dev.serviceTemplate.findResources("AWS::ECS::TaskDefinition"))).toContain('"AGENTCORE_BROWSER_ID"');
+    expect(JSON.stringify(prod.serviceTemplate.findResources("AWS::ECS::TaskDefinition"))).toContain('"AGENTCORE_BROWSER_ID"');
   });
 
   it("the owner boundary permits AgentCore Browser use, and the base policy grants none", () => {
@@ -270,6 +296,7 @@ describe("hermes runtime wiring", () => {
       "bedrock-agentcore:SaveBrowserSessionProfile", "bedrock-agentcore:InvokeBrowser"]));
     expect(flatten(stmt?.Action)).not.toContain("bedrock-agentcore:ListBrowserSessions"); // the §2c fence
     expect(flatten(stmt?.Resource).join(" ")).toContain(":aws:browser/aws.browser.v1");
+    expect(JSON.stringify(stmt?.Resource)).toContain('"WorkspaceBrowser'); // the env's VPC browser
     const base = managedPolicyStatements(dev.containerTemplate, "lightbulb-dev-owner-bedrock-base");
     expect(base.some((s) => /Browser/.test(s.Sid ?? ""))).toBe(false); // the grant is inline, per owner
   });
@@ -297,7 +324,7 @@ describe("hermes runtime wiring", () => {
               "bedrock-agentcore:ConnectBrowserLiveViewStream",
             ]),
             Resource: Match.arrayEquals([
-              "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser/*",
+              CUSTOM_BROWSER_ARN,
               "arn:aws:bedrock-agentcore:us-east-1:aws:browser/aws.browser.v1",
             ]),
           }),
@@ -306,7 +333,7 @@ describe("hermes runtime wiring", () => {
             // CDK collapses a single action to a bare string.
             Action: "bedrock-agentcore:StartBrowserSession",
             Resource: Match.arrayEquals([
-              "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser/*",
+              CUSTOM_BROWSER_ARN,
               "arn:aws:bedrock-agentcore:us-east-1:aws:browser/aws.browser.v1",
               "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser-profile/*",
             ]),
@@ -319,7 +346,7 @@ describe("hermes runtime wiring", () => {
               "bedrock-agentcore:ConnectBrowserAutomationStream",
             ]),
             Resource: Match.arrayEquals([
-              "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser/*",
+              CUSTOM_BROWSER_ARN,
               "arn:aws:bedrock-agentcore:us-east-1:aws:browser/aws.browser.v1",
             ]),
           }),
@@ -336,14 +363,18 @@ describe("hermes runtime wiring", () => {
   // Workspace memory (Track G). One shared resource per env; tenants are isolated by the per-owner
   // inline policy, so the boundary must never admit the record get/delete/Batch* actions -- they
   // carry no condition keys and would let one owner reach another's records by id (dev spike 09-22).
-  it("creates one semantic workspace memory per env, namespaced by actor (= owner)", () => {
-    dev.containerTemplate.resourceCountIs("AWS::BedrockAgentCore::Memory", 1);
+  it("creates one workspace memory per env (facts namespaced by actor = owner) and a sessions memory (episodes by user)", () => {
+    dev.containerTemplate.resourceCountIs("AWS::BedrockAgentCore::Memory", 2);
     dev.containerTemplate.hasResourceProperties("AWS::BedrockAgentCore::Memory", {
       Name: "lightbulb_dev_workspace_memory",
       EventExpiryDuration: 7,
       MemoryStrategies: [
-        { SemanticMemoryStrategy: Match.objectLike({ Namespaces: ["/owners/{actorId}/"] }) },
+        { CustomMemoryStrategy: Match.objectLike({ Name: "workspace_claims", Namespaces: ["/owners/{actorId}/"] }) },
       ],
+    });
+    dev.containerTemplate.hasResourceProperties("AWS::BedrockAgentCore::Memory", {
+      Name: "lightbulb_dev_sessions_memory",
+      MemoryStrategies: [{ EpisodicMemoryStrategy: Match.objectLike({ Name: "session_episodes" }) }],
     });
     // Prod memory is owner data: a later edit that drops applyRemovalPolicy must fail here.
     prod.containerTemplate.hasResource("AWS::BedrockAgentCore::Memory", {
@@ -375,7 +406,7 @@ describe("hermes runtime wiring", () => {
     expect(JSON.stringify(base)).not.toContain("MemoryRecords");
   });
 
-  it("grants the backend task role the memory wipe and the review actions, never retrieve", () => {
+  it("grants the backend task role the memory wipe, review and recall actions", () => {
     dev.serviceTemplate.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
@@ -408,8 +439,16 @@ describe("hermes runtime wiring", () => {
     });
     const env = backendContainerEnv(dev.serviceTemplate, "dev") as Record<string, unknown>;
     expect(env.AGENTCORE_MEMORY_ID).toBeDefined();
-    expect(JSON.stringify([dev.serviceTemplate.findResources("AWS::IAM::Policy"), dev.serviceTemplate.findResources("AWS::IAM::ManagedPolicy")])).not.toContain(
-      "bedrock-agentcore:RetrieveMemoryRecords",
-    );
+    // Recall (task 1 of the workspace memory plan): the backend now searches and writes events.
+    dev.serviceTemplate.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AgentCoreMemoryRecall",
+            Action: ["bedrock-agentcore:RetrieveMemoryRecords", "bedrock-agentcore:CreateEvent"],
+          }),
+        ]),
+      }),
+    });
   });
 });

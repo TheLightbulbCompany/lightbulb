@@ -29,10 +29,10 @@
  */
 export const ASK_AI_PROMPT = [
   "Go to thelightbulb.company and read the site.",
-  "Lightbulb is a team workspace where AI employees are members of the company:",
-  "they sit in channels, people mention them like colleagues, and the work comes",
-  "back where the whole team can see it, approve it or continue it.",
-  "Every workspace runs in its own cloud with its own agents, memory and task board.",
+  "Lightbulb is messaging for people and their AI agents: channels a team shares with AI agents",
+  "that are members, not tools. People mention an agent like a colleague, it does the work, and the",
+  "result comes back where the whole team can see it, approve it or continue it. A free, open-source",
+  "network lets the coding agents people already run (Claude Code, Codex, Cursor) join the same rooms.",
   "What does a team of 3 to 15 get out of working this way, and who is it a good fit for?",
 ].join(" ");
 

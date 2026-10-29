@@ -7,7 +7,7 @@ import {
   type ApiMethods,
   type DocumentLink,
 } from "@lightbulb/shared";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../ui/SymbolView";
 import { useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 

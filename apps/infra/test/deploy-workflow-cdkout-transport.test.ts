@@ -61,6 +61,16 @@ describe("deploy.yml cdk.out transport", () => {
     expect(downloads).toHaveLength(assetJobs.length);
   });
 
+  it("GUARD: every download reads the host cache before S3", () => {
+    // The deploy runners sit outside AWS, so each S3 GET of the ~34 MB
+    // tarball is internet egress: 43 jobs per run came to ~817 GB/mo (~$70).
+    // Synth seeds a per-run host cache; asset jobs must check it first.
+    const assetJobs = yaml.match(/^ {2}Assets-[A-Za-z0-9]+:$/gm) ?? [];
+    const cacheHits = yaml.match(/echo "cdk\.out: host cache hit"/g) ?? [];
+    expect(cacheHits).toHaveLength(assetJobs.length);
+    expect(yaml).toMatch(/lightbulb-cdkout\/\$\{\{ github\.run_id \}\}-\$\{\{\s+github\.run_attempt \}\}/);
+  });
+
   it("authenticates before touching S3 in Build-Synth", () => {
     const synthJob = yaml.match(/^ {2}Build-Synth:$[\s\S]*?(?=^ {2}[A-Za-z])/m)?.[0] ?? "";
     const authAt = synthJob.indexOf("Authenticate Via OIDC Role");

@@ -92,6 +92,7 @@ async def test_update_appends_a_note_and_never_comments(admin):
 async def test_hosted_update_needs_the_write_scope_and_explains_refusals(admin, monkeypatch):
     scopes = []
     monkeypatch.setattr(hosted_mcp, "_caller", lambda scope=hosted_mcp.READ_SCOPE: scopes.append(scope) or AUTH)
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda scope=hosted_mcp.READ_SCOPE: scopes.append(scope) or AUTH)
     with pytest.raises(ToolError, match="404"):
         await hosted_mcp.update_task("OTHR-1", status="done")
     assert scopes == [hosted_mcp.WRITE_SCOPE]

@@ -12,6 +12,8 @@
  * The appAccountToken comes from the server too (purchase-intent), so the
  * binding between a purchase and a workspace has one implementation.
  */
+import { Platform } from "react-native";
+
 export type ApiPost = (path: string, body: unknown) => Promise<unknown>;
 export type PurchaseIntent = { appAccountToken: string; productIds: string[] };
 
@@ -24,6 +26,9 @@ export const PLAN_ORDER: Record<string, number> = {
 export function paywallProductIds(
   account: { apple_iap_product_ids?: string[] | null } | null | undefined,
 ): string[] {
+  // App Store products only: Android sells nothing in-app, so every paywall
+  // shows its no-products fallback there, as iOS does while selling is off.
+  if (Platform.OS !== "ios") return [];
   const ids = account?.apple_iap_product_ids ?? [];
   return [...ids].sort((a, b) => (PLAN_ORDER[a] ?? 99) - (PLAN_ORDER[b] ?? 99));
 }

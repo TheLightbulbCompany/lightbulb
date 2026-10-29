@@ -58,7 +58,6 @@ const COMPANY_BOUND = {
   payouts_enabled: false,
   dashboard_url: "https://dashboard.stripe.com/",
   connect_configured: true,
-  provisioning_enabled: true,
 };
 
 const COMPANY_UNBOUND = {
@@ -69,7 +68,6 @@ const COMPANY_UNBOUND = {
   payouts_enabled: false,
   dashboard_url: null,
   connect_configured: true,
-  provisioning_enabled: true,
 };
 
 // SWR has a global cache that persists across renders/tests — wrap each
@@ -133,6 +131,30 @@ describe("StripeSection — the consolidated Stripe card", () => {
     expect(await screen.findByText(/Connected · OAuth/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Disconnect Stripe" })).toBeInTheDocument();
     expect(screen.queryByText(/pick the same account/)).toBeNull();
+  });
+
+  it("shows a dead agent grant as needing a reconnect, and says why", async () => {
+    get.mockResolvedValue(COMPANY_BOUND);
+    h.connections = [
+      {
+        provider: "stripe",
+        display_name: "Stripe",
+        acquisition: "direct_oauth",
+        status: "reconnect_required",
+        reconnect_reason: "invalid_grant: Invalid refresh token",
+      },
+    ];
+    renderSection();
+
+    expect(
+      await screen.findByText("Stripe ended the sign-in (invalid_grant). Reconnect to continue."),
+    ).toBeInTheDocument();
+    const status = screen.getByText(/Needs reconnecting · OAuth/);
+    expect(screen.queryByText(/Not connected/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Reconnect Stripe" })).toBeInTheDocument();
+    // The status dot sits beside the Agent tools text block; it must not read as healthy.
+    const dot = status.closest(".flex.items-start")?.querySelector("span[aria-hidden='true']");
+    expect(dot?.className).not.toContain("bg-[var(--ok)]");
   });
 
   it("keeps Disconnect but does not claim an unsupported old agent grant works", async () => {

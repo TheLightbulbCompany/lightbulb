@@ -96,15 +96,18 @@ async def test_a_decline_is_silent_and_they_may_ask_again(transport):
 
 
 @pytest.mark.asyncio
-async def test_the_owner_can_turn_asking_off_for_the_session(transport):
+async def test_link_viewers_always_may_ask_and_team_control_leaves_their_ask_waiting(transport):
+    """Owner ruling 2026-10-26: no "Viewers can ask to join" switch; a row left with the old flag
+    still takes the ask. Teammates control covers members only, so it answers no outside ask."""
     sid, token = await public_session(transport)
-    assert service._session_public(await repo.get_session(OWNER, sid), ALICE.user_id).ask_to_join is True
-    assert (await service.set_ask_to_join(ALICE, sid, False)).ask_to_join is False
-    assert (await session_links.open_page(PRIYA, token)).me.can_ask is False
-    with pytest.raises(ApiProblem):
-        await session_links.ask_to_join(PRIYA, token)
-    signed_out = await session_links.open_page(None, token)
-    assert signed_out.me.can_ask is False
+    await service._change_session(ALICE, sid, lambda r: {**r, "askToJoinOff": True}, "ask_to_join_off", None)
+    assert (await session_links.open_page(None, token)).me.can_ask is True
+    assert (await session_links.ask_to_join(PRIYA, token)).join == "pending"
+    await service.set_team_control(ALICE, sid, True)
+    assert (await session_links.open_page(PRIYA, token, refresh=True)).me.join == "pending"
+    assert PRIYA.user_id in (
+        service._session_public(await repo.get_session(OWNER, sid), ALICE.user_id).pending_joins or []
+    )
 
 
 @pytest.mark.asyncio

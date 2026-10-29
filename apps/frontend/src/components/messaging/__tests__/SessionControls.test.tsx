@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import { canonicalJson, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
+import { ApiError, canonicalJson, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
 import { SessionApprovalCard } from "../SessionControls";
 
 const pendingApproval = {
@@ -24,6 +24,30 @@ it("lets the owner approve the exact prompt, bound to its digest", async () => {
     kind: "approve", decision: "allow", approvalId: pendingApproval.approvalId, inputDigest: pendingApproval.inputDigest, expectedGeneration: "g",
   }));
   expect(await screen.findByText("Sent to your Mac.")).toBeInTheDocument();
+});
+
+it("drops the card when the prompt is answered in the terminal or the server says it is gone", async () => {
+  const c = client();
+  const { rerender } = render(<SessionApprovalCard session={session()} client={c} own ownerName="You" />);
+  // The next session update carries no prompt: the card goes without a click.
+  rerender(<SessionApprovalCard session={session({ status: "busy", pendingApproval: undefined })} client={c} own ownerName="You" />);
+  expect(screen.queryByLabelText("Permission prompt")).not.toBeInTheDocument();
+  // Still listed as open, but the answer comes back as a conflict and the re-read row has no prompt: no stale buttons stay up.
+  const stale = { ...c, getLocalSession: vi.fn(async () => session({ status: "busy", pendingApproval: undefined })) };
+  rerender(<SessionApprovalCard session={session()} client={stale} own ownerName="You" />);
+  c.submitLocalSessionCommand.mockRejectedValueOnce(new ApiError(409, { code: "LOCAL_SESSION_CONFLICT" }, "That permission prompt has changed."));
+  await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+  await waitFor(() => expect(screen.queryByLabelText("Permission prompt")).not.toBeInTheDocument());
+  expect(stale.getLocalSession).toHaveBeenCalledWith("s1");
+});
+
+it("keeps the card with a Try again note when a conflict leaves the prompt open", async () => {
+  const c = { ...client(), getLocalSession: vi.fn(async () => session()) };
+  c.submitLocalSessionCommand.mockRejectedValueOnce(new ApiError(409, { code: "LOCAL_SESSION_CONFLICT" }, "Session changed. Try again."));
+  render(<SessionApprovalCard session={session()} client={c} own ownerName="You" />);
+  await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+  expect(await screen.findByText("Could not send the answer. Try again.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
 });
 
 it("shows a teammate the prompt but no controls until the owner opts in", () => {
@@ -48,38 +72,24 @@ it("keeps a prompt it cannot show whole deny-only, and offers only suggested mod
   expect(c.submitLocalSessionCommand).toHaveBeenLastCalledWith("s1", expect.objectContaining({ decision: "allow", mode: "acceptEdits" }));
 });
 
+it("offers Claude's own similar-commands rule, naming what it allows", async () => {
+  const c = client();
+  render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval, summary: "npm run greet", modes: ["similar"], similar: "npm run *" } })} client={c} own ownerName="You" />);
+  await userEvent.click(screen.getByRole("button", { name: "Allow similar commands for this session (npm run *)" }));
+  expect(c.submitLocalSessionCommand).toHaveBeenCalledWith("s1", expect.objectContaining({ decision: "allow", mode: "similar" }));
+});
+
+it("answers a Codex prompt the same way, with Codex's own choices", async () => {
+  const c = client();
+  render(<SessionApprovalCard session={session({ provider: "codex", pendingApproval: { ...pendingApproval, summary: "/bin/zsh -lc 'mkdir -p /tmp/x'", modes: ["session"] } })} client={c} own ownerName="You" />);
+  expect(screen.getByText("Codex wants to use Bash")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Allow for this conversation" }));
+  expect(c.submitLocalSessionCommand).toHaveBeenCalledWith("s1", expect.objectContaining({ decision: "allow", mode: "session" }));
+});
+
 it("draws nothing when the session is not waiting", () => {
   const { container } = render(<SessionApprovalCard session={session({ status: "busy" })} client={client()} own ownerName="You" />);
   expect(container).toBeEmptyDOMElement();
-});
-
-it("shows a private send only to its owner before enabling approval", async () => {
-  const detail = { approvalId: pendingApproval.approvalId, inputDigest: pendingApproval.inputDigest,
-    destination: "person:bob", text: "First line\nSecond line", requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449" };
-  const c = { ...client(), getPrivateSendApproval: vi.fn(async () => detail) };
-  const privateSession = session({ pendingApproval: { ...pendingApproval,
-    tool: "mcp__lightbulb_native_sessions__send", summary: "Lightbulb message", exact: false, modes: [] } });
-  const { rerender } = render(<SessionApprovalCard session={privateSession} client={c} own ownerName="You" />);
-  const message = (_: string, element: Element | null) => element?.tagName === "PRE" && element.textContent === detail.text;
-  expect(await screen.findByText(message)).toBeInTheDocument();
-  expect(screen.getByText("To: person:bob")).toBeInTheDocument();
-  expect(screen.getByText(`Request ID: ${detail.requestId}`)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
-  rerender(<SessionApprovalCard session={session({ ...privateSession, teamControl: true })} client={c} own={false} ownerName="Alice" />);
-  expect(screen.queryByText(message)).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
-});
-
-it("lets the owner retry a failed private detail load", async () => {
-  const detail = { approvalId: pendingApproval.approvalId, inputDigest: pendingApproval.inputDigest,
-    destination: "room:one", text: "send this", requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449" };
-  const c = { ...client(), getPrivateSendApproval: vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(detail) };
-  render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval,
-    tool: "mcp__lightbulb_native_sessions__send", exact: false, modes: [] } })} client={c} own ownerName="You" />);
-  await userEvent.click(await screen.findByRole("button", { name: "Retry loading message" }));
-  expect(await screen.findByText("send this")).toBeInTheDocument();
-  expect(c.getPrivateSendApproval).toHaveBeenCalledTimes(2);
-  expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
 });
 
 // Hashed outside the component: sorted keys, compact, as the Mac digests the call.

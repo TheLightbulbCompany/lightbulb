@@ -3,12 +3,12 @@
 Stripe's Provisioning API has no webhooks and "doesn't define a caller
 idempotency contract for state-changing requests", so this row IS the
 integration's memory: "A browser session, Provider redirect, worker restart, or
-deployment failure must not lose an Account request ID, Resource ID, or
+deployment failure must not lose a Provider connection request ID, Resource ID, or
 uncertain write state" (guide) — restated in spec §3.5. Nothing sweeps these
 rows in the background: a workflow moves when somebody reads it.
 
 Fields follow the guide's own Provisioning-workflow record (workflow_id,
-tenant_id, action, account_request_id, resource_id, provider_id, service_ref,
+tenant_id, action, provider_connection_request_id, resource_id, provider_id, service_ref,
 status, created_at, updated_at) plus what spec §3.2 needs: the approval
 snapshot, the project id, and a SAFE error code.
 
@@ -49,7 +49,7 @@ TERMINAL_STATES = frozenset({"active", "failed", "requires_review", "rejected", 
 
 # States where no state-changing Stripe POST can have happened yet, so the ask
 # can simply be withdrawn. `awaiting_user_action` is conditional — the route
-# checks for an account_request_id / resource_id as well.
+# checks for a provider_connection_request_id / resource_id as well.
 CANCELLABLE_STATES = frozenset({"ask", "awaiting_approval", "awaiting_user_action", "stale"})
 
 # The claim is written only by `claim`/`release` (and dropped by a terminal

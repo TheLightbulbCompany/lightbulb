@@ -4,7 +4,16 @@
 import "./workspace.css";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { useUser } from "@clerk/nextjs";
+import { useOrganization, useOrganizationList, useUser } from "@clerk/nextjs";
+import { ChevronDown } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { useBilling } from "@/hooks/useBilling";
@@ -41,7 +50,20 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: Workspac
   const userName = user?.fullName || user?.firstName || "User";
   // ponytail: first membership stands in for the active org (workspace-first
   // onboarding gives one org per user); read useAuth().orgId if that changes.
-  const workspaceName = user?.organizationMemberships?.[0]?.organization?.name || "Lightbulb";
+  // The ACTIVE workspace, never the first membership: Clerk lists memberships newest first, so a
+  // person in two workspaces saw the newer one's name over the active one's rooms.
+  const { organization } = useOrganization();
+  const workspaceName = organization?.name || "Lightbulb";
+  // ponytail: first 50 memberships only (Clerk's default page is 10), as on the phone; page when someone belongs to more.
+  const { userMemberships, setActive } = useOrganizationList({ userMemberships: { pageSize: 50 } });
+  const memberships = userMemberships?.data ?? [];
+  const switchWorkspace = async (orgId: string) => {
+    if (!setActive || orgId === organization?.id) return;
+    await setActive({ organization: orgId });
+    // A full load: cached reads, live subscriptions and runtime keys all belong to the old workspace.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a full load is the point
+    window.location.assign("/chat");
+  };
   const userInitials = userName
     .split(" ")
     .map((n: string) => n[0])
@@ -60,7 +82,24 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: Workspac
   return (
     <div className="cream-sidebar">
       <div className="sidebar-header">
-        <h1 className="workspace-name" title={workspaceName}>{workspaceName}</h1>
+        <h1 className="workspace-name" title={workspaceName}>
+          {memberships.length > 1 ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger className="workspace-switcher">
+                {workspaceName}
+                <ChevronDown size={14} aria-hidden />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuLabel>Switch workspace</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={organization?.id} onValueChange={(id) => void switchWorkspace(id)}>
+                  {memberships.map(({ organization: org }) => (
+                    <DropdownMenuRadioItem key={org.id} value={org.id}>{org.name}</DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : workspaceName}
+        </h1>
       </div>
 
 

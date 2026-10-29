@@ -56,7 +56,7 @@ export function MessagingConversation() {
       onOpenSession={openSession} onClose={closeSession} />;
   }
   if (sessionFocus) {
-    return <SessionFocus key={scope} focus={{ sessionId: sessionFocus.sessionId }} entries={directoryProps.sessions ?? []} loading={workspaceSessions.loading}
+    return <SessionFocus key={scope} focus={{ sessionId: sessionFocus.sessionId, seq: sessionFocus.seq }} entries={directoryProps.sessions ?? []}
       hintRevision={workspaceSessions.hintRevision} client={sessionSource.client} onEvent={sessionSource.onEvent} resolveSessionOwner={resolveSessionOwner}
       onAccessLost={workspaceSessions.refresh} onClose={closeSession} participants={directoryProps.participants} onRemove={directoryProps.onRemoveSession}
       chatOpen={!!sessionFocus.chat} onChatOpenChange={setSessionChat} onChatRoom={setSessionChatRoomId}

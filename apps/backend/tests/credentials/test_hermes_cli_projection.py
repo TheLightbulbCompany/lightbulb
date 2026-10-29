@@ -370,3 +370,55 @@ async def test_a_google_connect_and_disconnect_keep_another_providers_cli_env_ke
     await hermes_cli.clear("org_1", "google", "gog_cli", {"disconnect_all": True, "accounts": []})
     for agent in ("ceo", "eng"):
         assert json.loads(s3[f"org_1/hermes/{agent}/cli-env.json"]) == {"VERCEL_TOKEN": "vt"}
+
+
+@pytest.mark.asyncio
+async def test_an_agent_created_after_a_connect_gets_the_credentials(s3, roster, monkeypatch):
+    from core.services.credentials.materializers import gh_cli
+
+    monkeypatch.setattr(gh_cli, "_fetch_login", lambda token: "octo")
+    await hermes_cli.project("org_1", "github", "gh_cli", {"token": "gho_secret"})
+    s3["org_1/hermes/ceo/cli-env.json"] = json.dumps({"VERCEL_TOKEN": "v", "GOG_ACCOUNT": "ceo@x.co"}).encode()
+
+    await hermes_cli.seed_new_profile("org_1", "hired")
+
+    assert b"gho_secret" in s3["org_1/hermes/hired/home/.config/gh/hosts.yml"]
+    # owner-level shell keys are inherited, the per-agent Google binding is not
+    assert json.loads(s3["org_1/hermes/hired/cli-env.json"]) == {"VERCEL_TOKEN": "v"}
+    assert "org_1/hermes/hired/.revision" in s3
+
+
+@pytest.mark.asyncio
+async def test_reseeding_an_existing_agent_keeps_its_own_binding_and_credentials(s3, roster, monkeypatch):
+    from core.services.credentials.materializers import gh_cli
+
+    monkeypatch.setattr(gh_cli, "_fetch_login", lambda token: "octo")
+    await hermes_cli.project("org_1", "github", "gh_cli", {"token": "gho_secret"})
+    s3["org_1/hermes/ceo/cli-env.json"] = json.dumps({"VERCEL_TOKEN": "v", "GOG_ACCOUNT": "ceo@x.co"}).encode()
+    s3["org_1/hermes/eng/cli-env.json"] = json.dumps({"GOG_ACCOUNT": "eng@x.co", "VERCEL_TOKEN": "mine"}).encode()
+    s3["org_1/hermes/eng/home/.config/gh/hosts.yml"] = b"own-hosts"
+
+    await hermes_cli.seed_new_profile("org_1", "eng")
+
+    assert json.loads(s3["org_1/hermes/eng/cli-env.json"]) == {"GOG_ACCOUNT": "eng@x.co", "VERCEL_TOKEN": "mine"}
+    assert s3["org_1/hermes/eng/home/.config/gh/hosts.yml"] == b"own-hosts"
+
+
+@pytest.mark.asyncio
+async def test_second_account_connect_keeps_the_first_when_the_first_profile_is_empty(s3, roster, monkeypatch):
+    """agent_ids[0] ('ceo') holds nothing; the seed must come from the profile that does ('eng'),
+    or the earlier xurl app is wiped."""
+    import yaml
+
+    from core.services.credentials.materializers import xurl_cli
+
+    monkeypatch.setattr(xurl_cli, "_fetch_username", lambda token: "acct")
+    s3["org_1/hermes/eng/home/.xurl"] = yaml.safe_dump({"apps": {"mine": {"client_id": "keep-me"}}}).encode()
+
+    await hermes_cli.project(
+        "org_1", "x", "xurl_cli", {"client_id": "cid", "access_token": "at", "refresh_token": "rt"}
+    )
+
+    for agent in ("ceo", "eng"):
+        store = yaml.safe_load(s3[f"org_1/hermes/{agent}/home/.xurl"].decode())
+        assert set(store["apps"]) == {"mine", "lightbulb-x"}

@@ -14,6 +14,7 @@ import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
 import { DailySummaryCard } from "@/components/settings/DailySummaryCard";
+import { SessionNotificationsCard } from "@/components/settings/SessionNotificationsCard";
 import { DesktopSettings } from "@/components/desktop/DesktopSettings";
 import { LocalMcpServers } from "@/components/desktop/LocalMcpServers";
 import { HandlePicker } from "@/components/marketplace/HandlePicker";
@@ -21,6 +22,7 @@ import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
 import { Logo } from "@/components/Logo";
 import { PlanChooser } from "@/components/settings/PlanChooser";
 import { UsagePanel } from "@/components/control/panels/UsagePanel";
+import { BudgetsPanel } from "@/components/control/panels/BudgetsPanel";
 import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
@@ -49,6 +51,7 @@ type Panel =
   | "connections"
   | "billing"
   | "usage"
+  | "budgets"
   | "providers"
   | "mcp"
   | "desktop"
@@ -270,6 +273,8 @@ function ProfilePanel() {
       </div>
 
       <DailySummaryCard />
+
+      <SessionNotificationsCard />
 
       <WorkspaceExportCard />
 
@@ -711,6 +716,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   connections: ConnectionsPanel,
   billing: BillingPanel,
   usage: UsagePanel,
+  budgets: BudgetsPanel,
   providers: ModelPanel,
   mcp: IntegrationsPanel,
   desktop: DesktopSettings,

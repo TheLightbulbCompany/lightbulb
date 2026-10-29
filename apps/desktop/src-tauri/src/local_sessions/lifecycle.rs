@@ -15,6 +15,31 @@ pub(crate) const WAITING_TEXT_MAX: usize = 200;
 pub(crate) enum Provider {
     Claude,
     Codex,
+    /// Cursor and Grok CLI: no session registry, no push channel. A session exists from its
+    /// first hook and hears a message at its next one (`super::hooked`).
+    Cursor,
+    Grok,
+}
+
+impl Provider {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Provider::Claude => "claude",
+            Provider::Codex => "codex",
+            Provider::Cursor => "cursor",
+            Provider::Grok => "grok",
+        }
+    }
+
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "claude" => Provider::Claude,
+            "codex" => Provider::Codex,
+            "cursor" => Provider::Cursor,
+            "grok" => Provider::Grok,
+            _ => return None,
+        })
+    }
 }
 
 /// Native process identity, independent of executable aliases and relay generations.
@@ -43,7 +68,8 @@ fn hook_ancestor(
     mut current: super::Process,
     mut parent: impl FnMut(&super::Process) -> Option<super::Process>,
 ) -> Option<HookProcess> {
-    if !matches!(provider, "claude" | "codex") { return None; }
+    if !matches!(provider, "claude" | "codex" | "cursor" | "grok") { return None; }
+    let hooked = super::hooked::provider(provider);
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..8 {
         if current.pid <= 1 || current.birth_micros == 0 || !seen.insert(current.pid) {
@@ -51,13 +77,37 @@ fn hook_ancestor(
         }
         let path = &current.executable;
         let name = path.file_name()?.to_str()?;
-        if name == provider || (provider == "claude" && crate::holder::run::is_claude_program(path)) {
+        if (hooked && hooked_agent(provider, path)) || name == provider || (provider == "claude" && crate::holder::run::is_claude_program(path)) {
             return Some(HookProcess::of(&current));
         }
         if !matches!(name, "sh" | "bash" | "zsh" | "dash") { return None; }
         current = parent(&current)?;
     }
     None
+}
+
+/// Whether `path` is the executable of the hooked agent `provider` (Cursor or Grok CLI). The
+/// nearest non-shell ancestor is not enough: `local-session-hook grok …` run from a shell inside a
+/// Claude session made that Claude a Grok session (prod e2e 2026-10-22), and its own local MCP
+/// then saw two sessions on one pid. Cursor's agent runs as `cursor-agent/versions/<v>/node` (CLI)
+/// or inside `Cursor.app` (the IDE's helper); Grok CLI as `grok` or `grok-native`. A Claude or
+/// Codex executable is never one, wherever it is installed.
+pub(super) fn hooked_agent(provider: &str, path: &std::path::Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if native_agent(path) {
+        return false;
+    }
+    let component = |c: &str| path.components().any(|p| p.as_os_str() == c);
+    match provider {
+        "cursor" => name == "cursor-agent" || component("cursor-agent") || component("Cursor.app"),
+        "grok" => matches!(name, "grok" | "grok-native"),
+        _ => false,
+    }
+}
+
+/// A Claude Code or Codex executable: a session of its own, never a Cursor or Grok record's.
+pub(super) fn native_agent(path: &std::path::Path) -> bool {
+    matches!(path.file_name().and_then(|n| n.to_str()), Some("claude" | "codex")) || crate::holder::run::is_claude_program(path)
 }
 
 /// Resolve a relationship, not just two live PIDs. A reparented child keeps
@@ -77,7 +127,7 @@ fn checked_parent(
     Some(first)
 }
 
-fn hook_process(provider: &str) -> Option<HookProcess> {
+pub(super) fn hook_process(provider: &str) -> Option<HookProcess> {
     let own = super::process(std::process::id()).ok()?;
     let parent = |child: &super::Process| checked_parent(
         child,
@@ -275,11 +325,7 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
         }
         Some(source)
     };
-    let provider = match v["provider"].as_str()? {
-        "claude" => Provider::Claude,
-        "codex" => Provider::Codex,
-        _ => return None,
-    };
+    let provider = Provider::parse(v["provider"].as_str()?)?;
     let s = |k: &str| v[k].as_str().map(str::to_owned);
     Some(HookEvent {
         provider,
@@ -308,7 +354,8 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
                     && h.input_digest.len() == 64
                     && h.input_digest.bytes().all(|b| b.is_ascii_hexdigit())
                     && h.reply.len() <= 256
-                    && h.modes.len() <= 3
+                    && h.modes.len() <= 4
+                    && h.similar.as_ref().is_none_or(|s| s.len() <= 120)
             })
             .or_else(|| {
                 // A release names only the prompt it lets go.
@@ -321,7 +368,7 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
                         input_digest: String::new(),
                         reply: String::new(),
                         exact: false,
-                        modes: vec![], full: false,
+                        modes: vec![], full: false, similar: None,
                     })
             }),
     })
@@ -457,6 +504,7 @@ pub(crate) fn codex_event_label(event: &str) -> Option<&'static str> {
         "UserPromptSubmit" => "user_prompt_submit",
         "Stop" => "stop",
         "SessionEnd" => "session_end",
+        "PostToolUse" => "post_tool_use",
         _ => return None,
     })
 }
@@ -549,12 +597,36 @@ mod tests {
         assert_eq!(hook_ancestor("codex", missing_birth, |_| None), None);
     }
 
+    /// `local-session-hook grok session-start` typed in a shell inside a Claude session made that
+    /// Claude a Grok session (prod e2e 2026-10-22). The hooked agent must be its own executable.
+    #[test]
+    fn lifecycle_hooked_agent_is_its_own_executable_never_the_nearest_ancestor() {
+        for (provider, path) in [
+            ("grok", "/opt/homebrew/lib/node_modules/@xai-official/grok/bin/grok-native"),
+            ("grok", "/usr/local/bin/grok"),
+            ("cursor", "/Users/a/.local/share/cursor-agent/versions/2026.10.19-6bbf2c4/node"),
+            ("cursor", "/Users/a/.local/bin/cursor-agent"),
+        ] {
+            let native = ancestor(42, path);
+            let shell = ancestor(43, "/bin/zsh");
+            assert_eq!(hook_ancestor(provider, shell, |_| Some(native.clone())), Some(HookProcess::of(&native)), "{path}");
+        }
+        for provider in ["grok", "cursor"] {
+            for path in ["/Users/a/.local/share/claude/versions/2.1.306", "/opt/claude", "/Applications/Codex.app/Contents/Resources/codex",
+                "/usr/bin/node", "/usr/bin/python3", "/Users/a/.local/share/cursor-agent/versions/1/claude"] {
+                let shell = ancestor(43, "/bin/zsh");
+                assert_eq!(hook_ancestor(provider, shell, |_| Some(ancestor(42, path))), None, "{provider} {path}");
+            }
+        }
+        assert!(!hooked_agent("cursor", std::path::Path::new("/opt/grok")) && !hooked_agent("grok", std::path::Path::new("/x/cursor-agent")));
+    }
+
     #[test]
     fn lifecycle_generation_is_not_taken_from_provider_stdin() {
         let stdin = json!({"session_id":"abc", "hook_event_name":"PermissionRequest",
             "pid": 2, "birth_micros": 1, "sourceProcess": {"pid": 2, "birthMicros": 1}});
         let held = super::super::approval::Held { id: "appr-0123456789abcdef0123456789abcdef".into(),
-            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![], full: false };
+            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![], full: false, similar: None };
         for bytes in [build_datagram("codex", &stdin), build_held_datagram("codex", &stdin, &held),
             build_release_datagram("codex", &stdin, &held.id)] {
             let parsed = parse_datagram(&bytes).unwrap();
@@ -584,7 +656,7 @@ mod tests {
         let source = hook_process(&provider).expect("actual native provider ancestor");
         let native = super::super::process(source.pid).unwrap();
         let held = super::super::approval::Held { id: "appr-0123456789abcdef0123456789abcdef".into(),
-            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![], full: false };
+            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![], full: false, similar: None };
         for bytes in [build_datagram(&provider, &stdin), build_held_datagram(&provider, &stdin, &held),
             build_release_datagram(&provider, &stdin, &held.id)] {
             assert_eq!(parse_datagram(&bytes).unwrap().source_process, Some(source.clone()));
@@ -758,10 +830,10 @@ mod tests {
         let held = super::super::approval::Held {
             id: "appr-0123456789abcdef0123456789abcdef".into(),
             input_digest: "d".repeat(64), reply: "/tmp/appr.sock".into(),
-            exact: true, modes: vec![], full: false,
+            exact: true, modes: vec![], full: false, similar: None,
         };
         let prompt = parse_datagram(&build_held_datagram("claude", &stdin, &held)).unwrap();
-        assert_eq!(prompt.waiting_text.as_deref(), Some("receipt e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"));
+        assert_eq!(prompt.waiting_text.as_deref(), Some("Lightbulb message"));
 
         // A long command line is cut to the bound, and a tool with nothing to
         // summarize sends no empty field at all.

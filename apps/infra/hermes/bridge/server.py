@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bridge
 from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
-from bridge import sync, turn, browser_control, followups, mcp_compat, recycle, subagents
+from bridge import sync, turn, browser_control, followups, mcp_compat, network, recycle, subagents
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
 log = logging.getLogger("bridge")
@@ -233,6 +233,9 @@ def _handle_call_run(path: str, method: str, headers: dict, body) -> tuple[int, 
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
+    # A real, authorized invoke: this microVM is claimed, so the network member may start here
+    # (never on a warm-pool instance). No-op without a member key or sessions.json.
+    network.ensure_started(background=True)
     # The website-login vault token rides every backend invoke (runtime_transport._vault_header);
     # memory only. See bridge/__init__.py's VAULT_TOKEN.
     vault = _header(headers, "X-Lightbulb-Vault")
@@ -453,6 +456,88 @@ RPC_METHODS["browser.attach"] = _browser_attach
 def _unavailable(method: str) -> dict:
     return {"ok": False, "error": {"code": "UNAVAILABLE",
                                    "message": f"{method} is not available on the Hermes runtime"}}
+
+
+# ---- network.* (the backend's calls onto the workspace's network member) ----------------------
+# Each one starts the sidecar in the foreground first: handle_plugin only starts it in the
+# background, so the first RPC of a cold microVM would otherwise find it off.
+def _net(method: str, op: str, body: dict | None = None, run=None) -> dict:
+    """``run`` (no arguments) replaces the one engine op when a method does more than ask."""
+    if not network.ensure_started(background=False):
+        return _unavailable(method)
+    try:
+        return {"ok": True, "payload": run() if run else network.ask(op, body)}
+    except network.NetworkOff:
+        return _unavailable(method)
+    except network.OpError as exc:
+        error = {"code": exc.code, "message": f"{method} was refused ({exc.code})"}
+        if exc.reason:
+            error["reason"] = exc.reason
+        return {"ok": False, "error": error}
+
+
+def _pick(params: dict, *keys: str) -> dict:
+    return {k: params[k] for k in keys if params.get(k) is not None}
+
+
+def _network_join(params: dict, **_kwargs) -> dict:
+    """An admin ran ``lightbulb invite --agents``: join the network their computer's once ask link
+    is for. Answers at once (``{state: "joining"}``); the join itself waits for that admin's
+    Allow in the background. A workspace already on a network is ``already_in_team`` (the first
+    network wins). The link is a credential: nothing here logs it."""
+    ticket = params.get("ticket")
+    if not isinstance(ticket, str) or not ticket:
+        return {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "ticket is required"}}
+
+    def run() -> dict:
+        if network.join_known(ticket):  # a retry of the join already under way (or done)
+            return {"state": "joining"}
+        if len(network.ask("team.get", {}).get("members") or []) > 1:
+            raise network.OpError("team.get", "already_in_team")
+        network.join_in_background(ticket)
+        return {"state": "joining"}
+
+    return _net("network.join", "", run=run)
+
+
+def _network_hold(params: dict, **_kwargs) -> dict:
+    return _net("network.hold", "hold.answer", _pick(params, "hold", "verdict", "scope", "decided_by"))
+
+
+def _network_leave(params: dict, **_kwargs) -> dict:
+    """An admin takes the workspace off its network (``team.leave``): back to its own solo team,
+    so ``invite --agents`` can add it to another."""
+    return _net("network.leave", "team.leave", {})
+
+
+def _network_sessions(params: dict, **_kwargs) -> dict:
+    return _net("network.sessions", "cloud.sessions.set", run=lambda: {"count": network.reload_sessions()})
+
+
+def _network_wake(params: dict, **_kwargs) -> dict:
+    """A peer rang the doorbell: start the member, nothing else (spec job 3)."""
+    return _net("network.wake", "", run=dict)
+
+
+RPC_METHODS.update({"network.join": _network_join, "network.sessions": _network_sessions,
+                    "network.hold": _network_hold,
+                    "network.leave": _network_leave,
+                    "network.wake": _network_wake})
+
+
+# The backend's memory sync, remember and wipes (core/services/memory_*.py) onto the cloud member:
+# each one is the engine op of the same name, its params passed through unchanged (they carry fact
+# text: like every params here, never logged).
+_MEMORY_OPS = ("memory.import", "memory.list", "memory.remember", "memory.forget", "memory.forget_author")
+
+
+def _memory_op(method: str):
+    # The backend's own timeout (memory.import asks 60 s), not the 10 s engine default.
+    return lambda params, timeout_ms=RPC_DEFAULT_TIMEOUT_MS, **_kwargs: _net(
+        method, "", run=lambda: network.ask(method, params, timeout_ms / 1000))
+
+
+RPC_METHODS.update({m: _memory_op(m) for m in _MEMORY_OPS})
 
 
 def _rpc(body) -> tuple[int, dict]:
@@ -797,9 +882,14 @@ def _save_on_sigterm(signum, _frame) -> None:
             log.warning("sigterm: save_root_auth failed", exc_info=True)
 
     log.info("sigterm: saving %d profile(s)", len(turn.RESTORED))
+    deadline = time.monotonic() + SIGTERM_SAVE_S
     worker = threading.Thread(target=_save, name="sigterm-save", daemon=True)
+    # Beside the profile saves, never after them: a slow save must not eat the network's stop.
+    net = threading.Thread(target=network.stop, name="sigterm-network", daemon=True)
     worker.start()
+    net.start()
     worker.join(SIGTERM_SAVE_S)
+    net.join(max(0.0, deadline - time.monotonic()))
     os._exit(128 + signum)
 
 

@@ -176,6 +176,7 @@ API_ERROR_STATUS = {
     "LOCAL_SESSION_UNSUPPORTED": 409,
     "LOCAL_SESSION_OFFLINE": 409,
     "LOCAL_SESSION_QUEUE_FULL": 409,
+    "LOCAL_SESSION_LOOP": 429,
     "LOCAL_SESSION_VIEWERS_FULL": 409,
     "LOCAL_SESSION_ASK_PENDING": 429,
     "LOCAL_SESSION_ASK_SETTLED": 409,
@@ -186,6 +187,11 @@ API_ERROR_STATUS = {
     "ROOM_NOT_FOUND": 404,
     "ACTIVITY_NOT_FOUND": 404,
     "ACTION_UNAVAILABLE": 409,
+    "HOLD_GONE": 409,
+    "NETWORK_NOT_CONNECTED": 409,
+    "NETWORK_ALREADY_JOINED": 409,
+    "NETWORK_NO_ROUTE": 409,
+    "NETWORK_OFFLINE": 409,
     "MEMBER_NOT_FOUND": 404,
     "MESSAGE_NOT_FOUND": 404,
     "RUN_NOT_FOUND": 404,
@@ -203,6 +209,7 @@ API_ERROR_STATUS = {
     "RATE_LIMITED": 429,
     "RUNTIME_UNAVAILABLE": 503,
     "SEARCH_UNAVAILABLE": 503,
+    "TEXT_RELAY_UNAVAILABLE": 503,
     "INTERNAL_ERROR": 500,
 }
 
@@ -759,6 +766,8 @@ class RunUsage(ContractModel):
 
 
 PROVIDER_QUOTA_EXHAUSTED = "provider_quota_exhausted"
+
+
 QUOTA_PROVIDER_NAMES = {"chatgpt": "ChatGPT", "openai": "OpenAI", "anthropic": "Anthropic"}
 
 
@@ -4031,11 +4040,8 @@ async def create_human_message(
     room_id: str,
     request: CreateMessageRequest,
     *,
-    native_source_id: str | None = None,
-    native_provider: str | None = None,
-    native_hop: int | None = None,
-    native_conditions: list[dict] | None = None,
     via: MessageVia | None = None,
+    text_reply_key: str | None = None,
     author_override: dict | None = None,
     expected_room_revision: int | None = None,
     wake: bool = True,
@@ -4089,7 +4095,7 @@ async def create_human_message(
                     raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "The session owner is not in this room.")
                 session_target_labels[session_id] = " · ".join(
                     (
-                        "Claude Code" if row["provider"] == "claude" else "Codex",
+                        local_sessions.PROVIDER_NAMES.get(row["provider"], "Coding session"),
                         notification_copy.line(
                             row.get("displayTitle") or row.get("title") or row.get("cwdName") or "Session", 80
                         ),
@@ -4101,15 +4107,11 @@ async def create_human_message(
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
-    author = author_override or (
-        {
-            "kind": "system",
-            "id": native_source_id,
-            "displayName": "Codex session" if native_provider == "codex" else "Claude Code session",
-        }
-        if native_source_id
-        else {"kind": "human", "id": auth.user_id, "displayName": await human_display_name(auth.user_id)}
-    )
+    author = author_override or {
+        "kind": "human",
+        "id": auth.user_id,
+        "displayName": await human_display_name(auth.user_id),
+    }
     addressing = None
     if meta.get("kind") != "dm" and feed_roster is None:
         # Who the text speaks to (routing v2 §3.1). Chat never holds: an unfinished message routes
@@ -4127,9 +4129,6 @@ async def create_human_message(
         feed_roster=feed_roster,
         in_thread=request.thread_root_message_id is not None,
     )
-    if native_source_id:
-        # A native agent's deliberate post does not wake every ambient listener.
-        targets = [target for target in targets if target["eventKind"] == "user_request"]
     room_kind = _room_kind(meta)
     # EFS is NFS. These reads open and read whole attachment files, so running
     # them inline blocked the event loop -- every other request on the
@@ -4155,14 +4154,8 @@ async def create_human_message(
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
         *([via] if via else []),
     ]
-    req_hash = messaging_repo.request_hash(
-        *hash_parts, *([session_ids] if session_ids else []), *([native_source_id] if native_source_id else [])
-    )
-    idemp_sk = (
-        messaging_repo.agent_idemp_sk(f"native:{native_source_id}:{request.client_message_id}")
-        if native_source_id
-        else messaging_repo.human_idemp_sk(auth.user_id, str(request.client_message_id))
-    )
+    req_hash = messaging_repo.request_hash(*hash_parts, *([session_ids] if session_ids else []))
+    idemp_sk = messaging_repo.human_idemp_sk(auth.user_id, str(request.client_message_id))
     effective_targets = targets if wake else []  # what is stored is what telemetry reports
     try:
         item, replayed = await messaging_repo.create_message(
@@ -4181,14 +4174,13 @@ async def create_human_message(
             source_agent_id=None,
             client_message_id=str(request.client_message_id),
             via=via,
+            text_reply_key=text_reply_key,
             session_mentions=session_ids,
             session_target_labels=session_target_labels,
             attachments=attachments,
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
-            acting_human_id=auth.user_id if native_source_id or author_override else None,
-            expected_room_revision=int(meta["revision"]) if native_source_id else expected_room_revision,
-            agent_hop=native_hop if native_source_id else None,
-            extra_conditions=native_conditions if native_source_id else None,
+            acting_human_id=auth.user_id if author_override else None,
+            expected_room_revision=expected_room_revision,
             addressing=_stored_addressing(addressing),
         )
     except messaging_repo.RoomArchived as exc:
@@ -4211,40 +4203,39 @@ async def create_human_message(
     if not replayed:
         _publish_message_created_soon(item)
         agent_mentions = sum(1 for ref in mentions if ref.get("kind") == "agent")
-        _emit_dispatch_targets(effective_targets, room_kind, "session" if native_source_id else "human")
+        _emit_dispatch_targets(effective_targets, room_kind, "human")
         put_metric(
             "messaging.message.created",
             dimensions={
-                "author_kind": "session" if native_source_id else "human",
+                "author_kind": "human",
                 "room_kind": room_kind,
                 "has_targets": "true" if effective_targets else "false",
             },
         )
-        if not native_source_id:
-            _product_event(
-                distinct_id=auth.user_id,
-                event="room_message_sent",
-                owner_id=owner_id,
-                props={
-                    "room_kind": room_kind,
-                    "mentions_agents": agent_mentions,
-                    "mentions_sessions": bool(session_ids),
-                    "is_thread_reply": bool(request.reply_to_message_id or request.thread_root_message_id),
-                    "has_attachment": bool(attachments),
-                    "first_in_room": int(item.get("messageSeq") or 0) == 1,
-                    "sender_is_owner": sender.get("role") == "owner",
-                },
-            )
+        _product_event(
+            distinct_id=auth.user_id,
+            event="room_message_sent",
+            owner_id=owner_id,
+            props={
+                "room_kind": room_kind,
+                "mentions_agents": agent_mentions,
+                "mentions_sessions": bool(session_ids),
+                "is_thread_reply": bool(request.reply_to_message_id or request.thread_root_message_id),
+                "has_attachment": bool(attachments),
+                "first_in_room": int(item.get("messageSeq") or 0) == 1,
+                "sender_is_owner": sender.get("role") == "owner",
+            },
+        )
         # The gap this whole task exists to close: someone addressed an agent
         # and nothing ran. Invisible before — no metric, no log, no event.
-        if agent_mentions and not targets and not native_source_id:
+        if agent_mentions and not targets:
             _product_event(
                 distinct_id=auth.user_id,
                 event="agent_dispatch_missed",
                 owner_id=owner_id,
                 props={"reason": "no_targets", "room_kind": room_kind},
             )
-        if agent_mentions and not native_source_id:
+        if agent_mentions:
             await _count_jev_miss(room_id, auth.user_id, item)
     # Neither of these is part of the response. `touch_last_interactive` writes
     # to the containers table purely to feed the idle/park clock, and it was
@@ -4591,6 +4582,9 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
         applied = started is not None
         if started is not None:
             await announce_run(started, "working")
+            from core.services import text_relay
+
+            await text_relay.signal_working(owner_id, started)
             # "Read" for an agent is its run starting on the message (owner ruling).
             if started.get("triggerMessageId"):
                 await _publish_room_event(
@@ -4610,6 +4604,9 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
         applied = started is not None
         if started is not None:
             await announce_run(started, "working")
+            from core.services import text_relay
+
+            await text_relay.signal_working(owner_id, started)  # keeps the typing bubble up
     else:
         usage = event.usage.model_dump(mode="json", by_alias=True) if event.usage else None
         row = await end_run_and_announce(
@@ -5053,6 +5050,14 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         if capped:
             put_metric("messaging.agent_chain.capped", dimensions={"room_kind": room_kind})
             await _post_chain_paused_notice(owner_id, item, agent["name"], (trigger or {}).get("author"))
+    if trigger and trigger.get("textReplyKey") and not request.progress:
+        # A member texted the line: whichever agent answered, the answer goes back by text. On a replay too: the
+        # send's idempotency key makes a resend Photon's replay of the first, and a failed send answers 503 so
+        # the container retries this same event, which lands here as a replay and sends again.
+        from core.services import text_relay
+
+        if await text_relay.relay_reply(owner_id, trigger, request.text) not in text_relay.RELAY_DONE:
+            raise ApiProblem("TEXT_RELAY_UNAVAILABLE", "The reply is posted; texting it back failed. Retry.")
     return AgentMessageReceiptResponse(message_id=item["messageId"], room_id=room_id, created_at=item["createdAt"])
 
 

@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import logging
 import re
 import uuid
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 # ``reaction`` and ``agent_run`` arrive in a later PR (new writers, same shape).
 ActivityKind = Literal[
-    "mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session", "login", "extension"
+    "mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session", "login", "extension", "reconnect"
 ]
 ActorKind = Literal["human", "agent", "system"]
 LinkKind = Literal["issue", "room", "thread", "run", "approval", "session"]
@@ -147,8 +148,7 @@ class ActivityItem(ContractModel):
     id: str
     kind: ActivityKind
     # ``session`` items: ``waiting`` (on its owner's input), ``finished`` (a turn ended) or
-    # ``join_request`` (a teammate asked to send to it; Allow / Decline) or
-    # ``agent_ask`` (an agent asked to message it; Send / Decline).
+    # ``join_request`` (a teammate asked to send to it; Allow / Decline).
     # ``login`` items: ``login`` (an agent needs a website login). A sign-in code is typed into the
     # shared browser, never asked for here.
     subtype: (
@@ -160,9 +160,9 @@ class ActivityItem(ContractModel):
             "waiting",
             "finished",
             "join_request",
-            "agent_ask",
             "login",
             "extension",
+            "reconnect",
         ]
         | None
     ) = None
@@ -423,11 +423,7 @@ async def _render_session_rows(owner_id: str, user_id: str, rows: list[dict], se
             continue
         sid, state = session["sessionId"], row.get("subtype")
         if state == "join_request" and row.get("request") == "agent_message":
-            from core.services.local_sessions import _get_ask
-
-            if ask := await _get_ask(owner_id, sid, row["requestId"]):
-                items.append(render_agent_ask(ask, session, seen=seen, stranded=await _ask_stranded(owner_id, ask)))
-            continue
+            continue  # an agent's ask to message a session: agents message through the engine now
         if state == "join_request":
             items.append(render_join_request(row, session, seen=seen))
             continue
@@ -562,88 +558,6 @@ async def _run_join_action(
     return await current()
 
 
-def agent_ask_item_id(session_id: str, request_id: str) -> str:
-    return f"agentmsg:{session_id}:{request_id}"
-
-
-_ASK_RESOLVED = {"sent": "Sent", "failed": "Not sent", "declined": "Declined", "expired": "Expired"}
-
-
-async def _ask_stranded(owner_id: str, ask: dict) -> bool:
-    """Approved (``sent``) but never admitted: the worker died between the two writes."""
-    from core.repositories import local_sessions_repo
-
-    return (
-        ask["status"] == "sent"
-        and await local_sessions_repo.get_command(owner_id, ask["sessionId"], ask["requestId"]) is None
-    )
-
-
-def render_agent_ask(ask: dict, session: dict, *, seen: str | None, stranded: bool = False) -> ActivityItem:
-    """An agent's ask to message (or stop) one of the viewer's sessions (spec
-    2026-10-07-agent-session-approval §3.5), open while the ask is pending, and while an approved
-    one was never admitted (``stranded``): Send again admits it."""
-    from core.services.local_sessions import AGENT_ASK_REASON, agent_ask_title, ask_status
-
-    status = ask_status(ask)
-    open_ = status == "pending" or stranded
-    created = datetime.fromtimestamp(ask["createdAt"], tz=timezone.utc)
-    actor = ActivityActor(kind="agent", id=ask["agentId"], name=str(ask.get("agentName") or "Your agent"))
-    title = agent_ask_title(ask, session)
-    links = [ActivityLink(kind="session", id=session["sessionId"], label="Session")]
-    if ask.get("roomId"):
-        links.append(ActivityLink(kind="room", id=ask["roomId"], label="Room"))
-    return ActivityItem(
-        id=agent_ask_item_id(session["sessionId"], ask["requestId"]),
-        kind="session",
-        subtype="agent_ask",
-        actor=actor,
-        created_at=created,
-        state="open" if open_ else "resolved",
-        read=not _newer_than(created, seen),
-        summary=ActivitySummary(
-            title=_clip(title if open_ else f"{_ASK_RESOLVED.get(status, 'Answered')} · {title}", TITLE_CHARS),
-            requester=actor,
-            reason=AGENT_ASK_REASON,
-            preview=ActivityPreview(text=_clip(ask["text"], PREVIEW_TEXT_CHARS)) if ask.get("text") else None,
-            links=links,
-        ),
-        actions=[
-            ActivityAction(id="send", label="Send", style="primary"),
-            # A stranded approval was already chosen; only Send (admit it) is left.
-            *([ActivityAction(id="decline", label="Decline")] if status == "pending" else []),
-        ]
-        if open_
-        else [],
-    )
-
-
-async def _run_agent_ask_action(auth: AuthContext, session_id: str, request_id: str, action_id: str) -> ActivityItem:
-    """Send / Decline from Activity: the same door as the session's decision route."""
-    from core.repositories import local_sessions_repo
-    from core.services import local_sessions
-
-    owner_id = resolve_owner_id(auth)
-
-    async def current() -> ActivityItem:
-        session = await local_sessions_repo.get_session(owner_id, session_id)
-        ask = await local_sessions._get_ask(owner_id, session_id, request_id) if session else None
-        if not ask or session.get("ownerId") != owner_id or session.get("humanUserId") != auth.user_id:
-            raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
-        return render_agent_ask(ask, session, seen=None, stranded=await _ask_stranded(owner_id, ask))
-
-    item = await current()
-    if item.state != "open":
-        return item
-    _require_action(item, action_id)
-    try:
-        await local_sessions.decide_agent_ask(auth, session_id, request_id, action_id)
-    except ApiProblem as exc:
-        if exc.error.code != "LOCAL_SESSION_ASK_SETTLED":  # a second tap or another approver won
-            raise
-    return await current()
-
-
 LOGIN_ADMIN_ONLY = "Only a workspace admin can add website sign-ins."
 
 
@@ -738,12 +652,134 @@ def render_extension_request(row: dict, *, seen: str | None) -> ActivityItem:
     )
 
 
+def reconnect_item_id(provider: str) -> str:
+    # The cursor regex wants a 32-hex id after the kind, so the provider key is hashed.
+    return f"reconnect:{hashlib.sha256(provider.encode()).hexdigest()[:32]}"
+
+
+async def _render_reconnect_rows(owner_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
+    """An integration's grant went ``reconnect_required`` (``access_token._mark_reconnect``).
+    Open while the integration row still says so; a reconnect flips it back and the item
+    disappears. A provider that failed twice has two rows: only the newest renders."""
+    from core.repositories import integrations_repo
+    from core.services.credentials import registry
+
+    newest: dict[str, dict] = {}
+    for row in rows:
+        if row.get("kind") == "reconnect" and row.get("provider"):
+            if row["provider"] not in newest or row["createdAt"] > newest[row["provider"]]["createdAt"]:
+                newest[row["provider"]] = row
+    items = []
+    for provider, row in newest.items():
+        # consistent: the item is filed right after the flip, and a stale "connected" would hide it
+        integration = await integrations_repo.get(owner_id, provider, consistent=True)
+        if not integration or integration.get("status") != "reconnect_required":
+            continue
+        try:
+            name = registry.get_provider(provider).display_name
+        except KeyError:
+            continue
+        created = _when(row["createdAt"])
+        actor = ActivityActor(kind="system", id="", name="Lightbulb")
+        items.append(
+            ActivityItem(
+                id=reconnect_item_id(provider),
+                kind="reconnect",
+                subtype="reconnect",
+                actor=actor,
+                created_at=created,
+                state="open",
+                read=not _newer_than(created, seen),
+                summary=ActivitySummary(
+                    title=_clip(f"Reconnect {name}", TITLE_CHARS),
+                    requester=actor,
+                    reason=(
+                        f"{name} stopped working (its sign-in expired or was revoked), so your agents "
+                        "cannot use it. Open Settings, then Connections, and press Reconnect."
+                    ),
+                ),
+                actions=[],
+            )
+        )
+    return items
+
+
 async def _render_extension_rows(owner_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
     from core.services import browser_extensions
 
     rows = [row for row in rows if row.get("kind") == "extension"]
     found = await asyncio.gather(*(browser_extensions.get_request(owner_id, str(row.get("requestId"))) for row in rows))
     return [render_extension_request(req, seen=seen) for req in found if req]
+
+
+NETWORK_HOLD_REASON = (
+    "Send delivers what they sent. Always allow also lets them, and their agents, reach it directly from now on."
+)
+
+
+def render_network_hold(row: dict, *, seen: str | None) -> ActivityItem:
+    """A stranger's first message on the network, held for a person's Allow
+    (``network_member.hold_notice``). The notice carries no text, so the item has no preview."""
+    from core.services import network_member
+
+    label = str(row.get("label") or "Someone on the network")
+    target = str(row.get("target") or "")
+    app = network_member.app_target(target)
+    open_ = row.get("state") == "open"
+    created = _when(row["createdAt"])
+    actor = ActivityActor(kind="agent", id="", name=label)
+    return ActivityItem(
+        id=network_member.hold_item_id(row["holdId"]),
+        kind="session",
+        subtype="join_request",
+        actor=actor,
+        created_at=created,
+        state="open" if open_ else "resolved",
+        resolved_at=None if open_ else _when(row.get("resolvedAt") or row["createdAt"]),
+        read=not _newer_than(created, seen),
+        summary=ActivitySummary(
+            title=_clip(f"{label} wants to message {f'your {app[0]}' if app else target}", TITLE_CHARS),
+            requester=actor,
+            reason=NETWORK_HOLD_REASON,
+            preview=None,
+            links=[],
+        ),
+        actions=[
+            ActivityAction(id="send", label="Send", style="primary"),
+            ActivityAction(id="decline", label="Decline"),
+            ActivityAction(id="allow", label="Always allow"),
+        ]
+        if open_
+        else [],
+    )
+
+
+async def _render_network_hold_rows(owner_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
+    from core.services import network_member
+
+    rows = [row for row in rows if row.get("kind") == "network_hold"]
+    found = await asyncio.gather(*(network_member.get_hold(owner_id, str(row.get("holdId"))) for row in rows))
+    return [render_network_hold(hold, seen=seen) for hold in found if hold]
+
+
+async def _run_network_hold_action(auth: AuthContext, hold_id: str, action_id: str) -> ActivityItem:
+    """Send / Decline / Always allow, for a person the hold was filed to."""
+    from core.services import network_member
+
+    owner_id = resolve_owner_id(auth)
+
+    async def current() -> ActivityItem:
+        hold = await network_member.get_hold(owner_id, hold_id)
+        if not hold or auth.user_id not in (hold.get("askedUserIds") or []):
+            raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
+        return render_network_hold(hold, seen=None)
+
+    item = await current()
+    if item.state != "open":
+        return item  # already answered (a retried tap, another person, or the engine closed it)
+    _require_action(item, action_id)
+    await network_member.decide_hold(auth, hold_id, action_id)
+    return await current()
 
 
 async def _render_rows(
@@ -755,13 +791,19 @@ async def _render_rows(
     *,
     admin: bool = False,
 ) -> list[ActivityItem]:
-    messages, sessions, logins, extensions = await asyncio.gather(
+    messages, sessions, logins, extensions, reconnects, holds = await asyncio.gather(
         _render_message_rows(owner_id, user_id, rows, seen, gates),
         _render_session_rows(owner_id, user_id, rows, seen),
         _render_login_rows(owner_id, rows, seen, admin),
         _render_extension_rows(owner_id, rows, seen),
+        _render_reconnect_rows(owner_id, rows, seen),
+        _render_network_hold_rows(owner_id, rows, seen),
     )
-    return sorted(messages + sessions + logins + extensions, key=lambda i: i.created_at, reverse=True)
+    return sorted(
+        messages + sessions + logins + extensions + reconnects + holds,
+        key=lambda i: i.created_at,
+        reverse=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1283,10 +1325,10 @@ _PINNED_ORDER = {
     "interaction": 1,
     "waiting": 1,
     "join_request": 1,
-    "agent_ask": 1,
     "login": 1,
     "code": 1,
     "extension": 1,
+    "reconnect": 1,
     "failed_run": 2,
 }
 
@@ -1296,8 +1338,8 @@ def needs_you(item: ActivityItem) -> bool:
     issue-thread interaction (an agent waiting on a human), a failed run, or one of your
     shared sessions still waiting for your input."""
     if item.kind == "session":
-        return item.state == "open" and item.subtype in ("waiting", "join_request", "agent_ask")
-    if item.kind in ("login", "extension"):
+        return item.state == "open" and item.subtype in ("waiting", "join_request")
+    if item.kind in ("login", "extension", "reconnect"):
         return item.state == "open"
     return item.kind == "paperclip" and item.state == "open" and item.subtype in _PINNED_ORDER
 
@@ -1525,7 +1567,7 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
             1
             for item in pinned
             # A login ask badges only the people who can answer it (admins get its actions).
-            if item.kind == "session"
+            if item.kind in ("session", "reconnect")
             or (item.kind in ("login", "extension") and item.actions)
             or (item.kind not in ("login", "extension") and not _newer_than(item.created_at, seen))
         )
@@ -1864,17 +1906,13 @@ async def run_action(
 ) -> ActivityItem:
     """Map one Activity action to the real call, re-authorized for this viewer,
     and answer with the updated item. A repeated decision returns the current state."""
-    if item_id.startswith("agentmsg:"):
-        # An agent's request id may itself contain ":", so it is everything after the session.
-        _, sid, request_id = (item_id.split(":", 2) + [""])[:3]
-        if _ID_RE.match(sid) and request_id:
-            return await _run_agent_ask_action(auth, sid, request_id, action_id)
-        raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
     parts = item_id.split(":")
     if parts[0] == "login" and len(parts) == 2:
         return await _run_login_action(auth, parts[1], action_id, body)
     if parts[0] == "extension" and len(parts) == 2:
         return await _run_extension_action(auth, parts[1], action_id)
+    if parts[0] == "nethold" and len(parts) == 2:
+        return await _run_network_hold_action(auth, parts[1], action_id)
     if parts[0] in ("join", "pickup") and len(parts) == 4 and all(_ID_RE.match(x) for x in parts[1:]):
         return await _run_join_action(auth, parts[1], parts[2], parts[3], action_id, pickup=parts[0] == "pickup")
     if parts[0] in _MESSAGE_KINDS and len(parts) == 4:

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  GLYPH, backgroundWaiting, buildRows, groupRows, lifecycleLabel, sessionClock, sessionSubagents, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags,
+  sessionGlyph, backgroundWaiting, buildRows, groupRows, lifecycleLabel, sessionClock, sessionSubagents, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags,
   thinkingLabel, toolHeader, toolRowView,
   type DiffLine, type LocalSessionEvent, type LocalSessionProvider, type SessionReceiptChip, type SessionSubagent, type ThinkingTranscriptRow, type ToolGroupItem,
   type ToolTranscriptRow, type TranscriptRow,
@@ -32,7 +32,7 @@ export function Diff({ lines, truncated }: { lines: readonly DiffLine[]; truncat
 
 function ToolRow({ provider, row, seq, subagentName }: { provider: Provider; row: ToolTranscriptRow; seq: number; subagentName?: SubagentName }) {
   const [open, setOpen] = useState(false);
-  const g = GLYPH[provider];
+  const g = sessionGlyph(provider);
   const { status, preview, full, numbered, summary, more, showOutput, truncated } = toolRowView(row);
   const isDiff = numbered.length > 0;
   const withMarker = (text: string) => (truncated && text ? `${text}\n(truncated)` : text);
@@ -63,7 +63,7 @@ function ThinkingRow({ provider, row, live }: { provider: Provider; row: Thinkin
   const [open, setOpen] = useState(false);
   const label = thinkingLabel(row, live);
   return <div className="native-session-row native-session-thinking" role="article" aria-label={`Native event ${row.seq}`}>
-    <div className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{GLYPH[provider].thinking}</span>
+    <div className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{sessionGlyph(provider).thinking}</span>
       {row.text ? <button type="button" className="native-session-toggle" aria-expanded={open} onClick={() => setOpen(o => !o)}>{label}<span className="native-session-chevron" aria-hidden="true">›</span></button> : <span>{label}</span>}</div>
     {open && row.text && <div className="native-session-thought room-message-content"><MarkdownView skipHtml components={roomMarkdown}>{row.text}</MarkdownView></div>}
   </div>;
@@ -77,7 +77,7 @@ function ThinkingRow({ provider, row, live }: { provider: Provider; row: Thinkin
  */
 function ToolGroup({ provider, group, subagentName }: { provider: Provider; group: ToolGroupItem; subagentName?: SubagentName }) {
   const [open, setOpen] = useState(false);
-  const g = GLYPH[provider];
+  const g = sessionGlyph(provider);
   // A thought on its own has no calls behind it to open.
   if (!group.rows.some(row => row.kind === "tool")) return <div className="native-session-group" data-provider={provider}>
     <p className="native-session-line native-session-muted native-session-activity" role="article" aria-label={`Native event ${group.seq}`}>
@@ -103,7 +103,7 @@ function Working({ provider, since, seq }: { provider: Provider; since?: string;
   const elapsed = Number.isFinite(started) ? sessionClock(Math.max(0, now - started), true) : null;
   const said = provider === "claude" ? `${SPINNER_VERBS[seq % SPINNER_VERBS.length]}…` : "Working";
   return <p className="native-session-line native-session-working" role="status" aria-label="Working" data-reload-blocker>
-    <span className="native-session-glyph native-session-spinner" aria-hidden="true">{GLYPH[provider].working}</span>{said}{elapsed !== null && <span className="native-session-muted"> ({elapsed})</span>}</p>;
+    <span className="native-session-glyph native-session-spinner" aria-hidden="true">{sessionGlyph(provider).working}</span>{said}{elapsed !== null && <span className="native-session-muted"> ({elapsed})</span>}</p>;
 }
 
 /** Claude Code's `✻ Waiting for N background agents to finish`, once its own turn is over. */
@@ -166,7 +166,7 @@ function AgentRow({ subagent: s, seq, earlier, ...transcript }: TranscriptProps 
   const now = useNow(s.state === "running");
   const state = subagentState(s, transcript.status, now);
   const { provider } = transcript;
-  const g = GLYPH[provider];
+  const g = sessionGlyph(provider);
   const name = s.description || "subagent";
   const tags = [...subagentTags(s), ...(earlier ? ["started earlier"] : [])];
   // Claude's `⏺ Agent · <what>`; Codex's own `• Spawned <nickname>` wording.
@@ -215,7 +215,7 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
   const root = useRef<HTMLDivElement>(null);
   // A background subagent's end points at its row, which sits in this same transcript (ids are opaque: no quoting needed).
   const showSubagent = (id: string) => revealSubagent(root.current, id);
-  const g = GLYPH[provider];
+  const g = sessionGlyph(provider);
   const name = (id: string | null) => (id ? participants.find(p => p.id === id)?.displayName ?? "Teammate" : ownerName);
   const time = (ts?: string) => { const d = ts ? new Date(ts) : null; return d && !Number.isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null; };
   const last = events.findLast(e => e.subagent === scope);
@@ -243,11 +243,11 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
       </p>
     </div>;
   const renderRow = (row: TranscriptRow) => {
-    if (row.kind === "prompt") return <div key={row.seq} className="native-session-row native-session-prompt" role="article" aria-label={`Native event ${row.seq}`}>
+    if (row.kind === "prompt") return <div key={row.seq} className="native-session-row native-session-prompt" role="article" aria-label={`Native event ${row.seq}`} data-seq={row.seq}>
       <p className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{g.prompt}</span><span className="native-session-prompt-text">{row.text}</span></p>
       <p className="native-session-meta"><span>{name(row.who)}</span>{time(row.ts) && <span> · {time(row.ts)}</span>}</p>
     </div>;
-    if (row.kind === "prose") return <div key={row.seq} className="native-session-row" role="article" aria-label={`Native event ${row.seq}`}>
+    if (row.kind === "prose") return <div key={row.seq} className="native-session-row" role="article" aria-label={`Native event ${row.seq}`} data-seq={row.seq}>
       <div className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{g.bullet}</span>
         <div className="native-session-prose room-message-content"><MarkdownView skipHtml components={roomMarkdown}>{row.text}</MarkdownView></div></div>
     </div>;

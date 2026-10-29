@@ -6,7 +6,7 @@ import { MessageSquare } from "lucide-react";
 import {
   auditLine, pickupSource, pickupStatus, sessionChanges, sessionFacts, sessionPlan, sessionStatus, sessionTitle, sessionToolName, usageLine,
   useSessionAudit, useTeamControl, useUsageSharing,
-  type LocalSession, type LocalSessionEvent, type SessionControlClient,
+  type LocalSession, type LocalSessionEvent, type SessionControlClient, sessionAgentName,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -28,7 +28,7 @@ type Client = SessionControlClient & PickupClient & Parameters<typeof SessionSha
 /** "Claude Code 2.1.283": the tool by its name, then the version out of whatever its `--version` printed. */
 function toolVersion(session: LocalSession): string {
   const version = session.providerVersion.match(/\d+(?:\.\d+)+/)?.[0];
-  return [session.provider === "claude" ? "Claude Code" : "Codex", version].filter(Boolean).join(" ");
+  return [sessionAgentName(session.provider), version].filter(Boolean).join(" ");
 }
 
 /** One fact about the session: what it is, and the value as its terminal would print it. */
@@ -156,10 +156,10 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
       {session.pickup?.allowed && <p role="status" className="session-setting-state">{pickupStatus(session.pickup, timeAgo) || "Taking the first snapshot."}</p>}
     </div>
     {!ended && client.setLocalSessionTeamControl && <Setting label="Let teammates control this session" checked={control.enabled} disabled={control.saving} onChange={next => void control.set(next)} error={control.error}>
-      Workspace members can send follow-ups and answer permission prompts on your Mac. Every action is logged in the session’s conversation. Turns off when the session ends.
+      Workspace members can type in it, send follow-ups and answer permission prompts on your Mac, without asking. Off, they watch. Every action is logged in the session’s conversation. Turns off when the session ends.
     </Setting>}
     {!ended && <People session={session} ids={session.allowedSenders} remove={client.removeLocalSessionSender} nameOf={nameOf}
-      label="People you let in" about="They asked to join. They can send follow-ups and answer permission prompts until the session ends." />}
+      label="People you let in" about="They asked to join from the session’s link. They can send follow-ups and answer permission prompts until the session ends." />}
     {ended && <People session={session} ids={session.resumeAllowed} remove={client.revokeLocalSessionResume} nameOf={nameOf}
       label="Who can resume it" about="They could send to it when it ended. They can start it again on your Mac, in plan mode, with a message." />}
     {session.usage && client.setLocalSessionUsageSharing && <Setting label="Show token usage to teammates" checked={usage.enabled} disabled={usage.saving} onChange={next => void usage.set(next)} error={usage.error}>
@@ -187,12 +187,12 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
   nameOf?: (userId: string) => string;
 }) {
   const switches = useAccessSwitches(client, session);
-  const hasChanges = useMemo(() => Boolean(sessionPlan(events)?.length) || sessionChanges(events).length > 0, [events]);
+  const hasChanges = useMemo(() => !!session.changes || Boolean(sessionPlan(events)?.length) || sessionChanges(events).length > 0, [events, session.changes]);
   return <Dialog open={open} onOpenChange={onOpenChange}>
     {/* Focus lands on the dialog, not its first tab: a ring on "About" would read as the open tab. */}
     <DialogContent tabIndex={-1} onOpenAutoFocus={event => { event.preventDefault(); (event.currentTarget as HTMLElement | null)?.focus(); }}
       onCloseAutoFocus={event => { event.preventDefault(); onClosed?.(); }}
-      className="session-details max-w-[calc(100%-2rem)] sm:max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto text-ui outline-none">
+      className="session-details max-w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto text-ui outline-none">
       <DialogHeader>
         <DialogTitle className="room-wrap">{sessionTitle(session)}</DialogTitle>
         <DialogDescription>{sessionToolName(session.provider)} session, {own ? "yours" : `owned by ${ownerName}`}.</DialogDescription>
@@ -207,7 +207,7 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
         <TabsContent value="about" className="session-details-tab"><About session={session} ownerName={ownerName} own={own} /></TabsContent>
         <TabsContent value="changes" className="session-details-tab">
           {hasChanges
-            ? <SessionOverview expanded events={events} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />} />
+            ? <SessionOverview expanded events={events} git={session.changes} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />} />
             : <p className="text-muted-foreground">No plan or file changes yet.</p>}
         </TabsContent>
         <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} switches={switches} nameOf={nameOf ?? (() => "A teammate")} /></TabsContent>

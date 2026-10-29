@@ -19,7 +19,7 @@ describe("ListRow", () => {
   it("marks unread with a labelled dot and a semibold title", async () => {
     await render(<ListRow palette={p} leading={null} title="general" unread accessibilityLabel="general, unread" />);
     expect(screen.getByLabelText("Unread")).toBeTruthy();
-    expect(StyleSheet.flatten(screen.getByText("general").props.style).fontFamily).toBe("SourceSans3_600SemiBold");
+    expect(StyleSheet.flatten(screen.getByText("general").props.style).fontFamily).toBe("Satoshi-Bold");
   });
 
   it("draws a live preview in the link colour", async () => {

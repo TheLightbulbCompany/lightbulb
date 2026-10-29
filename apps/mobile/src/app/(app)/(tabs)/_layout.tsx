@@ -42,7 +42,7 @@ function ActivityBadge({ onCount }: { onCount: (total: number) => void }) {
  * `NativeTabs` (react-native-screens' UITabBarController) rather than the JS
  * tab bar: on iOS 26 that is the real glass tab bar, with SF-font labels, SF
  * Symbol glyphs and the system's own minimize-on-scroll behaviour — none of
- * which a JS bar drawn in Source Sans 3 with a Feather icon font can imitate.
+ * which a JS bar drawn in Satoshi with a Feather icon font can imitate.
  * It carries everything the old bar did: per-tab icons, and Chats' unread badge.
  *
  * There is no header here. This group is ONE screen of the (app) stack, and
@@ -69,7 +69,7 @@ export default function TabsLayout() {
       <ActivityBadge onCount={setUnseen} />
       <NativeTabs key={orgId ?? "none"} tintColor={tint}>
         <NativeTabs.Trigger name="chats">
-          <NativeTabs.Trigger.Icon sf={{ default: "message", selected: "message.fill" }} />
+          <NativeTabs.Trigger.Icon sf={{ default: "message", selected: "message.fill" }} md="chat_bubble" />
           <NativeTabs.Trigger.Label>Chats</NativeTabs.Trigger.Label>
           {/* No Badge element at all at zero, not a "0" child and not
               `hidden`: expo-router sets `badgeValue = String(children)` for
@@ -80,7 +80,7 @@ export default function TabsLayout() {
           )}
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="activity">
-          <NativeTabs.Trigger.Icon sf="at" />
+          <NativeTabs.Trigger.Icon sf="at" md="alternate_email" />
           <NativeTabs.Trigger.Label>Activity</NativeTabs.Trigger.Label>
           {/* Same zero rule as Chats' badge above. */}
           {unseen > 0 && (
@@ -88,11 +88,11 @@ export default function TabsLayout() {
           )}
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="teams">
-          <NativeTabs.Trigger.Icon sf={{ default: "person.2", selected: "person.2.fill" }} />
+          <NativeTabs.Trigger.Icon sf={{ default: "person.2", selected: "person.2.fill" }} md="group" />
           <NativeTabs.Trigger.Label>Teams</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="settings">
-          <NativeTabs.Trigger.Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} />
+          <NativeTabs.Trigger.Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} md="settings" />
           <NativeTabs.Trigger.Label>Settings</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
       </NativeTabs>

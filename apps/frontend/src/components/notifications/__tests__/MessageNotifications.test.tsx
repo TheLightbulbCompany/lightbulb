@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   handlers: new Set<(event: LiveEvent) => void>(),
   nativeNotify: vi.fn(), notifySuccess: vi.fn(), capture: vi.fn(),
   notificationPermission: vi.fn(), isDesktopApp: vi.fn(), notifyAttention: vi.fn(),
+  sessionClick: null as ((sessionId: string) => void) | null,
 }));
 const onEvent = (handler: (event: LiveEvent) => void) => { mocks.handlers.add(handler); return () => mocks.handlers.delete(handler); };
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "me" }) }));
@@ -14,6 +15,8 @@ vi.mock("@/lib/analytics", () => ({ capture: mocks.capture }));
 vi.mock("@/lib/desktopNotify", () => ({
   nativeNotify: mocks.nativeNotify, notificationPermission: mocks.notificationPermission, isDesktopApp: mocks.isDesktopApp,
   onDesktopToast: () => () => {},
+  desktopDeviceId: async () => null,
+  onSessionNoticeClick: (handler: (sessionId: string) => void) => { mocks.sessionClick = handler; return () => { mocks.sessionClick = null; }; },
 }));
 vi.mock("@/lib/notify", () => ({ notifySuccess: mocks.notifySuccess, notifyAttention: mocks.notifyAttention }));
 import { MessageNotifications } from "../MessageNotifications";
@@ -199,4 +202,27 @@ describe("shared session attention", () => {
     await act(async () => { emit(attention); });
     expect(mocks.nativeNotify).not.toHaveBeenCalled();
   });
+
+  it("follows the owner's prefs: no banner below Banner; only-unfocused holds it while focused", async () => {
+    const at = (eventId: string, extra: object) =>
+      ({ ...attention, eventId, payload: { ...attention.payload, ...extra } }) as LiveEvent;
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
+    await act(async () => {
+      emit(at("a", { level: "badge" }));
+      emit(at("b", { level: "off" }));
+      emit(at("c", { level: "banner", onlyUnfocused: true }));
+    });
+    expect(mocks.nativeNotify).not.toHaveBeenCalled();
+    expect(mocks.notifySuccess).not.toHaveBeenCalled();
+    await act(async () => { emit(at("d", { level: "banner", sound: false, onlyUnfocused: false })); });
+    expect(mocks.nativeNotify.mock.calls[0][2]).toMatchObject({ tag: "d", sound: false, onlyUnfocused: false });
+  });
+});
+
+it("a click on a Mac request notification opens the session it is about", () => {
+  const onOpenSession = vi.fn();
+  render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} onOpenSession={onOpenSession} />);
+  mocks.sessionClick?.("s-1");
+  expect(onOpenSession).toHaveBeenCalledWith("s-1");
 });

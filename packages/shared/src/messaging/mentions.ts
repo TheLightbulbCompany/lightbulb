@@ -1,5 +1,5 @@
 import type { CanonicalRoomMessage, LocalSession, MemberRef, RoomMember } from "./types";
-import { sessionTitle, sessionToolName } from "./localSessionLabels";
+import { sessionAgentName, sessionTitle, sessionToolName } from "./localSessionLabels";
 
 export const MENTION_SCHEME = "mention:";
 
@@ -129,7 +129,12 @@ export function sessionMentionCandidates(sessions: readonly LocalSession[]): Ses
   });
 }
 
-/** Session ids the text addresses, plus `@claude-…`/`@codex-…` handles that no longer match one. */
+/** The handle prefixes of every provider a session can come from (`@claude-…`, `@grok-…`). */
+const HANDLE = "(?:claude|codex|cursor|grok)-[a-z0-9-]+";
+/** The provider a sent chip's label names ("Grok CLI · title · owner" → "grok"). */
+const PROVIDER_OF_LABEL: Record<string, LocalSession["provider"]> = { "Claude Code": "claude", Codex: "codex", Cursor: "cursor", "Grok CLI": "grok" };
+
+/** Session ids the text addresses, plus `@claude-…`/`@codex-…` (or cursor/grok) handles that no longer match one. */
 export function resolveTypedSessionMentions(
   text: string, targets: readonly LocalSession[] | readonly SessionMentionCandidate[], selected: Readonly<Record<string, string>> = {},
 ): { ids: string[]; unresolved: string[] } {
@@ -139,7 +144,7 @@ export function resolveTypedSessionMentions(
   const handles = [...candidates].sort((a, b) => b.handle.length - a.handle.length);
   const tokens = [...new Set([...handles.map((c) => c.handle), ...Object.keys(selected)])].sort((a, b) => b.length - a.length);
   const pattern = tokens.length ? new RegExp(`(^|[\\s(])@(${tokens.map(escapeRegExp).join("|")})(?![\\w.-]|\\]\\()`, "gi") : null;
-  const anyHandle = /(^|[\s(])@((?:claude|codex)-[a-z0-9-]+)(?![\w.-]|\]\()/gi;
+  const anyHandle = new RegExp(`(^|[\\s(])@(${HANDLE})(?![\\w.-]|\\]\\()`, "gi");
   const found: string[] = [];
   const resolved = new Set<string>();
   const unresolved: string[] = [];
@@ -168,7 +173,7 @@ export type SessionReferences = Pick<CanonicalRoomMessage, "sessionMentions" | "
 
 function rewriteSessionMentions(text: string, refs: SessionReferences, sessions: readonly LocalSession[], markdown: boolean): string {
   const sends = (refs?.sessionMentions ?? []).map((sessionId) => ({ sessionId, displayLabel: refs?.sessionTargetLabels?.[sessionId] }));
-  const pattern = new RegExp(`(^|[\\s(])@((?:claude|codex)-[a-z0-9-]+)(?![\\w.-]|\\]\\()`, "gi");
+  const pattern = new RegExp(`(^|[\\s(])@(${HANDLE})(?![\\w.-]|\\]\\()`, "gi");
   return proseSegments(text).map((segment, index) => index % 2 === 0
     ? segment.replace(pattern, (match, lead: string, token: string) => {
       const legacyId = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(token)?.[1];
@@ -177,7 +182,7 @@ function rewriteSessionMentions(text: string, refs: SessionReferences, sessions:
         const parts = send.displayLabel?.split(" · ") ?? [];
         const tool = parts[0];
         const title = parts.slice(1, -1).join(" · ");
-        const snapshotHandle = tool && title ? sessionMentionHandle({ provider: tool === "Claude Code" ? "claude" : "codex", title, displayTitle: null, cwdName: null }) : null;
+        const snapshotHandle = tool && title ? sessionMentionHandle({ provider: PROVIDER_OF_LABEL[tool] ?? "codex", title, displayTitle: null, cwdName: null }) : null;
         return token.toLowerCase().endsWith(send.sessionId.toLowerCase())
           || (session && (token.toLowerCase() === sessionMentionHandle(session) || token.toLowerCase() === `${sessionMentionHandle(session)}-${send.sessionId.slice(0, 8).toLowerCase()}`))
           || (snapshotHandle && (token.toLowerCase() === snapshotHandle || token.toLowerCase() === `${snapshotHandle}-${send.sessionId.slice(0, 8).toLowerCase()}`));
@@ -189,7 +194,7 @@ function rewriteSessionMentions(text: string, refs: SessionReferences, sessions:
       if (!send && !legacyId && !currentSession) return match;
       const id = send?.sessionId ?? legacyId ?? currentSession!.sessionId;
       const session = sessions.find((item) => item.sessionId === id);
-      const label = `@${send?.displayLabel || (session ? `${sessionToolName(session.provider)} · ${sessionTitle(session)}` : `${token.startsWith("claude-") ? "Claude Code" : "Codex"} session`)}`;
+      const label = `@${send?.displayLabel || (session ? `${sessionToolName(session.provider)} · ${sessionTitle(session)}` : `${sessionAgentName(token.split("-")[0].toLowerCase())} session`)}`;
       return markdown && send ? `${lead}[${label.replace(/[\\[\]]/g, "")}](${MENTION_SCHEME}session:${id})` : `${lead}${label}`;
     })
     : segment).join("");

@@ -1,6 +1,6 @@
 import { useAuth, useOrganization } from "@clerk/expo";
 import { createApiClient } from "@lightbulb/shared";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../components/ui/SymbolView";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
 

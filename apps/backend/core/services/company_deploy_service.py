@@ -328,7 +328,7 @@ async def _run_company_deploy(
             # Paperclip key and writes config.yaml/.env/SOUL.md; the package's own per-agent
             # content (today: just AGENTS.md) rides in a second small upload ending in its own
             # .revision.
-            await write_profile_for_agent(owner_id, pc, inputs=profile_inputs)
+            await write_profile_for_agent(owner_id, pc, inputs=profile_inputs, publish=False)
             await upload_profile_files(owner_id, pc_id, {"AGENTS.md": render_agent_identity_md(planned).encode()})
             # apply_deploy_aux_mutations (the agents.list entry -- including the planner's
             # skills binding -- and the paperclip-creds plugin enable) has no Hermes equivalent:
@@ -348,6 +348,9 @@ async def _run_company_deploy(
         from core.services.owner_facts import write_owner_facts
 
         await write_owner_facts(owner_id)  # best-effort: keeps the agents' facts manifest current
+        from core.services import network_member
+
+        await network_member.publish_sessions(owner_id)  # once, after the per-agent writes
 
         logger.info(
             "company_deploy: owner=%s deploy summary -- created=%d skipped_aux=%s",

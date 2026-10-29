@@ -49,6 +49,7 @@ from fastapi import APIRouter, HTTPException, Request
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, channel_link_repo, update_repo
+from core.services import network_member
 from core.services.paperclip_provisioning import (
     build_paperclip_provisioning,
     close_paperclip_provisioning,
@@ -519,6 +520,7 @@ async def _handle_organization_membership_deleted(
     if not user_id or not org_id:
         raise HTTPException(status_code=400, detail="Clerk membership deletion target unavailable")
 
+    from core.services import agent_keys
     from core.services.mac_browser import revoke_member_soon
     from core.services.messaging import revoke_human_membership
     from core.services.text_lines import unlink_member
@@ -530,6 +532,7 @@ async def _handle_organization_membership_deleted(
         # Security boundary: every room key rotates before the private stream is
         # disabled. Repeated delivery is idempotent.
         await revoke_human_membership(org_id, user_id)
+        await agent_keys.delete_for_member(org_id, user_id)  # a rejoin must not revive old keys
         await unlink_member(org_id, user_id)  # their texts to the business's number are a customer's now
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
         # Only once the revocation landed and this delete is still the current lifecycle event:
@@ -932,6 +935,11 @@ async def handle_clerk_webhook(request: Request):
         # membership cleanup is handled via the organizationMembership
         # event stream — we don't enumerate orgs here.
         await _handle_user_deleted_paperclip(user_id)
+        # Their own memory data (sessions, drafts, episodes, computer keys). Memory records never
+        # expire, so a failure fails the event and the redelivery retries it.
+        from core.services.workspace_memory import delete_person_memory
+
+        await delete_person_memory(user_id)
 
     elif event_type == "organization.created":
         try:
@@ -954,6 +962,7 @@ async def handle_clerk_webhook(request: Request):
             raise HTTPException(status_code=400, detail="Clerk membership creation target unavailable")
         await _handle_organization_membership_created(data, lifecycle_claim_id=membership_claim)
         await _sync_seats(org_id)
+        await network_member.publish_sessions(org_id)  # the network's member list follows (never raises)
 
     elif event_type == "organizationMembership.deleted":
         await _handle_organization_membership_deleted(
@@ -962,6 +971,7 @@ async def handle_clerk_webhook(request: Request):
             lifecycle_event_id=lifecycle_id if membership_claim is not None else None,
         )
         await _sync_seats(membership_owner_id)
+        await network_member.publish_sessions(membership_owner_id)
 
     elif event_type == "organization.deleted":
         await _handle_organization_deleted(data)

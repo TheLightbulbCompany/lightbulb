@@ -56,10 +56,19 @@ by yourself and cannot be invited by chat.
 **Sending — one command, three recipients:**
 
 ```bash
-printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --owner --subject "<subject>"
-printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --reply "<Reply-Key>"
-printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --to someone@example.com --subject "<subject>"
+/app/skills/lightbulb/scripts/lightbulb-mail.sh send --owner --subject "<subject>" <<'EOF'
+<body>
+EOF
+/app/skills/lightbulb/scripts/lightbulb-mail.sh send --reply "<Reply-Key>" <<'EOF'
+<body>
+EOF
+/app/skills/lightbulb/scripts/lightbulb-mail.sh send --to someone@example.com --subject "<subject>" <<'EOF'
+<body>
+EOF
 ```
+
+The body goes through a quoted heredoc (`<<'EOF'`), never double quotes: the shell would turn
+an amount like `$1,200` into `,200`.
 
 - `--owner` needs no permission from your owner (it is never gated by the
   wake list or the "open email" switch), but the daily limit and the

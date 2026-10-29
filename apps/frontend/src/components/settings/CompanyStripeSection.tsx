@@ -15,6 +15,8 @@ import { isTauri, openExternalUrl, pollUntil } from "@/lib/externalAuth";
 // correct on both surfaces.
 import { EditorialButton } from "@/components/teams/shell";
 import { Input } from "@/components/ui/input";
+import { loadConnectAndInitialize } from "@stripe/connect-js";
+import { ConnectAccountOnboarding, ConnectComponentsProvider } from "@stripe/react-connect-js";
 
 const POPUP_BLOCKED_MSG =
   "Your browser blocked the Stripe window — allow popups for this site and try again.";
@@ -29,10 +31,54 @@ export type CompanyStripeStatus = {
   livemode?: boolean | null;
   dashboard_url: string | null;
   connect_configured: boolean;
-  /** Connect is only offered while the provisioning rail is live — it is the
-   *  one thing an OAuth grant does that a pasted key cannot. */
-  provisioning_enabled: boolean;
+  /** Readiness of the account Stripe Projects runs on (the services account,
+   *  else a created main account); false = not active yet, or a connected /
+   *  api_key owner with no services account; null = not asked. */
+  projects_ready?: boolean | null;
+  /** The platform-created account Projects runs on beside a connected or
+   *  api_key binding (Accounts v2 refuses a v1 Standard account). */
+  services_account_id?: string | null;
+  /** Platform pk for embedded onboarding; null ⇒ hosted Account Link. */
+  publishable_key?: string | null;
 };
+
+type OnboardingTarget = "main" | "services";
+
+/** Stripe's embedded account onboarding, inside the card. Incremental
+ *  (`currently_due`), and the same component handles requirements that come
+ *  due later. */
+function EmbeddedOnboarding({
+  publishableKey,
+  target,
+  onExit,
+}: {
+  publishableKey: string;
+  target: OnboardingTarget;
+  onExit: () => void;
+}) {
+  const api = useApi();
+  const [connect] = useState(() =>
+    loadConnectAndInitialize({
+      publishableKey,
+      fetchClientSecret: async () => {
+        try {
+          const r = (await api.post("/company/stripe/account-session", { target })) as { client_secret: string };
+          return r.client_secret;
+        } catch (e) {
+          notifyApiError(e, "Couldn't open Stripe onboarding. Try again.");
+          throw e;
+        }
+      },
+    }),
+  );
+  return (
+    <div data-testid="stripe-embedded-onboarding">
+      <ConnectComponentsProvider connectInstance={connect}>
+        <ConnectAccountOnboarding onExit={onExit} collectionOptions={{ fields: "currently_due" }} />
+      </ConnectComponentsProvider>
+    </div>
+  );
+}
 
 /** The six read permissions the Money surface needs — shown so nobody has to
  *  guess at ~80 checkboxes. Confirmed against the permissions reference. */
@@ -66,6 +112,7 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   const [busy, setBusy] = useState(false);
   const [pasting, setPasting] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
+  const [onboarding, setOnboarding] = useState<OnboardingTarget | null>(null);
 
   // Stops the desktop grant-poll when this section unmounts — an abandoned
   // wait must not keep issuing status GETs for up to the poll timeout.
@@ -127,14 +174,18 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   }
 
   const bound = Boolean(data?.account_id);
-  // Both OAuth doors 409 without the platform client id, so don't offer the
-  // one that only exists there, and say why the exit is unavailable.
+  // Both Connect doors ("Set up Stripe" mints a Connect account too) need the
+  // platform client id: without it the account could never be disconnected.
   const connectConfigured = Boolean(data?.connect_configured);
-  // The Connect doors exist for provisioning. While that rail is off they
-  // would ask an owner for a read_write grant to power a read-only tab a
-  // pasted key already powers — so they are not offered.
-  const connectOffered = Boolean(data?.provisioning_enabled) && connectConfigured;
+  // Embedded onboarding needs the platform pk; the desktop webview can't open
+  // Stripe's sign-in popup, so it keeps the hosted link in the system browser.
+  const publishableKey = data?.publishable_key && !isTauri() ? data.publishable_key : null;
   const isApiKey = data?.source === "api_key";
+  // Connected/api_key owners run Projects on a separate, platform-created
+  // services account (Accounts v2 refuses a v1 Standard account).
+  const servicesShown = bound && data?.source !== "created" && data?.projects_ready === false;
+  const needsServicesAccount = servicesShown && !data?.services_account_id;
+  const servicesPending = servicesShown && Boolean(data?.services_account_id);
   // Disconnect needs the client id only for Connect rows; an api_key row has
   // nothing at Stripe to revoke.
   const canDisconnect = isApiKey || connectConfigured;
@@ -151,9 +202,40 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
 
   // The shared client returns `unknown`; narrow at the call site.
   const createLink = async () => (await api.post("/company/stripe/create", {})) as { onboarding_url: string };
-  const onboardingLink = async () =>
-    (await api.post("/company/stripe/onboarding-link", {})) as { onboarding_url: string };
+  const onboardingLink = async (target: OnboardingTarget = "main") =>
+    (await api.post("/company/stripe/onboarding-link", { target })) as { onboarding_url: string };
   const connectStart = async () => (await api.get("/company/stripe/connect/start")) as { authorize_url: string };
+
+  function setUpStripe() {
+    if (!publishableKey) return openWith(async () => (await createLink()).onboarding_url);
+    void run(async () => {
+      await createLink();
+      setOnboarding("main");
+    });
+  }
+
+  function finishMain() {
+    if (!publishableKey) return openWith(async () => (await onboardingLink()).onboarding_url);
+    setOnboarding("main");
+  }
+
+  function addServicesAccount() {
+    if (!publishableKey) {
+      return openWith(async () => {
+        await api.post("/company/stripe/services-account", {});
+        return (await onboardingLink("services")).onboarding_url;
+      });
+    }
+    void run(async () => {
+      await api.post("/company/stripe/services-account", {});
+      setOnboarding("services");
+    });
+  }
+
+  function finishServices() {
+    if (!publishableKey) return openWith(async () => (await onboardingLink("services")).onboarding_url);
+    setOnboarding("services");
+  }
 
   return (
     <div
@@ -240,17 +322,8 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                   <EditorialButton type="button" size="sm" disabled={busy} onClick={() => setPasting(true)}>
                     Add API key
                   </EditorialButton>
-                  {connectOffered && (
+                  {connectConfigured && (
                     <>
-                      <EditorialButton
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        disabled={busy}
-                        onClick={() => openWith(async () => (await createLink()).onboarding_url)}
-                      >
-                        Set up Stripe
-                      </EditorialButton>
                       <EditorialButton
                         type="button"
                         size="sm"
@@ -258,7 +331,10 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                         disabled={busy}
                         onClick={() => openWith(async () => (await connectStart()).authorize_url)}
                       >
-                        Connect existing Stripe
+                        Connect your Stripe
+                      </EditorialButton>
+                      <EditorialButton type="button" size="sm" variant="secondary" disabled={busy} onClick={setUpStripe}>
+                        Set up Stripe
                       </EditorialButton>
                     </>
                   )}
@@ -293,6 +369,12 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 </dd>
               </div>
             </dl>
+            {needsServicesAccount && (
+              <p className="text-sm text-[var(--midnight-soft)]">
+                Setting up services needs a services account: a second Stripe account Lightbulb creates for
+                you. This one stays as it is.
+              </p>
+            )}
             {data.source === "connected" && !data.details_submitted && (
               // "Onboarding incomplete" names the problem; this names the fix.
               // A connected account is finished in Stripe's own Dashboard —
@@ -317,14 +399,24 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                   Open Stripe Dashboard
                 </a>
               )}
-              {canManage && data.source === "created" && !data.charges_enabled && (
+              {canManage && data.source === "created" && (!data.charges_enabled || data.projects_ready === false) && (
                 <EditorialButton
                   type="button"
                   size="sm"
                   disabled={busy}
-                  onClick={() => openWith(async () => (await onboardingLink()).onboarding_url)}
+                  onClick={finishMain}
                 >
-                  Finish onboarding
+                  {data.projects_ready === false ? "Finish Stripe setup" : "Finish onboarding"}
+                </EditorialButton>
+              )}
+              {canManage && needsServicesAccount && (
+                <EditorialButton type="button" size="sm" disabled={busy} onClick={addServicesAccount}>
+                  Add a services account
+                </EditorialButton>
+              )}
+              {canManage && servicesPending && (
+                <EditorialButton type="button" size="sm" disabled={busy} onClick={finishServices}>
+                  Finish services account setup
                 </EditorialButton>
               )}
               {canManage && (
@@ -341,6 +433,18 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
               )}
             </div>
           </div>
+        )}
+
+        {onboarding && publishableKey && bound && (
+          <EmbeddedOnboarding
+            key={onboarding}
+            publishableKey={publishableKey}
+            target={onboarding}
+            onExit={() => {
+              setOnboarding(null);
+              void mutate();
+            }}
+          />
         )}
 
         {busy && isTauri() && (

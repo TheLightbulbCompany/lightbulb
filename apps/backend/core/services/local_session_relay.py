@@ -63,7 +63,7 @@ HolderId = Annotated[str, Field(pattern=r"^[0-9a-f]{8}$")]
 
 class Descriptor(ContractModel):
     workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
-    provider: Literal["claude", "codex"]
+    provider: sessions.Provider
     profile_fingerprint: sessions.DeviceId
     native_conversation_id: sessions.OpaqueId
     generation: sessions.OpaqueId
@@ -78,6 +78,22 @@ class Descriptor(ContractModel):
     # this names the session it continues, so a listing shows one session, not two.
     forked_from: sessions.OpaqueId | None = None
     start_id: sessions.OpaqueId | None = None
+    # False: its person stopped sharing it on the Mac, which still registers it so the owner keeps
+    # it in their own list as "Only you" (2026-10-26). Absent leaves the row's sharing as it is.
+    shared: bool | None = None
+    # What Claude says beyond `status` (spec 2026-10-26 (e)): a background job's turn is over
+    # (`done`), why a prompt is open in its terminal (`waitingFor`), its hand-off note (`note`,
+    # Claude's `needs`: a message for its person, never a prompt). Sent only once FEATURES lists
+    # sessionAttention; absent is none (an older desktop never sends them).
+    done: bool | None = None
+    waiting_for: Annotated[str, Field(max_length=120)] | None = None
+    note: Annotated[str, Field(max_length=300)] | None = None
+    # Files changed since the session started (git), its running subagents, its branch's pull request
+    # (spec 2026-10-26 (f) gaps 7, 16, 15). Sent only once FEATURES lists sessionSignals; absent is
+    # none or unknown (an older desktop never sends them).
+    changes: sessions.SessionChanges | None = None
+    agents: sessions.AgentCount | None = None
+    pr: sessions.SessionPr | None = None
 
 
 class Register(ContractModel):
@@ -115,6 +131,19 @@ class HeartbeatSession(ContractModel):
     # holder an older build started keeps running after the Mac updates and ignores it. Sent only
     # once FEATURES lists remoteResize.
     terminal_resize: bool = False
+    # What Claude says beyond `status` (spec 2026-10-26 (e)): a background job's turn is over
+    # (`done`), why a prompt is open in its terminal (`waitingFor`), its hand-off note (`note`,
+    # Claude's `needs`: a message for its person, never a prompt). Sent only once FEATURES lists
+    # sessionAttention; absent is none (an older desktop never sends them).
+    done: bool | None = None
+    waiting_for: Annotated[str, Field(max_length=120)] | None = None
+    note: Annotated[str, Field(max_length=300)] | None = None
+    # Files changed since the session started (git), its running subagents, its branch's pull request
+    # (spec 2026-10-26 (f) gaps 7, 16, 15). Sent only once FEATURES lists sessionSignals; absent is
+    # none or unknown (an older desktop never sends them).
+    changes: sessions.SessionChanges | None = None
+    agents: sessions.AgentCount | None = None
+    pr: sessions.SessionPr | None = None
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
@@ -122,7 +151,6 @@ FEATURES = [
     "sessionStats",
     "sessionSubagents",
     "nativeControlCapabilities",
-    "privateSendApproval",
     "liveTerminal",
     "remoteInput",
     "sessionTerminal",
@@ -139,6 +167,10 @@ FEATURES = [
     "endedIdleStopped",
     # The Mac advertises remoteResize (its holders take the app panel's size) only once this is listed.
     "remoteResize",
+    # The Mac sends `done`, `waitingFor` and `note` only once this is listed.
+    "sessionAttention",
+    # The Mac sends `changes`, `agents` and `pr` only once this is listed.
+    "sessionSignals",
 ]
 
 
@@ -206,7 +238,6 @@ class Events(ContractModel):
     batch_id: sessions.OpaqueId
     after_seq: int = Field(ge=0, lt=10**20 - 33)
     events: list[Event] = Field(min_length=1, max_length=32)
-    private_approval: sessions.PrivateSendApproval | None = None
 
 
 class Receipt(ContractModel):
@@ -270,59 +301,26 @@ def _conflict(reason: str, **fields: object) -> ApiProblem:
     return ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed; reconcile before retrying.")
 
 
-async def _actor_label(command: dict, owner_human: str | None = None, owner: str | None = None) -> dict | None:
-    """Handle and name of the sender; the desktop shows it in the owner's terminal. The room's
-    member row when there is one; a person with no room (a follow-up sent from the session's own
-    page stores roomId "") or no row in it still gets the name presence shows. An agent's send
-    that a person approved says so: "Friday, approved by you" to the session's owner
-    (``owner_human``), "Friday, approved by Sam" when a teammate under team control approved."""
-    label = await _sender_label(command, owner)
-    if label is None or not command.get("approvedBy"):
-        return label
-    from core.services.session_presence import _name
-
-    approver = command["approvedBy"]
-    by = "you" if approver == owner_human else await _name(approver)
-    return {**label, "displayName": f"{label.get('displayName') or 'An agent'}, approved by {by}"}
-
-
-async def _agent_roster_name(owner: str, agent_id: str) -> str | None:
-    from core.services.messaging import load_agent_roster
-
-    try:
-        return next((a.get("name") for a in await load_agent_roster(owner) if a.get("id") == agent_id), None)
-    except Exception:  # noqa: BLE001 -- a label never blocks delivery
-        return None
-
-
-async def _sender_label(command: dict, owner: str | None) -> dict | None:
+async def _actor_label(command: dict, owner: str | None = None) -> dict | None:
+    """Handle and name of the person who sent ``command``; the desktop shows it in the owner's
+    terminal. The room's member row when there is one; a person with no room (a follow-up sent
+    from the session's own page stores roomId "") or no row in it still gets the name presence shows."""
     from core.services.messaging import human_emails, with_human_handles
 
-    if (command.get("actor") or {}).get("kind") == "session":
-        return {"kind": "session", "displayName": "Shared native session"}
-    kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
-    if command.get("viaClient"):
-        from core.services.session_presence import _name  # tolerant: a label never blocks delivery
-
-        name = await _name(member_id)
-        return {"kind": "human", "handle": None, "displayName": f"{command['viaClient']} via {name}"}
+    member_id = command["actorUserId"]
     member = None
     if room_id := command.get("roomId"):
         room_members = await store.list_members(room_id)
         members = with_human_handles(room_members, await human_emails(room_members))
-        member = next((m for m in members if m.get("kind") == kind and str(m.get("id")) == member_id), None)
+        member = next((m for m in members if m.get("kind") == "human" and str(m.get("id")) == member_id), None)
     if member is None:
-        if kind != "human":
-            # An agent with no room (a Paperclip run) or no longer in it: the roster names it.
-            name = await _agent_roster_name(owner, member_id) if owner else None
-            return {"kind": "agent", "handle": None, "displayName": name} if name else None
         from core.services.session_presence import _name  # imports this module's siblings
 
         name = await _name(member_id)
         # A failed lookup answers the bare user id: no label is better than an opaque id.
         return None if name == member_id else {"kind": "human", "handle": None, "displayName": name}
     return {
-        "kind": kind,
+        "kind": "human",
         "handle": member.get("mentionHandle") or None,
         "displayName": member.get("displayName") or None,
     }
@@ -330,13 +328,15 @@ async def _sender_label(command: dict, owner: str | None) -> dict | None:
 
 #: In-flight hint fan-outs, referenced so asyncio cannot garbage-collect them before they finish.
 _hint_tasks: set[asyncio.Task[None]] = set()
-#: One fan-out per (owner, human, transcript) at a time: a hint that arrives while one is running
+#: One fan-out per (owner, human, transcript, session) at a time: a hint that arrives while one is running
 #: marks it dirty and the running task publishes once more at the end, so a streaming burst
 #: (one call per session per second) collapses to at most one in-flight + one follow-up per key.
-_hint_running: dict[tuple[str, str, bool], bool] = {}
+_hint_running: dict[tuple[str, str, bool, str | None], bool] = {}
 
 
-async def publish_resources_changed(owner: str, human: str, *, transcript: bool = False) -> None:
+async def publish_resources_changed(
+    owner: str, human: str, *, transcript: bool = False, session_id: str | None = None
+) -> None:
     """One ``workspace.sessions.changed`` per change, on the workspace sessions channel.
 
     Clients refetch their open room's resources (and so its transcript) from it. It used to
@@ -345,16 +345,24 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
     desktop's 10 s ack deadline and looped reconnects (prod 2026-09-24). Owner ruling: one hint.
     ``transcript`` marks a streaming batch: open panes refetch, the sidebar list ignores it (it
     lists liveness, not content, and a streaming teammate would refetch it once a second).
+    ``session_id`` names the one session that changed: clients re-read that row
+    (GET /messaging/sessions/{id}, ~0.3 s) instead of the whole list (1.7-2.5 s, measured
+    2026-10-27). Without it, the change may add or drop rows, and clients refetch the list.
     """
     from core.services.live_events import get_live_event_publisher
 
-    key = (owner, human, transcript)
+    key = (owner, human, transcript, session_id)
     if key in _hint_running:
         _hint_running[key] = True  # dirty: the running fan-out sends one more at the end
         return
     _hint_running[key] = False
     event = make_live_event(
-        "workspace.sessions.changed", {"humanUserId": human, **({"transcript": True} if transcript else {})}
+        "workspace.sessions.changed",
+        {
+            "humanUserId": human,
+            **({"transcript": True} if transcript else {}),
+            **({"sessionId": session_id} if session_id else {}),
+        },
     )
 
     async def fan_out() -> None:
@@ -381,7 +389,20 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
 
 
 #: Heartbeat fields whose change counts as the user doing something (stamps lastEventAt).
-_PUBLIC_FIELDS = ("status", "activeTurnId", "title", "cwdName", "lastAssistantMessage", "controlUnavailableReason")
+#: What Claude says beyond `status`; each frame from a Mac that sends them says all of them.
+ATTENTION_FIELDS = ("done", "waitingFor", "note")
+#: What the session's Mac reads beyond its transcript; each frame from a Mac that sends them says all of them.
+SIGNAL_FIELDS = ("changes", "agents", "pr")
+_PUBLIC_FIELDS = (
+    "status",
+    "activeTurnId",
+    "title",
+    "cwdName",
+    "lastAssistantMessage",
+    "controlUnavailableReason",
+    *ATTENTION_FIELDS,
+    *SIGNAL_FIELDS,
+)
 
 
 #: A session "in a turn": working, or paused on an approval inside that turn.
@@ -397,8 +418,13 @@ _tasks: set[asyncio.Task] = set()
 FINISHED_COLLAPSE_S = 30
 
 
-def _attention(row: dict, status: str, now: int) -> Literal["waiting", "finished"] | None:
-    """The owner-facing state change a heartbeat carries, if any."""
+def _attention(row: dict, status: str, now: int, note: str | None = None) -> list[str]:
+    """The owner-facing state changes a heartbeat carries: "waiting" or "finished". A Claude job's
+    hand-off ``note`` notifies nobody (owner 2026-10-27: notes are not shown anywhere)."""
+    return [state] if (state := _status_attention(row, status, now)) else []
+
+
+def _status_attention(row: dict, status: str, now: int) -> Literal["waiting", "finished"] | None:
     if status == "waiting-approval" and row["status"] != "waiting-approval":
         return "waiting"
     busy_since = row.get("busySince")
@@ -420,63 +446,127 @@ def _spawn(coro) -> None:
     task.add_done_callback(_tasks.discard)
 
 
-def attention_copy(row: dict, state: str, subagent: str | None = None) -> tuple[str, str]:
+def attention_copy(row: dict, state: str, subagent: str | None = None, prompt_text: str = "") -> tuple[str, str]:
     """ "Claude · <session title>" over "Waiting for you: …" / "Finished: <reply's first line>".
     ``subagent`` is a finished background subagent's own line ('Agent "…" finished'), which is the body."""
     from core.services import notification_copy as copy
 
-    tool = {"claude": "Claude", "codex": "Codex"}.get(row.get("provider", ""), "Session")
-    where = copy.line(row.get("title"), 40) or row["sessionId"][:8]
+    tool = {"claude": "Claude", "codex": "Codex", "cursor": "Cursor", "grok": "Grok"}.get(
+        row.get("provider", ""), "Session"
+    )
+    # The clients' rule (sessionTitle): never an id.
+    where = copy.line(row.get("displayTitle") or row.get("title") or row.get("cwdName"), 40) or "New chat"
     if subagent:
         return copy.title(tool, where), copy.line(subagent)
     if state == "waiting":
-        return copy.title(tool, where), "Waiting for you: approve or answer it in your terminal"
+        return copy.title(tool, where), waiting_line(row.get("pendingApproval"), prompt_text)
+    if state == "attention":
+        return copy.title(tool, where), copy.line(row.get("note")) or "Left you a note"
     reply = copy.line(row.get("lastAssistantMessage"))
     return copy.title(tool, where), copy.line(f"Finished: {reply}") if reply else "Finished its turn"
+
+
+def waiting_line(prompt: dict | None, text: str = "") -> str:
+    """What the session waits on, named: the question, or the call it wants to make. Only an
+    answerable prompt reaches the row; any other is named by its transcript row's ``text``
+    ("Tea or coffee? (Tea / Coffee)", "Wants to run Bash(git push)") and answered in the terminal."""
+    from core.services.notification_copy import line
+
+    if not prompt:
+        text = line(text, 60)
+        if text.startswith("Wants to run"):
+            return f"{text}: answer it in your terminal"
+        if text:
+            return line(f"Has a question: {text}")
+        return "Waiting for you: approve or answer it in your terminal"
+    tool, summary = prompt.get("tool") or "A tool", line(prompt.get("summary"), 60)
+    if tool == "AskUserQuestion":
+        return line(f"Has a question: {summary}") if summary else "Has a question for you"
+    ask = f'{tool} wants to run "{summary}"' if summary else f"{tool} wants your OK"
+    return ask if prompt.get("exact") or prompt.get("full") else f"{ask}: answer it in your terminal"
+
+
+async def _waiting_text(row: dict) -> str:
+    """The text of the prompt this wait is about: the session's LAST stored row, when that row is a
+    prompt stored around the moment the wait began. Anything after a prompt (its tool result, a
+    reply, a new turn) means it was answered, so an older prompt is never named for a new wait.
+    Empty when the new prompt's batch has not landed yet (the Mac sends the status and the prompt
+    row separately) or the read fails -- the generic line covers it."""
+    try:
+        events, _ = await repo.list_events(row["ownerId"], row["sessionId"], max(0, row.get("eventSeq", 0) - 10), 10)
+    except Exception:
+        logger.warning("Waiting prompt read failed", exc_info=True)
+        return ""
+    # A held prompt's release re-states it with no text: still the same prompt.
+    rows = [e for e in events if not (e.get("lifecycle") == "approval_pending" and not e.get("text"))]
+    last = rows[-1] if rows else {}
+    if last.get("lifecycle") == "approval_pending" and last.get("createdAt", 0) >= row.get("waitingSince", 0) - 30:
+        return last["text"]
+    return ""
 
 
 async def notify_attention(row: dict, state: str, subagent: Event | None = None) -> None:
     """Tell the session's OWNER (sessions have no watchers): an Activity row, a live
     event for desktop/web notifications, and a phone push. Best effort, each on its own.
     ``subagent`` is a background subagent's end event; it notifies as its parent would."""
+    from core.repositories import user_repo
     from core.services.live_events import get_live_event_publisher
     from core.services.push_service import send_push_to_user
 
     owner, human, sid = row["ownerId"], row["humanUserId"], row["sessionId"]
+    try:
+        prefs = user_repo.session_notifications(await user_repo.get(human))
+    except Exception:
+        # Fail closed: an unread opt-out must not be overridden, so this notice is badge-only.
+        logger.warning("Session notification prefs read failed; no banner", exc_info=True)
+        prefs = {**user_repo.session_notifications(None), "waiting": "badge", "finished": "badge", "attention": "badge"}
+    # "off" and "badge" never banner; a note is no Activity row (the row's own text is the record).
+    level = prefs[state]
+    if state == "attention" and level != "banner":
+        return
     line = (subagent.text.strip() or "A subagent finished.")[:180] if subagent else None
-    title, body = attention_copy(row, state, line)
+    prompt_text = await _waiting_text(row) if state == "waiting" and not row.get("pendingApproval") else ""
+    title, body = attention_copy(row, state, line, prompt_text)
     created = utc_now_iso()
     # A subagent ends once; its own id keeps a replayed batch to one notification.
+    # A note's notice shares its frame's revision with a "finished": its own key keeps both.
     key = f"subagent|{subagent.subagent}" if subagent else row["revision"]
+    key = f"attention|{key}" if state == "attention" else key
     event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-attention|{sid}|{key}"))
     try:
-        await store.put_activity_row(
-            {
-                "pk": store.activity_pk(owner, human),
-                "sk": store.activity_sk(created, f"session:{event_id}"),
-                "kind": "session",
-                "subtype": state,
-                "sessionId": sid,
-                **({"waitingSince": row["waitingSince"]} if state == "waiting" else {}),
-                **({"subagent": line} if line else {}),
-                "createdAt": created,
-                "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
-            }
-        )
+        if state != "attention":
+            await store.put_activity_row(
+                {
+                    "pk": store.activity_pk(owner, human),
+                    "sk": store.activity_sk(created, f"session:{event_id}"),
+                    "kind": "session",
+                    "subtype": state,
+                    "sessionId": sid,
+                    **({"waitingSince": row["waitingSince"]} if state == "waiting" else {}),
+                    **({"subagent": line} if line else {}),
+                    "createdAt": created,
+                    "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
+                }
+            )
     except Exception:
         logger.warning("Session attention activity row failed", exc_info=True)
     push = {"title": title, "body": body, "data": {"source": "session", "sessionId": sid}}
+    # The clients banner only at "banner", with these two prefs; "badge" is the Dock count alone.
+    notice = {"level": level, "sound": prefs["sound"], "onlyUnfocused": prefs["onlyUnfocused"]}
     try:
         await get_live_event_publisher().publish_user(
             owner,
             human,
             make_live_event(
-                "workspace.session.attention", {"sessionId": sid, "state": state, "push": push}, event_id=event_id
+                "workspace.session.attention",
+                {"sessionId": sid, "state": state, "push": push, **notice},
+                event_id=event_id,
             ),
         )
     except Exception:
         logger.warning("Session attention live event failed")
-    await send_push_to_user(human, title, body, push["data"])
+    if level == "banner":
+        await send_push_to_user(human, title, body, push["data"], sound=prefs["sound"])
 
 
 _NO_PROMPT = object()
@@ -634,7 +724,7 @@ class LocalSessionRelay:
                     compatible = descriptor.control_unavailable_reason is None
                     row = _revised(
                         previous or {},
-                        **descriptor.model_dump(by_alias=True),
+                        **descriptor.model_dump(by_alias=True, exclude={"shared"}),
                         pk=repo.session_pk(owner, sid),
                         sk="META",
                         ownerId=owner,
@@ -659,9 +749,33 @@ class LocalSessionRelay:
                     # have one, does not inherit its "Anyone with the link".
                     if previous and sessions.conversation_only(previous):
                         sessions.narrow_link(row)
+                    # A row's life is its conversation's, not its process's. A new process the Mac
+                    # moves this live row onto (Claude's daemon respawning a worker, the agent view's
+                    # restart, a `--resume` in another pid) names the generation we hold: the same
+                    # run goes on, with its title and its place in the lists. What the owner granted
+                    # a process (teammate control, the people let in) is granted again (below): a new
+                    # process is one they have not opted into. A run that ended first is a new one (a
+                    # resume), and so is a generation that names none.
+                    continuation = bool(
+                        previous
+                        and previous["generation"] != descriptor.generation
+                        and message.previous_generation == previous["generation"]
+                        and previous.get("endedAt") is None
+                    )
+                    new_run = previous is None or (previous["generation"] != descriptor.generation and not continuation)
+                    # Paused on the Mac: what `set_sharing(False)` writes, so it reads as "Only you".
+                    # Only for a new process: the same one reconnecting may carry a pause its owner has
+                    # since lifted from the web while the Mac was offline, and the Mac takes that
+                    # from presence. Its own pauses reach us as `set_sharing` (the band, a stop owed).
+                    new_process = previous is None or previous["generation"] != descriptor.generation
+                    if descriptor.shared is False and new_process and not row.get("unshared"):
+                        row["unshared"] = True
+                        sessions.narrow_link(row)
+                        row.pop("pendingApproval", None)
+                        row.pop("privateSendApproval", None)
                     # Absent, never a stored null.
-                    for key in ("holderId", "forkedFrom"):
-                        if row.get(key) is None:
+                    for key in ("holderId", "forkedFrom", *ATTENTION_FIELDS, *SIGNAL_FIELDS):
+                        if not row.get(key):
                             row.pop(key, None)
                     # The hidden `background` kind is gone (Phase 3); a row that still has it is listed now.
                     row.pop("kind", None)
@@ -670,8 +784,8 @@ class LocalSessionRelay:
                     elif descriptor.start_id is None:
                         row.pop("startId", None)
                     # A reconnect may find no prompt in the bounded desktop scan.
-                    # Keep the same process's title; a new generation starts fresh.
-                    if previous and previous["generation"] == descriptor.generation and descriptor.title is None:
+                    # Keep the same run's title (also across a continuation); a new run starts fresh.
+                    if previous and not new_run and descriptor.title is None:
                         row["title"] = previous.get("title")
                     if descriptor.status in _TURN_STATUSES and (previous or {}).get("status") not in _TURN_STATUSES:
                         row["busySince"] = int(time.time())
@@ -690,9 +804,7 @@ class LocalSessionRelay:
                         # The end rewrites who may resume; a new run has nobody to resume it. The
                         # same generation re-registering to drain an ended mirror keeps them.
                         row.pop("resumeAllowed", None)
-                        # Nor is it still removed from the lists (`sessions.remove_session`): the
-                        # owner started it again.
-                        row.pop("removedAt", None)
+                        # A terminal, a held prompt and control are the old process's, continued or not.
                         row.pop("terminal", None)
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
@@ -703,6 +815,10 @@ class LocalSessionRelay:
                             row["joinClosed"] = closed
                         for key in sessions.JOIN_FIELDS:
                             row.pop(key, None)
+                    if new_run:
+                        # Nor is it still removed from the lists (`sessions.remove_session`): the
+                        # owner started it again.
+                        row.pop("removedAt", None)
                     # A fork continues its origin's conversation: the name its person gave it there
                     # carries over, since the listing shows the fork in the origin's place.
                     # Also on a late re-register: a fork that registered before its origin had an id
@@ -726,7 +842,7 @@ class LocalSessionRelay:
                             await session_chat.follow_session(owner, sid)
                         except Exception:  # the next chat open reopens it too (_follow_lifecycle)
                             logger.warning("session chat reopen failed for %s", sid, exc_info=True)
-                    if previous is None or previous["generation"] != row["generation"]:
+                    if new_run:
                         # The desktop may discover an already-running native process: shared, not started.
                         _capture_lifecycle(row, "local_session_shared")
                     elif previous.get("connectionId") != row["connectionId"]:
@@ -777,7 +893,7 @@ class LocalSessionRelay:
                     if message.session_presence:
                         with step("presence"):
                             response = await session_presence.ack_with_presence(
-                                response, owner, [str(s.session_id) for s in message.sessions]
+                                response, owner, device, [str(s.session_id) for s in message.sessions]
                             )
                     notify_resources = False
                 elif isinstance(message, Ended):
@@ -927,6 +1043,20 @@ class LocalSessionRelay:
                         **labels,
                     )
                     updated["terminalResize"] = item.terminal_resize
+                    signals = (
+                        item.changes and item.changes.model_dump(by_alias=True),
+                        item.agents,
+                        item.pr and item.pr.model_dump(by_alias=True),
+                    )
+                    for key, value in zip(
+                        (*ATTENTION_FIELDS, *SIGNAL_FIELDS),
+                        (item.done, item.waiting_for, item.note, *signals),
+                        strict=True,
+                    ):
+                        if value:
+                            updated[key] = value
+                        else:
+                            updated.pop(key, None)
                     if item.terminal is not None:
                         updated["terminal"] = item.terminal
                         if item.terminal == "none" and item.terminal_reason is not None:
@@ -949,10 +1079,10 @@ class LocalSessionRelay:
                         )
                     if item.status in _TURN_STATUSES and row["status"] not in _TURN_STATUSES:
                         updated["busySince"] = now
-                    attention = _attention(row, item.status, now)
-                    if attention == "waiting":
+                    attention = _attention(row, item.status, now, item.note)
+                    if "waiting" in attention:
                         updated["waitingSince"] = now  # which wait an Activity item is about
-                    if attention == "finished":
+                    if "finished" in attention:
                         updated["finishedNotifiedAt"] = now
                     if item.status not in _TURN_STATUSES:
                         updated.pop("subagentEnded", None)
@@ -996,7 +1126,8 @@ class LocalSessionRelay:
                     if attention:
                         # The write above is revision-fenced, so exactly one frame wins a transition:
                         # one state change is one notification, retries included.
-                        _spawn(notify_attention(updated, attention))
+                        for state in attention:
+                            _spawn(notify_attention(updated, state))
                     # A workspace scan is worth a refetch but is not the user doing something,
                     # so it hints without stamping lastEventAt. A lapsed lease reads as
                     # offline, so recovery must reach the room even when nothing else moved;
@@ -1102,17 +1233,14 @@ class LocalSessionRelay:
                 await session_chat.follow_session(owner, row["sessionId"])
         except Exception:  # the next chat open archives it too (session_chat._follow_lifecycle)
             logger.warning("session chat archive failed for %s", row["sessionId"], exc_info=True)
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return ack
 
     async def _events(self, cid: str, connection: dict, enrollment: dict, row: dict, message: Events) -> dict:
         sid = row["sessionId"]
         first_seq = message.after_seq + 1
         previous = await store._get(row["pk"], f"EVENT#{first_seq:020d}")
-        hash_body = message.model_dump(mode="json", by_alias=True)
-        if hash_body["privateApproval"] is None:
-            hash_body.pop("privateApproval")  # Old event batches keep their existing replay hash.
-        digest = store.request_hash(hash_body)
+        digest = store.request_hash(message.model_dump(mode="json", by_alias=True))
         if previous:
             if previous.get("batchHash") != digest:
                 raise _conflict("batch hash", sid=sid, first_seq=first_seq)
@@ -1152,19 +1280,6 @@ class LocalSessionRelay:
             )
         hint = now >= row.get("nextHintAt", 0)
         approval = pending_approval(message.events)
-        detail = message.private_approval
-        if detail is not None:
-            from core.services.native_session_tools import _send_args
-
-            _send_args({"destination": detail.destination, "text": detail.text, "requestId": detail.request_id})
-            if (
-                approval is None
-                or approval is _NO_PROMPT
-                or approval["tool"] != "mcp__lightbulb_native_sessions__send"
-                or approval["approvalId"] != detail.approval_id
-                or approval["inputDigest"] != detail.input_digest
-            ):
-                raise ApiProblem("INVALID_REQUEST", "Private approval does not match this prompt.")
         approval_changed = approval is not _NO_PROMPT and row.get("pendingApproval") != approval
         if approval_changed or (approval is not None and approval is not _NO_PROMPT):
             # Prompt changes, including release, must refresh the session list immediately.
@@ -1191,14 +1306,14 @@ class LocalSessionRelay:
             updated.pop("privateSendApproval", None)
             if approval is not None:
                 updated["pendingApproval"] = approval
-                if detail is not None:
-                    updated["privateSendApproval"] = detail.model_dump(by_alias=True)
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         # The write is cursor-fenced and a replayed batch returned above, so each end notifies once.
         if notify_ended is not None:
             _spawn(notify_attention(updated, "finished", notify_ended))
         if hint:
-            await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=not approval_changed)
+            await publish_resources_changed(
+                row["ownerId"], row["humanUserId"], transcript=not approval_changed, session_id=row["sessionId"]
+            )
         return {
             "type": "local.session.events.ack",
             "sessionId": row["sessionId"],
@@ -1243,7 +1358,9 @@ class LocalSessionRelay:
         updated = _revised(row, eventSeq=end, pauseNoticed=True)
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         if updates:
-            await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=True)
+            await publish_resources_changed(
+                row["ownerId"], row["humanUserId"], transcript=True, session_id=row["sessionId"]
+            )
         return {
             "type": "local.session.events.ack",
             "sessionId": row["sessionId"],
@@ -1295,13 +1412,10 @@ class LocalSessionRelay:
                 row,
                 "local_session_command_settled",
                 f"{message.request_id}:{message.outcome}",
-                actor_user_id=command.get("actorUserId") or command.get("sourceHumanUserId") or row["humanUserId"],
+                actor_user_id=command.get("actorUserId") or row["humanUserId"],
                 request_id=message.request_id,
-                source_session_id=(command.get("actor") or {}).get("id")
-                if (command.get("actor") or {}).get("kind") == "session"
-                else None,
                 command_kind=command["kind"],
-                origin="native" if (command.get("actor") or {}).get("kind") == "session" else "direct",
+                origin="direct",
                 state=message.outcome,
             )
         return {
@@ -1313,51 +1427,11 @@ class LocalSessionRelay:
 
     async def _dispatch_checks(self, row: dict, command: dict, claim: bool) -> list[dict] | None:
         owner, sid = row["ownerId"], row["sessionId"]
-        native_actor = (command.get("actor") or {}).get("kind") == "session"
-        source_checks, source_pairing = [], None
-        if native_actor:
-            source = await repo.get_session(owner, command["actor"]["id"])
-            if (
-                not source
-                or source.get("humanUserId") != command.get("sourceHumanUserId")
-                or source.get("generation") != command.get("sourceSessionGeneration")
-                or source.get("activeTurnId") != command.get("sourceTurnId")
-                or source.get("unshared")
-                or source.get("endedAt") is not None
-                or int(source.get("onlineUntil") or 0) < int(time.time())
-                or int(command.get("invocationExpiresAt") or 0) <= int(time.time())
-            ):
-                raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Source native session is no longer authorized.")
-            source_connection, source_enrollment = await self.connect(source.get("connectionId") or "")
-            if (
-                source_connection["device_id"] != source["deviceId"]
-                or source_connection["user_id"] != source["humanUserId"]
-            ):
-                raise _conflict("source connection changed", sid=sid)
-            # A DynamoDB transaction cannot name one item twice. Pairing is one row per
-            # owner, and a source on the target's Mac shares its enrollment and connection.
-            source_pairing = (source["humanUserId"], source["deviceId"])
-            source_checks = [
-                *(
-                    []
-                    if source_pairing == (row["humanUserId"], row["deviceId"])
-                    else [repo.enrollment_condition(source_enrollment)]
-                ),
-                self._session_check(source),
-                *(
-                    []
-                    if source["connectionId"] == row["connectionId"]
-                    else [self._connection_check(source["connectionId"], source_connection)]
-                ),
-            ]
-            auth = sessions.AuthContext(
-                user_id=source["humanUserId"], org_id=owner if owner != source["humanUserId"] else None
-            )
-        else:
-            auth = sessions.command_caller(owner, command)
+        auth = sessions.command_caller(owner, command)
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid, owner_only=True)
-        if command.get("offlineIdentity") and command.get("actorUserId") != current["humanUserId"]:
-            stream = await store.get_user_stream(owner, command["actorUserId"])
+        sender = command["actorUserId"]
+        if command.get("offlineIdentity") and sender != current["humanUserId"]:
+            stream = await store.get_user_stream(owner, sender)
             if not stream or not stream.get("active"):
                 raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sender is no longer in this workspace.")
         sessions.require_command_scope(auth, current, command["kind"])
@@ -1379,8 +1453,7 @@ class LocalSessionRelay:
             return None
         return [
             *repo.room_conditions(owner, row["humanUserId"], command),
-            *source_checks,
-            repo.pairing_condition(owner, row["humanUserId"], row["deviceId"], None, also=source_pairing),
+            repo.pairing_condition(owner, row["humanUserId"], row["deviceId"], None),
             repo.enrollment_condition(enrollment),
             self._session_check(row),
             self._connection_check(row["connectionId"], connection),
@@ -1396,7 +1469,9 @@ class LocalSessionRelay:
                 # Expire even commands behind an unresolved outcome; never queue old input indefinitely.
                 expired = False
                 for command in commands:
-                    if command["state"] == "pending" and command["deliverBy"] <= int(time.time()):
+                    if command["state"] in {"pending", "awaiting_approval"} and command["deliverBy"] <= int(
+                        time.time()
+                    ):
                         await repo.replace_command(
                             command, _revised(command, state="rejected", updatedAt=int(time.time()))
                         )
@@ -1470,7 +1545,7 @@ class LocalSessionRelay:
                     continue
                 # Resolved before the claim: a membership read inside the claim window
                 # can spend the lease and turn a dispatchable command into a rejection.
-                actor = await _actor_label(command, row.get("humanUserId"), owner)
+                actor = await _actor_label(command, owner)
                 claim = _revised(command, claimUntil=min(int(time.time()) + CLAIM_SECONDS, command["deliverBy"]))
                 await repo.replace_command(command, claim, checks=checks)
                 row = await repo.get_session(owner, sid)
@@ -1492,6 +1567,13 @@ class LocalSessionRelay:
                             "createdAt": sent_at,
                             "deliverBy": min(claim["deliverBy"], sent_at + DISPATCH_WINDOW_SECONDS),
                         }
+                    # A released or offline-queued session send outlived its source turn's 30 s
+                    # invocation window (``_dispatch_checks`` skips it); the Mac still checks it, so
+                    # it leaves with the dispatch window's own expiry.
+                    if (claim.get("actor") or {}).get("kind") == "session" and (
+                        claim.get("releasedAt") is not None or claim.get("offlineIdentity")
+                    ):
+                        window["invocationExpiresAt"] = window.get("deliverBy", claim["deliverBy"])
                     public = sessions._public(sessions.CommandReceipt, {**claim, **window}).model_dump(
                         mode="json", by_alias=True
                     )

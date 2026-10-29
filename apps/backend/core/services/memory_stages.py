@@ -61,6 +61,16 @@ def _when(value: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+def _until(value: str) -> datetime | None:
+    """validTo; 0 or below is no end: the extraction model writes 0 for "empty" (a NUMBER field)."""
+    try:
+        if float(value) <= 0:
+            return None
+    except ValueError:
+        pass
+    return _when(value)
+
+
 def from_record(summary: dict, kind_default: str) -> Candidate:
     metadata = summary.get("metadata") or {}
     text = (summary.get("content") or {}).get("text", "")
@@ -76,7 +86,7 @@ def from_record(summary: dict, kind_default: str) -> Candidate:
         speaker = m.group(1)
     elif kind == "entry":
         speaker = _meta(metadata, "author")
-    valid_to = _when(_meta(metadata, "validTo"))
+    valid_to = _until(_meta(metadata, "validTo"))
     status = "contested" if contested else _meta(metadata, "status") or "current"
     if valid_to and status == "current":
         status = "replaced"

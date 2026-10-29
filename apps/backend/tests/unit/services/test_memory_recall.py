@@ -140,6 +140,11 @@ async def test_recall_as_of_filters_are_sent(monkeypatch):
         "operator": "GREATER_THAN",
         "right": {"metadataValue": {"numberValue": e}},
     }
+    zero = {
+        "left": {"metadataKey": "validTo"},
+        "operator": "EQUALS_TO",
+        "right": {"metadataValue": {"numberValue": 0.0}},
+    }
     sent = [kw["searchCriteria"]["metadataFilters"] for kw in c.where("retrieve", NS["facts"])]
     for status in ("current", "contested"):
         s = {
@@ -147,8 +152,8 @@ async def test_recall_as_of_filters_are_sent(monkeypatch):
             "operator": "EQUALS_TO",
             "right": {"metadataValue": {"stringValue": status}},
         }
-        assert [s, start, open_ended] in sent and [s, start, later] in sent
-    assert len(sent) == 4
+        assert [s, start, open_ended] in sent and [s, start, later] in sent and [s, start, zero] in sent
+    assert len(sent) == 6
 
 
 @pytest.mark.asyncio
@@ -164,6 +169,51 @@ async def test_recall_as_of_keeps_fact_replaced_after_it(monkeypatch):
             )
         ),
     )
+    assert _texts(await _run(as_of=AS_OF)) == ["Ann: city: Oslo"]
+
+
+def _filtered(rows):
+    """Facts rows the service would return for each request's metadata filters (all must hold)."""
+
+    def holds(row, f):
+        have = (row.get("metadata") or {}).get(f["left"]["metadataKey"])
+        if f["operator"] == "NOT_EXISTS":
+            return have is None
+        if have is None:
+            return False
+        a, b = next(iter(have.values())), next(iter(f["right"]["metadataValue"].values()))
+        return {"EQUALS_TO": a == b, "GREATER_THAN": a > b, "LESS_THAN_OR_EQUALS": a <= b}[f["operator"]]
+
+    def handler(op, kw):
+        if op != "retrieve" or kw["namespace"] != NS["facts"]:
+            return []
+        filters = kw["searchCriteria"].get("metadataFilters") or []
+        return [r for r in rows if all(holds(r, f) for f in filters)]
+
+    return handler
+
+
+# The extraction model writes validTo 0 for a current claim: "empty" in a NUMBER field.
+ZERO = _rec("z", "Ann: city: Oslo", kind="claim", status="current", validFrom=1.0, validTo=0)
+
+
+@pytest.mark.asyncio
+async def test_recall_validto_zero_is_current_without_as_of(monkeypatch):
+    _use(monkeypatch, FakeClient(_filtered([ZERO])))
+    page = await _run()
+    assert _texts(page) == ["Ann: city: Oslo"] and page["results"][0]["status"] == "current"
+
+
+@pytest.mark.asyncio
+async def test_recall_validto_zero_is_current_as_of_after_its_start(monkeypatch):
+    _use(monkeypatch, FakeClient(_filtered([ZERO])))
+    assert _texts(await _run(as_of=AS_OF)) == ["Ann: city: Oslo"]
+
+
+@pytest.mark.asyncio
+async def test_recall_as_of_still_excludes_a_fact_that_ended_before_it(monkeypatch):
+    ended = _rec("e", "Ann: city: Rome", kind="claim", status="current", validFrom=1.0, validTo=2.0)
+    _use(monkeypatch, FakeClient(_filtered([ended, ZERO])))
     assert _texts(await _run(as_of=AS_OF)) == ["Ann: city: Oslo"]
 
 

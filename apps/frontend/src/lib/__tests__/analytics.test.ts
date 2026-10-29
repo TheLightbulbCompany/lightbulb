@@ -86,6 +86,22 @@ describe("analytics.capture", () => {
     }, undefined);
   });
 
+  it("captures a browser handoff with its workspace and kind", async () => {
+    const { captureHandoffCompleted } = await importAnalytics();
+    captureHandoffCompleted("org_workspace", "approval_answered");
+    expect(mockCapture).toHaveBeenCalledWith("handoff_completed", {
+      workspace_id: "org_workspace",
+      kind: "approval_answered",
+    }, undefined);
+  });
+
+  it("does not capture a handoff without an organization workspace id", async () => {
+    const { captureHandoffCompleted } = await importAnalytics();
+    captureHandoffCompleted(undefined, "task_moved");
+    captureHandoffCompleted("user_123", "task_moved");
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
+
   it("drops file-path query strings from chat analytics URLs", async () => {
     const { withoutChatQuery } = await importAnalytics();
     expect(withoutChatQuery("/chat?panel=file-viewer&path=%2FUsers%2Falice%2Fsecret")).toBe("/chat");

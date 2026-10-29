@@ -296,6 +296,7 @@ async def main_async(args: argparse.Namespace) -> None:
         "recall": {"limit": RECALL_LIMIT, "maxTokens": RECALL_MAX_TOKENS},
         "prompts": {"source": exabase_prompts.SOURCE_URL, "sha256": exabase_prompts.SOURCE_SHA256},
         "backend": run.backend_name,
+        **({"backendStats": run.backend.stats} if hasattr(run.backend, "stats") else {}),
         "projectTag": run.tag,
         "harnessVersion": HARNESS_VERSION,
         "modelPath": "codex-cli" if hasattr(llm, "start_usage") else "openrouter",

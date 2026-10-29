@@ -147,6 +147,18 @@ describe("CompanyStripeSection", () => {
     expect(await screen.findByTestId("stripe-embedded-onboarding")).toBeInTheDocument();
   });
 
+  it("themes Stripe's embedded component with the page's resolved colours", async () => {
+    const { loadConnectAndInitialize } = await import("@stripe/connect-js");
+    document.documentElement.style.setProperty("--fg", "#ECECEE");
+    get.mockResolvedValue({ ...BOUND, charges_enabled: false, publishable_key: "pk_test_x" });
+    renderSection(true);
+    fireEvent.click(await screen.findByText("Finish onboarding"));
+    await screen.findByTestId("stripe-embedded-onboarding");
+    const opts = vi.mocked(loadConnectAndInitialize).mock.lastCall?.[0];
+    expect(opts?.appearance?.variables?.colorText).toBe("#ECECEE");
+    document.documentElement.style.removeProperty("--fg");
+  });
+
   it("hides Finish Stripe setup once projects is ready", async () => {
     get.mockResolvedValue({ ...BOUND, projects_ready: true });
     renderSection(true);

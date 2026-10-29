@@ -72,18 +72,42 @@ The gold answer was in memory / only in a turn / nowhere on the page:
 
 The IE and KU gaps against column (b) are mostly misses on the page, not misreadings.
 
-## The workspace engine (pending: runs once dev has the bench routes, PR #4471)
+## The two engines on BEAM 100K, lined up
 
-What the workspace side does with the turns (`apps/backend/routers/internal_bench.py`):
-- **Owners.** Each conversation is a synthetic owner `bench-<ulid>`, with no container, runtime or network member. The routes refuse any other owner, and they 404 outside dev.
-- **Events.** Each user turn and the assistant turn after it become one `CreateEvent` under `actorId = <bench owner>`, with `eventTimestamp` set to the dataset's time. This is how the runtime plugin writes a room exchange. AgentCore's `workspace_claims` strategy then extracts claims into `/owners/<owner>/` on its own: there is no note-taker.
-- **Turn records.** Each turn is also written as a `/turns/<owner>/` record, as the sync's turn mirror would write it.
-- **No sync.** Bench owners have no member, so no sync runs for them.
-- **Recall.** `memory_recall.recall` as the Memory tab calls it (expansion and rerank on), as of the question's moment. The runner then trims the page with past.dev's count.
+All columns are verified by verify.py; each cell is the mean with a bootstrap 95% interval over questions. The answerer and judge are gpt-5.6-luna (reasoning effort none) through the Codex CLI for every column except past.dev's published one.
 
-Two deviations from a real room:
-1. **Dated event text.** Each event's text starts with the session's day, `[YYYY-MM-DD] Speaker: text`. A real room's turns are dated "now", and the extraction prompt dates a fact by "the date of the conversation it came from". Without the day in the text, every claim would likely be dated 2026 and dropped by a 2024 `as_of` filter (`validFrom <= as_of`). The `/turns/` records carry no prefix.
-2. **Turns dated by `validFrom`.** Bench turn records carry a `validFrom` (the dataset's time, epoch seconds), and recall's turn arm filters on it (`dated_turns`, bench only), not on the system `x-amz-agentcore-memory-createdAt`. Whether the record `timestamp` we send becomes `createdAt` was not verified on AWS. `validFrom` is already an indexed key. A turn that carries `validFrom` is also displayed and windowed by it. Production turns carry none, so nothing changes for them.
+| Category | past.dev published (a) | Our judge on their answers | Our answer + judge on their pages (b) | **Free engine** (CLI, shipped page v0.7.1 + contested-line fix) | **Workspace engine** + validTo-0 fix |
+|---|---:|---:|---:|---:|---:|
+| abstention | 98.75 | 95.00 | 97.50 | 98.75 [96.2, 100.0] | 96.25 [90.0, 100.0] |
+| contradiction_resolution | 78.12 | 71.25 | 69.38 | 67.81 [64.1, 71.2] | 58.13 [52.5, 63.4] |
+| event_ordering | 100.00 | 100.00 | 98.78 | 99.94 [99.8, 100.0] | 99.52 [98.6, 100.0] |
+| information_extraction | 95.00 | 93.75 | 89.69 | 84.69 [76.8, 91.6] | 65.42 [53.6, 76.8] |
+| instruction_following | 96.25 | 96.88 | 91.88 | 92.50 [85.6, 98.1] | 88.12 [78.8, 96.2] |
+| knowledge_update | 89.38 | 89.38 | 85.62 | 78.12 [65.6, 89.4] | 60.62 [45.6, 75.0] |
+| multi_session_reasoning | 68.95 | 67.76 | 64.63 | 65.59 [53.8, 76.5] | 56.15 [44.1, 68.0] |
+| preference_following | 100.00 | 100.00 | 98.12 | 100.00 [100.0, 100.0] | 99.38 [98.1, 100.0] |
+| summarization | 99.38 | 99.17 | 98.25 | 97.69 [95.4, 99.4] | 97.29 [95.1, 99.1] |
+| temporal_reasoning | 95.00 | 93.75 | 92.50 | 95.62 [92.5, 98.1] | 95.00 [88.8, 99.4] |
+| **overall (micro)** | **92.08** | **90.69** | **88.63** | **88.07 [85.6, 90.4]** | **81.59 [78.5, 84.6]** |
+
+**Like-for-like reading.** Column (b) holds the answerer, judge, prompts and budget fixed and changes only the memory, so it is the comparison.
+- **Free engine:** 88.07 against (b)'s 88.63, inside the noise. Without the contested-line fix (the shipped v0.7.1) it is 87.43.
+- **Workspace engine:** 81.59, a paired -7.05 [-9.70, -4.54] against (b) and -6.48 [-8.95, -4.20] against the free engine. Both gaps are outside the noise.
+  - Its losses are in information extraction (65.42), knowledge update (60.62), contradiction (58.13) and multi-session (56.15).
+  - Its recall pages are small: 1,870 of 8,000 evidence tokens on average (max 5,653), mostly extracted claims with almost no turns. It runs expansion and rerank as the Memory tab does.
+
+**Workspace engine conditions.** Run locally on this Mac (`apps/backend/scripts/bench_local.py` from bench/workspace-routes 1f8906af2, routes only, none of main.py's sweepers), against dev's AgentCore workspace memory (`lightbulb_dev_workspace_memory-uNdawU9Abr`; prod ids refused in code), AWS profile isol8-admin. Each conversation is a synthetic `bench-<ulid>` owner.
+- **Ingest.** Each exchange went in as one CreateEvent at the dataset's time; AgentCore's `workspace_claims` strategy extracted 4,512 claims. Each turn was also written as a `/turns/` record.
+- **The two deviations above:** the dated event prefix, and turns dated by validFrom.
+- **Plus the validTo-0 fix**, without which every extracted claim is invisible to recall: the as-is engine recalls turns only.
+- **AWS side:**
+  - Ingest: 5,732 turns, 2,866 events, 949 s of request time across 4 parallel conversations (wall 4.3 min).
+  - Extraction settled 210–356 s after each conversation's last ingest (median 254 s).
+  - 400 recalls took 1,826 s in all, 4.6 s each on average.
+  - 0 throttles, 0 retries.
+- **Whole run:** 45.8 min wall (05:39:59–06:25:47 UTC).
+- **Codex:** 1,453 paid calls, 14,766,022 input tokens (10,050,944 cached), 93,900 output.
+- **Cleanup:** every bench owner was deleted, then deleted again at least 3 minutes later, and confirmed at 0 facts / 0 turns. That includes the 20 owners from the paused attempt.
 
 ## CLI loop (free engine; same ingest, harness and calibration columns)
 

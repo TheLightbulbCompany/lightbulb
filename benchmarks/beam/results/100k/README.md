@@ -12,6 +12,7 @@ Each folder holds a run's `results.jsonl` and `summary.json`; `python verify.py 
 | free-length-100k | + matched 800-char excerpts (cli loop/turn-excerpt-length) |
 | free-v071-100k | free engine, shipped page (v0.7.1: cli feat/recall-page 35c2fa5), the daemon's page text as an agent gets it |
 | free-contested-100k | shipped page v0.7.1 + Contested only across authors, full dates (cli loop/contested-line 94d73ff) |
+| workspace-100k | workspace engine + validTo-0 fix (dev AgentCore memory via the local bench routes, bench/workspace-routes 1f8906af2), the route's recall page |
 | free-dates-100k | + dated fact lines, newest first within a subject (cli loop/fact-dates) |
 
 Conditions and the table: docs/research/2026-10-29-beam-first-run.md.

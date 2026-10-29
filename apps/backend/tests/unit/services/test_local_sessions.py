@@ -1300,15 +1300,25 @@ def test_a_session_that_ended_before_its_first_message_is_not_listed():
         # It had a live terminal: its first events take up to a minute to arrive, so zero events
         # does not mean nothing happened in it.
         s("held", "ended", 0, held=True),
-        # Ended on purpose (owner ruling 2026-10-08): never listed, whatever it holds.
+        # Ended on purpose: listed until removed (owner ruling 2026-10-27).
         s("left", "ended", 3, on_purpose=True),
         s("left-held", "ended", 0, held=True, on_purpose=True),
         s("left-codex", "ended", 0, provider="codex", on_purpose=True),
-        # A fork ended on purpose still stands in for its origin: the origin does not come back.
+        # A fork ended on purpose stands in for its origin: the origin does not come back.
         s("origin", "ended", 5),
         s("fork", "ended", 2, on_purpose=True, forked_from="origin"),
     ]
-    assert [x.session_id for x in service._without_moved(found)] == ["starting", "used", "unread", "codex", "held"]
+    assert [x.session_id for x in service._without_moved(found)] == [
+        "starting",
+        "used",
+        "unread",
+        "codex",
+        "held",
+        "left",
+        "left-held",
+        "left-codex",
+        "fork",
+    ]
 
 
 @pytest.mark.asyncio

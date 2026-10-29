@@ -1334,6 +1334,10 @@ _COMPANY_STRIPE_FIELDS = (
     # the SAME Project — credentials are scoped by project, so a second
     # Project splits the company's credentials in two.
     "company_stripe_project_id",
+    # A platform-created account Stripe Projects runs on when the main binding
+    # can't (`connected` is a v1 Standard account v2 refuses; `api_key` has no
+    # platform grant). Listed here so every unbind releases it with the main.
+    "company_stripe_projects_account_id",
     "company_stripe_source",
     "company_stripe_details_submitted",
     "company_stripe_charges_enabled",
@@ -1408,6 +1412,23 @@ async def set_company_stripe_project_id(owner_id: str, *, project_id: str) -> di
         owner_id,
         mutate,
         condition="attribute_exists(owner_id) AND attribute_not_exists(company_stripe_project_id)",
+        values={},
+    )
+
+
+async def set_company_stripe_projects_account(owner_id: str, *, account_id: str) -> dict | None:
+    """Record the services account, exactly once, beside a bound main account.
+    None = no row, no main binding, or another worker got there first."""
+    if not account_id:
+        raise ValueError("account_id must be non-empty")
+
+    def mutate(row: dict) -> None:
+        row["company_stripe_projects_account_id"] = account_id
+
+    return await _write_company_stripe(
+        owner_id,
+        mutate,
+        condition="attribute_exists(company_stripe_account_id) AND attribute_not_exists(company_stripe_projects_account_id)",
         values={},
     )
 

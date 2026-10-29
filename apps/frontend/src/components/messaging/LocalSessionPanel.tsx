@@ -35,9 +35,6 @@ const MAX_OLDER_PAGES = 20;
  *  heartbeat (11.5 s in prod, desktop 0.4.625). */
 const SCREEN_DUE_MS = 20_000;
 const NO_EVENTS: never[] = [];
-/** Terminal or Conversation, for a session with a live terminal: this viewer's last pick (Terminal first). */
-const VIEW_KEY = "lightbulb:session-view";
-const savedView = () => { try { return window.localStorage.getItem(VIEW_KEY) === "conversation"; } catch { return false; } };
 /** Between two keys of a question's answer: the picker reads one write as one key ("21" is not 2 then 1). */
 const KEY_GAP_MS = 350;
 /** The input route's refusals (`session_screen.type_into`) that it raises before anything is sent to the
@@ -56,8 +53,10 @@ type JoinDecider = { decideLocalSessionJoin?: Decide; decideLocalSessionPickup?:
 type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider & { watchLocalSession?: (sessionId: string) => Promise<unknown>; sendLocalSessionInput?: (sessionId: string, data: string, epoch: number, size?: { cols: number; rows: number; claim: boolean }) => Promise<unknown> };
 
 /**
- * A shared session: its status on one line and one body: the live terminal, or
- * a plain panel saying why there is none (ended, Mac offline, an older Mac app).
+ * A shared session: its status on one line and ONE body (owner rulings 2026-10-27): the live terminal
+ * while there is one, for everyone, with no conversation stacked under it and no approval card over it
+ * (its own prompt is the surface). Where there is none (not started, paused, Mac offline, a search
+ * hit) the body is the conversation; an ended one says so, over its kept final screen while there is one.
  * A session that runs inside an app has no terminal: its body is its conversation,
  * as on the phone. What the session is running, what it changed and who may do
  * what with it live behind Details.
@@ -112,10 +111,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // owner at that Mac included, watches it through the relay: the app's own panel closes with the provider.
   const endedScreen = session.status === "ended" && session.screenAvailable === true && hasTerminal;
   // An offline session still probes this Mac's holder: "offline" is the relay's view (sharing off, a reconnect), not the Mac's.
-  // Terminal | Conversation while the session has a live terminal: the same conversation an ended one shows.
-  const [convoView, setConvoView] = useState(savedView);
-  // A search hit opens the conversation, not the terminal (this visit only: the saved pick stays).
-  useEffect(() => { if (focusSeq) setConvoView(true); }, [focusSeq]);
+  // Paused: nothing of it leaves its Mac, so no picture here; it reads Paused at once, not a frozen live one.
+  const paused = session.shared === false;
+  // A search hit opens the conversation at its turn, even on a live session, until the viewer goes back.
+  const [leftHit, setLeftHit] = useState<number | null>(null);
+  const hit = !!focusSeq && leftHit !== focusSeq;
   const local = useLocalTerminal(session.status === "ended" || convo || (running && !hasTerminal) ? null : { sessionId: session.sessionId }, slot, details === null);
   // Until then the panel does not say the screen is gone; the timer redraws it when the wait is over.
   // (`wasHeld`: the server sends no `terminal` for an ended session until its screen is reported.)
@@ -151,7 +151,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // taken away there came back empty, on "Connecting…" (prod 2026-10-07).
   const watched = useRef("");
   const keptWatching = canWatch && screenDue && watched.current === session.sessionId;
-  const watchRemote = (canWatch && hasTerminal && (running || endedScreen)) || keptWatching;
+  const watchRemote = (canWatch && hasTerminal && !hit && ((running && !paused) || endedScreen)) || keptWatching;
   useEffect(() => { watched.current = watchRemote ? session.sessionId : ""; }, [watchRemote, session.sessionId]);
   // Terminal | Browser while the session has a browser connection open.
   // The session the Browser tab was picked for: another session, or no tab, reads as Terminal.
@@ -159,21 +159,18 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const browserTab = showsBrowserTab(session, local === "none" && !!onEvent);
   if (!browserTab && browserFor !== null) setBrowserFor(null);
   const showBrowser = browserTab && browserFor === session.sessionId;
-  const pickView = (conversation: boolean) => { setConvoView(conversation); try { window.localStorage.setItem(VIEW_KEY, conversation ? "conversation" : "terminal"); } catch { /* storage blocked: this visit only */ } };
   // Keys typed into the live terminal from outside it (a question's answer).
   const keys = useRef<((data: string) => Promise<unknown>) | null>(null);
   const [screenLive, setScreenLive] = useState(false);
   // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
   const [termCanType, setTermCanType] = useState(true);
   const liveTerminal = watchRemote && screenLive;
-  // Not the owner's own terminal at that Mac: there the real terminal is the session (rulings 2026-10-03 §2).
-  const termView = running && watchRemote;
-  const showConvo = termView && convoView && !showBrowser;
   const notStarted = running && !hasTerminal;
-  // No terminal here: the conversation, as on the phone (owner ruling 2026-10-11). Workspace members
-  // only by construction: /s never mounts this panel and the events route 404s outside the workspace.
-  // An ended or offline session shows its conversation when a search hit opened it.
-  const conversation = notStarted || (!!focusSeq && !running && !convo);
+  // No live terminal here: the conversation, as on the phone (owner rulings 2026-10-11, 2026-10-27). Never
+  // both: the transcript under a live terminal read as the session twice (prod 2026-10-27). Workspace
+  // members only by construction: /s never mounts this panel and the events route 404s outside the workspace.
+  // An ended session shows its conversation when a search hit opened it.
+  const conversation = !convo && !watchRemote && (notStarted || session.status === "offline" || paused || hit);
   const toBottom = useCallback(() => { const node = scroller.current; if (node) node.scrollTop = node.scrollHeight; }, []);
   useLayoutEffect(() => {
     const node = scroller.current;
@@ -187,7 +184,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     const observer = new ResizeObserver(() => { if (atBottomRef.current) toBottom(); });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [toBottom, conversation, showConvo]);
+  }, [toBottom, conversation]);
   // The hit's turn: the last prompt or reply row at or before it, once older pages hold it.
   const scrolledTo = useRef<number | undefined>(undefined);
   useEffect(() => {
@@ -258,6 +255,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const canAnswer = liveTerminal && termCanType && control && session.shared !== false && !!client.sendLocalSessionInput;
   // A live terminal is the only input: no message box under it. A viewer who cannot type keeps the watch-only line.
   const terminalLive = local === "local" || liveTerminal;
+  const terminalOnScreen = terminalLive && !showBrowser;
   const resume = useSessionResume(client, session, { own, userId, ownerName, nameOf: personName, uuid: () => crypto.randomUUID() });
   const askPickup = useSessionJoinRequest(client, session, "pickup");
   const glyph = session.provider === "claude" ? "❯" : "›";
@@ -288,7 +286,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // The sent-but-not-echoed prompt and the queued rows, so a follow-up stays visible; under an app session's conversation.
   // ponytail: the conversation is the events already read for the summaries (the last 1,000); add a read-back on scroll when someone needs more.
   const feedback = <>
-          <NativeSessionTranscript provider={session.provider} events={convo || conversation || showConvo ? history.events : NO_EVENTS} busy={(convo || conversation || showConvo) && busy && !history.hasNewer} ownerName={ownerName} participants={people}
+          <NativeSessionTranscript provider={session.provider} events={convo || conversation ? history.events : NO_EVENTS} busy={(convo || conversation) && busy && !history.hasNewer} ownerName={ownerName} participants={people}
             status={session.status} pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip,
               onRetry: command.receipt?.state === "rejected" ? command.retry : undefined,
               onCancel: command.receipt?.state === "rejected" ? command.dismiss : command.canCancel ? () => void command.cancel() : undefined } : null}
@@ -313,10 +311,10 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   </div>;
   const endedLine = <p className="session-ended-line" role="status">{why ? `Ended · ${why}` : endedAt ? <>Ended · {endedAt}</> : "Ended"}</p>;
   // A paused session is never heartbeated (nothing of it leaves its Mac), so it reads offline whether or not its Mac is on.
-  const offlinePanel = session.shared === false ? <div className="session-state-panel" data-compact={convo || undefined} role="status">
+  const offlinePanel = paused ? <div className="session-state-panel" data-compact={convo || conversation || undefined} role="status">
     <p className="session-state-title">Paused</p>
     <p>{own ? "Sharing is paused, so nothing of this session leaves your Mac. Share it again from its terminal." : `${ownerName} paused sharing this session.`}</p>
-  </div> : <div className="session-state-panel" data-compact={convo || undefined} role="status">
+  </div> : <div className="session-state-panel" data-compact={convo || conversation || undefined} role="status">
     <p className="session-state-title">{own ? "Your Mac is offline" : `${ownerName}'s Mac is offline`}</p>
     {session.lastEventAt && <p>Last seen {timeAgo(session.lastEventAt)}</p>}
     <Button type="button" variant="outline" size="sm" disabled>Resume</Button>
@@ -336,7 +334,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     <div className="session-status">
       <p className="session-status-line">
         <span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" />
-        <span>{sessionStatus[session.status]}</span>
+        <span>{paused && session.status !== "ended" ? "Paused" : sessionStatus[session.status]}</span>
         <span>{own ? "You" : ownerName}</span>
         {where && <span className="session-fact-value room-wrap">{where}</span>}
         {session.pickedUpFrom && <span>picked up from {personName(session.pickedUpFrom.humanUserId)}</span>}
@@ -355,7 +353,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         {!own && !canPickUp(session) && session.provider === "claude" && !session.pickup?.allowed && askPickup.supported &&
           <Button type="button" variant="outline" size="sm" disabled={askPickup.saving || (askPickup.state === "pending" && !askPickup.again)} onClick={() => void askPickup.ask()}>
             {askPickup.again ? "No answer yet. Ask again" : askPickup.state === "pending" ? "Requested" : askPickup.state === "declined" ? `${ownerName} declined. Ask again` : "Ask to pick up"}</Button>}
-        {command.attempt?.request.kind === "end" && command.chip && <span role="status" className="text-ui"><ReceiptChip chip={command.chip} /></span>}
+        {/* Gone once it ended: "Ending" next to "Ended" stayed for good (prod 2026-10-27). */}
+        {command.attempt?.request.kind === "end" && command.chip && session.status !== "ended" && <span role="status" className="text-ui"><ReceiptChip chip={command.chip} /></span>}
         {/* The app's own terminal on this Mac has End in its bar; this is the same control everywhere else. */}
         {command.canEnd && local !== "local" && <Button type="button" variant="outline" size="sm" disabled={command.locked}
           onClick={() => { if (endArmed) command.end(); setEndArmed(!endArmed); }}>{endArmed ? `Click again to end “${sessionTitle(session)}”` : "End session"}</Button>}
@@ -368,20 +367,19 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {own && !!session.pendingPickups?.length && <JoinRequests waiting={session.pendingPickups} ids={session.pendingPickupIds}
       line={pickupRequestLine} decide={(who, d, id) => client.decideLocalSessionPickup!(session.sessionId, who, d, id)}
       enabled={!!client.decideLocalSessionPickup} personName={personName} />}
-    {/* A Claude job's hand-off note: what it left its person, shown as text, never as a prompt. */}
-    {waitingOn === null && session.note && sessionLive(session) && <p role="status" className="session-ended-line">{session.note}</p>}
     {(session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
-      {session.shared === false && <p role="status">Only you see this session. Sharing again shares the whole session.</p>}
+      {paused && session.status === "ended" && <p role="status">Only you see this session. Sharing again shares the whole session.</p>}
       {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
     </div>}
-    {/* A prompt the Mac holds for a remote answer gets the approval card; any other waits in the terminal. */}
-    <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} own={own} ownerName={ownerName} />
+    {/* A prompt the Mac holds for a remote answer gets the approval card; any other waits in the terminal. Not over a
+        live terminal on screen: its own prompt is the one surface there (owner ruling 2026-10-27). */}
+    {!terminalOnScreen && <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} own={own} ownerName={ownerName} />}
     {waitingOn !== null && !session.pendingApproval && <div role="status" className="local-session-waiting">
       <p className="font-semibold">{question && canAnswer ? "Waiting for your answer" : own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</p>
       {question && canAnswer ? <QuestionAnswer key={main.at(-1)?.seq} questions={question} keys={keys} /> : <>
         {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
-        {canAnswer ? <p className="text-ui">{showConvo ? "Answer it in the Terminal tab." : "Answer it in the live terminal below."}</p>
+        {canAnswer ? <p className="text-ui">Answer it in the live terminal below.</p>
           : own ? <p className="text-ui">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
       </>}
     </div>}
@@ -391,8 +389,10 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       : <>
       {convoEmpty ? endedPanel : convo ? <>{session.status === "ended" && endedLine}{session.status === "offline" && offlinePanel}<p className="session-ended-line" role="note">{notice.title} {notice.body}</p>
         {own && running && !CLI_ONLY.has(session.provider) && <OpenInTerminal sessionId={session.sessionId} onEvent={onEvent} />}</>
-        : session.status === "ended" ? (endedScreen || keptWatching ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : null}
-      {(conversation || showConvo) && !convo && !showBrowser && <>{!showConvo && hint}<div className="local-session-scroll">
+        : session.status === "ended" ? (endedScreen && !hit || keptWatching ? endedLine : endedPanel) : session.status === "offline" || paused ? offlinePanel : null}
+      {hit && running && !paused && hasTerminal && canWatch && <div className="local-session-actions">
+        <Button type="button" variant="outline" size="sm" onClick={() => setLeftHit(focusSeq ?? null)}>Back to the live terminal</Button></div>}
+      {conversation && !showBrowser && <>{hint}<div className="local-session-scroll">
         <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
           <div ref={content}>
             {history.loading && <div className="native-session-shimmer" role="status" aria-label="Loading session history" />}
@@ -401,24 +401,22 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
           </div>
         </div>
       </div></>}
-      {(browserTab || termView) && <div className="session-view-tabs" role="tablist" aria-label="Session view">
-        {termView ? <>
-          <button type="button" role="tab" aria-selected={!showBrowser && !showConvo} onClick={() => { setBrowserFor(null); pickView(false); }}>Terminal</button>
-          <button type="button" role="tab" aria-selected={showConvo} onClick={() => { setBrowserFor(null); pickView(true); }}>Conversation</button>
-        </> : <button type="button" role="tab" aria-selected={!showBrowser} onClick={() => setBrowserFor(null)}>{hasTerminal ? "Terminal" : "Conversation"}</button>}
+      {browserTab && <div className="session-view-tabs" role="tablist" aria-label="Session view">
+        <button type="button" role="tab" aria-selected={!showBrowser} onClick={() => setBrowserFor(null)}>{watchRemote ? "Terminal" : "Conversation"}</button>
         {browserTab && <button type="button" role="tab" aria-selected={showBrowser} onClick={() => setBrowserFor(session.sessionId)}>Browser</button>}
       </div>}
       {showBrowser && <SessionBrowserTab sessionId={session.sessionId} frames={frames} canType={control && running && session.shared !== false && !(session.inputPaused && !own)} />}
-      {watchRemote && <div className="session-terminal-slot" hidden={showBrowser || showConvo} onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen} keys={keys}
+      {watchRemote && <div className="session-terminal-slot" hidden={showBrowser} onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen} keys={keys}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)} resizable={session.terminalResize === true}
         input={client.sendLocalSessionInput ? (bytes, epoch, size) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch, size) : undefined} /></div>}
       {terminalLive && control && !own && session.inputPaused && <p className="text-ui text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
-      {liveTerminal && !showBrowser && !showConvo && <div className="local-session-feedback">{feedback}</div>}
+      {/* Under the live terminal only what it cannot show: a sent follow-up not echoed yet, and the queue. */}
+      {liveTerminal && !showBrowser && <div className="local-session-feedback">{feedback}</div>}
       {/* One child in a reversed column: the browser keeps the newest row in view as the conversation grows. */}
       {showBrowser ? null : convo && !convoEmpty ? <div className="local-session-feedback local-session-conversation" role="log" aria-label="Session conversation"><div>{feedback}</div></div>
         : !liveTerminal && !conversation && (session.status !== "ended" || !!pendingText || queuedOutbox.length > 0) && <div className="local-session-feedback">{feedback}</div>}
     </>}
-    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : showBrowser ? null : terminalLive && !showConvo && control && (local === "local" || termCanType || (!own && session.inputPaused)) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
+    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : showBrowser ? null : terminalLive && control && (local === "local" || termCanType || (!own && session.inputPaused)) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>
         <textarea id={id} className="room-input" rows={2} value={text} disabled={!command.canSend || command.locked} onChange={event => setText(event.target.value)}

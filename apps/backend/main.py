@@ -398,6 +398,7 @@ async def lifespan(app: FastAPI):
     from core.services.run_ledger import run_ledger_sweeper
     from core.services.browser_control import run_autosave_sweeper
     from core.services.session_pickup import run_pickup_sweeper
+    from core.services.memory_api import run_memory_sweeper
     from core.services.voice_calls import voice_call_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
@@ -411,6 +412,8 @@ async def lifespan(app: FastAPI):
     voice_sweeper_task = asyncio.create_task(voice_call_sweeper(voice_sweeper_stop))
     pickup_sweeper_stop = asyncio.Event()
     pickup_sweeper_task = asyncio.create_task(run_pickup_sweeper(pickup_sweeper_stop))
+    memory_sweeper_stop = asyncio.Event()
+    memory_sweeper_task = asyncio.create_task(run_memory_sweeper(memory_sweeper_stop))
     digest_stop = asyncio.Event()
     digest_task = asyncio.create_task(run_digest_sweeper(digest_stop))
     away_stop = asyncio.Event()
@@ -437,6 +440,7 @@ async def lifespan(app: FastAPI):
             "browser_autosave_sweeper": browser_autosave_task,
             "voice_call_sweeper": voice_sweeper_task,
             "session_pickup_sweeper": pickup_sweeper_task,
+            "memory_sweeper": memory_sweeper_task,
             "daily_digest": digest_task,
             "needs_you_email": away_task,
             "running_gauges": gauge_task,
@@ -476,6 +480,7 @@ async def lifespan(app: FastAPI):
     browser_autosave_stop.set()
     voice_sweeper_stop.set()
     pickup_sweeper_stop.set()
+    memory_sweeper_stop.set()
     digest_stop.set()
     away_stop.set()
     gauge_task.cancel()
@@ -493,6 +498,7 @@ async def lifespan(app: FastAPI):
                 browser_autosave_task,
                 voice_sweeper_task,
                 pickup_sweeper_task,
+                memory_sweeper_task,
                 digest_task,
                 away_task,
                 gauge_task,
@@ -509,6 +515,7 @@ async def lifespan(app: FastAPI):
             browser_autosave_task,
             voice_sweeper_task,
             pickup_sweeper_task,
+            memory_sweeper_task,
             digest_task,
             away_task,
             gauge_task,
@@ -521,6 +528,7 @@ async def lifespan(app: FastAPI):
             browser_autosave_task,
             voice_sweeper_task,
             pickup_sweeper_task,
+            memory_sweeper_task,
             digest_task,
             away_task,
             gauge_task,
@@ -617,6 +625,9 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
         return JSONResponse(status_code=problem.status_code, content=problem.body())
+    if request.url.path.startswith("/api/v1/sessions"):
+        # uploaded sessions: FastAPI's default 422 would echo tool-call summaries.
+        return JSONResponse(status_code=422, content={"detail": "Invalid sessions upload."})
     return await request_validation_exception_handler(request, exc)
 
 
@@ -1047,7 +1058,7 @@ from routers import company_policy  # noqa: E402
 
 app.include_router(company_policy.router, prefix="/api/v1/company", tags=["company-policy"])
 
-# Stripe Link Agent Wallet (dark: every route 404s while LINK_WALLET_ENABLED is false).
+# Stripe Link Agent Wallet (every route 404s until Link's OAuth client is configured).
 from routers import company_link_wallet  # noqa: E402
 
 app.include_router(company_link_wallet.router, prefix="/api/v1/company/link-wallet", tags=["company-link-wallet"])
@@ -1076,6 +1087,13 @@ app.include_router(ideas_router.router, prefix="/api/v1", tags=["ideas"])
 from routers import memory as memory_router  # noqa: E402
 
 app.include_router(memory_router.router, prefix="/api/v1/memory", tags=["memory"])
+app.include_router(memory_router.internal_router, prefix="/api/v1/internal/memory", tags=["memory"])
+
+# Sessions a person uploads from the CLI, by choice (metadata or full).
+from routers import sessions as sessions_router  # noqa: E402
+
+app.include_router(sessions_router.router, prefix="/api/v1/sessions", tags=["sessions"])
+app.include_router(sessions_router.shared_router, prefix="/api/v1/shared", tags=["sessions"])
 
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402

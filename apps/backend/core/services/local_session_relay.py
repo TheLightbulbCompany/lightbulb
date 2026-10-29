@@ -328,13 +328,15 @@ async def _actor_label(command: dict, owner: str | None = None) -> dict | None:
 
 #: In-flight hint fan-outs, referenced so asyncio cannot garbage-collect them before they finish.
 _hint_tasks: set[asyncio.Task[None]] = set()
-#: One fan-out per (owner, human, transcript) at a time: a hint that arrives while one is running
+#: One fan-out per (owner, human, transcript, session) at a time: a hint that arrives while one is running
 #: marks it dirty and the running task publishes once more at the end, so a streaming burst
 #: (one call per session per second) collapses to at most one in-flight + one follow-up per key.
-_hint_running: dict[tuple[str, str, bool], bool] = {}
+_hint_running: dict[tuple[str, str, bool, str | None], bool] = {}
 
 
-async def publish_resources_changed(owner: str, human: str, *, transcript: bool = False) -> None:
+async def publish_resources_changed(
+    owner: str, human: str, *, transcript: bool = False, session_id: str | None = None
+) -> None:
     """One ``workspace.sessions.changed`` per change, on the workspace sessions channel.
 
     Clients refetch their open room's resources (and so its transcript) from it. It used to
@@ -343,16 +345,24 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
     desktop's 10 s ack deadline and looped reconnects (prod 2026-09-24). Owner ruling: one hint.
     ``transcript`` marks a streaming batch: open panes refetch, the sidebar list ignores it (it
     lists liveness, not content, and a streaming teammate would refetch it once a second).
+    ``session_id`` names the one session that changed: clients re-read that row
+    (GET /messaging/sessions/{id}, ~0.3 s) instead of the whole list (1.7-2.5 s, measured
+    2026-10-27). Without it, the change may add or drop rows, and clients refetch the list.
     """
     from core.services.live_events import get_live_event_publisher
 
-    key = (owner, human, transcript)
+    key = (owner, human, transcript, session_id)
     if key in _hint_running:
         _hint_running[key] = True  # dirty: the running fan-out sends one more at the end
         return
     _hint_running[key] = False
     event = make_live_event(
-        "workspace.sessions.changed", {"humanUserId": human, **({"transcript": True} if transcript else {})}
+        "workspace.sessions.changed",
+        {
+            "humanUserId": human,
+            **({"transcript": True} if transcript else {}),
+            **({"sessionId": session_id} if session_id else {}),
+        },
     )
 
     async def fan_out() -> None:
@@ -409,13 +419,9 @@ FINISHED_COLLAPSE_S = 30
 
 
 def _attention(row: dict, status: str, now: int, note: str | None = None) -> list[str]:
-    """The owner-facing state changes a heartbeat carries: "waiting" or "finished", and
-    "attention" for a new hand-off ``note`` (a job can finish and leave one in the same frame;
-    each is told by its own setting)."""
-    changes = [state] if (state := _status_attention(row, status, now)) else []
-    if note and note != row.get("note"):
-        changes.append("attention")
-    return changes
+    """The owner-facing state changes a heartbeat carries: "waiting" or "finished". A Claude job's
+    hand-off ``note`` notifies nobody (owner 2026-10-27: notes are not shown anywhere)."""
+    return [state] if (state := _status_attention(row, status, now)) else []
 
 
 def _status_attention(row: dict, status: str, now: int) -> Literal["waiting", "finished"] | None:
@@ -1227,7 +1233,7 @@ class LocalSessionRelay:
                 await session_chat.follow_session(owner, row["sessionId"])
         except Exception:  # the next chat open archives it too (session_chat._follow_lifecycle)
             logger.warning("session chat archive failed for %s", row["sessionId"], exc_info=True)
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return ack
 
     async def _events(self, cid: str, connection: dict, enrollment: dict, row: dict, message: Events) -> dict:
@@ -1305,7 +1311,9 @@ class LocalSessionRelay:
         if notify_ended is not None:
             _spawn(notify_attention(updated, "finished", notify_ended))
         if hint:
-            await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=not approval_changed)
+            await publish_resources_changed(
+                row["ownerId"], row["humanUserId"], transcript=not approval_changed, session_id=row["sessionId"]
+            )
         return {
             "type": "local.session.events.ack",
             "sessionId": row["sessionId"],
@@ -1350,7 +1358,9 @@ class LocalSessionRelay:
         updated = _revised(row, eventSeq=end, pauseNoticed=True)
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         if updates:
-            await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=True)
+            await publish_resources_changed(
+                row["ownerId"], row["humanUserId"], transcript=True, session_id=row["sessionId"]
+            )
         return {
             "type": "local.session.events.ack",
             "sessionId": row["sessionId"],

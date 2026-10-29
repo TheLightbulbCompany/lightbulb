@@ -5,9 +5,11 @@ import { BudgetsPanel } from "../BudgetsPanel";
 const patch = vi.fn();
 let isAdmin = true;
 let overview: unknown;
+let providerChoice: string | null = null;
 
 // The Purchases section is dark here: its API answers 404.
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: () => Promise.reject(new Error("404")), put: vi.fn() }) }));
+vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: { provider_choice: providerChoice } }) }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => isAdmin }));
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
@@ -17,7 +19,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({
         path === "/budgets/overview"
           ? overview
           : path === "/agents"
-            ? { agents: [{ id: "ag1", name: "Friday" }, { id: "ag2", name: "Atlas" }] }
+            ? { agents: [{ id: "ag1", name: "Friday" }, { id: "ag2", name: "Atlas", spentMonthlyCents: 9 }] }
             : undefined,
       isLoading: false,
       mutate: vi.fn(),
@@ -40,6 +42,7 @@ describe("BudgetsPanel", () => {
     patch.mockReset();
     patch.mockResolvedValue({});
     isAdmin = true;
+    providerChoice = null;
     overview = {
       policies: [
         policy("company", "co1", "Acme", 10000, 4000),
@@ -66,6 +69,11 @@ describe("BudgetsPanel", () => {
     expect(screen.getByText(/no limit/i)).toBeInTheDocument();
   });
 
+  it("shows an unlimited agent's spend from the agent itself", () => {
+    render(<BudgetsPanel />);
+    expect(screen.getByText("$0.09 spent")).toBeInTheDocument();
+  });
+
   it("admin sets an agent budget in dollars, PATCHed as cents", async () => {
     render(<BudgetsPanel />);
     fireEvent.change(screen.getByLabelText("Monthly budget for Atlas"), { target: { value: "25.50" } });
@@ -86,5 +94,20 @@ describe("BudgetsPanel", () => {
     expect(screen.getByText(/\$40\.00 of \$100\.00/)).toBeInTheDocument();
     expect(screen.queryByLabelText(/Monthly budget for/)).toBeNull();
     expect(screen.queryByRole("button", { name: /Save budget/ })).toBeNull();
+  });
+
+  it.each(["chatgpt_oauth", "byo_key"])("%s owners get one line, no editor", (choice) => {
+    providerChoice = choice;
+    render(<BudgetsPanel />);
+    expect(screen.getByText(/Budgets track Lightbulb credits/)).toBeInTheDocument();
+    expect(screen.queryByText("Friday")).toBeNull();
+    expect(screen.queryByLabelText(/Monthly budget for/)).toBeNull();
+  });
+
+  it("managed owners get the editor", () => {
+    providerChoice = "openrouter_managed";
+    render(<BudgetsPanel />);
+    expect(screen.queryByText(/Budgets track Lightbulb credits/)).toBeNull();
+    expect(screen.getByLabelText("Monthly budget for Atlas")).toBeInTheDocument();
   });
 });

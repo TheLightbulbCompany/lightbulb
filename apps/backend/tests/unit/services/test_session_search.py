@@ -24,20 +24,20 @@ async def test_own_sessions_in_any_state_and_teammates_only_while_shared():
     await _change(only_me, unshared=True)
     await _change(on_purpose, endedAt=1, endedReason=service.ENDED_ON_PURPOSE)
     await _change(old, endedAt=1, endedReason="process-exited", eventSeq=3)  # ended long ago: still searchable
-    assert set(await service.searchable_sessions(ALICE)) == {shared, only_me, old}
-    assert set(await service.searchable_sessions(BOB)) == {shared, old}
+    assert set(await service.searchable_sessions(ALICE)) == {shared, only_me, on_purpose, old}
+    assert set(await service.searchable_sessions(BOB)) == {shared, on_purpose, old}
     # A removed member searches nothing, whatever their JWT still says.
     await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
     assert await service.searchable_sessions(BOB) == {}
 
 
-def test_a_paused_removed_or_ended_on_purpose_row_stops_being_searchable():
+def test_a_paused_or_removed_row_stops_being_searchable_and_an_ended_one_stays():
     row = {"humanUserId": ALICE.user_id}
     assert service.still_searchable(row, BOB.user_id)
     assert service.still_searchable({**row, "unshared": True}, ALICE.user_id)
     assert not service.still_searchable({**row, "unshared": True}, BOB.user_id)
     assert not service.still_searchable({**row, "removedAt": 1}, ALICE.user_id)
-    assert not service.still_searchable({**row, "endedAt": 1, "endedReason": service.ENDED_ON_PURPOSE}, ALICE.user_id)
+    assert service.still_searchable({**row, "endedAt": 1, "endedReason": service.ENDED_ON_PURPOSE}, ALICE.user_id)
     assert not service.still_searchable(None, ALICE.user_id)
 
 

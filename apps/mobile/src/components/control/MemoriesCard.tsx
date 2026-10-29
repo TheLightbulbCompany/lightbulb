@@ -6,7 +6,8 @@ import type { createApiClient } from "@lightbulb/shared";
 import { colors, fonts, radii, spacing } from "../../config/theme";
 
 type ApiClient = ReturnType<typeof createApiClient>;
-interface Memory { id: string; text: string; createdAt: string; confirmed: boolean }
+// source "network": a mirrored log entry, which cannot be shared or confirmed.
+interface Memory { id: string; text: string; createdAt: string; confirmed: boolean; source?: "room" | "network" }
 interface MemoryList { private: Memory[]; team: Memory[]; truncated: boolean }
 
 // A new record is listed by GET /memory only ~60 s after it is written, so a share/confirm/delete
@@ -95,10 +96,10 @@ export function MemoriesCard({ api }: { api: ApiClient }) {
         <Text style={styles.text}>{m.text}</Text>
         <View style={styles.actions}>
           {m.confirmed ? <Text style={styles.confirmed}>Confirmed</Text> : null}
-          {kind === "private"
+          {kind === "private" && m.source !== "network"
             ? button("Share with team", m, () => void act(m.id, () => api.post(`/memory/${m.id}/share`, {}), (r) => hold(m, r.id)))
             : null}
-          {kind === "team" && !m.confirmed
+          {kind === "team" && !m.confirmed && m.source !== "network"
             ? button("Confirm", m, () => void act(m.id, () => api.post(`/memory/${m.id}/confirm`, {}), (r) => hold(m, r.id)))
             : null}
           {button("Delete", m, () =>

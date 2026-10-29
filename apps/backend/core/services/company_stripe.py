@@ -55,40 +55,19 @@ DEVELOPER_CONFIGURATION = {"developer": {"capabilities": {"projects": {"requeste
 DEVELOPER_INCLUDE = ["configuration.developer", "requirements", "identity"]
 
 
-def developer_config_on() -> bool:
-    """The rail being on implies the developer configuration: a workflow is
-    refused until the `projects` capability is active, so an account created
-    without it could never satisfy the gate. The explicit flag stays so the
-    configuration can be requested before the rail is switched on."""
-    return bool(settings.STRIPE_PROJECTS_DEVELOPER_CONFIG or settings.STRIPE_PROVISIONING_ENABLED)
-
-
 def account_configuration() -> dict:
-    if not developer_config_on():
-        return dict(MERCHANT_CONFIGURATION)
+    """Every account requests the developer configuration: a workflow is
+    refused until the `projects` capability is active, so an account created
+    without it could never satisfy the gate."""
     return {**MERCHANT_CONFIGURATION, **DEVELOPER_CONFIGURATION}
 
 
-def onboarding_configurations() -> list[str]:
-    """A return to `return_url` proves only that the browser came back — "it
-    doesn't prove that the projects capability is active" (guide). The
-    workflow's eligibility read is the truth."""
-    return ["merchant", "developer"] if developer_config_on() else ["merchant"]
-
-
 def accounts_v2_options(**extra) -> dict:
-    """Per-request options for the Accounts v2 calls. Pins `Stripe-Version`
-    when configured. The `developer` configuration (the `projects` capability)
-    exists only in the provisioning preview, so with it on and no explicit
-    version the calls pin the provisioning preview: the SDK default rejects it
+    """Per-request options for the Accounts v2 calls. Pins `Stripe-Version` to
+    `STRIPE_ACCOUNTS_V2_VERSION`, else the provisioning preview: the
+    `developer` configuration exists only there, and the SDK default rejects it
     as "configuration.developer: Unknown field" (dev sandbox, 2026-10-27)."""
-    options = dict(extra)
-    version = settings.STRIPE_ACCOUNTS_V2_VERSION
-    if not version and developer_config_on():
-        version = PROVISIONING_VERSION
-    if version:
-        options["stripe_version"] = version
-    return options
+    return {**extra, "stripe_version": settings.STRIPE_ACCOUNTS_V2_VERSION or PROVISIONING_VERSION}
 
 
 def _client() -> StripeClient:
@@ -115,26 +94,33 @@ async def resolve_company_name(owner_id: str) -> str:
     return (company or {}).get("name") or owner_id
 
 
-async def create_company_account(*, owner_id: str, email: str, company_name: str) -> str:
+async def create_company_account(*, owner_id: str, email: str, company_name: str, kind: str = "company") -> str:
     """Create the account shell. ``identity`` carries only the country —
     entity type and everything else are collected by Stripe in hosted
     onboarding (``requirements_collector`` defaults to ``stripe``). Fresh
     uuid4 idempotency key on purpose — a stable key would return a deleted
     account from Stripe's 24h cache; the router de-dups on the billing row."""
     client = _client()
+    # kind "company_services" = the services account (see projects_account_of).
+    # It only provisions, so it asks for `developer` alone: on that shape Stripe
+    # requires just the contact email for `projects`; `merchant` adds ~15
+    # KYC/bank fields (dev sandbox, 10-28). Stripe refuses `dashboard` and
+    # `defaults.responsibilities` without merchant ("You cannot set … unless the
+    # account is configured as a merchant", prod + dev sandbox 10-29).
+    services = kind == "company_services"
     params: dict = {
         "display_name": company_name,
-        "dashboard": "full",
         "identity": {"country": "us"},
-        "configuration": account_configuration(),
-        "defaults": ACCOUNT_DEFAULTS,
-        "metadata": {"owner_id": owner_id, "kind": "company"},
+        "configuration": DEVELOPER_CONFIGURATION if services else account_configuration(),
+        "defaults": {"currency": ACCOUNT_DEFAULTS["currency"]} if services else ACCOUNT_DEFAULTS,
+        "metadata": {"owner_id": owner_id, "kind": kind},
     }
+    if not services:
+        params["dashboard"] = "full"
     # v2 rejects an empty contact_email; Stripe collects one in onboarding.
     if email:
         params["contact_email"] = email
-    if developer_config_on():
-        params["include"] = list(DEVELOPER_INCLUDE)
+    params["include"] = list(DEVELOPER_INCLUDE)
     account = await asyncio.to_thread(
         client.v2.core.accounts.create,
         params,
@@ -150,17 +136,14 @@ async def create_company_onboarding_link(*, account_id: str, update: bool = Fals
     guide's ``account_update`` use case is "subsequent corrections", and it
     takes no ``configurations`` list.
 
-    With the developer configuration on, the call runs on the provisioning
-    preview, which REJECTS ``configurations`` ("Unknown field", dev sandbox
-    2026-10-27) and collects what the account's own configurations require; the
-    provisioning guide sends ``collection_options`` instead."""
+    The call runs on the provisioning preview, which REJECTS
+    ``configurations`` ("Unknown field", dev sandbox 2026-10-27) and collects
+    what the account's own configurations require; the provisioning guide
+    sends ``collection_options`` instead. A return to `return_url` proves only
+    that the browser came back; the workflow's eligibility read is the truth."""
     client = _client()
     urls = {"refresh_url": settings.STRIPE_COMPANY_REFRESH_URL, "return_url": settings.STRIPE_COMPANY_RETURN_URL}
-    onboarding = (
-        {"collection_options": {"fields": "currently_due"}, **urls}
-        if developer_config_on()
-        else {"configurations": onboarding_configurations(), **urls}
-    )
+    onboarding = {"collection_options": {"fields": "currently_due"}, **urls}
     use_case = (
         {"type": "account_update", "account_update": urls}
         if update
@@ -172,6 +155,31 @@ async def create_company_onboarding_link(*, account_id: str, update: bool = Fals
         options=accounts_v2_options(),
     )
     return link.url
+
+
+def projects_account_of(row: dict | None) -> str | None:
+    """The ONE answer to "which account does Stripe Projects run on": the
+    services account when there is one, else the main account when the
+    platform created it. A `connected` account is v1 Standard, which Accounts
+    v2 refuses (`v1_account_instead_of_v2_account`) and Projects answers 403
+    (prod, 2026-10-27); an `api_key` row has no platform grant. Both need a
+    services account; None says so."""
+    row = row or {}
+    if row.get("company_stripe_projects_account_id"):
+        return row["company_stripe_projects_account_id"]
+    if row.get("company_stripe_source") == "created":
+        return row.get("company_stripe_account_id")
+    return None
+
+
+async def create_account_session(*, account_id: str) -> str:
+    """A client secret for Connect embedded onboarding (v1 Account Sessions
+    accept v2 ids). Never log the return value."""
+    session = await asyncio.to_thread(
+        _client().v1.account_sessions.create,
+        {"account": account_id, "components": {"account_onboarding": {"enabled": True}}},
+    )
+    return session.client_secret
 
 
 async def request_projects_capability(*, account_id: str) -> None:

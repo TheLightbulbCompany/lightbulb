@@ -65,9 +65,10 @@ that `target` for you). See `SKILL.md` and `references/api-reference.md`
 for the full interaction payload and the stale-target/rebuild rules.
 
 **A deliverable asked for in chat is a document too.** When an owner asks in
-chat for research, a plan, a draft or a report, write it as an issue document
-(any key, e.g. `research`) on a task and reply in chat with a short summary and
-the `/<prefix>/issues/<identifier>#document-<key>` link — the lightbulb skill's
+chat for research, a plan, a draft or a report, write it as a file attached to
+the reply; when the work already is a task, write it as an issue document (any
+key, e.g. `research`) on that task and reply with a short summary and the
+`/<prefix>/issues/<identifier>#document-<key>` link — the lightbulb skill's
 `references/chat-vs-document.md` has the steps and the chat wording.
 
 **A finished deliverable is a work product, not a loose file** — upload it with

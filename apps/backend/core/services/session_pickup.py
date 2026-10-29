@@ -389,7 +389,7 @@ async def set_pickup(
             if not store._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         if sessions.pending_pickups(row):
             await sessions._push_presence(updated)  # a pending ask froze the owner's Mac; lift it now
         return sessions._session_public(updated, auth.user_id)
@@ -600,7 +600,7 @@ async def report_outcome(auth: AuthContext, session_id: str, pickup_id: str, out
             raise
         return  # a retried outcome: already audited and already announced
     # An open session view refetches its audit on this, so the owner sees the pick-up at once.
-    await publish_resources_changed(owner, row["humanUserId"])
+    await publish_resources_changed(owner, row["humanUserId"], session_id=sid)
 
 
 async def lineage(owner: str, sid: str) -> dict | None:
@@ -802,7 +802,7 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
                 raise
     else:
         raise DeviceRefused(503)
-    await publish_resources_changed(owner, row["humanUserId"])
+    await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
 
 
 async def mark_unavailable(row: dict, enrollment: dict, reason: str) -> None:
@@ -831,7 +831,7 @@ async def mark_unavailable(row: dict, enrollment: dict, reason: str) -> None:
                 raise
     else:
         raise DeviceRefused(503)
-    await publish_resources_changed(owner, row["humanUserId"])
+    await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
 
 
 # --- Expiry -------------------------------------------------------------------------------------
@@ -969,7 +969,7 @@ async def retire(
     for prefix in retired:
         await run_in_thread(delete_prefix, prefix)
     if allowed:
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
     return updated
 
 

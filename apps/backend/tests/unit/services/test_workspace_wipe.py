@@ -322,6 +322,21 @@ async def test_preview_unknown_layer_rejected(ws_mocks):
 
 
 @pytest.mark.asyncio
+async def test_a_parked_members_runtime_step_says_scheduled(ws_mocks):
+    async def _parked(owner_id, *, delete_profiles=False, report=None):
+        report["runtime"] = "scheduled"
+        return _container_row()
+
+    ws_mocks.delete_runtime.side_effect = _parked
+    preview = await preview_workspace_wipe(ORG_ID)
+    report = await wipe_workspace(
+        ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, expected_fingerprint=preview.fingerprint
+    )
+    step = {s.system: s for s in report.steps}["runtime"]
+    assert step.status == "ok" and "teardown scheduled" in step.detail
+
+
+@pytest.mark.asyncio
 async def test_execute_finds_and_deletes_runtime_under_org_id(ws_mocks):
     """The incident's acceptance case: containers under the ORG id IS found
     and torn down (not 'skipped: no containers row')."""
@@ -334,7 +349,7 @@ async def test_execute_finds_and_deletes_runtime_under_org_id(ws_mocks):
     )
 
     assert report.dry_run is False
-    ws_mocks.delete_runtime.assert_awaited_once_with(ORG_ID, delete_profiles=True)
+    ws_mocks.delete_runtime.assert_awaited_once_with(ORG_ID, delete_profiles=True, report={})
     ws_mocks.voice_wipe.assert_awaited_once_with(ORG_ID)
     by_system = {s.system: s for s in report.steps}
     assert by_system["runtime"].status == "ok"
@@ -660,9 +675,11 @@ def test_workspace_registry_covers_user_path_systems():
     """The shared registry covers every system the user-keyed path emits
     (plus clerk_org, which only a workspace wipe has) — the two paths cannot
     silently diverge. ``paperclip_membership`` is the user path's alternative
-    to deleting the company, which the workspace wipe does outright."""
+    to deleting the company, which the workspace wipe does outright. ``person_memory`` is a
+    person's own data (theirs in every workspace); a workspace's sessions and drafts go with its
+    runtime teardown (workspace_memory.delete_owner_memory)."""
     registry_systems = {system for system, _ in WORKSPACE_STEP_ORDER}
-    assert set(EXPECTED_ORDER) - {"paperclip_membership"} <= registry_systems
+    assert set(EXPECTED_ORDER) - {"paperclip_membership", "person_memory"} <= registry_systems
     assert "clerk_org" in registry_systems
 
 
@@ -872,7 +889,7 @@ async def test_self_serve_sole_member_wipes_workspace_and_cancels_stripe(ws_mock
     assert not [s for s in report.steps if s.status == "failed"]
     assert report.billing_preserved is False
     ws_mocks.stripe_delete.assert_awaited_once_with(ORG_ID)  # cancels the subscription, then the customer
-    ws_mocks.delete_runtime.assert_awaited_once_with(ORG_ID, delete_profiles=True)
+    ws_mocks.delete_runtime.assert_awaited_once_with(ORG_ID, delete_profiles=True, report={})
     ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
     ws_mocks.clerk_delete_user.assert_awaited_once_with(MEMBER_A)
     ws_mocks.clerk_delete_org.assert_awaited_once_with(ORG_ID)

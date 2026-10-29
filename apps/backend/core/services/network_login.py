@@ -25,6 +25,7 @@ import base64
 import binascii
 import json
 import re
+import logging
 import time
 
 from botocore.exceptions import ClientError
@@ -35,6 +36,8 @@ from fastapi import HTTPException, Request
 from core.auth import AuthContext, require_org_admin, resolve_owner_id
 from core.repositories import messaging_repo
 from core.services import device_login, network_proof
+
+logger = logging.getLogger(__name__)
 
 CHALLENGE_TTL_S = 120
 KIND = "network"
@@ -197,6 +200,7 @@ async def approve(ctx: AuthContext, user_code: str) -> dict:
             "routeUrl": route_url(),
         }
         await unrevoke(ctx.user_id, row["computerKey"])
+        await register_key(ctx.user_id, row["computerKey"])
     else:
         await network_member.join_network(owner_id, row["ticket"])
         result = {"workspaceName": await _workspace(owner_id)}
@@ -219,6 +223,7 @@ async def refresh(key: str, nonce: str, sig: str, proof: str) -> dict:
     if claims is None or await is_revoked(claims["sub"], key):
         raise HTTPException(status_code=401, detail=_SIGN_IN_AGAIN)
     await require_live_user(claims["sub"])
+    await register_key(claims["sub"], key)
     if claims["exp"] - int(time.time()) > REFRESH_BEFORE_S:
         return {"proof": proof}
     return {"proof": network_proof.mint(key, claims["sub"], auth_time=claims.get("auth_time"), org=claims.get("org"))}
@@ -292,6 +297,47 @@ async def revoked_keys(user_ids: list[str]) -> list[str]:
     return sorted({r["sk"] for found in rows for r in found if int(r.get("ttl") or 0) > now})
 
 
+def _registry_key(user_id: str, key: str) -> dict:
+    return {"pk": f"NETKEY#{user_id}", "sk": f"NETKEY#{key}"}
+
+
+async def register_key(user_id: str, key: str) -> None:
+    """Remember that ``key`` has been signed in as ``user_id`` (proofs are stateless, so this is
+    the only record), for the member wipe's ``memory.forget_author``. One conditional put; a repeat
+    keeps the first ``first_seen``. Never raises: a lost row must not block a sign-in."""
+    from core.dynamodb import run_in_thread
+
+    try:
+        await run_in_thread(
+            messaging_repo._table().put_item,
+            Item={**_registry_key(user_id, key), "first_seen": int(time.time())},
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("network key registry write failed error=%s", exc.response["Error"]["Code"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("network key registry write failed error=%s", type(exc).__name__)
+
+
+async def forget_keys(user_id: str) -> None:
+    """Drop the person's registry rows (after the wipe's forwards were sent or queued)."""
+    from core.dynamodb import run_in_thread
+
+    for row in await messaging_repo._query(f"NETKEY#{user_id}"):
+        await run_in_thread(messaging_repo._table().delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
+
+
+async def computer_keys(user_id: str) -> list[str]:
+    """Member keys of this person's computers: the registry (every key that ever signed in as
+    them, online or not), those linked now, and those they signed out."""
+    from core.services import network_route
+
+    registered = [r["sk"].removeprefix("NETKEY#") for r in await messaging_repo._query(f"NETKEY#{user_id}")]
+    live = [r["key"] for r in await network_route._connections().routes_for_user(user_id)]
+    return sorted({*registered, *live, *await revoked_keys([user_id])})
+
+
 async def require_live_user(user_id: str) -> None:
     """The Clerk user still exists and is not banned or locked: 401 if not, 503 when Clerk cannot
     say (fail closed). A proof is renewed, and a personal key used, only for a live account."""
@@ -350,8 +396,9 @@ def _same_target(signed: str, path: str, query: str) -> bool:
     return unquote(signed_path) == unquote(path) and pairs(signed_query) == pairs(query)
 
 
-async def computer_person(request: Request) -> tuple[AuthContext, str]:
-    """A signed-in computer's call (``lightbulb login``): the person its proof names, in the
+async def computer_person(request: Request, *, free_ok: bool = False) -> tuple[AuthContext, str]:
+    """(``free_ok``: a person in no workspace is returned with ``org_id=None`` instead of a 409.)
+    A signed-in computer's call (``lightbulb login``): the person its proof names, in the
     workspace chosen at login, and the engine-verified label of the calling session. Each call is signed over its
     method, path, query, body hash and a timestamp, and is good once, within ``TOOLS_SKEW_S``."""
     import hashlib
@@ -406,6 +453,8 @@ async def computer_person(request: Request) -> tuple[AuthContext, str]:
             )
     elif len(organizations) == 1:
         org = organizations[0]
+    elif free_ok and not organizations:
+        return AuthContext(user_id=claims["sub"]), label
     else:
         raise HTTPException(
             status_code=409,
@@ -413,3 +462,8 @@ async def computer_person(request: Request) -> tuple[AuthContext, str]:
             "Sign it in again with your workspace selected: lightbulb login",
         )
     return AuthContext(user_id=claims["sub"], org_id=org["id"], org_role=org.get("role")), label
+
+
+async def computer_identity(request: Request) -> tuple[AuthContext, str]:
+    """``computer_person`` for routes a free (no-workspace) signed-in computer may also call."""
+    return await computer_person(request, free_ok=True)

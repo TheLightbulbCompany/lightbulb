@@ -39,7 +39,30 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+const memoryGets = () => mockGet.mock.calls.filter(([url]) => url === "/memory").length;
+const DRAFTS = {
+  drafts: [
+    { id: "d1", kind: "lesson", text: "Run migrations before the seed", evidence: ["s1", "s-gone"], status: "proposed" },
+    { id: "d2", kind: "finding", text: "Token in a log line", evidence: [], status: "proposed" },
+  ],
+};
+// GET by url: the memory list, the drafts, the viewer's sessions.
+const route = (drafts: unknown = { drafts: [] }) =>
+  mockGet.mockImplementation(async (url: string) =>
+    url === "/memory/drafts" ? drafts : url === "/sessions" ? { sessions: [{ id: "s1" }] } : LIST);
+
 describe("AgentMemoryTab", () => {
+  it("offers Share and Confirm on room rows but not on mirrored log entries", async () => {
+    const entry = { id: "mem-e1", text: "deploy: Fridays only", createdAt: "2026-10-01T00:00:00+00:00", confirmed: false, source: "network" };
+    const mine = { id: "mem-e2", text: "me: prefers email", createdAt: "2026-10-01T00:00:00+00:00", confirmed: false, source: "network" };
+    mockGet.mockResolvedValue({ ...LIST, private: [mine, LIST.private[0]], team: [entry, { ...LIST.team[1], source: "room" }] });
+    renderTab();
+    expect(await screen.findByText("deploy: Fridays only")).toBeInTheDocument();
+    expect(screen.getByText("me: prefers email")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Confirm" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Share with team" })).toHaveLength(1);
+  });
+
   it("renders Only you and Team with Confirmed on mem-t1 only", async () => {
     renderTab();
     expect(await screen.findByText("I am allergic to nuts")).toBeInTheDocument();
@@ -81,7 +104,7 @@ describe("AgentMemoryTab", () => {
     await waitFor(() => expect(screen.getAllByText("Confirmed")).toHaveLength(2));
     expect(screen.getByText("I am allergic to nuts")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Share with team" })).not.toBeInTheDocument();
-    expect(mockGet).toHaveBeenCalledTimes(1);
+    expect(memoryGets()).toBe(1);
   });
 
   it("confirms optimistically without refetching", async () => {
@@ -93,7 +116,7 @@ describe("AgentMemoryTab", () => {
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/memory/mem-t2/confirm", {}));
     await waitFor(() => expect(screen.getAllByText("Confirmed")).toHaveLength(2));
     expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
-    expect(mockGet).toHaveBeenCalledTimes(1);
+    expect(memoryGets()).toBe(1);
   });
 
   it("shows the empty state", async () => {
@@ -128,7 +151,7 @@ describe("AgentMemoryTab", () => {
     // A delete revalidates; the mocked GET still returns the OLD lists.
     vi.spyOn(window, "confirm").mockReturnValue(true);
     fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[2]);
-    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(memoryGets()).toBe(2));
     // The refetched (old) lists must RENDER: mem-t2 is deleted and gone, the rest stays.
     await waitFor(() => expect(screen.queryByText("Ships on Tuesdays")).not.toBeInTheDocument());
     expect(screen.getAllByText("I am allergic to nuts")).toHaveLength(1);
@@ -189,19 +212,110 @@ describe("AgentMemoryTab", () => {
     try {
       fireEvent.click(screen.getByRole("button", { name: "Share with team" }));
       await waitFor(() => expect(screen.getAllByText("Confirmed")).toHaveLength(2));
-      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(memoryGets()).toBe(1);
       mockGet.mockResolvedValue({
         ...LIST,
         private: [],
         team: [{ id: "mem-new", text: "I am allergic to nuts", createdAt: "2026-10-02T00:00:00+00:00", confirmed: true }, ...LIST.team],
       });
       await vi.advanceTimersByTimeAsync(90_001);
-      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(memoryGets()).toBe(2));
       await waitFor(() => expect(screen.getAllByText("I am allergic to nuts")).toHaveLength(1));
       expect(screen.getAllByText("Confirmed")).toHaveLength(2);
       expect(screen.queryByRole("button", { name: "Share with team" })).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("renders contested badge and history line", async () => {
+    mockGet.mockResolvedValue({
+      ...LIST,
+      team: [
+        {
+          id: "mem-c", text: "API port is 9090", createdAt: "2026-10-01T00:00:00+00:00", confirmed: false,
+          status: "contested", speaker: "Ana",
+          history: [{ value: "8080", speaker: "Bo", occurredAt: "2026-09-30T00:00:00+00:00" }],
+        },
+        {
+          ...LIST.team[0], status: "current",
+          history: [{ value: "York", speaker: "Cy", occurredAt: "2026-09-01T00:00:00+00:00" }],
+        },
+      ],
+    });
+    renderTab();
+    expect(await screen.findByText("API port is 9090")).toBeInTheDocument();
+    expect(screen.getByText(/Was York/)).toBeInTheDocument(); // a current value's replaced one
+    expect(screen.getByText("Contested")).toBeInTheDocument();
+    expect(screen.getByText(/Also: 8080/)).toHaveTextContent(/Bo/); // the other side, not an old value
+    expect(screen.queryByText(/Was 8080/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Contested only" }));
+    expect(screen.getByText("API port is 9090")).toBeInTheDocument();
+    expect(screen.queryByText("Warehouse is in Leeds")).not.toBeInTheDocument();
+  });
+
+  it("labels a record the overlay is holding as pending", async () => {
+    mockPost.mockResolvedValue({ id: "mem-new" });
+    renderTab();
+    await screen.findByText("I am allergic to nuts");
+    fireEvent.click(screen.getByRole("button", { name: "Share with team" }));
+    expect(await screen.findByText("Pending")).toBeInTheDocument();
+  });
+
+  it("says no contested memories when the filter hides everything", async () => {
+    renderTab();
+    await screen.findByText("Warehouse is in Leeds");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Contested only" }));
+    expect(screen.getAllByText("No contested memories")).toHaveLength(2);
+    expect(screen.queryByText(/Nothing remembered yet/)).not.toBeInTheDocument();
+  });
+
+  it("renders suggested drafts with evidence links", async () => {
+    route(DRAFTS);
+    renderTab();
+    expect(await screen.findByText("Run migrations before the seed")).toBeInTheDocument();
+    expect(screen.getByText("Suggested")).toBeInTheDocument();
+    expect(screen.getByText(/Lessons drawn from uploaded sessions\./)).toBeInTheDocument();
+    expect(screen.getByText("lesson")).toBeInTheDocument();
+    expect(screen.getByText("finding")).toBeInTheDocument();
+    const link = await screen.findByRole("link", { name: "s1" });
+    expect(link.getAttribute("href")).toContain("/chat?panel=session&session=s1");
+    expect(screen.getByText("s-gone")).not.toHaveAttribute("href"); // not one of the viewer's sessions
+    expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1); // a finding is only dismissed
+    expect(screen.getAllByRole("button", { name: "Dismiss" })).toHaveLength(2);
+  });
+
+  it("approves a draft, removes it locally and refetches the drafts", async () => {
+    route(DRAFTS);
+    mockPost.mockResolvedValue({ queued: false });
+    renderTab();
+    await screen.findByText("Run migrations before the seed");
+    route({ drafts: [DRAFTS.drafts[1]] });
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/memory/drafts/d1/approve", {}));
+    await waitFor(() => expect(screen.queryByText("Run migrations before the seed")).not.toBeInTheDocument());
+    expect(screen.getByText("Token in a log line")).toBeInTheDocument();
+    expect(mockGet.mock.calls.filter(([u]) => u === "/memory/drafts").length).toBeGreaterThan(1);
+  });
+
+  it("dismisses a draft", async () => {
+    route(DRAFTS);
+    mockPost.mockResolvedValue(undefined);
+    renderTab();
+    await screen.findByText("Token in a log line");
+    fireEvent.click(screen.getAllByRole("button", { name: "Dismiss" })[1]);
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/memory/drafts/d2/dismiss", {}));
+    await waitFor(() => expect(screen.queryByText("Token in a log line")).not.toBeInTheDocument());
+  });
+
+  it("refetches the drafts and shows the error when a draft was settled elsewhere", async () => {
+    route(DRAFTS);
+    mockPost.mockRejectedValue(Object.assign(new Error("draft already settled"), { status: 409 }));
+    renderTab();
+    await screen.findByText("Run migrations before the seed");
+    route({ drafts: [DRAFTS.drafts[1]] });
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("already settled");
+    await waitFor(() => expect(screen.queryByText("Run migrations before the seed")).not.toBeInTheDocument());
   });
 });

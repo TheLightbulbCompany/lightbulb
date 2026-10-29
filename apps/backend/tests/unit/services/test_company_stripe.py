@@ -43,13 +43,33 @@ async def test_create_company_account_uses_v2_merchant_config_and_stripe_fees():
     assert params["contact_email"] == "founder@example.com"
     assert params["display_name"] == "Northwind Ceramics"
     assert params["identity"] == {"country": "us"}
-    assert params["configuration"] == {"merchant": {"capabilities": {"card_payments": {"requested": True}}}}
+    assert params["configuration"] == {
+        "merchant": {"capabilities": {"card_payments": {"requested": True}}},
+        "developer": {"capabilities": {"projects": {"requested": True}}},
+    }
     assert params["defaults"] == {
         "currency": "usd",
         "responsibilities": {"fees_collector": "stripe", "losses_collector": "stripe"},
     }
     assert params["metadata"] == {"owner_id": "org_a", "kind": "company"}
     assert options["idempotency_key"].startswith("company_account_create:")
+
+
+@pytest.mark.asyncio
+async def test_services_account_requests_developer_only():
+    """merchant would add the payments KYC fields to a provisioning-only account."""
+    create = MagicMock(return_value=SimpleNamespace(id="acct_svc"))
+    with patch("core.services.company_stripe._client", return_value=_client_with(accounts_create=create)):
+        await company_stripe.create_company_account(
+            owner_id="org_a", email="f@example.com", company_name="N", kind="company_services"
+        )
+    params = create.call_args.args[0]
+    assert params["configuration"] == {
+        "developer": {"capabilities": {"projects": {"requested": True}}},
+    }
+    # Stripe refuses `dashboard` and `responsibilities` on a non-merchant account.
+    assert "dashboard" not in params
+    assert params["defaults"] == {"currency": "usd"}
 
 
 @pytest.mark.asyncio
@@ -72,7 +92,7 @@ async def test_create_company_onboarding_link_v2():
     assert params["use_case"] == {
         "type": "account_onboarding",
         "account_onboarding": {
-            "configurations": ["merchant"],
+            "collection_options": {"fields": "currently_due"},
             "refresh_url": settings.STRIPE_COMPANY_REFRESH_URL,
             "return_url": settings.STRIPE_COMPANY_RETURN_URL,
         },
@@ -113,27 +133,9 @@ async def test_retrieve_status_shape():
 
 
 @pytest.mark.asyncio
-async def test_developer_configuration_is_off_by_default(monkeypatch):
-    """The field is "Unknown field" for our platform today (probed 2026-08-29),
-    so sending it would break every company-account create."""
+async def test_developer_configuration_matches_the_guide_shape(monkeypatch):
     from core.services import company_stripe as mod
 
-    assert mod.settings.STRIPE_PROJECTS_DEVELOPER_CONFIG is False
-    client = MagicMock()
-    client.v2.core.accounts.create = MagicMock(return_value=SimpleNamespace(id="acct_1"))
-    with patch.object(mod, "_client", return_value=client):
-        await mod.create_company_account(owner_id="org_a", email="f@example.com", company_name="Northwind")
-    params = client.v2.core.accounts.create.call_args.args[0]
-    assert "developer" not in params["configuration"]
-    assert "include" not in params
-    assert params["configuration"]["merchant"]["capabilities"]["card_payments"]["requested"] is True
-
-
-@pytest.mark.asyncio
-async def test_developer_configuration_matches_the_guide_shape_when_enabled(monkeypatch):
-    from core.services import company_stripe as mod
-
-    monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_DEVELOPER_CONFIG", True)
     client = MagicMock()
     client.v2.core.accounts.create = MagicMock(return_value=SimpleNamespace(id="acct_1"))
     with patch.object(mod, "_client", return_value=client):
@@ -149,45 +151,31 @@ async def test_developer_configuration_matches_the_guide_shape_when_enabled(monk
 
 
 @pytest.mark.asyncio
-async def test_onboarding_configurations_follow_the_flag(monkeypatch):
+async def test_onboarding_link_uses_collection_options(monkeypatch):
+    """On the provisioning preview `configurations` is an unknown field; the
+    guide's collection_options shape is what the sandbox accepts."""
     from core.services import company_stripe as mod
 
     client = MagicMock()
     client.v2.core.account_links.create = MagicMock(return_value=SimpleNamespace(url="https://x"))
     with patch.object(mod, "_client", return_value=client):
         await mod.create_company_onboarding_link(account_id="acct_1")
-        body = client.v2.core.account_links.create.call_args.args[0]
-        assert body["use_case"]["account_onboarding"]["configurations"] == ["merchant"]
-
-        # On the provisioning preview `configurations` is an unknown field; the
-        # guide's collection_options shape is what the sandbox accepts.
-        monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_DEVELOPER_CONFIG", True)
-        await mod.create_company_onboarding_link(account_id="acct_1")
-        body = client.v2.core.account_links.create.call_args.args[0]
-        onboarding = body["use_case"]["account_onboarding"]
-        assert "configurations" not in onboarding
-        assert onboarding["collection_options"] == {"fields": "currently_due"}
+    onboarding = client.v2.core.account_links.create.call_args.args[0]["use_case"]["account_onboarding"]
+    assert "configurations" not in onboarding
+    assert onboarding["collection_options"] == {"fields": "currently_due"}
 
 
 @pytest.mark.asyncio
-async def test_accounts_v2_version_is_pinned_only_when_configured(monkeypatch):
-    """The guide pins that call with -H "Stripe-Version: {{ACCOUNTS_V2_VERSION}}"
-    and says to confirm the version during onboarding. Empty ⇒ SDK default."""
+async def test_accounts_v2_version_pins_the_preview_unless_configured(monkeypatch):
+    """The developer configuration exists only in the provisioning preview: the
+    SDK default answered "configuration.developer: Unknown field" in the dev
+    sandbox. An explicit STRIPE_ACCOUNTS_V2_VERSION wins."""
     from core.services import company_stripe as mod
 
     client = MagicMock()
     client.v2.core.accounts.create = MagicMock(return_value=SimpleNamespace(id="acct_1"))
     with patch.object(mod, "_client", return_value=client):
         monkeypatch.setattr(mod.settings, "STRIPE_ACCOUNTS_V2_VERSION", "")
-        monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", False)
-        monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_DEVELOPER_CONFIG", False)
-        await mod.create_company_account(owner_id="org_a", email="f@example.com", company_name="N")
-        options = client.v2.core.accounts.create.call_args.kwargs["options"]
-        assert "stripe_version" not in options
-
-        # The developer configuration exists only in the provisioning preview: the SDK
-        # default answered "configuration.developer: Unknown field" in the dev sandbox.
-        monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
         await mod.create_company_account(owner_id="org_a", email="f@example.com", company_name="N")
         options = client.v2.core.accounts.create.call_args.kwargs["options"]
         assert options["stripe_version"] == mod.PROVISIONING_VERSION
@@ -421,18 +409,6 @@ async def test_projects_ready_reads_the_developer_capability(status, ready):
 
 
 @pytest.mark.asyncio
-async def test_the_rail_being_on_implies_the_developer_configuration(monkeypatch):
-    from core.services import company_stripe as mod
-
-    monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_DEVELOPER_CONFIG", False)
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", False)
-    assert "developer" not in mod.account_configuration()
-    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
-    assert "developer" in mod.account_configuration()
-    assert mod.onboarding_configurations() == ["merchant", "developer"]
-
-
-@pytest.mark.asyncio
 async def test_request_projects_capability_adds_the_developer_configuration():
     from core.services import company_stripe as mod
 
@@ -443,3 +419,40 @@ async def test_request_projects_capability_adds_the_developer_configuration():
     args = client.v2.core.accounts.update.call_args.args
     assert args[0] == "acct_1"
     assert args[1] == {"configuration": {"developer": {"capabilities": {"projects": {"requested": True}}}}}
+
+
+@pytest.mark.asyncio
+async def test_account_session_enables_account_onboarding():
+    from core.services import company_stripe as mod
+
+    client = MagicMock()
+    client.v1.account_sessions.create = MagicMock(return_value=SimpleNamespace(client_secret="cs_1"))
+    with patch.object(mod, "_client", return_value=client):
+        assert await mod.create_account_session(account_id="acct_1") == "cs_1"
+    assert client.v1.account_sessions.create.call_args.args[0] == {
+        "account": "acct_1",
+        "components": {"account_onboarding": {"enabled": True}},
+    }
+
+
+@pytest.mark.parametrize(
+    "row, expected",
+    [
+        ({"company_stripe_account_id": "acct_m", "company_stripe_source": "created"}, "acct_m"),
+        ({"company_stripe_account_id": "acct_m", "company_stripe_source": "connected"}, None),
+        ({"company_stripe_account_id": "acct_m", "company_stripe_source": "api_key"}, None),
+        (
+            {
+                "company_stripe_account_id": "acct_m",
+                "company_stripe_source": "connected",
+                "company_stripe_projects_account_id": "acct_s",
+            },
+            "acct_s",
+        ),
+        (None, None),
+    ],
+)
+def test_projects_account_of(row, expected):
+    from core.services import company_stripe as mod
+
+    assert mod.projects_account_of(row) == expected

@@ -21,7 +21,7 @@ describe("SessionNotificationsCard", () => {
     get.mockResolvedValue({ timezone: "UTC" });
     card();
     expect(((await screen.findByLabelText("Waiting on you")) as HTMLSelectElement).value).toBe("banner");
-    expect((screen.getByLabelText("Needs attention") as HTMLSelectElement).value).toBe("badge");
+    expect(screen.queryByLabelText("Needs attention")).toBeNull(); // hand-off notes are not a setting any more
     expect((screen.getByLabelText("Sound") as HTMLInputElement).checked).toBe(true);
     expect((screen.getByLabelText("Only when Lightbulb isn't focused") as HTMLInputElement).checked).toBe(false);
   });

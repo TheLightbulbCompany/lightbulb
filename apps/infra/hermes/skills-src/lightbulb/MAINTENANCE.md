@@ -32,7 +32,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  routers/ses_inbound.py (email wake — any authenticated sender while the row's
                                  `send_to_anyone` is on, the default; else allowlisted senders only) and
                                  core/services/agent_mail_send.py (the same flag gates `--to`/`--reply`);
-                                 the Google scopes in providers.yaml (gmail.send, calendar.events, drive.file)
+                                 the Google scopes in providers.yaml (gmail.modify, calendar, drive)
   - Send a file in chat ..... references/platform-primitives.md ("Send a file in chat" row)
                               <- apps/infra/hermes/bridge/turn.py (MEDIA_PREFIX, MEDIA_CONTENT_TYPES,
                                  ATTACHMENT_MAX_BYTES_BY_TYPE incl. video, MAX_ATTACHMENTS, _within: own profile or
@@ -50,10 +50,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  .scratch/ and /tmp share the microVM's ~4 GB disk across teammates until it is
                                  recycled; numbered slots filled it twice for the founder's engineering agent
                                  (2026-10-07/08). Mirrors bridge/turn.py `_repo_rule`; edit both together.
-  - gog scope-denied ........ references/integrations.md ("Google Workspace (`gog`)": say Google access does not
-                              cover it; offer forwarding / the file picker; never a browser sign-in)
-                              <- Google is the platform app now (docs/superpowers/plans/2026-10-23-google-verification.md);
-                                 its scopes are the providers.yaml `google` list. Update when phase 3 adds gmail.readonly/drive.
+  - gog scope-denied ........ references/integrations.md ("Google Workspace (`gog`)": ask for a reconnect in
+                              Connections; never a browser sign-in)
+                              <- Google is the platform app, unverified under the 100-user exemption; its scopes are
+                                 the providers.yaml `google` list. A 403 means a grant from before the scopes widened.
   - Plain words, no plumbing  SKILL.md ("Talk to people in plain words, never plumbing")
                               <- observed prod 2026-09-29: an agent told #general "PAPERCLIP_RUN_ID is empty (this is
                                  a webchat session, not a heartbeat)". No code enforces it; the verifier footer that
@@ -372,11 +372,12 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  (409 name_taken, 429 rate_limited). Pinned by apps/infra/hermes/tests/test_voice_skill.py.
   - Provisioning rail ....... references/money.md
                               <- apps/backend/routers/company_provisioning.py (container routes, refusal codes);
-                                 core/services/provisioning_workflow.py (STATES); core/services/owner_facts.py (the `provisioning` facts list)
+                                 core/services/provisioning_workflow.py (STATES, account_id_for's refusals incl.
+                                 services_account_needed); core/services/owner_facts.py (the `provisioning` facts list)
   - Buying things ........... references/money.md ("Buying things")
                               <- plugins/lightbulb/__init__.py (`request_purchase`, PURCHASE_SCHEMA); backend
                                  routers/company_link_wallet.py (agent door, refusal codes), core/services/purchases.py (policy),
-                                 core/services/link_wallet.py. Dark behind LINK_WALLET_ENABLED. Pinned by
+                                 core/services/link_wallet.py. Every route 404s until Link's OAuth client is configured. Pinned by
                                  apps/infra/hermes/tests/test_plugin_request_purchase.py.
   - Budgets (monthly caps) .. references/money.md
                               <- apps/frontend Settings -> Budgets panel; routers/teams/budgets.py (BFF proxy, admin-gated writes);
@@ -391,8 +392,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  _REPRODUCIBLE_DIRS node_modules/*venv/.next/dist/build, work/ of other conversations never
                                  restored, save at end of turn);
                                  apps/infra/hermes/Dockerfile (global npm installs as root, then USER 1000; no dockerd);
-                                 the provisioning-rail fallback = core/config.py STRIPE_PROVISIONING_ENABLED +
-                                 routers/company_provisioning.py container_catalog (`provisioning_unavailable`);
+                                 the provisioning-rail fallback = routers/company_provisioning.py container_catalog
+                                 (nothing offered that fits the task);
                                  Hermes's bundled github / requesting-code-review skills (/opt/hermes/skills, the base image);
                                  PyPI package graphifyy (its `graphify` entry point; `graphify query --graph`,
                                  `graphify update . --no-cluster` = AST only), mirrored by this repo's own
@@ -500,6 +501,14 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/frontend/src/components/messaging/openui/ (web renderers, press -> reply),
                                  apps/mobile/src/components/chat/openui/ (phone; lands with the mobile PR). SKILL.md: the "Ask with a card"
                                  non-negotiable and "How you reply in chat" (docs/research/2026-10-13-employee-voice-and-consumer-agents.md rung 1).
+  - Workspace actions ....... SKILL.md (routing row + "Lightbulb's own data changes only through Lightbulb tools" non-negotiable)
+                              + references/workspace.md (the action list and each action's args)
+                              <- apps/infra/hermes/plugins/lightbulb/__init__.py (`lightbulb_workspace`) -> apps/backend/routers/messaging.py
+                                 AGENT_ACTIONS / agent_actor (acts as the turn's requester; no person = refused). Args mirror
+                                 UpsertRoomMemberRequest/CreateRoomRequest/PatchRoomRequest (core/services/messaging.py) and
+                                 MessageSearchRequest/SessionSearchRequest (core/services/message_search.py): edit both together.
+                                 Lesson 2026-10-18: a hand-written member row skipped the delivery cursor and silenced an agent.
+                                 lightbulb-api.sh's owner-only refusal points room/member/search actions at the tool.
   - Writing a document ...... references/documents.md
                               <- owner complaint 2026-10-16 (a GTM document opened with "Observed … UTC",
                                  "Decision", "Current-state audit" and task-id bullets); the pane header now carries

@@ -32,6 +32,13 @@ function Details({ tab: initial = "access", s = session(), own = true, c = clien
 }
 const switchNamed = (name: string) => screen.getByRole("switch", { name });
 
+it("uses the available viewport width on desktop", () => {
+  render(<Details />);
+  const dialog = screen.getByRole("dialog");
+  expect(dialog).toHaveClass("max-w-[calc(100%-2rem)]");
+  expect(dialog).not.toHaveClass("sm:max-w-lg");
+});
+
 it("gives the owner one control for who can see the session, and two switches", async () => {
   render(<Details />);
   expect(screen.getAllByRole("switch").map(s => (s as HTMLButtonElement).labels[0]?.textContent)).toEqual([

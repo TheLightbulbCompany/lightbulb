@@ -10,6 +10,7 @@ import logging
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -34,6 +35,7 @@ from core.services import (
     agent_keys,
     app_wake,
     clerk_admin,
+    memory_api,
     messaging,
     network_member,
     network_route,
@@ -421,6 +423,44 @@ async def update_task(
     task: str, status: str | None = None, priority: str | None = None, append_note: str | None = None
 ) -> dict:
     return await _board(task_board.update_task(_caller(WRITE_SCOPE), task, status, priority, append_note))
+
+
+async def _memory(call):
+    """FastMCP hides any non-ToolError text: a bad question or a failed memory says why."""
+    try:
+        return await call
+    except (ValueError, RuntimeError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool(annotations=READ, description=SPEC["recall"]["description"])
+@_noted
+async def recall(question: str) -> dict:
+    auth = _caller()
+    return await _memory(memory_api.recall_page(auth.org_id, auth.user_id, question))
+
+
+@mcp.tool(annotations=WRITE, description=SPEC["remember"]["description"])
+@_noted
+async def remember(
+    subject: str,
+    fact: str,
+    kind: Literal["fact", "decision", "lesson", "preference"],
+    scope: Literal["me", "team"] = "me",
+    replaces: list[str] | None = None,
+) -> dict:
+    auth = _caller(WRITE_SCOPE)
+    return await _memory(
+        memory_api.remember(
+            auth.org_id,
+            subject=subject,
+            fact=fact,
+            kind=kind,
+            scope=scope,
+            replaces=replaces,
+            on_behalf_of=auth.user_id,
+        )
+    )
 
 
 # `use_browser` is left out: it moves a coding session's browser, and a hosted app has none.

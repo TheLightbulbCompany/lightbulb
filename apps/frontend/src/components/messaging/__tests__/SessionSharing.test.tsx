@@ -40,9 +40,10 @@ describe("per-session sharing", () => {
     expect(c.setLocalSessionSharing).toHaveBeenCalledWith("session", false);
     expect(await who(dialog)).toHaveValue("me");
     expect(within(dialog).getByText("Only you see this session. Sharing again shares the whole session.")).toBeInTheDocument();
-    // The session row comes back as Only me: the pane itself says so.
+    // The session row comes back as Only me: the pane says Paused at once, with no frozen picture.
     rerender(panel({ ...session, shared: false }, true, c));
-    expect(screen.getAllByText("Only you see this session. Sharing again shares the whole session.").some(line => line.getAttribute("role") === "status")).toBe(true);
+    expect(screen.getByText("Sharing is paused, so nothing of this session leaves your Mac. Share it again from its terminal.")).toBeInTheDocument();
+    expect(document.querySelector(".session-status-line")?.textContent).toMatch(/^Paused/);
     await userEvent.selectOptions(await who(dialog), "workspace");
     expect(c.setLocalSessionSharing).toHaveBeenLastCalledWith("session", true);
     expect(within(dialog).queryByRole("switch", { name: "Shared with the workspace" })).toBeNull(); // one control

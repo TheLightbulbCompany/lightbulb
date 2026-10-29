@@ -64,6 +64,17 @@ async def increment(
     return None
 
 
+async def add_capture_tokens(owner_id: str, period: str, prompt_tokens: int, completion_tokens: int) -> None:
+    """Add tokens from uploaded coding-agent sessions to a row. Not LLM requests: no request_count.
+    The deltas may be negative (a re-uploaded session is corrected, not counted twice)."""
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"owner_id": owner_id, "period": period},
+        UpdateExpression="ADD capture_prompt_tokens :p, capture_completion_tokens :c",
+        ExpressionAttributeValues={":p": Decimal(prompt_tokens), ":c": Decimal(completion_tokens)},
+    )
+
+
 async def get_period_usage(owner_id: str, period: str) -> dict | None:
     """Get usage counters for an owner+period. Returns None if no usage."""
     table = _get_table()
@@ -163,6 +174,8 @@ async def get_member_usage(owner_id: str, period: str) -> list[dict]:
                     "total_input_tokens": int(item.get("total_input_tokens", 0)),
                     "total_output_tokens": int(item.get("total_output_tokens", 0)),
                     "request_count": int(item.get("request_count", 0)),
+                    "capture_prompt_tokens": int(item.get("capture_prompt_tokens", 0)),
+                    "capture_completion_tokens": int(item.get("capture_completion_tokens", 0)),
                 }
             )
     return results

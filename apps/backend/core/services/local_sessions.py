@@ -809,10 +809,9 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
     minute reads as zero events while people were watching real work in it (prod 2026-10-08). The
     two cannot be told apart from here, so a held session is listed; its owner can remove it.
 
-    A session its person ended on purpose (`endedOnPurpose`: End, the provider's own exit) is not
-    listed at all (owner ruling 2026-10-08), whatever it holds. It still counts as the later one of
-    its origin, so ending a fork on purpose does not put the origin back. One that ended any other
-    way (the process died, a closed terminal, a shutdown) stays, so its owner can resume it."""
+    A session its person ended on purpose (`endedOnPurpose`: End, the provider's own exit) stays
+    listed until its owner removes it (owner ruling 2026-10-27, superseding 2026-10-08's hide:
+    ended work vanished from Recent minutes after End)."""
     ids = {(s.human_user_id, s.session_id) for s in found}
     empty = {
         (s.human_user_id, s.session_id)
@@ -828,7 +827,6 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
         s
         for s in found
         if (s.human_user_id, s.session_id) not in empty
-        and not s.ended_on_purpose
         and not (ended_empty(s.provider, s.status, s.latest_event_seq, s.control_unavailable_reason) and not s.was_held)
         and not (s.status in ("ended", "offline") and (s.human_user_id, s.session_id) in moved)
     ]
@@ -1382,8 +1380,8 @@ async def list_workspace_sessions(auth: Caller, *, include_ended: bool = False) 
 
 async def searchable_sessions(auth: AuthContext) -> dict[str, LocalSession]:
     """The sessions whose words this person may search: what the sessions list shows them
-    (their own in any sharing state, everyone else's while shared; not one ended on purpose
-    or continued by a fork), without the list's 7-day window on ended ones."""
+    (their own in any sharing state, everyone else's while shared; not one continued by a fork),
+    without the list's 7-day window on ended ones."""
     owner = resolve_owner_id(auth)
     if not await still_in_workspace(owner, auth.user_id):
         return {}
@@ -1410,7 +1408,6 @@ def still_searchable(row: dict | None, user_id: str) -> bool:
         row is not None
         and row.get("removedAt") is None
         and (not row.get("unshared") or row.get("humanUserId") == user_id)
-        and not (row.get("endedAt") is not None and row.get("endedReason") == ENDED_ON_PURPOSE)
     )
 
 
@@ -1463,8 +1460,6 @@ async def referenced_sessions(owner: str, members: list[dict], session_ids: list
                 or row.get("ownerId") != owner
                 or row.get("unshared")
                 or row.get("removedAt") is not None
-                # Ended on purpose: no list shows it, so an agent is not told of it either.
-                or (row.get("endedAt") is not None and row.get("endedReason") == ENDED_ON_PURPOSE)
                 or row.get("kind") == "background"
                 or row.get("humanUserId") not in humans
             ):
@@ -1585,7 +1580,7 @@ async def set_display_title(auth: AuthContext, session_id: str, title: str | Non
             await session_chat.follow_session(owner, row["sessionId"])
         except Exception:  # the next chat open names it too (session_chat._follow_lifecycle)
             logger.warning("session chat rename failed for %s", row["sessionId"], exc_info=True)
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return _session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -1849,7 +1844,7 @@ async def submit_command(
             if offline_send:
                 from core.services.local_session_relay import publish_resources_changed
 
-                await publish_resources_changed(owner, row["humanUserId"])
+                await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
             return _public(CommandReceipt, receipt)
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc):
@@ -2000,7 +1995,7 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This follow-up cannot be cancelled.")
         if row.get("cancelledAt"):
             if session:
-                await publish_resources_changed(owner, session["humanUserId"])
+                await publish_resources_changed(owner, session["humanUserId"], session_id=session_id)
             return _public(CommandReceipt, row)
         if row["state"] != "pending" or row["deliverBy"] <= int(time.time()):
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "This follow-up has already left the queue.")
@@ -2018,7 +2013,7 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
             )
             await _capture_offline_terminal(owner, session_id, updated, "cancelled")
             if session:
-                await publish_resources_changed(owner, session["humanUserId"])
+                await publish_resources_changed(owner, session["humanUserId"], session_id=session_id)
             return _public(CommandReceipt, updated)
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc):
@@ -2189,7 +2184,7 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         capture_session_event(
             updated, "local_session_team_control_changed", updated["revision"], state="on" if enabled else "off"
         )
@@ -2282,7 +2277,7 @@ async def _change_session(
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return updated, audit
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -2643,7 +2638,7 @@ async def set_usage_sharing(auth: AuthContext, session_id: str, enabled: bool) -
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return _session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -2817,7 +2812,7 @@ async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> 
             await _push_presence(updated)
         if not link:
             _capture_growth(row, "share_link_created", auth.user_id, audience=new["audience"])
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         link = new
         break
     else:
@@ -2877,7 +2872,7 @@ async def delete_link(auth: AuthContext, session_id: str, *, removed_only: bool 
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -2977,7 +2972,7 @@ async def finish_removal(auth: AuthContext, session_id: str, *, hint: bool = Tru
         await session_chat.silence(row["ownerId"], row["sessionId"], keep=row["humanUserId"])
     await session_chat.follow_session(row["ownerId"], row["sessionId"])
     if hint:
-        await publish_resources_changed(row["ownerId"], row["humanUserId"])
+        await publish_resources_changed(row["ownerId"], row["humanUserId"], session_id=row["sessionId"])
 
 
 REMOVE_ENDED_CAP = 100

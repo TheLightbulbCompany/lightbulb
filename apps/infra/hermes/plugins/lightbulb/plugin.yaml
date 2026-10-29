@@ -10,3 +10,4 @@ provides_tools:
   - lightbulb_local_sessions
   - lightbulb_desktop
   - lightbulb_read_rooms
+  - lightbulb_workspace

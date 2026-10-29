@@ -501,6 +501,52 @@ def _read_rooms(args: dict, *, session_id: str = "", **_kw) -> str:
         return "Lightbulb rooms are unavailable right now."
 
 
+# ---- workspace: act in the workspace with the asker's rights ------------------------------------
+WORKSPACE_SCHEMA = {
+    "name": "lightbulb_workspace",
+    "description": "Act in the Lightbulb workspace with exactly the access of the person who asked you: room "
+                   "members (add_member, remove_member, set_listen_mode), create_room, update_room "
+                   "(rename or archive), pin and unpin a message, search_messages and search_sessions. Never "
+                   "change Lightbulb data any other way.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": [
+                "add_member", "set_listen_mode", "remove_member", "create_room",
+                "update_room", "pin", "unpin", "search_messages", "search_sessions"]},
+            "roomId": {"type": "string"},
+            "args": {"type": "object"},
+        },
+        "required": ["action"],
+    },
+}
+
+
+def _workspace(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not ctx or not ctx.get("localSessionToken"):
+        return NO_TURN
+    if not isinstance(args.get("args") or {}, dict):
+        return "args must be an object"
+    act_args = dict(args.get("args") or {})
+    if args.get("action") == "create_room" and not (act_args.get("clientRoomId") or act_args.get("client_room_id")):
+        act_args["clientRoomId"] = str(uuid.uuid5(
+            uuid.NAMESPACE_URL, f"lightbulb-agent-act:{ctx.get('runId') or ctx.get('eventId')}:create_room:"
+            f"{json.dumps(act_args, sort_keys=True)}"))
+    body = {"action": args.get("action"), "roomId": args.get("roomId"), "args": act_args}
+    try:
+        return json.dumps(_post(f"{ctx['apiUrl'].rstrip('/')}/api/v1/messaging/agent-act",
+                                ctx["localSessionToken"], body))
+    except urllib.error.HTTPError as exc:
+        try:
+            problem = json.loads(exc.read())
+            return f"Refused ({problem['code']}): {problem['message']}"
+        except Exception:  # noqa: BLE001 -- an unreadable body is just the status
+            return f"Lightbulb workspace action refused: {exc.code}"
+    except Exception:  # noqa: BLE001 -- no status, no URL, no detail reaches the agent
+        return "Lightbulb workspace is unavailable right now."
+
+
 # ---- request_approval: a person's decision as a real Paperclip approval ------------------------
 # Observed dev 2026-10-14 (Walker Studio): told to raise an approval through
 # `paperclip-api.sh raw POST .../approvals` with a jq body, the managed model asked in chat or
@@ -773,6 +819,8 @@ def register(ctx) -> None:
                       description=NETWORK_SCHEMA["description"], emoji="🌐")
     ctx.register_tool("lightbulb_read_rooms", "lightbulb", READ_ROOMS_SCHEMA, _read_rooms,
                       description=READ_ROOMS_SCHEMA["description"], emoji="🗂️")
+    ctx.register_tool("lightbulb_workspace", "lightbulb", WORKSPACE_SCHEMA, _workspace,
+                      description=WORKSPACE_SCHEMA["description"], emoji="🏢")
     ctx.register_tool("lightbulb_voice_profile", "lightbulb", VOICE_PROFILE_SCHEMA, _voice_profile,
                       description=VOICE_PROFILE_SCHEMA["description"], emoji="🎙️")
     from . import desktop

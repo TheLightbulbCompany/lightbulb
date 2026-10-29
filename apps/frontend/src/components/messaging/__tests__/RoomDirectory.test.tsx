@@ -592,6 +592,16 @@ it("keeps the section drag grip usable on touch and above the 44px touch floor",
   expect(css).toMatch(/\.room-directory-actions,\s*\.room-directory-grip\s*\{\s*min-width:\s*44px;\s*\}/);
 });
 
+it("does not reserve a second action slot on session rows", () => {
+  const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
+  expect(css).toMatch(/\.room-directory-row--roster:has\(\.room-directory-actions\)::after\s*\{\s*display:\s*none;/);
+});
+
+it("caps sidebar session metadata so the title keeps the remaining width", () => {
+  const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
+  expect(css).toMatch(/\.session-row-time\s*\{[^}]*max-width:\s*5rem;[^}]*text-overflow:\s*ellipsis;/);
+});
+
 // The heading's title is a direct <h2> child of .room-directory-heading (the
 // CSS ellipsis selector below targets it structurally) -- jsdom won't apply
 // the stylesheet, so this pairs a DOM-structure assertion with a source-text
@@ -830,7 +840,7 @@ it("caps the live list at five with +N more that expands in place", async () => 
 
 const aliceFace = { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 };
 
-it("never lists a session its person ended on purpose", () => {
+it("lists a session its person ended on purpose like any ended one, until removed (desktop #4453)", () => {
   render(<RoomDirectory ownerScopeId="org-purpose" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
     onSelectSession={vi.fn()} sessions={[
       { session: makeSession("a", "Stopped by a crash", "ended"), ownerName: "Alice", own: false, owner: aliceFace },
@@ -838,7 +848,7 @@ it("never lists a session its person ended on purpose", () => {
     ]} />);
   const section = screen.getByRole("region", { name: "Sessions" });
   expect(within(section).getByRole("button", { name: /^Open .*Stopped by a crash/ })).toBeInTheDocument();
-  expect(within(section).queryByRole("button", { name: /Ended with End/ })).not.toBeInTheDocument();
+  expect(within(section).getByRole("button", { name: /^Open .*Ended with End/ })).toBeInTheDocument();
 });
 
 it("pins, archives, unarchives and marks a session unread from its row menu, kept on this browser", async () => {

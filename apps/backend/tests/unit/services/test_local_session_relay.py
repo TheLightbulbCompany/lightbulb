@@ -962,7 +962,7 @@ async def test_cancel_offline_send_fences_a_concurrent_dispatch_claim(transport)
     await repo.replace_command(original, claim)
     with patch("core.services.local_session_relay.publish_resources_changed", new_callable=AsyncMock) as notice:
         cancelled = await service.cancel_offline_command(ALICE, sid.upper(), "request-1")
-    notice.assert_awaited_once_with(OWNER, ALICE.user_id)
+    notice.assert_awaited_once_with(OWNER, ALICE.user_id, session_id=sid)
     assert cancelled.state == "rejected" and cancelled.cancelled_at
     assert (await service.cancel_offline_command(ALICE, sid, "request-1")).cancelled_at == cancelled.cancelled_at
     with pytest.raises(ClientError):
@@ -2267,7 +2267,7 @@ async def test_event_batches_send_a_transcript_workspace_hint(transport, db):
     )
     hints = [json.loads(h["events"][0]) for h in transport[4] if h["channel"].endswith("/sessions")]
     assert len(hints) == 1
-    assert all(e["payload"] == {"humanUserId": ALICE.user_id, "transcript": True} for e in hints)
+    assert all(e["payload"] == {"humanUserId": ALICE.user_id, "transcript": True, "sessionId": sid} for e in hints)
     assert not any("/rooms/" in h["channel"] for h in transport[4])
 
 
@@ -2311,7 +2311,8 @@ async def test_approval_metadata_changes_refresh_the_session_list_without_waitin
             assert public.pending_approval.approval_id == event["itemId"]
         hints = [json.loads(h["events"][0]) for h in transport[4] if h["channel"].endswith("/sessions")]
         assert len(hints) == 1
-        expected = {"humanUserId": ALICE.user_id}
+        # The hint names the one session, so clients re-read that row instead of the whole list.
+        expected = {"humanUserId": ALICE.user_id, "sessionId": sid}
         if change == "unchanged":
             expected["transcript"] = True
         assert all(h["type"] == "workspace.sessions.changed" and h["payload"] == expected for h in hints)
@@ -2471,13 +2472,12 @@ async def test_session_notification_prefs_choose_banner_badge_or_nothing_per_kin
             with patch("time.time", return_value=stamp):
                 await relay(transport).handle_message("conn-1", heartbeat(sid, **change))
                 await asyncio.gather(*module._tasks)
-    assert pushes == [("run lightbulb login, then press Resume", {"sound": False})]
+    assert pushes == []  # a hand-off note never notifies, even set to banner (owner 2026-10-27)
     events = [json.loads(h["events"][0]) for h in transport[4]]
     notices = [e["payload"] for e in events if e["type"] == "workspace.session.attention"]
     assert [(n["state"], n["level"], n["sound"], n["onlyUnfocused"]) for n in notices] == [
         ("waiting", "badge", False, True),
         ("finished", "off", False, True),
-        ("attention", "banner", False, True),
     ]
 
     # The defaults are the old behaviour: a note is never a banner, nor even a live notice.
@@ -2490,7 +2490,7 @@ async def test_session_notification_prefs_choose_banner_badge_or_nothing_per_kin
 
 
 @pytest.mark.asyncio
-async def test_a_turn_that_ends_with_a_new_note_tells_both_by_their_own_settings(transport):
+async def test_a_turn_that_ends_with_a_new_note_tells_only_the_finish(transport):
     from core.repositories import user_repo
     from core.services import local_session_relay as module
 
@@ -2508,14 +2508,10 @@ async def test_a_turn_that_ends_with_a_new_note_tells_both_by_their_own_settings
         # One frame: a 100 s turn ends AND the job leaves a note.
         await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", note="run lightbulb login"))
         await asyncio.gather(*module._tasks)
-    assert pushes == ["run lightbulb login"]
+    assert pushes == []  # the note notifies nobody; only the finish is told, by its own setting
     notices = [json.loads(h["events"][0]) for h in transport[4]]
     notices = [n for n in notices if n["type"] == "workspace.session.attention"]
-    assert sorted((n["payload"]["state"], n["payload"]["level"]) for n in notices) == [
-        ("attention", "banner"),
-        ("finished", "off"),
-    ]
-    assert len({n["eventId"] for n in notices}) == 2
+    assert [(n["payload"]["state"], n["payload"]["level"]) for n in notices] == [("finished", "off")]
 
 
 @pytest.mark.asyncio
@@ -2745,6 +2741,15 @@ async def test_hints_for_one_person_coalesce_while_a_fan_out_is_running(monkeypa
     await asyncio.gather(*list(relay._hint_tasks))
     assert len(calls) == 2  # exactly one follow-up carried the coalesced hints
     assert "org_1" not in {k[0] for k in relay._hint_running}
+    # Another session's hint is its own fan-out: coalescing it would drop which row changed.
+    calls.clear()
+    gate.clear()
+    await relay.publish_resources_changed("org_1", "user_1", session_id="s1")
+    await relay.publish_resources_changed("org_1", "user_1", session_id="s2")
+    await asyncio.sleep(0)
+    assert [c.get("sessionId") for c in calls] == ["s1", "s2"]
+    gate.set()
+    await asyncio.gather(*list(relay._hint_tasks))
 
 
 @pytest.mark.asyncio

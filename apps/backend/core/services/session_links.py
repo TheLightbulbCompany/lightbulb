@@ -352,7 +352,7 @@ async def ask_to_join(auth: AuthContext, token: str) -> JoinAsk:
         await sessions._notify_join_request(updated, me)
         await _email_owner(updated, label)
         await sessions._push_presence(updated)
-        await publish_resources_changed(row["ownerId"], row["humanUserId"])
+        await publish_resources_changed(row["ownerId"], row["humanUserId"], session_id=row["sessionId"])
         return JoinAsk(join="pending")
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 

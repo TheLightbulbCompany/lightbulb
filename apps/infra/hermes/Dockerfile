@@ -193,7 +193,7 @@ COPY plugins/ /opt/hermes/plugins/
 # the loader creates a home, and the rm keeps that out of the layer.
 RUN HERMES_HOME=/tmp/mp-smoke python3 -c "import sys; sys.path.insert(0,'/opt/hermes'); \
 from plugins.memory import load_memory_provider; p = load_memory_provider('agentcore', register_skills=False); \
-assert p is not None and p.name == 'agentcore' and [t['name'] for t in p.get_tool_schemas()] == ['workspace_memory_search'], p" \
+assert p is not None and p.name == 'agentcore' and [t['name'] for t in p.get_tool_schemas()] == ['remember', 'workspace_memory_search'], p" \
  && rm -rf /tmp/mp-smoke && test ! -d /tmp/mp-smoke
 # Bundled agent-facing skills. NOT checked in: `skills/` is GENERATED into this build
 # context by ../build-skills.sh (run by build-hermes-image.yml before `docker build`) from

@@ -23,7 +23,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
-from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo, integrations_repo
 from core.repositories import provisioning_workflow_repo as workflow_repo
@@ -398,10 +397,6 @@ async def container_catalog(owner_id: str, request: Request, q: str = Query(defa
     would then refuse."""
     await _require_hook_token(owner_id, request)
     await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
-    if not settings.STRIPE_PROVISIONING_ENABLED:
-        # Rail off: nothing is offerable, and saying so HERE means the agent
-        # never proposes a service `start()` would only refuse. No Stripe call.
-        return {"services": [], "eligible": False, "requirements": [], "reason": "provisioning_unavailable"}
     try:
         account_id = await provisioning_workflow.account_id_for(owner_id)
         elig = await api.eligibility(account_id)

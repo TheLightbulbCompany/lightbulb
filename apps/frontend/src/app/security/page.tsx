@@ -8,12 +8,72 @@ import { JsonLd, breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
 // Every line here is either in the Privacy Policy (section 15 and "How can you
 // review, update, or delete the data we collect") or one of the three provider
 // paths a workspace can choose. Do not add a claim the policy does not make.
+// The memory, capture, upload and evaluator rows are covered by the privacy
+// policy rewrite that must land before this page ships; until then the rule
+// above stands for every other line.
 export const metadata = pageMetadata({
   title: "What happens to your data — Lightbulb",
   description:
     "Each workspace runs in its own isolated environment on AWS. Your content goes to the model provider your team chose, and we do not sell it or use it to train AI models.",
   path: "/security",
 });
+
+const CLAIMS: { claim: string; evidence: string }[] = [
+  {
+    claim: "Your keys never leave your computer",
+    evidence:
+      "The computer's key is a file only you can read and it is never uploaded. A cloud member's key comes from a secret at boot and is never written to storage.",
+  },
+  {
+    claim: "Relays see ciphertext, keys, addresses, timing and sizes, never text",
+    evidence:
+      "Messages are encrypted end to end between member keys. A relay carries the ciphertext when a direct route fails.",
+  },
+  {
+    claim: "On the free network, memory lives on members' computers and moves only between them",
+    evidence:
+      "Memory is a set of signed entries kept on each member's computer. Sync sends entries only to admitted members, and your private entries only to your own computers. In a workspace, the workspace's always-on member keeps a copy, and the facts it mirrors for search are reachable only by that member and our backend. A workspace wipe deletes them.",
+  },
+  {
+    claim: "Nothing from a laptop session leaves without sign-in and a choice",
+    evidence:
+      "Capture is local by default. Upload is a setting you choose once at sign-in: keep local, metadata only, or full. You can change it with lightbulb sessions upload.",
+  },
+  {
+    claim: "Secrets are refused before they are stored",
+    evidence:
+      "Before a memory is saved, its text is checked against a list of patterns: API keys, tokens, private-key blocks and credentials in URLs. A match is refused with the reason, not saved with the secret scrubbed out.",
+  },
+  {
+    claim: "Every fact carries who, where and when; disagreements are shown, not settled",
+    evidence:
+      "Each entry is signed by its author and records the tool, repo and session it came from, and when. When two people hold different current values, recall shows both with names and dates and marks the fact contested. Neither overwrites the other.",
+  },
+  {
+    claim: "You can see exactly what your agent was told",
+    evidence:
+      "lightbulb memory last shows what was injected at the last session start. The block is logged on your computer.",
+  },
+  {
+    claim: "Forgetting reaches every copy that comes online",
+    evidence:
+      "A forget is a signed tombstone that keeps the id and drops the content on every copy as each computer receives it. The one limit: a computer that stays offline forever keeps what it held before the forget, as it keeps messages it already received.",
+  },
+  {
+    claim: "Agents ask before they spend",
+    evidence: "Spend gates and approvals are shipped.",
+  },
+  {
+    claim: "Teammates see presence, not your sessions or files",
+    evidence:
+      "Teammates see whether you are online. Capture stays on your computer unless you upload it. In a workspace, uploaded sessions appear in the workspace timeline to its members, because the workspace owns that record.",
+  },
+  {
+    claim: "In a workspace, a wipe deletes everything, including the extracted facts",
+    evidence:
+      "A workspace wipe removes the workspace's memory, its uploaded sessions and the drafts the evaluator suggested, along with the rest of its data.",
+  },
+];
 
 const SECTIONS: { title: string; body: React.ReactNode }[] = [
   {
@@ -107,6 +167,56 @@ const SECTIONS: { title: string; body: React.ReactNode }[] = [
           is on the <Link href="/docs/agent-network-security">network security page</Link>.
         </p>
       </>
+    ),
+  },
+  {
+    title: "What leaves your machine",
+    body: (
+      <ul>
+        <li>
+          <strong>Messages.</strong> Encrypted end to end, computer to computer.
+        </li>
+        <li>
+          <strong>Memory.</strong> On the free network, facts your agents save are kept on your
+          computers and the computers of your team, and move only between members. An entry marked
+          for you alone syncs only to your own computers. In a workspace, the workspace&apos;s
+          always-on member keeps a copy, and the facts it mirrors for search are reachable only by
+          that member and our backend. A workspace wipe deletes them.
+        </li>
+        <li>
+          <strong>Capture.</strong> Your computer records each session (the tool, the repo, token
+          counts) and each tool call (its name, a 200-character summary, how long it took and
+          whether it worked). It never records file contents, diffs or command output. This stays
+          on your computer.
+        </li>
+        <li>
+          <strong>Upload.</strong> Only if you sign in and choose it: metadata only, or full
+          sessions. Uploads go to Lightbulb under your identity, never to a third party. We keep
+          them 30 days on a free account and a year in a workspace. The evaluator that suggests
+          memories reads full uploads and nothing else.
+        </li>
+      </ul>
+    ),
+  },
+  {
+    title: "The claims and the evidence for them",
+    body: (
+      <table aria-label="Security claims and the evidence for them" className="w-full border-collapse text-left text-base leading-7">
+        <thead>
+          <tr>
+            <th scope="col" className="w-2/5 border-b border-current/20 py-2 pr-4 align-top">Claim</th>
+            <th scope="col" className="border-b border-current/20 py-2 align-top">What it rests on</th>
+          </tr>
+        </thead>
+        <tbody>
+          {CLAIMS.map((c) => (
+            <tr key={c.claim}>
+              <td className="border-b border-current/10 py-3 pr-4 align-top font-semibold">{c.claim}</td>
+              <td className="border-b border-current/10 py-3 align-top">{c.evidence}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     ),
   },
 ];

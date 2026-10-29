@@ -151,4 +151,22 @@ This run uses cli feat/recall-page 35c2fa5, with the bench ops (dated ingest, as
   - The arrays gave the answerer separate results, with ISO dates and the turn excerpts.
 - **Run:** verified, 0 failed; 1,168 paid calls, 11,958,257 input (8,344,704 cached), 99,270 output; 22.9 min.
 
+### Loop 3: the page says Contested only when two people disagree
+
+Branch: cli loop/contested-line 94d73ff, on v0.7.1 main 53d48f3. One author's values for a subject now print as separate lines, in rank order, each dated with the full YYYY-MM-DD, instead of one "Contested: a vs b vs …" line. The answerer still reads the daemon's page text.
+
+| Category | Shipped page v0.7.1 | **+ contested line fix** | Paired vs 87.43 [95%] | Paired vs 89.62 (lists) [95%] |
+|---|---:|---:|---:|---:|
+| information_extraction | 81.77 | 84.69 | +2.92 [-0.52, +8.02] | -0.94 [-3.85, +1.67] |
+| knowledge_update | 68.12 | **78.12** | **+10.00 [+2.50, +20.00]** | -7.50 [-17.50, 0.00] |
+| multi_session_reasoning | 68.30 | 65.59 | -2.71 [-10.86, +5.33] | -3.21 [-8.00, +0.17] |
+| contradiction_resolution | 66.88 | 67.81 | +0.94 [-1.56, +3.44] | 0.00 |
+| instruction_following | 95.62 | 92.50 | -3.12 [-8.75, 0.00] | -3.75 [-11.88, +3.75] |
+| temporal_reasoning | 96.88 | 95.62 | -1.25 [-3.75, +1.25] | +0.62 |
+| **overall (micro)** | **87.43** | **88.07 [85.6, 90.4]** | **+0.64 [-0.79, +2.22]** | **-1.55 [-3.00, -0.25]** |
+
+- **Knowledge update moves outside the noise:** +10.0 over v0.7.1. It does not reach the lists: 78.12 vs 85.62.
+- **The overall does not move outside the noise:** 88.07, +0.64. Against like-for-like (b) at 88.63 it is -0.56, inside the noise.
+- **Run:** verified, 0 failed; 1,138 paid calls, 11,877,757 input (8,143,104 cached), 99,528 output; 22.2 min.
+
 Results files: `benchmarks/beam/results/100k/`, stripped to ids, answers, verdicts and scores (no recall pages, questions or gold text). `verify.py` recomputes all six.

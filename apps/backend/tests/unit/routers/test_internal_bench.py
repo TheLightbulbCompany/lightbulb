@@ -162,3 +162,24 @@ def test_a_prod_memory_is_refused(dev, monkeypatch):
         == 503
     )
     client.create_event.assert_not_called()
+
+
+def test_valid_to_zero_is_a_current_value_with_and_without_as_of():
+    row = {
+        "memoryRecordId": "mem-2",
+        "content": {"text": "Ann Lee: garden has tulips."},
+        "metadata": {
+            "status": {"stringValue": "current"},
+            "validFrom": {"numberValue": 1710460800.0},
+            "validTo": {"numberValue": 0.0},
+        },
+    }
+    c = memory_stages.from_record(row, "claim")
+    assert c.status == "current" and c.valid_to is None
+    ended = {**row, "metadata": {**row["metadata"], "validTo": {"numberValue": 1713052800.0}}}
+    assert memory_stages.from_record(ended, "claim").status == "replaced"
+    variants = memory_recall._as_of_variants(AT)
+    assert [
+        memory_recall._flt("validFrom", "LESS_THAN_OR_EQUALS", AT.timestamp()),
+        memory_recall._flt("validTo", "EQUALS_TO", 0.0),
+    ] in variants

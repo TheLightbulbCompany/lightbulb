@@ -76,7 +76,13 @@ def from_record(summary: dict, kind_default: str) -> Candidate:
         speaker = m.group(1)
     elif kind == "entry":
         speaker = _meta(metadata, "author")
-    valid_to = _when(_meta(metadata, "validTo"))
+    # The extraction model writes validTo 0 for "empty" (a current value): 0 is no end.
+    raw_to = _meta(metadata, "validTo")
+    try:
+        ended = float(raw_to) > 0
+    except ValueError:
+        ended = bool(raw_to)
+    valid_to = _when(raw_to) if ended else None
     status = "contested" if contested else _meta(metadata, "status") or "current"
     if valid_to and status == "current":
         status = "replaced"

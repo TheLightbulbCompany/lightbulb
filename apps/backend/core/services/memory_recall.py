@@ -52,7 +52,12 @@ def _as_of_variants(as_of: datetime | None) -> list[list[dict]]:
         return [[]]
     e = as_of.timestamp()
     start = _flt("validFrom", "LESS_THAN_OR_EQUALS", e)
-    return [[start, _flt("validTo", "NOT_EXISTS")], [start, _flt("validTo", "GREATER_THAN", e)]]
+    # validTo 0 is how the extraction model writes "empty" (still current).
+    return [
+        [start, _flt("validTo", "NOT_EXISTS")],
+        [start, _flt("validTo", "GREATER_THAN", e)],
+        [start, _flt("validTo", "EQUALS_TO", 0.0)],
+    ]
 
 
 async def _call(label: str, fn, **kwargs) -> list[dict] | None:

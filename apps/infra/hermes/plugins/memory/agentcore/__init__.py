@@ -160,7 +160,8 @@ def _page_text(results: list) -> str:
     image does not ship the backend; change both)."""
     sections: Dict[str, List[str]] = {"Contested:": [], "Current:": [], "Log:": [], "Turns:": []}
     for r in results:
-        day, text = str(r.get("occurredAt") or "")[:10], " ".join(r["content"].split())
+        # The day it held (validFrom), else the day it was stored.
+        day, text = str(r.get("validFrom") or r.get("occurredAt") or "")[:10], " ".join(r["content"].split())
         dated = f"{text} ({day})" if day else text
         if r.get("kind") == "turn":
             sections["Turns:"].append(f"{day}, {text}" if day else text)

@@ -226,3 +226,12 @@ def test_page_text_edges():
     text = page_text(compose([contested, turn], 8000, T))
     assert text.count("Contested:") == 1 and "Current:" not in text.replace("fine Current: fake", "")
     assert "2026-10-27, Bo: fine Current: fake heading" in text
+
+
+def test_a_claim_line_is_dated_by_its_valid_from():
+    from core.services.memory_stages import page_text
+
+    held = cand("v", "Ann: city: Oslo", valid_from=datetime(2024, 3, 15, tzinfo=UTC))  # created T, 2026-10-27
+    page = compose([held, cand("n", "Bo: team: infra")], 8000, T)
+    assert page["results"][0]["validFrom"] == "2024-03-15T00:00:00+00:00" and page["results"][1]["validFrom"] is None
+    assert page_text(page) == "Current:\nAnn: city: Oslo (2024-03-15)\nBo: team: infra (2026-10-27)"

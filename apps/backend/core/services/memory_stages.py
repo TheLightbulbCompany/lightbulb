@@ -211,6 +211,7 @@ def _result(c: Candidate) -> dict:
         "kind": c.kind,
         "content": c.content,
         "occurredAt": c.occurred_at.isoformat(),
+        "validFrom": c.valid_from.isoformat() if c.valid_from else None,  # when it held; occurredAt is when stored
         "status": c.status,
         "history": history,
         "sources": [
@@ -250,11 +251,11 @@ def compose(candidates: list[Candidate], budget_tokens: int, as_of: datetime) ->
 
 def page_text(page: dict) -> str:
     """The composed page as an agent reads it, as the CLI's: a heading per section, a line per
-    result with its day, in rank order; a line's own newlines are spaces, so no line fakes a heading.
+    result with its day (validFrom when it has one, else occurredAt), in rank order; a line's own newlines are spaces, so no line fakes a heading.
     apps/infra/hermes/plugins/memory/agentcore keeps a copy (_page_text): change both."""
     sections: dict[str, list[str]] = {"Contested:": [], "Current:": [], "Log:": [], "Turns:": []}
     for r in page["results"]:
-        day, text = r["occurredAt"][:10], " ".join(r["content"].split())
+        day, text = (r.get("validFrom") or r["occurredAt"])[:10], " ".join(r["content"].split())
         if r["kind"] == "turn":
             sections["Turns:"].append(f"{day}, {text}")
         elif r["status"] == "contested":

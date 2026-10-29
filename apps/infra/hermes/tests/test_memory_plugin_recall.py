@@ -222,3 +222,13 @@ def test_search_tool_returns_one_text_page_with_its_turns(mod, backend):
     backend.reply = {"results": claims + turns * 3}  # over the cap: cut at a whole line from the end
     big = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "x"}))
     assert len(big["page"]) <= mod._SEARCH_MAX and big["page"].endswith("w") and "Turns:" in big["page"]
+
+
+def test_search_page_dates_a_claim_by_its_valid_from(mod, backend):
+    backend.reply = {"results": [
+        {"kind": "claim", "content": "Ann: city: Oslo", "occurredAt": "2026-10-29T01:40:27+00:00",
+         "validFrom": "2024-03-15T00:00:00+00:00", "status": "current"},
+        {"kind": "claim", "content": "Bo: team: infra", "occurredAt": "2026-10-29T01:40:27+00:00",
+         "validFrom": None, "status": "current"}]}
+    out = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "city"}))
+    assert out["page"] == "Current:\nAnn: city: Oslo (2024-03-15)\nBo: team: infra (2026-10-29)"

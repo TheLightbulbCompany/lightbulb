@@ -9,16 +9,19 @@ The headline is the mean score over all questions (micro average). The summary a
 category's mean and the mean of those means (macro average).
 """
 
+import importlib
 import math
+import os
 import re
 from collections import defaultdict
 
 from scipy.stats import kendalltau
 
 import prompts as exabase_prompts
-import llm
 from log import log
 from dataset import Question
+
+llm = importlib.import_module("llm_codex" if os.environ.get("BEAM_LLM") == "codex" else "llm")  # BEAM_LLM=codex: the subscription path
 
 
 async def score_question(question: Question, answer: str) -> tuple[float, dict]:

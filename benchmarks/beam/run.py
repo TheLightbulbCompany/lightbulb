@@ -16,6 +16,7 @@ Environment: OPENROUTER_API_KEY.
 
 import argparse
 import asyncio
+import importlib
 import json
 import os
 import time
@@ -24,13 +25,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import prompts as exabase_prompts
-import llm
 import scoring
 import adapters
 from adapters.base import RECALL_LIMIT, RECALL_MAX_TOKENS, BackendError, MemoryBackend, Turn, recall_json
 from dataset import (ASSISTANT_IDENTITY, ASSISTANT_TRAITS, SPLITS, Conversation, Question,
                      build_conversation, load_rows, utc_iso)
 from log import duration, log
+
+llm = importlib.import_module("llm_codex" if os.environ.get("BEAM_LLM") == "codex" else "llm")  # BEAM_LLM=codex: the subscription path
 
 HARNESS_VERSION = "lb-1"  # past.dev's 2, with the adapter interface in place of past_api
 
@@ -81,6 +83,7 @@ async def wait_until_processed(backend: MemoryBackend, project: str) -> None:
 
 async def answer_question(backend: MemoryBackend, project: str, conversation: Conversation, question: Question,
                           recall_slots: asyncio.Semaphore) -> dict:
+    usage = llm.start_usage() if hasattr(llm, "start_usage") else None
     try:
         # The user asks, at the question's moment in the conversation.
         async with recall_slots:
@@ -109,6 +112,7 @@ async def answer_question(backend: MemoryBackend, project: str, conversation: Co
             "error": str(error)[:500],
             "judge": {"method": "failed"},
             "score": 0.0,
+            **({"usage": llm.usage_totals(usage)} if usage is not None else {}),
         }
 
     score, verdicts = await scoring.score_question(question, answer)
@@ -125,6 +129,7 @@ async def answer_question(backend: MemoryBackend, project: str, conversation: Co
         "answer": answer,
         "judge": verdicts,
         "score": score,
+        **({"usage": llm.usage_totals(usage)} if usage is not None else {}),
     }
 
 
@@ -145,7 +150,7 @@ def check_recalled_moment(recalled: dict, asked_at: str) -> None:
 
 # --- The run -----------------------------------------------------------------------------------
 
-REQUIRED_ENVIRONMENT = ("OPENROUTER_API_KEY",)
+REQUIRED_ENVIRONMENT = getattr(llm, "REQUIRED_ENVIRONMENT", ("OPENROUTER_API_KEY",))
 
 
 @dataclass
@@ -258,6 +263,9 @@ async def main_async(args: argparse.Namespace) -> None:
 
     run = Run(args)
     run.output.mkdir(parents=True, exist_ok=True)
+    if hasattr(llm, "set_budget"):
+        llm.set_budget(args.budget_calls)
+        llm.set_cache(run.output / "codex-calls.jsonl")
     rows, revision = load_rows(args.split)
     if args.conversations is not None:
         rows = rows[:args.conversations]
@@ -290,10 +298,20 @@ async def main_async(args: argparse.Namespace) -> None:
         "backend": run.backend_name,
         "projectTag": run.tag,
         "harnessVersion": HARNESS_VERSION,
+        "modelPath": "codex-cli" if hasattr(llm, "start_usage") else "openrouter",
+        **({"usage": sum_usage(scored)} if hasattr(llm, "start_usage") else {}),
         "finishedAt": utc_iso(datetime.now(timezone.utc)),
     }
     (run.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", "utf-8")
     print_summary(summary)
+
+
+def sum_usage(rows: list[dict]) -> dict:
+    totals: dict[str, int] = {}
+    for row in rows:
+        for key, value in (row.get("usage") or {}).items():
+            totals[key] = totals.get(key, 0) + value
+    return totals
 
 
 def print_summary(summary: dict) -> None:
@@ -318,12 +336,19 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--backend", choices=list(adapters.BACKENDS), required=True)
     parser.add_argument("--split", choices=SPLITS, default="100k")
     parser.add_argument("--conversations", type=positive_number, help="only the first N conversations")
-    parser.add_argument("--output", help="results directory (default: results/beam-<split>)")
+    parser.add_argument("--output", help="results directory (default: results/beam-<split>-<backend>)")
+    parser.add_argument("--budget-calls", type=int, help="Codex path: stop before model call N+1")
     return parser.parse_args(argv)
 
 
 def main() -> None:
-    asyncio.run(main_async(parse_arguments()))
+    try:
+        asyncio.run(main_async(parse_arguments()))
+    except BaseExceptionGroup as group:
+        stop = group.subgroup(lambda e: llm.stops_the_run(e))
+        if stop is None:
+            raise
+        raise SystemExit(f"stopped: {stop.exceptions[0]}") from None
 
 
 if __name__ == "__main__":

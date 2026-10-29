@@ -18,7 +18,7 @@ Internal. Not for publication (founder). The per-question results contain BEAM d
 | temporal_reasoning | 95.00 [88.8, 99.4] | 93.75 [87.5, 98.8] | 92.50 [86.2, 97.5] | 93.75 [88.1, 98.1] |
 | **overall (micro)** | **92.08 [90.0, 94.0]** | **90.69 [88.5, 92.7]** | **88.63 [86.2, 90.9]** | **87.86 [85.4, 90.2]** |
 
-**Free engine caveat: its recall was more generous than the shipped page.** The free-engine column gave the answerer 50 facts and 50 turn excerpts per question (as structured results, trimmed to 100 / 8,000 tokens). The shipped `recall` hands an agent a page of at most 1,600 characters with 5 turns. A row at the shipped page size is below (pending).
+**Free engine caveat: its recall was more generous than the shipped page.** The free-engine column gave the answerer 50 facts and 50 turn excerpts per question (as structured results, trimmed to 100 / 8,000 tokens). The shipped `recall` hands an agent a page of at most 1,600 characters with 5 turns. At the shipped page size (`BEAM_FREE_SHIPPED=1`: the release's page text, 5 turns, at most 1,600 characters, as the agent gets it; same ingest), the free engine scores **73.82 [70.1, 77.5]**. By category: abstention 100.00, contradiction 50.94, event ordering 99.94, information extraction 56.35, instruction following 75.00, knowledge update 48.75, multi-session 20.57, preference 97.50, summarization 91.67, temporal 97.50. That run is verified, with 0 failed calls; it paid 1,205 calls, 9,382,644 input tokens (8,481,664 cached) and 74,992 output tokens, in 24.4 minutes.
 
 (a) past.dev, `github.com/pastdotdev/benchmarks` `beam/results/100k/results.jsonl` at a712cd993e249cadd214168c3c3ee674f89bd5e4 (CC BY-SA 4.0). Its README table matches it.
 

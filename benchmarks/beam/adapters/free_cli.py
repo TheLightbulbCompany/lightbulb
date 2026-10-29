@@ -69,7 +69,8 @@ class FreeCliBackend:
             if self._bridge is None or self._bridge.returncode is not None:
                 self._bridge = await asyncio.create_subprocess_exec(
                     "docker", "exec", "-i", self.container, "perl", "-e", BRIDGE,
-                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
+                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                    limit=1 << 24)  # one JSON line per answer: an export can pass 64 KiB
             line = f"/bench/{project}/sock\t{json.dumps({'id': 1, **body})}\n"
             self._bridge.stdin.write(line.encode())
             await self._bridge.stdin.drain()

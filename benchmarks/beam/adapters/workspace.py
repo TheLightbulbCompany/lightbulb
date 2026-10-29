@@ -119,7 +119,12 @@ class WorkspaceBackend:
         self.stats["recalls"] += 1
         self.stats["recallSeconds"] += self.clock() - started
         echoed = page.get("asOf")
-        return RecallPage(page.get("results") or [],
+        # BEAM_WORKSPACE_PAGE_TEXT=1: the answerer reads the text page an agent gets (one result,
+        # passed through as it came), not the structured results.
+        results = page.get("results") or []
+        if os.environ.get("BEAM_WORKSPACE_PAGE_TEXT") == "1":
+            results = [{"kind": "page", "content": page.get("pageText") or ""}] if page.get("pageText") else []
+        return RecallPage(results,
                           datetime.fromisoformat(echoed.replace("Z", "+00:00")) if echoed else None)
 
     async def close(self) -> None:

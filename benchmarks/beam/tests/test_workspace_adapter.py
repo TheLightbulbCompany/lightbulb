@@ -30,7 +30,8 @@ class Server:
             return httpx.Response(200, json={"facts": self.facts, "turns": 2})
         if path == "/recall":
             results = [{"kind": "claim", "content": "x" * 400, "sources": []} for _ in range(150)]
-            return httpx.Response(200, json={"asOf": body["as_of"].replace("Z", "+00:00"), "usedEvidenceTokens": 1, "results": results})
+            return httpx.Response(200, json={"asOf": body["as_of"].replace("Z", "+00:00"), "usedEvidenceTokens": 1,
+                                             "results": results, "pageText": "Current:\\nx (2024-03-15)"})
         return httpx.Response(204)
 
 
@@ -78,3 +79,10 @@ def test_recall_sends_as_of_echoes_it_and_the_page_is_trimmed_as_past_dev(backen
     trimmed = recall_json(page)
     assert trimmed["asOf"] == "2024-03-15T12:00:00.000187Z"
     assert len(trimmed["results"]) == 80 and trimmed["usedEvidenceTokens"] == 8000  # 100 tokens each
+
+
+def test_page_text_mode_hands_the_answerer_the_text_page(backend, monkeypatch):
+    b, _, _ = backend
+    monkeypatch.setenv("BEAM_WORKSPACE_PAGE_TEXT", "1")
+    page = asyncio.run(b.recall("bench-01abc", "db?", AT, "ann"))
+    assert page.results == [{"kind": "page", "content": "Current:\\nx (2024-03-15)"}]

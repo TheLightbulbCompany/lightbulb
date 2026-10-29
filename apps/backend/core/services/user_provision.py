@@ -260,6 +260,22 @@ def feed_routine_title(hour: int) -> str:
     return f"Feed post {hour:02d}:00"
 
 
+#: The CEO's planning sweep runs as a routine, not its timer heartbeat: Paperclip's timer
+#: counts from the agent's last run of any kind, so a CEO busy with feed posts never gets one.
+PLANNING_ROUTINE_HOUR = 9
+PLANNING_ROUTINE_TITLE = "Plan the company"
+PLANNING_ROUTINE_DESCRIPTION = (
+    "Planning heartbeat. Follow your HEARTBEAT.md checklist; if it is empty, the paperclip skill's "
+    "references/ceo-heartbeat.md. Review the company goals and the board, turn goals into work assigned "
+    "to the right teammate with what done means, unblock what you can, and send the founders one short "
+    "message: what moved and what needs them. If nothing changed, post nothing."
+)
+#: (kind, title, description, local hour) of every CEO routine; ``kind`` names its keys.
+CEO_ROUTINES = [("feed", feed_routine_title(h), FEED_ROUTINE_DESCRIPTION, h) for h in FEED_ROUTINE_HOURS] + [
+    ("planning", PLANNING_ROUTINE_TITLE, PLANNING_ROUTINE_DESCRIPTION, PLANNING_ROUTINE_HOUR)
+]
+
+
 async def _feed_timezone(row) -> str:
     """The workspace creator's own ``users.timezone`` when they set one, else UTC."""
     user_id = getattr(row, "provisioner_user_id", "") or ""
@@ -268,7 +284,7 @@ async def _feed_timezone(row) -> str:
 
 
 async def _ensure_feed_routines(admin, cookie: str, owner_id: str, row, ceo_id: str) -> None:
-    """Create the three feed routines once per owner, assigned to the CEO.
+    """Create the CEO's routines (``CEO_ROUTINES``: three feed posts, one planning sweep) once per owner.
 
     Matched by title + assignee (any status: an owner's pause or archive is theirs to keep);
     created under a stable per-owner ``Idempotency-Key`` so two racing reconciles converge.
@@ -287,8 +303,7 @@ async def _ensure_feed_routines(admin, cookie: str, owner_id: str, row, ceo_id: 
             )
 
         timezone = None
-        for hour in FEED_ROUTINE_HOURS:
-            title = feed_routine_title(hour)
+        for kind, title, description, hour in CEO_ROUTINES:
             routine = existing.get(title)
             if routine is not None and settled(routine):
                 continue
@@ -299,12 +314,12 @@ async def _ensure_feed_routines(admin, cookie: str, owner_id: str, row, ceo_id: 
                         company_id=row.company_id,
                         body={
                             "title": title,
-                            "description": FEED_ROUTINE_DESCRIPTION,
+                            "description": description,
                             "assigneeAgentId": ceo_id,
                             "concurrencyPolicy": "coalesce_if_active",
                             "catchUpPolicy": "skip_missed",
                         },
-                        idempotency_key=f"lightbulb-feed-routine:v1:{owner_id}:{hour:02d}",
+                        idempotency_key=f"lightbulb-{kind}-routine:v1:{owner_id}:{hour:02d}",
                     )
                 except PaperclipApiError as exc:
                     # The key's routine was deleted by the owner: Paperclip refuses the replay.
@@ -317,7 +332,7 @@ async def _ensure_feed_routines(admin, cookie: str, owner_id: str, row, ceo_id: 
             # Trigger creates carry no idempotency key upstream: overlapping reconciles take turns
             # under a short claim, and the holder re-reads the routine before it adds one. The claim
             # just lapses after a success (the trigger is then in every later list).
-            claim = f"feed-trigger:{owner_id}:{hour:02d}"
+            claim = f"{kind}-trigger:{owner_id}:{hour:02d}"
             if not await container_repo.try_claim_pass(claim, interval_s=FEED_TRIGGER_CLAIM_S):
                 continue  # another reconcile is attaching it; the next one checks again
             try:
@@ -359,7 +374,7 @@ async def arm_nightly_ceo(owner_id: str) -> str:
     Armed for paid OR an unexpired trial (``should_arm_nightly_ceo``). Sets the
     CEO's ``runtimeConfig.heartbeat`` to a timer at ``ceo_heartbeat_interval_sec``
     that runs even on an empty inbox, and re-applies ``SPECIALIST_HEARTBEAT`` to
-    the starter specialists. Not entitled: ``pause_owner_automation`` (routines + every
+    the specialists. Not entitled: ``pause_owner_automation`` (routines + every
     heartbeat); entitled again: ``resume_owner_automation`` first. No
     ``maxDailyRuns``: Paperclip counts every run against it, assignment wakes
     included, so it would silence chat-driven work. It converges both ways: a
@@ -404,6 +419,8 @@ async def arm_nightly_ceo(owner_id: str) -> str:
             if not ceo_id:
                 return _arm_status("friday_not_seeded")
             specialists = [agent_id for key, agent_id in starters.items() if key != "ceo" and agent_id]
+            if not starters:  # a legacy roster: its specialists are the seeded agents besides the CEO
+                specialists = [agent_id for agent_id in row.seeded_agent_ids or [] if agent_id and agent_id != ceo_id]
             admin = provisioning._admin
             admin_cookie = await get_admin_session_cookie(admin._http)
 

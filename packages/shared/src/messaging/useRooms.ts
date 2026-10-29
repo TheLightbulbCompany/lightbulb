@@ -171,6 +171,10 @@ export type UseRoomsResult = ReturnType<typeof useRooms>;
 const NO_ROOMS: never[] = [];
 const NO_SECTIONS: RoomSection[] = [];
 const HISTORY_FAILED = "history could not be loaded";
+
+/** A DM is usable only when it has somebody besides the signed-in human. */
+const hasDmRecipient = (room: RoomSummary, userId: string | null) =>
+  room.kind !== "dm" || room.members.some((member) => member.kind !== "human" || member.id !== userId);
 const SELECT_FAILED = "this conversation could not be opened";
 
 const failureMessage = (error: unknown, fallback: string): string =>
@@ -298,8 +302,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     void mutateRooms();
   }, [connectionRevision, liveConnected, mutateRooms, store]);
   // The workspace feed is read on Activity, never as a conversation: it is in no list, no
-  // unread count and no auto-pick. An explicit select (Discuss) still opens it by id.
-  const rooms = useMemo(() => roomsData?.rooms.filter((room) => !room.feed) ?? NO_ROOMS, [roomsData]);
+  // unread count and no auto-pick. Recipient-less DMs are malformed and must not expose a
+  // row or composer. An explicit feed select (Discuss) still opens it by id.
+  const rooms = useMemo(
+    () => roomsData?.rooms.filter((room) => !room.feed && hasDmRecipient(room, userId)) ?? NO_ROOMS,
+    [roomsData, userId],
+  );
   const sections = roomsData?.sections ?? NO_SECTIONS;
   /**
    * Members per room, for the sidebar.
@@ -342,6 +350,9 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const activeRoom = detailResponse.data;
   const roomError = detailResponse.error;
   const mutateRoom = detailResponse.mutate;
+  useEffect(() => {
+    if (activeRoom && !hasDmRecipient(activeRoom, userId)) setActiveRoomId(null);
+  }, [activeRoom, userId]);
   useEffect(() => {
     if (manuallyUnreadRoom.current && manuallyUnreadRoom.current !== activeRoomId) {
       manuallyUnreadRoom.current = null;
@@ -1066,6 +1077,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
 
   const sendMessage = useCallback(async (request: CreateMessageRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
+    const room = activeRoom ?? roomsData?.rooms.find((entry) => entry.roomId === activeRoomId);
+    if (room && !hasDmRecipient(room, userId)) throw new Error("Direct message has no recipient.");
     const roomId = activeRoomId;
     const sendGeneration = generation.current;
     requests.current.set(request.clientMessageId, request);
@@ -1098,7 +1111,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       }
       throw error;
     }
-  }, [activeRoomId, messaging, mutateRooms]);
+  }, [activeRoom, activeRoomId, messaging, mutateRooms, roomsData, userId]);
 
   const updateMessage = useCallback(async (messageId: string, request: UpdateMessageRequest) => {
     if (!activeRoomId || accessRemoved) throw new Error("No room selected.");
@@ -1136,13 +1149,15 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
 
   /** `null` releases the selection, which also stops the room-detail poll. */
   const selectRoom = useCallback((roomId: string | null) => {
+    const listedRoom = roomId ? roomsData?.rooms.find((room) => room.roomId === roomId) : undefined;
+    if (listedRoom && !hasDmRecipient(listedRoom, userId)) roomId = null;
     selectionRequest.current += 1;
     if (manuallyUnreadRoom.current === roomId) {
       manuallyUnreadRoom.current = null;
       markVisibleReadRef.current();
     }
     setActiveRoomId(roomId);
-  }, []);
+  }, [roomsData, userId]);
 
   const markUnread = useCallback(async (roomId: string, fromSeq?: number) => {
     if (activeRoomId === roomId) manuallyUnreadRoom.current = roomId;

@@ -112,6 +112,7 @@ WHERE event IN ({event_names})
   AND timestamp >= toDateTime({_sql(earliest.isoformat())})
   AND timestamp < toDateTime({_sql(end.isoformat())})
   AND properties.environment = 'prod'{author_exclusion}
+  AND toString(properties.last_touch_utm_term) != 'exclude_from_operating_metrics'
   AND (
     (event IN ({acquisition_names})
      AND (event NOT IN ({client_names})

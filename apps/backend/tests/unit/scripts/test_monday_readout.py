@@ -110,6 +110,7 @@ def test_hogql_keeps_anonymous_acquisition_visitors_and_filters_workspace_metric
     query = build_posthog_query(start, end, {"org_internal", "org_test"}, {"user_staff"})
 
     assert "properties.environment = 'prod'" in query
+    assert "properties.last_touch_utm_term) != 'exclude_from_operating_metrics'" in query
     assert "toString(properties.workspace_id) NOT IN ('org_internal', 'org_test')" in query
     assert "toString(distinct_id) NOT IN ('user_staff')" in query
     assert "nullIf(toString(distinct_id), '') AS actor_id" in query

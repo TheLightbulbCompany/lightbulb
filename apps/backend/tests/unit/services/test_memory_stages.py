@@ -178,3 +178,8 @@ def test_compose_keeps_50_turns_and_50_claims_and_trims_at_the_budget():
     assert page["usedEvidenceTokens"] == 8000
     short = compose(claims[:1], 8000, T)
     assert short["usedEvidenceTokens"] == -(-len("topic 0: value") // 4)
+
+
+def test_a_result_carries_its_text_once():
+    (r,) = compose([cand("a", "Ann: city: Oslo")], 8000, T)["results"]
+    assert r["content"] == "Ann: city: Oslo" and "excerpt" not in r["sources"][0]

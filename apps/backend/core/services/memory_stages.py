@@ -16,7 +16,6 @@ _SINCE = re.compile(r"^(?P<claim>.*?) \(since (?P<since>[^;()]*)(?P<tail>;.*)?\)
 _SIDE = re.compile(r"^(?P<name>[^:]+): (?P<claim>.*) \((?P<who>[^()]*?), (?P<date>[^()]*)\)$", re.S)
 _SPEAKER_KINDS = _CURRENT_KINDS | {"turn"}
 _LOG_KINDS = {"fact", "decision", "lesson", "preference"}  # the network log's kinds (memory_sync: logKind)
-_EXCERPT_CHARS = 280
 # A question's page, as the CLI's: up to 50 turns and 50 of the rest, each turn the 800-character
 # window that matches the question best.
 PAGE_TURNS = 50
@@ -219,7 +218,6 @@ def _result(c: Candidate) -> dict:
                 "sourceId": c.source_id,
                 "occurredAt": c.occurred_at.isoformat(),
                 "speaker": c.speaker,
-                "excerpt": c.content[:_EXCERPT_CHARS],
             }
         ],
     }
@@ -248,6 +246,20 @@ def compose(candidates: list[Candidate], budget_tokens: int, as_of: datetime) ->
         page["usedEvidenceTokens"] += cost
         page["results"].append({"rank": len(page["results"]) + 1, **_result(c)})
     return page
+
+
+def page_text(page: dict) -> str:
+    """The composed page as an agent reads it, as the CLI's: a heading per section, a line per
+    result with its day, in rank order."""
+    sections: dict[str, list[str]] = {"Contested:": [], "Current:": [], "Log:": [], "Turns:": []}
+    for r in page["results"]:
+        day = r["occurredAt"][:10]
+        if r["kind"] == "turn":
+            sections["Turns:"].append(f"{day}, {r['content']}")
+            continue
+        head = "Contested:" if r["status"] == "contested" else "Current:" if r["kind"] in _CURRENT_KINDS else "Log:"
+        sections[head].append(f"{r['content']} ({day})")
+    return "\n".join(f"{head}\n" + "\n".join(lines) for head, lines in sections.items() if lines)
 
 
 _MONTHS = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}

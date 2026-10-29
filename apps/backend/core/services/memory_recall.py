@@ -111,7 +111,9 @@ def _named(part: str, entities: set[str]) -> list[str]:
     return hits[:MAX_ENTITIES]
 
 
-async def _search_part(client, memory_id, namespaces, part, limit, as_of, include_private, entities) -> list:
+async def _search_part(
+    client, memory_id, namespaces, part, limit, as_of, include_private, entities, dated_turns=False
+) -> list:
     """Every arm for one part: (kind_default, summaries) per arm, in a fixed order."""
     variants = _as_of_variants(as_of)
     jobs: list[tuple[str, object]] = []
@@ -125,7 +127,9 @@ async def _search_part(client, memory_id, namespaces, part, limit, as_of, includ
     # Turns and entries have no validity range: as of a moment is what existed by then.
     # The system field: a bare ``createdAt`` is not indexed and AgentCore refuses it.
     created = [_flt("x-amz-agentcore-memory-createdAt", "BEFORE", _iso_utc(as_of))] if as_of else []
-    jobs.append(("turn", retrieve(namespaces["turns"], created)))
+    # A benchmark's turns carry the dataset's moment as validFrom (routers/internal_bench.py).
+    dated = [_flt("validFrom", "LESS_THAN_OR_EQUALS", as_of.timestamp())] if as_of and dated_turns else created
+    jobs.append(("turn", retrieve(namespaces["turns"], dated)))
     jobs.append(("entry", retrieve(namespaces["entries"], created)))
     if include_private and "private" in namespaces:
         for extra in variants:
@@ -167,6 +171,7 @@ async def recall(
     include_private: bool = False,
     use_rerank: bool = True,
     use_expand: bool = True,
+    dated_turns: bool = False,
 ) -> dict:
     now = datetime.now(UTC)
     when = as_of or now
@@ -177,7 +182,10 @@ async def recall(
     client = workspace_memory._client()
     entities = await _entities(client, memory_id, namespaces["facts"])
     per_part = await asyncio.gather(
-        *(_search_part(client, memory_id, namespaces, p, limit, as_of, include_private, entities) for p in parts)
+        *(
+            _search_part(client, memory_id, namespaces, p, limit, as_of, include_private, entities, dated_turns)
+            for p in parts
+        )
     )
     t2 = time.monotonic()
 

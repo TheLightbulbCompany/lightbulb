@@ -81,16 +81,19 @@ def from_record(summary: dict, kind_default: str) -> Candidate:
     if valid_to and status == "current":
         status = "replaced"
     record_id = summary.get("memoryRecordId", "")
+    valid_from = _when(_meta(metadata, "validFrom"))
+    # A turn that carries validFrom (a benchmark's, dated by its dataset) happened then.
+    said = valid_from if kind == "turn" and valid_from else _when(summary.get("createdAt"))
     return Candidate(
         id=record_id,
         kind=kind,
         content=text,
-        occurred_at=_when(summary.get("createdAt")) or datetime.fromtimestamp(0, UTC),
+        occurred_at=said or datetime.fromtimestamp(0, UTC),
         status=status,
         speaker=speaker,
         entity=_meta(metadata, "entity") or _meta(metadata, "subject"),
         attribute=_meta(metadata, "attribute"),
-        valid_from=_when(_meta(metadata, "validFrom")),
+        valid_from=valid_from,
         valid_to=valid_to,
         source_id=record_id,
     )

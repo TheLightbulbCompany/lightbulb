@@ -177,7 +177,8 @@ class LightbulbVerifier(ClerkOAuthVerifier):
 
 _NEEDS_WORKSPACE = (
     "WORKSPACE_REQUIRED: this needs a Lightbulb workspace. The network tools (find_sessions, "
-    "send_message to a session_id, check_inbox, message_receipt, wake_me) work without one."
+    "find_workers, send_message to a session_id, assign, cancel_assignment, check_inbox, message_receipt, "
+    "wake_me) work without one."
 )
 
 
@@ -209,7 +210,18 @@ HOSTED_BUDGET_S = 24.0
 INBOX_WAIT_CAP_S = 20.0
 _RESERVE_S = 3.0  # what a peek, an ack or the unread line may take on a warm workspace
 _deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("hosted_mcp_deadline", default=None)
-_NETWORK_TOOLS = frozenset({"find_sessions", "send_message", "message_receipt", "check_inbox", "wake_me"})
+_NETWORK_TOOLS = frozenset(
+    {
+        "find_sessions",
+        "find_workers",
+        "send_message",
+        "assign",
+        "cancel_assignment",
+        "message_receipt",
+        "check_inbox",
+        "wake_me",
+    }
+)
 _sleep = asyncio.sleep  # a seam for tests
 
 
@@ -371,6 +383,21 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
     found = await _network_sessions(_net_caller(), query)
     return {"sessions": found[: max(1, min(limit, 50))], "total": len(found)}
+
+
+def _always_on(session_id: str) -> bool:
+    """A name address after the member prefix: no ``:`` and not ``terminal``. Mirrors ``always_on``
+    in the engine's ``src/mcp.rs``."""
+    address = session_id.partition("/")[2]
+    return ":" not in address and address != "terminal"
+
+
+@mcp.tool(annotations=READ, description=SPEC["find_workers"]["description"])
+@_noted
+async def find_workers(query: str = "", limit: int = 20) -> dict:
+    found = await _network_sessions(_net_caller(), query)
+    kept = [{**row, "always_on": True} for row in found if row.get("online") is True and _always_on(row["session_id"])]
+    return {"sessions": kept[: max(1, min(limit, 50))], "total": len(kept)}
 
 
 async def _network_sessions(auth: AuthContext, query: str) -> list[dict]:
@@ -687,6 +714,7 @@ async def send_message(
     person_id: str | None = None,
     reply_to_message_id: str | None = None,
     mention_ids: list[str] | None = None,
+    status: Literal["done", "failed", "cancelled"] | None = None,
 ) -> dict:
     auth = _net_caller(WRITE_SCOPE)
     request_id = str(request_id)
@@ -696,6 +724,8 @@ async def send_message(
         raise messaging.ApiProblem(
             "INVALID_REQUEST", "Send to exactly one of session_id, reply_to, room_id or person_id."
         )
+    if status is not None and network is None:
+        raise messaging.ApiProblem("INVALID_REQUEST", "status answers an assignment: send it with reply_to.")
     slug, client = _sender(get_access_token())
     if network is not None:
         if reply_to_message_id or mention_ids:
@@ -715,6 +745,9 @@ async def send_message(
         fields = {"to": session_id, "text": text, "request_id": request_id}
         if reply_to is not None:
             fields["reply_to"] = reply_to
+        if status is not None:
+            fields["status"] = status
+            fields["kind"] = "result"
         result = await _through_member(auth, "send", sender=(slug, client), **fields)
         return _record(result, destination, request_id)
     if not auth.org_id:
@@ -779,6 +812,64 @@ async def send_message(
         "messageSeq": message.message_seq,
         "state": "posted",
     }
+
+
+async def _network_forward(auth: AuthContext, request_id: str, destination: str, **fields) -> dict:
+    """Pin ``request_id`` to its destination, then forward ``fields`` as an ``app.send`` (the
+    engine dedupes on request_id per app session, so a retry sends once)."""
+    slug, client = _sender(get_access_token())
+    request_id = _network_request_id(request_id)
+    try:
+        pinned = await _pin_destination(auth, request_id, destination, app=slug, client=client)
+        if pinned.get("app") != slug:  # another app session would send it a second time
+            raise messaging.ApiProblem("IDEMPOTENCY_CONFLICT", "request_id was used by another client.")
+    except messaging.ApiProblem as exc:
+        raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
+    result = await _through_member(auth, "send", sender=(slug, client), request_id=request_id, **fields)
+    return _record(result, destination, request_id)
+
+
+def _checked_id(value: str, label: str) -> str:
+    if not value.strip() or len(value) > 256:
+        raise messaging.ApiProblem("INVALID_REQUEST", f"Invalid {label}.")
+    return value
+
+
+@mcp.tool(annotations=SEND, description=SPEC["assign"]["description"])
+@_noted
+async def assign(
+    request_id: str,
+    to: str,
+    brief: str,
+    done_when: str,
+    deadline_s: int | None = None,
+    repo: str | None = None,
+    branch: str | None = None,
+) -> dict:
+    auth = _net_caller(WRITE_SCOPE)
+    _checked_id(to, "to")
+    # The brief, done_when and deadline_s bounds are the engine's: it answers bad_request.
+    fields = {"to": to, "text": brief, "kind": "assign", "done_when": done_when}
+    for key, value in (("deadline_s", deadline_s), ("repo", repo), ("branch", branch)):
+        if value is not None:
+            fields[key] = value
+    return await _network_forward(auth, str(request_id), f"network:{to}", **fields)
+
+
+@mcp.tool(annotations=SEND, description=SPEC["cancel_assignment"]["description"])
+@_noted
+async def cancel_assignment(assignment: str, request_id: str, note: str | None = None) -> dict:
+    auth = _net_caller(WRITE_SCOPE)
+    _checked_id(assignment, "assignment")
+    # No `to`: the engine addresses a cancel to the assignment's target.
+    return await _network_forward(
+        auth,
+        str(request_id),
+        f"network:reply:{assignment}",
+        reply_to=assignment,
+        text=note or "cancelled",
+        kind="cancel",
+    )
 
 
 @mcp.tool(annotations=READ, description=SPEC["message_receipt"]["description"])

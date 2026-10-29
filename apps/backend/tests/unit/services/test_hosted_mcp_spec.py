@@ -86,6 +86,7 @@ async def test_every_tool_declares_openais_three_hints():
     }
     reads = {
         "find_sessions",
+        "find_workers",
         "message_receipt",
         "check_inbox",
         "find_rooms",
@@ -96,6 +97,8 @@ async def test_every_tool_declares_openais_three_hints():
     }
     assert hints == {
         **{name: (True, False, False) for name in reads},
+        "assign": (False, False, True),  # a brief another session acts on
+        "cancel_assignment": (False, False, True),
         "send_message": (False, False, True),  # deletes and overwrites nothing (owner, 10-27)
         "update_task": (False, False, False),
         "remember": (False, False, False),

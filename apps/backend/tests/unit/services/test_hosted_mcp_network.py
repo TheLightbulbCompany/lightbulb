@@ -22,6 +22,7 @@ OWNER, USER = "org_a", "user_ann"
 PERSON = network_member.app_person(USER)
 ADEN = "ab12cd34/aden-mac"
 OWN = f"w1w1w1w1/claude-code-{PERSON}"
+CODING = "ab12cd34/claude:conv1"  # a coding session: provider:conversation, never always-on
 
 
 class Engine:
@@ -37,6 +38,7 @@ class Engine:
         self.no_ack = False
         self.hang: asyncio.Event | None = None
         self.on_inbox = None
+        self.results: dict[str, dict] = {}
 
     async def __call__(self, owner, method, params):
         assert (owner, method) == (OWNER, "network.app")
@@ -54,6 +56,8 @@ class Engine:
             return {"request_id": params["request_id"], "state": "delivered", "id": "m-sent"}
         if op == "receipt":
             rid = params["request_id"]
+            if rid in self.results:
+                return {"request_id": rid, "state": "delivered", "result": self.results[rid]}
             return {"request_id": rid, "state": "delivered" if rid in self.sent else "unknown"}
         if op == "inbox":
             assert params.get("peek") is True  # a take would lose mail an answer never carried
@@ -71,8 +75,11 @@ class Engine:
         assert op == "directory"
         return {
             "sessions": [
-                {"session_id": ADEN, "title": "Aden's Mac", "handle": "claude-5", "agent": "claude"},
-                {"session_id": OWN, "title": "Claude Code via Ann", "agent": "claude-code"},
+                {"session_id": ADEN, "title": "Aden's Mac", "handle": "claude-5", "agent": "claude", "online": True},
+                {"session_id": OWN, "title": "Claude Code via Ann", "agent": "claude-code", "online": True},
+                {"session_id": CODING, "title": "Aden's Claude", "agent": "claude", "online": True},
+                {"session_id": f"ab12cd34/sleepy-{PERSON}", "title": "Sleepy", "agent": "claude", "online": False},
+                {"session_id": "ab12cd34/terminal", "title": "Terminal", "agent": "terminal", "online": True},
             ],
             "people": [],
         }
@@ -242,10 +249,38 @@ async def test_find_sessions_lists_the_network_sessions_in_the_engines_shape(mem
     out = await hosted_mcp.find_sessions(query="aden")
     assert member.engine.calls[0] == {"op": "directory", "app": "claude-code", "person": PERSON, "query": "aden"}
     assert out["sessions"] == [
-        {"session_id": ADEN, "title": "Aden's Mac", "name": "claude-5", "agent": "claude", "is_this_session": False},
-        {"session_id": OWN, "title": "Claude Code via Ann", "agent": "claude-code", "is_this_session": True},
+        {
+            "session_id": ADEN,
+            "title": "Aden's Mac",
+            "name": "claude-5",
+            "agent": "claude",
+            "online": True,
+            "is_this_session": False,
+        },
+        {
+            "session_id": OWN,
+            "title": "Claude Code via Ann",
+            "agent": "claude-code",
+            "online": True,
+            "is_this_session": True,
+        },
+        {"session_id": CODING, "title": "Aden's Claude", "agent": "claude", "online": True, "is_this_session": False},
+        {
+            "session_id": f"ab12cd34/sleepy-{PERSON}",
+            "title": "Sleepy",
+            "agent": "claude",
+            "online": False,
+            "is_this_session": False,
+        },
+        {
+            "session_id": "ab12cd34/terminal",
+            "title": "Terminal",
+            "agent": "terminal",
+            "online": True,
+            "is_this_session": False,
+        },
     ]
-    assert out["total"] == 2 and set(out) == {"sessions", "total"}  # network-only, like the engine's
+    assert out["total"] == 5 and set(out) == {"sessions", "total"}  # network-only, like the engine's
 
 
 @pytest.mark.asyncio
@@ -370,3 +405,74 @@ async def test_no_field_overrides_the_app_session(member):
     call = member.engine.calls[-1]
     assert (call["app"], call["person"], call["peek"]) == ("claude-code", PERSON, True)
     assert member.titles[-1] == "Claude Code via Ann"
+
+
+@pytest.mark.asyncio
+async def test_assign_sends_an_assignment_through_the_pinned_computer(member):
+    out = await hosted_mcp.assign(request_id="as1", to=ADEN, brief="do x", done_when="x done", deadline_s=300)
+
+    assert member.engine.calls[0] == {
+        "op": "send",
+        "app": "claude-code",
+        "person": PERSON,
+        "to": ADEN,
+        "text": "do x",
+        "request_id": "as1",
+        "kind": "assign",
+        "done_when": "x done",
+        "deadline_s": 300,
+    }
+    assert out["destination"] == f"network:{ADEN}" and out["requestId"] == "as1"
+    with pytest.raises(ToolError, match="IDEMPOTENCY_CONFLICT"):
+        await hosted_mcp.assign(request_id="as1", to=OWN, brief="do y", done_when="y done")
+
+
+@pytest.mark.asyncio
+async def test_a_reply_with_a_status_is_a_result(member):
+    await hosted_mcp.send_message(text="x done", request_id="re1", reply_to="as1", status="failed")
+    call = member.engine.calls[0]
+    assert call["kind"] == "result" and call["status"] == "failed" and call["reply_to"] == "as1"
+
+    before = list(member.engine.calls)
+    with pytest.raises(ApiProblem) as refused:
+        await hosted_mcp.send_message(text="?", request_id="r9", room_id=str(uuid.uuid4()), status="done")
+    assert refused.value.error.code == "INVALID_REQUEST" and member.engine.calls == before
+
+
+@pytest.mark.asyncio
+async def test_cancel_assignment_names_the_assignment_and_sends_no_to(member):
+    out = await hosted_mcp.cancel_assignment(assignment="as1", request_id="c1")
+    assert member.engine.calls[0] == {
+        "op": "send",
+        "app": "claude-code",
+        "person": PERSON,
+        "reply_to": "as1",
+        "text": "cancelled",
+        "request_id": "c1",
+        "kind": "cancel",
+    }
+    assert out["destination"] == "network:reply:as1"
+    await hosted_mcp.cancel_assignment(assignment="as1", request_id="c2", note="no longer needed")
+    assert [c for c in member.engine.calls if c["op"] == "send"][1]["text"] == "no longer needed"
+
+
+@pytest.mark.asyncio
+async def test_find_workers_lists_online_always_on_agents_only(member):
+    out = await hosted_mcp.find_workers()
+    assert [r["session_id"] for r in out["sessions"]] == [ADEN, OWN]  # name addresses, online
+    assert all(r["always_on"] is True for r in out["sessions"]) and out["total"] == 2
+    one = await hosted_mcp.find_workers(limit=0)
+    assert len(one["sessions"]) == 1 and one["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_result_record_and_a_receipts_result_pass_through(member):
+    member.engine.mail = [
+        {**_record("re1", "x done"), "kind": "result", "status": "done", "reply_to": "m-as1", "framed": "[result]"}
+    ]
+    got = (await hosted_mcp.check_inbox())["messages"][0]
+    assert (got["kind"], got["status"], got["reply_to"], got["framed"]) == ("result", "done", "m-as1", "[result]")
+
+    await hosted_mcp.assign(request_id="as1", to=ADEN, brief="do x", done_when="x done")
+    member.engine.results["as1"] = {"request_id": "res1", "status": "done"}
+    assert (await hosted_mcp.message_receipt("as1"))["result"] == {"request_id": "res1", "status": "done"}

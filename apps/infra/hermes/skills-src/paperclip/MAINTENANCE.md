@@ -319,8 +319,8 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       reference grows one. The snapshot never replaces the fresh-check rule.
       Re-apply on re-vendor.
   24. Task work runs in the task's own session (SKILL.md webchat summary +
-      references/heartbeat.md's "Work bigger than a quick answer becomes a
-      task" bullet + lightbulb references/chat-vs-document.md "How" + the
+      references/heartbeat.md's "Answer and do quick work in the room turn
+      yourself; a task is only for ..." bullet + lightbulb references/chat-vs-document.md "How" + the
       helper's usage text). Owner ruling 2026-10-18 ("the task is the durable
       record ... the work shouldn't really be done in the room"), reversing
       2026-10-04's "one conversation per piece of work". That design (after

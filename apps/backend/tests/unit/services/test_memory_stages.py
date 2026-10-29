@@ -152,3 +152,29 @@ def test_from_record_mirrored_entry_takes_the_entry_branch_by_log_kind():
     # A mirror written before logKind carried the log kind as kind: still an entry.
     old = from_record({"content": {"text": "Redis: 3 nodes"}, "metadata": {"kind": {"stringValue": "fact"}}}, "entry")
     assert old.kind == "entry"
+
+
+def test_excerpt_is_the_matched_800_character_window():
+    from core.services.memory_stages import excerpt
+
+    filler = "lorem ipsum dolor sit amet " * 60
+    text = filler + "the staging deploy key rotates every Tuesday " + filler
+    out = excerpt(text, "When does the deploy key rotate?")
+    assert out.startswith("…") and len(out) <= 800
+    assert "the staging deploy key rotates" in out  # the earliest window holding every term
+    assert excerpt("short turn", "deploy key") == "short turn"  # 800 or fewer characters: whole
+    assert excerpt(text, "nothing matches zebra") == text[:800]  # no match: the opening
+    assert excerpt("é" * 1000, "é") == "é" * 800  # character boundaries
+
+
+def test_compose_keeps_50_turns_and_50_claims_and_trims_at_the_budget():
+    claims = [cand(f"c{i}", f"topic {i}: value", fused=1.0) for i in range(60)]
+    turns = [cand(f"t{i}", "x" * 800, kind="turn", fused=1.0) for i in range(60)]
+    roomy = compose(claims + turns, 100_000, T)
+    assert [r["kind"] for r in roomy["results"]].count("turn") == 50
+    assert [r["kind"] for r in roomy["results"]].count("claim") == 50
+    page = compose(turns, 8000, T)
+    assert len(page["results"]) == 40  # 200 tokens each: the 41st would overflow
+    assert page["usedEvidenceTokens"] == 8000
+    short = compose(claims[:1], 8000, T)
+    assert short["usedEvidenceTokens"] == -(-len("topic 0: value") // 4)

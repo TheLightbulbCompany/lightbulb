@@ -4,7 +4,6 @@ No AWS and no I/O; the recall function calls these.
 """
 
 import calendar
-import json
 import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -18,6 +17,15 @@ _SIDE = re.compile(r"^(?P<name>[^:]+): (?P<claim>.*) \((?P<who>[^()]*?), (?P<dat
 _SPEAKER_KINDS = _CURRENT_KINDS | {"turn"}
 _LOG_KINDS = {"fact", "decision", "lesson", "preference"}  # the network log's kinds (memory_sync: logKind)
 _EXCERPT_CHARS = 280
+# A question's page, as the CLI's: up to 50 turns and 50 of the rest, each turn the 800-character
+# window that matches the question best.
+PAGE_TURNS = 50
+PAGE_OTHERS = 50
+TURN_WINDOW = 800
+_STOPWORDS = frozenset(  # the CLI's (lightbulb-network src/memory.rs STOPWORDS)
+    "how do does we i you the a an of to in on is are was were be it that this what when where which "
+    "who why before after with for and or not our my your".split()
+)
 
 
 @dataclass
@@ -38,7 +46,40 @@ class Candidate:
 
 def count_tokens(text: str) -> int:
     # ponytail: tiktoken is not a backend dependency; swap this one function if it becomes one.
-    return len(text) // 4
+    return -(-len(text) // 4)  # characters / 4 rounded up: the benchmark runner's evidence count
+
+
+def _clean(word: str) -> str:
+    return re.sub(r"^\W+|\W+$", "", word).casefold()
+
+
+def excerpt(text: str, question: str, width: int = TURN_WINDOW) -> str:
+    """The ``width``-character window of ``text`` holding the most distinct question terms (3+
+    characters, not stopwords, matched as a word prefix), the earliest on a tie, "…" when it starts
+    inside. Text that fits is whole; no match is the opening."""
+    if len(text) <= width:
+        return text
+    terms = tuple(dict.fromkeys(t for w in question.split() if len(t := _clean(w)) >= 3 and t not in _STOPWORDS))
+    spans = [(m.start(), m.end(), _clean(m[0])) for m in re.finditer(r"\S+", text)]
+    hits = [[t for t in terms if w.startswith(t)] if w.startswith(terms) else [] for _, _, w in spans]
+    room = width - 1  # one character for the lead
+    held: dict[str, int] = {}
+    best, best_score, end = 0, 0, 0
+    for i, (start, _, _) in enumerate(spans):  # two pointers: the window is spans[i:end]
+        end = max(end, i)
+        while end < len(spans) and spans[end][1] - start <= room:
+            for t in hits[end]:
+                held[t] = held.get(t, 0) + 1
+            end += 1
+        if len(held) > best_score:
+            best, best_score = i, len(held)
+        for t in hits[i] if end > i else ():
+            held[t] -= 1
+            if not held[t]:
+                del held[t]
+    if best == 0:
+        return text[:width]
+    return "…" + text[spans[best][0] :][:room]
 
 
 def _meta(metadata: dict, key: str) -> str:
@@ -184,14 +225,6 @@ def _result(c: Candidate) -> dict:
     }
 
 
-def _stamp_tokens(page: dict) -> None:
-    for _ in range(4):  # the count includes its own digits; settles in a pass or two
-        n = count_tokens(json.dumps(page))
-        if page["usedEvidenceTokens"] == n:
-            return
-        page["usedEvidenceTokens"] = n
-
-
 def compose(candidates: list[Candidate], budget_tokens: int, as_of: datetime) -> dict:
     marked = [c for c in mark_contested(candidates) if c.status != "replaced"]
 
@@ -202,13 +235,18 @@ def compose(candidates: list[Candidate], budget_tokens: int, as_of: datetime) ->
 
     marked.sort(key=lambda c: (group(c), -c.fused))  # stable: ties keep input order
     page: dict = {"asOf": as_of.isoformat(), "usedEvidenceTokens": 0, "results": []}
+    room = {True: PAGE_TURNS, False: PAGE_OTHERS}
     for c in marked:
-        page["results"].append({"rank": len(page["results"]) + 1, **_result(c)})
-        _stamp_tokens(page)
-        if page["usedEvidenceTokens"] > budget_tokens:
-            page["results"].pop()
+        turn = c.kind == "turn"
+        if not room[turn]:
+            continue
+        # Evidence is content, counted as the benchmark runner counts it; the first overflow ends the page.
+        cost = count_tokens(c.content)
+        if page["usedEvidenceTokens"] + cost > budget_tokens:
             break
-    _stamp_tokens(page)
+        room[turn] -= 1
+        page["usedEvidenceTokens"] += cost
+        page["results"].append({"rank": len(page["results"]) + 1, **_result(c)})
     return page
 
 

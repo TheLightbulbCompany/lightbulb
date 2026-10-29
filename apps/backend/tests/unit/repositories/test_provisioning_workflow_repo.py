@@ -246,3 +246,21 @@ async def test_the_lease_cannot_be_forged_through_patch_or_transition(workflows_
         await repo.transition(
             row["workflow_id"], from_state="ask", to_state="awaiting_approval", fields={"lease_until": "9999"}
         )
+
+
+@pytest.mark.asyncio
+async def test_floats_in_catalog_values_are_written_not_refused(workflows_table):
+    """Live 2026-10-29: Vercel's catalog snapshot carried a float and the
+    transition raised "Float types are not supported", leaving the row in `ask`."""
+    from core.repositories import provisioning_workflow_repo as repo
+
+    row = await _new()
+    moved = await repo.transition(
+        row["workflow_id"],
+        from_state="ask",
+        to_state="awaiting_approval",
+        fields={"approval": {"paid_pricing": [{"amount": 1.25}], "schema": {"minimum": 0.1}}},
+    )
+    assert moved is not None and moved["state"] == "awaiting_approval"
+    patched = await repo.patch(row["workflow_id"], {"usage_limit": {"max_amount": 12.5}})
+    assert str(patched["usage_limit"]["max_amount"]) == "12.5"

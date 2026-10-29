@@ -40,6 +40,8 @@ TURN_LIMIT = 50
 # BEAM_FREE_SHIPPED=1: what an agent is handed, the page text of a release's recall (5 turns,
 # 1,600 characters), as one result, instead of 50 facts and 50 excerpts.
 SHIPPED = os.environ.get("BEAM_FREE_SHIPPED") == "1"
+# BEAM_FREE_EXCERPT_CHARS=N: ask recall for N-character turn excerpts (a loop/turn-excerpt-length build).
+EXCERPT_CHARS = int(os.environ.get("BEAM_FREE_EXCERPT_CHARS") or 0)
 CONFIG = "lan = false\ncapture_turns_days = 36500\n"
 
 
@@ -152,6 +154,8 @@ class FreeCliBackend:
             {"op": "memory.recall", "question": query, "turn_limit": TURN_LIMIT}
         if as_of is not None:
             body["as_of"] = seconds(as_of)
+        if EXCERPT_CHARS and not SHIPPED:
+            body["excerpt_chars"] = EXCERPT_CHARS
         page = await self.ask(project, body)
         echoed = self.moments[project].get(page["as_of"]) if page.get("as_of") is not None else None
         known = self.moments[project]

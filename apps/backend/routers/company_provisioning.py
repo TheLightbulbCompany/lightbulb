@@ -29,7 +29,7 @@ from core.repositories import provisioning_workflow_repo as workflow_repo
 from core.services import provisioning_approvals, provisioning_landing, provisioning_workflow
 from core.services import stripe_provisioning as api
 from core.services.owner_facts import write_owner_facts
-from core.services.provisioning_workflow import WorkflowRefused, is_offerable, is_transient
+from core.services.provisioning_workflow import WorkflowRefused, is_offerable, is_transient, provider_of
 from core.services.stripe_provisioning import ProvisioningError
 from core.services.container_auth import _require_hook_token
 from routers.company_board import file_card
@@ -408,11 +408,11 @@ async def container_catalog(owner_id: str, request: Request, q: str = Query(defa
         raise _stripe_failure(e) from e
 
     rows = [
-        _safe_service(s, providers[s["provider_id"]])
+        _safe_service(s, providers[provider_of(s)])
         for s in services
         # A service whose provider is not in the catalog is one `start` refuses
         # outright, so it is not an offer we can keep.
-        if s.get("provider_id") in providers and is_offerable(s, providers[s["provider_id"]])
+        if provider_of(s) in providers and is_offerable(s, providers[provider_of(s)])
     ]
     needle = q.strip().lower()
     if needle:

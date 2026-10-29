@@ -121,4 +121,8 @@ Misses are classified in the session ledger (beam-cli-loop.md). The top cause in
   - **Caveat, unchanged.** This is the generous recall (50 facts + 50 excerpts, now 800 characters each). The shipped page row (73.82) is the product as an agent gets it today.
   - **Run:** verified, 0 failed; 1,189 paid calls, 12,885,631 input (8,410,368 cached), 100,517 output; 23.9 min.
 
+- **Change 3 (cli loop/fact-dates 8b8f27d, on top of change 2).** Each recalled fact carries a dated line, "subject: value (YYYY-MM-DD)", and among facts sharing a subject the newest comes first.
+  - **Result: no gain; do not fold.** Overall 88.61, paired vs 89.62: -1.01 [-2.66, +0.59]. Knowledge update fell to 76.88, -8.75 [-20.00, +1.25]: worse, though inside the noise. Information extraction -1.93 [-5.89, +1.46]; multi-session +3.23 [-2.71, +10.38]; the rest within about 1.3 points.
+  - **Run:** verified, 0 failed; 1,173 paid calls, 12,869,611 input (8,320,512 cached), 100,282 output; 24.9 min.
+
 Results files: `benchmarks/beam/results/100k/`, stripped to ids, answers, verdicts and scores (no recall pages, questions or gold text). `verify.py` recomputes all six.

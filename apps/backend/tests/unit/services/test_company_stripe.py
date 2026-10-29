@@ -63,9 +63,13 @@ async def test_services_account_requests_developer_only():
         await company_stripe.create_company_account(
             owner_id="org_a", email="f@example.com", company_name="N", kind="company_services"
         )
-    assert create.call_args.args[0]["configuration"] == {
+    params = create.call_args.args[0]
+    assert params["configuration"] == {
         "developer": {"capabilities": {"projects": {"requested": True}}},
     }
+    # Stripe refuses `dashboard` and `responsibilities` on a non-merchant account.
+    assert "dashboard" not in params
+    assert params["defaults"] == {"currency": "usd"}
 
 
 @pytest.mark.asyncio

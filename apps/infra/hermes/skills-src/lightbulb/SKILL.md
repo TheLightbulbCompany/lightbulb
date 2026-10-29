@@ -26,7 +26,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/platform-primitives.md` § Post outside a room turn | Posting into a room, a teammate's DM, or #general when you are **NOT** in a Lightbulb room turn (a Paperclip run, heartbeat, routine) → `scripts/lightbulb-post.sh`. Inside a room turn, keep using your reply / the room tools. |
 | `references/feed.md` | Posting to the workspace feed (Activity): when a post is worth it, one thing per post, `--feed --why`, the brief, and the CEO's scheduled feed posts. |
 | `references/ideas.md` | Someone sends you an **idea** (a quoted idea, "Let's do it!", maybe "Tracked in Work: …"); a Work task whose description has **Needs** and **Done means** sections, or you notice a concrete job worth adding with `suggest_idea`. On a linked project, break it into assigned tasks first. |
-| `references/chat-vs-document.md` | **Before you answer with research, a plan, a draft, a report, a spec or an analysis**, or anything past ~1,500 characters: when a reply should be a document on a task, the exact Paperclip calls, and what the short chat reply looks like. |
+| `references/chat-vs-document.md` | **Before you answer with research, a plan, a draft, a report, a spec or an analysis**, or anything past ~1,500 characters: when a reply should be a document (a file on your reply, or on the task), how to attach or write it, and what the short chat reply looks like. |
 | `references/documents.md` | **How to write a document** (a plan, research, a report, a spec): open with the answer, owners and dates, tasks in a table, cards and diagrams. |
 | `references/workspace.md` | Adding or removing a room member, changing listen mode, making, renaming or archiving a room, pinning, searching messages or sessions → `lightbulb_workspace`. |
 | `references/platform-primitives.md` § Other rooms | Someone asks about another channel, DM or group chat ("what did we decide in #launch?", "check our recent conversations") → `lightbulb_read_rooms`, with the asker's own access. |
@@ -99,9 +99,9 @@ These hold whether or not you open a reference.
   cron: a job added there runs where no one can see it, outside the company's
   governance.
 - **A deliverable is a document, not a chat message.** Research, plans, drafts,
-  reports and anything long go in a Paperclip issue document on a task (the Library shows
-  documents, never a comment or chat); chat gets at most five lines and the document's
-  link — `references/chat-vs-document.md`.
+  reports and anything long go in a file attached to your chat reply, or in a Paperclip
+  issue document when the work already is a task (the Library shows documents, never a
+  comment or chat); chat gets at most five lines — `references/chat-vs-document.md`.
   The owner's first reply to the welcome in `#general` is the first run: its
   shape (one plan, one decision, one connect card, three offers) is in that
   file's "The first run", even before `BRIEF.md` lands.

@@ -140,6 +140,12 @@ async def test_recall_as_of_filters_are_sent(monkeypatch):
         "operator": "GREATER_THAN",
         "right": {"metadataValue": {"numberValue": e}},
     }
+    # validTo 0: the extraction model's "empty" (still current)
+    zero = {
+        "left": {"metadataKey": "validTo"},
+        "operator": "EQUALS_TO",
+        "right": {"metadataValue": {"numberValue": 0.0}},
+    }
     sent = [kw["searchCriteria"]["metadataFilters"] for kw in c.where("retrieve", NS["facts"])]
     for status in ("current", "contested"):
         s = {
@@ -147,8 +153,8 @@ async def test_recall_as_of_filters_are_sent(monkeypatch):
             "operator": "EQUALS_TO",
             "right": {"metadataValue": {"stringValue": status}},
         }
-        assert [s, start, open_ended] in sent and [s, start, later] in sent
-    assert len(sent) == 4
+        assert [s, start, open_ended] in sent and [s, start, later] in sent and [s, start, zero] in sent
+    assert len(sent) == 6
 
 
 @pytest.mark.asyncio

@@ -1089,6 +1089,11 @@ from routers import memory as memory_router  # noqa: E402
 app.include_router(memory_router.router, prefix="/api/v1/memory", tags=["memory"])
 app.include_router(memory_router.internal_router, prefix="/api/v1/internal/memory", tags=["memory"])
 
+# The BEAM runner's door to the workspace engine (dev only; every route 404s elsewhere).
+from routers import internal_bench  # noqa: E402
+
+app.include_router(internal_bench.router, prefix="/api/v1/internal/bench", tags=["memory"])
+
 # Sessions a person uploads from the CLI, by choice (metadata or full).
 from routers import sessions as sessions_router  # noqa: E402
 

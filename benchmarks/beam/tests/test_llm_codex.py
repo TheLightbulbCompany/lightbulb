@@ -26,6 +26,8 @@ if len(calls) <= fail:
     print(json.dumps({"type": "turn.failed", "error": {"message": "rate limited"}}))
     sys.exit(1)
 reply = os.environ.get("FAKE_REPLY", "the answer")
+if os.environ.get("FAKE_RECONNECT"):
+    print(json.dumps({"type": "error", "message": "Reconnecting... 2/5 (unexpected status 403 Forbidden)"}))
 Path(argv[argv.index("-o") + 1]).write_text(reply)
 print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": reply}}))
 print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 7400, "cached_input_tokens": 100,
@@ -111,3 +113,9 @@ def test_usage_is_recorded_and_a_cached_reply_is_not_paid_again(fake, tmp_path):
     llm_codex.set_budget(0)
     again = asyncio.run(question())
     assert again["calls"] == 0 and again["cacheHits"] == 1 and len(fake()) == 1
+
+
+def test_a_reconnect_notice_in_a_completed_turn_is_not_a_failure(fake, monkeypatch):
+    monkeypatch.setenv("FAKE_RECONNECT", "1")
+    assert asyncio.run(llm_codex.complete_text("q")) == "the answer"
+    assert len(fake()) == 1

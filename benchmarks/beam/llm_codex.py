@@ -240,7 +240,9 @@ async def _exec_in_scratch(prompt: str, schema: dict | None) -> tuple[str, dict]
         events = [json.loads(line) for line in stdout.decode("utf-8", "replace").splitlines()
                   if line.startswith("{")]
         usage = next((e["usage"] for e in events if e.get("type") == "turn.completed"), None)
-        failure = next((e for e in events if e.get("type") in ("turn.failed", "error")), None)
+        # An "error" event alone can be Codex's own reconnect notice; a completed turn wins over it.
+        failure = next((e for e in events if e.get("type") == "turn.failed"), None) or (
+            None if usage is not None else next((e for e in events if e.get("type") == "error"), None))
         if process.returncode != 0 or usage is None or failure is not None:
             message = json.dumps(failure) if failure else stderr.decode("utf-8", "replace")[-1000:]
             raise _classify(message, process.returncode)

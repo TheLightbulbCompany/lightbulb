@@ -91,3 +91,18 @@ def test_recall_sends_as_of_and_echoes_the_dataset_moment(backend):
     assert page.as_of == at
     assert page.results[0]["content"].startswith("garden: roses (was tulips, 1970-01-01)")
     assert page.results[1] == {"kind": "turn", "content": "user: x", "occurredAt": "1970-01-01T00:00:05Z"}
+
+
+def test_the_shipped_page_is_one_result_with_the_release_knobs(backend, monkeypatch):
+    import adapters.free_cli as free
+    monkeypatch.setattr(free, "SHIPPED", True)
+    backend.moments["p"], backend.subjects["p"] = {}, {}
+    real = backend.ask
+
+    async def ask(project, body):
+        answer = await real(project, body)
+        return {**answer, "page": "Current:\ngarden: roses (Ann, 2024-03-15)"} if body["op"] == "memory.recall" else answer
+    backend.ask = ask
+    page = asyncio.run(backend.recall("p", "what grows?", None, "ann"))
+    assert "turn_limit" not in backend.sent[-1] and "budget_chars" not in backend.sent[-1]
+    assert page.results == [{"kind": "page", "content": "Current:\ngarden: roses (Ann, 2024-03-15)"}]

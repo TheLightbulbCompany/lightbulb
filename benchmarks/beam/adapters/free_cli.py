@@ -37,6 +37,9 @@ while (my $l = <STDIN>) { chomp $l; my ($p, $j) = split /\t/, $l, 2;
   print(defined $r ? $r : "{\"ok\":false,\"error\":\"eof\"}\n"); }'''
 
 TURN_LIMIT = 50
+# BEAM_FREE_SHIPPED=1: what an agent is handed, the page text of a release's recall (5 turns,
+# 1,600 characters), as one result, instead of 50 facts and 50 excerpts.
+SHIPPED = os.environ.get("BEAM_FREE_SHIPPED") == "1"
 CONFIG = "lan = false\ncapture_turns_days = 36500\n"
 
 
@@ -144,7 +147,8 @@ class FreeCliBackend:
         return "done"
 
     async def recall(self, project: str, query: str, as_of: datetime | None, identity: str) -> RecallPage:
-        body = {"op": "memory.recall", "question": query, "turn_limit": TURN_LIMIT}
+        body = {"op": "memory.recall", "question": query} if SHIPPED else \
+            {"op": "memory.recall", "question": query, "turn_limit": TURN_LIMIT}
         if as_of is not None:
             body["as_of"] = seconds(as_of)
         page = await self.ask(project, body)
@@ -153,6 +157,9 @@ class FreeCliBackend:
 
         def moment(second: int) -> str:  # the dataset's moment where the second is a turn's
             return utc_iso(known.get(second) or datetime.fromtimestamp(second, timezone.utc))
+        if SHIPPED:
+            results = [{"kind": "page", "content": page["page"]}] if page.get("page") else []
+            return RecallPage(results, echoed)
         results = [fact_result(f, moment) for f in page.get("facts") or []]
         results += [turn_result(t, moment) for t in page.get("turns") or []]
         return RecallPage(results, echoed)

@@ -113,9 +113,9 @@ def test_prefetch_caps_injected_block(mod, backend):
     out = provider(mod, FakeClient()).prefetch(said("launch?"))
     facts = out.split("\n", 1)[1]
     assert len(facts) <= 1600 and all(line.startswith("- fact ") and line.endswith("x") for line in facts.splitlines())
-    backend.reply = {"results": [{"content": "y" * 300} for _ in range(40)]}
+    backend.reply = {"results": [{"content": "y" * 1000} for _ in range(40)]}
     big = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "x"}))
-    assert len(json.dumps(big)) <= 6000 and big["results"]
+    assert len(big["page"]) <= mod._SEARCH_MAX and big["page"].endswith("y")  # whole lines only
 
 
 def test_remember_sends_a_secret_unchanged_and_returns_the_refusal(mod, backend, monkeypatch):
@@ -152,7 +152,7 @@ def test_sync_turn_prefixes_speaker_on_events(mod, tmp_path):
 
 def test_search_tool_reads_through_the_backend(mod, backend):
     out = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "launch"}))
-    assert [r["content"] for r in out["results"]] == ["Launch is Nov 3 (contested)", "Weekly reports"]
+    assert out["page"] == "Contested:\nLaunch is Nov 3 (contested) (2026-10-20)\nLog:\nWeekly reports (2026-10-13)"
     assert recalls(backend)[0][2]["question"] == "launch"
 
 
@@ -206,3 +206,29 @@ def test_remember_refusal_is_surfaced_to_the_agent(mod, backend, monkeypatch):
     monkeypatch.setattr(mod.urllib.request, "urlopen", refuse)
     out = json.loads(provider(mod, FakeClient()).handle_tool_call("remember", {"subject": "s", "fact": "f", "kind": "fact"}))
     assert out == {"error": "Not remembered: secret:aws_key"}
+
+
+def test_search_tool_returns_one_text_page_with_its_turns(mod, backend):
+    claims = [{"kind": "claim", "content": f"Ann: topic {i}: value {i}", "occurredAt": "2026-10-20T00:00:00+00:00",
+               "status": "current"} for i in range(50)]
+    turns = [{"kind": "turn", "content": f"Bo: turn {i}\n" + "w " * 390, "occurredAt": "2026-10-21T00:00:00+00:00",
+              "status": "current"} for i in range(30)]
+    backend.reply = {"results": claims + turns}
+    out = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "launch"}))
+    assert set(out) == {"page", "counts"} and out["counts"] == {"facts": 50, "turns": 30}
+    assert out["page"].startswith("Current:\nAnn: topic 0: value 0 (2026-10-20)")
+    assert "Turns:\n2026-10-21, Bo: turn 0 w w" in out["page"]
+    assert recalls(backend)[0][2]["budget_tokens"] == 8000
+    backend.reply = {"results": claims + turns * 3}  # over the cap: cut at a whole line from the end
+    big = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "x"}))
+    assert len(big["page"]) <= mod._SEARCH_MAX and big["page"].endswith("w") and "Turns:" in big["page"]
+
+
+def test_search_page_dates_a_claim_by_its_valid_from(mod, backend):
+    backend.reply = {"results": [
+        {"kind": "claim", "content": "Ann: city: Oslo", "occurredAt": "2026-10-29T01:40:27+00:00",
+         "validFrom": "2024-03-15T00:00:00+00:00", "status": "current"},
+        {"kind": "claim", "content": "Bo: team: infra", "occurredAt": "2026-10-29T01:40:27+00:00",
+         "validFrom": None, "status": "current"}]}
+    out = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "city"}))
+    assert out["page"] == "Current:\nAnn: city: Oslo (2024-03-15)\nBo: team: infra (2026-10-29)"

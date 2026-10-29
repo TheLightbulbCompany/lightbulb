@@ -171,3 +171,39 @@ def test_the_identity_line_names_the_agent_from_its_session_title(net):
         "You are Friday, answering a network message from Prasiddha's Mac. "
         "Reply with lightbulb_network if a reply is needed.")
     assert turn.system_prompt({**body, "targetAgentId": "a-x"}, "a-x").startswith("You are an agent, ")
+
+
+def test_an_assignment_record_carries_its_fields_into_the_turn(net, turns):
+    net.answer(**_peek({**REC, "kind": "assign", "done_when": "tests pass", "deadline_at": "2026-10-30T00:00:00Z",
+                        "reply_to": "r0", "status": "done"}))
+    assert network.ensure_started(background=False)
+    assert _until(lambda: len(_acks(net, "read")) == 1)
+    msg = turns.ran[0][1]["message"]
+    assert msg == {"text": "[peer] hello", "label": "Prasiddha's Mac", "kind": "assign", "done_when": "tests pass",
+                   "deadline_at": "2026-10-30T00:00:00Z", "reply_to": "r0", "status": "done"}
+
+
+def test_the_identity_line_for_an_assignment_and_a_cancel(net):
+    assert network.ensure_started(background=False)
+    body = {"version": 1, "eventKind": "network_message", "eventId": "m1", "targetAgentId": "a-friday",
+            "sessionKey": "t-1", "message": {"text": "x", "label": "Mac", "kind": "assign"}}
+    assert turn.system_prompt(body, "a-friday").startswith(
+        "You are Friday. This is an assignment from Mac: do it, then reply with lightbulb_network action send, "
+        "reply_to its requestId, and status failed or cancelled if you could not finish.")
+    body["message"]["kind"] = "cancel"
+    assert "Mac cancelled an assignment: stop that work and reply with status cancelled." in turn.system_prompt(body, "a-friday")
+
+
+def test_network_workers_is_written_only_when_the_runtime_asks(net, monkeypatch):
+    cfg = network.NET_HOME / "config.toml"
+    monkeypatch.delenv("LIGHTBULB_NETWORK_WORKERS", raising=False)
+    network._enable_workers()
+    assert not cfg.exists()
+    network.NET_HOME.mkdir(parents=True, exist_ok=True)
+    cfg.write_text('name = "x"\nnetwork_workers = false\n')
+    network._enable_workers()
+    assert cfg.read_text() == 'name = "x"\nnetwork_workers = false\n'  # off: untouched
+    monkeypatch.setenv("LIGHTBULB_NETWORK_WORKERS", "1")
+    network._enable_workers()
+    network._enable_workers()
+    assert cfg.read_text() == 'name = "x"\nnetwork_workers = true\n'

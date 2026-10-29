@@ -102,3 +102,17 @@ def test_a_turn_with_neither_run_nor_event_id_gets_one_uuid_base(net, tmp_path):
     assert "None" not in ids[0] and ids[0].endswith(".net.1")
     assert re.fullmatch(r"[A-Za-z0-9._-]{1,128}", ids[0])  # the engine refuses any other id
     assert ids[1] == ids[0].removesuffix("1") + "2"
+
+
+def test_a_reply_forwards_status_and_reason_only_when_given(net):
+    lightbulb._network({"action": "send", "text": "no", "reply_to": "a1", "status": "failed", "reason": "blocked"},
+                       session_id=SESSION)
+    assert net == [("send", {"from": "friday", "text": "no", "request_id": "m1.net.1", "status": "failed",
+                             "reason": "blocked", "reply_to": "a1"})]
+    props = lightbulb.NETWORK_SCHEMA["parameters"]["properties"]
+    assert props["status"]["enum"] == ["done", "failed", "cancelled"] and "reason" in props
+
+
+def test_a_status_without_reply_to_is_an_error_not_a_send(net):
+    out = lightbulb._network({"action": "send", "to": "mac", "text": "hi", "status": "done"}, session_id=SESSION)
+    assert "reply_to" in out and net == []

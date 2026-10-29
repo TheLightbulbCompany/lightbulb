@@ -385,6 +385,9 @@ NETWORK_SCHEMA = {
             "request_id": {"type": "string", "description": "Omit on send (one is made for you); "
                                                             "required for receipt."},
             "query": {"type": "string", "maxLength": 200},
+            "status": {"type": "string", "enum": ["done", "failed", "cancelled"],
+                       "description": "With reply_to: how an assignment ended."},
+            "reason": {"type": "string", "maxLength": 1000},
         },
         "required": ["action"],
     },
@@ -433,7 +436,16 @@ def _network(args: dict, *, session_id: str = "", **_kw) -> str:
         request_id = str(args.get("request_id") or "") or _next_request_id(session_id)
         if not _OPAQUE_RE.match(request_id):
             return "request_id must be an opaque token."
+        status = str(args.get("status") or "")
+        if status and status not in ("done", "failed", "cancelled"):
+            return "status must be one of done|failed|cancelled."
+        if status and not args.get("reply_to"):
+            return "status needs reply_to (the assignment's requestId)."
         body = {"from": sender, "text": text, "request_id": request_id}
+        if status:
+            body["status"] = status
+        if args.get("reason"):
+            body["reason"] = str(args["reason"])
         if to:  # without it the engine sends the reply to the sender of reply_to
             body["to"] = to
         if args.get("reply_to"):

@@ -101,18 +101,22 @@ async def create_company_account(*, owner_id: str, email: str, company_name: str
     uuid4 idempotency key on purpose — a stable key would return a deleted
     account from Stripe's 24h cache; the router de-dups on the billing row."""
     client = _client()
+    # kind "company_services" = the services account (see projects_account_of).
+    # It only provisions, so it asks for `developer` alone: on that shape Stripe
+    # requires just the contact email for `projects`; `merchant` adds ~15
+    # KYC/bank fields (dev sandbox, 10-28). Stripe refuses `dashboard` and
+    # `defaults.responsibilities` without merchant ("You cannot set … unless the
+    # account is configured as a merchant", prod + dev sandbox 10-29).
+    services = kind == "company_services"
     params: dict = {
         "display_name": company_name,
-        "dashboard": "full",
         "identity": {"country": "us"},
-        # The services account only provisions, so it asks for `developer`
-        # alone: on that shape Stripe requires just the contact email for
-        # `projects`; `merchant` adds ~15 KYC/bank fields (dev sandbox, 10-28).
-        "configuration": DEVELOPER_CONFIGURATION if kind == "company_services" else account_configuration(),
-        "defaults": ACCOUNT_DEFAULTS,
-        # kind "company_services" = the services account (see projects_account_of).
+        "configuration": DEVELOPER_CONFIGURATION if services else account_configuration(),
+        "defaults": {"currency": ACCOUNT_DEFAULTS["currency"]} if services else ACCOUNT_DEFAULTS,
         "metadata": {"owner_id": owner_id, "kind": kind},
     }
+    if not services:
+        params["dashboard"] = "full"
     # v2 rejects an empty contact_email; Stripe collects one in onboarding.
     if email:
         params["contact_email"] = email

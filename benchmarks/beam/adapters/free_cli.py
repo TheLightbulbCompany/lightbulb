@@ -177,7 +177,8 @@ class FreeCliBackend:
 
 
 def fact_result(fact: dict, moment) -> dict:
-    content = f"{fact['subject']}: {fact['value']}"
+    # A build with loop/fact-dates gives the fact's own line, dated; older builds do not.
+    content = fact.get("line") or f"{fact['subject']}: {fact['value']}"
     if fact.get("history"):
         was = fact["history"][-1]
         content += f" (was {was['value']}, {moment(was['when'])[:10]})"

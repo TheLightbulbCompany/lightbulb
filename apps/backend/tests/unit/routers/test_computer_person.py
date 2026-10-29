@@ -68,18 +68,24 @@ def test_computer_person_refuses_replayed_stale_or_other_body(env, monkeypatch):
     monkeypatch.setattr(router.task_board, "update_task", AsyncMock(return_value={"ok": True}))
     path = "/local-sessions/device/tasks/ISOA-1"
     body = json.dumps({"status": "done"}).encode()
-    headers = signed(computer, proof, "PATCH", path, body)
+    # Three calls, three timestamps: a challenge is its timestamp, method, path and body, and a
+    # repeat is a replay, so two calls signed in the same second would collide — which is what
+    # happened on a slow runner. All three sit inside the 60 s window.
+    t0 = int(time.time())
+    headers = signed(computer, proof, "PATCH", path, body, ts=t0)
     assert client.patch(f"/api/v1{path}", content=body, headers=headers).status_code == 200
     # The same signed call again: good once.
     assert client.patch(f"/api/v1{path}", content=body, headers=headers).status_code == 401
     # Nor under another spelling of the same signature (padding, or other unused trailing bits).
-    fresh = signed(computer, proof, "PATCH", path, body, ts=int(time.time()) - 1)  # another call
-    sig = fresh["X-Lightbulb-Sig"]
+    respell = signed(computer, proof, "PATCH", path, body, ts=t0 - 1)  # another call
+    sig = respell["X-Lightbulb-Sig"]
     abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
     last = abc[abc.index(sig[-1]) + 1]  # 64 bytes: the last character's low 4 bits are unused
     for spelling in (sig + "==", sig[:-1] + last):
-        respelled = {**fresh, "X-Lightbulb-Sig": spelling}
+        respelled = {**respell, "X-Lightbulb-Sig": spelling}
         assert client.patch(f"/api/v1{path}", content=body, headers=respelled).status_code == 401
+    # A genuinely fresh call under a timestamp of its own is accepted.
+    fresh = signed(computer, proof, "PATCH", path, body, ts=t0 - 2)
     assert client.patch(f"/api/v1{path}", content=body, headers=fresh).status_code == 200
     # Another body under a signature for this one.
     other = signed(computer, proof, "PATCH", path, body)

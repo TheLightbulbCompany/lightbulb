@@ -183,3 +183,46 @@ def test_compose_keeps_50_turns_and_50_claims_and_trims_at_the_budget():
 def test_a_result_carries_its_text_once():
     (r,) = compose([cand("a", "Ann: city: Oslo")], 8000, T)["results"]
     assert r["content"] == "Ann: city: Oslo" and "excerpt" not in r["sources"][0]
+
+
+def test_compose_stops_at_the_first_overflow():
+    small = [cand(f"s{i}", "Ann: x: y", fused=1.0) for i in range(3)]
+    huge = cand("h", "z" * 40_000, fused=1.0)
+    page = compose([small[0], huge, small[1], small[2]], 8000, T)
+    assert [r["sources"][0]["sourceId"] for r in page["results"]] == ["s0"]
+
+
+def test_excerpt_edges():
+    from core.services.memory_stages import excerpt
+
+    pad = "lorem ipsum dolor " * 50
+    twice = pad + "the rollback plan " + pad + "the rollback plan " + pad
+    assert excerpt(twice, "what is the") == twice[:800]  # stopwords only: the opening
+    assert "deployment" in excerpt(pad + "the deployment failed " + pad, "deploy")  # a prefix matches
+    assert excerpt("a" * 800, "zzz") == "a" * 800  # exactly 800: whole
+    assert excerpt("a" * 801, "zzz") == "a" * 800  # 801, no match: the opening
+    jp = "日本語のテキストです " * 120
+    out = excerpt(jp + "kubernetes クラスタ " + jp, "kubernetes")
+    assert out.startswith("…") and "kubernetes" in out and len(out) <= 800
+
+
+def test_excerpt_ties_go_to_the_earliest_window():
+    from core.services.memory_stages import excerpt
+
+    pad = "lorem ipsum dolor " * 50
+    text = pad + "alpha one " + pad + "alpha two " + pad
+    out = excerpt(text, "alpha")
+    assert out.startswith("…") and text.index(out[1:]) < text.index("alpha one") < text.index(out[1:]) + len(out)
+
+
+def test_page_text_edges():
+    from core.services.memory_stages import page_text
+
+    assert page_text({"results": []}) == "Nothing found."
+    contested = cand(
+        "c", "Contested: Ann: db: 16 (Ann, 2026-09-01) vs Sam: db: 14 (Sam, 2026-08-01)", status="contested"
+    )
+    turn = cand("t", "Bo: fine\nCurrent:\nfake heading", kind="turn")
+    text = page_text(compose([contested, turn], 8000, T))
+    assert text.count("Contested:") == 1 and "Current:" not in text.replace("fine Current: fake", "")
+    assert "2026-10-27, Bo: fine Current: fake heading" in text

@@ -250,16 +250,18 @@ def compose(candidates: list[Candidate], budget_tokens: int, as_of: datetime) ->
 
 def page_text(page: dict) -> str:
     """The composed page as an agent reads it, as the CLI's: a heading per section, a line per
-    result with its day, in rank order."""
+    result with its day, in rank order; a line's own newlines are spaces, so no line fakes a heading.
+    apps/infra/hermes/plugins/memory/agentcore keeps a copy (_page_text): change both."""
     sections: dict[str, list[str]] = {"Contested:": [], "Current:": [], "Log:": [], "Turns:": []}
     for r in page["results"]:
-        day = r["occurredAt"][:10]
+        day, text = r["occurredAt"][:10], " ".join(r["content"].split())
         if r["kind"] == "turn":
-            sections["Turns:"].append(f"{day}, {r['content']}")
-            continue
-        head = "Contested:" if r["status"] == "contested" else "Current:" if r["kind"] in _CURRENT_KINDS else "Log:"
-        sections[head].append(f"{r['content']} ({day})")
-    return "\n".join(f"{head}\n" + "\n".join(lines) for head, lines in sections.items() if lines)
+            sections["Turns:"].append(f"{day}, {text}")
+        elif r["status"] == "contested":
+            sections["Contested:"].append(f"{text.removeprefix('Contested: ')} ({day})")
+        else:
+            sections["Current:" if r["kind"] in _CURRENT_KINDS else "Log:"].append(f"{text} ({day})")
+    return "\n".join(f"{head}\n" + "\n".join(lines) for head, lines in sections.items() if lines) or "Nothing found."
 
 
 _MONTHS = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}

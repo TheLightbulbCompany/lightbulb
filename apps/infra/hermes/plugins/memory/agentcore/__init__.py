@@ -62,9 +62,10 @@ _SESSION_MAX = 100      # SessionId, pattern [a-zA-Z0-9][a-zA-Z0-9-_]*
 # Evidence tokens the backend may spend on the page: passive recall is small; the search tool is
 # asked for on purpose, so it may say more.
 _RECALL_BUDGET = 400
-_SEARCH_BUDGET = 1500
+_SEARCH_BUDGET = 8000  # one page, as the hosted MCP's recall: claims and turn excerpts
 _INJECT_MAX = 1600  # characters of recalled facts per turn, cut on a line
-_SEARCH_MAX = 6000  # characters the search tool returns
+_SEARCH_MAX = 36_000  # characters of page the search tool returns: 8,000 tokens and the day per line
+_CURRENT_KINDS = {"claim", "observation", "rule", "anchor", "mention"}  # backend memory_stages
 _BACKEND_TIMEOUT_S = 3.0  # Hermes gives prefetch 8 s in all
 # The board: how many rows of each kind, how far back "done" reaches, and how long one read
 # serves later turns (a busy room asks every few seconds; the board moves in minutes).
@@ -152,6 +153,22 @@ def _page(obj) -> list:
     if not isinstance(rows, list) or not all(isinstance(r, dict) and isinstance(r.get("content"), str) for r in rows):
         raise ValueError("malformed recall page")
     return rows
+
+
+def _page_text(results: list) -> str:
+    """The page as the hosted MCP's recall gives it (backend memory_stages.page_text, copied: the
+    image does not ship the backend; change both)."""
+    sections: Dict[str, List[str]] = {"Contested:": [], "Current:": [], "Log:": [], "Turns:": []}
+    for r in results:
+        day, text = str(r.get("occurredAt") or "")[:10], " ".join(r["content"].split())
+        dated = f"{text} ({day})" if day else text
+        if r.get("kind") == "turn":
+            sections["Turns:"].append(f"{day}, {text}" if day else text)
+        elif r.get("status") == "contested":
+            sections["Contested:"].append(dated.removeprefix("Contested: "))
+        else:
+            sections["Current:" if r.get("kind") in _CURRENT_KINDS else "Log:"].append(dated)
+    return "\n".join(f"{head}\n" + "\n".join(lines) for head, lines in sections.items() if lines) or "Nothing found."
 
 
 def _cut(text: str, limit: int) -> str:
@@ -366,9 +383,9 @@ class AgentCoreMemoryProvider(MemoryProvider):
         except Exception as exc:
             logger.warning("memory search failed: %s", type(exc).__name__)
             return json.dumps({"error": "workspace memory is unavailable right now"})
-        while results and len(out := json.dumps({"results": results}, ensure_ascii=False)) > _SEARCH_MAX:
-            results = results[:-1]  # whole results only, so the JSON stays valid
-        return out if results else json.dumps({"results": []})
+        turns = sum(r.get("kind") == "turn" for r in results)
+        counts = {"facts": len(results) - turns, "turns": turns}
+        return json.dumps({"page": _cut(_page_text(results), _SEARCH_MAX), "counts": counts}, ensure_ascii=False)
 
     def _remember(self, args: Dict[str, Any]) -> str:
         subject, fact = str(args.get("subject") or "").strip(), str(args.get("fact") or "").strip()

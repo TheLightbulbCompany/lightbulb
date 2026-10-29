@@ -439,7 +439,7 @@ async def _memory(call):
 async def recall(question: str) -> dict:
     auth = _caller()
     page = await _memory(memory_api.recall_page(auth.org_id, auth.user_id, question))
-    # The one page an agent reads (about 8,000 tokens, up to about 9,000 full), as the CLI's tool:
+    # The one page an agent reads (8,000-9,000 tokens for English text), as the CLI's tool:
     # the structured results stay for the Memory tab.
     turns = sum(r["kind"] == "turn" for r in page["results"])
     return {"page": memory_stages.page_text(page), "counts": {"facts": len(page["results"]) - turns, "turns": turns}}

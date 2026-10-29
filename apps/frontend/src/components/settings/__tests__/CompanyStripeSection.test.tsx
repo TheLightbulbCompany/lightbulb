@@ -89,11 +89,35 @@ describe("CompanyStripeSection", () => {
     expect(screen.queryByText("Finish onboarding")).not.toBeInTheDocument();
   });
 
+  it("asks a connected owner for a services account and onboards it in the page", async () => {
+    get.mockResolvedValue({ ...BOUND, source: "connected", projects_ready: false, publishable_key: "pk_test_x" });
+    post.mockResolvedValue({ account_id: "acct_svc" });
+    renderSection(true);
+    expect(await screen.findByText(/needs a services account/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Add a services account"));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/company/stripe/services-account", {}));
+    expect(await screen.findByTestId("stripe-embedded-onboarding")).toBeInTheDocument();
+  });
+
   it("asks a pasted-key owner for a services account too", async () => {
     get.mockResolvedValue({ ...BOUND_BY_KEY, projects_ready: false, publishable_key: "pk_test_x" });
     renderSection(true);
     expect(await screen.findByText("Add a services account")).toBeInTheDocument();
     expect(screen.queryByText("Finish Stripe setup")).not.toBeInTheDocument();
+  });
+
+  it("offers to finish the services account once it exists", async () => {
+    get.mockResolvedValue({
+      ...BOUND,
+      source: "connected",
+      projects_ready: false,
+      services_account_id: "acct_svc",
+      publishable_key: "pk_test_x",
+    });
+    renderSection(true);
+    fireEvent.click(await screen.findByText("Finish services account setup"));
+    expect(await screen.findByTestId("stripe-embedded-onboarding")).toBeInTheDocument();
+    expect(screen.queryByText("Add a services account")).toBeNull();
   });
 
   it("Set up Stripe creates the account, then onboards it in the page and refreshes on exit", async () => {
@@ -130,8 +154,8 @@ describe("CompanyStripeSection", () => {
     expect(screen.queryByText("Finish Stripe setup")).not.toBeInTheDocument();
   });
 
-  it("Add a services account creates it, then opens its hosted link even with embedded onboarding available", async () => {
-    get.mockResolvedValue({ ...BOUND, source: "connected", projects_ready: false, publishable_key: "pk_test_x" });
+  it("without embedded onboarding, Add a services account creates it, then opens its hosted link", async () => {
+    get.mockResolvedValue({ ...BOUND, source: "connected", projects_ready: false, publishable_key: null });
     post.mockImplementation(async (path: string) =>
       path === "/company/stripe/onboarding-link"
         ? { onboarding_url: "https://connect.stripe.com/setup/svc" }
@@ -153,13 +177,13 @@ describe("CompanyStripeSection", () => {
     expect(screen.queryByTestId("stripe-embedded-onboarding")).toBeNull();
   });
 
-  it("Finish services account setup opens its hosted link even with embedded onboarding available", async () => {
+  it("without embedded onboarding, Finish services account setup opens its hosted link", async () => {
     get.mockResolvedValue({
       ...BOUND,
       source: "api_key",
       projects_ready: false,
       services_account_id: "acct_svc",
-      publishable_key: "pk_test_x",
+      publishable_key: null,
     });
     post.mockResolvedValue({ onboarding_url: "https://connect.stripe.com/setup/svc" });
     const tab = fakeTab();

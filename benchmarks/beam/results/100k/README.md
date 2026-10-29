@@ -13,6 +13,7 @@ Each folder holds a run's `results.jsonl` and `summary.json`; `python verify.py 
 | free-v071-100k | free engine, shipped page (v0.7.1: cli feat/recall-page 35c2fa5), the daemon's page text as an agent gets it |
 | free-contested-100k | shipped page v0.7.1 + Contested only across authors, full dates (cli loop/contested-line 94d73ff) |
 | workspace-100k | workspace engine + validTo-0 fix (dev AgentCore memory via the local bench routes, bench/workspace-routes 1f8906af2), the route's recall page |
+| workspace-page-100k | workspace engine + validTo-0 fix + page fix (feat/workspace-recall-page eae5d4b6a + bench routes), the text page an agent reads |
 | free-dates-100k | + dated fact lines, newest first within a subject (cli loop/fact-dates) |
 
 Conditions and the table: docs/research/2026-10-29-beam-first-run.md.

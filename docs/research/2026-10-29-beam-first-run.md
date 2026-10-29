@@ -76,25 +76,39 @@ The IE and KU gaps against column (b) are mostly misses on the page, not misread
 
 All columns are verified by verify.py; each cell is the mean with a bootstrap 95% interval over questions. The answerer and judge are gpt-5.6-luna (reasoning effort none) through the Codex CLI for every column except past.dev's published one.
 
-| Category | past.dev published (a) | Our judge on their answers | Our answer + judge on their pages (b) | **Free engine** (CLI, shipped page v0.7.1 + contested-line fix) | **Workspace engine** + validTo-0 fix |
-|---|---:|---:|---:|---:|---:|
-| abstention | 98.75 | 95.00 | 97.50 | 98.75 [96.2, 100.0] | 96.25 [90.0, 100.0] |
-| contradiction_resolution | 78.12 | 71.25 | 69.38 | 67.81 [64.1, 71.2] | 58.13 [52.5, 63.4] |
-| event_ordering | 100.00 | 100.00 | 98.78 | 99.94 [99.8, 100.0] | 99.52 [98.6, 100.0] |
-| information_extraction | 95.00 | 93.75 | 89.69 | 84.69 [76.8, 91.6] | 65.42 [53.6, 76.8] |
-| instruction_following | 96.25 | 96.88 | 91.88 | 92.50 [85.6, 98.1] | 88.12 [78.8, 96.2] |
-| knowledge_update | 89.38 | 89.38 | 85.62 | 78.12 [65.6, 89.4] | 60.62 [45.6, 75.0] |
-| multi_session_reasoning | 68.95 | 67.76 | 64.63 | 65.59 [53.8, 76.5] | 56.15 [44.1, 68.0] |
-| preference_following | 100.00 | 100.00 | 98.12 | 100.00 [100.0, 100.0] | 99.38 [98.1, 100.0] |
-| summarization | 99.38 | 99.17 | 98.25 | 97.69 [95.4, 99.4] | 97.29 [95.1, 99.1] |
-| temporal_reasoning | 95.00 | 93.75 | 92.50 | 95.62 [92.5, 98.1] | 95.00 [88.8, 99.4] |
-| **overall (micro)** | **92.08** | **90.69** | **88.63** | **88.07 [85.6, 90.4]** | **81.59 [78.5, 84.6]** |
+| Category | past.dev published (a) | Our judge on their answers | Our answer + judge on their pages (b) | **Free engine** (CLI, shipped page v0.7.1 + contested-line fix) | Workspace engine + validTo-0 fix | **Workspace engine + validTo-0 fix + page fix** (text page) |
+|---|---:|---:|---:|---:|---:|---:|
+| abstention | 98.75 | 95.00 | 97.50 | 98.75 [96.2, 100.0] | 96.25 [90.0, 100.0] | 100.00 [100.0, 100.0] |
+| contradiction_resolution | 78.12 | 71.25 | 69.38 | 67.81 [64.1, 71.2] | 58.13 [52.5, 63.4] | 65.94 [60.9, 70.6] |
+| event_ordering | 100.00 | 100.00 | 98.78 | 99.94 [99.8, 100.0] | 99.52 [98.6, 100.0] | 100.00 [100.0, 100.0] |
+| information_extraction | 95.00 | 93.75 | 89.69 | 84.69 [76.8, 91.6] | 65.42 [53.6, 76.8] | 71.93 [61.4, 81.9] |
+| instruction_following | 96.25 | 96.88 | 91.88 | 92.50 [85.6, 98.1] | 88.12 [78.8, 96.2] | 86.88 [77.5, 95.0] |
+| knowledge_update | 89.38 | 89.38 | 85.62 | 78.12 [65.6, 89.4] | 60.62 [45.6, 75.0] | 68.12 [53.8, 81.9] |
+| multi_session_reasoning | 68.95 | 67.76 | 64.63 | 65.59 [53.8, 76.5] | 56.15 [44.1, 68.0] | 62.15 [50.6, 73.2] |
+| preference_following | 100.00 | 100.00 | 98.12 | 100.00 [100.0, 100.0] | 99.38 [98.1, 100.0] | 99.38 [98.1, 100.0] |
+| summarization | 99.38 | 99.17 | 98.25 | 97.69 [95.4, 99.4] | 97.29 [95.1, 99.1] | 98.85 [97.6, 99.8] |
+| temporal_reasoning | 95.00 | 93.75 | 92.50 | 95.62 [92.5, 98.1] | 95.00 [88.8, 99.4] | 95.00 [88.8, 99.4] |
+| **overall (micro)** | **92.08** | **90.69** | **88.63** | **88.07 [85.6, 90.4]** | **81.59 [78.5, 84.6]** | **84.82 [82.0, 87.5]** |
 
 **Like-for-like reading.** Column (b) holds the answerer, judge, prompts and budget fixed and changes only the memory, so it is the comparison.
 - **Free engine:** 88.07 against (b)'s 88.63, inside the noise. Without the contested-line fix (the shipped v0.7.1) it is 87.43.
 - **Workspace engine:** 81.59, a paired -7.05 [-9.70, -4.54] against (b) and -6.48 [-8.95, -4.20] against the free engine. Both gaps are outside the noise.
   - Its losses are in information extraction (65.42), knowledge update (60.62), contradiction (58.13) and multi-session (56.15).
   - Its recall pages are small: 1,870 of 8,000 evidence tokens on average (max 5,653), mostly extracted claims with almost no turns. It runs expansion and rerank as the Memory tab does.
+
+**The workspace page fix.** Measured commit: feat/workspace-recall-page eae5d4b6a. 46e52d0a9 changes only edge cases in `page_text`, none of which occur on this dataset's pages. The bench routes are on top: bench/workspace-page 323e26ef9, local.
+- **What the fix does:** compose charges the content, not the JSON; a page holds up to 50 turns plus 50 other results; each search arm keeps its top 50 before rerank, with 800-character matched windows; and the answerer reads `memory_stages.page_text`, the text page an agent gets.
+- **Result:** **84.82 [82.0, 87.5]**. Paired, that is +3.24 [+0.76, +5.84] against 81.59, -3.25 [-5.42, -1.18] against the free engine's 88.07, and -3.81 [-5.79, -1.92] against (b). All three are outside the noise.
+- **Against 81.59, by category:**
+  - contradiction +7.81 [+2.81, +13.12] (outside the noise);
+  - information extraction +6.51, knowledge update +7.50, multi-session +6.01 (all inside the noise);
+  - instruction following -1.25.
+- **Pages:** now 7,188 evidence tokens on average, against 1,870 before.
+- **Gap that remains:** `page_text` dates a claim by its record's creation time (the ingest day, 2026-10-29), not its validFrom. So every claim line on these pages carries the wrong day; the claim text's own "(since …)" form is the only date it shows.
+- **AWS side:** ingest 963 s of request time; extraction settled 185–362 s after the last ingest (median 268 s), producing 4,488 claims; 400 recalls took 1,674 s in all (4.2 s each). 0 throttles, 0 retries. The run took 43.1 min wall (06:47:18–07:30:24 UTC).
+- **Codex:** 1,450 paid calls, 14,003,440 input tokens (10,219,264 cached), 105,302 output.
+- **Cleanup:** the bench owners were deleted twice and confirmed empty.
+
 
 **Workspace engine conditions.** Run locally on this Mac (`apps/backend/scripts/bench_local.py` from bench/workspace-routes 1f8906af2, routes only, none of main.py's sweepers), against dev's AgentCore workspace memory (`lightbulb_dev_workspace_memory-uNdawU9Abr`; prod ids refused in code), AWS profile isol8-admin. Each conversation is a synthetic `bench-<ulid>` owner.
 - **Ingest.** Each exchange went in as one CreateEvent at the dataset's time; AgentCore's `workspace_claims` strategy extracted 4,512 claims. Each turn was also written as a `/turns/` record.

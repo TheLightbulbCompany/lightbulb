@@ -1,0 +1,130 @@
+{
+  "dataset": "BEAM",
+  "split": "100k",
+  "datasetRevision": "3205395e897e7318c7b094ef4e6047b9b82dbb03",
+  "conversations": 20,
+  "questions": 400,
+  "failedQuestions": 0,
+  "failedVerdicts": 0,
+  "microAverage": 0.8482485119047619,
+  "macroAverage": 0.8482485119047618,
+  "categories": {
+    "abstention": {
+      "questions": 40,
+      "mean": 1.0
+    },
+    "contradiction_resolution": {
+      "questions": 40,
+      "mean": 0.659375
+    },
+    "event_ordering": {
+      "questions": 40,
+      "mean": 1.0
+    },
+    "information_extraction": {
+      "questions": 40,
+      "mean": 0.7192708333333333
+    },
+    "instruction_following": {
+      "questions": 40,
+      "mean": 0.86875
+    },
+    "knowledge_update": {
+      "questions": 40,
+      "mean": 0.68125
+    },
+    "multi_session_reasoning": {
+      "questions": 40,
+      "mean": 0.621547619047619
+    },
+    "preference_following": {
+      "questions": 40,
+      "mean": 0.99375
+    },
+    "summarization": {
+      "questions": 40,
+      "mean": 0.9885416666666667
+    },
+    "temporal_reasoning": {
+      "questions": 40,
+      "mean": 0.95
+    }
+  },
+  "answerModel": "gpt-5.6-luna",
+  "judgeModel": "gpt-5.6-luna",
+  "reasoningEffort": "none",
+  "recall": {
+    "limit": 100,
+    "maxTokens": 8000
+  },
+  "prompts": {
+    "source": "https://fabric.so/p/beam-3VjBcqEVRofZyA5CeazeX",
+    "sha256": "584b672d957f3e6f75e96f881ec31da22e1039da1df5fbedb53dc6a9145cfc43"
+  },
+  "backend": "workspace",
+  "backendStats": {
+    "turns": 5732,
+    "events": 2866,
+    "ingestSeconds": 963.0372252890083,
+    "settleSeconds": {
+      "bench-01m636mdpq0r86dh6eqe3x5bap": 319.5,
+      "bench-01m636kg5ny5s5btqqw2zjj4fv": 360.3,
+      "bench-01m636kg5ny5s5btqqw2zjj4fs": 362.0,
+      "bench-01m636kg5ny5s5btqqw2zjj4ft": 359.5,
+      "bench-01m636kg5p0pbytk4zz6qndex5": 358.4,
+      "bench-01m636mf5my3x2sx192azxcytg": 314.8,
+      "bench-01m636q0m66s4kf18tsf97ye0e": 229.7,
+      "bench-01m636mh6h1f61pgctzmm5s4p4": 317.4,
+      "bench-01m636mg6ckq9mgzxadbwq6rw8": 318.4,
+      "bench-01m636np65m3eb48eb5rg8abar": 278.6,
+      "bench-01m636qbtccv25yv672cpcc641": 219.3,
+      "bench-01m636rf3wrkzwd85hz8mv339d": 184.6,
+      "bench-01m636ns2cxehk8n8x3xz4vy5q": 268.1,
+      "bench-01m636nw26fkx1a7fq34kar2n0": 254.6,
+      "bench-01m636nshxp8qr1cqzbpebtkhy": 245.4,
+      "bench-01m636qrtd2z5t2d793yjp4exx": 237.0,
+      "bench-01m636r1s7hxyxje3ny2rx5pt3": 221.0,
+      "bench-01m636s8fqsx48phhrme8dpvnh": 209.3,
+      "bench-01m636rtk1jpj4ma18zad050f8": 211.3,
+      "bench-01m636srtstwdf6rzdcrw6v382": 214.8
+    },
+    "facts": {
+      "bench-01m636mdpq0r86dh6eqe3x5bap": 147,
+      "bench-01m636kg5ny5s5btqqw2zjj4fv": 162,
+      "bench-01m636kg5ny5s5btqqw2zjj4fs": 162,
+      "bench-01m636kg5ny5s5btqqw2zjj4ft": 144,
+      "bench-01m636kg5p0pbytk4zz6qndex5": 153,
+      "bench-01m636mf5my3x2sx192azxcytg": 209,
+      "bench-01m636q0m66s4kf18tsf97ye0e": 232,
+      "bench-01m636mh6h1f61pgctzmm5s4p4": 228,
+      "bench-01m636mg6ckq9mgzxadbwq6rw8": 204,
+      "bench-01m636np65m3eb48eb5rg8abar": 248,
+      "bench-01m636qbtccv25yv672cpcc641": 232,
+      "bench-01m636rf3wrkzwd85hz8mv339d": 242,
+      "bench-01m636ns2cxehk8n8x3xz4vy5q": 259,
+      "bench-01m636nw26fkx1a7fq34kar2n0": 299,
+      "bench-01m636nshxp8qr1cqzbpebtkhy": 277,
+      "bench-01m636qrtd2z5t2d793yjp4exx": 237,
+      "bench-01m636r1s7hxyxje3ny2rx5pt3": 237,
+      "bench-01m636s8fqsx48phhrme8dpvnh": 273,
+      "bench-01m636rtk1jpj4ma18zad050f8": 264,
+      "bench-01m636srtstwdf6rzdcrw6v382": 279
+    },
+    "recalls": 400,
+    "recallSeconds": 1673.6179001568817,
+    "retries": 0,
+    "throttled": 0
+  },
+  "projectTag": "1029-064719",
+  "harnessVersion": "lb-1",
+  "modelPath": "codex-cli",
+  "usage": {
+    "calls": 1450,
+    "cacheHits": 0,
+    "input_tokens": 14003440,
+    "cached_input_tokens": 10219264,
+    "output_tokens": 105302,
+    "reasoning_output_tokens": 0
+  },
+  "finishedAt": "2026-10-29T07:30:24.453606Z"
+}

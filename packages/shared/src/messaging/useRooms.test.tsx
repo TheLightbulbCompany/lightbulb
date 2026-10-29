@@ -959,7 +959,9 @@ describe("runs already in progress when the room opens", () => {
   });
 
   it.each(["channel", "group-dm", "dm"] as const)("recovers nested thread placement for %s", async (kind) => {
-    messaging.getRoom.mockResolvedValue(withRun({ kind }));
+    // A DM needs a recipient besides the signed-in human, or the hook refuses to open it.
+    const members = kind === "dm" ? [...room.members, { ...room.members[0], id: "user-b", displayName: "Bob", role: "member" as const }] : room.members;
+    messaging.getRoom.mockResolvedValue(withRun({ kind, members }));
     messaging.listMessages.mockResolvedValue({ messages: [{ ...message, threadRootMessageId: "root" }], nextAfterSeq: null });
     const { result } = renderHook(() => useRooms(platform()), { wrapper });
     act(() => result.current.selectRoom(room.roomId));

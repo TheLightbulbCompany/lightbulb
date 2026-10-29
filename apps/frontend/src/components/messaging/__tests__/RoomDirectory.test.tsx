@@ -592,6 +592,16 @@ it("keeps the section drag grip usable on touch and above the 44px touch floor",
   expect(css).toMatch(/\.room-directory-actions,\s*\.room-directory-grip\s*\{\s*min-width:\s*44px;\s*\}/);
 });
 
+it("does not reserve a second action slot on session rows", () => {
+  const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
+  expect(css).toMatch(/\.room-directory-row--roster:has\(\.room-directory-actions\)::after\s*\{\s*display:\s*none;/);
+});
+
+it("caps sidebar session metadata so the title keeps the remaining width", () => {
+  const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");
+  expect(css).toMatch(/\.session-row-time\s*\{[^}]*max-width:\s*5rem;[^}]*text-overflow:\s*ellipsis;/);
+});
+
 // The heading's title is a direct <h2> child of .room-directory-heading (the
 // CSS ellipsis selector below targets it structurally) -- jsdom won't apply
 // the stylesheet, so this pairs a DOM-structure assertion with a source-text

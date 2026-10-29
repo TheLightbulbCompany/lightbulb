@@ -104,8 +104,8 @@ export function SessionListRow({ entry: { session, ownerName, own, owner, unread
           </>}
       </DropdownMenuContent>
     </DropdownMenu>}
-    {own && onRename && <SessionRenameButton session={session} onRename={onRename} icon />}
-    {own && onRemove && (session.status === "ended" || sessionEndable(session))
+    {!oneLine && own && onRename && <SessionRenameButton session={session} onRename={onRename} icon />}
+    {!oneLine && own && onRemove && (session.status === "ended" || sessionEndable(session))
       && <SessionRemoveButton name={sessionTitle(session)} live={session.status !== "ended"} onRemove={() => onRemove(session.sessionId)} icon />}
   </li>;
 }

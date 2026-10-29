@@ -84,3 +84,21 @@ What the workspace side does with the turns (`apps/backend/routers/internal_benc
 Two deviations from a real room:
 1. **Dated event text.** Each event's text starts with the session's day, `[YYYY-MM-DD] Speaker: text`. A real room's turns are dated "now", and the extraction prompt dates a fact by "the date of the conversation it came from". Without the day in the text, every claim would likely be dated 2026 and dropped by a 2024 `as_of` filter (`validFrom <= as_of`). The `/turns/` records carry no prefix.
 2. **Turns dated by `validFrom`.** Bench turn records carry a `validFrom` (the dataset's time, epoch seconds), and recall's turn arm filters on it (`dated_turns`, bench only), not on the system `x-amz-agentcore-memory-createdAt`. Whether the record `timestamp` we send becomes `createdAt` was not verified on AWS. `validFrom` is already an indexed key. A turn that carries `validFrom` is also displayed and windowed by it. Production turns carry none, so nothing changes for them.
+
+## CLI loop (free engine; same ingest, harness and calibration columns)
+
+Misses are classified in the session ledger (beam-cli-loop.md). The top cause in information extraction and multi-session reasoning: the answer sits in a retrieved turn, but past the 240-character opening the excerpt shows. Pages used 4.6k of 8k tokens.
+
+| Category | Re-answer (b) | Free engine | + matched excerpt window | Delta vs free | Delta vs (b) |
+|---|---:|---:|---:|---:|---:|
+| information_extraction | 89.69 | 81.82 | 80.83 [72.3, 88.6] | -0.99 | -8.86 |
+| knowledge_update | 85.62 | 80.62 | 81.88 [69.4, 92.5] | +1.26 | -3.74 |
+| contradiction_resolution | 69.38 | 69.06 | 67.19 | -1.87 | -2.19 |
+| multi_session_reasoning | 64.63 | 64.86 | 63.21 | -1.65 | -1.42 |
+| temporal_reasoning | 92.50 | 93.75 | 95.62 | +1.87 | +3.12 |
+| **overall (micro)** | **88.63** | **87.86** | **87.65 [85.1, 90.1]** | **-0.21** | **-0.98** |
+
+- **Change 1 (cli loop/turn-excerpt-window 3e291ac, on main 10eb2ac).** A turn's excerpt is the 240-character window with the most question words.
+  - **It did not move the two weak categories.** Both stay inside the noise. In none of the 20 targeted misses did the gold reach the page: 240 characters is too short for these multi-part answers, wherever the window sits.
+  - **Run:** verified, 0 failed; 1,174 paid calls, 11,735,379 input (8,312,832 cached), 96,849 output; 25.5 min.
+- **Change 2 (loop/turn-excerpt-length):** `excerpt_chars` on recall (default 240), asked at 800. Result below.

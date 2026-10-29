@@ -136,3 +136,29 @@ def test_a_turn_with_valid_from_happened_then():
     }
     assert memory_stages.from_record(row, "turn").occurred_at == datetime(2024, 3, 15, 12, tzinfo=timezone.utc)
     assert memory_stages.from_record({**row, "metadata": {}}, "turn").occurred_at.year == 2026
+
+
+def test_a_local_run_takes_the_env_token_for_a_bench_caller_only(monkeypatch):
+    monkeypatch.setattr(internal_bench.settings, "ENVIRONMENT", "local", raising=False)
+    monkeypatch.setenv("BENCH_LOCAL_TOKEN", "local-secret")
+    http = TestClient(app)
+    ok = {"Authorization": "Bearer local-secret"}
+    assert http.post("/api/v1/internal/bench/bench-01x/projects", json={"name": "x"}, headers=ok).status_code == 200
+    bad = {"Authorization": "Bearer nope"}
+    assert http.post("/api/v1/internal/bench/bench-01x/projects", json={"name": "x"}, headers=bad).status_code == 401
+    assert http.post("/api/v1/internal/bench/org_a/projects", json={"name": "x"}, headers=ok).status_code == 422
+    monkeypatch.setattr(internal_bench.settings, "ENVIRONMENT", "dev", raising=False)  # deployed: no env token
+    with patch.object(internal_bench.container_auth.container_repo, "get_by_owner_id", AsyncMock(return_value=None)):
+        assert http.post("/api/v1/internal/bench/bench-01x/projects", json={"name": "x"}, headers=ok).status_code == 401
+
+
+def test_a_prod_memory_is_refused(dev, monkeypatch):
+    http, client, _ = dev
+    monkeypatch.setattr(
+        internal_bench.settings, "AGENTCORE_MEMORY_ID", "lightbulb_prod_workspace_memory-x", raising=False
+    )
+    assert (
+        http.post("/api/v1/internal/bench/org_a/ingest", json={"bench_owner": "bench-abc", "turns": TURNS}).status_code
+        == 503
+    )
+    client.create_event.assert_not_called()

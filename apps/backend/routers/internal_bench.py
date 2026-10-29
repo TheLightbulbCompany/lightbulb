@@ -19,6 +19,8 @@ Outside dev (and local/test) every route is 404.
 """
 
 import hashlib
+import hmac
+import os
 import re
 from datetime import UTC, datetime
 
@@ -41,6 +43,15 @@ _SESSION = "[^a-zA-Z0-9-_]"
 async def _gate(owner_id: str, request: Request) -> None:
     if settings.ENVIRONMENT not in _DEV:
         raise HTTPException(status_code=404, detail="Not Found")
+    local = os.environ.get("BENCH_LOCAL_TOKEN", "")
+    if settings.ENVIRONMENT == "local" and local:
+        # A local run (scripts/bench_local.py) has no container row to hold a hook token: the
+        # token comes from env, and only for a bench- caller. Never on a deployed env.
+        _bench(owner_id)
+        presented = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        if not hmac.compare_digest(presented.encode("utf-8"), local.encode("utf-8")):
+            raise HTTPException(status_code=401, detail="invalid bench token")
+        return
     await container_auth._require_hook_token(owner_id, request)
 
 
@@ -52,9 +63,10 @@ def _bench(owner: str) -> str:
 
 
 def _memory_id() -> str:
-    if not settings.AGENTCORE_MEMORY_ID:
-        raise HTTPException(status_code=503, detail="no workspace memory in this environment")
-    return settings.AGENTCORE_MEMORY_ID
+    memory_id = settings.AGENTCORE_MEMORY_ID
+    if not memory_id or "prod" in memory_id.lower():
+        raise HTTPException(status_code=503, detail="no bench-safe workspace memory in this environment")
+    return memory_id
 
 
 class ProjectBody(BaseModel):
@@ -188,7 +200,16 @@ async def recall(owner_id: str, body: BenchRecallBody, request: Request) -> dict
     )
 
 
-@router.delete("/{owner_id}/projects/{bench_owner}", status_code=204)
-async def delete_project(owner_id: str, bench_owner: str, request: Request) -> None:
+def _delete(client, memory_id: str, owner: str) -> int:
+    """The bench owner's records and events only (no drafts or sessions: it has none)."""
+    ns = list(workspace_memory.namespaces_for(owner, None).values())
+    records = workspace_memory._delete_records(client, f"bench={owner}", memory_id, ns)
+    workspace_memory._delete_events(client, owner, memory_id)
+    return records
+
+
+@router.delete("/{owner_id}/projects/{bench_owner}")
+async def delete_project(owner_id: str, bench_owner: str, request: Request) -> dict:
     await _gate(owner_id, request)
-    await workspace_memory.delete_owner_memory(_bench(bench_owner))
+    owner, memory_id = _bench(bench_owner), _memory_id()
+    return {"records": await run_in_thread(_delete, workspace_memory._client(), memory_id, owner)}

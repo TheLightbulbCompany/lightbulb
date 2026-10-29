@@ -219,22 +219,18 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
     setOnboarding("main");
   }
 
+  // The services account always onboards on Stripe's hosted page: the Projects
+  // guide makes hosted the primary door, and the embedded component stalls on
+  // its Stripe sign-in popup for this account (prod, 2026-10-29).
   function addServicesAccount() {
-    if (!publishableKey) {
-      return openWith(async () => {
-        await api.post("/company/stripe/services-account", {});
-        return (await onboardingLink("services")).onboarding_url;
-      });
-    }
-    void run(async () => {
+    openWith(async () => {
       await api.post("/company/stripe/services-account", {});
-      setOnboarding("services");
+      return (await onboardingLink("services")).onboarding_url;
     });
   }
 
   function finishServices() {
-    if (!publishableKey) return openWith(async () => (await onboardingLink("services")).onboarding_url);
-    setOnboarding("services");
+    openWith(async () => (await onboardingLink("services")).onboarding_url);
   }
 
   return (

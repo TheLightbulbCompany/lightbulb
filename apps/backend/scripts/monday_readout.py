@@ -37,14 +37,14 @@ CLERK_URL = "https://api.clerk.com/v1"
 PROD_API_URL = "https://api.thelightbulb.company/api/v1"
 USER_AGENT = "lightbulb-monday-readout/1"
 
-EXCLUDED_ORG_QUERIES = (
+INTERNAL_WORKSPACE_SLUGS = (
     "lightbulb",
     "demo-lab",
     "10-06-test",
     "adenprivatetest",
     "external-review",
     "starter-roster-audit-sep-12",
-    "MKT385",
+    "mkt385-lightbulb-1789408375222209342",
 )
 CLIENT_EVENTS = ("landing_viewed", "setup_cta_clicked", "signup_cta_clicked", "signup_started")
 ACQUISITION_EVENTS = (*CLIENT_EVENTS, "setup_requested")
@@ -81,7 +81,7 @@ def _sql(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def build_posthog_query(start: datetime, end: datetime, excluded: set[str]) -> str:
+def build_posthog_query(start: datetime, end: datetime, excluded: set[str], excluded_authors: set[str]) -> str:
     """Build the single bounded HogQL event read used by the pure summarizer."""
     earliest = start - timedelta(days=28)
     event_names = ", ".join(_sql(name) for name in READOUT_EVENTS)
@@ -90,11 +90,17 @@ def build_posthog_query(start: datetime, end: datetime, excluded: set[str]) -> s
     exclusion = ""
     if excluded:
         exclusion = f"\n  AND toString(properties.workspace_id) NOT IN ({', '.join(_sql(v) for v in sorted(excluded))})"
+    author_exclusion = ""
+    if excluded_authors:
+        author_exclusion = (
+            f"\n  AND toString(distinct_id) NOT IN ({', '.join(_sql(v) for v in sorted(excluded_authors))})"
+        )
     return f"""SELECT
   toString(uuid) AS event_id,
   event,
   timestamp,
   toString(properties.workspace_id) AS workspace_id,
+  nullIf(toString(distinct_id), '') AS actor_id,
   nullIf(toString(distinct_id), '') AS visitor_id,
   nullIf(toString(properties.self_reported_source), '') AS self_reported_source,
   nullIf(toString(properties.first_touch_utm_source), '') AS first_touch_utm_source,
@@ -105,7 +111,7 @@ FROM events
 WHERE event IN ({event_names})
   AND timestamp >= toDateTime({_sql(earliest.isoformat())})
   AND timestamp < toDateTime({_sql(end.isoformat())})
-  AND properties.environment = 'prod'
+  AND properties.environment = 'prod'{author_exclusion}
   AND (
     (event IN ({acquisition_names})
      AND (event NOT IN ({client_names})
@@ -139,10 +145,14 @@ def summarize(
     start: datetime,
     end: datetime,
     *,
+    staff_ids: set[str] | None = None,
     vercel_visitors: int | None = None,
 ) -> dict[str, Any]:
     """Compute all readout metrics from fixture-shaped source records."""
-    clean_events = [{**event, "timestamp": _dt(event["timestamp"])} for event in events]
+    staff_ids = staff_ids or set()
+    clean_events = [
+        {**event, "timestamp": _dt(event["timestamp"])} for event in events if event.get("actor_id") not in staff_ids
+    ]
     workspace_events = [
         event for event in clean_events if event.get("workspace_id") and event["workspace_id"] not in excluded
     ]
@@ -394,9 +404,20 @@ class Clerk:
         page = self.get("/organizations", query=query, limit=100, offset=0)
         return page.get("data", page if isinstance(page, list) else [])
 
-    def membership_count(self, workspace_id: str) -> int:
-        page = self.get(f"/organizations/{workspace_id}/memberships", limit=1, offset=0)
-        return int(page.get("total_count", len(page.get("data", []))))
+    def member_user_ids(self, workspace_id: str) -> set[str]:
+        user_ids: set[str] = set()
+        offset = 0
+        while True:
+            page = self.get(f"/organizations/{workspace_id}/memberships", limit=500, offset=offset)
+            rows = page.get("data", [])
+            for row in rows:
+                public_user_data = row.get("public_user_data") or {}
+                user_id = public_user_data.get("user_id") or row.get("user_id")
+                if user_id:
+                    user_ids.add(str(user_id))
+            if len(rows) < 500:
+                return user_ids
+            offset += len(rows)
 
 
 def resolve_organizations(clerk: Clerk, admin_ids: set[str]) -> tuple[dict[str, str], set[str]]:
@@ -404,9 +425,11 @@ def resolve_organizations(clerk: Clerk, admin_ids: set[str]) -> tuple[dict[str, 
         raise RuntimeError("PLATFORM_ADMIN_USER_IDS is empty; refusing to risk counting internal workspaces")
     organizations = clerk.organizations()
     by_id = {org["id"]: org.get("name") or org.get("slug") or org["id"] for org in organizations}
-    excluded = {org["id"] for org in organizations if org.get("created_by") in admin_ids}
-    for query in EXCLUDED_ORG_QUERIES:
-        excluded.update(org["id"] for org in clerk.query_organizations(query))
+    by_slug = {org.get("slug"): org["id"] for org in organizations if org.get("slug")}
+    missing = set(INTERNAL_WORKSPACE_SLUGS) - set(by_slug)
+    if missing:
+        raise RuntimeError(f"internal workspace slugs were not found in Clerk: {', '.join(sorted(missing))}")
+    excluded = {by_slug[slug] for slug in INTERNAL_WORKSPACE_SLUGS}
     return by_id, excluded
 
 
@@ -524,10 +547,10 @@ def main(argv: list[str] | None = None) -> int:
     organizations, excluded = resolve_organizations(clerk, admins)
     events = fetch_events(
         _secret("POSTHOG_PROJECT_API_KEY", "lightbulb/prod/posthog_project_api_key"),
-        build_posthog_query(start, end, excluded),
+        build_posthog_query(start, end, excluded, admins),
     )
     relevant = {event["workspace_id"] for event in events if event.get("workspace_id")}
-    membership_counts = {workspace_id: clerk.membership_count(workspace_id) for workspace_id in relevant}
+    membership_counts = {workspace_id: len(clerk.member_user_ids(workspace_id) - admins) for workspace_id in relevant}
     invoices = fetch_invoices(_secret("STRIPE_SECRET_KEY", "lightbulb/prod/stripe_secret_key"))
     result = summarize(
         events,
@@ -537,6 +560,7 @@ def main(argv: list[str] | None = None) -> int:
         excluded,
         start,
         end,
+        staff_ids=admins,
         vercel_visitors=fetch_vercel_visitors(start, end),
     )
     text = render_readout(result)

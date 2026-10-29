@@ -10,6 +10,7 @@ from scripts.monday_readout import (
     build_posthog_query,
     monday_window,
     render_readout,
+    resolve_organizations,
     summarize,
 )
 
@@ -106,10 +107,12 @@ def test_render_names_every_metric_and_suppresses_small_base_percentages():
 
 def test_hogql_keeps_anonymous_acquisition_visitors_and_filters_workspace_metrics():
     start, end = monday_window(datetime(2026, 10, 14, tzinfo=timezone.utc))
-    query = build_posthog_query(start, end, {"org_internal", "org_test"})
+    query = build_posthog_query(start, end, {"org_internal", "org_test"}, {"user_staff"})
 
     assert "properties.environment = 'prod'" in query
     assert "toString(properties.workspace_id) NOT IN ('org_internal', 'org_test')" in query
+    assert "toString(distinct_id) NOT IN ('user_staff')" in query
+    assert "nullIf(toString(distinct_id), '') AS actor_id" in query
     assert "nullIf(toString(distinct_id), '') AS visitor_id" in query
     assert "properties.first_touch_utm_source" in query
     assert "properties.first_touch_referring_domain" in query
@@ -123,6 +126,69 @@ def test_hogql_keeps_anonymous_acquisition_visitors_and_filters_workspace_metric
     assert "AND notEmpty(toString(properties.workspace_id))" in query
     assert "ORDER BY timestamp, event_id" in query
     assert "LIMIT" not in query
+
+
+def test_resolve_organizations_uses_exact_internal_slugs_each_run():
+    class FakeClerk:
+        def organizations(self):
+            return [
+                {"id": f"org_{index}", "name": slug, "slug": slug}
+                for index, slug in enumerate(monday_readout.INTERNAL_WORKSPACE_SLUGS)
+            ] + [{"id": "org_customer", "name": "Lightbulb Customer", "slug": "lightbulb-customer"}]
+
+    organizations, excluded = resolve_organizations(FakeClerk(), {"user_staff"})
+
+    assert excluded == {f"org_{index}" for index, _ in enumerate(monday_readout.INTERNAL_WORKSPACE_SLUGS)}
+    assert "org_customer" not in excluded
+    assert organizations["org_customer"] == "Lightbulb Customer"
+
+
+def test_staff_authors_do_not_count_as_second_person_handoff_or_week4_activity():
+    start, end = monday_window(datetime(2026, 10, 14, tzinfo=timezone.utc))
+    events = [
+        {
+            "event": "workspace_created",
+            "timestamp": "2026-10-04T00:00:00+00:00",
+            "workspace_id": "org_team",
+            "actor_id": "user_customer",
+        },
+        {
+            "event": "team_formed",
+            "timestamp": "2026-10-04T01:00:00+00:00",
+            "workspace_id": "org_team",
+            "actor_id": "user_staff",
+        },
+        {
+            "event": "workspace_created",
+            "timestamp": "2026-09-30T00:00:00+00:00",
+            "workspace_id": "org_handoff",
+            "actor_id": "user_customer",
+        },
+        {
+            "event": "handoff_completed",
+            "timestamp": "2026-10-01T00:00:00+00:00",
+            "workspace_id": "org_handoff",
+            "actor_id": "user_staff",
+        },
+        {
+            "event": "team_formed",
+            "timestamp": "2026-09-07T00:00:00+00:00",
+            "workspace_id": "org_week4",
+            "actor_id": "user_customer",
+        },
+        {
+            "event": "room_message_sent",
+            "timestamp": "2026-10-02T00:00:00+00:00",
+            "workspace_id": "org_week4",
+            "actor_id": "user_staff",
+        },
+    ]
+
+    result = summarize(events, [], {}, {"org_team": 1}, set(), start, end, staff_ids={"user_staff"})
+
+    assert result["teams_formed"]["count"] == 0
+    assert result["first_handoff"]["count"] == 0
+    assert result["week4_active"]["count"] == 0
 
 
 def test_fetch_events_pages_until_posthog_returns_a_short_page(monkeypatch):

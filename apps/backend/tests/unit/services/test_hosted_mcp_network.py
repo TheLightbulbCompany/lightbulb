@@ -437,6 +437,9 @@ async def test_a_reply_with_a_status_is_a_result(member):
     with pytest.raises(ApiProblem) as refused:
         await hosted_mcp.send_message(text="?", request_id="r9", room_id=str(uuid.uuid4()), status="done")
     assert refused.value.error.code == "INVALID_REQUEST" and member.engine.calls == before
+    with pytest.raises(ApiProblem) as bare:
+        await hosted_mcp.send_message(text="x", request_id="r10", session_id=ADEN, status="done")
+    assert bare.value.error.code == "INVALID_REQUEST" and member.engine.calls == before
 
 
 @pytest.mark.asyncio

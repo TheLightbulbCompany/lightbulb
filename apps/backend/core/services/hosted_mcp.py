@@ -724,7 +724,7 @@ async def send_message(
         raise messaging.ApiProblem(
             "INVALID_REQUEST", "Send to exactly one of session_id, reply_to, room_id or person_id."
         )
-    if status is not None and network is None:
+    if status is not None and reply_to is None:
         raise messaging.ApiProblem("INVALID_REQUEST", "status answers an assignment: send it with reply_to.")
     slug, client = _sender(get_access_token())
     if network is not None:

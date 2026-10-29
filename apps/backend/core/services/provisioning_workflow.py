@@ -137,6 +137,14 @@ class WorkflowRefused(RuntimeError):
         self.requirements = requirements or []
 
 
+def provider_of(service: dict) -> str | None:
+    """The provider id a catalog service row carries. On the 2026-09-30.preview
+    wire the field is ``provider`` (verified live 2026-10-29: Neon's
+    ``postgres`` row has ``provider: prvdr_…`` and ``provider_name: Neon``, no
+    ``provider_id``). The old name is kept as a fallback for recorded fixtures."""
+    return service.get("provider") or service.get("provider_id")
+
+
 def is_offerable(service: dict, provider: dict | None) -> bool:
     """The deterministic policy filter. Runs BEFORE anything a model sees:
     "Catalog and Forge policy → determine available Services → apply country,
@@ -271,7 +279,7 @@ async def _read_catalog(account_id: str, provider_name: str, service_id: str) ->
         # round trip on the provider list to say no.
         raise WorkflowRefused("service_unavailable", f"{provider_name}/{service_id} is not available to you")
     providers = await api.catalog_providers(account_id)
-    provider = next((p for p in providers if p.get("id") == service.get("provider_id")), None)
+    provider = next((p for p in providers if p.get("id") == provider_of(service)), None)
     if provider is None:
         raise WorkflowRefused("service_unavailable", "That provider is not in your catalog")
     if not is_offerable(service, provider):

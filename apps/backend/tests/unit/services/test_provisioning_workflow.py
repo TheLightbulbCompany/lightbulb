@@ -16,7 +16,8 @@ from core.services.stripe_provisioning import ProvisioningError  # noqa: E402
 SERVICE = {
     "object": "v2.provisioning.provider_service",
     "id": "psvc_1",
-    "provider_id": "prvdr_1",
+    # Live 2026-09-30.preview shape (verified 2026-10-29): the provider id is `provider`.
+    "provider": "prvdr_1",
     "service_id": "svc_analytics",
     "provider_name": "posthog",
     "description": "Product analytics",
@@ -840,7 +841,7 @@ async def test_a_thin_stripe_test_provider_is_never_offered():
     """The live catalog carries `herenow` / `Perplexity` / `Shopify` rows with
     empty categories AND description — Stripe's own test providers."""
     thin_provider = {"id": "prvdr_9", "name": "herenow", "categories": [], "description": ""}
-    thin_service = {**SERVICE, "provider_id": "prvdr_9", "provider_name": "herenow"}
+    thin_service = {**SERVICE, "provider": "prvdr_9", "provider_name": "herenow"}
     assert mod.is_offerable(SERVICE, PROVIDER) is True
     assert mod.is_offerable(thin_service, thin_provider) is False
     # A development-only row never shows either.

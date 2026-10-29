@@ -105,7 +105,10 @@ async def create_company_account(*, owner_id: str, email: str, company_name: str
         "display_name": company_name,
         "dashboard": "full",
         "identity": {"country": "us"},
-        "configuration": account_configuration(),
+        # The services account only provisions, so it asks for `developer`
+        # alone: on that shape Stripe requires just the contact email for
+        # `projects`; `merchant` adds ~15 KYC/bank fields (dev sandbox, 10-28).
+        "configuration": DEVELOPER_CONFIGURATION if kind == "company_services" else account_configuration(),
         "defaults": ACCOUNT_DEFAULTS,
         # kind "company_services" = the services account (see projects_account_of).
         "metadata": {"owner_id": owner_id, "kind": kind},

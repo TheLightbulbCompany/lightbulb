@@ -18,6 +18,8 @@ Internal. Not for publication (founder). The per-question results contain BEAM d
 | temporal_reasoning | 95.00 [88.8, 99.4] | 93.75 [87.5, 98.8] | 92.50 [86.2, 97.5] | 93.75 [88.1, 98.1] |
 | **overall (micro)** | **92.08 [90.0, 94.0]** | **90.69 [88.5, 92.7]** | **88.63 [86.2, 90.9]** | **87.86 [85.4, 90.2]** |
 
+**Free engine caveat: its recall was more generous than the shipped page.** The free-engine column gave the answerer 50 facts and 50 turn excerpts per question (as structured results, trimmed to 100 / 8,000 tokens). The shipped `recall` hands an agent a page of at most 1,600 characters with 5 turns. A row at the shipped page size is below (pending).
+
 (a) past.dev, `github.com/pastdotdev/benchmarks` `beam/results/100k/results.jsonl` at a712cd993e249cadd214168c3c3ee674f89bd5e4 (CC BY-SA 4.0). Its README table matches it.
 
 ## The Codex path offset (to go next to every number)
@@ -69,3 +71,16 @@ The gold answer was in memory / only in a turn / nowhere on the page:
 - contradiction: 5 / 0 / 35
 
 The IE and KU gaps against column (b) are mostly misses on the page, not misreadings.
+
+## The workspace engine (pending: runs once dev has the bench routes, PR #4471)
+
+What the workspace side does with the turns (`apps/backend/routers/internal_bench.py`):
+- **Owners.** Each conversation is a synthetic owner `bench-<ulid>`, with no container, runtime or network member. The routes refuse any other owner, and they 404 outside dev.
+- **Events.** Each user turn and the assistant turn after it become one `CreateEvent` under `actorId = <bench owner>`, with `eventTimestamp` set to the dataset's time. This is how the runtime plugin writes a room exchange. AgentCore's `workspace_claims` strategy then extracts claims into `/owners/<owner>/` on its own: there is no note-taker.
+- **Turn records.** Each turn is also written as a `/turns/<owner>/` record, as the sync's turn mirror would write it.
+- **No sync.** Bench owners have no member, so no sync runs for them.
+- **Recall.** `memory_recall.recall` as the Memory tab calls it (expansion and rerank on), as of the question's moment. The runner then trims the page with past.dev's count.
+
+Two deviations from a real room:
+1. **Dated event text.** Each event's text starts with the session's day, `[YYYY-MM-DD] Speaker: text`. A real room's turns are dated "now", and the extraction prompt dates a fact by "the date of the conversation it came from". Without the day in the text, every claim would likely be dated 2026 and dropped by a 2024 `as_of` filter (`validFrom <= as_of`). The `/turns/` records carry no prefix.
+2. **Turns dated by `validFrom`.** Bench turn records carry a `validFrom` (the dataset's time, epoch seconds), and recall's turn arm filters on it (`dated_turns`, bench only), not on the system `x-amz-agentcore-memory-createdAt`. Whether the record `timestamp` we send becomes `createdAt` was not verified on AWS. `validFrom` is already an indexed key. A turn that carries `validFrom` is also displayed and windowed by it. Production turns carry none, so nothing changes for them.

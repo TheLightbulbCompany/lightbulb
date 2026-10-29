@@ -3,9 +3,11 @@
 **Chat is for talking about the work. A document is for the work itself.**
 
 An 8,000-character answer in chat cannot be skimmed, found again, reviewed or
-versioned. A deliverable goes in a Paperclip **issue document** on a task; chat
-gets a short summary with the document's link, and the app turns that link
-into a card (title, task, preview, Open) right in the conversation.
+versioned. In a chat turn, a deliverable is a file attached to your reply,
+with a short summary in chat. When the work already is a task, it goes in a
+Paperclip **issue document** on that task; chat gets a short summary with the
+document's link, and the app turns that link into a card (title, task,
+preview, Open) right in the conversation.
 
 The **Library** lists issue documents, work products and attachments, and
 nothing else. A deliverable written in chat, in a task comment or in the task
@@ -17,8 +19,8 @@ say "the full doc is in the task thread": write the document, then link it.
 | What was asked | Deliver as |
 |---|---|
 | A fact, a number, yes/no, an opinion, a link | A chat reply |
-| Research, a plan, a draft, a report, a spec, an analysis | A document on a task, plus a short chat summary with its link |
-| Something to do later, by someone, or repeatedly | A task, plus a one-line chat confirmation |
+| Research, a plan, a draft, a report, a spec, an analysis | A file attached to your reply, plus a short chat summary; a document on the task if the work already is one |
+| Goal or project work, or work that outlives the conversation (later, by someone else, or repeatedly) | A task under that goal or project, plus a one-line chat confirmation |
 | A spreadsheet, PDF or image | An attachment (`MEDIA:` line) or an uploaded work product |
 
 Write a document when **any two** of these hold:
@@ -34,14 +36,21 @@ Write a document when **any two** of these hold:
 This holds in a DM too. Where you are only changes the chat part: in a channel,
 keep the summary short and take the back-and-forth into the thread.
 
-## How (the stock issue-documents API)
+## How
 
-All writes go through the paperclip helper. The room turn files the task; the
-task's own run writes the document. Never write the document in the room turn.
+**In a chat turn**, write the document yourself as a file in this
+conversation's folder (`.md`, or `.docx`/`.pdf`) and put `MEDIA:<absolute
+path>` on its own line in your reply; the room shows it as an attachment
+(limits: `references/platform-primitives.md` "Send a file in chat").
+
+**When the work is a task** (the stock issue-documents API), all writes go
+through the paperclip helper. The room turn files the task; the task's own run
+writes the document.
 
 1. **In the room turn, file the task.** If the conversation is about an
    existing task (it was named or linked), comment the new ask on it instead.
-   Otherwise create one task per deliverable, assigned to yourself (an assigned
+   Otherwise, for goal or project work (the paperclip skill's webchat rule),
+   create one task, assigned to yourself (an assigned
    task starts on its own; filing your own new task is not the paperclip
    skill's "take a task that is not yours", and Paperclip accepts it from a
    room turn), with the full context on stdin: what was asked, by whom, and

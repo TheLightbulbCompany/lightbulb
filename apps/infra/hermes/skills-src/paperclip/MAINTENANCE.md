@@ -224,12 +224,14 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       (seeded paused by `provision_org` via `agent_routine_provisioning
       .create_agent_routines(paused=True)`); rename a routine there and here
       together. Re-apply on re-vendor.
-  16. Chat deliverables as documents (references/artifacts.md "A deliverable
-      asked for in chat is a document too"). Points at the lightbulb skill's
-      references/chat-vs-document.md, which owns the rule, the webchat-safe
-      calls (create --status backlog, raw PUT /api/issues/:id/documents/:key,
-      disposition) and the chat wording; the `#document-<key>` link it writes
-      is what the web/iOS chat renders as a document card. Re-apply on re-vendor.
+  16. Chat deliverables (references/artifacts.md). A deliverable asked for in
+      chat goes back as a file attached to the reply; an issue document only
+      when the work already is a task (founder ruling 2026-10-28: no task just
+      to hold a chat deliverable). Points at the lightbulb skill's
+      references/chat-vs-document.md, which owns the rule; for task-backed work
+      the raw PUT /api/issues/:id/documents/:key and the `#document-<key>` link
+      (rendered as a document card in web/iOS chat) still apply. Do not restore
+      upstream's create-a-task-for-the-deliverable flow. Re-apply on re-vendor.
   17. Handoffs through issues (SKILL.md Critical Rules "Handoffs go through
       issues, not chat" + its full form in references/delegation.md): the
       room caps agent chains at two agent replies per human message
@@ -319,8 +321,8 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       reference grows one. The snapshot never replaces the fresh-check rule.
       Re-apply on re-vendor.
   24. Task work runs in the task's own session (SKILL.md webchat summary +
-      references/heartbeat.md's "Work bigger than a quick answer becomes a
-      task" bullet + lightbulb references/chat-vs-document.md "How" + the
+      references/heartbeat.md's "Answer and do quick work in the room turn
+      yourself; a task is only for ..." bullet + lightbulb references/chat-vs-document.md "How" + the
       helper's usage text). Owner ruling 2026-10-18 ("the task is the durable
       record ... the work shouldn't really be done in the room"), reversing
       2026-10-04's "one conversation per piece of work". That design (after

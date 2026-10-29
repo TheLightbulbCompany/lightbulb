@@ -162,9 +162,10 @@ def _enable_workers() -> None:
     if os.environ.get("LIGHTBULB_NETWORK_WORKERS") != "1":
         return
     path = NET_HOME / "config.toml"
-    old = path.read_text().splitlines() if path.exists() else []
-    kept = [ln for ln in old if ln.split("=")[0].strip() != "network_workers"]
-    path.write_text("\n".join([*kept, "network_workers = true"]) + "\n")
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    cut = next((i for i, ln in enumerate(lines) if ln.strip().startswith("[")), len(lines))
+    top = [ln for ln in lines[:cut] if ln.split("=")[0].strip() != "network_workers"]
+    path.write_text("\n".join([*top, "network_workers = true", *lines[cut:]]) + "\n", encoding="utf-8")
 
 
 def _start() -> bool:

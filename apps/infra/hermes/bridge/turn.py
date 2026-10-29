@@ -2055,7 +2055,7 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None, spo
             task = (f"This is an assignment from {label}: do it, then reply with lightbulb_network action send, "
                     "reply_to its requestId, and status failed or cancelled if you could not finish.")
         elif kind == "cancel":
-            task = f"{label} cancelled an assignment: stop that work and reply with status cancelled."
+            task = f"{label} cancelled an assignment: stop that work and reply with lightbulb_network action send, reply_to its requestId, and status cancelled."
         else:
             task = f"answering a network message from {label}. Reply with lightbulb_network if a reply is needed."
         identity = (f"You are {name}, {task} {_repo_rule(agent_id)}" if kind not in ("assign", "cancel")

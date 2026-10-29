@@ -191,7 +191,7 @@ def test_the_identity_line_for_an_assignment_and_a_cancel(net):
         "You are Friday. This is an assignment from Mac: do it, then reply with lightbulb_network action send, "
         "reply_to its requestId, and status failed or cancelled if you could not finish.")
     body["message"]["kind"] = "cancel"
-    assert "Mac cancelled an assignment: stop that work and reply with status cancelled." in turn.system_prompt(body, "a-friday")
+    assert "Mac cancelled an assignment: stop that work and reply with lightbulb_network action send, reply_to its requestId, and status cancelled." in turn.system_prompt(body, "a-friday")
 
 
 def test_network_workers_is_written_only_when_the_runtime_asks(net, monkeypatch):
@@ -207,3 +207,12 @@ def test_network_workers_is_written_only_when_the_runtime_asks(net, monkeypatch)
     network._enable_workers()
     network._enable_workers()
     assert cfg.read_text() == 'name = "x"\nnetwork_workers = true\n'
+
+
+def test_network_workers_goes_above_the_first_table(net, monkeypatch):
+    monkeypatch.setenv("LIGHTBULB_NETWORK_WORKERS", "1")
+    network.NET_HOME.mkdir(parents=True, exist_ok=True)
+    cfg = network.NET_HOME / "config.toml"
+    cfg.write_text('# mine\nname = "x"\nnetwork_workers = false\n[t]\nnetwork_workers = 5\n', encoding="utf-8")
+    network._enable_workers()
+    assert cfg.read_text(encoding="utf-8") == '# mine\nname = "x"\nnetwork_workers = true\n[t]\nnetwork_workers = 5\n'

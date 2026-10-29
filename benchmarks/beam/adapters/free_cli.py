@@ -149,8 +149,12 @@ class FreeCliBackend:
             body["as_of"] = seconds(as_of)
         page = await self.ask(project, body)
         echoed = self.moments[project].get(page["as_of"]) if page.get("as_of") is not None else None
-        results = [fact_result(f) for f in page.get("facts") or []]
-        results += [turn_result(t) for t in page.get("turns") or []]
+        known = self.moments[project]
+
+        def moment(second: int) -> str:  # the dataset's moment where the second is a turn's
+            return utc_iso(known.get(second) or datetime.fromtimestamp(second, timezone.utc))
+        results = [fact_result(f, moment) for f in page.get("facts") or []]
+        results += [turn_result(t, moment) for t in page.get("turns") or []]
         return RecallPage(results, echoed)
 
     async def close(self) -> None:
@@ -160,11 +164,7 @@ class FreeCliBackend:
             await self._bridge.wait()
 
 
-def moment(second: int) -> str:
-    return utc_iso(datetime.fromtimestamp(second, timezone.utc))
-
-
-def fact_result(fact: dict) -> dict:
+def fact_result(fact: dict, moment) -> dict:
     content = f"{fact['subject']}: {fact['value']}"
     if fact.get("history"):
         was = fact["history"][-1]
@@ -175,5 +175,5 @@ def fact_result(fact: dict) -> dict:
     return result
 
 
-def turn_result(turn: dict) -> dict:
+def turn_result(turn: dict, moment) -> dict:
     return {"kind": "turn", "content": f"{turn['role']}: {turn['excerpt']}", "occurredAt": moment(turn["at"])}

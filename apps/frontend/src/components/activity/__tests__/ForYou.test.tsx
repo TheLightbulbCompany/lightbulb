@@ -241,7 +241,7 @@ describe("ForYou", () => {
     await userEvent.click(within(row as HTMLElement).getByRole("button", { name: "Decline" }));
     expect(props.onRunAction).toHaveBeenLastCalledWith("nethold:h1", "decline", {});
     // Review asks once inline (a session ask with no session link), then Send answers it.
-    // Like a webhook agent's ask, the one-line row offers the primary and Decline only.
+    // The one-line row offers the primary and Decline only.
     await userEvent.click(within(row as HTMLElement).getByRole("button", { name: "Review" }));
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(props.onRunAction).toHaveBeenLastCalledWith("nethold:h1", "send", {});

@@ -483,6 +483,16 @@ async def _archive_metronome_customer(customer_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _runtime_detail(report: dict) -> str:
+    """The runtime step's detail; "scheduled" when a parked member keeps the runtime a while."""
+    if report.get("runtime") == "scheduled":
+        return (
+            "containers row + channel-links removed; agentcore runtime + boot secret + S3 profiles "
+            "teardown scheduled (after the cloud member forgets its entries, within a few minutes)"
+        )
+    return "agentcore runtime + boot secret + S3 profiles + containers row + channel-links removed"
+
+
 async def _step(steps: list[WipeStep], *, system: str, action: str, fn: Callable[[], Awaitable[str | None]]) -> None:
     """Run one teardown collaborator, in its own try/except.
 
@@ -699,6 +709,14 @@ async def preview_wipe(owner_id: str) -> WipeReport:
             action="drop_owner_index",
             status="would_delete",
             detail="the owner's message search index",
+        )
+    )
+    steps.append(
+        WipeStep(
+            system="person_memory",
+            action="delete_person_memory",
+            status="would_delete",
+            detail="uploaded sessions, drafts, episodes and computer keys",
         )
     )
 
@@ -956,8 +974,9 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
             # Every other caller (entitlement_teardown on a lapsed card, debug's routine
             # reprovision) leaves it False and keeps the owner's memory/skills/SOUL.md/
             # auth.json. Do not re-broaden it.
-            row_at_death = await delete_workspace_runtime(owner_id, delete_profiles=True)
-            detail = "agentcore runtime + boot secret + S3 profiles + containers row + channel-links removed"
+            report: dict = {}
+            row_at_death = await delete_workspace_runtime(owner_id, delete_profiles=True, report=report)
+            detail = _runtime_detail(report)
             # FINAL SWEEP — the last moment any gate-token hash is reachable.
             # ``delete_workspace_runtime`` returns the row's own ALL_OLD image, so
             # this covers exactly what step 2b could not see: a hash minted
@@ -1053,6 +1072,16 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         return await message_search.delete_owner_index(owner_id)
 
     await _step(steps, system="search", action="drop_owner_index", fn=_s9a3)
+
+    async def _s9a4() -> str:
+        # The person's own memory data, in no workspace's keeping: uploaded sessions, drafts and
+        # evaluator rows, episodes, the computer-key registry (workspace_memory.delete_person_memory).
+        from core.services import workspace_memory
+
+        await workspace_memory.delete_person_memory(owner_id)
+        return "sessions, drafts, episodes and computer keys removed"
+
+    await _step(steps, system="person_memory", action="delete_person_memory", fn=_s9a4)
 
     # Both of this owner's items in paperclip-companies, not just the company
     # row: the funnel answer lives in the SAME table under the prefixed key

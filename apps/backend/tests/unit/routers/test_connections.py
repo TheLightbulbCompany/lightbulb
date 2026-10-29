@@ -421,6 +421,23 @@ class TestListConnections:
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
+    async def test_list_returns_reconnect_reason_only_while_reconnect_required(self, mock_repo, async_client):
+        mock_repo.list_for_owner = AsyncMock(
+            return_value=[
+                {"provider": "stripe", "status": "reconnect_required", "reconnect_reason": "invalid_grant"},
+                # A stale reason on a connected row is never surfaced.
+                {"provider": "linear", "status": "connected", "reconnect_reason": "invalid_grant"},
+            ]
+        )
+
+        by_key = {c["provider"]: c for c in (await async_client.get("/api/v1/connections")).json()["connections"]}
+
+        assert by_key["stripe"]["reconnect_reason"] == "invalid_grant"
+        assert by_key["linear"]["reconnect_reason"] is None
+        assert by_key["google"]["reconnect_reason"] is None
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
     async def test_google_visible_to_every_owner(self, mock_repo, async_client, monkeypatch):
         mock_repo.list_for_owner = AsyncMock(return_value=[])  # no connected rows
         response = await async_client.get("/api/v1/connections")

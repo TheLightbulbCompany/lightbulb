@@ -77,7 +77,7 @@ async def request_provider_consent(
 ) -> str | None:
     """The guide's "Collect informed approval" list, in full.
 
-    "Before creating an Account request or Resource, show Ada: Provider name,
+    "Before creating a Provider connection request or Resource, show Ada: Provider name,
     description, website, privacy policy, and terms of service. Service
     description, categories, availability, scope, required configuration, and
     constraints. The applicable paid_pricing entry and any Service-specific
@@ -133,9 +133,9 @@ async def request_provider_connect(
     *, owner_id: str, issue_id: str | None, workflow_id: str, snapshot: dict, provider_account: dict | None = None
 ) -> str | None:
     """`pending_auth`: "Open the returned redirect_url for the authenticated
-    user." Stripe owns the OAuth callback; we poll the Account request.
+    user." Stripe owns the OAuth callback; we poll the Provider connection request.
 
-    The URL is NOT on the card. By the time it is clicked the account request
+    The URL is NOT on the card. By the time it is clicked the provider connection request
     may have completed, errored, or gone stale — so the button calls the
     connect-link route, which re-reads (or re-creates) the request and returns
     a URL minted for that click. ``provider_account`` (already reduced to names

@@ -80,7 +80,7 @@ def classify_routines(routines: list[dict]) -> tuple[list[dict], list[dict]]:
 async def _retire_grant(owner_id: str, *, apply: bool) -> str:
     if not apply:
         return "would mark reconnect_required + clear gog keyring"
-    await _mark_reconnect(owner_id, "google")
+    await _mark_reconnect(owner_id, "google", "lightbulb_retired_grant")
     p = registry.get_provider("google")
     cred = await integration_secret_store.get(owner_id, "google") or {}
     cred = {

@@ -241,7 +241,8 @@ export function describePanel(
     // task-7a's report.
     // A session is workspace-scoped: a `room` riding along (old links) is ignored.
     if (params.session) {
-      return { panelId: MESSAGES_PANEL_ID, component: "chat", title: "Chat", params: { sessionId: params.session } };
+      // `seq`: open the session's conversation at that turn (a session search hit).
+      return { panelId: MESSAGES_PANEL_ID, component: "chat", title: "Chat", params: { sessionId: params.session, ...(params.seq ? { seq: params.seq } : {}) } };
     }
     if (params.room) {
       return {
@@ -318,7 +319,7 @@ export function describePanel(
   // permalink with ?session= already produces.
   if (key === "session") {
     if (!params.session) return null;
-    return describePanel("chat", { session: params.session });
+    return describePanel("chat", { session: params.session, ...(params.seq ? { seq: params.seq } : {}) });
   }
 
   if (key.startsWith("teams-")) {
@@ -388,7 +389,7 @@ export function durableParamsFor(panelId: string): string[] {
   // param or a refresh resurrects the panel the user just closed. "panel" +
   // "agentId" cover the explicit ?panel=chat grammar (describePanel accepts
   // agent OR agentId) so an externally-authored chat link clears fully.
-  if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId", "room", "message", "session"];
+  if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId", "room", "message", "session", "seq"];
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
   if (panelId === "artifact") return ["panel", ...ARTIFACT_PARAM_KEYS];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
@@ -411,7 +412,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   // roomId/messageId included alongside agentId/agentSelection: an agent open
   // must clear a stale room target and vice versa, or the two grammars fight
   // (see openMessagePanel / openChatPanel in workspaceController.ts).
-  if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId", "sessionId", "sessionIntent"];
+  if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId", "sessionId", "seq", "sessionIntent"];
   if (panelId === WORK_PANEL_ID) return ["agent", "groupBy", "view", "day", "section"];
   if (panelId === "activity") return ["filter", "focus"];
   if (panelId === "mail") return ["item"];

@@ -111,8 +111,6 @@ def member(table, monkeypatch):
         claims={"org_id": OWNER},
     )
     monkeypatch.setattr(hosted_mcp, "get_access_token", lambda: token)
-    monkeypatch.setattr(hosted_mcp, "sessions_for", AsyncMock(return_value={"sessions": [], "total": 0}))
-    monkeypatch.setattr(hosted_mcp.webhook_agents, "targets", AsyncMock(return_value=[]))
     return SimpleNamespace(engine=engine, table=table, token=token, rows=rows, sent_to=sent_to, titles=titles)
 
 
@@ -187,22 +185,18 @@ async def test_request_ids_follow_the_destination(member):
         await hosted_mcp.send_message(text="hi", request_id="x" * 129, session_id=ADEN)
     with pytest.raises(ToolError, match="INVALID_REQUEST"):
         await hosted_mcp.send_message(text="hi", request_id="r1\n", session_id=ADEN)
-    with pytest.raises(ToolError, match="UUID"):  # a room send still takes a UUID
-        await hosted_mcp.send_message(text="hi", request_id="r1", room_id=str(uuid.uuid4()))
+    with pytest.raises(ToolError, match="INVALID_REQUEST"):  # a room send takes either form, never junk
+        await hosted_mcp.send_message(text="hi", request_id="not ok!", room_id=str(uuid.uuid4()))
     with pytest.raises(ToolError, match="INVALID_REQUEST"):
         await hosted_mcp.message_receipt("not ok!")
     assert member.engine.ops("unread") == []
 
 
 @pytest.mark.asyncio
-async def test_a_uuid_session_id_is_a_shared_lightbulb_session_not_the_network(member, monkeypatch):
-    refused = AsyncMock(side_effect=ApiProblem("LOCAL_SESSION_NOT_FOUND", "no such session"))
-    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", refused)
-    with pytest.raises(ToolError, match="LOCAL_SESSION_NOT_FOUND"):
-        await hosted_mcp.send_message(text="hi", request_id=str(uuid.uuid4()), session_id=str(uuid.uuid4()))
-    assert member.engine.ops("unread") == []
-    with pytest.raises(ApiProblem):  # reply_to is a network reply: never beside a shared session
-        await hosted_mcp.send_message(text="hi", request_id="r1", session_id=str(uuid.uuid4()), reply_to="q1")
+async def test_a_uuid_session_id_is_a_network_address_like_any_other(member):
+    sid = str(uuid.uuid4())
+    out = await hosted_mcp.send_message(text="hi", request_id="r1", session_id=sid)
+    assert out["destination"] == f"network:{sid}"
 
 
 @pytest.mark.asyncio
@@ -251,7 +245,7 @@ async def test_find_sessions_lists_the_network_sessions_in_the_engines_shape(mem
         {"session_id": ADEN, "title": "Aden's Mac", "name": "claude-5", "agent": "claude", "is_this_session": False},
         {"session_id": OWN, "title": "Claude Code via Ann", "agent": "claude-code", "is_this_session": True},
     ]
-    assert out["total"] == 2 and out["agents"] == [] and "network" not in out
+    assert out["total"] == 2 and set(out) == {"sessions", "total"}  # network-only, like the engine's
 
 
 @pytest.mark.asyncio
@@ -356,8 +350,8 @@ async def test_an_offline_pinned_computer_is_named_and_no_other_stands_in(member
     with pytest.raises(ToolError) as err:
         await hosted_mcp.send_message(text="hi", request_id="r9", session_id=ADEN)
     assert str(err.value) == "NETWORK_OFFLINE: Ann's Mac is offline. Open it."
-    out = await hosted_mcp.find_sessions()
-    assert out["network"] == "NETWORK_OFFLINE: Ann's Mac is offline. Open it."
+    with pytest.raises(ToolError, match="NETWORK_OFFLINE: Ann's Mac is offline"):  # network-only: it says why
+        await hosted_mcp.find_sessions()
 
 
 @pytest.mark.asyncio

@@ -1,9 +1,9 @@
 import {
-  APPROVAL_MODE_LABEL, approvalInputView, useSessionApproval, useShownInputMatches,
-  type LocalSession, type PrivateSendApproval, type SessionControlClient,
+  approvalAgent, approvalInputView, approvalModeAction, useSessionApproval, useShownInputMatches,
+  type LocalSession, type SessionControlClient,
 } from "@lightbulb/shared";
 import { CryptoDigestAlgorithm, digestStringAsync, randomUUID } from "expo-crypto";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
@@ -52,7 +52,7 @@ function CallInput({ tool, input }: { tool: string; input: Record<string, unknow
   );
 }
 
-/** Claude's own permission prompt, held on the Mac and answerable here. */
+/** Claude's or Codex's own permission prompt, held on the Mac and answerable here. */
 export function SessionApprovalCard({ session, client, allowed, own, ownerName }: {
   session: LocalSession;
   client: SessionControlClient;
@@ -65,56 +65,29 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
   const digestOk = useShownInputMatches(session.pendingApproval, sha256Hex);
   const [denyingFor, setDenyingFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
-  const [detail, setDetail] = useState<PrivateSendApproval | null>(null);
-  const [failedFor, setFailedFor] = useState<string | null>(null);
-  const [retry, setRetry] = useState(0);
-  const privateSend = pending?.tool === "mcp__lightbulb_native_sessions__send";
-  const approvalId = pending?.approvalId;
-  const inputDigest = pending?.inputDigest;
-  const detailKey = `${approvalId}:${inputDigest}`;
-  useEffect(() => {
-    if (!own || !privateSend || !approvalId || !inputDigest || !client.getPrivateSendApproval) return;
-    let active = true;
-    void client.getPrivateSendApproval(session.sessionId)
-      .then((value) => { if (active) { setDetail(value); setFailedFor(null); } })
-      .catch(() => { if (active) setFailedFor(detailKey); });
-    return () => { active = false; };
-  }, [client, own, privateSend, approvalId, inputDigest, detailKey, retry, session.sessionId]);
-  if (!pending || session.provider !== "claude" || session.status !== "waiting-approval") return null;
+  if (!pending || !["claude", "codex"].includes(session.provider) || session.status !== "waiting-approval") return null;
 
   const current = state?.approvalId === pending.approvalId ? state : null;
   const busy = current?.status === "sending" || current?.status === "sent";
   const denying = denyingFor === pending.approvalId;
-  const shown = own && privateSend && detail?.approvalId === pending.approvalId && detail.inputDigest === pending.inputDigest ? detail : null;
-  const canApprove = privateSend ? !!shown : pending.exact || (pending.full === true && digestOk);
-  const canAnswer = allowed && (!privateSend || own);
+  const canApprove = pending.exact || (pending.full === true && digestOk);
+  const canAnswer = allowed;
   const where = own ? "your" : `${ownerName}’s`;
   return (
-    <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.alert }]} accessibilityLabel="Claude permission prompt">
-      <Text style={[styles.title, { color: palette.fg }]}>Claude wants to use {pending.tool}</Text>
-      {pending.input && !privateSend ? <CallInput tool={pending.tool} input={pending.input} /> : pending.summary ? (
+    <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.alert }]} accessibilityLabel={`${approvalAgent(session.provider)} permission prompt`}>
+      <Text style={[styles.title, { color: palette.fg }]}>{approvalAgent(session.provider)} wants to use {pending.tool}</Text>
+      {pending.input ? <CallInput tool={pending.tool} input={pending.input} /> : pending.summary ? (
         <Text selectable style={[styles.summary, { backgroundColor: palette.raised, color: palette.fg }]}>{pending.summary}</Text>
       ) : null}
-      {shown && <View style={[styles.summary, { backgroundColor: palette.raised }]}>
-        <Text selectable style={[styles.privateLine, { color: palette.fg }]}>To: {shown.destination}</Text>
-        <Text selectable style={[styles.privateLine, { color: palette.fgSoft }]}>Request ID: {shown.requestId}</Text>
-        <ScrollView style={styles.privateBody} accessibilityLabel="Message to send">
-          <Text selectable style={[styles.privateLine, { color: palette.fg }]}>{shown.text}</Text>
-        </ScrollView>
-      </View>}
       {!canAnswer ? (
         <Text style={[styles.note, { color: palette.fgSoft }]}>Waiting on {where} approval.</Text>
       ) : (
         <>
           {!canApprove && (
             <Text style={[styles.note, { color: palette.fgSoft }]}>
-              {privateSend ? failedFor === detailKey
-                ? "Could not load the exact message. Retry, or approve on your Mac."
-                : "Loading the exact message…"
-                : `Lightbulb shows only part of this call. Approve it on ${where} Mac; you can deny it here.`}
+              {`Lightbulb shows only part of this call. Approve it on ${where} Mac; you can deny it here.`}
             </Text>
           )}
-          {privateSend && !shown && failedFor === detailKey && <ApprovalButton label="Retry loading message" onPress={() => { setFailedFor(null); setRetry(value => value + 1); }} disabled={busy} />}
           {denying ? (
             <>
               <TextInput
@@ -135,7 +108,7 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
             <View style={styles.actions}>
               {canApprove && <ApprovalButton label="Approve" onPress={() => void answer({ decision: "allow" })} disabled={busy} primary />}
               {canApprove && pending.modes.map((mode) => (
-                <ApprovalButton key={mode} label={`Approve and switch to ${APPROVAL_MODE_LABEL[mode]}`} onPress={() => void answer({ decision: "allow", mode })} disabled={busy} />
+                <ApprovalButton key={mode} label={approvalModeAction(mode, pending)} onPress={() => void answer({ decision: "allow", mode })} disabled={busy} />
               ))}
               <ApprovalButton label="Deny…" onPress={() => setDenyingFor(pending.approvalId)} disabled={busy} />
             </View>

@@ -5,7 +5,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, GripVertical, History, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
-import { listenModeOptions, roomDisplayName, soleChannelOwner, SIDEBAR_SESSION_CAP, sessionArchived, sessionLive, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
+import { listenModeOptions, roomDisplayName, soleChannelOwner, SIDEBAR_SESSION_CAP, sessionArchived, sessionLive, sidebarSessionList, type ListenMode, type SessionMarks, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -16,8 +16,9 @@ import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { groupRooms, type RoomGroup, type SidebarSession, type SidebarSort } from "./roomSections";
 import { SessionListRow } from "./SessionListRow";
+import { SessionSearch } from "./SessionSearch";
 import { StartSessionDialog } from "./StartSessionDialog";
-import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
+import { readSessionMarks, readSidebarPrefs, writeSessionMarks, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
 import { openInviteDialog } from "@/components/workspace/workspaceController";
 import type { DirectoryParticipant, ParticipantSelection, DirectoryRoom } from "./types";
@@ -50,7 +51,7 @@ export interface RoomDirectoryProps {
   creationError?: string;
   onRetry?: () => void;
   draftRoomIds?: readonly string[];
-  /** Every session the workspace lists; the sidebar shows the live ones, All sessions the rest. */
+  /** Every session the workspace lists; the sidebar shows them until archived (live first), All sessions every one. */
   sessions?: readonly SidebarSession[];
   /** Present: the Sessions group always shows, with an empty state when nobody is sharing. */
   onSelectSession?: (sessionId: string) => void;
@@ -58,6 +59,8 @@ export interface RoomDirectoryProps {
   /** The owner takes one of their ended sessions, or all of them, off the list (All sessions and the open session). */
   onRemoveSession?: (sessionId: string) => Promise<unknown>;
   onRemoveEndedSessions?: () => Promise<unknown>;
+  /** Mark unread (true) or read (false): moves this viewer's seen baseline for the row's dot. */
+  onMarkSessionUnread?: (sessionId: string, unread: boolean) => void;
   currentSessionId?: string | null;
   /** Opens the All sessions list in the main pane. */
   onOpenAllSessions?: () => void;
@@ -127,6 +130,7 @@ function DirectoryContent({
   sessions = [],
   onSelectSession,
   onRenameSession,
+  onMarkSessionUnread,
   currentSessionId = null,
   onOpenAllSessions,
   allSessionsOpen = false,
@@ -142,6 +146,13 @@ function DirectoryContent({
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
   const [sessionsExpanded, setSessionsExpanded] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  // Per person AND workspace: two members on one browser profile keep their own pins and archives.
+  // The user id can arrive after the first render, so the marks carry the key they were read under.
+  const marksKey = `${currentUserId ?? ""}:${ownerScopeId}`;
+  const [storedMarks, setStoredMarks] = useState(() => ({ key: marksKey, marks: readSessionMarks(marksKey) }));
+  const sessionMarks = storedMarks.key === marksKey ? storedMarks.marks : readSessionMarks(marksKey);
+  const updateSessionMarks = (next: SessionMarks) => { setStoredMarks({ key: marksKey, marks: next }); writeSessionMarks(marksKey, next); };
   const [selected, setSelected] = useState(new Map<string, ParticipantSelection>());
   const [markingUnread, setMarkingUnread] = useState<string | null>(null);
   const [unreadError, setUnreadError] = useState<{ roomId: string; label: string } | null>(null);
@@ -381,27 +392,47 @@ function DirectoryContent({
   const sessionsSection = (onSelectSession || sessions.length > 0) && (() => {
     const collapsed = prefs.collapsed.includes("sessions");
     const listId = `${id}-group-sessions`;
-    // Only what the desktop is mirroring right now; everything else is under All sessions.
-    // Already ordered: mine first, then people by name, each newest activity first (see workspaceSections in shared).
-    const live = sessions.filter((entry) => sessionLive(entry.session));
+    // Ended sessions stay until archived (owner decision 2026-10-27), as on the phone and in both vendor apps.
+    const { list, archived } = sidebarSessionList(sessions, sessionMarks);
+    const live = list.filter((entry) => sessionLive(entry.session));
     // What All sessions lists: everything but the long-lost (offline for days).
     const listed = sessions.filter((entry) => !sessionArchived(entry.session)).length;
-    // Collapsed to the cap, it still keeps the session you are reading on screen.
-    const shown = sessionsExpanded ? live : live.filter((entry, index) => index < SIDEBAR_SESSION_CAP || entry.session.sessionId === currentSessionId);
+    const pinned = (sessionId: string) => sessionMarks.pinned.includes(sessionId);
+    // Collapsed to the cap, it still keeps every pinned row and the session you are reading on screen.
+    const shown = sessionsExpanded ? list : list.filter((entry, index) => index < SIDEBAR_SESSION_CAP || pinned(entry.session.sessionId) || entry.session.sessionId === currentSessionId);
+    const row = (entry: SidebarSession, isArchived: boolean) => {
+      const { sessionId, latestEventSeq } = entry.session;
+      return <SessionListRow key={sessionId} entry={entry} current={sessionId === currentSessionId} onSelect={onSelectSession} onRename={onRenameSession} oneLine
+        marks={{
+          pinned: pinned(sessionId), archived: isArchived,
+          onTogglePin: () => updateSessionMarks({ ...sessionMarks, pinned: pinned(sessionId) ? sessionMarks.pinned.filter((other) => other !== sessionId) : [...sessionMarks.pinned, sessionId] }),
+          // Archiving unpins: a pinned row hidden in Archived would come back pinned on its next output.
+          onToggleArchive: () => {
+            updateSessionMarks(isArchived ? { ...sessionMarks, archived: Object.fromEntries(Object.entries(sessionMarks.archived).filter(([other]) => other !== sessionId)) }
+              : { pinned: sessionMarks.pinned.filter((other) => other !== sessionId), archived: { ...sessionMarks.archived, [sessionId]: latestEventSeq ?? 0 } });
+          },
+          onMarkUnread: (unread) => onMarkSessionUnread?.(sessionId, unread),
+        }} />;
+    };
     return <section aria-label="Sessions">
       {groupHeader({
         id: "sessions", label: "Sessions", listId, collapsed,
-        badge: collapsed && live.length > 0 && <span className="room-count" aria-label={`${live.length} live session${live.length === 1 ? "" : "s"}`}>{live.length}</span>,
+        badge: <>{collapsed && live.length > 0 && <span className="room-count" aria-label={`${live.length} live session${live.length === 1 ? "" : "s"}`}>{live.length}</span>}<SessionSearch /></>,
       })}
       {!collapsed && <div id={listId}>
-        {live.length === 0
+        {list.length === 0
           ? <div className="room-directory-session-empty"><p className="text-caption text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
-          : <ul>{shown.map((entry) => <SessionListRow key={entry.session.sessionId} entry={entry}
-              current={entry.session.sessionId === currentSessionId} onSelect={onSelectSession} onRename={onRenameSession} oneLine />)}</ul>}
-        {live.length > SIDEBAR_SESSION_CAP && <button type="button" className="room-directory-subgroup" aria-expanded={sessionsExpanded}
+          : <ul>{shown.map((entry) => row(entry, false))}</ul>}
+        {(sessionsExpanded ? list.length > SIDEBAR_SESSION_CAP : shown.length < list.length) && <button type="button" className="room-directory-subgroup" aria-expanded={sessionsExpanded}
           aria-controls={listId} onClick={() => setSessionsExpanded((open) => !open)}>
-          {sessionsExpanded ? "Show fewer" : `+${live.length - SIDEBAR_SESSION_CAP} more`}
+          {sessionsExpanded ? "Show fewer" : `+${list.length - shown.length} more`}
         </button>}
+        {archived.length > 0 && <>
+          <button type="button" className="room-directory-subgroup" aria-expanded={archivedOpen} onClick={() => setArchivedOpen((open) => !open)}>
+            {archivedOpen ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}Archived<span className="text-muted-foreground">{archived.length}</span>
+          </button>
+          {archivedOpen && <ul aria-label="Archived sessions">{archived.map((entry) => row(entry, true))}</ul>}
+        </>}
         {onOpenAllSessions && listed > 0 && <button type="button" className="room-directory-subgroup"
           aria-current={allSessionsOpen ? "page" : undefined} onClick={onOpenAllSessions}>
           <History aria-hidden="true" />All sessions<span className="text-muted-foreground">{listed}</span>

@@ -1,11 +1,12 @@
 # TheLightbulbCompany/homebrew-tap
 
-The contents of the public tap repo `TheLightbulbCompany/homebrew-tap`. The repo does not
-exist yet: creating it is an owner decision. This folder is its source of truth.
+The cask in the public tap repo `TheLightbulbCompany/homebrew-tap`. This folder is its source
+of truth. The tap's `Formula/lightbulb.rb` (the network engine alone) is bumped by the engine
+repo's own release workflow, not from here.
 
 ```sh
-brew install --cask thelightbulbcompany/tap/lightbulb
-lightbulb join
+brew install --cask thelightbulbcompany/tap/lightbulb   # the app (it bundles the engine)
+brew install thelightbulbcompany/tap/lightbulb          # or the engine alone
 ```
 
 ## Set it up (once)
@@ -26,5 +27,6 @@ prints a notice and skips.
   the site's proxy for the private releases. It always serves the latest build, so between a
   release and its tap bump (minutes) a fresh `brew install` fails its checksum; rerun it.
 - `auto_updates true`: the app updates itself, so `brew upgrade` is not needed.
-- The `lightbulb` command is the app's own binary (`binary` stanza), because macOS shows
-  its Allow/Decline notifications only for a signed app bundle.
+- The cask has no `binary` stanza. The `lightbulb` command is the network engine's: the app
+  bundles it and its `setup` links `~/.local/bin/lightbulb`. A cask binary would collide with
+  the formula.

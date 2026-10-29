@@ -354,7 +354,8 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
                     && h.input_digest.len() == 64
                     && h.input_digest.bytes().all(|b| b.is_ascii_hexdigit())
                     && h.reply.len() <= 256
-                    && h.modes.len() <= 3
+                    && h.modes.len() <= 4
+                    && h.similar.as_ref().is_none_or(|s| s.len() <= 120)
             })
             .or_else(|| {
                 // A release names only the prompt it lets go.
@@ -367,7 +368,7 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
                         input_digest: String::new(),
                         reply: String::new(),
                         exact: false,
-                        modes: vec![], full: false,
+                        modes: vec![], full: false, similar: None,
                     })
             }),
     })
@@ -625,7 +626,7 @@ mod tests {
         let stdin = json!({"session_id":"abc", "hook_event_name":"PermissionRequest",
             "pid": 2, "birth_micros": 1, "sourceProcess": {"pid": 2, "birthMicros": 1}});
         let held = super::super::approval::Held { id: "appr-0123456789abcdef0123456789abcdef".into(),
-            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![], full: false };
+            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![], full: false, similar: None };
         for bytes in [build_datagram("codex", &stdin), build_held_datagram("codex", &stdin, &held),
             build_release_datagram("codex", &stdin, &held.id)] {
             let parsed = parse_datagram(&bytes).unwrap();
@@ -655,7 +656,7 @@ mod tests {
         let source = hook_process(&provider).expect("actual native provider ancestor");
         let native = super::super::process(source.pid).unwrap();
         let held = super::super::approval::Held { id: "appr-0123456789abcdef0123456789abcdef".into(),
-            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![], full: false };
+            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![], full: false, similar: None };
         for bytes in [build_datagram(&provider, &stdin), build_held_datagram(&provider, &stdin, &held),
             build_release_datagram(&provider, &stdin, &held.id)] {
             assert_eq!(parse_datagram(&bytes).unwrap().source_process, Some(source.clone()));
@@ -829,10 +830,10 @@ mod tests {
         let held = super::super::approval::Held {
             id: "appr-0123456789abcdef0123456789abcdef".into(),
             input_digest: "d".repeat(64), reply: "/tmp/appr.sock".into(),
-            exact: true, modes: vec![], full: false,
+            exact: true, modes: vec![], full: false, similar: None,
         };
         let prompt = parse_datagram(&build_held_datagram("claude", &stdin, &held)).unwrap();
-        assert_eq!(prompt.waiting_text.as_deref(), Some("receipt e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"));
+        assert_eq!(prompt.waiting_text.as_deref(), Some("Lightbulb message"));
 
         // A long command line is cut to the bound, and a tool with nothing to
         // summarize sends no empty field at all.

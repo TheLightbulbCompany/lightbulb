@@ -28,7 +28,7 @@ async def test_display_title_owner_only_and_preserves_native_title(monkeypatch):
     async def put_session(updated, *_args, **_kwargs):
         writes.append(updated)
 
-    async def publish(*args):
+    async def publish(*args, **_):
         hints.append(args)
 
     monkeypatch.setattr(local_sessions, "authorize_session", authorize)

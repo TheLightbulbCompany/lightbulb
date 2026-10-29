@@ -9,7 +9,7 @@ import { ContainerStack } from "../lib/stacks/container-stack";
 import { LAUNCH_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
-import { ServiceStack, stripeProvisioningEnabled } from "../lib/stacks/service-stack";
+import { ServiceStack } from "../lib/stacks/service-stack";
 
 /**
  * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
@@ -82,6 +82,8 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,
       workspaceMemoryId: container.workspaceMemory.attrMemoryId,
+      sessionsMemoryId: container.sessionsMemory.attrMemoryId,
+      workspaceBrowserId: container.workspaceBrowser.attrBrowserId,
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
@@ -370,8 +372,9 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     // until the new generation is healthy (MaximumPercent=200 gives it the
     // headroom to run both at once), so a deploy is a clean handoff with no
     // outage window. Circuit breaker stays on so a bad rollout auto-rolls back.
+    // Holds with dev's single task too: the new task starts before the old one stops.
     template.hasResourceProperties("AWS::ECS::Service", {
-      DesiredCount: 2,
+      DesiredCount: 1,
       DeploymentConfiguration: {
         MinimumHealthyPercent: 100,
         MaximumPercent: 200,
@@ -380,12 +383,26 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend service autoscales 2-4 on CPU", () => {
+  test("dev backend is one 0.5 vCPU / 2 GB task on Fargate Spot; prod is two 1 vCPU / 2 GB on-demand", () => {
+    template.hasResourceProperties("AWS::ECS::Service", {
+      CapacityProviderStrategy: [
+        { CapacityProvider: "FARGATE_SPOT", Weight: 1 },
+        { CapacityProvider: "FARGATE", Weight: 0 },
+      ],
+    });
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", { Family: "lightbulb-dev-backend", Cpu: "512", Memory: "2048" });
+    const prod = buildServiceStack("prod");
+    prod.hasResourceProperties("AWS::ECS::Service", { DesiredCount: 2, LaunchType: "FARGATE" });
+    prod.hasResourceProperties("AWS::ECS::TaskDefinition", { Family: "lightbulb-prod-backend", Cpu: "1024", Memory: "2048" });
+    prod.hasResourceProperties("AWS::ApplicationAutoScaling::ScalableTarget", { MinCapacity: 2, MaxCapacity: 4 });
+  });
+
+  test("backend service autoscales 1-4 (dev) on CPU", () => {
     // Sub-project D moved the remaining per-connection state that made a
     // second instance unsafe (node/operator sockets, RPC waiters) out of
-    // process and onto DynamoDB, so the backend can now run N>=2.
+    // process and onto DynamoDB, so the backend can run N>=2.
     template.hasResourceProperties("AWS::ApplicationAutoScaling::ScalableTarget", {
-      MinCapacity: 2,
+      MinCapacity: 1,
       MaxCapacity: 4,
       ServiceNamespace: "ecs",
     });
@@ -495,64 +512,17 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", envOf("prod"));
   });
 
-  test("Stripe developer configuration defaults off, and the Accounts v2 version pin defaults empty, when no prop threads a value", () => {
-    // configuration.developer is an Unknown field for our platform today
-    // (probed 2026-08-29) — sending it would break every company-account
-    // create, so a stack that forgets to set the prop must stay off.
+  test("the Accounts v2 version pin defaults empty, and no Stripe rail flag reaches the task env", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_PROJECTS_DEVELOPER_CONFIG", Value: "false" }),
-            Match.objectLike({ Name: "STRIPE_ACCOUNTS_V2_VERSION", Value: "" }),
-          ]),
+          Environment: Match.arrayWith([Match.objectLike({ Name: "STRIPE_ACCOUNTS_V2_VERSION", Value: "" })]),
         }),
       ]),
     }));
-  });
-
-  test("the Stripe provisioning rail defaults OFF when no prop threads a value", () => {
-    // Every state-changing /v2/provisioning call 500s until Stripe ships
-    // delegated account creation + KYC; a stack that forgets the prop must
-    // refuse at the door rather than park owners in requires_review.
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_PROVISIONING_ENABLED", Value: "false" }),
-          ]),
-        }),
-      ]),
-    }));
-  });
-
-  test("reads the provisioning switch per environment from the deploy variables", () => {
-    expect(stripeProvisioningEnabled("dev", { STRIPE_PROVISIONING_ENABLED_DEV: "true" })).toBe(true);
-    expect(stripeProvisioningEnabled("prod", { STRIPE_PROVISIONING_ENABLED_DEV: "true" })).toBe(false);
-    expect(stripeProvisioningEnabled("prod", { STRIPE_PROVISIONING_ENABLED_PROD: "true" })).toBe(true);
-    expect(stripeProvisioningEnabled("dev", { STRIPE_PROVISIONING_ENABLED_DEV: "false" })).toBe(false);
-    expect(stripeProvisioningEnabled("dev", {})).toBe(false);
-  });
-
-  test("STRIPE_PROVISIONING_ENABLED_DEV=true turns the rail on in the dev stack only", () => {
-    const before = process.env.STRIPE_PROVISIONING_ENABLED_DEV;
-    process.env.STRIPE_PROVISIONING_ENABLED_DEV = "true";
-    try {
-      const envOn = (value: string) => Match.objectLike({
-        ContainerDefinitions: Match.arrayWith([
-          Match.objectLike({
-            Environment: Match.arrayWith([
-              Match.objectLike({ Name: "STRIPE_PROVISIONING_ENABLED", Value: value }),
-            ]),
-          }),
-        ]),
-      });
-      buildServiceStack("dev").hasResourceProperties("AWS::ECS::TaskDefinition", envOn("true"));
-      buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", envOn("false"));
-    } finally {
-      if (before === undefined) delete process.env.STRIPE_PROVISIONING_ENABLED_DEV;
-      else process.env.STRIPE_PROVISIONING_ENABLED_DEV = before;
-    }
+    const taskDefs = JSON.stringify(template.findResources("AWS::ECS::TaskDefinition"));
+    expect(taskDefs).not.toContain("STRIPE_PROVISIONING_ENABLED");
+    expect(taskDefs).not.toContain("STRIPE_PROJECTS_DEVELOPER_CONFIG");
   });
 
   test("backend task env carries neither LAUNCH_SCHEDULE_JSON nor STRIPE_FREE_MONTH_COUPON_ID nor any retired per-field LAUNCH_* name — settings now live in the launch-settings DynamoDB row, not synth-time env", () => {
@@ -1542,5 +1512,71 @@ describe("Apple IAP env", () => {
   it("prod never accepts Xcode transactions", () => {
     const json = JSON.stringify(buildServiceStack("prod").toJSON());
     expect(json).not.toMatch(/"APPLE_IAP_ACCEPT_XCODE","Value":"true"/);
+  });
+});
+
+describe("ServiceStack — workspace memory recall", () => {
+  test("backend task role can rerank", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: ["bedrock:Rerank", "bedrock:InvokeModel"],
+            Effect: "Allow",
+            Resource: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+          }),
+        ]),
+      },
+    });
+  });
+
+  test("backend task role can retrieve records and write events on the workspace memory", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: ["bedrock-agentcore:RetrieveMemoryRecords", "bedrock-agentcore:CreateEvent"],
+            Effect: "Allow",
+          }),
+        ]),
+      },
+    });
+  });
+
+  test("backend task role can mark mirrored records replaced", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({ Sid: "AgentCoreMemorySync", Action: "bedrock-agentcore:BatchUpdateMemoryRecords" }),
+        ]),
+      },
+    });
+  });
+
+  test("backend task role reaches the sessions memory, and its id is in the backend env", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AgentCoreSessionsMemory",
+            Action: Match.arrayWith([
+              "bedrock-agentcore:CreateEvent",
+              "bedrock-agentcore:ListMemoryRecords",
+              "bedrock-agentcore:BatchDeleteMemoryRecords",
+              "bedrock-agentcore:DeleteEvent",
+            ]),
+          }),
+        ]),
+      },
+    });
+    expect(JSON.stringify(SERVICE_TEMPLATE_DEV.toJSON())).toContain('"Name":"AGENTCORE_SESSIONS_MEMORY_ID"');
+  });
+
+  test("backend task role reads, writes and deletes uploaded sessions in S3", () => {
+    const policies = SERVICE_TEMPLATE_DEV.findResources("AWS::IAM::Policy");
+    const statements = Object.values(policies).flatMap((p: any) => p.Properties.PolicyDocument.Statement);
+    const rw = statements.find((s: any) => s.Sid === "SessionsRW");
+    expect(rw.Action).toEqual(["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]);
+    expect(rw.Resource).toBe("arn:aws:s3:::lightbulb-dev-openclaw-replicas/sessions/*");
   });
 });

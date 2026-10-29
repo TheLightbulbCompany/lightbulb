@@ -20,7 +20,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core.auth import get_current_user
 from core.config import settings
@@ -74,7 +74,6 @@ from routers import (
     sendblue_inbound,
     ses_inbound,
     agent_keys as agent_keys_router,
-    webhook_agents as webhook_agents_router,
     network as network_router,
     network_route as network_route_router,
     settings_keys,
@@ -399,6 +398,7 @@ async def lifespan(app: FastAPI):
     from core.services.run_ledger import run_ledger_sweeper
     from core.services.browser_control import run_autosave_sweeper
     from core.services.session_pickup import run_pickup_sweeper
+    from core.services.memory_api import run_memory_sweeper
     from core.services.voice_calls import voice_call_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
@@ -412,6 +412,8 @@ async def lifespan(app: FastAPI):
     voice_sweeper_task = asyncio.create_task(voice_call_sweeper(voice_sweeper_stop))
     pickup_sweeper_stop = asyncio.Event()
     pickup_sweeper_task = asyncio.create_task(run_pickup_sweeper(pickup_sweeper_stop))
+    memory_sweeper_stop = asyncio.Event()
+    memory_sweeper_task = asyncio.create_task(run_memory_sweeper(memory_sweeper_stop))
     digest_stop = asyncio.Event()
     digest_task = asyncio.create_task(run_digest_sweeper(digest_stop))
     away_stop = asyncio.Event()
@@ -438,6 +440,7 @@ async def lifespan(app: FastAPI):
             "browser_autosave_sweeper": browser_autosave_task,
             "voice_call_sweeper": voice_sweeper_task,
             "session_pickup_sweeper": pickup_sweeper_task,
+            "memory_sweeper": memory_sweeper_task,
             "daily_digest": digest_task,
             "needs_you_email": away_task,
             "running_gauges": gauge_task,
@@ -477,6 +480,7 @@ async def lifespan(app: FastAPI):
     browser_autosave_stop.set()
     voice_sweeper_stop.set()
     pickup_sweeper_stop.set()
+    memory_sweeper_stop.set()
     digest_stop.set()
     away_stop.set()
     gauge_task.cancel()
@@ -494,6 +498,7 @@ async def lifespan(app: FastAPI):
                 browser_autosave_task,
                 voice_sweeper_task,
                 pickup_sweeper_task,
+                memory_sweeper_task,
                 digest_task,
                 away_task,
                 gauge_task,
@@ -510,6 +515,7 @@ async def lifespan(app: FastAPI):
             browser_autosave_task,
             voice_sweeper_task,
             pickup_sweeper_task,
+            memory_sweeper_task,
             digest_task,
             away_task,
             gauge_task,
@@ -522,6 +528,7 @@ async def lifespan(app: FastAPI):
             browser_autosave_task,
             voice_sweeper_task,
             pickup_sweeper_task,
+            memory_sweeper_task,
             digest_task,
             away_task,
             gauge_task,
@@ -614,12 +621,13 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
             # session links: a rejected body carries a link token or a PKCE verifier.
             "/api/v1/public",
             "/api/v1/session-links",
-            # webhook agents: a rejected body carries the webhook's key.
-            "/api/v1/settings/webhook-agents",
         )
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
         return JSONResponse(status_code=problem.status_code, content=problem.body())
+    if request.url.path.startswith("/api/v1/sessions"):
+        # uploaded sessions: FastAPI's default 422 would echo tool-call summaries.
+        return JSONResponse(status_code=422, content={"detail": "Invalid sessions upload."})
     return await request_validation_exception_handler(request, exc)
 
 
@@ -916,7 +924,6 @@ app.include_router(container_recover.router, prefix="/api/v1/container", tags=["
 app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 
 app.include_router(agent_keys_router.router, prefix="/api/v1/settings/agent-keys", tags=["settings"])
-app.include_router(webhook_agents_router.router, prefix="/api/v1/settings/webhook-agents", tags=["settings"])
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
 # Under /internal/messaging: the bridge's `_post_backend` prefixes every callback with it.
 app.include_router(network_router.internal_router, prefix="/api/v1/internal/messaging/network", tags=["settings"])
@@ -1051,6 +1058,14 @@ from routers import company_policy  # noqa: E402
 
 app.include_router(company_policy.router, prefix="/api/v1/company", tags=["company-policy"])
 
+# Stripe Link Agent Wallet (every route 404s until Link's OAuth client is configured).
+from routers import company_link_wallet  # noqa: E402
+
+app.include_router(company_link_wallet.router, prefix="/api/v1/company/link-wallet", tags=["company-link-wallet"])
+app.include_router(
+    company_link_wallet.internal_router, prefix="/api/v1/internal/link-wallet", tags=["company-link-wallet"]
+)
+
 # Money reads — the stored day rollup plus live Stripe payments/customers/products.
 from routers import company_money  # noqa: E402
 
@@ -1072,6 +1087,13 @@ app.include_router(ideas_router.router, prefix="/api/v1", tags=["ideas"])
 from routers import memory as memory_router  # noqa: E402
 
 app.include_router(memory_router.router, prefix="/api/v1/memory", tags=["memory"])
+app.include_router(memory_router.internal_router, prefix="/api/v1/internal/memory", tags=["memory"])
+
+# Sessions a person uploads from the CLI, by choice (metadata or full).
+from routers import sessions as sessions_router  # noqa: E402
+
+app.include_router(sessions_router.router, prefix="/api/v1/sessions", tags=["sessions"])
+app.include_router(sessions_router.shared_router, prefix="/api/v1/shared", tags=["sessions"])
 
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402
@@ -1142,6 +1164,13 @@ async def mcp_protected_resource_metadata():
         "scopes_supported": ["user:org:read", READ_SCOPE, WRITE_SCOPE],
         "bearer_methods_supported": ["header"],
     }
+
+
+@app.get("/.well-known/openai-apps-challenge", include_in_schema=False)
+async def openai_apps_challenge():
+    if not settings.OPENAI_APPS_CHALLENGE_TOKEN:
+        return PlainTextResponse("Not Found", status_code=404)
+    return PlainTextResponse(settings.OPENAI_APPS_CHALLENGE_TOKEN)
 
 
 # Keep this last: the SDK serves /mcp and its root well-known OAuth metadata.

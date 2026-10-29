@@ -34,6 +34,17 @@ it("renders both sections; Confirmed on confirmed team rows only", async () => {
   expect(screen.getAllByText("Confirmed")).toHaveLength(1);
 });
 
+it("offers Share and Confirm on room rows but not on mirrored log entries", async () => {
+  const entry = { id: "mem-e1", text: "Deploy Fridays", createdAt: "2026-10-01", confirmed: false, source: "network" };
+  const mine = { id: "mem-e2", text: "Prefers email", createdAt: "2026-10-01", confirmed: false, source: "network" };
+  get.mockResolvedValue({ ...LIST, private: [mine, LIST.private[0]], team: [entry, { ...LIST.team[1], source: "room" }] });
+  await render(<MemoriesCard api={api} />);
+  expect(await screen.findByText("Deploy Fridays")).toBeTruthy();
+  expect(screen.getByText("Prefers email")).toBeTruthy();
+  expect(screen.getAllByText("Confirm")).toHaveLength(1);
+  expect(screen.getAllByText("Share with team")).toHaveLength(1);
+});
+
 it("shows an unavailable message when the load fails", async () => {
   get.mockRejectedValue(new Error("502"));
   await render(<MemoriesCard api={api} />);

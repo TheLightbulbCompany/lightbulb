@@ -768,12 +768,6 @@ class RunUsage(ContractModel):
 PROVIDER_QUOTA_EXHAUSTED = "provider_quota_exhausted"
 
 
-def _session_tool_name(provider: str | None) -> str:
-    from core.services.local_sessions import PROVIDER_NAMES  # lazy: local_sessions imports this module
-
-    return PROVIDER_NAMES.get(provider or "claude", "Coding")
-
-
 QUOTA_PROVIDER_NAMES = {"chatgpt": "ChatGPT", "openai": "OpenAI", "anthropic": "Anthropic"}
 
 
@@ -4046,10 +4040,6 @@ async def create_human_message(
     room_id: str,
     request: CreateMessageRequest,
     *,
-    native_source_id: str | None = None,
-    native_provider: str | None = None,
-    native_hop: int | None = None,
-    native_conditions: list[dict] | None = None,
     via: MessageVia | None = None,
     text_reply_key: str | None = None,
     author_override: dict | None = None,
@@ -4117,15 +4107,11 @@ async def create_human_message(
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
-    author = author_override or (
-        {
-            "kind": "system",
-            "id": native_source_id,
-            "displayName": f"{_session_tool_name(native_provider)} session",
-        }
-        if native_source_id
-        else {"kind": "human", "id": auth.user_id, "displayName": await human_display_name(auth.user_id)}
-    )
+    author = author_override or {
+        "kind": "human",
+        "id": auth.user_id,
+        "displayName": await human_display_name(auth.user_id),
+    }
     addressing = None
     if meta.get("kind") != "dm" and feed_roster is None:
         # Who the text speaks to (routing v2 §3.1). Chat never holds: an unfinished message routes
@@ -4143,9 +4129,6 @@ async def create_human_message(
         feed_roster=feed_roster,
         in_thread=request.thread_root_message_id is not None,
     )
-    if native_source_id:
-        # A native agent's deliberate post does not wake every ambient listener.
-        targets = [target for target in targets if target["eventKind"] == "user_request"]
     room_kind = _room_kind(meta)
     # EFS is NFS. These reads open and read whole attachment files, so running
     # them inline blocked the event loop -- every other request on the
@@ -4171,14 +4154,8 @@ async def create_human_message(
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
         *([via] if via else []),
     ]
-    req_hash = messaging_repo.request_hash(
-        *hash_parts, *([session_ids] if session_ids else []), *([native_source_id] if native_source_id else [])
-    )
-    idemp_sk = (
-        messaging_repo.agent_idemp_sk(f"native:{native_source_id}:{request.client_message_id}")
-        if native_source_id
-        else messaging_repo.human_idemp_sk(auth.user_id, str(request.client_message_id))
-    )
+    req_hash = messaging_repo.request_hash(*hash_parts, *([session_ids] if session_ids else []))
+    idemp_sk = messaging_repo.human_idemp_sk(auth.user_id, str(request.client_message_id))
     effective_targets = targets if wake else []  # what is stored is what telemetry reports
     try:
         item, replayed = await messaging_repo.create_message(
@@ -4202,10 +4179,8 @@ async def create_human_message(
             session_target_labels=session_target_labels,
             attachments=attachments,
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
-            acting_human_id=auth.user_id if native_source_id or author_override else None,
-            expected_room_revision=int(meta["revision"]) if native_source_id else expected_room_revision,
-            agent_hop=native_hop if native_source_id else None,
-            extra_conditions=native_conditions if native_source_id else None,
+            acting_human_id=auth.user_id if author_override else None,
+            expected_room_revision=expected_room_revision,
             addressing=_stored_addressing(addressing),
         )
     except messaging_repo.RoomArchived as exc:
@@ -4228,40 +4203,39 @@ async def create_human_message(
     if not replayed:
         _publish_message_created_soon(item)
         agent_mentions = sum(1 for ref in mentions if ref.get("kind") == "agent")
-        _emit_dispatch_targets(effective_targets, room_kind, "session" if native_source_id else "human")
+        _emit_dispatch_targets(effective_targets, room_kind, "human")
         put_metric(
             "messaging.message.created",
             dimensions={
-                "author_kind": "session" if native_source_id else "human",
+                "author_kind": "human",
                 "room_kind": room_kind,
                 "has_targets": "true" if effective_targets else "false",
             },
         )
-        if not native_source_id:
-            _product_event(
-                distinct_id=auth.user_id,
-                event="room_message_sent",
-                owner_id=owner_id,
-                props={
-                    "room_kind": room_kind,
-                    "mentions_agents": agent_mentions,
-                    "mentions_sessions": bool(session_ids),
-                    "is_thread_reply": bool(request.reply_to_message_id or request.thread_root_message_id),
-                    "has_attachment": bool(attachments),
-                    "first_in_room": int(item.get("messageSeq") or 0) == 1,
-                    "sender_is_owner": sender.get("role") == "owner",
-                },
-            )
+        _product_event(
+            distinct_id=auth.user_id,
+            event="room_message_sent",
+            owner_id=owner_id,
+            props={
+                "room_kind": room_kind,
+                "mentions_agents": agent_mentions,
+                "mentions_sessions": bool(session_ids),
+                "is_thread_reply": bool(request.reply_to_message_id or request.thread_root_message_id),
+                "has_attachment": bool(attachments),
+                "first_in_room": int(item.get("messageSeq") or 0) == 1,
+                "sender_is_owner": sender.get("role") == "owner",
+            },
+        )
         # The gap this whole task exists to close: someone addressed an agent
         # and nothing ran. Invisible before — no metric, no log, no event.
-        if agent_mentions and not targets and not native_source_id:
+        if agent_mentions and not targets:
             _product_event(
                 distinct_id=auth.user_id,
                 event="agent_dispatch_missed",
                 owner_id=owner_id,
                 props={"reason": "no_targets", "room_kind": room_kind},
             )
-        if agent_mentions and not native_source_id:
+        if agent_mentions:
             await _count_jev_miss(room_id, auth.user_id, item)
     # Neither of these is part of the response. `touch_last_interactive` writes
     # to the containers table purely to feed the idle/park clock, and it was

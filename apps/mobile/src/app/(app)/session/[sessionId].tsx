@@ -17,7 +17,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { ConversationHeader } from "../../../components/conversation/ConversationHeader";
 import { Avatar } from "../../../components/room/Avatar";
-import { AskToJoin, JoinRequests } from "../../../components/session/SessionJoin";
+import { JoinRequests, WatchOnly } from "../../../components/session/SessionJoin";
 import { SessionApprovalCard } from "../../../components/session/SessionApprovalCard";
 import { SessionOverview } from "../../../components/session/SessionOverview";
 import { ResumeDelivery, SessionResume } from "../../../components/session/SessionResume";
@@ -41,6 +41,8 @@ const BOTTOM_SLACK = 80;
 /** The header's status line, as a sentence: "Working on your Mac", "Leo’s Mac is offline". */
 function sessionWhere(session: LocalSession, own: boolean, ownerName: string): string {
   const mac = own ? "your Mac" : `${ownerName}’s Mac`;
+  // A paused session is never heartbeated, so it reads offline whether or not its Mac is on.
+  if (session.status === "offline" && session.shared === false) return `Paused on ${mac}`;
   if (session.status === "offline") return `${mac[0].toUpperCase()}${mac.slice(1)} is offline`;
   const why = endedWhy(session, mac, "’");
   if (why) return `Ended · ${why}`;
@@ -379,8 +381,8 @@ function SessionBody({
   const queuedOutbox = savedOutbox.filter(receipt => receipt.state !== "applied");
   const pendingText = usePendingPrompt(command.attempt, events);
   const pendingShown = !!pendingText && !history.hasNewer;
-  const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
-  const remoteApproval = !!session.pendingApproval && session.provider === "claude" && waitingOn !== null;
+  const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? session.waitingFor ?? "" : null;
+  const remoteApproval = !!session.pendingApproval && (session.provider === "claude" || session.provider === "codex") && waitingOn !== null;
   const last = events.at(-1);
   const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
   // From every event: a subagent is drawn inline where it was launched and opens onto its own rows.
@@ -525,7 +527,7 @@ function SessionBody({
       {!ended && <ResumeDelivery flow={resume} />}
       {ended ? <SessionResume flow={resume} own={own} ownerName={ownerName} />
         : control ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
-        : <AskToJoin session={session} client={client} ownerName={ownerName} />}
+        : <WatchOnly ownerName={ownerName} />}
       <BottomSheet visible={detailsOpen} onClose={onCloseDetails} large>
         <View style={styles.sheetContent}>
           <View style={styles.sheetTextGroup}>

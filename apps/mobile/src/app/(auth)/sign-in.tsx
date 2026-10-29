@@ -249,7 +249,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     backgroundColor: colors.cream,
   },
-  // Lora wordmark, mirroring the web landing masthead.
+  // Satoshi wordmark, mirroring the web landing masthead.
   logo: {
     ...type.display,
     textAlign: "center",

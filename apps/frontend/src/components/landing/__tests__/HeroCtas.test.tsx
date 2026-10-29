@@ -4,48 +4,45 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const captureSignupCta = vi.fn();
-const register = vi.fn();
 vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: (o: unknown) => captureSignupCta(o) }));
-vi.mock("@/lib/analytics", () => ({ register: (p: unknown) => register(p) }));
 vi.mock("next/image", () => ({ default: () => null }));
 
 import { Hero } from "../Hero";
-import { headlineCookieScript, headlineVariantProps } from "@/lib/headlineVariant";
 
 beforeEach(() => {
   captureSignupCta.mockReset();
-  register.mockReset();
-  document.cookie = "lb_hv=; Max-Age=0; Path=/";
 });
 
-describe("hero: two doors and the headline test", () => {
-  it("links the two buttons and tracks each with the variant", () => {
-    render(<Hero variant="B" />);
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("AI employees your whole team can see.");
-    const setup = screen.getByRole("link", { name: /Request a guided setup/ });
-    const start = screen.getByRole("link", { name: "Start free" });
-    expect(setup).toHaveAttribute("href", "/request-setup");
+describe("hero: one primary door and the trust row", () => {
+  it("leads with self-serve, links both buttons and tracks each", () => {
+    render(<Hero />);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      "Message your agents the way you message your team.",
+    );
+    const [start, setup] = screen.getAllByRole("link");
+    expect(start).toHaveAccessibleName(/Start your workspace free/);
+    expect(start).toHaveClass("lb-btn-p");
     expect(start).toHaveAttribute("href", "/sign-up");
-    fireEvent.click(setup);
+    expect(setup).toHaveAccessibleName("Request a guided setup");
+    expect(setup).toHaveClass("lb-btn-s");
+    expect(setup).toHaveAttribute("href", "/request-setup");
     fireEvent.click(start);
-    expect(captureSignupCta.mock.calls.map(([o]) => [o.ctaId, o.properties.headline_variant])).toEqual([
-      ["hero_setup", "B"],
-      ["hero_start_free", "B"],
+    fireEvent.click(setup);
+    expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["hero_start_free", "hero_setup"]);
+  });
+
+  it("shows the trust row under the buttons", () => {
+    render(<Hero />);
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Open source network",
+      "Any agent, any vendor",
+      "30 days free, no card",
     ]);
   });
 
-  it("keeps the first variant in a cookie before PostHog starts, and never overwrites it", () => {
-    new Function(headlineCookieScript("A"))();
-    expect(document.cookie).toContain("lb_hv=A");
-    expect(headlineVariantProps()).toEqual({ headline_variant: "A" });
-    new Function(headlineCookieScript("B"))();
-    expect(document.cookie).toContain("lb_hv=A");
-    expect(document.cookie).not.toContain("lb_hv=B");
-  });
-
-  it("renders the cookie script in the hero and registers the variant", () => {
-    const { container } = render(<Hero variant="B" />);
-    expect(container.querySelector("script")?.innerHTML).toBe(headlineCookieScript("B"));
-    expect(register).toHaveBeenCalledWith({ headline_variant: "B" });
+  it("carries no headline-test script or cookie", () => {
+    const { container } = render(<Hero />);
+    expect(container.querySelector("script")).toBeNull();
+    expect(document.cookie).not.toContain("lb_hv");
   });
 });

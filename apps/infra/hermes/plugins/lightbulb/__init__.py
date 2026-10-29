@@ -194,6 +194,52 @@ def _suggest_idea(args: dict, *, session_id: str = "", **_kw) -> str:
     return json.dumps(result)
 
 
+# request_purchase tool (Link Agent Wallet, dark): the agent can only ASK. The backend checks the
+# owner's purchase limits, files the Needs-you card and, after the owner's click, Link's own
+# approval. The agent and workspace come from the turn; the reply is {requestId, status} and
+# nothing else -- no URL, token or card ever reaches the model.
+PURCHASE_SCHEMA = {
+    "name": "request_purchase",
+    "description": "Ask the owner to approve buying something for this company. You do not pay: the "
+                   "owner approves it in Lightbulb and in Link first, and you are never given a card. "
+                   "Use it only for a real purchase your task needs, tied to the issue you are working on.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "merchant": {"type": "string", "description": "Who is paid, e.g. 'Acme Hosting'."},
+            "url": {"type": "string", "description": "The merchant's web address (the page you would buy on)."},
+            "amount": {"type": "number", "description": "Total in US dollars, e.g. 35.00."},
+            "why": {"type": "string", "description": "What it is and why the company needs it, one or two sentences. The owner reads this."},
+            "issue_id": {"type": "string", "description": "The issue this purchase is for."},
+        },
+        "required": ["merchant", "url", "amount", "why", "issue_id"],
+    },
+}
+PURCHASE_NO_TURN = "request_purchase works only inside a Lightbulb turn."
+
+
+def _request_purchase(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not ctx or not ctx.get("agentId") or not ctx.get("hookToken"):
+        return PURCHASE_NO_TURN
+    body = {"agentId": ctx["agentId"], "merchant": args.get("merchant"), "url": args.get("url"),
+            "amount": args.get("amount"), "why": args.get("why"), "issueId": args.get("issue_id")}
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/link-wallet/{ctx['ownerId']}/requests"
+    try:
+        result = _post(url, ctx["hookToken"], body)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return "Purchases are not switched on for this workspace."
+        try:
+            code = (json.loads(exc.read() or b"{}").get("detail") or {}).get("code")
+        except Exception:  # noqa: BLE001
+            code = None
+        return f"Purchase not requested: {code or f'HTTP {exc.code}'}."
+    except Exception as exc:  # noqa: BLE001
+        return f"Purchase not requested: {type(exc).__name__}."
+    return json.dumps({"requestId": result.get("requestId"), "status": result.get("status")})
+
+
 # Task 12: hire_suggestion tool
 # parseHireSuggestion (HireCard.tsx:38-78) matches this string EXACTLY and returns null on
 # any mismatch, which degrades the card to a plain tool pill with no error anywhere. It is
@@ -259,51 +305,35 @@ def _register_redaction_default() -> int:
     return _register_redaction(register_redaction_patterns)
 
 
-# Task 14: lightbulb_local_sessions tool
+# Task 14: lightbulb_local_sessions tool -- read-only: an agent messages a session with lightbulb_network
 SESSIONS_UNAVAILABLE = "Lightbulb local sessions unavailable"
 SESSIONS_MAX_BYTES = 2 * 1024 * 1024
-ASK_REFUSALS = {
-    "LOCAL_SESSION_ASK_PENDING": "your ask on this session still waits for its owner; do not ask again.",
-    "LOCAL_SESSION_ASK_DECLINED": "the session's owner declined your message; do not ask again in this run.",
-}
 _OPAQUE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,256}$")
 # Strict per-action allowlist: an unexpected param is a bug, not something to ignore.
 _ACTION_PARAMS = {
     "resources": {"action"},
     "read": {"action", "sessionId", "afterSeq", "limit"},
-    "send": {"action", "sessionId", "requestId", "expectedGeneration", "expectedTurnId", "text", "kind"},
-    "receipt": {"action", "sessionId", "requestId"},
 }
 
 SESSIONS_SCHEMA = {
     "name": "lightbulb_local_sessions",
-    "description": "Read and message people's shared Claude Code/Codex sessions. Check a "
-                   "session's agentSend first: \"direct\" goes straight in (the session of the "
-                   "person who woke you, or its owner allows it); \"ask\" returns "
-                   "awaiting_approval and its owner chooses Send or Decline -- ask once, say so "
-                   "in your reply, never re-ask under a new requestId; declined is final for this "
-                   "run. kind \"interrupt\" stops the session's turn: no text, and expectedTurnId = "
-                   "the session's activeTurnId (also needed to steer a busy session).",
+    "description": "Read people's shared Claude Code/Codex sessions: \"resources\" lists them, \"read\" "
+                   "pages one's events. To message a session, use lightbulb_network.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["resources", "read", "send", "receipt"]},
-            "sessionId": {"type": "string"}, "requestId": {"type": "string"},
-            "expectedGeneration": {"type": "string"}, "text": {"type": "string", "maxLength": 8192},
-            "expectedTurnId": {"type": "string", "description": "The session's activeTurnId."},
+            "action": {"type": "string", "enum": ["resources", "read"]},
+            "sessionId": {"type": "string"},
             "afterSeq": {"type": "integer", "minimum": 0},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-            "kind": {"type": "string", "enum": ["send", "interrupt"]},
         },
         "required": ["action"],
     },
 }
 
 
-def _call_sessions(method: str, url: str, token: str, body: dict | None = None) -> dict:
-    request = urllib.request.Request(
-        url, data=json.dumps(body).encode() if body is not None else None,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}, method=method)
+def _call_sessions(method: str, url: str, token: str) -> dict:
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method=method)
     with urllib.request.urlopen(request, timeout=10) as res:
         if res.status // 100 != 2 or res.status in (301, 302, 303, 307, 308):
             raise RuntimeError(f"status {res.status}")
@@ -317,56 +347,20 @@ def _local_sessions(args: dict, *, session_id: str = "", **_kw) -> str:
     action = args.get("action")
     allowed = _ACTION_PARAMS.get(action)
     if allowed is None:
-        return "action must be one of resources|read|send|receipt."
+        return "action must be one of resources|read."
     extra = set(args) - allowed
     if extra:
         return f"Params not allowed for action {action}: {', '.join(sorted(extra))}."
     base = f"{ctx['apiUrl'].rstrip('/')}/api/v1/messaging/local-session-agent"
     token, sid = ctx["localSessionToken"], str(args.get("sessionId") or "")
-    if action != "resources" and not _UUID_RE.match(sid):
-        return "Invalid sessionId: expected a session UUID."
     try:
         if action == "resources":
             return json.dumps(_call_sessions("GET", f"{base}/resources", token))
-        if action == "read":
-            after = max(0, int(args.get("afterSeq") or 0))
-            limit = min(100, max(1, int(args.get("limit") or 50)))
-            return json.dumps(_call_sessions(
-                "GET", f"{base}/sessions/{sid}/events?afterSeq={after}&limit={limit}", token))
-        request_id = str(args.get("requestId") or "")
-        if not _OPAQUE_RE.match(request_id):
-            return "requestId is required and must be an opaque token."
-        if action == "receipt":
-            return json.dumps(_call_sessions("GET", f"{base}/sessions/{sid}/commands/{request_id}", token))
-        generation = str(args.get("expectedGeneration") or "")
-        if not _OPAQUE_RE.match(generation):
-            return "expectedGeneration is required (take it from the resources listing)."
-        kind = args.get("kind") or "send"
-        if kind not in ("send", "interrupt"):
-            return "kind must be send or interrupt."
-        body = {"requestId": request_id, "expectedGeneration": generation, "kind": kind}
-        turn_id = str(args.get("expectedTurnId") or "")
-        if turn_id:
-            if not _OPAQUE_RE.match(turn_id):
-                return "expectedTurnId must be the session's activeTurnId."
-            body["expectedTurnId"] = turn_id
-        elif kind == "interrupt":
-            return "An interrupt needs expectedTurnId (the session's activeTurnId from resources or read)."
-        if kind == "send":  # the backend refuses text on an interrupt
-            text = str(args.get("text") or "").strip()
-            if not text:
-                return "text is required."
-            body["text"] = text
-        return json.dumps(_call_sessions("POST", f"{base}/sessions/{sid}/commands", token, body))
-    except urllib.error.HTTPError as exc:
-        # The two ask bounds steer the agent's next step, so their code (only) reaches it.
-        try:
-            code = json.loads(exc.read(4096) or b"{}").get("code")
-        except Exception:  # noqa: BLE001
-            code = None
-        if code in ASK_REFUSALS:
-            return f"{code}: {ASK_REFUSALS[code]}"
-        return SESSIONS_UNAVAILABLE
+        if not _UUID_RE.match(sid):
+            return "Invalid sessionId: expected a session UUID."
+        after = max(0, int(args.get("afterSeq") or 0))
+        limit = min(100, max(1, int(args.get("limit") or 50)))
+        return json.dumps(_call_sessions("GET", f"{base}/sessions/{sid}/events?afterSeq={after}&limit={limit}", token))
     except Exception:  # noqa: BLE001 — no status, no URL, no detail reaches the agent
         return SESSIONS_UNAVAILABLE
 
@@ -375,10 +369,10 @@ def _local_sessions(args: dict, *, session_id: str = "", **_kw) -> str:
 NETWORK_SCHEMA = {
     "name": "lightbulb_network",
     "description": "Messages to people's computers and their agents on the Lightbulb network (not "
-                   "rooms, and not your local coding sessions; for those use lightbulb_local_sessions). "
+                   "rooms). Also how you message a shared coding session (lightbulb_local_sessions only reads them). "
                    "action \"directory\" finds sessions (optional query); \"send\" sends text to a "
                    "session name and returns a receipt; \"receipt\" reads a sent message's state by its "
-                   "request_id. A message held for its owner's approval stays held: say so, do not re-send.",
+                   "request_id.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -505,6 +499,52 @@ def _read_rooms(args: dict, *, session_id: str = "", **_kw) -> str:
         return READ_ROOMS_REFUSED if exc.code in (403, 404) else "Lightbulb rooms are unavailable right now."
     except Exception:  # noqa: BLE001 -- no status, no URL, no detail reaches the agent
         return "Lightbulb rooms are unavailable right now."
+
+
+# ---- workspace: act in the workspace with the asker's rights ------------------------------------
+WORKSPACE_SCHEMA = {
+    "name": "lightbulb_workspace",
+    "description": "Act in the Lightbulb workspace with exactly the access of the person who asked you: room "
+                   "members (add_member, remove_member, set_listen_mode), create_room, update_room "
+                   "(rename or archive), pin and unpin a message, search_messages and search_sessions. Never "
+                   "change Lightbulb data any other way.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": [
+                "add_member", "set_listen_mode", "remove_member", "create_room",
+                "update_room", "pin", "unpin", "search_messages", "search_sessions"]},
+            "roomId": {"type": "string"},
+            "args": {"type": "object"},
+        },
+        "required": ["action"],
+    },
+}
+
+
+def _workspace(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not ctx or not ctx.get("localSessionToken"):
+        return NO_TURN
+    if not isinstance(args.get("args") or {}, dict):
+        return "args must be an object"
+    act_args = dict(args.get("args") or {})
+    if args.get("action") == "create_room" and not (act_args.get("clientRoomId") or act_args.get("client_room_id")):
+        act_args["clientRoomId"] = str(uuid.uuid5(
+            uuid.NAMESPACE_URL, f"lightbulb-agent-act:{ctx.get('runId') or ctx.get('eventId')}:create_room:"
+            f"{json.dumps(act_args, sort_keys=True)}"))
+    body = {"action": args.get("action"), "roomId": args.get("roomId"), "args": act_args}
+    try:
+        return json.dumps(_post(f"{ctx['apiUrl'].rstrip('/')}/api/v1/messaging/agent-act",
+                                ctx["localSessionToken"], body))
+    except urllib.error.HTTPError as exc:
+        try:
+            problem = json.loads(exc.read())
+            return f"Refused ({problem['code']}): {problem['message']}"
+        except Exception:  # noqa: BLE001 -- an unreadable body is just the status
+            return f"Lightbulb workspace action refused: {exc.code}"
+    except Exception:  # noqa: BLE001 -- no status, no URL, no detail reaches the agent
+        return "Lightbulb workspace is unavailable right now."
 
 
 # ---- request_approval: a person's decision as a real Paperclip approval ------------------------
@@ -769,6 +809,8 @@ def register(ctx) -> None:
                       description=SUGGEST_IDEA_SCHEMA["description"], emoji="💡")
     ctx.register_tool("hire_suggestion", "lightbulb", HIRE_SCHEMA, _hire_suggestion,
                       description=HIRE_SCHEMA["description"], emoji="🧑‍💼")
+    ctx.register_tool("request_purchase", "lightbulb", PURCHASE_SCHEMA, _request_purchase,
+                      description=PURCHASE_SCHEMA["description"], emoji="💳")
     ctx.register_tool("request_approval", "lightbulb", APPROVAL_SCHEMA, _request_approval,
                       description=APPROVAL_SCHEMA["description"], emoji="✅")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,
@@ -777,6 +819,8 @@ def register(ctx) -> None:
                       description=NETWORK_SCHEMA["description"], emoji="🌐")
     ctx.register_tool("lightbulb_read_rooms", "lightbulb", READ_ROOMS_SCHEMA, _read_rooms,
                       description=READ_ROOMS_SCHEMA["description"], emoji="🗂️")
+    ctx.register_tool("lightbulb_workspace", "lightbulb", WORKSPACE_SCHEMA, _workspace,
+                      description=WORKSPACE_SCHEMA["description"], emoji="🏢")
     ctx.register_tool("lightbulb_voice_profile", "lightbulb", VOICE_PROFILE_SCHEMA, _voice_profile,
                       description=VOICE_PROFILE_SCHEMA["description"], emoji="🎙️")
     from . import desktop

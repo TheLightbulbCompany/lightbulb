@@ -58,7 +58,7 @@ async def add_connected_team(owner_id: str, provider: str, team_id: str) -> None
         _table().update_item,
         Key={"owner_id": owner_id, "provider": provider},
         UpdateExpression="SET #s = :c, connected_at = if_not_exists(connected_at, :now), updated_at = :now "
-        "ADD team_ids :t",
+        "ADD team_ids :t REMOVE reconnect_reason, reconnect_reason_at",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":c": "connected", ":now": now, ":t": {team_id}},
     )
@@ -84,15 +84,25 @@ async def remove_connected_team(owner_id: str, provider: str, team_id: str) -> s
     return set((response.get("Attributes") or {}).get("team_ids") or ())
 
 
-async def set_status(owner_id: str, provider: str, status: str) -> None:
+async def set_status(owner_id: str, provider: str, status: str, *, reason: str | None = None) -> None:
     """Flip an existing row's status (e.g. ``reconnect_required``), keeping its identity,
-    tenant and connected_at -- unlike ``put_status``, which rewrites the whole row."""
+    tenant and connected_at -- unlike ``put_status``, which rewrites the whole row.
+
+    ``reason`` (secret-free: the provider's OAuth error or our own short code) lands as
+    ``reconnect_reason`` + ``reconnect_reason_at``. A reconnect clears both: ``put_status``
+    rewrites the row and ``add_connected_team`` removes them."""
+    now = int(time.time())
+    expr = "SET #s = :s, updated_at = :u"
+    values: dict = {":s": status, ":u": now}
+    if reason:
+        expr += ", reconnect_reason = :r, reconnect_reason_at = :u"
+        values[":r"] = reason
     await run_in_thread(
         _table().update_item,
         Key={"owner_id": owner_id, "provider": provider},
-        UpdateExpression="SET #s = :s, updated_at = :u",
+        UpdateExpression=expr,
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":s": status, ":u": int(time.time())},
+        ExpressionAttributeValues=values,
     )
 
 

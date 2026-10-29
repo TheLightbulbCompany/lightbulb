@@ -14,7 +14,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 
-from core.services import handoff_analytics, marketplace_hire
+import logging
+
+from core.services import handoff_analytics, marketplace_hire, purchases
 
 from . import agents as _agents
 from .deps import TeamsContext, envelope_list
@@ -113,6 +115,10 @@ async def reject(
     handoff_analytics.approval_answered(
         workspace_id=ctx.owner_id, user_id=ctx.user_id, approval_id=approval_id, decision="rejected"
     )
+    try:  # a rejected purchase card also ends the Link spend request; never fail the rejection over it
+        await purchases.cancel_for_card(ctx.owner_id, (rejected or {}).get("payload"))
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("approvals: purchase cancel failed approval_id=%s", approval_id)
     return rejected
 
 

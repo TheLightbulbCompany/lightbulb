@@ -134,7 +134,7 @@ export default function AppLayout() {
                       // render, which is always Chats.
                       title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "chats"] ?? "Chats",
                       // Telegram/Signal-style: the tab's title sits in the top row,
-                      // left-aligned in Lora, beside the tab's own buttons — not a
+                      // left-aligned in Satoshi, beside the tab's own buttons — not a
                       // centred title and not a large title a row further down.
                       headerTitle: "",
                       unstable_headerLeftItems: () => [

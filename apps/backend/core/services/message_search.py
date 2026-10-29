@@ -61,7 +61,7 @@ def index_name(owner_id: str) -> str:
     return "messages-" + hashlib.sha256(owner_id.encode()).hexdigest()[:32]
 
 
-def build_query(q: str, room_ids: list[str], limit: int) -> dict:
+def build_query(q: str, room_ids: list[str], limit: int, *, field: str = "roomId", source: list[str] = _SOURCE) -> dict:
     fields = ["text^3", "authorName"]
     # Phrases, -exclusions, prefix*; never throws on bad syntax.
     should: list[dict] = [
@@ -77,11 +77,11 @@ def build_query(q: str, room_ids: list[str], limit: int) -> dict:
         )
     return {
         "size": limit,
-        "_source": _SOURCE,
+        "_source": source,
         "query": {
             "function_score": {
                 "query": {
-                    "bool": {"filter": [{"terms": {"roomId": room_ids}}], "should": should, "minimum_should_match": 1}
+                    "bool": {"filter": [{"terms": {field: room_ids}}], "should": should, "minimum_should_match": 1}
                 },
                 # Recency nudges, never buries: the factor runs 0.5–1.5.
                 "functions": [
@@ -194,6 +194,96 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
             )
         )
     return MessageSearchResponse(hits=hits)
+
+
+class SessionSearchRequest(ContractModel):
+    q: str = Field(min_length=1, max_length=200)
+    limit: int = Field(default=30, ge=1, le=50)
+
+
+class SessionSearchHit(ContractModel):
+    session_id: str
+    seq: int
+    #: "person" (a prompt) or "agent" (the assistant's reply).
+    author_kind: str
+    #: The person who typed it; empty for the assistant.
+    author_id: str
+    #: The assistant's name; a person's is the client's to resolve from author_id.
+    author_name: str
+    created_at: str
+    snippet: str
+    session_title: str
+    provider: str
+    human_user_id: str
+
+
+class SessionSearchResponse(ContractModel):
+    hits: list[SessionSearchHit]
+
+
+_SESSION_SOURCE = ["sessionId", "seq", "authorKind", "authorId", "authorName", "createdAt", "text"]
+
+
+async def search_sessions(auth: AuthContext, request: SessionSearchRequest) -> SessionSearchResponse:
+    """What was said in coding sessions. The sessions list decides what is searchable (from
+    DynamoDB, on this request); the index only ranks text inside that set."""
+    from core.repositories import local_sessions_repo
+    from core.services import local_sessions  # lazy: it imports messaging, like this module
+
+    if not settings.SEARCH_ENDPOINT:
+        raise ApiProblem("SEARCH_UNAVAILABLE", "Search is not available yet.")
+    q = request.q.strip()
+    sessions = await local_sessions.searchable_sessions(auth)
+    if not q or not sessions:
+        return SessionSearchResponse(hits=[])
+    owner_id = resolve_owner_id(auth)
+    query = build_query(q, sorted(sessions), request.limit, field="sessionId", source=_SESSION_SOURCE)
+    try:
+        response = await _request("POST", f"/{index_name(owner_id)}/_search?ignore_unavailable=true", query)
+    except httpx.TimeoutException as exc:
+        raise _unavailable() from exc
+    if response.status_code >= 500:
+        logger.warning("session search unavailable status=%s", response.status_code)
+        raise _unavailable()
+    if response.status_code != 200:
+        logger.error("session search rejected status=%s", response.status_code)
+        raise ApiProblem("INTERNAL_ERROR", "Search failed.")
+    candidates = [
+        h for h in response.json().get("hits", {}).get("hits", []) if h["_source"].get("sessionId") in sessions
+    ]
+    # The search can outlast a pause or a removal: re-read the rows with hits (strongly).
+    ids = sorted({h["_source"]["sessionId"] for h in candidates})
+    # A member removed while the index answered gets nothing (rooms re-check membership the same way).
+    if ids and not await local_sessions.still_in_workspace(owner_id, auth.user_id):
+        return SessionSearchResponse(hits=[])
+    rows = await local_sessions_repo.get_sessions(owner_id, ids)
+    readable = {sid: row for sid, row in zip(ids, rows) if local_sessions.still_searchable(row, auth.user_id)}
+    # A teammate removed meanwhile keeps a shared row; their sessions leave search with them.
+    others = sorted({row["humanUserId"] for row in readable.values()} - {auth.user_id})
+    members = await asyncio.gather(*(local_sessions.still_in_workspace(owner_id, human) for human in others))
+    gone = {human for human, ok in zip(others, members) if not ok}
+    readable = {sid for sid, row in readable.items() if row["humanUserId"] not in gone}
+    hits = []
+    for hit in candidates:
+        source = hit["_source"]
+        session = sessions[source["sessionId"]]
+        if session.session_id not in readable:
+            continue
+        hits.append(
+            SessionSearchHit(
+                session_id=session.session_id,
+                seq=source["seq"],
+                author_kind=source.get("authorKind", ""),
+                author_id=source.get("authorId", ""),
+                author_name=source.get("authorName", ""),
+                created_at=source["createdAt"],
+                snippet=(hit.get("highlight", {}).get("text") or [source.get("text", "")[:160]])[0],
+                session_title=session.display_title or session.title or session.cwd_name or "",
+                provider=session.provider,
+                human_user_id=session.human_user_id,
+            )
+        )
+    return SessionSearchResponse(hits=hits)
 
 
 async def warm(auth: AuthContext) -> None:

@@ -95,6 +95,13 @@ async def proof_refresh(body: ProofRefresh, response: Response):
     return await network_login.refresh(body.key, body.challenge, body.sig, body.proof)
 
 
+@router.post("/proof/revoke")
+async def proof_revoke(body: ProofRefresh, response: Response):
+    """``lightbulb logout``: the computer signs itself out everywhere before deleting its proof."""
+    _no_store(response)
+    return await network_login.logout(body.key, body.challenge, body.sig, body.proof)
+
+
 @router.get("/issuer")
 async def issuer():
     """The public key that signs sign-in proofs (for the engine's key ceremony and dev)."""

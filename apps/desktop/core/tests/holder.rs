@@ -622,13 +622,13 @@ fn holder_runs_the_provider_in_the_environment_it_was_handed() {
     // The real holder binary, as `lightbulb claude` starts it: the terminal's environment through
     // the holder's own, minus another session's markers, never on its argv.
     let dir = temp_dir();
-    let env = vec![("PATH".to_string(), "/usr/bin:/bin".to_string()), ("MARK".into(), "from-terminal".into()), ("CLAUDECODE".into(), "1".into())];
+    let env = vec![("PATH".to_string(), "/usr/bin:/bin".to_string()), ("MARK".into(), "from-terminal".into()), ("CLAUDECODE".into(), "1".into()), ("CLAUDE_JOB_DIR".into(), "/tmp/jobs/other".into())];
     let info = manager::start_with_env(Path::new(env!("CARGO_BIN_EXE_lightbulb")), &dir, Path::new("/"),
-        &["/bin/sh".into(), "-c".into(), "echo \"mark=$MARK claudecode=${CLAUDECODE:-unset} inherit=${LIGHTBULB_HOLDER_INHERIT_ENV:-unset}\"; exec cat".into()], None, Some(env)).unwrap();
+        &["/bin/sh".into(), "-c".into(), "echo \"mark=$MARK claudecode=${CLAUDECODE:-unset} jobdir=${CLAUDE_JOB_DIR:-unset} inherit=${LIGHTBULB_HOLDER_INHERIT_ENV:-unset}\"; exec cat".into()], None, Some(env)).unwrap();
     let mut c = UnixStream::connect(&info.socket).unwrap();
     c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     c.write_all(&encode(HELLO, br#"{"role":"interactive","replayFrom":0}"#)).unwrap();
-    read_until(&mut c, b"mark=from-terminal claudecode=unset inherit=unset");
+    read_until(&mut c, b"mark=from-terminal claudecode=unset jobdir=unset inherit=unset");
     manager::stop(info.pid);
 }
 

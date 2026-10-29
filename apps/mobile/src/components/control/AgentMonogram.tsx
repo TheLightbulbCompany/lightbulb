@@ -3,7 +3,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { fonts, radii, useChatPalette } from "../../config/theme";
 
 /**
- * 28px tinted avatar tile — Lora italic-bold initial, or the agent's emoji
+ * 28px tinted avatar tile — Satoshi bold-italic initial, or the agent's emoji
  * inside the same tile when one is set (spec §5 Monogram). Mirrors the
  * private Monogram in chat.tsx; extracted so the Agents panel + inspector
  * reuse the identical roster styling without touching the chat source.

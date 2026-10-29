@@ -5,7 +5,7 @@ import { LogoMark } from "../LogoMark";
 
 /**
  * Empty-conversation hero (spec §7): the centred bulb mark, the conversation's
- * name in Lora, and a one-line prompt. The default prompt reads as an agent DM;
+ * name in Satoshi, and a one-line prompt. The default prompt reads as an agent DM;
  * a channel or group DM passes its own.
  */
 export function EmptyState({

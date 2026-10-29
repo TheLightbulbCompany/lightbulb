@@ -221,15 +221,21 @@ export type SessionAttention = {
   sessionId: string;
   /** join_request: a teammate asked to join one of your sessions. join_allowed / join_declined:
    *  the owner answered YOUR request to join theirs. */
-  state: "waiting" | "finished" | "join_request" | "join_allowed" | "join_declined";
+  /** attention: a job left a hand-off note (sent only to someone who chose a banner for it). */
+  state: "waiting" | "finished" | "attention" | "join_request" | "join_allowed" | "join_declined";
   push: { title: string; body: string; data: { source: "session"; sessionId: string } };
+  /** The owner's choice for this kind: only "banner" shows one. Absent (older server) = banner. */
+  level?: "off" | "badge" | "banner";
+  sound?: boolean;
+  /** No banner while Lightbulb is the focused app. */
+  onlyUnfocused?: boolean;
   /** A held session send: the session's Mac posts its own notification, with Allow and Decline. */
   held?: boolean;
   /** For a held send: the device id of the Mac that hosts the session. */
   hostDeviceId?: string;
 };
 const SCREEN_KINDS = new Set<string>(["snapshot", "output", "history"]);
-const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "join_request", "join_allowed", "join_declined"]);
+const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "attention", "join_request", "join_allowed", "join_declined"]);
 /** One piece of a running session's live terminal, for a person watching it (spec §5.2). `epoch`
  *  is one relay run on the Mac and `seq` orders frames within it; a "snapshot" redraws the
  *  screen, "history" is the holder's recent output sent before a snapshot, "ping" (no data, no
@@ -326,7 +332,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.browser.frame", RoomBrowserFrame>
   | LiveEventEnvelope<"room.subagent.event", RoomSubagentEvent>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
-  | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
+  | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true; sessionId?: string }>
   /** You were removed from this workspace: drop its live subscriptions (user channel only). */
   | LiveEventEnvelope<"workspace.access.removed", { workspaceId: string }>
   | LiveEventEnvelope<"workspace.session.attention", SessionAttention>
@@ -435,8 +441,10 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.workspaceId) && Object.keys(payload).length === 1;
     case "workspace.sessions.changed":
       // `transcript: true` marks a streaming batch: open panes refetch, the sidebar list does not.
+      // `sessionId` names the one session that changed: the list re-reads that row, not the whole list.
       return str(payload.humanUserId) && (payload.transcript === undefined || payload.transcript === true)
-        && Object.keys(payload).every((key) => key === "humanUserId" || key === "transcript");
+        && (payload.sessionId === undefined || str(payload.sessionId))
+        && Object.keys(payload).every((key) => key === "humanUserId" || key === "transcript" || key === "sessionId");
     case "workspace.session.screen":
       if (payload.kind === "image") {
         return str(payload.sessionId) && str(payload.data) && num(payload.w) && num(payload.h)

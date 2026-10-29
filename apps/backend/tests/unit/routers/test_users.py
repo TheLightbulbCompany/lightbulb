@@ -332,8 +332,8 @@ class TestPrefs:
         mock_repo.timezone_of = real_user_repo.timezone_of
         mock_repo.daily_summary_on = real_user_repo.daily_summary_on
         mock_repo.chat_theme_of = real_user_repo.chat_theme_of
-        mock_repo.agent_send_without_asking = real_user_repo.agent_send_without_asking
         mock_repo.sessions_reachable_from_background_work = real_user_repo.sessions_reachable_from_background_work
+        mock_repo.session_notifications = real_user_repo.session_notifications
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
@@ -380,8 +380,8 @@ class TestPrefs:
             daily_summary=None,
             away_email=None,
             chat_theme="dark",
-            agent_send_without_asking=None,
             sessions_reachable_from_background_work=None,
+            session_notifications=None,
         )
 
     @pytest.mark.asyncio
@@ -412,8 +412,8 @@ class TestPrefs:
             daily_summary=None,
             away_email=None,
             chat_theme=None,
-            agent_send_without_asking=None,
             sessions_reachable_from_background_work=None,
+            session_notifications=None,
         )
         # The mocked row already carries chat_theme=dark, so the response still
         # reflects it even though this PUT didn't touch it.
@@ -422,31 +422,56 @@ class TestPrefs:
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
     async def test_the_agent_session_switches_default_off_and_are_set(self, mock_repo, async_client):
-        """Spec 2026-10-07-agent-session-approval §3.4: agents ask, and background work cannot
-        reach a person's sessions, until that person turns each on."""
+        """Background work reaches a person's sessions unless they opt out (owner ruling 2026-10-26)."""
         self._wire_real_helpers(mock_repo)
         mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
         mock_repo.set_prefs = AsyncMock(return_value=None)
 
         body = (await async_client.get("/api/v1/users/me/prefs")).json()
-        assert (body["agentSendWithoutAsking"], body["sessionsReachableFromBackgroundWork"]) == (False, False)
+        assert body["sessionsReachableFromBackgroundWork"] is True and "agentSendWithoutAsking" not in body
 
         mock_repo.get = AsyncMock(
             return_value={
                 "user_id": "user_test_123",
-                "agent_send_without_asking": True,
                 "sessions_reachable_from_background_work": True,
             }
         )
         response = await async_client.put(
             "/api/v1/users/me/prefs",
-            json={"agentSendWithoutAsking": True, "sessionsReachableFromBackgroundWork": True},
+            json={"sessionsReachableFromBackgroundWork": True},
         )
         assert response.status_code == 200
-        assert response.json()["agentSendWithoutAsking"] is True
         assert response.json()["sessionsReachableFromBackgroundWork"] is True
         kwargs = mock_repo.set_prefs.await_args.kwargs
-        assert kwargs["agent_send_without_asking"] is True and kwargs["sessions_reachable_from_background_work"] is True
+        assert kwargs["sessions_reachable_from_background_work"] is True
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_session_notifications_default_to_todays_behaviour_and_round_trip(self, mock_repo, async_client):
+        self._wire_real_helpers(mock_repo)
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
+        mock_repo.set_prefs = AsyncMock(return_value=None)
+
+        body = (await async_client.get("/api/v1/users/me/prefs")).json()
+        assert body["sessionNotifications"] == {
+            "waiting": "banner",
+            "finished": "banner",
+            "attention": "badge",
+            "onlyUnfocused": False,
+            "sound": True,
+        }
+
+        stored = {"waiting": "badge", "finished": "off", "attention": "banner", "onlyUnfocused": True, "sound": False}
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123", "session_notifications": stored})
+        response = await async_client.put("/api/v1/users/me/prefs", json={"sessionNotifications": stored})
+        assert response.status_code == 200 and response.json()["sessionNotifications"] == stored
+        assert mock_repo.set_prefs.await_args.kwargs["session_notifications"] == stored
+
+        # A level the server does not know is refused, and a stored one reads as its default.
+        bad = await async_client.put("/api/v1/users/me/prefs", json={"sessionNotifications": {"waiting": "loud"}})
+        assert bad.status_code == 422
+        mock_repo.get = AsyncMock(return_value={"user_id": "u", "session_notifications": {"waiting": "loud"}})
+        assert (await async_client.get("/api/v1/users/me/prefs")).json()["sessionNotifications"]["waiting"] == "banner"
 
 
 class TestDeleteMyAccount:

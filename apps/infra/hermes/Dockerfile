@@ -87,9 +87,9 @@ RUN set -eux; \
 
 # ---- network engine (the `lightbulb member` sidecar, bridge/network.py) ----------------------
 # The engine (TheLightbulbCompany/cli): its static musl release asset, pinned by tag and checksum.
-# The checksum is v0.5.0's lightbulb-linux-arm64.tar.gz.sha256 asset; bump the tag and the checksum together.
-RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.5.0/lightbulb-linux-arm64.tar.gz \
- && echo "a4cd98f54ae8a0ecb99269c1b08d09d3bd621bec8e0b9bb8efb8c105bc9546bf  /tmp/lb.tgz" | sha256sum -c - \
+# The checksum is v0.6.2's lightbulb-linux-arm64.tar.gz.sha256 asset; bump the tag and the checksum together.
+RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.6.2/lightbulb-linux-arm64.tar.gz \
+ && echo "eb7aac168b6b6ba5791fc94c5bed1466446ad24c65a1e79368552c112ad94b0e  /tmp/lb.tgz" | sha256sum -c - \
  && tar -xzf /tmp/lb.tgz -C /usr/local/bin lightbulb && rm /tmp/lb.tgz && lightbulb version
 
 # ---- CLI connector binaries ------------------------------------------------------------------
@@ -193,7 +193,7 @@ COPY plugins/ /opt/hermes/plugins/
 # the loader creates a home, and the rm keeps that out of the layer.
 RUN HERMES_HOME=/tmp/mp-smoke python3 -c "import sys; sys.path.insert(0,'/opt/hermes'); \
 from plugins.memory import load_memory_provider; p = load_memory_provider('agentcore', register_skills=False); \
-assert p is not None and p.name == 'agentcore' and [t['name'] for t in p.get_tool_schemas()] == ['workspace_memory_search'], p" \
+assert p is not None and p.name == 'agentcore' and [t['name'] for t in p.get_tool_schemas()] == ['remember', 'workspace_memory_search'], p" \
  && rm -rf /tmp/mp-smoke && test ! -d /tmp/mp-smoke
 # Bundled agent-facing skills. NOT checked in: `skills/` is GENERATED into this build
 # context by ../build-skills.sh (run by build-hermes-image.yml before `docker build`) from

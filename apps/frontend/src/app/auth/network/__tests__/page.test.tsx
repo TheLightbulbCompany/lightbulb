@@ -53,9 +53,10 @@ describe("confirm a lightbulb computer", () => {
     render(<NetworkConfirmPage />);
     expect(s.post).not.toHaveBeenCalled(); // nothing is looked up before a code is typed
     typeCode();
-    expect(await screen.findByText("Sign in Ada's Mac as you?")).toBeInTheDocument();
+    expect(await screen.findByText("Sign in Ada's Mac as you, for Acme?")).toBeInTheDocument();
     expect(s.post).toHaveBeenCalledWith("/network/device/describe", { userCode: "ABCD-EFGH" });
-    expect(screen.getByText(/Requested 5 seconds ago from 203\.0\.113\.7/)).toBeInTheDocument();
+    // The age is computed from Date.now() at render; a slow runner reads 6 or 7 seconds, not 5.
+    expect(screen.getByText(/Requested \d+ seconds ago from 203\.0\.113\.7/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Sign in this computer" }));
     expect(await screen.findByText("This computer is signed in. You can close this tab.")).toBeInTheDocument();
     expect(s.post).toHaveBeenCalledWith("/network/device/approve", { userCode: "ABCD-EFGH" });
@@ -66,7 +67,8 @@ describe("confirm a lightbulb computer", () => {
     describes("login");
     render(<NetworkConfirmPage />);
     typeCode();
-    expect(await screen.findByRole("button", { name: "Sign in this computer" })).toBeInTheDocument();
+    expect(await screen.findByText("Sign in Ada's Mac as you?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in this computer" })).toBeInTheDocument();
   });
 
   it("agents asks about the selected workspace and says to allow it after", async () => {
@@ -75,7 +77,7 @@ describe("confirm a lightbulb computer", () => {
     typeCode();
     expect(await screen.findByText("Add Acme's agents to Ada's Mac's network?")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Add the agents" }));
-    expect(await screen.findByText("Done. Allow Acme on Ada's Mac when it asks.")).toBeInTheDocument();
+    expect(await screen.findByText("Done. Acme is joining the network on Ada's Mac.")).toBeInTheDocument();
   });
 
   it("agents with no workspace selected asks for one and offers no button", async () => {
@@ -101,7 +103,7 @@ describe("confirm a lightbulb computer", () => {
       typeCode();
       fireEvent.click(await screen.findByRole("button", { name: "Add the agents" }));
       await act(async () => { await vi.advanceTimersByTimeAsync(16000); });
-      expect(await screen.findByText("Done. Allow Acme on Ada's Mac when it asks.")).toBeInTheDocument();
+      expect(await screen.findByText("Done. Acme is joining the network on Ada's Mac.")).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

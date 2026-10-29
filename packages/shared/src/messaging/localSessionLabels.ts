@@ -28,6 +28,90 @@ export const sessionStatus: Record<LocalSession["status"], string> = {
   idle: "Idle", busy: "Working", "waiting-approval": "Waiting for input", unknown: "Online", offline: "Offline", ended: "Ended",
 };
 
+/**
+ * The sidebar's one state per session (spec 2026-10-26 (e), "Lifecycle states and what the sidebar
+ * shows"), shared by web and mobile. A parked origin, a superseded origin, a subagent and a spare
+ * never reach a client as a row (the Mac and the server drop them), so they have no state here.
+ *  - `here`: running in a terminal on its Mac (or a Lightbulb holder): Open.
+ *  - `background`: a Claude background job (`claude attach`): Attach.
+ *  - `waiting`: a prompt is open in its terminal, or its job left its person a hand-off note.
+ *  - `done`: a background job whose turn is over; it may still sit at its shell.
+ *  - `offline`: its Mac is not heard from.
+ *  - `stopped`: it ended, on purpose or not: Resume. An ended row stays listed until its owner
+ *    removes it (2026-10-27, superseding the 2026-10-08 hide-on-purpose ruling; desktop #4453).
+ */
+export type SessionState = "here" | "background" | "waiting" | "done" | "offline" | "stopped";
+
+export function sessionState(s: Pick<LocalSession, "status" | "note" | "done" | "terminal">): SessionState {
+  if (s.status === "ended") return "stopped";
+  if (s.status === "offline") return "offline";
+  if (s.status === "waiting-approval") return "waiting";
+  if (s.done) return "done";
+  return s.terminal === "attach" ? "background" : "here";
+}
+
+/** Session notifications per kind (GET/PUT /users/me/prefs `sessionNotifications`). */
+export type NotifyLevel = "off" | "badge" | "banner";
+export type SessionNotifications = {
+  waiting: NotifyLevel; finished: NotifyLevel; attention: NotifyLevel; onlyUnfocused: boolean; sound: boolean;
+};
+export const SESSION_NOTIFICATION_DEFAULTS: SessionNotifications = {
+  waiting: "banner", finished: "banner", attention: "badge", onlyUnfocused: false, sound: true,
+};
+
+/** The Dock / tab count: your own sessions waiting on a prompt or holding a hand-off note, each
+ *  counted unless that kind is off. */
+export function sessionsNeedingYou(
+  sessions: readonly Pick<LocalSession, "humanUserId" | "status" | "note">[],
+  userId: string | null | undefined,
+  prefs: SessionNotifications = SESSION_NOTIFICATION_DEFAULTS,
+): number {
+  return sessions.filter((s) => s.humanUserId === userId && (
+    s.status === "waiting-approval" && prefs.waiting !== "off"
+  )).length;
+}
+
+/** One label per state. A running one says what it does now (`sessionStatus`): "Working", "Idle". */
+export const sessionStateLabel = (s: LocalSession): string => {
+  const state = sessionState(s);
+  return state === "here" ? sessionStatus[s.status]
+    : { background: "Running in background", waiting: "Waiting on you", done: "Done", offline: "Offline", stopped: "Stopped" }[state];
+};
+
+/** The state's primary action: Open its terminal, Attach to the job, Resume what stopped; none while its Mac is offline. */
+export const sessionStateAction = (s: LocalSession): "Open" | "Attach" | "Resume" | null => {
+  const state = sessionState(s);
+  if (state === "stopped") return "Resume";
+  if (state === "offline") return null;
+  return s.terminal === "attach" ? "Attach" : "Open";
+};
+
+/** "3 files changed +12 −4", the Codex wording. */
+export const changesLabel = (c: { files: number; additions: number; deletions: number }): string =>
+  `${c.files} ${c.files === 1 ? "file" : "files"} changed +${c.additions} −${c.deletions}`;
+
+/** "2 agents running"; null with none (spec 2026-10-26 (f) gap 16). */
+export const sessionAgentsLabel = (s: Pick<LocalSession, "agents">): string | null =>
+  s.agents ? `${s.agents} ${s.agents === 1 ? "agent" : "agents"} running` : null;
+
+/** "PR #123 · checks passing", "PR #123 · merged"; null without a PR (gap 15). */
+export const sessionPrLabel = (s: Pick<LocalSession, "pr">): string | null => {
+  const pr = s.pr;
+  if (!pr) return null;
+  const what = pr.state !== "open" ? pr.state : !pr.checks ? "open" : `checks ${pr.checks === "pending" ? "running" : pr.checks}`;
+  return `PR #${pr.number} · ${what}`;
+};
+
+/** A row's signals after its other line: running agents and the PR. Null with neither. */
+export const sessionSignalsLine = (s: Pick<LocalSession, "agents" | "pr">): string | null =>
+  [sessionAgentsLabel(s), sessionPrLabel(s)].filter(Boolean).join(" · ") || null;
+
+/** What a waiting session waits on, as its row's preview: the open prompt's reason. Null when it
+ *  waits on nothing. A Claude job's hand-off note is not shown anywhere (owner 2026-10-27): the
+ *  terminal already says it. */
+export const sessionWaitingLine = (s: Pick<LocalSession, "status" | "waitingFor">): string | null =>
+  s.status === "waiting-approval" ? `${sessionStatus["waiting-approval"]}${s.waitingFor ? `: ${s.waitingFor}` : ""}` : null;
+
 /** Why an ended session ended, when it is not the ordinary leave. `mac` is "your Mac" or "Leo's Mac"; the phone passes its curly ’ as `apostrophe`.
  *  "stopped while idle": the Mac stopped it after an idle hour with nobody on it (sooner when short of memory), as Claude's background sessions; Resume continues it. */
 export const endedWhy = (s: Pick<LocalSession, "status" | "endedReason">, mac: string, apostrophe = "'"): string | null => {
@@ -98,8 +182,38 @@ export const sessionLive = (session: LocalSession): boolean => session.status !=
 export const sessionEndable = (session: LocalSession): boolean => sessionLive(session)
   && (session.terminal === "held" || (session.provider === "claude" && session.kind !== "background"));
 
-/** How many live sessions the sidebar shows before "+N more". */
+/** How many sessions the sidebar shows before "+N more" (pinned ones and the open one always show). */
 export const SIDEBAR_SESSION_CAP = 5;
+
+/** Per viewer, on this device (a convenience, not state): rows pinned to the top, and rows archived
+ *  off the list with the `latestEventSeq` they had then. Nothing changes server-side. */
+export interface SessionMarks { pinned: readonly string[]; archived: Readonly<Record<string, number>> }
+
+/** Archived by the viewer and nothing new since: new output brings it back (the phone's rule, `mergeChats`). */
+export const sessionArchivedByViewer = (s: Pick<LocalSession, "sessionId" | "latestEventSeq">, archived: Readonly<Record<string, number>>): boolean => {
+  const at = archived[s.sessionId];
+  return at !== undefined && (s.latestEventSeq ?? 0) <= at;
+};
+
+/**
+ * The web sidebar's sessions (owner decision 2026-10-27: ended ones stay until archived, as on the
+ * phone and in both vendor apps; supersedes the 2026-10-13 live-only ruling). Pinned first, then
+ * live, then the rest (ended, offline) newest activity first. Pinned and live keep the order they
+ * came in (`workspaceSections`: mine first). Never listed: one
+ * offline for days. One ended on purpose is listed like any ended one until removed (2026-10-27). `archived` is what the viewer archived, for the "Archived" group.
+ */
+export function sidebarSessionList<T extends { session: LocalSession }>(entries: readonly T[], marks: SessionMarks, now = Date.now()): { list: T[]; archived: T[] } {
+  const list: T[] = [];
+  const archived: T[] = [];
+  for (const entry of entries) {
+    if (sessionArchived(entry.session, now)) continue;
+    (sessionArchivedByViewer(entry.session, marks.archived) ? archived : list).push(entry);
+  }
+  const rank = (s: LocalSession) => marks.pinned.includes(s.sessionId) ? 0 : sessionLive(s) ? 1 : 2;
+  const at = (s: LocalSession) => Date.parse(s.lastEventAt ?? s.endedAt ?? "") || 0;
+  list.sort((a, b) => rank(a.session) - rank(b.session) || (rank(a.session) === 2 ? at(b.session) - at(a.session) : 0));
+  return { list, archived };
+}
 
 export interface SessionDayGroup { key: "today" | "yesterday" | "week" | "earlier"; title: string; data: LocalSession[] }
 
@@ -151,6 +265,14 @@ export function markSessionsSeen(seen: SessionSeen, sessions: readonly LocalSess
   }
   return next ?? seen;
 }
+
+/** Mark unread: the viewer's baseline drops below the session's latest output, so the dot shows. */
+export const markSessionUnread = (seen: SessionSeen, s: Pick<LocalSession, "sessionId" | "latestEventSeq">): SessionSeen =>
+  ({ ...seen, [s.sessionId]: (s.latestEventSeq ?? 0) - 1 });
+
+/** Mark read: the baseline catches up with the session's latest output. */
+export const markSessionRead = (seen: SessionSeen, s: Pick<LocalSession, "sessionId" | "latestEventSeq">): SessionSeen =>
+  ({ ...seen, [s.sessionId]: s.latestEventSeq ?? 0 });
 
 /** The sidebar/mobile filter: title, folder, tool or owner, case-insensitive. */
 export function sessionMatches(session: LocalSession, query: string, ownerName = ""): boolean {

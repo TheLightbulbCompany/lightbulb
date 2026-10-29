@@ -7,14 +7,13 @@ import { isDesktopApp } from "@/lib/desktopNotify";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
-  CLI_ONLY, conversationOnly, joinRequestView, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
-  type LocalSession, type SessionControlClient, type SessionSource,
+  ApiError, audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, pendingQuestion, questionKeys, receiptChip, sendBlockedReason, sessionAgentsLabel, sessionChanges, sessionFooter, sessionPrLabel, sessionLabel, sessionLive, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
+  CLI_ONLY, conversationOnly, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox, watchOnlyLine,
+  type LocalSession, type SessionControlClient, type SessionQuestion, type SessionSource,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessionTranscript";
 import { SessionApprovalCard } from "./SessionControls";
-import { SessionAgentAsks, type AgentAskClient } from "./SessionAgentAsks";
 import { SessionTerminalView, type SessionFrames } from "./SessionTerminalView";
 import { SessionBrowserTab, showsBrowserTab } from "./SessionBrowserTab";
 import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
@@ -36,6 +35,14 @@ const MAX_OLDER_PAGES = 20;
  *  heartbeat (11.5 s in prod, desktop 0.4.625). */
 const SCREEN_DUE_MS = 20_000;
 const NO_EVENTS: never[] = [];
+/** Between two keys of a question's answer: the picker reads one write as one key ("21" is not 2 then 1). */
+const KEY_GAP_MS = 350;
+/** The input route's refusals (`session_screen.type_into`) that it raises before anything is sent to the
+ *  Mac, so the key was never typed and may be sent again. Every other failure leaves unknown whether it
+ *  landed: LOCAL_SESSION_OFFLINE is also what a sent frame whose ack was lost reads as, and a timeout or a
+ *  lost connection has no answer at all. */
+const KEY_NOT_SENT = new Set(["LOCAL_SESSION_FORBIDDEN", "LOCAL_SESSION_NOT_FOUND", "LOCAL_SESSION_UNSUPPORTED", "RATE_LIMITED"]);
+const keyNotSent = (e: unknown) => e instanceof ApiError && KEY_NOT_SENT.has(String((e.body as { code?: unknown } | null)?.code));
 /** Distance from the bottom, in px, still counted as "at the bottom" (the phone's value). */
 const BOTTOM_SLACK = 80;
 /** Within this many pixels of the top, older output is fetched. */
@@ -43,16 +50,20 @@ const SCROLLBACK_SLACK = 240;
 
 type Decide = (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown>;
 type JoinDecider = { decideLocalSessionJoin?: Decide; decideLocalSessionPickup?: Decide };
-type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider & Partial<AgentAskClient> & { watchLocalSession?: (sessionId: string) => Promise<unknown>; sendLocalSessionInput?: (sessionId: string, data: string, epoch: number, size?: { cols: number; rows: number; claim: boolean }) => Promise<unknown> };
+type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider & { watchLocalSession?: (sessionId: string) => Promise<unknown>; sendLocalSessionInput?: (sessionId: string, data: string, epoch: number, size?: { cols: number; rows: number; claim: boolean }) => Promise<unknown> };
 
 /**
- * A shared session: its status on one line and one body: the live terminal, or
- * a plain panel saying why there is none (ended, Mac offline, an older Mac app).
+ * A shared session: its status on one line and ONE body (owner rulings 2026-10-27): the live terminal
+ * while there is one, for everyone, with no conversation stacked under it and no approval card over it
+ * (its own prompt is the surface). Where there is none (not started, paused, Mac offline, a search
+ * hit) the body is the conversation; an ended one says so, over its kept final screen while there is one.
  * A session that runs inside an app has no terminal: its body is its conversation,
  * as on the phone. What the session is running, what it changed and who may do
  * what with it live behind Details.
  */
-export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf, onEvent }: {
+export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf, onEvent, focusSeq }: {
+  /** A turn to open the conversation at (a session search hit): its row is scrolled to and marked. */
+  focusSeq?: number;
   /** Live events, for watching a running session's terminal from another machine. */
   onEvent?: SessionSource["onEvent"];
   session: LocalSession; ownerName: string; own: boolean; client: Client;
@@ -100,6 +111,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // owner at that Mac included, watches it through the relay: the app's own panel closes with the provider.
   const endedScreen = session.status === "ended" && session.screenAvailable === true && hasTerminal;
   // An offline session still probes this Mac's holder: "offline" is the relay's view (sharing off, a reconnect), not the Mac's.
+  // Paused: nothing of it leaves its Mac, so no picture here; it reads Paused at once, not a frozen live one.
+  const paused = session.shared === false;
+  // A search hit opens the conversation at its turn, even on a live session, until the viewer goes back.
+  const [leftHit, setLeftHit] = useState<number | null>(null);
+  const hit = !!focusSeq && leftHit !== focusSeq;
   const local = useLocalTerminal(session.status === "ended" || convo || (running && !hasTerminal) ? null : { sessionId: session.sessionId }, slot, details === null);
   // Until then the panel does not say the screen is gone; the timer redraws it when the wait is over.
   // (`wasHeld`: the server sends no `terminal` for an ended session until its screen is reported.)
@@ -135,7 +151,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // taken away there came back empty, on "Connecting…" (prod 2026-10-07).
   const watched = useRef("");
   const keptWatching = canWatch && screenDue && watched.current === session.sessionId;
-  const watchRemote = (canWatch && hasTerminal && (running || endedScreen)) || keptWatching;
+  const watchRemote = (canWatch && hasTerminal && !hit && ((running && !paused) || endedScreen)) || keptWatching;
   useEffect(() => { watched.current = watchRemote ? session.sessionId : ""; }, [watchRemote, session.sessionId]);
   // Terminal | Browser while the session has a browser connection open.
   // The session the Browser tab was picked for: another session, or no tab, reads as Terminal.
@@ -143,14 +159,18 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const browserTab = showsBrowserTab(session, local === "none" && !!onEvent);
   if (!browserTab && browserFor !== null) setBrowserFor(null);
   const showBrowser = browserTab && browserFor === session.sessionId;
+  // Keys typed into the live terminal from outside it (a question's answer).
+  const keys = useRef<((data: string) => Promise<unknown>) | null>(null);
   const [screenLive, setScreenLive] = useState(false);
   // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
   const [termCanType, setTermCanType] = useState(true);
   const liveTerminal = watchRemote && screenLive;
   const notStarted = running && !hasTerminal;
-  // No terminal here: the conversation, as on the phone (owner ruling 2026-10-11). Workspace members
-  // only by construction: /s never mounts this panel and the events route 404s outside the workspace.
-  const conversation = notStarted;
+  // No live terminal here: the conversation, as on the phone (owner rulings 2026-10-11, 2026-10-27). Never
+  // both: the transcript under a live terminal read as the session twice (prod 2026-10-27). Workspace
+  // members only by construction: /s never mounts this panel and the events route 404s outside the workspace.
+  // An ended session shows its conversation when a search hit opened it.
+  const conversation = !convo && !watchRemote && (notStarted || session.status === "offline" || paused || hit);
   const toBottom = useCallback(() => { const node = scroller.current; if (node) node.scrollTop = node.scrollHeight; }, []);
   useLayoutEffect(() => {
     const node = scroller.current;
@@ -165,6 +185,25 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     observer.observe(node);
     return () => observer.disconnect();
   }, [toBottom, conversation]);
+  // The hit's turn: the last prompt or reply row at or before it, once older pages hold it.
+  const scrolledTo = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!focusSeq || scrolledTo.current === focusSeq || history.error) return;
+    const box = document.querySelector('[aria-label="Native session history"], [aria-label="Session conversation"]');
+    const rows = [...(box?.querySelectorAll<HTMLElement>("[data-seq]") ?? [])];
+    const first = rows.length ? Number(rows[0].dataset.seq) : Infinity;
+    if (first > focusSeq && history.hasOlder) {
+      if (!history.loading) void history.load("older");
+      return;
+    }
+    const row = rows.filter(node => Number(node.dataset.seq) <= focusSeq).at(-1) ?? rows[0];
+    if (!row) return;
+    scrolledTo.current = focusSeq;
+    atBottomRef.current = false;
+    box?.querySelector("[data-search-hit]")?.removeAttribute("data-search-hit");
+    row.setAttribute("data-search-hit", "");
+    row.scrollIntoView({ block: "center" });
+  }, [focusSeq, history]);
   const onScroll = () => {
     const node = scroller.current;
     if (!node) return;
@@ -202,7 +241,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const queuedOutbox = savedOutbox.filter(receipt => receipt.state !== "applied");
   const pendingText = usePendingPrompt(command.attempt, main);
   const blocked = sendBlockedReason(session);
-  const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? "" : null;
+  const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? session.waitingFor ?? "" : null;
+  const question = session.status === "waiting-approval" && session.provider === "claude" ? pendingQuestion(main) : null;
   const target = sessionLabel(session);
   const { userId, orgId } = useAuth();
   // One row per session a person opens: whether anyone looks at a teammate's session is the
@@ -211,12 +251,13 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     capture("session_opened", { own, provider: session.provider, workspace_id: orgId, session_id: session.sessionId, origin: "web" });
   }, [session.sessionId, own, session.provider, orgId]);
   const control = canControlSession(session, own, userId);
-  // A live terminal is the only input: no message box under it. A viewer who cannot type keeps the Ask to join line.
+  // The live terminal takes this viewer's keys (it stays mounted, hidden, under the Conversation tab).
+  const canAnswer = liveTerminal && termCanType && control && session.shared !== false && !!client.sendLocalSessionInput;
+  // A live terminal is the only input: no message box under it. A viewer who cannot type keeps the watch-only line.
   const terminalLive = local === "local" || liveTerminal;
+  const terminalOnScreen = terminalLive && !showBrowser;
   const resume = useSessionResume(client, session, { own, userId, ownerName, nameOf: personName, uuid: () => crypto.randomUUID() });
-  const join = useSessionJoinRequest(client, session);
   const askPickup = useSessionJoinRequest(client, session, "pickup");
-  const asking = joinRequestView(join, ownerName);
   const glyph = session.provider === "claude" ? "❯" : "›";
   const plan = useMemo(() => sessionPlan(main), [main]);
   const changes = useMemo(() => sessionChanges(main), [main]);
@@ -233,8 +274,13 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
 
   const messageOwner = !own && onMessageOwner
     ? <Button type="button" variant="outline" size="sm" onClick={onMessageOwner}><MessageSquare aria-hidden="true" />Message {ownerName}</Button> : null;
-  const added = changes.reduce((n, file) => n + file.added, 0);
-  const removed = changes.reduce((n, file) => n + file.removed, 0);
+  // Git's count from the session's Mac when it sends one (spec 2026-10-26 (f) gap 7): it sees edits made
+  // by shell, checkout and codegen that the transcript's edit events miss. Else the events' count.
+  const files = session.changes?.files ?? changes.length;
+  const added = session.changes?.additions ?? changes.reduce((n, file) => n + file.added, 0);
+  const removed = session.changes?.deletions ?? changes.reduce((n, file) => n + file.removed, 0);
+  const agents = sessionAgentsLabel(session);
+  const pr = sessionPrLabel(session);
   const done = plan?.filter(step => step.status === "completed").length ?? 0;
 
   // The sent-but-not-echoed prompt and the queued rows, so a follow-up stays visible; under an app session's conversation.
@@ -264,13 +310,17 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {(endedEmpty || !screenDue) && <p>{endedEmpty || convoEmpty ? "This session ended before anything was sent." : "The screen is gone: this session's terminal closed."}</p>}
   </div>;
   const endedLine = <p className="session-ended-line" role="status">{why ? `Ended · ${why}` : endedAt ? <>Ended · {endedAt}</> : "Ended"}</p>;
-  const offlinePanel = <div className="session-state-panel" data-compact={convo || undefined} role="status">
+  // A paused session is never heartbeated (nothing of it leaves its Mac), so it reads offline whether or not its Mac is on.
+  const offlinePanel = paused ? <div className="session-state-panel" data-compact={convo || conversation || undefined} role="status">
+    <p className="session-state-title">Paused</p>
+    <p>{own ? "Sharing is paused, so nothing of this session leaves your Mac. Share it again from its terminal." : `${ownerName} paused sharing this session.`}</p>
+  </div> : <div className="session-state-panel" data-compact={convo || conversation || undefined} role="status">
     <p className="session-state-title">{own ? "Your Mac is offline" : `${ownerName}'s Mac is offline`}</p>
     {session.lastEventAt && <p>Last seen {timeAgo(session.lastEventAt)}</p>}
     <Button type="button" variant="outline" size="sm" disabled>Resume</Button>
     <p>{`Resume works once ${own ? "your" : `${ownerName}'s`} Mac is back.`}{!own && canPickUp(session) ? " Pick up continues it on your Mac now." : ""}</p>
   </div>;
-  // A terminal session with no terminal (an older Mac app): what a teammate can do is message the owner (Ask to join is below).
+  // A terminal session with no terminal (an older Mac app): what a teammate can do is message the owner.
   const notice = sessionScreenNotice(session, own, ownerName);
   const reason = session.terminalReason === "plain" || session.terminalReason === "no-daemon" ? session.terminalReason : null;
   const settings = isDesktopApp()
@@ -284,12 +334,14 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     <div className="session-status">
       <p className="session-status-line">
         <span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" />
-        <span>{sessionStatus[session.status]}</span>
+        <span>{paused && session.status !== "ended" ? "Paused" : sessionStatus[session.status]}</span>
         <span>{own ? "You" : ownerName}</span>
         {where && <span className="session-fact-value room-wrap">{where}</span>}
         {session.pickedUpFrom && <span>picked up from {personName(session.pickedUpFrom.humanUserId)}</span>}
-        {changes.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>
-          {changes.length} {changes.length === 1 ? "file" : "files"} changed<span className="local-session-add">+{added}</span><span className="local-session-del">−{removed}</span></button>}
+        {files > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>
+          {files} {files === 1 ? "file" : "files"} changed<span className="local-session-add">+{added}</span><span className="local-session-del">−{removed}</span></button>}
+        {agents && <span>{agents}</span>}
+        {pr && session.pr && <a className="session-status-link" href={session.pr.url} target="_blank" rel="noopener noreferrer">{pr}</a>}
         {history.error && <span role="status">Could not load session details. <button type="button" className="session-status-link" onClick={() => void history.retry()}>Retry</button></span>}
         {plan && plan.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>plan {done} of {plan.length}</button>}
       </p>
@@ -301,7 +353,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         {!own && !canPickUp(session) && session.provider === "claude" && !session.pickup?.allowed && askPickup.supported &&
           <Button type="button" variant="outline" size="sm" disabled={askPickup.saving || (askPickup.state === "pending" && !askPickup.again)} onClick={() => void askPickup.ask()}>
             {askPickup.again ? "No answer yet. Ask again" : askPickup.state === "pending" ? "Requested" : askPickup.state === "declined" ? `${ownerName} declined. Ask again` : "Ask to pick up"}</Button>}
-        {command.attempt?.request.kind === "end" && command.chip && <span role="status" className="text-ui"><ReceiptChip chip={command.chip} /></span>}
+        {/* Gone once it ended: "Ending" next to "Ended" stayed for good (prod 2026-10-27). */}
+        {command.attempt?.request.kind === "end" && command.chip && session.status !== "ended" && <span role="status" className="text-ui"><ReceiptChip chip={command.chip} /></span>}
         {/* The app's own terminal on this Mac has End in its bar; this is the same control everywhere else. */}
         {command.canEnd && local !== "local" && <Button type="button" variant="outline" size="sm" disabled={command.locked}
           onClick={() => { if (endArmed) command.end(); setEndArmed(!endArmed); }}>{endArmed ? `Click again to end “${sessionTitle(session)}”` : "End session"}</Button>}
@@ -315,18 +368,20 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       line={pickupRequestLine} decide={(who, d, id) => client.decideLocalSessionPickup!(session.sessionId, who, d, id)}
       enabled={!!client.decideLocalSessionPickup} personName={personName} />}
     {(session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
-      {session.shared === false && <p role="status">Only you see this session. Sharing again shares the whole session.</p>}
+      {paused && session.status === "ended" && <p role="status">Only you see this session. Sharing again shares the whole session.</p>}
       {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
     </div>}
-    {/* A prompt the Mac holds for a remote answer gets the approval card; any other waits in the terminal. */}
-    <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} own={own} ownerName={ownerName} />
+    {/* A prompt the Mac holds for a remote answer gets the approval card; any other waits in the terminal. Not over a
+        live terminal on screen: its own prompt is the one surface there (owner ruling 2026-10-27). */}
+    {!terminalOnScreen && <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} own={own} ownerName={ownerName} />}
     {waitingOn !== null && !session.pendingApproval && <div role="status" className="local-session-waiting">
-      <p className="font-semibold">{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</p>
-      {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
-      {liveTerminal && termCanType && control && session.shared !== false && client.sendLocalSessionInput
-        ? <p className="text-ui">Answer it in the live terminal below.</p>
-        : own ? <p className="text-ui">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
+      <p className="font-semibold">{question && canAnswer ? "Waiting for your answer" : own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</p>
+      {question && canAnswer ? <QuestionAnswer key={main.at(-1)?.seq} questions={question} keys={keys} /> : <>
+        {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
+        {canAnswer ? <p className="text-ui">Answer it in the live terminal below.</p>
+          : own ? <p className="text-ui">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
+      </>}
     </div>}
     {local !== "none"
       ? <>{audience && <div className="session-terminal-size local-session-audience"><span className="session-terminal-hint">{audience}</span></div>}
@@ -334,8 +389,10 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       : <>
       {convoEmpty ? endedPanel : convo ? <>{session.status === "ended" && endedLine}{session.status === "offline" && offlinePanel}<p className="session-ended-line" role="note">{notice.title} {notice.body}</p>
         {own && running && !CLI_ONLY.has(session.provider) && <OpenInTerminal sessionId={session.sessionId} onEvent={onEvent} />}</>
-        : session.status === "ended" ? (endedScreen || keptWatching ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : null}
-      {conversation && !convo && !showBrowser && <>{hint}<div className="local-session-scroll">
+        : session.status === "ended" ? (endedScreen && !hit || keptWatching ? endedLine : endedPanel) : session.status === "offline" || paused ? offlinePanel : null}
+      {hit && running && !paused && hasTerminal && canWatch && <div className="local-session-actions">
+        <Button type="button" variant="outline" size="sm" onClick={() => setLeftHit(focusSeq ?? null)}>Back to the live terminal</Button></div>}
+      {conversation && !showBrowser && <>{hint}<div className="local-session-scroll">
         <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
           <div ref={content}>
             {history.loading && <div className="native-session-shimmer" role="status" aria-label="Loading session history" />}
@@ -345,15 +402,15 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         </div>
       </div></>}
       {browserTab && <div className="session-view-tabs" role="tablist" aria-label="Session view">
-        <button type="button" role="tab" aria-selected={!showBrowser} onClick={() => setBrowserFor(null)}>{hasTerminal ? "Terminal" : "Conversation"}</button>
-        <button type="button" role="tab" aria-selected={showBrowser} onClick={() => setBrowserFor(session.sessionId)}>Browser</button>
+        <button type="button" role="tab" aria-selected={!showBrowser} onClick={() => setBrowserFor(null)}>{watchRemote ? "Terminal" : "Conversation"}</button>
+        {browserTab && <button type="button" role="tab" aria-selected={showBrowser} onClick={() => setBrowserFor(session.sessionId)}>Browser</button>}
       </div>}
       {showBrowser && <SessionBrowserTab sessionId={session.sessionId} frames={frames} canType={control && running && session.shared !== false && !(session.inputPaused && !own)} />}
-      {(own || !!session.teamControl) && running && client.listAgentAsks && client.decideAgentAsk && <SessionAgentAsks client={client as AgentAskClient} own={own} onEvent={onEvent} connected={liveEvents?.liveConnected} sessionId={session.sessionId} title={session.displayTitle || session.title || "this session"} />}
-      {watchRemote && <div className="session-terminal-slot" hidden={showBrowser} onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
+      {watchRemote && <div className="session-terminal-slot" hidden={showBrowser} onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen} keys={keys}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)} resizable={session.terminalResize === true}
         input={client.sendLocalSessionInput ? (bytes, epoch, size) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch, size) : undefined} /></div>}
       {terminalLive && control && !own && session.inputPaused && <p className="text-ui text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
+      {/* Under the live terminal only what it cannot show: a sent follow-up not echoed yet, and the queue. */}
       {liveTerminal && !showBrowser && <div className="local-session-feedback">{feedback}</div>}
       {/* One child in a reversed column: the browser keeps the newest row in view as the conversation grows. */}
       {showBrowser ? null : convo && !convoEmpty ? <div className="local-session-feedback local-session-conversation" role="log" aria-label="Session conversation"><div>{feedback}</div></div>
@@ -385,13 +442,10 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       </div>}
     </form> : <div className="room-composer local-session-readonly">
       <div>
-        <p className="text-ui text-muted-foreground">{terminalLive && "Watching · "}{asking.line}</p>
+        <p className="text-ui text-muted-foreground">{terminalLive && "Watching · "}{watchOnlyLine(ownerName)}</p>
         <div className="local-session-actions">
-          {join.supported && <Button type="button" variant="outline" size="sm" disabled={asking.disabled}
-            onClick={() => void join.ask()}>{asking.button}</Button>}
           {waitingOn === null && !(notStarted && convo) && messageOwner}
         </div>
-        {join.error && <p role="alert" className="text-ui text-warn">{join.error}</p>}
       </div>
       {footer && <p className="native-session-footer">{footer}</p>}
     </div>}
@@ -451,5 +505,61 @@ function JoinRequests({ waiting, ids, line, decide: send, enabled, personName }:
       </div>
     </div>)}
     {error && <p role="alert" className="text-warn">{error}</p>}
+  </div>;
+}
+
+/**
+ * A Claude question (AskUserQuestion) answered from here: the picks are typed into the session's live
+ * terminal, one key per write (`questionKeys`; observed on Claude Code 2.1.310: a single-select question
+ * takes its option's digit and moves on, so one question is answered by one click; a multi-select one
+ * toggles by digit and moves on with →; two or more questions, or any multi-select, end on a review
+ * screen that takes Enter). "Type something" stays in the terminal.
+ */
+function QuestionAnswer({ questions, keys }: { questions: SessionQuestion[]; keys: React.RefObject<((data: string) => Promise<unknown>) | null> }) {
+  const [picks, setPicks] = useState<number[][]>(() => questions.map(() => []));
+  // "sent" only once the relay took every key. A key the server refused before sending (`KEY_NOT_SENT`) was
+  // never typed: the rest is sent again from it ("failed"). Any other failure leaves unknown whether it
+  // landed, and a key typed twice answers the next question or the composer: no retry ("stuck").
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "failed" | "stuck">("idle");
+  const progress = useRef<{ keys: string[]; taken: number } | null>(null);
+  const [taken, setTaken] = useState(0);
+  const sent = state === "sending" || state === "sent" || state === "stuck";
+  const send = async (answer: number[][]) => {
+    // A retry after a partial send resumes the same keys; with nothing taken yet it starts over with this answer.
+    const run = progress.current && progress.current.taken > 0 ? progress.current : { keys: questionKeys(questions, answer), taken: 0 };
+    progress.current = run;
+    setState("sending");
+    for (let i = run.taken; i < run.keys.length; i++) {
+      if (i > 0) await new Promise(done => setTimeout(done, KEY_GAP_MS));
+      try {
+        if (!keys.current) throw new ApiError(409, { code: "LOCAL_SESSION_UNSUPPORTED" }, "no terminal");
+        await keys.current(run.keys[i]);
+      } catch (e) {
+        setState(keyNotSent(e) ? "failed" : "stuck");
+        return;
+      }
+      run.taken = i + 1; setTaken(run.taken);
+    }
+    setState("sent");
+  };
+  // One single-select question: a click is the answer.
+  const oneClick = questions.length === 1 && !questions[0].multiSelect;
+  const pick = (q: number, o: number) => {
+    if (oneClick) { void send([[o]]); return; }
+    setPicks(all => all.map((p, i) => i !== q ? p : questions[q].multiSelect ? (p.includes(o) ? p.filter(x => x !== o) : [...p, o].sort()) : [o]));
+  };
+  const ready = picks.every((p, i) => p.length > 0 || questions[i].multiSelect);
+  return <div className="local-session-question">
+    {questions.map((q, qi) => <fieldset key={qi} disabled={sent || taken > 0}>
+      <legend className="local-session-waiting-reason">{q.question}</legend>
+      <div className="local-session-actions">
+        {q.options.map((label, oi) => <Button key={oi} type="button" size="sm" variant={picks[qi].includes(oi) ? "default" : "outline"}
+          aria-pressed={oneClick ? undefined : picks[qi].includes(oi)} onClick={() => pick(qi, oi)}>{label}</Button>)}
+      </div>
+    </fieldset>)}
+    {(!oneClick || taken > 0) && <Button type="button" size="sm" disabled={sent || !ready} onClick={() => void send(picks)}>{state === "failed" ? "Try again" : "Send answer"}</Button>}
+    {state === "sent" && <p role="status" className="text-ui text-muted-foreground">Sent to the terminal.</p>}
+    {state === "failed" && <p role="alert" className="text-ui text-warn">Couldn&apos;t send, try again.</p>}
+    {state === "stuck" && <p role="alert" className="text-ui text-warn">Couldn&apos;t send. Finish answering in the terminal.</p>}
   </div>;
 }

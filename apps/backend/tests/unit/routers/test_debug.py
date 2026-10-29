@@ -60,6 +60,12 @@ class TestDeleteUserData:
             yield mock
 
     @pytest.fixture(autouse=True)
+    def person_memory(self):
+        """The person's own memory data (workspace_memory.delete_person_memory), stubbed."""
+        with patch("routers.debug.workspace_memory.delete_person_memory", new_callable=AsyncMock) as mock:
+            yield mock
+
+    @pytest.fixture(autouse=True)
     def _mock_integrations_teardown(self):
         # Phase 2 added an integrations sweep (per-provider Secrets Manager
         # credentials + the secret-free status rows) to the teardown. Stub it so
@@ -103,6 +109,7 @@ class TestDeleteUserData:
         mock_paperclip_repo_cls,
         async_client,
         runtime_teardown,
+        person_memory,
     ):
         """Endpoint returns deleted summary and calls each subsystem teardown."""
         mock_container = {
@@ -133,6 +140,8 @@ class TestDeleteUserData:
         assert "pending-updates" in body["deleted"]["ddb"]
         assert "channel-links" in body["deleted"]["ddb"]
         assert "integrations" in body["deleted"]["ddb"]
+        assert "person-memory" in body["deleted"]["ddb"]
+        person_memory.assert_awaited_once_with("user_test_123")  # the caller's user id
         assert "ws-connections" in body["deleted"]["ddb"]
         # paperclip-companies (whose row now carries onboarding
         # generation/funnel/bootstrap fields) must be part of the atomic
@@ -150,7 +159,7 @@ class TestDeleteUserData:
         # ``delete_profiles=True`` is this endpoint's answer to the EFS ``rm -rf`` it replaces:
         # the owner's S3 profile prefix IS their workspace content, and the e2e harness's
         # empty-slate contract breaks silently if the next provision restores it.
-        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True)
+        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True, report={})
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         # The WORKSPACE row (org-keyed) goes; the caller's identity row stays.
         mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("org_test_456")
@@ -382,7 +391,7 @@ class TestDeleteUserData:
         # Critical: teardown WAS attempted despite no container row, and with delete_profiles --
         # this, ``account_wipe`` and ``workspace_wipe`` are the only three terminal callers
         # that pass it (M6-R42).
-        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True)
+        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True, report={})
         assert res.json()["deleted"]["runtime"] is True
 
     @pytest.mark.asyncio

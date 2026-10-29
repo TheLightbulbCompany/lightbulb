@@ -15,9 +15,10 @@ fn main() {
     if argv.get(1).map(String::as_str) == Some("serve") {
         lightbulb_desktop::headless::serve();
     }
+    // The retired app MCP server: a provider config an older release wrote still starts it.
+    // It fails at once, and the launch's MCP reconcile removes that entry.
     if argv.get(1).map(String::as_str) == Some("session-mcp") {
-        lightbulb_desktop::local_sessions::serve_mcp();
-        return;
+        std::process::exit(1);
     }
     if argv.get(1).map(String::as_str) == Some("local-session-hook") {
         // argv is untrusted: only the providers we install hooks for.

@@ -42,7 +42,7 @@ function ActivityBadge({ onCount }: { onCount: (total: number) => void }) {
  * `NativeTabs` (react-native-screens' UITabBarController) rather than the JS
  * tab bar: on iOS 26 that is the real glass tab bar, with SF-font labels, SF
  * Symbol glyphs and the system's own minimize-on-scroll behaviour — none of
- * which a JS bar drawn in Source Sans 3 with a Feather icon font can imitate.
+ * which a JS bar drawn in Satoshi with a Feather icon font can imitate.
  * It carries everything the old bar did: per-tab icons, and Chats' unread badge.
  *
  * There is no header here. This group is ONE screen of the (app) stack, and

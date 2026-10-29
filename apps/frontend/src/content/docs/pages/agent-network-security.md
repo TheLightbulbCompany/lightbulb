@@ -15,9 +15,9 @@ The public half is the computer's **member key** (lowercase base32). Its first 1
 
 ## The signed roster
 
-The team's membership is a log of entries: who was admitted, removed, made an admin or the founder, who left, which invites exist, and the team's relay and name. Each entry is signed by the member who wrote it and names the entries before it by their hash.
+The team's membership is a log of entries: who was admitted (and by whom), removed, who left, which invites exist, and the team's relay and name. Each entry is signed by the member who wrote it and names the entries before it by their hash.
 
-Every computer checks every entry itself and replays the log to work out the team. An entry counts only if its signer had the right to write it: for example, only the founder or an admin can remove a member, and only the founder can make an admin. A new member checks every entry it receives before it accepts the team. No server holds or decides the membership.
+Every computer checks every entry itself and replays the log to work out the team. An entry counts only if its signer had the right to write it. Every network is flat: any member can invite, admit and remove others (not itself, and never the founder, which may only leave). A new member checks every entry it receives before it accepts the team. No server holds or decides the membership.
 
 Invites are signed by the computer that made them. A join is checked against the roster: the invite must still be live (not replaced, not ended by a removal, not a used one-time invite) and not expired.
 
@@ -36,19 +36,19 @@ When two computers have no direct path, iroh carries their encrypted connection 
 
 With the `lan` setting on (the default), the service announces its member key and port on your local network over mDNS, so your other Macs on the same Wi-Fi find it. Anyone on that network can see the announcement. To turn it off, add `lan = false` to `~/.lightbulb/connect/config.toml`. Joins still work, because the invite carries the inviter's addresses.
 
-## Holds and policy
+## Trust
 
-A message from someone you have not allowed does not reach your sessions. It is held until you answer it (**Allow** or **Decline** in a dialog, or `lightbulb approve H<n>` / `decline H<n>`).
+An invite is the approval. Whoever holds a live invite joins with no one asked, and every member of the network is trusted. A message from a member reaches the session it names. Nothing is held, and there is no per-person Allow or policy. Membership is the only gate, and `lightbulb remove <name>` ends it.
 
 - Messages between sessions on this computer always get through.
-- In this release each computer counts as its own person, so your other computer's first message is held once, like anyone's.
-- A person with no policy entry is held.
-- Allow lets that person's later messages through (`policy <person> accept`).
-- `policy <person> hold` asks each time; `policy <person> refuse` refuses them.
+- Any member can make an invite, so any member can add someone. Names are not verified yet: they show "(not verified)".
+- An agent's invite is always one-time. When someone joins with it, a dialog tells you, with **Keep** and **Remove**.
+- Only a person at a terminal can remove a member, leave a network or change the relay. A command run from an agent's shell or tools is refused. This does not stop a program that you run yourself as your own user.
+- The one prompt left is a permission request from an agent that the Lightbulb app files (`lightbulb held`, then `lightbulb approve H<n>` or `decline H<n>`).
 
-A join request is held the same way, unless the founder or an admin made the invite with `invite --open`.
+## Workspace agents
 
-Only a person at a terminal can answer a hold, change membership or change the relay. A command run from an agent's shell or tools is refused. This stops an agent's ordinary tools from approving things for you. It does not stop a program that you run yourself as your own user.
+A Lightbulb workspace's agents are members like any other. They take a message only from a computer that is signed in to that workspace (`lightbulb login`). Any other member's message is refused (`not_a_member`). The sign-in proof lasts 30 days and is renewed in its last week. Removing a person from a workspace takes effect at once. `lightbulb logout` deletes the proof.
 
 ## Loop limits
 
@@ -61,7 +61,7 @@ A refused message's receipt says which limit it hit. A message is at most 64 KiB
 
 ## What is logged
 
-The service writes `~/.lightbulb/connect/daemon.log`. It logs events: connections, member key prefixes, message and session ids, receipt states, hold and join request numbers, relay URLs.
+The service writes `~/.lightbulb/connect/daemon.log`. It logs events: connections, member key prefixes, message and session ids, receipt states, permission prompt and join request numbers, relay URLs.
 
 It never logs message text, message previews or file contents. When your computer is removed from a team, it logs the team's name and the name of whoever removed it.
 
@@ -73,10 +73,10 @@ Everything lives in `~/.lightbulb/connect/`, which is private to your user (`070
 |---|---|
 | `identity.key` | This computer's secret key. |
 | `config.toml` | Settings (computer name, relay, `lan`, hidden folders). |
-| `state.db` | SQLite: the roster, sessions, messages, receipts, holds and their answers, policy. |
+| `state.db` | SQLite: the roster, sessions, messages, receipts, permission prompts and their answers. |
 | `daemon.log` | The log (see above). |
 | `addrs.json` | Teammates' last known network addresses. |
-| `relays.json`, `relays.json.minisig`, `relays.floor` | The signed relay list, its signature, and the newest list date seen (only while no relay is set). |
+| `login.json` | The sign-in proof, while this computer is signed in (`0600`). |
 | `sock`, `daemon.lock` | The service's socket and lock. |
 | `bin/lightbulb` | The program. |
 
@@ -86,11 +86,11 @@ How long things last:
 |---|---|
 | A message waiting for an offline computer | retried for 24 hours, then `expired` |
 | A message waiting on the receiving computer for its session, not picked up | 24 hours, then `expired` |
-| A held message with no answer | 7 days (sooner if its session has been gone for 24 hours) |
-| A one-time invite / a reusable or open invite | 24 hours / 7 days |
+| A permission prompt with no answer | 10 minutes (sooner if its session has ended) |
+| A one-time invite / a reusable invite | 24 hours / 7 days |
 | Answered join requests | kept 30 days |
 
-Message text is kept in `state.db` after delivery; nothing deletes it. `leave` and `setup --remove` keep it too. To erase this computer's key and messages, run `lightbulb setup --remove`, then delete `~/.lightbulb/connect/` and the command link `~/.local/bin/lightbulb`:
+A message's text is deleted from `state.db` once nothing waits on it (read, refused or expired). Its row stays for receipts and loop limits. Messages to your own terminal keep their text. `leave` and `setup --remove` keep what is left. To erase this computer's key and messages, run `lightbulb setup --remove`, then delete `~/.lightbulb/connect/` and the command link `~/.local/bin/lightbulb`:
 
 ```sh
 rm -rf ~/.lightbulb/connect ~/.local/bin/lightbulb
@@ -102,14 +102,18 @@ For each of your sessions that is not hidden: the agent, the computer, the folde
 
 ## Telemetry and network requests
 
-Telemetry: none. Lightbulb sends no usage data, no crash reports and no analytics.
+**Usage counts are on by default.** Lightbulb sends anonymous counts so the project can see adoption: installs, updates, joins, invites, and once a day the number of messages and computers and which agents are connected. The only identifier is a random install id. It never sends message text, names, keys, tickets, codes or folder paths. It sends no crash reports. The [engine README](https://github.com/TheLightbulbCompany/cli#usage-counts) lists every event.
 
-It talks to your teammates' computers and to relays. Apart from that, it makes these requests to the Lightbulb server (`https://thelightbulb.company/connect`):
+To turn the counts off, run `lightbulb telemetry off`, or set `DO_NOT_TRACK=1` (or `LIGHTBULB_NO_TELEMETRY=1`) in the environment. To send nothing at all, set it before you install:
 
-- **The signed relay list:** while neither you nor your team has set a relay, the service asks for `relays.json` and its signature at most once a day (once an hour after a failure). It sends no data about you; the server sees your IP address. Setting a relay (`lightbulb relay <url>`) stops it. A list is used only if it carries a valid signature.
-- **Sign-in:** `lightbulb signin`, when you run it, and then renewing that sign-in about once a day.
+```sh
+curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | DO_NOT_TRACK=1 sh
+```
 
-The install script and `npm install` download the release from GitHub.
+Apart from your teammates' computers and the relays, the engine makes these requests:
+
+- **Updates:** the background service checks GitHub once a day for a newer release. It installs one only when the checksum matches and, on macOS, the binary is signed with Lightbulb's Developer ID. `lightbulb update --auto off` stops the daily check. The install script, `npm install` and `lightbulb update` also download from GitHub.
+- **Lightbulb, only when you use these:** `lightbulb login` and the renewal of its proof, `lightbulb invite --agents`, and routing for hosted apps (the Claude app and others) that reach the network through your signed-in computer.
 
 ## Reporting a vulnerability
 

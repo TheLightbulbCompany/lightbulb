@@ -39,9 +39,6 @@ class AgentInvocation:
     origin: dict | None = None
     # One run: the room trigger's message id, or the Paperclip run id. A decline holds for it.
     turn_id: str | None = None
-    # The person who chose Send on this agent's ask (spec §3.3). Set only by the ask resolver
-    # and by the relay restoring that command; never from a token.
-    approved_by: str | None = None
     # Whose access the turn READS rooms with when nobody signed in asked (owner ruling 2026-10-13: a
     # Google Meet reads as the member who invited the agents). Rooms only: every other right a grant
     # carries (local sessions, the Mac) is the requester's, and a Meet guest is never one.

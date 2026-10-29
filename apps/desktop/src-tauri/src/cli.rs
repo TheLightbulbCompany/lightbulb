@@ -246,7 +246,7 @@ pub fn ask_app(path: &Path, request: &Value) -> Result<Started, String> {
 }
 
 use crate::holder::model::strip_queries;
-use crate::holder::protocol::{encode, read_frame, split_offset, DETACHED, EXIT, HELLO, INPUT, OUTPUT, RESIZE, SNAPSHOT};
+use crate::holder::protocol::{encode, read_frame, split_offset, DETACHED, END, EXIT, HELLO, INPUT, OUTPUT, RESIZE, SNAPSHOT};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::OnceLock;
 
@@ -268,7 +268,7 @@ pub struct Ask {
 
 const USAGE: &str = "Usage: lightbulb claude|codex [any claude or codex arguments]\n\
        lightbulb continue '<link>'\n\
-       lightbulb join | setup | share on|off | leave\n\
+       lightbulb share on|off | pair\n\
 Starts a session in the Lightbulb app on this Mac, with its live terminal there too, or continues\n\
 a shared session from its link in your own Claude Code.";
 
@@ -435,8 +435,9 @@ fn restore() {
     }
 }
 
-/// SIGWINCH resizes the session; SIGINT, SIGTERM and SIGHUP (the terminal closed) detach and
-/// leave it running. Blocked before any thread starts, so only `sigwait` receives them.
+/// SIGWINCH resizes the session. SIGHUP (the terminal closed) ends it, as closing the terminal
+/// ends the provider run directly (`signal_frame`). SIGINT and SIGTERM detach and leave it
+/// running. Blocked before any thread starts, so only `sigwait` receives them.
 fn block_signals() -> libc::sigset_t {
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
@@ -446,6 +447,22 @@ fn block_signals() -> libc::sigset_t {
         }
         libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
         set
+    }
+}
+
+/// The frame a signal sends the holder: SIGWINCH the window's new size, SIGHUP END. Closing the
+/// terminal ends the session (it never runs on headless with nothing to say so); a holder of a
+/// session the provider's own daemon hosts ends only its client, and the job runs on in the
+/// background, as Claude's own terminal does.
+fn signal_frame(sig: libc::c_int, (cols, rows): (u16, u16)) -> Option<Vec<u8>> {
+    match sig {
+        libc::SIGWINCH => {
+            let mut size = cols.to_be_bytes().to_vec();
+            size.extend_from_slice(&rows.to_be_bytes());
+            Some(encode(RESIZE, &size))
+        }
+        libc::SIGHUP => Some(encode(END, b"")),
+        _ => None,
     }
 }
 
@@ -481,12 +498,10 @@ fn attach(socket: &Path, (cols, rows): (u16, u16), signals: libc::sigset_t) -> i
         if unsafe { libc::sigwait(&signals, &mut sig) } != 0 {
             continue;
         }
-        if sig == libc::SIGWINCH {
-            let (cols, rows) = window_size();
-            let mut size = cols.to_be_bytes().to_vec();
-            size.extend_from_slice(&rows.to_be_bytes());
-            let _ = resize.lock().unwrap().write_all(&encode(RESIZE, &size));
-        } else {
+        if let Some(frame) = signal_frame(sig, if sig == libc::SIGWINCH { window_size() } else { (0, 0) }) {
+            let _ = resize.lock().unwrap().write_all(&frame);
+        }
+        if sig != libc::SIGWINCH {
             STOPPED_BY.store(sig, Ordering::SeqCst);
             let _ = stopper.shutdown(std::net::Shutdown::Both);
             return;
@@ -511,6 +526,7 @@ fn attach(socket: &Path, (cols, rows): (u16, u16), signals: libc::sigset_t) -> i
         Outcome::Moved => (0, Some("● This session was opened in another terminal. It keeps running in the Lightbulb app.")),
         Outcome::Lost => match STOPPED_BY.load(Ordering::SeqCst) {
             0 => (1, Some("● Lost this session's terminal. If it is still running, it is in the Lightbulb app.")),
+            libc::SIGHUP => (128 + libc::SIGHUP, None),
             sig => (128 + sig, Some("● Detached. The session keeps running in the Lightbulb app.")),
         },
     };
@@ -524,7 +540,8 @@ fn attach(socket: &Path, (cols, rows): (u16, u16), signals: libc::sigset_t) -> i
 /// `lightbulb …`: the process exit code.
 pub fn main(args: &[String]) -> i32 {
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["join"] => return crate::headless::join(),
+        // `join` is the old name, kept for scripts; the engine owns `lightbulb join` now.
+        ["pair"] | ["join"] => return crate::headless::join(),
         ["setup"] => return crate::headless::setup(),
         ["leave"] => return crate::headless::leave(),
         ["share", "on"] => return crate::headless::share(true),
@@ -587,32 +604,6 @@ pub fn main(args: &[String]) -> i32 {
 /// Set once `~/.local/bin/lightbulb` is in place: the PATH line to show, if one is needed.
 static INSTALLED: OnceLock<Option<String>> = OnceLock::new();
 
-/// `~/.local/bin/lightbulb` → `exe`, in the user's own folder (no admin rights). Creates it, or
-/// repairs a link to another copy of this app (moved away or not); leaves anything else alone.
-pub fn install(exe: &Path, home: &Path) -> Result<(), String> {
-    let bin = home.join(".local/bin");
-    let link = bin.join("lightbulb");
-    match std::fs::symlink_metadata(&link) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            let target = std::fs::read_link(&link).map_err(|e| e.to_string())?;
-            if target == exe {
-                return Ok(());
-            }
-            // Dangling or not, only a link to a Lightbulb app binary is ours to repair.
-            if target.file_name() != exe.file_name() {
-                return Err("~/.local/bin/lightbulb points at another program; leaving it".into());
-            }
-        }
-        Ok(_) => return Err("~/.local/bin/lightbulb is not Lightbulb's; leaving it".into()),
-        Err(_) => {}
-    }
-    std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
-    let staged = bin.join(format!(".lightbulb-{}", std::process::id()));
-    let _ = std::fs::remove_file(&staged);
-    std::os::unix::fs::symlink(exe, &staged).map_err(|e| e.to_string())?;
-    std::fs::rename(&staged, &link).map_err(|e| e.to_string())
-}
-
 /// The one line that puts `~/.local/bin` on the login shell's PATH, if it is not there.
 pub fn path_line(shell: &str, path: &str, home: &Path) -> Option<String> {
     let bin = home.join(".local/bin");
@@ -633,17 +624,18 @@ pub(crate) fn strip_nofollow(exe: &Path) -> PathBuf {
 
 /// The path to link to, if `exe` is an installed app. macOS can report the running app as
 /// `/.nofollow/Applications/...` (and `canonicalize` keeps that), so the prefix is dropped first.
-fn installed_exe(exe: &Path, home: &Path) -> Option<PathBuf> {
+pub(crate) fn installed_exe(exe: &Path, home: &Path) -> Option<PathBuf> {
     let exe = strip_nofollow(exe);
     (exe.starts_with("/Applications") || exe.starts_with(home.join("Applications"))).then_some(exe)
 }
 
-/// At launch. Only an installed app links itself: a copy run from the disk image, a translocated
-/// path or a build folder moves away and would leave the link dangling.
+/// At launch: the PATH line, once the `lightbulb` command is in ~/.local/bin. The network
+/// engine owns that link (its `setup` points it at the engine, which hands `claude`, `codex`,
+/// `continue` and `share` to `lightbulb-desktop cli`); the app no longer writes it.
 pub fn install_at_launch() {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
     let Ok(exe) = std::env::current_exe().and_then(std::fs::canonicalize) else { return };
-    // Not an installed app (a build folder, the disk image): nothing to link, nothing to log.
+    // Not an installed app (a build folder, the disk image): nothing to show, nothing to log.
     if installed_exe(&exe, &home).is_none() {
         return;
     }
@@ -655,11 +647,13 @@ pub fn install_at_launch() {
     }
 }
 
-/// `~/.local/bin/lightbulb`, for an installed app only (see `install_at_launch`). The PATH line
-/// to show, if one is needed.
+/// For an installed app whose `~/.local/bin/lightbulb` exists (the engine's link; never
+/// written here): the PATH line to show, if one is needed.
 pub fn link_command(exe: &Path, home: &Path) -> Result<Option<String>, String> {
-    let exe = installed_exe(exe, home).ok_or("~/.local/bin/lightbulb is linked only from an app in /Applications")?;
-    install(&exe, home)?;
+    installed_exe(exe, home).ok_or("the lightbulb command is set up only for an app in /Applications")?;
+    if !home.join(".local/bin/lightbulb").exists() {
+        return Err("~/.local/bin/lightbulb is not installed yet; the network engine installs it".into());
+    }
     // The login shell's PATH, not this GUI app's.
     let env = crate::holder::run::login_environment();
     let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str()).unwrap_or_default();
@@ -851,6 +845,14 @@ mod tests {
     }
 
     #[test]
+    fn cli_closing_the_terminal_ends_the_session_and_a_resize_sends_the_size() {
+        assert_eq!(signal_frame(libc::SIGHUP, (0, 0)), Some(encode(crate::holder::protocol::END, b"")));
+        assert_eq!(signal_frame(libc::SIGWINCH, (120, 40)), Some(encode(crate::holder::protocol::RESIZE, &[0, 120, 0, 40])));
+        assert_eq!(signal_frame(libc::SIGINT, (0, 0)), None, "an interrupt detaches and leaves it running");
+        assert_eq!(signal_frame(libc::SIGTERM, (0, 0)), None);
+    }
+
+    #[test]
     fn cli_pump_draws_output_without_queries_and_reports_how_the_session_left() {
         let mut frames = encode(HELLO, b"{}");
         frames.extend(encode(OUTPUT, &with_offset(0, b"\x1b[?1049hhi\x1b[c")));
@@ -885,41 +887,11 @@ mod tests {
     }
 
     #[test]
-    fn cli_install_links_repairs_and_never_clobbers() {
+    fn cli_never_writes_the_lightbulb_link() {
         let home = tempfile::tempdir().unwrap();
-        let macos = home.path().join("Lightbulb.app/Contents/MacOS");
-        std::fs::create_dir_all(&macos).unwrap();
-        let exe = macos.join("lightbulb-desktop");
-        std::fs::write(&exe, b"").unwrap();
-        let link = home.path().join(".local/bin/lightbulb");
-        install(&exe, home.path()).unwrap();
-        assert_eq!(std::fs::read_link(&link).unwrap(), exe);
-        install(&exe, home.path()).unwrap();
-
-        // A link left by a copy of the app that moved away is repaired.
-        std::fs::remove_file(&link).unwrap();
-        std::os::unix::fs::symlink(home.path().join("gone/lightbulb-desktop"), &link).unwrap();
-        install(&exe, home.path()).unwrap();
-        assert_eq!(std::fs::read_link(&link).unwrap(), exe);
-
-        // Someone else's `lightbulb`, a link or a file, stays.
-        let other = home.path().join("other-tool");
-        std::fs::write(&other, b"").unwrap();
-        std::fs::remove_file(&link).unwrap();
-        std::os::unix::fs::symlink(&other, &link).unwrap();
-        assert!(install(&exe, home.path()).is_err());
-        assert_eq!(std::fs::read_link(&link).unwrap(), other);
-        std::fs::remove_file(&link).unwrap();
-        std::fs::write(&link, b"#!/bin/sh\n").unwrap();
-        assert!(install(&exe, home.path()).is_err());
-        assert_eq!(std::fs::read(&link).unwrap(), b"#!/bin/sh\n");
-
-        // An unrelated link whose target is gone is not ours either.
-        std::fs::remove_file(&link).unwrap();
-        let nowhere = home.path().join("nowhere/other-tool");
-        std::os::unix::fs::symlink(&nowhere, &link).unwrap();
-        assert!(install(&exe, home.path()).is_err());
-        assert_eq!(std::fs::read_link(&link).unwrap(), nowhere);
+        let exe = home.path().join("Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        assert!(link_command(&exe, home.path()).is_err(), "no command yet: nothing to show");
+        assert!(std::fs::symlink_metadata(home.path().join(".local/bin/lightbulb")).is_err(), "and none is made");
     }
 
     #[test]

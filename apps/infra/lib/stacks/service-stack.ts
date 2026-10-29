@@ -29,6 +29,7 @@ import {
   tablePrefix,
 } from "../table-names";
 import { Construct } from "constructs";
+import { DEV_SPOT } from "./container-stack";
 import { LAUNCH_DOMAIN, LEGACY_MAIL_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
 
 // hermes-version.json is the per-env promotion tag for the Hermes bridge image (M4-R34),
@@ -119,16 +120,6 @@ export interface SecretNames {
   sesIngestSecret: string;
 }
 
-/**
- * The Stripe Projects rail master switch, from the deploy job's environment
- * (a per-env repo variable). Off ⇒ the backend refuses `start()` and the
- * frontend hides the Connect door. Unset = off.
- */
-export function stripeProvisioningEnabled(env: "dev" | "prod", vars: NodeJS.ProcessEnv = process.env): boolean {
-  const v = env === "dev" ? vars.STRIPE_PROVISIONING_ENABLED_DEV : vars.STRIPE_PROVISIONING_ENABLED_PROD;
-  return v === "true";
-}
-
 export interface ServiceStackProps extends cdk.StackProps {
   environment: string;
   /** Product root domain (see lib/domains.ts). Defaults to ROOT_DOMAIN. */
@@ -173,6 +164,10 @@ export interface ServiceStackProps extends cdk.StackProps {
     /** The env's shared AgentCore Memory id (ContainerStack.workspaceMemory). One export, not two:
      *  the ARN is derived here, so the container stack pins as little as possible. */
     workspaceMemoryId: string;
+    /** The env's uploaded-sessions AgentCore Memory id (ContainerStack.sessionsMemory): the evaluator's. */
+    sessionsMemoryId: string;
+    /** The env's workspace browser id (ContainerStack.workspaceBrowser, VPC mode). */
+    workspaceBrowserId: string;
   };
   managementApiUrl: string;
   /** Public wss:// endpoint returned by /api/v1/desktop/pair so desktop clients
@@ -235,18 +230,8 @@ export interface ServiceStackProps extends cdk.StackProps {
   /** LiveKit server URL for huddles. Empty (default) keeps huddle routes 503 — ships dark. */
   livekitUrl?: string;
   /**
-   * Stripe's recommended Provisioning onboarding path: request the Accounts v2
-   * `developer` configuration with the `projects` capability on the company
-   * account. DEFAULT FALSE — `configuration.developer` is an "Unknown field"
-   * for our platform today (probed 2026-08-29); sending it breaks every
-   * company-account create. Flip once Stripe enables the field.
-   */
-  stripeProjectsDeveloperConfig?: boolean;
-  /**
    * The Accounts v2 API version pinned on the company account/account-link
-   * calls (`Stripe-Version` header). Empty ⇒ the SDK's own default, i.e.
-   * today's behaviour. Set once Stripe names the version during preview
-   * onboarding for stripeProjectsDeveloperConfig.
+   * calls (`Stripe-Version` header). Empty ⇒ the provisioning preview.
    */
   stripeAccountsV2Version?: string;
 }
@@ -271,6 +256,10 @@ export interface ServiceStackProps extends cdk.StackProps {
  * in one deploy.
  */
 const MANAGED_BY_ACCEPTED = ["lightbulb-backend"];
+
+/** Envs whose workspace sessions run on the VPC-mode AgentCore browser (fixed egress address).
+ *  Add an env only after its runtimes are rolled onto an image built from #4391 or later. */
+const VPC_BROWSER_ENVS = new Set<string>(["dev", "prod"]);
 
 export class ServiceStack extends cdk.Stack {
   public readonly service: ecs.FargateService;
@@ -488,6 +477,13 @@ export class ServiceStack extends cdk.Stack {
 
     // AgentCore Browser: the backend mints/reads the per-workspace profile and owns the
     // session lifecycle; the session id lives on the workspace's browser row, so it lists none.
+    // Sessions start on the env's VPC browser (ContainerStack.workspaceBrowser); the built-in
+    // browser stays granted so a session started on it before the move can still be viewed and
+    // stopped.
+    const browserArns = [
+      agentcoreArn(`browser-custom/${props.container.workspaceBrowserId}`),
+      `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,
+    ];
     // Browser-profile state snapshots use the released agent-browser CLI; no
     // SaveBrowserSessionProfile grant.
     agentCorePolicy.addStatements(
@@ -511,18 +507,14 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:GetBrowserSession",
           "bedrock-agentcore:ConnectBrowserLiveViewStream",
         ],
-        resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
+        resources: browserArns,
       }),
     );
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreBrowserSessionStart",
         actions: ["bedrock-agentcore:StartBrowserSession"],
-        resources: [
-          agentcoreArn("browser/*"),
-          `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,
-          agentcoreArn("browser-profile/*"),
-        ],
+        resources: [...browserArns, agentcoreArn("browser-profile/*")],
       }),
     );
     agentCorePolicy.addStatements(
@@ -533,13 +525,12 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:UpdateBrowserStream",
           "bedrock-agentcore:ConnectBrowserAutomationStream",
         ],
-        resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
+        resources: browserArns,
       }),
     );
 
     // Workspace memory wipe (account_wipe / DELETE /debug/user-data -> workspace_memory.
-    // delete_owner_memory). The backend never SEARCHES memory; runtimes recall under their per-owner
-    // `owner-memory` policy.
+    // delete_owner_memory). This statement is the wipe only; recall has its own below.
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreMemoryWipe",
@@ -560,12 +551,56 @@ export class ServiceStack extends cdk.Stack {
     // namespaces, reads ONE record to prove it sits in the viewer's own scope before any delete
     // or copy (BatchDelete/BatchCreate take bare ids), and writes the vouched team copy that
     // "Share with team" / "Confirm" produce. Runtimes stay denied every record write, so only this
-    // role can mark a fact confirmed. Still no RetrieveMemoryRecords: the backend never searches.
+    // role can mark a fact confirmed.
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreMemoryReview",
         actions: ["bedrock-agentcore:GetMemoryRecord", "bedrock-agentcore:BatchCreateMemoryRecords"],
         resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
+      }),
+    );
+
+    // Memory sync (memory_sync._mark_replaced): an entry the network log replaced is marked
+    // `replaced` on its mirrored record, in place.
+    agentCorePolicy.addStatements(
+      new iam.PolicyStatement({
+        sid: "AgentCoreMemorySync",
+        actions: ["bedrock-agentcore:BatchUpdateMemoryRecords"],
+        resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
+      }),
+    );
+
+    // The evaluator (core/services/evaluator.py) on the sessions memory, which only the backend
+    // touches: writes uploaded sessions as events, lists reflections into drafts, and deletes a
+    // person's episodes and events on a wipe.
+    agentCorePolicy.addStatements(
+      new iam.PolicyStatement({
+        sid: "AgentCoreSessionsMemory",
+        actions: [
+          "bedrock-agentcore:CreateEvent",
+          "bedrock-agentcore:ListMemoryRecords",
+          "bedrock-agentcore:BatchDeleteMemoryRecords",
+          "bedrock-agentcore:ListSessions",
+          "bedrock-agentcore:ListEvents",
+          "bedrock-agentcore:DeleteEvent",
+        ],
+        resources: [agentcoreArn(`memory/${props.container.sessionsMemoryId}`)],
+      }),
+    );
+
+    // Workspace recall: the backend now searches the memory (RetrieveMemoryRecords), writes room
+    // conversation in as events for extraction (CreateEvent), and reranks the hits with Cohere on
+    // Bedrock (foundation-model ARNs carry no account).
+    agentCorePolicy.addStatements(
+      new iam.PolicyStatement({
+        sid: "AgentCoreMemoryRecall",
+        actions: ["bedrock-agentcore:RetrieveMemoryRecords", "bedrock-agentcore:CreateEvent"],
+        resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
+      }),
+      new iam.PolicyStatement({
+        sid: "MemoryRerank",
+        actions: ["bedrock:Rerank", "bedrock:InvokeModel"],
+        resources: [`arn:aws:bedrock:${this.region}::foundation-model/cohere.rerank-v3-5:0`],
       }),
     );
 
@@ -898,10 +933,11 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // Per-agent Paperclip API keys (credential-layer redesign): minted by the
-    // backend and stored under isol8/{env}/paperclip-agent-keys/* so Friday's
-    // openclaw.json MCP block can authenticate to Paperclip. Replaces the old
-    // encrypted-in-DynamoDB api-keys storage. Same tight prefix scoping.
+    // LEGACY per-agent Paperclip API keys. New keys live Fernet-encrypted on the
+    // owner's paperclip-companies row (paperclip_api_key.py); this prefix is only
+    // read as a fallback, swept by the wipes, and migrated + scheduled for deletion
+    // by scripts/migrate_agent_keys_to_rows.py (needs Get + Delete). Remove this
+    // statement, the fallback and the wipe sweeps once the prefix is empty.
     secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "PaperclipAgentKeysRW",
@@ -999,6 +1035,15 @@ export class ServiceStack extends cdk.Stack {
         sid: "SessionPickupRW",
         actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
         resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/session-pickup/*`],
+      }),
+    );
+    // Uploaded coding sessions (session_store.py): sessions/<free|workspace>/<user>/<id>.json, the
+    // full uploads the lifecycle rules age out. Backend-only, outside every <owner>/ prefix.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "SessionsRW",
+        actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/sessions/*`],
       }),
     );
     // Redacted copies of a shared session for a link's holder (session_links.py): an id-free
@@ -1505,6 +1550,12 @@ export class ServiceStack extends cdk.Stack {
       // Stamped into every runtime spec as AGENTCORE_MEMORY_ID; the image enables its memory
       // provider only when it is set (N-1 safe: an older image ignores it).
       AGENTCORE_MEMORY_ID: props.container.workspaceMemoryId,
+      // The evaluator's own memory (uploaded sessions); backend only, never stamped into a runtime.
+      AGENTCORE_SESSIONS_MEMORY_ID: props.container.sessionsMemoryId,
+      // The browser every workspace session starts on (bedrock_aip.BROWSER_ID); unset = the
+      // built-in one. Per env, and only once every runtime there runs a bridge that accepts a
+      // custom browser's CDP URL (#4391): an older bridge refuses it and the browser fails.
+      ...(VPC_BROWSER_ENVS.has(env) ? { AGENTCORE_BROWSER_ID: props.container.workspaceBrowserId } : {}),
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,
@@ -1526,6 +1577,8 @@ export class ServiceStack extends cdk.Stack {
       // existing receipts remain readable/cancellable in the backend.
       DESKTOP_EXECUTION_ENABLED: desktopOwner ? "true" : "false",
       DESKTOP_EXECUTION_OWNER_ALLOWLIST: desktopOwner,
+      // OpenAI's plugin-portal domain token (public by design). Unset = the path 404s.
+      OPENAI_APPS_CHALLENGE_TOKEN: process.env[`OPENAI_APPS_CHALLENGE_TOKEN_${env.toUpperCase()}`] ?? "",
       // Platform admin (/admin, /ops, marketplace review, workspace wipe) is
       // this reviewed list of Clerk USER IDS per env, never an email domain.
       // Empty ⇒ nobody is admin. Comma-separated.
@@ -1786,22 +1839,21 @@ export class ServiceStack extends cdk.Stack {
           ? `https://api.${rootDomain}/api/v1/company/stripe/connect/callback`
           : `https://api-dev.${rootDomain}/api/v1/company/stripe/connect/callback`,
       STRIPE_CONNECT_CLIENT_ID: props.stripeConnectClientId ?? "",
+      // Platform publishable key (pk_…, public) for Connect embedded
+      // onboarding, from the STRIPE_PUBLISHABLE_KEY_{DEV,PROD} repo variables.
+      // Empty ⇒ the Stripe card falls back to the hosted Account Link.
+      STRIPE_PUBLISHABLE_KEY: env === "dev"
+        ? (process.env.STRIPE_PUBLISHABLE_KEY_DEV ?? "")
+        : (process.env.STRIPE_PUBLISHABLE_KEY_PROD ?? ""),
       // Provider catalog partition. dev reads/writes Stripe's `testing`
       // partition, prod the real one. NOT a payment-mode switch — Stripe's own
       // caveat: "Selecting a DEV or TESTING catalog doesn't mean 'no real
       // charges.'"
       STRIPE_PROJECTS_CATALOG: props.stripeProjectsCatalog ?? "prod",
       LIVEKIT_URL: props.livekitUrl ?? "",
-      // Stripe's recommended `developer` configuration + `projects`
-      // capability on the company account. Default-off flag — see the
-      // stripeProjectsDeveloperConfig prop doc for why.
-      STRIPE_PROJECTS_DEVELOPER_CONFIG: String(props.stripeProjectsDeveloperConfig ?? false),
       // Accounts v2 API version pin for the company account/account-link
-      // calls. Empty ⇒ the SDK's own default.
+      // calls. Empty ⇒ the provisioning preview.
       STRIPE_ACCOUNTS_V2_VERSION: props.stripeAccountsV2Version ?? "",
-      // Provisioning rail master switch: off unless the owner sets the
-      // STRIPE_PROVISIONING_ENABLED_{DEV,PROD} repo variable to "true".
-      STRIPE_PROVISIONING_ENABLED: String(stripeProvisioningEnabled(env === "dev" ? "dev" : "prod")),
       // Dev keeps timer heartbeats off (spend): arm_nightly_ceo leaves them alone.
       NIGHTLY_CEO_HEARTBEATS_ENABLED: env === "dev" ? "false" : "true",
       // PostHog server-side reads for the admin Activity tab.
@@ -2404,8 +2456,11 @@ export class ServiceStack extends cdk.Stack {
 
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
       family: `lightbulb-${env}-backend`,
-      cpu: env === "prod" ? 2048 : 1024,
-      memoryLimitMiB: env === "prod" ? 4096 : 2048,
+      // Sized from 30-day CloudWatch (2026-10-27 cost review): prod peaked at 0.52 GB of 4 GB
+      // and 0.9 vCPU hourly-average of 2; dev peaked at 1 GB once (p99 0.35 GB). 2 GB is 4x
+      // prod's and 2x dev's high-water; CPU bursts are what autoscaling (2-4 / 1-4) is for.
+      cpu: env === "prod" ? 1024 : 512,
+      memoryLimitMiB: 2048,
       taskRole: this.taskRole,
       executionRole: taskExecutionRole,
     });
@@ -2454,7 +2509,10 @@ export class ServiceStack extends cdk.Stack {
       serviceName: `lightbulb-${env}-backend`,
       cluster: props.container.cluster,
       taskDefinition: taskDef,
-      desiredCount: 2,
+      // Dev runs one task on Spot (no HA to keep; a Spot reclaim is a brief dev gap). With
+      // one task, min 100 / max 200 still starts the new task before stopping the old one.
+      desiredCount: env === "prod" ? 2 : 1,
+      ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
       // Rolling deploy as a clean handoff: keeping 100% healthy forces ECS to
       // bring new tasks to healthy BEFORE stopping old ones, and 200% gives
       // the headroom to run both generations at once. So a deploy has no
@@ -2481,7 +2539,7 @@ export class ServiceStack extends cdk.Stack {
     // DynamoDB (TTL presence rows, claim leases) — see CLAUDE.md's
     // WebSocket Architecture section. 2-4 tasks, scaling on CPU.
     this.service
-      .autoScaleTaskCount({ minCapacity: 2, maxCapacity: 4 })
+      .autoScaleTaskCount({ minCapacity: env === "prod" ? 2 : 1, maxCapacity: 4 })
       .scaleOnCpuUtilization("Cpu", { targetUtilizationPercent: 60 });
 
     // -------------------------------------------------------------------------

@@ -268,8 +268,8 @@ const styles = StyleSheet.create({
     borderColor: colors.edge,
     padding: spacing.xl,
   },
-  // Lora, not type.title's Source Sans 3 — matches web's `.provision-title`
-  // (Lora 400) so the onboarding surfaces read the same on both clients.
+  // Regular weight, not type.title's bold — matches web's `.provision-title`
+  // (Satoshi 400) so the onboarding surfaces read the same on both clients.
   headline: {
     fontFamily: fonts.lora,
     fontSize: 20,

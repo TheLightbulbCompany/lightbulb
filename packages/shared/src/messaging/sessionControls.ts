@@ -9,22 +9,19 @@ import type {
   LocalSessionAuditEntry,
   LocalSessionEvent,
   LocalSessionPendingApproval,
-  PrivateSendApproval,
 } from "./types";
 import type { createMessagingClient } from "./client";
 import { canonicalJson, hasHiddenChars } from "./localSessionTranscript";
 import { AUTO_CHECK_INTERVAL_MS, receiptChip, type SessionCommandAttempt, type SessionReceiptChip } from "./useSessionCommand";
 
 type Client = Pick<ReturnType<typeof createMessagingClient>,
-  "submitLocalSessionCommand" | "cancelLocalSessionCommand" | "listLocalSessionOutbox" | "getPrivateSendApproval"
+  "submitLocalSessionCommand" | "cancelLocalSessionCommand" | "listLocalSessionOutbox"
   | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
   | "setLocalSessionSharing" | "requestLocalSessionJoin" | "requestLocalSessionPickupAccess" | "removeLocalSessionSender"
   | "resumeLocalSession" | "revokeLocalSessionResume" | "getLocalSessionCommand" | "getLocalSession">;
 
 /** A session client that may predate the control routes (test doubles, older callers). */
 export type SessionControlClient = Pick<Client, "submitLocalSessionCommand"> & Partial<Omit<Client, "submitLocalSessionCommand">>;
-
-export type { PrivateSendApproval };
 
 /**
  * Who may use a session's controls (owner ruling 2026-09-25): its owner, any
@@ -93,16 +90,9 @@ export function useSessionJoinRequest(client: SessionControlClient, session: Loc
   return { state, saving, error, ask, supported: !!send, again, lapsed };
 }
 
-/** The asker's line and button under a session they cannot send to, the same on the web and the
- *  phone (ISOA-729): waiting, not answered yet (remind), closed unanswered, declined, or not asked. */
-export function joinRequestView(join: Pick<ReturnType<typeof useSessionJoinRequest>, "state" | "again" | "lapsed" | "saving">, ownerName: string): { line: string; button: string; disabled: boolean } {
-  if (join.state === "pending") return join.again
-    ? { line: `${ownerName} has not answered your request yet.`, button: "Ask again", disabled: join.saving }
-    : { line: `Waiting for ${ownerName} to answer. Your request stays open until they do or the session ends.`, button: "Requested", disabled: true };
-  if (join.state === "declined") return { line: `${ownerName} declined your request.`, button: "Ask to join", disabled: join.saving };
-  if (join.lapsed) return { line: `Your request closed before ${ownerName} answered, because the session restarted.`, button: "Ask again", disabled: join.saving };
-  return { line: `Only ${ownerName} can send to this session.`, button: "Ask to join", disabled: join.saving };
-}
+/** The line under a teammate's session they cannot type into (owner ruling 2026-10-26): members
+ *  never ask to join; they type while the owner lets teammates control the session. */
+export const watchOnlyLine = (ownerName: string) => `Only ${ownerName} can type in this session.`;
 
 /** The one follow-up "Commit & open PR" sends. Plain instructions: the harness, not
  * Lightbulb, runs git, under the owner's own permissions and prompts. */
@@ -118,7 +108,19 @@ export const APPROVAL_MODE_LABEL: Record<LocalSessionApprovalMode, string> = {
   acceptEdits: "auto-accept edits",
   plan: "plan mode",
   default: "ask before edits",
+  session: "this conversation",
+  similar: "similar commands",
 };
+
+/** The approval card's button for one offered choice. */
+export function approvalModeAction(mode: LocalSessionApprovalMode, pending: Pick<LocalSessionPendingApproval, "similar">): string {
+  if (mode === "session") return "Allow for this conversation";
+  if (mode === "similar") return `Allow similar commands for this session (${pending.similar ?? ""})`;
+  return `Approve and switch to ${APPROVAL_MODE_LABEL[mode]}`;
+}
+
+/** Whose permission prompt the card answers. */
+export const approvalAgent = (provider: string): string => (provider === "codex" ? "Codex" : "Claude");
 
 const MODE_LABEL: Record<string, string> = {
   default: "Ask before edits", manual: "Ask before edits", acceptEdits: "Auto-accept edits", plan: "Plan mode",
@@ -460,11 +462,15 @@ const RESUME_FAST_MS = 30_000;
 const RESUME_SLOW_MS = 30_000;
 
 const RESUME_REFUSED: Record<string, (mac: string, folder: string) => string> = {
-  ALREADY_RUNNING: mac => `it is already running on ${mac}`,
+  // Only a run Lightbulb cannot show (a private `claude --resume`, `codex --no-daemon`, a job it has
+  // not picked up): a conversation it tracks in the provider's own daemon is shown again instead (resume.rs `reattach`).
+  ALREADY_RUNNING: mac => `it is still running on ${mac}, where Lightbulb cannot show it. End it there, then resume`,
   FOLDER_NOT_APPROVED: (mac, folder) => `${folder} is no longer an approved folder on ${mac}`,
   FOLDER_MISSING: mac => `its folder is no longer on ${mac}`,
   TOOL_UNAVAILABLE: mac => `its CLI is no longer installed on ${mac}`,
   SHARING_OFF: mac => `session sharing is off on ${mac}`,
+  // Claude continued it under a new id (←, /background): resuming this one would branch it.
+  CONTINUED: mac => `it continues as a newer session on ${mac}. Open that session instead`,
 };
 
 /** One line about a resume already asked for (waiting, or refused by the Mac), or null. */

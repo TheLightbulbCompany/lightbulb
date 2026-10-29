@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { canChangeListenMode, cardReplyRequest, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionsNeedingYou, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -14,6 +14,7 @@ import { resolveCeoAgentId } from "@/components/getstarted/getStartedFirstTask";
 import { activateMessagesPanel, getWorkspaceSnapshot, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
 import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
+import { useSessionNotificationPrefs } from "@/components/settings/SessionNotificationsCard";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { capture } from "@/lib/analytics";
 import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
@@ -36,7 +37,8 @@ export interface MessagingWorkspaceValue {
   selectAgentDm: (agentId: string, explicit?: boolean) => Promise<string | null>;
   openMessage: (roomId: string, messageId: string | null) => void;
   openNotificationTarget: (roomId: string, threadId: string | null, messageId?: string) => void;
-  openSession: (sessionId: string, chat?: boolean) => void;
+  /** `seq`: open the session's conversation at that turn. */
+  openSession: (sessionId: string, chat?: boolean, seq?: number) => void;
   /** Open or close the focused session's chat column. */
   setSessionChat: (open: boolean) => void;
   /** The chat room on screen beside a session (SessionChat reports it), or null. */
@@ -91,6 +93,12 @@ function landingFor(rooms: readonly RoomSummary[]): boolean | null {
 // that never gets one (legacy, #general left) opens the default DM a minute late.
 // Make it event-driven if the backend ever says "seeded" explicitly.
 const FRESH_LANDING_WAIT_MS = 60_000;
+
+// Activation is a workspace milestone, not a count of every successful run.
+// Keep the browser marker workspace-scoped so a remount or another room cannot
+// report the same workspace twice. The event itself contains no message, room,
+// run, or agent identifiers: only the stable aggregate join key.
+const CHAT_COMPLETED_STORAGE_PREFIX = "isol8_chat_completed_v1";
 
 const MessagingWorkspaceContext = createContext<MessagingWorkspaceValue | null>(null);
 
@@ -209,6 +217,43 @@ export function MessagingWorkspaceProvider({
     true,
     true, // this instance feeds RoomPanel's subagent strip
   );
+  const activeRunIds = useRef(new Set<string>());
+  const completedRunIds = useRef(new Set<string>());
+  useEffect(() => {
+    // A replayed completed run is not a browser-observed completion. Require
+    // this mounted client to have seen the run working before it completed.
+    for (const run of rooms.runs) {
+      if (run.state === "running") activeRunIds.current.add(run.runId);
+      if (run.state === "completed" && activeRunIds.current.has(run.runId)) {
+        completedRunIds.current.add(run.runId);
+      }
+    }
+
+    if (!orgId || !userId || freshLanding !== true || completedRunIds.current.size === 0) return;
+    const storageKey = `${CHAT_COMPLETED_STORAGE_PREFIX}:${orgId}`;
+    if (window.localStorage.getItem(storageKey)) return;
+
+    // A qualifying activation is the first real message this user sent in the
+    // fresh workspace followed by its successful agent run. System-authored,
+    // agent-authored, errored, aborted, and unrelated runs do not qualify.
+    const ownMessages = rooms.messages.filter((message) =>
+      message.author.kind === "human" && message.author.id === userId,
+    );
+    if (ownMessages.length !== 1) return;
+    const firstMessageId = ownMessages[0].messageId;
+    const completedFirstChat = rooms.runs.some((run) =>
+      completedRunIds.current.has(run.runId) &&
+      run.state === "completed" &&
+      run.triggerMessageId === firstMessageId,
+    );
+    if (!completedFirstChat) return;
+
+    // Persist before capture so React remounts and effect replays cannot emit a
+    // duplicate. capture() is browser-only and deliberately receives no chat
+    // content or per-run identifiers.
+    window.localStorage.setItem(storageKey, "1");
+    capture("chat_completed", { workspace_id: orgId });
+  }, [freshLanding, orgId, rooms.messages, rooms.runs, userId]);
   const observedLanding = rooms.roomsLoading || rooms.roomsError ? null : landingFor(rooms.rooms);
   if (freshLanding === null && observedLanding !== null) setLanding({ scope, fresh: observedLanding });
   const awaitingGeneral = freshLanding === null && !rooms.roomsLoading;
@@ -361,15 +406,18 @@ export function MessagingWorkspaceProvider({
     .map((session) => session.humanUserId)), [workspaceSessions.sessions]);
   // The unread dot: this viewer's last-seen seq per session, on this device.
   // ponytail: entries are never pruned (one number per session ever listed); prune if it ever matters.
-  const [sessionSeen, setSessionSeen] = useState(() => ({ scope, seen: readSessionSeen(scope) }));
-  const seen = sessionSeen.scope === scope ? sessionSeen.seen : readSessionSeen(scope);
+  // Per person AND workspace (as the sidebar's pins and archives): two members on one browser profile
+  // keep their own unread dots, and Mark unread/read moves only the signed-in person's.
+  const seenScope = `${userId ?? ""}:${scope}`;
+  const [sessionSeen, setSessionSeen] = useState(() => ({ scope: seenScope, seen: readSessionSeen(seenScope) }));
+  const seen = sessionSeen.scope === seenScope ? sessionSeen.seen : readSessionSeen(seenScope);
   const openSessionId = sessionFocus?.sessionId ?? null;
   useEffect(() => {
     const next = markSessionsSeen(seen, workspaceSessions.sessions, openSessionId);
-    if (next === seen && sessionSeen.scope === scope) return;
-    setSessionSeen({ scope, seen: next });
-    writeSessionSeen(scope, next);
-  }, [seen, workspaceSessions.sessions, openSessionId, scope, sessionSeen.scope]);
+    if (next === seen && sessionSeen.scope === seenScope) return;
+    setSessionSeen({ scope: seenScope, seen: next });
+    writeSessionSeen(seenScope, next);
+  }, [seen, workspaceSessions.sessions, openSessionId, seenScope, sessionSeen.scope]);
   // A room member's online/sharing (human) or agentActivity (agent) decoration --
   // the same ternary every member list below applies to its own room-member array.
   const decorate = useCallback((member: RoomMember): RoomParticipant => member.kind === "agent"
@@ -731,15 +779,19 @@ export function MessagingWorkspaceProvider({
    * SessionFocus owns the wait ("Opening session…") and the unknown id ("no longer shared").
    * Returns false for such an early link: it is the URL's replay, not a pick.
    */
-  const applySession = useCallback((sessionId: string, chat = false) => {
+  const applySession = useCallback((sessionId: string, chat = false, seq?: number) => {
     setThreadId(null);
     setTarget(null);
-    setSessionFocus(chat ? { sessionId, chat } : { sessionId });
+    // Opening the URL this open just wrote (?session=, no seq) replays it: keep the turn it opened at.
+    setSessionFocus((current) => {
+      const at = seq ?? (current?.sessionId === sessionId ? current.seq : undefined);
+      return { sessionId, ...(chat ? { chat } : {}), ...(at ? { seq: at } : {}) };
+    });
     return !(workspaceSessions.loading && !workspaceSessions.sessions.some((candidate) => candidate.sessionId === sessionId));
   }, [workspaceSessions.sessions, workspaceSessions.loading]);
   // A person's open is a pick; a link applied before the list lands is not.
-  const openSession = useCallback((sessionId: string, chat = false) => {
-    if (applySession(sessionId, chat)) bumpPick();
+  const openSession = useCallback((sessionId: string, chat = false, seq?: number) => {
+    if (applySession(sessionId, chat, seq)) bumpPick();
   }, [applySession, bumpPick]);
   const setSessionChat = useCallback((open: boolean) => {
     setSessionFocus((current) => current?.sessionId ? { ...current, chat: open } : current);
@@ -852,6 +904,13 @@ export function MessagingWorkspaceProvider({
     onRemoveEndedSessions: async () => {
       try { await rooms.resourceSource.client.removeEndedLocalSessions(); }
       finally { await workspaceSessions.refresh(); }
+    },
+    onMarkSessionUnread: (sessionId, unread) => {
+      const session = workspaceSessions.sessions.find((candidate) => candidate.sessionId === sessionId);
+      if (!session) return;
+      const next = (unread ? markSessionUnread : markSessionRead)(seen, session);
+      setSessionSeen({ scope: seenScope, seen: next });
+      writeSessionSeen(seenScope, next);
     },
     currentSessionId: sessionFocus?.sessionId ?? null,
     onOpenAllSessions: openAllSessions,
@@ -991,6 +1050,9 @@ export function MessagingWorkspaceProvider({
   }, [openNotificationTarget, openSession]);
 
   const unreadTotal = useMemo(() => rooms.rooms.reduce((sum, room) => sum + (room.muted ? 0 : room.unreadCount), 0), [rooms.rooms]);
+  // The Dock and tab count also carry your own sessions waiting on you (gap 8).
+  const { prefs: notifyPrefs } = useSessionNotificationPrefs();
+  const needingYou = useMemo(() => sessionsNeedingYou(workspaceSessions.sessions, userId, notifyPrefs), [workspaceSessions.sessions, userId, notifyPrefs]);
 
   return <MessagingWorkspaceContext.Provider value={{
     activeRoomId: rooms.activeRoomId,
@@ -1013,7 +1075,7 @@ export function MessagingWorkspaceProvider({
     explicitPickCount,
   }}><MessageNotifications activeRoomId={sessionChatRoomId ?? rooms.activeRoomId} threadId={threadId} roomVisible={sessionChatRoomId ? true : roomVisible} repliesInline={!!sessionChatRoomId} rooms={rooms.rooms}
     onOpen={openNotificationTarget} activeSessionId={sessionFocus?.sessionId ?? null}
-    onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}
+    onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal + needingYou} />{children}
     {selectRoomError && <div role="alert" className="px-4 py-2 text-ui text-err">{selectRoomError}{" "}
       <button type="button" className="underline underline-offset-4" onClick={() => setSelectErrorDismissed(rooms.selectRoomError)}>Dismiss</button>
     </div>}</MessagingWorkspaceContext.Provider>;

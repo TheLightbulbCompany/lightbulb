@@ -26,14 +26,6 @@ describe("messaging HTTP client", () => {
     expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/sess%201/chat", {});
   });
 
-  it("lists and answers an agent's ask through the session's agent-asks door", async () => {
-    const { client, methods } = setup();
-    await client.listAgentAsks("sess 1");
-    expect(methods.get).toHaveBeenCalledWith("/messaging/sessions/sess%201/agent-asks");
-    await client.decideAgentAsk("sess 1", "req/1", "send");
-    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/sess%201/agent-asks/req%2F1", { decision: "send" });
-  });
-
   it("searches messages in a POST body and warms search", async () => {
     const { client, methods } = setup();
     await client.searchMessages("deploy fix", { roomId, limit: 20 });
@@ -42,6 +34,8 @@ describe("messaging HTTP client", () => {
     expect(methods.post).toHaveBeenLastCalledWith("/messaging/search", { q: "deploy" });
     await client.warmSearch();
     expect(methods.post).toHaveBeenLastCalledWith("/messaging/search/warm", {});
+    await client.searchSessions("deploy", { limit: 50 });
+    expect(methods.post).toHaveBeenLastCalledWith("/messaging/sessions/search", { q: "deploy", limit: 50 });
   });
 
   it("reads Activity with an opaque cursor, marks it seen and runs one escaped action door", async () => {

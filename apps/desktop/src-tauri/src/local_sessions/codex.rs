@@ -121,15 +121,11 @@ pub(super) fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf
     daemon_release(home, execution).map(|(path, _)| path)
 }
 
-/// Only the observed managed daemon protocol, never a global Codex socket or
-/// another app-server process. Its own lsof entry must name one user-owned socket.
+/// Only the managed daemon (`daemon_release`), never a global Codex socket or another app-server
+/// process. Its own lsof entry must name one user-owned socket. Any verified release: liveness reads
+/// it on every build; steer and interrupt stay on `CONTROL_DAEMON_VERSION` (`control`).
 async fn control_socket(home: &Path, execution: &Process) -> Option<(PathBuf, u64)> {
-    let root = home.join(format!(
-        ".codex/packages/app-server-daemon/releases/{}-{}-apple-darwin/bin/codex",
-        CONTROL_DAEMON_VERSION,
-        if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" },
-    ));
-    if execution.executable != root { return None; }
+    daemon_release(home, execution)?;
     let uid = unsafe { libc::geteuid() };
     let dir = fs::canonicalize("/tmp").ok()?.join(format!("codex-daemon-{uid}"));
     let pid = execution.pid.to_string();
@@ -260,10 +256,15 @@ fn from_writer(
         last_assistant_message: None,
         holder: None,
         job: None,
-        forked_from: None,
+        // A fork's header names the thread it came from (`forked_from_id`, 0.164.0), so its lineage
+        // outlives the daemon that ran it; the app-server's `forkedFromId` says the same while loaded.
+        forked_from: row["payload"]["forked_from_id"].as_str().filter(|id| !id.is_empty() && id.len() <= 128).map(str::to_owned),
+        forked_by_person: None,
+        aliases: vec![],
         // The header says who wrote it: the app's own conversations, never a TUI (the app's
         // bundled CLI run in a terminal writes `cli`).
         app: source == "vscode" && app_originator(&row["payload"]),
+        attention: Default::default(),
     })
 }
 
@@ -328,6 +329,18 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
                 && p.extension().is_some_and(|e| e == "jsonl")
         })
         .collect();
+    // The shared daemon says which threads it runs and what each is doing (spec 2026-10-26 (b)):
+    // it lets an idle thread's rollout go while the thread stays loaded, so the open files alone
+    // lost every idle thread. A listing that fails says nothing: the open files still count.
+    let control = control_socket(home, &execution).await;
+    let threads = match &control {
+        Some((socket, _)) => loaded_threads(socket).await.ok(),
+        None => None,
+    };
+    if daemon_release(home, &execution).is_some() {
+        remember_loaded(&execution, threads.as_deref());
+    }
+    paths.extend(threads.iter().flatten().filter_map(|thread| thread_rollout(&root, thread)));
     if paths.is_empty() {
         return Err("native rollout is not available yet".into());
     }
@@ -346,7 +359,6 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
         }
     }
     .unwrap_or_default();
-    let control = control_socket(home, &execution).await;
     let mut found = Vec::with_capacity(paths.len());
     let mut refusal = None;
     for path in &paths {
@@ -357,6 +369,24 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
                     session.socket_inode = Some(*inode);
                 }
                 session.job = attach_thread(home, &execution, &session.conversation);
+                let thread = threads.iter().flatten().find(|t| t["id"] == session.conversation.as_str());
+                // A subagent's rollout is refused above (its source is not a user's); one the
+                // listing names is still its parent's, never a row (Codex desktop nests it).
+                if thread.is_some_and(subagent) {
+                    refusal.get_or_insert_with(|| "a subagent thread is its parent's".to_owned());
+                    continue;
+                }
+                if let Some(thread) = thread {
+                    apply_thread(&mut session, thread);
+                }
+                session.attention.agents = working_children(threads.iter().flatten(), &session.conversation);
+                if let (Some((socket, _)), Some(thread)) = (&control, thread) {
+                    let polled = match waiting_on_approval(thread) {
+                        true => Some(open_approval(socket, &session.conversation).await),
+                        false => None,
+                    };
+                    update_approval(&session.conversation, polled);
+                }
                 found.push(session);
             },
             Err(e) => {
@@ -456,27 +486,548 @@ pub(super) async fn control(home: &Path, native: &NativeSession, kind: &str, tur
 }
 
 async fn control_rpc(socket: &Path, request: &Value) -> Result<Value> {
-    let stream = tokio::net::UnixStream::connect(socket).await.map_err(|_| "control socket unavailable")?;
-    let (mut conn, _) = client_async("ws://localhost/", stream).await.map_err(|_| "control handshake failed")?;
-    conn.send(Message::Text(r#"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"lightbulb_local_session","title":"Lightbulb","version":"0.1.0"}}}"#.into()))
-        .await.map_err(|_| "control handshake failed")?;
-    let initialized = rpc_response(&mut conn, 1).await?;
-    if initialized.get("error").is_some() { return Ok(initialized); }
-    conn.send(Message::Text(r#"{"method":"initialized","params":{}}"#.into()))
-        .await.map_err(|_| "control handshake failed")?;
+    let mut conn = match connect(socket).await? {
+        Ok(conn) => conn,
+        Err(refused) => return Ok(refused),
+    };
     conn.send(Message::Text(request.to_string().into())).await.map_err(|_| "control request failed")?;
     rpc_response(&mut conn, 2).await
 }
 
-async fn rpc_response(conn: &mut WebSocketStream<tokio::net::UnixStream>, id: u64) -> Result<Value> {
-    for _ in 0..64 {
+/// The name this Mac's app-server client gives. Codex stamps the FIRST client's name into every
+/// thread its daemon creates after that (`session_meta.originator`, observed on 0.164.0): a daemon
+/// whose first client was this one marked the person's own TUI threads as ours, which
+/// `accepted_app_source` then refuses. It reads as the TUI the daemon serves, so the stamp stays true.
+const CLIENT_NAME: &str = "codex-tui";
+
+type Conn = WebSocketStream<tokio::net::UnixStream>;
+
+/// What every daemon door says when the daemon cannot be reached or does not finish `initialize`
+/// in time: a start or resume then falls back to a private `--no-daemon` writer.
+pub(crate) const UNAVAILABLE: &str = "Codex's shared daemon did not answer";
+/// A stalled app-server must not hold a start, a resume or the watcher forever.
+const HANDSHAKE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// An initialized app-server connection, or the server's refusal of `initialize` (Err inside Ok).
+/// Err(UNAVAILABLE) when the socket or the handshake fails or takes longer than HANDSHAKE.
+async fn connect(socket: &Path) -> Result<std::result::Result<Conn, Value>> {
+    tokio::time::timeout(HANDSHAKE, async {
+        let stream = tokio::net::UnixStream::connect(socket).await.ok()?;
+        let (mut conn, _) = client_async("ws://localhost/", stream).await.ok()?;
+        let init = json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":CLIENT_NAME,"title":"Lightbulb","version":"0.1.0"}}});
+        conn.send(Message::Text(init.to_string().into())).await.ok()?;
+        let initialized = rpc_response(&mut conn, 1).await.ok()?;
+        if initialized.get("error").is_some() { return Some(Err(initialized)); }
+        conn.send(Message::Text(r#"{"method":"initialized","params":{}}"#.into())).await.ok()?;
+        Some(Ok(conn))
+    })
+    .await
+    .ok()
+    .flatten()
+    .ok_or_else(|| UNAVAILABLE.to_owned())
+}
+
+async fn connected(socket: &Path) -> Result<Conn> {
+    connect(socket).await?.map_err(|_| UNAVAILABLE.into())
+}
+
+/// One request's `result`; an error answer is Err.
+async fn call(conn: &mut Conn, id: u64, method: &str, params: Value) -> Result<Value> {
+    let request = json!({"id": id, "method": method, "params": params});
+    conn.send(Message::Text(request.to_string().into())).await.map_err(|_| "control request failed")?;
+    let mut response = rpc_response(conn, id).await?;
+    if response.get("error").is_some() { return Err(format!("{method} refused")); }
+    Ok(response["result"].take())
+}
+
+/// Notifications for every thread reach every client (`thread/status/changed`, `thread/started`,
+/// observed on 0.164.0), so a response can sit behind many of them; an oversized one is skipped.
+async fn rpc_response(conn: &mut Conn, id: u64) -> Result<Value> {
+    for _ in 0..512 {
         let Some(frame) = conn.next().await else { break; };
         let Message::Text(text) = frame.map_err(|_| "control response unavailable")? else { continue; };
-        if text.len() > 65536 { return Err("control response oversized".into()); }
+        if text.len() > 1024 * 1024 { continue; }
         let row: Value = serde_json::from_str(&text).map_err(|_| "control response invalid")?;
-        if row["id"].as_u64() == Some(id) { return Ok(row); }
+        // A server request (an approval) carries its own id and a method: never our response.
+        if row["id"].as_u64() == Some(id) && row.get("method").is_none() { return Ok(row); }
     }
     Err("control response unavailable".into())
+}
+
+/// Every thread the daemon has loaded (`thread/loaded/list`), as `thread/read` describes it.
+async fn loaded_threads(socket: &Path) -> Result<Vec<Value>> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut conn = connected(socket).await?;
+        let mut ids = vec![];
+        let mut cursor = Value::Null;
+        for page in 0..8 {
+            let listed = call(&mut conn, 10 + page, "thread/loaded/list", json!({"cursor": cursor})).await?;
+            ids.extend(listed["data"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned));
+            cursor = listed["nextCursor"].clone();
+            if cursor.is_null() || ids.len() >= 512 { break; }
+        }
+        let mut threads = vec![];
+        for (n, id) in ids.iter().take(512).enumerate() {
+            // A thread unloaded between the two calls is simply not running.
+            if let Ok(mut read) = call(&mut conn, 100 + n as u64, "thread/read", json!({"threadId": id})).await {
+                threads.push(read["thread"].take());
+            }
+        }
+        Ok(threads)
+    })
+    .await
+    .map_err(|_| "control response timed out".to_owned())?
+}
+
+/// A subagent thread belongs to its parent's row (Codex desktop shows it nested), never its own.
+fn subagent(thread: &Value) -> bool {
+    !thread["parentThreadId"].is_null() || thread["source"].get("subAgent").is_some()
+}
+
+/// How many loaded threads `parent` spawned are working now (`parentThreadId`): the row's "2 agents
+/// running". Only direct children: a grandchild is its own parent's.
+fn working_children<'a>(threads: impl Iterator<Item = &'a Value>, parent: &str) -> u32 {
+    threads
+        .filter(|t| t["parentThreadId"] == parent && matches!(thread_status(&t["status"]), Some("busy" | "waiting-approval")))
+        .count() as u32
+}
+
+/// The app-server's `ThreadStatus` in the mirror's words (the state table, spec 2026-10-26 (e)):
+/// working is busy; waiting on an approval or on an answer is waiting on its person; idle (its last
+/// turn done) and a system error are idle. `notLoaded` runs nowhere: None, the row is stopped.
+fn thread_status(status: &Value) -> Option<&'static str> {
+    match status["type"].as_str()? {
+        "active" if status["activeFlags"].as_array().is_some_and(|flags| !flags.is_empty()) => Some("waiting-approval"),
+        "active" => Some("busy"),
+        "idle" | "systemError" => Some("idle"),
+        _ => None,
+    }
+}
+
+/// The rollout of a loaded thread that is a row: a person's thread, written to disk, running.
+fn thread_rollout(root: &Path, thread: &Value) -> Option<PathBuf> {
+    if subagent(thread) || thread["ephemeral"] == true || thread_status(&thread["status"]).is_none() {
+        return None;
+    }
+    let path = PathBuf::from(thread["path"].as_str()?);
+    (path.starts_with(root) && path.is_file()).then_some(path)
+}
+
+/// What the daemon says outranks what the rollout's tail suggests: its status, and the thread a
+/// fork came from (`forkedFromId`), which the rollout does not carry.
+fn apply_thread(session: &mut NativeSession, thread: &Value) {
+    if let Some(status) = thread_status(&thread["status"]) {
+        session.status = status.into();
+    }
+    if let Some(origin) = thread["forkedFromId"].as_str().filter(|id| !id.is_empty() && id.len() <= 128) {
+        session.forked_from = Some(origin.to_owned());
+    }
+}
+
+/// The threads the shared daemon had loaded at its last listing, by daemon process.
+static LOADED: std::sync::Mutex<Option<(Process, std::collections::BTreeSet<String>)>> = std::sync::Mutex::new(None);
+
+fn remember_loaded(daemon: &Process, threads: Option<&[Value]>) {
+    let Ok(mut loaded) = LOADED.lock() else { return };
+    match threads {
+        Some(threads) => {
+            *loaded = Some((daemon.clone(), threads.iter().filter_map(|t| t["id"].as_str()).map(str::to_owned).collect()));
+        }
+        // A failed listing knows nothing: liveness falls back to the daemon's pid. Only this
+        // process's own listing is forgotten: the daemon's updater (same release, its own socket)
+        // never answers one, and must not erase the daemon's.
+        None if loaded.as_ref().is_some_and(|(known, _)| known == daemon) => *loaded = None,
+        None => {}
+    }
+}
+
+/// Whether the daemon `process` still has `conversation` loaded: None when its last listing is
+/// unknown. A thread it dropped is stopped although the daemon runs on (`notLoaded`).
+pub(super) fn loaded(process: &Process, conversation: &str) -> Option<bool> {
+    let loaded = LOADED.lock().ok()?;
+    let (daemon, threads) = loaded.as_ref()?;
+    (daemon == process).then(|| threads.contains(conversation))
+}
+
+/// The approvals Lightbulb can hold for a Codex thread: a command, or a patch.
+const APPROVAL_METHODS: [&str; 2] = ["item/commandExecution/requestApproval", "item/fileChange/requestApproval"];
+/// How long a joining client waits for the daemon to replay a thread's open request.
+const REPLAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
+fn waiting_on_approval(thread: &Value) -> bool {
+    thread["status"]["activeFlags"].as_array().is_some_and(|flags| flags.iter().any(|f| f == "waitingOnApproval"))
+}
+
+/// The open approval of each waiting daemon thread, as its last discovery read it.
+static APPROVALS: std::sync::Mutex<std::collections::BTreeMap<String, Value>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+pub(super) fn remember_approval(thread: &str, request: Option<Value>) {
+    let Ok(mut open) = APPROVALS.lock() else { return };
+    match request {
+        Some(request) => open.insert(thread.to_owned(), request),
+        None => open.remove(thread),
+    };
+}
+
+/// One discovery's word on a thread's approval: None when it no longer waits on one (the request
+/// is gone), else the replay. A replay that failed (`Err`, a daemon timeout) knows nothing: the
+/// thread still waits, so the request held before is kept rather than dropping its card.
+fn update_approval(thread: &str, polled: Option<Result<Option<Value>>>) {
+    match polled {
+        None => remember_approval(thread, None),
+        Some(Ok(request)) => remember_approval(thread, request),
+        Some(Err(_)) => {}
+    }
+}
+
+/// The approval request the daemon holds open for `thread`, as discovery last read it.
+pub(super) fn open_request(thread: &str) -> Option<Value> {
+    APPROVALS.lock().ok()?.get(thread).cloned()
+}
+
+/// A Codex approval as Lightbulb holds it: what it shows, and the input whose digest an answer
+/// must name. A command is its whole command line, so it can be `full`. A patch request carries
+/// no patch (only its item id), so nobody here saw the change: deny-only.
+#[derive(Debug, PartialEq)]
+pub(super) struct Approval {
+    pub item: String,
+    pub tool: &'static str,
+    pub summary: String,
+    pub input: Value,
+    pub full: bool,
+    /// "Allow for this conversation" (`acceptForSession`) is offered.
+    pub session: bool,
+}
+
+pub(super) fn approval(request: &Value) -> Option<Approval> {
+    let params = &request["params"];
+    let item = params["itemId"].as_str().filter(|i| !i.is_empty() && i.len() <= 128)?.to_owned();
+    match request["method"].as_str()? {
+        "item/commandExecution/requestApproval" => {
+            let command = params["command"].as_str().filter(|c| !c.trim().is_empty())?;
+            let input = json!({"command": command});
+            Some(Approval {
+                item,
+                tool: "Bash",
+                summary: command.to_owned(),
+                full: super::approval::shown_input("Bash", &input).1,
+                input,
+                session: decision(request, "allow", Some("session")).is_some(),
+            })
+        }
+        "item/fileChange/requestApproval" => Some(Approval {
+            input: json!({"itemId": item}),
+            item,
+            tool: "apply_patch",
+            summary: params["reason"].as_str().unwrap_or("Edit files").to_owned(),
+            full: false,
+            session: false,
+        }),
+        _ => None,
+    }
+}
+
+/// The approval's id in Lightbulb (`approval::valid_id`): stable for one request of one thread,
+/// so rediscovering it never reads as a new prompt.
+pub(super) fn approval_id(thread: &str, item: &str) -> String {
+    format!("appr-{}", &hex::encode(Sha256::digest(format!("{thread}\n{item}")))[..32])
+}
+
+/// Codex's answer for a decision Lightbulb admitted, only if this request offers it. "Similar"
+/// (`acceptWithExecpolicyAmendment`) and network rules persist past the thread: never from here.
+fn decision(request: &Value, decision: &str, mode: Option<&str>) -> Option<&'static str> {
+    let offered = |choice: &str| {
+        request["params"]["availableDecisions"].as_array().is_none_or(|all| all.iter().any(|d| d == choice))
+    };
+    let wanted: &[&'static str] = match (decision, mode) {
+        ("allow", None) => &["accept"],
+        ("allow", Some("session")) => &["acceptForSession"],
+        // Declined, the turn goes on; where Codex offers only cancel, the turn stops.
+        ("deny", None) => &["decline", "cancel"],
+        _ => return None,
+    };
+    wanted.iter().copied().find(|choice| offered(choice))
+}
+
+/// Join `thread` and read the approval the daemon replays to a new subscriber. Observed on
+/// 0.163.0: a client that resumes a loaded thread is sent its open server requests right after
+/// the resume, may answer one like the client that started the turn, and every subscriber then
+/// gets `serverRequest/resolved`. A join without overrides changes nothing in the thread.
+async fn replayed_request(conn: &mut Conn, thread: &str) -> Result<Option<Value>> {
+    let resume = json!({"id":2,"method":"thread/resume","params":{"threadId":thread,"excludeTurns":true}});
+    conn.send(Message::Text(resume.to_string().into())).await.map_err(|_| "control request failed")?;
+    let (mut joined, mut found) = (false, None);
+    for _ in 0..512 {
+        let wait = if joined { REPLAY } else { HANDSHAKE };
+        let Ok(frame) = tokio::time::timeout(wait, conn.next()).await else { break };
+        let Some(frame) = frame else { break };
+        let Message::Text(text) = frame.map_err(|_| "control response unavailable")? else { continue };
+        if text.len() > 1024 * 1024 { continue; }
+        let row: Value = serde_json::from_str(&text).map_err(|_| "control response invalid")?;
+        if row.get("method").is_none() && row["id"].as_u64() == Some(2) {
+            if row.get("error").is_some() { return Err("thread/resume refused".into()); }
+            joined = true;
+        } else if row["params"]["threadId"] == thread
+            && row.get("id").is_some()
+            && row["method"].as_str().is_some_and(|m| APPROVAL_METHODS.contains(&m))
+        {
+            found.get_or_insert(row);
+        }
+        if joined && found.is_some() { break; }
+    }
+    if !joined {
+        return Err("thread/resume unanswered".into());
+    }
+    Ok(found)
+}
+
+/// Ok(None): the daemon joined us to the thread and replayed no approval. Err: unknown.
+async fn open_approval(socket: &Path, thread: &str) -> Result<Option<Value>> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut conn = connected(socket).await?;
+        replayed_request(&mut conn, thread).await
+    })
+    .await
+    .map_err(|_| "approval replay timed out".to_owned())?
+}
+
+/// Answer the thread's open approval, only if it is still the one held (`item`, `digest`) and
+/// offers this decision. Ok(true) once the daemon says the request is resolved; Ok(false) when
+/// it is not ours to answer (gone, changed, or another runtime); Err when that is unknown.
+pub(super) async fn answer(home: &Path, native: &NativeSession, item: &str, digest: &str, choice: &str, mode: Option<&str>) -> Result<bool> {
+    let (Some(socket), Some(inode)) = (&native.socket, native.socket_inode) else { return Ok(false) };
+    if native.provider != "codex"
+        || process(native.process.pid)? != native.process
+        || control_socket(home, &native.process).await.as_ref() != Some(&(socket.clone(), inode))
+    {
+        return Ok(false);
+    }
+    answer_on(socket, &native.conversation, item, digest, choice, mode).await
+}
+
+async fn answer_on(socket: &Path, thread: &str, item: &str, digest: &str, choice: &str, mode: Option<&str>) -> Result<bool> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut conn = connected(socket).await?;
+        let Some(request) = replayed_request(&mut conn, thread).await? else { return Ok(false) };
+        let held = approval(&request).filter(|a| a.item == item && super::approval::digest(&a.input) == digest);
+        let Some(answer) = held.and(decision(&request, choice, mode)) else { return Ok(false) };
+        let reply = json!({"id": request["id"], "result": {"decision": answer}});
+        conn.send(Message::Text(reply.to_string().into())).await.map_err(|_| "approval answer failed")?;
+        for _ in 0..512 {
+            let Some(frame) = conn.next().await else { break };
+            let Message::Text(text) = frame.map_err(|_| "approval answer unconfirmed")? else { continue };
+            let Ok(row) = serde_json::from_str::<Value>(&text) else { continue };
+            if row["method"] == "serverRequest/resolved"
+                && row["params"]["threadId"] == thread
+                && row["params"]["requestId"] == request["id"]
+            {
+                return Ok(true);
+            }
+        }
+        Err("approval answer unconfirmed".into())
+    })
+    .await
+    .map_err(|_| "approval answer unconfirmed".to_owned())?
+}
+
+/// The shared daemon's control socket while it runs: Codex's own link, resolved to a socket this
+/// user owns in `/tmp/codex-daemon-<uid>`. None: no daemon, and a start falls back to `--no-daemon`.
+pub(crate) fn daemon_socket(home: &Path) -> Option<PathBuf> {
+    let uid = unsafe { libc::geteuid() };
+    let dir = fs::canonicalize("/tmp").ok()?.join(format!("codex-daemon-{uid}"));
+    let path = fs::canonicalize(home.join(".codex/app-server-control/app-server-control.sock")).ok()?;
+    let meta = fs::symlink_metadata(&path).ok()?;
+    (path.parent() == Some(dir.as_path()) && meta.file_type().is_socket() && meta.uid() == uid).then_some(path)
+}
+
+/// The daemon process, from its own pid file, only when it is a verified managed release.
+fn daemon_process(home: &Path) -> Option<Process> {
+    let text = fs::read_to_string(home.join(".codex/app-server-daemon/daemon.pid")).ok()?;
+    let row: Value = serde_json::from_str(&text).ok()?;
+    let daemon = process(u32::try_from(row["pid"].as_u64()?).ok()?).ok()?;
+    daemon_release(home, &daemon).is_some().then_some(daemon)
+}
+
+/// Wakes discovery whenever the daemon says a thread started, closed or changed status, so a row's
+/// status follows the app-server, not the 60 s backstop. Runs until aborted.
+pub(super) async fn watch(home: PathBuf, wake: std::sync::Arc<tokio::sync::Notify>) {
+    loop {
+        if let Some(socket) = daemon_socket(&home) {
+            if let Ok(mut conn) = connected(&socket).await {
+                while let Some(Ok(frame)) = conn.next().await {
+                    let Message::Text(text) = frame else { continue };
+                    if text.len() <= 1024 * 1024 && wakes(&text) {
+                        wake.notify_one();
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+}
+
+fn wakes(frame: &str) -> bool {
+    serde_json::from_str::<Value>(frame)
+        .is_ok_and(|row| matches!(row["method"].as_str(), Some("thread/status/changed" | "thread/started" | "thread/closed")))
+}
+
+/// The daemon form of a held Codex argv (`session_start::argv`, `resume::argv`): a TUI client of
+/// the shared daemon, not a private writer.
+pub(crate) fn on_daemon(argv: &[String]) -> bool {
+    argv.get(1..3).is_some_and(|flags| flags[0] == "--remote" && flags[1] == "unix://")
+}
+
+/// The private form of a daemon start argv (`session_start::argv`): what it falls back to when the
+/// daemon does not answer.
+pub(crate) fn private_argv(argv: &[String]) -> Vec<String> {
+    if !on_daemon(argv) || argv.len() < 7 {
+        return argv.to_vec();
+    }
+    // [program, --remote, unix://, -C, folder, -c, check_for_update_on_startup=false, rest...]
+    let mut private = vec![argv[0].clone(), "--no-daemon".into()];
+    private.extend_from_slice(&argv[7..]);
+    private
+}
+
+/// A held Codex start on the shared daemon. Its start hook runs in the daemon, which has neither
+/// the holder's environment nor its process, and nothing in the protocol names the client that
+/// started a thread. So the thread is learned here and bound only when it is provably this start's
+/// (`our_thread`): that binds the holder (`holder::manager::bind_thread`) and the start link. Not
+/// proven: the thread is still listed, as a background one, and the start is not linked.
+/// Err(UNAVAILABLE) before anything launched: the caller falls back to `--no-daemon`.
+pub(crate) async fn start_on_daemon(
+    home: &Path,
+    folder: PathBuf,
+    argv: Vec<String>,
+    link: Option<(String, String)>,
+) -> std::result::Result<HolderInfo, String> {
+    let socket = daemon_socket(home).ok_or(UNAVAILABLE)?;
+    // Listening before the TUI asks for its thread, and knowing what already runs.
+    let mut conn = connected(&socket).await?;
+    let before: std::collections::BTreeSet<String> = tokio::time::timeout(HANDSHAKE, call(&mut conn, 3, "thread/loaded/list", json!({})))
+        .await
+        .ok()
+        .and_then(|listed| listed.ok())
+        .ok_or(UNAVAILABLE)?["data"]
+        .as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+    let want = fs::canonicalize(&folder).map_err(|e| e.to_string())?;
+    let prompt = argv.iter().position(|a| a == "--").and_then(|at| argv.get(at + 1)).cloned();
+    let info = crate::session_start::start_held(folder, argv).await?;
+    let (home, held) = (home.to_path_buf(), info.clone());
+    tokio::spawn(async move {
+        let thread = match our_thread(&mut conn, &want, &before, prompt.as_deref(), GRACE).await {
+            Ok(thread) => thread,
+            Err(why) => {
+                crate::log(&format!("[session-start] Codex: this start's thread is not bound ({why}); it is listed unlinked"));
+                return;
+            }
+        };
+        crate::holder::manager::bind_thread(&held, &thread);
+        if let (Some((start_id, scope)), Some(daemon)) = (link, daemon_process(&home)) {
+            if let Err(e) = super::start_links::record(&home, &start_id, &scope, "codex", &thread, daemon) {
+                crate::log(&format!("[session-start] Codex start link not recorded: {e}"));
+            }
+        }
+    });
+    Ok(info)
+}
+
+/// How long after the first candidate another start in the same folder still makes it ambiguous.
+const GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// This start's thread, or why it cannot be proven. A candidate is a person's thread that STARTED
+/// (`thread/started`, not one already loaded: a resume elsewhere) in `folder` after the launch.
+/// Exactly one may appear by GRACE after the first; two (another client, a second Lightbulb start
+/// in the same folder) bind neither. With a prompt, the thread's first user message (`preview`,
+/// observed verbatim on 0.164.0) must be it: a different first message is another client's.
+async fn our_thread(
+    conn: &mut Conn,
+    folder: &Path,
+    before: &std::collections::BTreeSet<String>,
+    prompt: Option<&str>,
+    grace: std::time::Duration,
+) -> std::result::Result<String, &'static str> {
+    use tokio::time::{timeout_at, Instant};
+    let mut found: Vec<String> = vec![];
+    let mut until = Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        match timeout_at(until, conn.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                if let Some(id) = started_thread(&text, folder).filter(|id| !before.contains(id) && !found.contains(id)) {
+                    if found.is_empty() {
+                        until = Instant::now() + grace;
+                    }
+                    found.push(id);
+                }
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(_) => return Err("the daemon closed the connection"),
+            Err(_) => break,
+        }
+    }
+    let [thread] = found.as_slice() else {
+        return Err(if found.is_empty() { "no thread started" } else { "another thread started in the same folder" });
+    };
+    let Some(prompt) = prompt.filter(|p| !p.is_empty()) else { return Ok(thread.clone()) };
+    for n in 0..60 {
+        let read = call(conn, 200 + n, "thread/read", json!({"threadId": thread})).await.map_err(|_| "thread unreadable")?;
+        match first_turn(read["thread"]["preview"].as_str().unwrap_or(""), prompt) {
+            Some(true) => return Ok(thread.clone()),
+            Some(false) => return Err("its first message is not this start's prompt"),
+            None => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+        }
+    }
+    Err("its first message never came")
+}
+
+/// Whether a thread's first user message is this start's prompt; None while it has none.
+fn first_turn(preview: &str, prompt: &str) -> Option<bool> {
+    (!preview.is_empty()).then(|| preview == prompt)
+}
+
+fn started_thread(frame: &str, folder: &Path) -> Option<String> {
+    let row: Value = serde_json::from_str(frame).ok()?;
+    let thread = &row["params"]["thread"];
+    if row["method"] != "thread/started" || subagent(thread) || thread["ephemeral"] == true {
+        return None;
+    }
+    let cwd = fs::canonicalize(thread["cwd"].as_str()?).ok()?;
+    let id = thread["id"].as_str().filter(|id| uuid::Uuid::parse_str(id).is_ok())?;
+    (cwd == folder).then(|| id.to_owned())
+}
+
+/// Loads `thread` on the shared daemon for a resume, in `folder` with the mode the backend decided
+/// (`plan`: read-only). A `--remote` TUI may not set permissions on a resume ("Permission overrides
+/// are not supported when resuming a remote task", 0.163.0), and one that loads the thread itself
+/// takes the person's global config, which may be `danger-full-access`. So the thread is loaded
+/// here first, and the TUI rejoins it as it runs. A thread already running under looser terms is
+/// refused. The connection stays open a while so the thread is loaded when the TUI arrives.
+pub(super) async fn resume_on_daemon(socket: &Path, thread: &str, folder: &Path, plan: bool) -> Result<()> {
+    let mut conn = connected(socket).await?;
+    let params = json!({"threadId": thread, "cwd": folder, "excludeTurns": true,
+        "sandbox": if plan { "read-only" } else { "workspace-write" }, "approvalPolicy": "on-request"});
+    let resumed = tokio::time::timeout(std::time::Duration::from_secs(20), call(&mut conn, 2, "thread/resume", params))
+        .await
+        .map_err(|_| "thread/resume timed out")??;
+    if !within(&resumed, plan) {
+        return Err(LOOSER.into());
+    }
+    tokio::spawn(async move {
+        // ponytail: a fixed hold, not a handshake (the daemon has no "client joined" event); 0.164.0
+        // kept an idle thread loaded with no client at all.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(60), async { while conn.next().await.is_some() {} }).await;
+    });
+    Ok(())
+}
+
+/// `resume_on_daemon`'s refusal of a thread that already runs under looser permissions.
+pub(super) const LOOSER: &str = "thread runs under looser permissions";
+
+/// The thread's permissions after `thread/resume` are no looser than asked.
+fn within(resumed: &Value, plan: bool) -> bool {
+    let sandbox = resumed["sandbox"]["type"].as_str();
+    let sandbox_ok = if plan { sandbox == Some("readOnly") } else { matches!(sandbox, Some("readOnly" | "workspaceWrite")) };
+    sandbox_ok && matches!(resumed["approvalPolicy"].as_str(), Some("on-request" | "untrusted"))
 }
 
 const TURN_ROW_MAX: usize = 1024 * 1024;
@@ -1091,16 +1642,18 @@ fn remove_trust(config: &str, key: &str) -> String {
 fn hook_timing(event: &str) -> (u64, bool) {
     match event {
         "SessionEnd" => (1, false),
-        // Synchronous: its output is how the agent hears a request is waiting (Task 7b).
-        "PostToolUse" => (5, false),
         _ => (5, true),
     }
 }
 
-/// The lifecycle events plus PostToolUse, which only Codex is given: Claude has its band.
+/// The lifecycle events Codex is given.
 fn codex_events() -> impl Iterator<Item = &'static str> {
-    super::claude::HOOK_EVENTS.iter().map(|(event, _)| *event).chain(["PostToolUse"])
+    super::claude::HOOK_EVENTS.iter().map(|(event, _)| *event)
 }
+
+/// Events earlier releases installed for Codex and this one removes: PostToolUse carried the
+/// retired held-request notice.
+const RETIRED_EVENTS: &[&str] = &["PostToolUse"];
 
 /// Read-only: "configured" when every lifecycle group runs `executable` and is
 /// trusted in `config.toml` (an untrusted group is skipped silently), else "missing".
@@ -1166,7 +1719,7 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
     let hooks = doc["hooks"].as_object_mut().ok_or("invalid Codex hooks")?;
     // key -> hash to trust, or None to untrust.
     let mut trust: Vec<(String, Option<String>)> = Vec::new();
-    for event in codex_events() {
+    for (event, enabled) in codex_events().map(|e| (e, enabled)).chain(RETIRED_EVENTS.iter().map(|e| (*e, false))) {
         let Some(label) = lifecycle::codex_event_label(event) else {
             continue;
         };
@@ -1261,6 +1814,364 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `thread/read` result as Codex 0.164.0's app-server returns it (trimmed to what is read).
+    fn thread(id: &str, status: Value, path: &Path) -> Value {
+        json!({"id": id, "sessionId": id, "forkedFromId": null, "parentThreadId": null, "ephemeral": false,
+            "status": status, "path": path, "cwd": "/tmp/cx-e2e", "source": "vscode", "threadSource": "user",
+            "preview": "", "name": null, "turns": []})
+    }
+
+    #[test]
+    fn local_sessions_codex_thread_status_follows_the_app_server() {
+        // The state table (spec 2026-10-26 (e)): running, waiting on you, done, stopped.
+        assert_eq!(thread_status(&json!({"type":"active","activeFlags":[]})), Some("busy"));
+        assert_eq!(thread_status(&json!({"type":"active","activeFlags":["waitingOnApproval"]})), Some("waiting-approval"));
+        assert_eq!(thread_status(&json!({"type":"active","activeFlags":["waitingOnUserInput"]})), Some("waiting-approval"));
+        assert_eq!(thread_status(&json!({"type":"idle"})), Some("idle"));
+        assert_eq!(thread_status(&json!({"type":"systemError"})), Some("idle"));
+        assert_eq!(thread_status(&json!({"type":"notLoaded"})), None);
+        assert_eq!(thread_status(&Value::Null), None);
+    }
+
+    /// The daemon lets an idle thread's rollout go but keeps the thread loaded: it is still a row.
+    /// Subagents (nested under their parent), ephemeral helpers (the title namer) and threads it no
+    /// longer runs are not.
+    #[test]
+    fn local_sessions_codex_an_idle_loaded_thread_is_a_row_whatever_its_rollout() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join(".codex/sessions");
+        let day = root.join("2026/10/26");
+        fs::create_dir_all(&day).unwrap();
+        let rollout = |id: &str| { let p = day.join(format!("rollout-2026-10-26T17-47-06-{id}.jsonl")); fs::write(&p, "{}\n").unwrap(); p };
+        let idle = rollout("01a17a2e-71be-72a3-9ea3-db3681294921");
+        assert_eq!(thread_rollout(&root, &thread("01a17a2e-71be-72a3-9ea3-db3681294921", json!({"type":"idle"}), &idle)), Some(idle.clone()));
+        let mut child = thread("01a17a2f-0000-7000-8000-000000000001", json!({"type":"active","activeFlags":[]}), &rollout("01a17a2f-0000-7000-8000-000000000001"));
+        child["parentThreadId"] = json!("01a17a2e-71be-72a3-9ea3-db3681294921");
+        assert!(subagent(&child) && thread_rollout(&root, &child).is_none());
+        let mut spawned = thread("01a17a2f-0000-7000-8000-000000000002", json!({"type":"idle"}), &rollout("01a17a2f-0000-7000-8000-000000000002"));
+        spawned["source"] = json!({"subAgent":{"thread_spawn":{"parent_thread_id":"x","depth":1}}});
+        assert!(subagent(&spawned) && thread_rollout(&root, &spawned).is_none());
+        let mut namer = thread("01a17a2f-0000-7000-8000-000000000003", json!({"type":"idle"}), &rollout("01a17a2f-0000-7000-8000-000000000003"));
+        namer["ephemeral"] = json!(true);
+        assert!(thread_rollout(&root, &namer).is_none());
+        assert!(thread_rollout(&root, &thread("a", json!({"type":"notLoaded"}), &idle)).is_none());
+        assert!(thread_rollout(&root, &thread("a", json!({"type":"idle"}), Path::new("/etc/passwd"))).is_none(), "only under ~/.codex/sessions");
+        assert!(thread_rollout(&root, &thread("a", json!({"type":"idle"}), &day.join("missing.jsonl"))).is_none(), "not written yet");
+        assert!(!subagent(&thread("a", json!({"type":"idle"}), &idle)));
+    }
+
+    #[test]
+    fn local_sessions_codex_counts_working_child_threads_by_parent_thread_id() {
+        let parent = "01a17a2e-71be-72a3-9ea3-db3681294921";
+        let child = |status: Value, of: &str| json!({"id":"c","parentThreadId":of,"status":status});
+        let threads = [
+            child(json!({"type":"active","activeFlags":[]}), parent),
+            child(json!({"type":"active","activeFlags":["waitingOnApproval"]}), parent),
+            child(json!({"type":"idle"}), parent),
+            child(json!({"type":"active","activeFlags":[]}), "someone-else"),
+            json!({"id":parent,"parentThreadId":null,"status":{"type":"active","activeFlags":[]}}),
+        ];
+        assert_eq!(working_children(threads.iter(), parent), 2);
+    }
+
+    #[test]
+    fn local_sessions_codex_fork_lineage_and_status_come_from_the_thread() {
+        let mut session = super::super::transport::tests::test_mirror("01a17a35-0000-7000-8000-000000000001", "g").native;
+        session.status = "busy".into(); // what the rollout's tail guessed
+        let mut fork = thread("01a17a35-0000-7000-8000-000000000001", json!({"type":"active","activeFlags":["waitingOnApproval"]}), Path::new("/x"));
+        fork["forkedFromId"] = json!("01a17a2e-71be-72a3-9ea3-db3681294921");
+        apply_thread(&mut session, &fork);
+        assert_eq!(session.forked_from.as_deref(), Some("01a17a2e-71be-72a3-9ea3-db3681294921"));
+        assert_eq!(session.status, "waiting-approval");
+        let mut plain = super::super::transport::tests::test_mirror("01a17a35-0000-7000-8000-000000000002", "g").native;
+        apply_thread(&mut plain, &thread("01a17a35-0000-7000-8000-000000000002", json!({"type":"idle"}), Path::new("/x")));
+        assert_eq!((plain.forked_from, plain.status.as_str()), (None, "idle"));
+    }
+
+    #[test]
+    fn local_sessions_codex_a_thread_the_daemon_dropped_is_stopped() {
+        let daemon = process(std::process::id()).unwrap();
+        let other = Process { pid: daemon.pid + 1, ..daemon.clone() };
+        let listed = [json!({"id":"01a17a2e-71be-72a3-9ea3-db3681294921"})];
+        remember_loaded(&daemon, Some(&listed));
+        assert_eq!(loaded(&daemon, "01a17a2e-71be-72a3-9ea3-db3681294921"), Some(true));
+        assert_eq!(loaded(&daemon, "01a17a29-13c2-71e1-8501-912c2cf234c4"), Some(false));
+        assert_eq!(loaded(&other, "01a17a2e-71be-72a3-9ea3-db3681294921"), None, "another daemon: unknown");
+        remember_loaded(&other, None);
+        assert_eq!(loaded(&daemon, "01a17a29-13c2-71e1-8501-912c2cf234c4"), Some(false), "the updater's failed listing is not the daemon's");
+        remember_loaded(&daemon, None);
+        assert_eq!(loaded(&daemon, "01a17a29-13c2-71e1-8501-912c2cf234c4"), None, "a failed listing proves nothing");
+    }
+
+    /// One connection lists the loaded threads page by page and reads each one, past the
+    /// notifications the daemon sends every client; it introduces itself as the TUI (CLIENT_NAME).
+    async fn read(conn: &mut WebSocketStream<tokio::net::UnixStream>) -> Value {
+        serde_json::from_str(&conn.next().await.unwrap().unwrap().into_text().unwrap()).unwrap()
+    }
+
+    /// `item/commandExecution/requestApproval` as Codex 0.163.0 replayed it to a second client
+    /// (a read-only thread asked to `mkdir` outside its sandbox).
+    fn mkdir_request() -> Value {
+        json!({"method":"item/commandExecution/requestApproval","id":0,"params":{"kind":"command",
+            "threadId":"01a17b15-9831-7651-8cd8-b55882740c23","turnId":"01a17b15-9bc9-77a1-85ec-7e8a48445038",
+            "itemId":"exec-84fa3836-f8cd-4230-9403-f62dd39973fb","startedAtMs":1793066384867u64,"environmentId":"local",
+            "reason":"Allow the requested command to create /tmp/cxappr/outside_made outside the read-only sandbox?",
+            "command":"/bin/zsh -lc 'mkdir -p /tmp/cxappr/outside_made && echo done'","cwd":"/tmp/cxappr/w",
+            "commandActions":[{"type":"unknown","command":"mkdir -p /tmp/cxappr/outside_made && echo done"}],
+            "proposedExecpolicyAmendment":["mkdir","-p","/tmp/cxappr/outside_made"],
+            "availableDecisions":["accept",{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["mkdir","-p","/tmp/cxappr/outside_made"]}},"cancel"]}})
+    }
+
+    #[test]
+    fn local_sessions_codex_an_approval_is_held_as_its_whole_command() {
+        let request = mkdir_request();
+        let open = approval(&request).unwrap();
+        assert_eq!(open.tool, "Bash");
+        assert_eq!(open.input, json!({"command":"/bin/zsh -lc 'mkdir -p /tmp/cxappr/outside_made && echo done'"}));
+        assert_eq!(open.summary, open.input["command"]);
+        assert!(open.full && !open.session, "the whole command line; this one offers no conversation-wide allow");
+        assert!(super::super::approval::valid_id(&approval_id("t", &open.item)));
+        assert_eq!(approval_id("t", &open.item), approval_id("t", &open.item), "rediscovered, it is the same prompt");
+        assert_ne!(approval_id("t", &open.item), approval_id("u", &open.item));
+        // Only what Codex offered, and never a rule that outlives the thread.
+        assert_eq!(decision(&request, "allow", None), Some("accept"));
+        assert_eq!(decision(&request, "allow", Some("session")), None);
+        assert_eq!(decision(&request, "allow", Some("similar")), None);
+        assert_eq!(decision(&request, "deny", None), Some("cancel"), "decline is not offered: the turn stops");
+        let mut open_ended = request.clone();
+        open_ended["params"]["availableDecisions"] = json!(["accept", "acceptForSession", "decline", "cancel"]);
+        assert!(approval(&open_ended).unwrap().session);
+        assert_eq!(decision(&open_ended, "allow", Some("session")), Some("acceptForSession"));
+        assert_eq!(decision(&open_ended, "deny", None), Some("decline"));
+        assert_eq!(decision(&open_ended, "deny", Some("session")), None);
+        // A patch request carries no patch: nobody here saw the change, so it is never `full`.
+        let patch = json!({"method":"item/fileChange/requestApproval","id":1,"params":{"threadId":"t","turnId":"u","itemId":"call_1","startedAtMs":1,"reason":"write outside the workspace"}});
+        let open = approval(&patch).unwrap();
+        assert!(!open.full && open.tool == "apply_patch" && open.summary == "write outside the workspace");
+        assert!(!super::super::approval::exact(open.tool, &open.input, None, None));
+        assert!(approval(&json!({"method":"item/permissions/requestApproval","id":2,"params":{"itemId":"x"}})).is_none());
+    }
+
+    /// A daemon thread holding `request` open: replays it to a client that joins the thread, and
+    /// resolves it when answered (as 0.163.0 does). Returns what the client answered.
+    async fn daemon_holding(request: Value) -> (std::path::PathBuf, tempfile::TempDir, tokio::task::JoinHandle<Option<Value>>) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut conn = tokio_tungstenite::accept_async(stream).await.unwrap();
+            read(&mut conn).await;
+            conn.send(Message::Text(json!({"id":1,"result":{}}).to_string().into())).await.unwrap();
+            read(&mut conn).await;
+            let resume = read(&mut conn).await;
+            assert_eq!(resume["method"], "thread/resume");
+            assert_eq!(resume["params"], json!({"threadId":request["params"]["threadId"],"excludeTurns":true}), "a join, no overrides");
+            // The server request's id is the daemon's own counter: it can equal ours.
+            let mut early = request.clone();
+            early["id"] = json!(2);
+            early["params"]["threadId"] = json!("another-thread");
+            conn.send(Message::Text(early.to_string().into())).await.unwrap();
+            conn.send(Message::Text(json!({"id":2,"result":{"thread":{"id":request["params"]["threadId"]}}}).to_string().into())).await.unwrap();
+            conn.send(Message::Text(json!({"method":"thread/goal/cleared","params":{"threadId":request["params"]["threadId"]}}).to_string().into())).await.unwrap();
+            conn.send(Message::Text(request.to_string().into())).await.unwrap();
+            let answered = match tokio::time::timeout(std::time::Duration::from_secs(3), conn.next()).await {
+                Ok(Some(Ok(Message::Text(text)))) => serde_json::from_str::<Value>(&text).ok(),
+                _ => None,
+            };
+            if answered.as_ref().is_some_and(|a| a["id"] == request["id"]) {
+                let resolved = json!({"method":"serverRequest/resolved","params":{"threadId":request["params"]["threadId"],"requestId":request["id"]}});
+                conn.send(Message::Text(resolved.to_string().into())).await.unwrap();
+            }
+            answered
+        });
+        (socket, dir, server)
+    }
+
+    #[test]
+    fn local_sessions_codex_a_failed_replay_keeps_the_held_approval() {
+        let thread = "01a17b15-0000-7000-8000-00000000fa11";
+        update_approval(thread, Some(Ok(Some(mkdir_request()))));
+        update_approval(thread, Some(Err("approval replay timed out".into())));
+        assert_eq!(open_request(thread), Some(mkdir_request()), "still waiting, the replay failed: kept");
+        update_approval(thread, Some(Ok(None)));
+        assert_eq!(open_request(thread), None, "the replay says it is gone");
+        update_approval(thread, Some(Ok(Some(mkdir_request()))));
+        update_approval(thread, None);
+        assert_eq!(open_request(thread), None, "no longer waiting on approval");
+    }
+
+    #[tokio::test]
+    async fn local_sessions_codex_an_approval_is_answered_over_the_daemon_only_as_held() {
+        let request = mkdir_request();
+        let thread = request["params"]["threadId"].as_str().unwrap().to_owned();
+        let open = approval(&request).unwrap();
+        let digest = super::super::approval::digest(&open.input);
+        // The replayed request, what discovery holds.
+        let (socket, _dir, server) = daemon_holding(request.clone()).await;
+        let mut conn = connected(&socket).await.unwrap();
+        assert_eq!(replayed_request(&mut conn, &thread).await.unwrap(), Some(request.clone()));
+        drop(conn);
+        assert_eq!(server.await.unwrap(), None, "reading it answers nothing");
+        // Allowed: Codex's own `accept`, confirmed by `serverRequest/resolved`.
+        let (socket, _dir, server) = daemon_holding(request.clone()).await;
+        assert!(answer_on(&socket, &thread, &open.item, &digest, "allow", None).await.unwrap());
+        assert_eq!(server.await.unwrap(), Some(json!({"id":0,"result":{"decision":"accept"}})));
+        // Denied where only cancel is offered.
+        let (socket, _dir, server) = daemon_holding(request.clone()).await;
+        assert!(answer_on(&socket, &thread, &open.item, &digest, "deny", None).await.unwrap());
+        assert_eq!(server.await.unwrap(), Some(json!({"id":0,"result":{"decision":"cancel"}})));
+        // A changed command, another item, or a choice it does not offer: nothing is sent.
+        for (item, digest, mode) in [(open.item.as_str(), "e".repeat(64), None), ("exec-other", digest.clone(), None), (open.item.as_str(), digest.clone(), Some("session"))] {
+            let (socket, _dir, server) = daemon_holding(request.clone()).await;
+            assert!(!answer_on(&socket, &thread, item, &digest, "allow", mode).await.unwrap());
+            assert_eq!(server.await.unwrap(), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn local_sessions_codex_lists_loaded_threads_over_the_control_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut conn = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let init = read(&mut conn).await;
+            assert_eq!(init["params"]["clientInfo"]["name"], "codex-tui", "the daemon stamps its first client's name on threads");
+            conn.send(Message::Text(json!({"id":1,"result":{}}).to_string().into())).await.unwrap();
+            assert_eq!(read(&mut conn).await["method"], "initialized");
+            let page = read(&mut conn).await;
+            assert_eq!(page["method"], "thread/loaded/list");
+            conn.send(Message::Text(json!({"method":"thread/status/changed","params":{"threadId":"t1","status":{"type":"idle"}}}).to_string().into())).await.unwrap();
+            conn.send(Message::Text(json!({"id":page["id"],"result":{"data":["t1"],"nextCursor":"c2"}}).to_string().into())).await.unwrap();
+            let page = read(&mut conn).await;
+            assert_eq!(page["params"]["cursor"], "c2");
+            conn.send(Message::Text(json!({"id":page["id"],"result":{"data":["t2"],"nextCursor":null}}).to_string().into())).await.unwrap();
+            for (id, status) in [("t1", json!({"type":"idle"})), ("t2", json!({"type":"active","activeFlags":[]}))] {
+                let request = read(&mut conn).await;
+                assert_eq!((request["method"].as_str(), request["params"]["threadId"].as_str()), (Some("thread/read"), Some(id)));
+                conn.send(Message::Text(json!({"id":request["id"],"result":{"thread":{"id":id,"status":status}}}).to_string().into())).await.unwrap();
+            }
+        });
+        let threads = loaded_threads(&socket).await.unwrap();
+        assert_eq!(threads.iter().map(|t| t["id"].as_str().unwrap()).collect::<Vec<_>>(), ["t1", "t2"]);
+        assert_eq!(thread_status(&threads[1]["status"]), Some("busy"));
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn local_sessions_codex_a_held_start_is_the_thread_started_in_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = fs::canonicalize(dir.path()).unwrap();
+        let started = |thread: Value| json!({"method":"thread/started","params":{"thread":thread}}).to_string();
+        let mut mine = json!({"id":"01a17a2e-71be-72a3-9ea3-db3681294921","cwd":dir.path(),"ephemeral":false,"parentThreadId":null,"source":"vscode"});
+        assert_eq!(started_thread(&started(mine.clone()), &folder).as_deref(), Some("01a17a2e-71be-72a3-9ea3-db3681294921"));
+        mine["ephemeral"] = json!(true);
+        assert!(started_thread(&started(mine.clone()), &folder).is_none(), "the title namer");
+        mine["ephemeral"] = json!(false);
+        mine["parentThreadId"] = json!("01a17a2e-0000-7000-8000-000000000000");
+        assert!(started_thread(&started(mine.clone()), &folder).is_none(), "a subagent");
+        mine["parentThreadId"] = Value::Null;
+        mine["cwd"] = json!("/");
+        assert!(started_thread(&started(mine), &folder).is_none(), "another folder's start");
+        assert!(started_thread(r#"{"method":"thread/status/changed","params":{}}"#, &folder).is_none());
+        assert!(wakes(r#"{"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"idle"}}}"#));
+        assert!(wakes(r#"{"method":"thread/closed","params":{"threadId":"t"}}"#));
+        assert!(!wakes(r#"{"method":"account/updated","params":{}}"#));
+    }
+
+    /// The fake daemon side of `our_thread`: sends `frames`, then answers each `thread/read` with
+    /// `preview`.
+    async fn daemon_says(frames: Vec<Value>, preview: &'static str) -> (std::path::PathBuf, tempfile::TempDir, tokio::task::JoinHandle<()>) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut conn = tokio_tungstenite::accept_async(stream).await.unwrap();
+            read(&mut conn).await;
+            conn.send(Message::Text(json!({"id":1,"result":{}}).to_string().into())).await.unwrap();
+            read(&mut conn).await;
+            for frame in frames {
+                conn.send(Message::Text(frame.to_string().into())).await.unwrap();
+            }
+            while let Some(Ok(Message::Text(text))) = conn.next().await {
+                let request: Value = serde_json::from_str(&text).unwrap();
+                let reply = json!({"id":request["id"],"result":{"thread":{"id":request["params"]["threadId"],"preview":preview}}});
+                if conn.send(Message::Text(reply.to_string().into())).await.is_err() { break; }
+            }
+        });
+        (socket, dir, server)
+    }
+
+    /// Nothing in the protocol names the client that started a thread, so a held start binds only
+    /// a thread provably its own: the only one started in its folder, whose first message is its
+    /// prompt. Another client's start in the same folder during the wait binds nothing.
+    #[tokio::test]
+    async fn local_sessions_codex_a_held_start_binds_only_its_own_thread() {
+        let work = tempfile::tempdir().unwrap();
+        let folder = fs::canonicalize(work.path()).unwrap();
+        let started = |id: &str| json!({"method":"thread/started","params":{"thread":{"id":id,"cwd":work.path(),"ephemeral":false,"parentThreadId":null,"source":"vscode"}}});
+        let (ours, theirs, old) = ("01a17a65-6aa7-7222-8b6a-03942b282538", "01a17a65-0000-7000-8000-000000000002", "01a17a64-91ae-72c2-9a36-febc23604305");
+        let before: std::collections::BTreeSet<String> = [old.to_owned()].into();
+        let grace = std::time::Duration::from_millis(300);
+        let run = |frames: Vec<Value>, preview: &'static str, prompt: Option<&'static str>| {
+            let (folder, before) = (folder.clone(), before.clone());
+            async move {
+                let (socket, _dir, server) = daemon_says(frames, preview).await;
+                let mut conn = connected(&socket).await.unwrap();
+                let picked = our_thread(&mut conn, &folder, &before, prompt, grace).await;
+                drop(conn);
+                server.abort();
+                picked
+            }
+        };
+        assert_eq!(run(vec![started(old), started(ours)], "fix it", Some("fix it")).await.as_deref(), Ok(ours), "an already loaded thread is no candidate");
+        assert_eq!(run(vec![started(ours)], "", None).await.as_deref(), Ok(ours), "no prompt: the only start in the folder");
+        assert_eq!(run(vec![started(ours), started(theirs)], "fix it", Some("fix it")).await,
+            Err("another thread started in the same folder"));
+        assert_eq!(run(vec![started(theirs)], "something else", Some("fix it")).await,
+            Err("its first message is not this start's prompt"));
+        assert!(first_turn("", "fix it").is_none() && first_turn("fix it", "fix it") == Some(true));
+    }
+
+    /// An app-server that accepts the socket but never answers `initialize` fails the door in
+    /// HANDSHAKE as UNAVAILABLE, which a start or resume turns into its `--no-daemon` fallback.
+    #[tokio::test]
+    async fn local_sessions_codex_a_stalled_daemon_handshake_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut conn = tokio_tungstenite::accept_async(stream).await.unwrap();
+            read(&mut conn).await; // initialize, never answered
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+        let at = std::time::Instant::now();
+        assert_eq!(connected(&socket).await.err().as_deref(), Some(UNAVAILABLE));
+        assert!(at.elapsed() < HANDSHAKE + std::time::Duration::from_secs(2));
+        assert_eq!(connected(&dir.path().join("missing.sock")).await.err().as_deref(), Some(UNAVAILABLE));
+        server.abort();
+        let daemon: Vec<String> = ["/bin/codex", "--remote", "unix://", "-C", "/w", "-c", "check_for_update_on_startup=false",
+            "-m", "gpt", "--sandbox", "workspace-write", "--ask-for-approval", "on-request", "--", "fix it"].map(String::from).into();
+        assert_eq!(private_argv(&daemon), ["/bin/codex", "--no-daemon", "-m", "gpt", "--sandbox", "workspace-write",
+            "--ask-for-approval", "on-request", "--", "fix it"]);
+        assert_eq!(private_argv(&daemon[..1]), ["/bin/codex"]);
+    }
+
+    /// A teammate's resume is read-only: a thread the daemon already runs looser is refused.
+    #[test]
+    fn local_sessions_codex_a_daemon_resume_is_never_looser_than_asked() {
+        let resumed = |sandbox: &str, approval: &str| json!({"sandbox":{"type":sandbox},"approvalPolicy":approval});
+        assert!(within(&resumed("readOnly", "on-request"), true));
+        assert!(!within(&resumed("workspaceWrite", "on-request"), true));
+        assert!(!within(&resumed("dangerFullAccess", "on-request"), false));
+        assert!(!within(&resumed("readOnly", "never"), false));
+        assert!(within(&resumed("workspaceWrite", "on-request"), false));
+    }
 
     #[test]
     fn setup_backs_up_codex_files_once() {
@@ -1415,7 +2326,7 @@ mod tests {
             "Codex has no Notification event"
         );
         let config = fs::read_to_string(fresh.path().join(".codex/config.toml")).unwrap();
-        assert_eq!(config.matches("[hooks.state.").count(), 5);
+        assert_eq!(config.matches("[hooks.state.").count(), 4);
 
         // No Codex on this Mac: nothing to install, and not an error.
         let bare = tempfile::tempdir().unwrap();
@@ -1439,15 +2350,14 @@ mod tests {
         let hooks = doc["hooks"].as_object().unwrap();
         assert_eq!(
             hooks.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "PostToolUse"],
-            "Codex installs the five shared events minus Notification, plus PostToolUse (Task 7b's notice), and nothing else"
+            ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"],
+            "Codex installs the five shared events minus Notification, and nothing else"
         );
         for (event, timeout, is_async) in [
             ("SessionStart", json!(5), json!(true)),
             ("UserPromptSubmit", json!(5), json!(true)),
             ("Stop", json!(5), json!(true)),
             ("SessionEnd", json!(1), json!(false)),
-            ("PostToolUse", json!(5), json!(false)),
         ] {
             assert_eq!(
                 hooks[event],
@@ -1463,7 +2373,6 @@ mod tests {
             (0, "user_prompt_submit", "sha256:1b9663f4792c847238b9ce60fa8356836634675cf6edcd96b9660a8bbac50d5a"),
             (0, "stop", "sha256:560328742055693cdfd246bce82c94a8b396c388029444fb0adb39b8899b547e"),
             (0, "session_end", "sha256:73824c3fd7c65d780e2b8aa1740084f4ce2090a802322de8aac307784a3698d8"),
-            (0, "post_tool_use", "sha256:0be577df5e9da83b39a4848f75b425d09b47d0100006fc1501d19a67d0c4fc6a"),
         ] {
             let key = lifecycle::codex_trust_key(&path, label, index);
             assert!(
@@ -1471,7 +2380,31 @@ mod tests {
                 "{label} trust entry moved"
             );
         }
-        assert_eq!(config.matches("[hooks.state.").count(), 5);
+        assert_eq!(config.matches("[hooks.state.").count(), 4);
+    }
+
+    /// The PostToolUse group an earlier release installed (for the retired held-request notice)
+    /// goes, with its trust entry; another tool's PostToolUse stays.
+    #[test]
+    fn local_sessions_codex_removes_our_old_post_tool_use_hook() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".codex");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hooks.json");
+        let ours = json!({"hooks":[{"type":"command","command":"'/app' local-session-hook codex","timeout":5,"async":false}]});
+        let theirs = json!({"hooks":[{"type":"command","command":"/bin/other","timeout":5,"async":false}]});
+        fs::write(&path, json!({"hooks":{"PostToolUse":[ours]}}).to_string()).unwrap();
+        let key = lifecycle::codex_trust_key(&path, "post_tool_use", 0);
+        fs::write(dir.join("config.toml"), format!("[hooks.state.\"{key}\"]\ntrusted_hash = \"sha256:0be577df5e9da83b39a4848f75b425d09b47d0100006fc1501d19a67d0c4fc6a\"\n")).unwrap();
+        configure_hooks(home.path(), Path::new("/app"), true).unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(doc["hooks"].get("PostToolUse").is_none(), "{doc}");
+        assert!(!fs::read_to_string(dir.join("config.toml")).unwrap().contains(&key));
+        assert_eq!(hooks_state(home.path(), Path::new("/app")), "configured");
+        fs::write(&path, json!({"hooks":{"PostToolUse":[theirs]}}).to_string()).unwrap();
+        configure_hooks(home.path(), Path::new("/app"), true).unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["hooks"]["PostToolUse"], json!([theirs]));
     }
 
     #[test]
@@ -2014,6 +2947,24 @@ mod tests {
         assert_eq!(from_rollout(&root, process, &path, "0.160.1").unwrap().restriction.as_deref(), Some("runtime-unverified"));
     }
 
+    /// A fork's own rollout header names its origin (seen on a `codex fork` through the daemon,
+    /// 0.164.0), so a stopped fork keeps its lineage with no app-server to ask.
+    #[test]
+    fn local_sessions_codex_a_fork_rollout_names_its_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let process = Process { pid: 42, birth_micros: 123, executable: "/bin/codex".into() };
+        let path = root.join("rollout-fork.jsonl");
+        fs::write(&path, concat!(r#"{"type":"session_meta","payload":{"id":"01a17a4c-cd88-7092-8922-62097afde080","#,
+            r#""forked_from_id":"01a17a4b-d15a-7772-8898-d84c8a12fa4b","forked_from_ordinal_exclusive":31,"#,
+            r#""source":"cli","cli_version":"0.159.3","history_mode":"paginated","cwd":"/tmp/cx-e2e"}}"#, "\n")).unwrap();
+        let fork = from_rollout(&root, process.clone(), &path, "0.159.3").unwrap();
+        assert_eq!(fork.forked_from.as_deref(), Some("01a17a4b-d15a-7772-8898-d84c8a12fa4b"));
+        fs::write(&path, concat!(r#"{"type":"session_meta","payload":{"id":"01a17a4b-d15a-7772-8898-d84c8a12fa4b","#,
+            r#""source":"cli","cli_version":"0.159.3","history_mode":"paginated"}}"#, "\n")).unwrap();
+        assert_eq!(from_rollout(&root, process, &path, "0.159.3").unwrap().forked_from, None);
+    }
+
     #[test]
     fn local_sessions_codex_discovers_only_process_owned_cli_profile_history() {
         let dir = tempfile::tempdir().unwrap();
@@ -2202,3 +3153,4 @@ mod tests {
     }
 
 }
+

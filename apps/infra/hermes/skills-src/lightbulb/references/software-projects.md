@@ -216,7 +216,7 @@ in your home directory: it would be saved and restored on every turn.
 
 Read the provisioning catalog first (`references/money.md`). If it offers the
 service, request it there and build against the variable names meanwhile. If
-it answers `provisioning_unavailable`, tell the owner, recommend one provider
+it offers nothing that fits, tell the owner, recommend one provider
 with the reason, and ask them to create the account and connect it in
 Connections or give you the credential through the `secrets` tool. Never
 invent a credential, never sign up on the owner's behalf.

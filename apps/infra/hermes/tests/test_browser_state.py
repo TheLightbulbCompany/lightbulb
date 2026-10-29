@@ -89,6 +89,17 @@ def test_cdp_path_and_s3_redirects_are_rejected(monkeypatch):
         browser_state._valid_url("https://bucket.s3.us-east-1.amazonaws.com:444/state", "https")
 
 
+def test_the_vpc_custom_browser_cdp_url_is_accepted():
+    """Codex on #4391: the env's VPC-mode custom browser has its own id in the stream path; a
+    bridge that took only aws.browser.v1 refused every checkpoint on it."""
+    base = "wss://bedrock-agentcore.us-east-1.amazonaws.com/browser-streams/{}/sessions/abc/automation"
+    for browser in ("aws.browser.v1", "lightbulb_dev_workspace_browser-Ab12Cd34Ef"):
+        assert browser_state._valid_url(base.format(browser), "wss")
+    for bad in ("../x", "a/b", ""):
+        with pytest.raises(ValueError):
+            browser_state._valid_url(base.format(bad), "wss")
+
+
 def test_load_runs_state_load_then_reload_and_returns_no_state(monkeypatch):
     calls = []
 

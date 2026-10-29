@@ -72,6 +72,51 @@ function Apps() {
   );
 }
 
+// Your computers signed in to Lightbulb and online now. Sign out ends that computer's sign-in
+// everywhere at once: it must run `lightbulb login` again.
+function Computers() {
+  const api = useApi();
+  const { data, mutate } = useSWR<{ apps: App[]; routes: Route[] }>(APPS, () =>
+    api.get(APPS) as Promise<{ apps: App[]; routes: Route[] }>);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const routes = data?.routes ?? [];
+  const signOut = async (r: Route) => {
+    setBusy(r.key);
+    setFailure(null);
+    try {
+      await api.post(`/network/computers/${encodeURIComponent(r.key)}/sign-out`, {});
+      await mutate();
+    } catch {
+      setFailure("That did not work. Try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <section className="rounded-md border border-[var(--edge)] px-5 py-4">
+      <h2 className="text-base font-semibold">Your computers</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Computers signed in as you and online now. Sign out ends that computer&rsquo;s sign-in at once;
+        it needs <code>lightbulb login</code> again.
+      </p>
+      {routes.length === 0 ? (
+        <p className="mt-3 text-sm text-muted-foreground">None of your computers is online.</p>
+      ) : (
+        <ul className="mt-2">
+          {routes.map((r) => (
+            <li key={r.key} className="py-3 border-b border-[var(--edge)] last:border-0 flex items-center justify-between gap-3">
+              <p className="font-medium">{r.name ?? "Your computer"}</p>
+              <Button variant="ghost" disabled={busy === r.key} onClick={() => void signOut(r)}>Sign out</Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {failure && <p className="text-sm text-destructive mt-1">{failure}</p>}
+    </section>
+  );
+}
+
 type Wake = { app: string; client?: string; host?: string; state: "needs_key" | "ready" };
 
 const PAGE = "/auth/network/apps";
@@ -157,6 +202,7 @@ export default function NetworkAppsPage() {
   return (
     <main className="mx-auto max-w-2xl px-4 py-10 flex flex-col gap-6">
       <h1 className="text-xl font-semibold">Your apps on the lightbulb network</h1>
+      <Computers />
       <Apps />
       <Wakes />
       <AgentKeysSection />

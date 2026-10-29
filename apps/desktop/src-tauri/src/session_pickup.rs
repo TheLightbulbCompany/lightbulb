@@ -149,6 +149,12 @@ pub(crate) fn normalize_remote(raw: &str) -> Option<String> {
     (!host.is_empty() && !path.is_empty()).then(|| format!("{host}/{path}"))
 }
 
+/// A ticket's remote: the author's Mac already reduced it to `host/org/repo`, which
+/// `normalize_remote` refuses (a bare path is a relative local origin there). Ticket-only.
+fn ticket_remote(raw: &str) -> Option<String> {
+    normalize_remote(raw).or_else(|| normalize_remote(&format!("https://{}", raw.trim())))
+}
+
 /// Presigned S3 URLs for the owner-state bucket, under the backend-only prefix. Anything
 /// else in a ticket is refused before a single request is made.
 pub(crate) fn allowed_url(raw: &str) -> bool {
@@ -320,7 +326,7 @@ fn parse_ticket(value: Value) -> Result<Ticket, Failure> {
             .manifest
             .code
             .as_ref()
-            .is_some_and(|c| !hex_sha(&c.snapshot) || normalize_remote(&c.remote).is_none())
+            .is_some_and(|c| !hex_sha(&c.snapshot) || ticket_remote(&c.remote).is_none())
     {
         return Err(invalid("The pick-up ticket is malformed."));
     }
@@ -785,7 +791,7 @@ async fn pick_up(ticket: Value, folder: Option<String>, env: &Env) -> Result<Val
     // Ok(repo) for a code pick-up, Err(folder) for a conversation-only one.
     let target: Result<PathBuf, PathBuf> = match &manifest.code {
         Some(code) => {
-            let remote = normalize_remote(&code.remote).unwrap_or_default();
+            let remote = ticket_remote(&code.remote).unwrap_or_default();
             let found = candidates(&env.approved, &remote).await;
             Ok(match (chosen, found.len()) {
                 (_, 0) => {
@@ -871,7 +877,7 @@ async fn pick_up(ticket: Value, folder: Option<String>, env: &Env) -> Result<Val
         .await
         .map_err(|e| fail("LAUNCH_FAILED", &format!("The session didn't start: {e}")))?;
     // Started with no window: tell the owner at this Mac (spec §5.2).
-    let _ = crate::notify::native_notify(
+    let _ = crate::notify::show(
         format!(
             "Picked up {}",
             ticket
@@ -1341,6 +1347,20 @@ mod tests {
             );
         }
         assert_eq!(normalize_remote("/local/path"), None);
+        // A relative local origin is not a host path (Codex, #4383).
+        assert_eq!(normalize_remote("team/project"), None);
+        // What a pick-up ticket carries: the author's Mac already normalised it.
+        for raw in [
+            "github.com/TheLightbulbCompany/lightbulb",
+            "https://github.com/TheLightbulbCompany/lightbulb",
+        ] {
+            assert_eq!(
+                ticket_remote(raw).as_deref(),
+                Some("github.com/TheLightbulbCompany/lightbulb"),
+                "{raw}"
+            );
+        }
+        assert_eq!(ticket_remote("/local/path"), None);
     }
 
     #[test]

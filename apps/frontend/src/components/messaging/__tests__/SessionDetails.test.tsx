@@ -32,6 +32,13 @@ function Details({ tab: initial = "access", s = session(), own = true, c = clien
 }
 const switchNamed = (name: string) => screen.getByRole("switch", { name });
 
+it("uses the available viewport width on desktop", () => {
+  render(<Details />);
+  const dialog = screen.getByRole("dialog");
+  expect(dialog).toHaveClass("max-w-[calc(100%-2rem)]");
+  expect(dialog).not.toHaveClass("sm:max-w-lg");
+});
+
 it("gives the owner one control for who can see the session, and two switches", async () => {
   render(<Details />);
   expect(screen.getAllByRole("switch").map(s => (s as HTMLButtonElement).labels[0]?.textContent)).toEqual([
@@ -130,6 +137,13 @@ it("Changes shows the plan and the files when the events carry them, and says so
   unmount();
   render(<Details tab="changes" events={[ev(1, { kind: "text", role: "assistant", text: "hi" })]} />);
   expect(screen.getByText(/^No plan or file changes yet\./)).toBeInTheDocument();
+});
+
+it("Changes shows git's summary when the Mac counted changes the transcript has no edits for", () => {
+  render(<Details tab="changes" s={session({ changes: { files: 2, additions: 5, deletions: 1 } })} events={[ev(1, { kind: "text", role: "assistant", text: "hi" })]} />);
+  expect(screen.queryByText(/No plan or file changes yet/)).not.toBeInTheDocument();
+  expect(screen.getByText("What changed · 2 files", { exact: false })).toBeInTheDocument();
+  expect(screen.getByText("from git, since the session started")).toBeInTheDocument();
 });
 
 it("switches tabs from the tab list", async () => {

@@ -160,7 +160,10 @@ pub(super) fn discover(dir: &Path) -> Vec<NativeSession> {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: false,
+            attention: Default::default(),
         });
     }
     found

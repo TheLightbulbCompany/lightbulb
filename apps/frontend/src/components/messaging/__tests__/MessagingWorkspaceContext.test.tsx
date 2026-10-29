@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useCallback, useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, EMPTY_ROOM_SUBAGENTS, resolveTypedMentions, type RoomDetail } from "@lightbulb/shared";
+import { ApiError, EMPTY_ROOM_SUBAGENTS, resolveTypedMentions, type CanonicalRoomMessage, type RoomDetail } from "@lightbulb/shared";
 import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
 import { RoomComposer } from "../RoomComposer";
@@ -71,7 +71,7 @@ const state = {
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
   roomError: undefined, roomLoading: false, accessRemoved: false,
-  messages: [], optimisticMessages: [] as Array<{ clientMessageId: string; roomId: string; text: string; mentions: never[]; replyToMessageId: null; threadRootMessageId: string | null; createdAt: string }>, typingMembers: [], runs: [] as LiveRoomRun[],
+  messages: [] as CanonicalRoomMessage[], optimisticMessages: [] as Array<{ clientMessageId: string; roomId: string; text: string; mentions: never[]; replyToMessageId: null; threadRootMessageId: string | null; createdAt: string }>, typingMembers: [], runs: [] as LiveRoomRun[],
   historyLoading: false, historyComplete: false, historyError: false, historyErrorMessage: null as string | null,
   loadHistory: vi.fn(), selectRoomError: null as string | null,
   liveConnected: true, httpReady: true, selectRoom: vi.fn(), selectDm: vi.fn(), selectAgentDm: vi.fn(),
@@ -82,11 +82,13 @@ const state = {
 };
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
   state.rooms = [room];
   state.activeRoomId = room.roomId;
   state.activeRoom = room;
   state.roomsError = undefined;
   state.optimisticMessages = [];
+  state.messages = [];
   state.directoryError = undefined;
   state.directoryLoading = false;
   state.accessRemoved = false;
@@ -161,6 +163,82 @@ it("records room_opened once per room and composer_typing_started once per room 
     ["composer_typing_started", { room_kind: "dm", workspace_id: "org" }],
   ]);
   view.unmount();
+});
+
+const firstChatMessage: CanonicalRoomMessage = {
+  messageId: "first-message",
+  roomId: room.roomId,
+  messageSeq: 1,
+  roomRevision: 2,
+  author: { kind: "human", id: "owner", displayName: "Owner" },
+  text: "private customer content",
+  mentions: [],
+  replyToMessageId: null,
+  threadRootMessageId: null,
+  createdAt: "2026-09-10T00:01:00Z",
+  runId: null,
+};
+
+const firstChatRun = (runState: LiveRoomRun["state"]): LiveRoomRun => ({
+  roomId: room.roomId,
+  agentId: "agent-friday",
+  runId: "first-run",
+  triggerMessageId: firstChatMessage.messageId,
+  text: runState === "completed" ? "A useful answer" : "",
+  thinking: "",
+  frames: [],
+  state: runState,
+});
+
+function makeWorkspaceFresh() {
+  const general = { ...room, kind: "channel" as const, isDefault: true };
+  state.rooms = [general];
+  state.activeRoom = general;
+  state.messages = [firstChatMessage];
+}
+
+it("emits one aggregate chat_completed event when the browser observes the first real chat complete", async () => {
+  makeWorkspaceFresh();
+  state.runs = [firstChatRun("running")];
+  const tree = () => (<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <CaptureContext /><MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  const view = render(tree());
+  expect(mocks.capture.mock.calls.filter(([event]) => event === "chat_completed")).toEqual([]);
+
+  state.runs = [firstChatRun("completed")];
+  view.rerender(tree());
+  await waitFor(() => expect(mocks.capture).toHaveBeenCalledWith("chat_completed", { workspace_id: "org" }));
+  expect(mocks.capture.mock.calls.filter(([event]) => event === "chat_completed")).toHaveLength(1);
+
+  // The same completed run, a rerender, and a full remount are all replays.
+  view.rerender(tree());
+  view.unmount();
+  render(tree());
+  expect(mocks.capture.mock.calls.filter(([event]) => event === "chat_completed")).toHaveLength(1);
+});
+
+it.each(["failed", "aborted"] as const)("does not emit chat_completed when the first chat run ends %s", async (outcome) => {
+  makeWorkspaceFresh();
+  state.runs = [firstChatRun("running")];
+  const tree = () => (<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <CaptureContext /><MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  const view = render(tree());
+  state.runs = [firstChatRun(outcome)];
+  view.rerender(tree());
+  await act(async () => {});
+  expect(mocks.capture.mock.calls.filter(([event]) => event === "chat_completed")).toEqual([]);
+});
+
+it("does not emit chat_completed for a completed run that the browser never observed running", async () => {
+  makeWorkspaceFresh();
+  state.runs = [firstChatRun("completed")];
+  render(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <CaptureContext /><MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  await act(async () => {});
+  expect(mocks.capture.mock.calls.filter(([event]) => event === "chat_completed")).toEqual([]);
 });
 
 it("opens the room a failed-run toast names", async () => {
@@ -869,6 +947,20 @@ it("counts a person's session open as a pick, but not a held link's later replay
   act(() => workspaceValue.openSession("s2"));
   expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s2" });
   expect(workspaceValue.explicitPickCount).toBe(before + 1);
+});
+
+it("keeps a search hit's turn when the URL it wrote replays the same session", async () => {
+  const landList = holdSessionList();
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await landList([liveSession("s1", "colleague"), liveSession("s2", "colleague")]);
+  act(() => workspaceValue.openSession("s1", false, 4));
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", seq: 4 });
+  // Dev 2026-10-27: the shell replayed ?session=s1 (no seq) and the conversation opened at the bottom.
+  act(() => workspaceValue.openSession("s1"));
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", seq: 4 });
+  act(() => workspaceValue.openSession("s2"));
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s2" });
 });
 
 it("says a linked session that the settled list lacks is no longer shared", async () => {

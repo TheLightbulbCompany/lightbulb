@@ -1,7 +1,7 @@
 //! Opt-in native terminal sharing. Provider processes and credentials stay local.
 mod approval;
 mod claude;
-mod codex;
+pub(crate) mod codex;
 mod hooked;
 pub mod enrollment;
 pub(crate) mod lifecycle;
@@ -9,9 +9,7 @@ mod native_mcp;
 mod native_tools;
 mod mod_socket;
 pub(crate) mod plugin;
-pub(crate) mod held_notice;
 mod presence;
-pub use native_mcp::serve_mcp;
 
 /// The shared session a browser connection comes from (session_browser), or why not.
 pub(crate) fn shared_session_for(scope: &Path, ancestors: &[u32]) -> Result<String> {
@@ -26,6 +24,7 @@ pub(crate) mod remote_input;
 pub(crate) mod resume;
 pub(crate) mod screen;
 mod session_states;
+mod signals;
 mod stats;
 mod start_links;
 mod transport;
@@ -923,7 +922,7 @@ impl Journal {
                         return Err("partial transcript boundary".into());
                     }
                 }
-                Cursor { offset: meta.len(), inode: Some(meta.ino()) }
+                Cursor { offset: meta.len(), inode: Some(meta.ino()), ..Cursor::default() }
             }
         };
         receipt.ingress = Some(Ingress {
@@ -972,6 +971,9 @@ impl Journal {
 struct Cursor {
     offset: u64,
     inode: Option<u64>,
+    /// Claude private tool calls whose results are still to come (`claude::hide_private_results`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    private: std::collections::BTreeSet<String>,
 }
 
 #[derive(Deserialize)]
@@ -1064,6 +1066,14 @@ impl Cursor {
     }
 }
 
+/// Set while state writes fail on a full disk: logged once per episode, not once per hook.
+static DISK_FULL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// ENOSPC or EDQUOT, as `private_write` words them.
+fn disk_full(error: &str) -> bool {
+    error.contains("(os error 28)") || error.contains("(os error 69)")
+}
+
 fn private_write(path: &Path, value: &impl Serialize) -> Result<()> {
     if fs::symlink_metadata(path)
         .is_ok_and(|m| !m.is_file() || m.uid() != unsafe { libc::geteuid() })
@@ -1085,7 +1095,7 @@ fn private_write(path: &Path, value: &impl Serialize) -> Result<()> {
             )
         };
         if fd < 0 {
-            return Err("cannot create private state".into());
+            return Err(format!("cannot create private state: {}", std::io::Error::last_os_error()));
         }
         let mut file = unsafe { fs::File::from_raw_fd(fd) };
         file.write_all(&serde_json::to_vec(value).map_err(|e| e.to_string())?)
@@ -1100,7 +1110,7 @@ fn private_write(path: &Path, value: &impl Serialize) -> Result<()> {
             )
         } != 0
         {
-            return Err("cannot replace private state".into());
+            return Err(format!("cannot replace private state: {}", std::io::Error::last_os_error()));
         }
         directory.sync_all().map_err(|e| e.to_string())
     })();
@@ -1294,13 +1304,26 @@ struct NativeSession {
     /// `claude attach` takes. None for every other session.
     #[serde(default)]
     job: Option<String>,
-    /// The conversation this background session was forked from (← in an interactive session).
+    /// The conversation this background session continues (←, `/background`, a peer reply): the
+    /// origin whose transcript ends `continued-in` → this one (`claude::continued_from`).
     #[serde(default)]
     forked_from: Option<String>,
+    /// Whether its person moved it on (its own first turn is theirs, not a peer's or another
+    /// agent's): only then is it shared like its origin. None until it has a turn of its own.
+    #[serde(default)]
+    forked_by_person: Option<bool>,
+    /// Every earlier id of this conversation, oldest first (Claude gives a continuation a new id):
+    /// a request naming any of them means this session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    aliases: Vec<String>,
     /// It runs inside an app, an IDE or an SDK, not in a terminal: there is never a live
     /// terminal to show, so a shared one is shared as its conversation.
     #[serde(default)]
     app: bool,
+    /// What Claude says beyond `status`: a finished job, why a prompt is open, a job's hand-off
+    /// note (`claude::attention`). Default for every other provider.
+    #[serde(default)]
+    attention: claude::Attention,
 }
 
 impl NativeSession {
@@ -1951,12 +1974,32 @@ struct RegistrationState {
     pending: bool,
     // At most one latest observation while the frozen transition/history drains.
     successor: Option<NativeSession>,
+    // Whether the last register sent said `shared:false`: an ACK of it does not settle a
+    // mirror shared since (its register must go again, or it stays private on the relay).
+    #[serde(default)]
+    sent_withheld: bool,
 }
 
 impl Mirror {
+    /// A full disk is not fatal: the mirror in memory stays the truth (`dirty`) and the next
+    /// write saves it whole. Failing here ended the relay connection, and every reconnect failed
+    /// the same way, so every session went offline until the app was quit (2026-10-26).
     fn persist(&mut self, path: &Path) -> Result<()> {
+        match self.persist_durable(path) {
+            Err(error) if disk_full(&error) => Ok(()),
+            other => other,
+        }
+    }
+    /// On disk or an error: a register whose generation must survive a crash waits for this.
+    fn persist_durable(&mut self, path: &Path) -> Result<()> {
         self.dirty = true;
-        private_write(path, self)?;
+        if let Err(error) = private_write(path, self) {
+            if disk_full(&error) && !DISK_FULL.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                transport::relay_log(&format!("state not saved, kept in memory: {error}"));
+            }
+            return Err(error);
+        }
+        DISK_FULL.store(false, std::sync::atomic::Ordering::Relaxed);
         self.dirty = false;
         Ok(())
     }
@@ -2031,11 +2074,12 @@ impl Mirror {
             let from = cursor.offset;
             for row in cursor.read(path, &self.native.provider)? {
                 stats.observe(&self.native.provider, &row);
-                let events = normalize_public_message(
+                let mut events = normalize_public_message(
                     &self.native.provider,
                     &self.native.conversation,
                     &row,
                 )?;
+                claude::hide_private_results(&mut cursor.private, &mut events);
                 for event in events {
                     enqueue(&mut queue, event);
                 }
@@ -2149,10 +2193,11 @@ impl Mirror {
             let session = if native.provider == "claude" { &native.conversation } else { id };
             let mut cursor = sub.cursor.clone();
             let read = cursor.read(path, &native.provider).and_then(|rows| {
-                let events = rows.iter().try_fold(vec![], |mut all, row| {
+                let mut events = rows.iter().try_fold(vec![], |mut all, row| {
                     all.extend(normalize_public_message(&native.provider, session, row)?);
                     Ok::<_, String>(all)
                 })?;
+                claude::hide_private_results(&mut cursor.private, &mut events);
                 Ok((rows, events))
             });
             match read {
@@ -2321,7 +2366,10 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
+            attention: Default::default(),
         }
     }
 
@@ -2510,7 +2558,10 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         let mut workspace = workspace::State::default();
         workspace.observe(Ok((dir.path().into(), "before".into())), false);
@@ -2576,7 +2627,10 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         journal.anchor(&cmd, &native, "unique".into(), None).unwrap();
         let ingress = journal.reconcile("s1", "r1", "g1").unwrap().ingress.unwrap();
@@ -2969,7 +3023,10 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            forked_by_person: None,
+            aliases: vec![],
             app: true,
+            attention: Default::default(),
         };
         let mut sessions = vec![];
         reconcile_sessions(&mut sessions, vec![native.clone(), native.clone()]);
@@ -3073,7 +3130,10 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: None,
+                aliases: vec![],
                 app: true,
+                attention: Default::default(),
             },
             generation: "g".into(),
             previous_generation: None,
@@ -3162,7 +3222,10 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: None,
+                aliases: vec![],
                 app: true,
+                attention: Default::default(),
             },
             generation: "g".into(),
             previous_generation: None,
@@ -3250,7 +3313,10 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: None,
+                aliases: vec![],
                 app: true,
+                attention: Default::default(),
             },
             generation: "g".into(),
             previous_generation: None,
@@ -3353,7 +3419,10 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: None,
+                aliases: vec![],
                 app: true,
+                attention: Default::default(),
             },
             generation: "g".into(),
             previous_generation: None,
@@ -3421,7 +3490,10 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                forked_by_person: None,
+                aliases: vec![],
                 app: true,
+                attention: Default::default(),
             },
             generation: "g".into(),
             previous_generation: None,

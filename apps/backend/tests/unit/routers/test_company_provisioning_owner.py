@@ -119,98 +119,46 @@ def test_revoke_is_org_admin_only(member_client):
 
 
 # --- GET /charges — Spend's second source ---------------------------------
-# Near-universally empty today (it needs a bound company Stripe account AND
-# provisioned providers), so every test here is about empty not looking broken.
+# The 2026-09-30.preview API has no charges endpoint, so the route only ever
+# says "unavailable" and never calls Stripe.
 
 CHARGES = "/api/v1/company/provisioning/charges"
 
 
-def _charges(client, *, resources=(RES,), account="acct_1", usage=([], False), **params):
+def _charges(client, *, account="acct_1", **params):
     account_mock = (
         AsyncMock(return_value=account)
         if account
         else AsyncMock(side_effect=mod.WorkflowRefused("no_company_stripe_account", "connect Stripe"))
     )
-    walker = AsyncMock(return_value=usage) if not isinstance(usage, Exception) else AsyncMock(side_effect=usage)
     with (
         patch.object(mod.provisioning_workflow, "account_id_for", account_mock),
-        patch.object(mod.provisioning_landing, "provisioning_summary", AsyncMock(return_value=list(resources))),
-        patch.object(mod.api, "charges_usage", walker),
+        patch.object(mod.api, "request", AsyncMock()) as stripe_call,
     ):
         resp = client.get(CHARGES, params=params)
-    return resp, walker
+    stripe_call.assert_not_awaited()
+    return resp
 
 
 def test_charges_says_unavailable_with_a_reason_when_stripe_is_unbound(client):
-    resp, walker = _charges(client, account=None)
-    assert resp.status_code == 200
-    body = resp.json()
+    body = _charges(client, account=None).json()
     assert body["provisioning_available"] is False
     assert body["reason"] == "no_company_stripe_account"
     assert body["charges"] == []
-    walker.assert_not_awaited()
 
 
-def test_charges_says_unavailable_when_nothing_is_provisioned(client):
-    resp, walker = _charges(client, resources=[])
-    assert resp.json()["reason"] == "no_provisioned_resources"
-    assert resp.json()["provisioning_available"] is False
-    walker.assert_not_awaited()
-
-
-def test_charges_available_and_empty_is_distinguishable_from_unavailable(client):
-    resp, _ = _charges(client, usage=([], False))
-    body = resp.json()
-    assert body["provisioning_available"] is True and body["reason"] is None
-    assert body["charges"] == []
-
-
-def test_charges_sends_the_three_required_fields_and_an_exclusive_end(client):
-    resp, walker = _charges(
-        client,
-        usage=([{"id": "u1", "amount": 120}], False),
-        start="2026-08-01",
-        end="2026-08-30",
-    )
-    assert resp.status_code == 200
-    kwargs = walker.await_args.kwargs
-    assert kwargs["start_time"] == "2026-08-01T00:00:00Z"
-    assert kwargs["end_time"] == "2026-08-31T00:00:00Z"  # end is inclusive, the bound is not
-    assert isinstance(kwargs["livemode"], bool)
-    assert resp.json()["charges"] == [{"id": "u1", "amount": 120}]
-
-
-def test_charges_are_money_out_and_say_so(client):
-    resp, _ = _charges(client)
-    assert resp.json()["direction"] == "out"
-
-
-def test_charges_redacts_the_secret_shaped_keys(client):
-    resp, _ = _charges(client, usage=([{"id": "u1", "url": "https://preauthed"}], False))
-    assert resp.json()["charges"][0]["url"] == "[redacted]"
-
-
-def test_charges_reports_a_truncated_walk(client):
-    resp, _ = _charges(client, usage=([{"id": "u1"}], True))
-    assert resp.json()["truncated"] is True
-
-
-def test_charges_surfaces_a_stripe_refusal_not_an_empty_list(client):
-    resp, _ = _charges(client, usage=mod.ProvisioningError("provider_failure", "nope"))
-    assert resp.status_code == 502
-    assert resp.json()["detail"]["code"] == "stripe_error"
+def test_charges_is_unavailable_because_the_api_has_no_usage_endpoint(client):
+    body = _charges(client).json()
+    assert body["provisioning_available"] is False and body["reason"] == "usage_unavailable"
+    assert body["direction"] == "out"
 
 
 def test_charges_rejects_a_bad_window(client):
-    resp, walker = _charges(client, start="not-a-date")
-    assert resp.status_code == 422
-    walker.assert_not_awaited()
+    assert _charges(client, start="not-a-date").status_code == 422
 
 
 def test_charges_rejects_an_unbounded_span(client):
-    resp, walker = _charges(client, start="2020-01-01", end="2026-08-30")
-    assert resp.status_code == 422
-    walker.assert_not_awaited()
+    assert _charges(client, start="2020-01-01", end="2026-08-30").status_code == 422
 
 
 def test_charges_is_org_admin_only(member_client):
@@ -547,7 +495,7 @@ AR_INFO = {
     "awaiting": "provider_information",
     "information_schema": _SCHEMA,
     "information_target": "account_request",
-    "account_request_id": "ar_1",
+    "provider_connection_request_id": "ar_1",
     "resource_id": "res_1",
 }
 RES_INFO = {**AR_INFO, "information_target": "resource"}
@@ -558,7 +506,7 @@ def test_information_submits_to_the_resource_endpoint_for_that_target(client):
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=RES_INFO)),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
         patch.object(mod.api, "submit_resource_information", AsyncMock(return_value={"id": "res_1"})) as submit,
-        patch.object(mod.api, "submit_account_request_information", AsyncMock()) as other,
+        patch.object(mod.api, "submit_provider_connection_request_information", AsyncMock()) as other,
         patch.object(
             mod.workflow_repo, "transition", AsyncMock(return_value={**RES_INFO, "state": "provisioning"})
         ) as move,
@@ -586,7 +534,9 @@ def test_information_submits_to_the_account_request_endpoint_for_that_target(cli
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=AR_INFO)),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(mod.api, "submit_account_request_information", AsyncMock(return_value={"id": "ar_1"})) as submit,
+        patch.object(
+            mod.api, "submit_provider_connection_request_information", AsyncMock(return_value={"id": "ar_1"})
+        ) as submit,
         patch.object(mod.api, "submit_resource_information", AsyncMock()) as other,
         patch.object(
             mod.workflow_repo, "transition", AsyncMock(return_value={**AR_INFO, "state": "connecting_provider"})
@@ -738,11 +688,11 @@ def test_a_withdrawn_request_can_never_mint_a_link(client, path, code):
     or by any other terminal move — must not mint one either."""
     row = {**PAYING, "state": "cancelled", "awaiting": "payment_setup"}
     if path == "connect-link":
-        row = {**row, "awaiting": "provider_connect", "account_request_id": "ar_1"}
+        row = {**row, "awaiting": "provider_connect", "provider_connection_request_id": "ar_1"}
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=row)),
         patch.object(mod.api, "create_payment_method_request", AsyncMock()) as paid,
-        patch.object(mod.api, "get_account_request", AsyncMock()) as read,
+        patch.object(mod.api, "get_provider_connection_request", AsyncMock()) as read,
     ):
         resp = client.post(f"/api/v1/company/provisioning/workflows/pwf_1/{path}")
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == code
@@ -772,7 +722,7 @@ CONNECTING = {
     **WF,
     "state": "awaiting_user_action",
     "awaiting": "provider_connect",
-    "account_request_id": "ar_1",
+    "provider_connection_request_id": "ar_1",
 }
 
 
@@ -782,16 +732,16 @@ def test_connect_link_reuses_a_live_account_request(client):
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
         patch.object(
             mod.api,
-            "get_account_request",
+            "get_provider_connection_request",
             AsyncMock(
                 return_value={
                     "id": "ar_1",
-                    "status": "pending_auth",
+                    "request_status": "pending_auth",
                     "redirect_url": "https://provider.example/oauth?fresh",
                 }
             ),
         ),
-        patch.object(mod.api, "create_account_request", AsyncMock()) as created,
+        patch.object(mod.api, "create_provider_connection_request", AsyncMock()) as created,
         patch.object(mod.workflow_repo, "patch", AsyncMock()) as patched,
         patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
@@ -808,16 +758,22 @@ def test_connect_link_reuses_a_live_account_request(client):
 
 def test_connect_link_mints_a_new_account_request_when_the_old_one_errored(client):
     with (
-        patch.object(mod.workflow_repo, "get", AsyncMock(return_value={**CONNECTING, "account_request_id": "ar_old"})),
+        patch.object(
+            mod.workflow_repo, "get", AsyncMock(return_value={**CONNECTING, "provider_connection_request_id": "ar_old"})
+        ),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(mod.api, "get_account_request", AsyncMock(return_value={"id": "ar_old", "status": "error"})),
         patch.object(
             mod.api,
-            "create_account_request",
+            "get_provider_connection_request",
+            AsyncMock(return_value={"id": "ar_old", "request_status": "error"}),
+        ),
+        patch.object(
+            mod.api,
+            "create_provider_connection_request",
             AsyncMock(
                 return_value={
                     "id": "ar_new",
-                    "status": "pending_auth",
+                    "request_status": "pending_auth",
                     "redirect_url": "https://provider.example/oauth?new",
                 }
             ),
@@ -828,10 +784,10 @@ def test_connect_link_mints_a_new_account_request_when_the_old_one_errored(clien
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
     assert resp.json()["redirect_url"] == "https://provider.example/oauth?new"
-    assert created.await_args.kwargs == {"provider": "prvdr_1", "project_id": "p_1"}
+    assert created.await_args.kwargs == {"provider": "prvdr_1", "project": "p_1"}
     # Persisted before the URL is handed over — an account request has no name
     # to reconcile a lost id by.
-    assert patched.await_args.args[1] == {"account_request_id": "ar_new"}
+    assert patched.await_args.args[1] == {"provider_connection_request_id": "ar_new"}
 
 
 def test_connect_link_mints_a_new_one_when_the_old_id_is_gone(client):
@@ -839,11 +795,13 @@ def test_connect_link_mints_a_new_one_when_the_old_id_is_gone(client):
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=CONNECTING)),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(mod.api, "get_account_request", AsyncMock(side_effect=gone)),
+        patch.object(mod.api, "get_provider_connection_request", AsyncMock(side_effect=gone)),
         patch.object(
             mod.api,
-            "create_account_request",
-            AsyncMock(return_value={"id": "ar_new", "status": "pending_auth", "redirect_url": "https://p.example/x"}),
+            "create_provider_connection_request",
+            AsyncMock(
+                return_value={"id": "ar_new", "request_status": "pending_auth", "redirect_url": "https://p.example/x"}
+            ),
         ) as created,
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={})),
         patch.object(mod.workflow_repo, "patch", AsyncMock()),
@@ -862,8 +820,10 @@ def test_connect_link_un_stales_the_row_so_the_next_read_is_not_a_no_op(client):
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
         patch.object(
             mod.api,
-            "get_account_request",
-            AsyncMock(return_value={"id": "ar_1", "status": "pending_auth", "redirect_url": "https://p.example/x"}),
+            "get_provider_connection_request",
+            AsyncMock(
+                return_value={"id": "ar_1", "request_status": "pending_auth", "redirect_url": "https://p.example/x"}
+            ),
         ),
         patch.object(mod.workflow_repo, "transition", AsyncMock()) as move,
         patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
@@ -882,8 +842,12 @@ def test_connect_link_409s_when_the_connection_needs_no_browser_step(client):
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=CONNECTING)),
         patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(mod.api, "get_account_request", AsyncMock(return_value={"id": "ar_1", "status": "complete"})),
-        patch.object(mod.api, "create_account_request", AsyncMock()) as created,
+        patch.object(
+            mod.api,
+            "get_provider_connection_request",
+            AsyncMock(return_value={"id": "ar_1", "request_status": "complete"}),
+        ),
+        patch.object(mod.api, "create_provider_connection_request", AsyncMock()) as created,
         patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)) as step,
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
@@ -897,7 +861,7 @@ def test_connect_link_409s_when_the_connection_needs_no_browser_step(client):
 def test_connect_link_409s_when_the_row_is_not_waiting_on_a_connection(client):
     with (
         patch.object(mod.workflow_repo, "get", AsyncMock(return_value=WF)),
-        patch.object(mod.api, "get_account_request", AsyncMock()) as read,
+        patch.object(mod.api, "get_provider_connection_request", AsyncMock()) as read,
     ):
         resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/connect-link")
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "no_connect_pending"
@@ -909,52 +873,14 @@ def test_connect_link_409s_when_the_row_is_not_waiting_on_a_connection(client):
 POINTER = {"resource_id": "res_1", "provider": "posthog", "service": "analytics", "resource_name": "analytics-abc123"}
 
 
-def test_dashboard_link_is_minted_on_click_and_never_stored(client):
+def test_dashboard_link_answers_no_url_because_the_api_has_no_deep_links(client):
     with (
         patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[POINTER])),
-        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(
-            mod.api,
-            "catalog_providers",
-            AsyncMock(return_value=[{"id": "prvdr_1", "name": "posthog", "deep_link_purposes": ["dashboard"]}]),
-        ),
-        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"company_stripe_project_id": "p_1"})),
-        patch.object(
-            mod.api,
-            "create_deep_link",
-            AsyncMock(
-                return_value={
-                    "purpose": "dashboard",
-                    "url": "https://app.posthog.com/x",
-                    "expires_time": "2026-08-29T12:00:00Z",
-                }
-            ),
-        ) as deep,
-        patch.object(mod.integrations_repo, "record_provider_resource", AsyncMock()) as recorded,
+        patch.object(mod.api, "request", AsyncMock()) as stripe_call,
     ):
         resp = client.post("/api/v1/company/provisioning/resources/posthog/res_1/dashboard-link")
-    assert resp.json() == {"url": "https://app.posthog.com/x", "expires_time": "2026-08-29T12:00:00Z"}
-    # The provider ID, not the name, and the company's own project.
-    assert deep.await_args.kwargs["provider"] == "prvdr_1"
-    assert deep.await_args.kwargs["project"] == "p_1"
-    assert deep.await_args.kwargs["purpose"] == "dashboard"
-    recorded.assert_not_awaited()
-
-
-def test_dashboard_link_refuses_a_purpose_the_provider_does_not_advertise(client):
-    with (
-        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[POINTER])),
-        patch.object(mod.provisioning_workflow, "account_id_for", AsyncMock(return_value="acct_1")),
-        patch.object(
-            mod.api,
-            "catalog_providers",
-            AsyncMock(return_value=[{"id": "prvdr_1", "name": "posthog", "deep_link_purposes": []}]),
-        ),
-        patch.object(mod.api, "create_deep_link", AsyncMock()) as deep,
-    ):
-        resp = client.post("/api/v1/company/provisioning/resources/posthog/res_1/dashboard-link")
-    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "deep_link_unsupported"
-    deep.assert_not_awaited()
+    assert resp.json() == {"url": None, "expires_time": None}
+    stripe_call.assert_not_awaited()
 
 
 # --- remove ----------------------------------------------------------------

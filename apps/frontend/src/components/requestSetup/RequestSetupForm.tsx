@@ -6,7 +6,6 @@ import { useState, type FormEvent } from "react";
 
 import { BACKEND_URL } from "@/lib/api";
 import { SUPPORT_EMAIL } from "@/lib/domain";
-import { readHeadlineVariantCookie } from "@/lib/headlineVariant";
 import { attributionProperties, client as posthog, refreshAttribution } from "@/lib/analytics";
 
 import { AGENTS, SMALL_TEAMS, SOURCES, TEAM_SIZES } from "./options";
@@ -69,7 +68,6 @@ export function RequestSetupForm() {
           attribution: readAttribution(),
           source_param: (params?.get("source") ?? "").slice(0, 100),
           anonymous_id: anonymousId(),
-          headline_variant: readHeadlineVariantCookie(),
         }),
       });
       if (!res.ok) throw new Error(String(res.status));

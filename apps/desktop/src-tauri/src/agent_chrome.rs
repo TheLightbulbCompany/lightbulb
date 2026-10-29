@@ -701,7 +701,7 @@ impl Channels {
                     let app = app.clone();
                     tokio::spawn(async move {
                         let shown =
-                            crate::notify::native_notify("Lightbulb".into(), Some(text.clone()), tag.clone(), None, None).await;
+                            crate::notify::show("Lightbulb".into(), Some(text.clone()), tag.clone(), None, None).await;
                         if !shown {
                             // Native notifications off: the webview's in-app toast, as for messages.
                             use tauri::Emitter;

@@ -333,6 +333,28 @@ export interface MessageSearchResponse {
   hits: MessageSearchHit[];
 }
 
+/** One prompt or reply from a coding session (`POST /messaging/sessions/search`). */
+export interface SessionSearchHit {
+  sessionId: string;
+  /** The event's seq: open the session's conversation at this turn. */
+  seq: number;
+  authorKind: "person" | "agent";
+  /** Who typed it; empty for the assistant. */
+  authorId: string;
+  /** The assistant's name; a person's is resolved from authorId. */
+  authorName: string;
+  createdAt: string;
+  /** Matches are wrapped in \u0001...\u0002. */
+  snippet: string;
+  sessionTitle: string;
+  provider: string;
+  humanUserId: string;
+}
+
+export interface SessionSearchResponse {
+  hits: SessionSearchHit[];
+}
+
 export interface ReadCursorRequest {
   lastReadSeq: number;
 }
@@ -381,6 +403,12 @@ export interface LocalSessionCapabilities {
   interrupt: boolean;
 }
 
+/** Files a session changed since it started, from git on its Mac. */
+export interface SessionChanges { files: number; additions: number; deletions: number }
+
+/** The pull request of a session's branch. `checks`: failing when any failed, pending while any runs; absent with none. */
+export interface SessionPr { number: number; state: "open" | "merged" | "closed"; url: string; checks?: "passing" | "failing" | "pending" }
+
 export interface LocalSession {
   /** Advisory bounded local evidence, not proof that a harness refreshed files. */
   workspace?: { revision: number; coverage: "bounded" | "unknown"; changed: boolean; overlap: boolean };
@@ -416,6 +444,18 @@ export interface LocalSession {
   endedOnPurpose?: boolean;
   /** The session this one continues: a Claude session moved to the background (←) forks a new one. */
   forkedFrom?: string;
+  /** Live only, from a Mac that reports them: a background job whose turn is over (it may sit at its shell). */
+  done?: boolean;
+  /** Live only: why a prompt is open in its terminal ("permission prompt", "input needed"). */
+  waitingFor?: string;
+  /** Live only: a Claude job's hand-off note for its person ("run lightbulb login, then press Resume"). A message, never a prompt. */
+  note?: string;
+  /** Live only, from a Mac that reports it: files changed since the session started, from git (not edit events). */
+  changes?: SessionChanges;
+  /** Live only: how many of its subagents run now. Absent with none. */
+  agents?: number;
+  /** Live only: the pull request of the branch checked out in its folder (`gh pr view` on its Mac). */
+  pr?: SessionPr;
   /** Harness-derived: Claude ai-title or listing name, Codex first prompt. */
   title?: string | null;
   /** Owner-chosen name shared by Lightbulb surfaces. Null uses the harness title. */
@@ -458,8 +498,6 @@ export interface LocalSession {
   pendingJoinIds?: Record<string, string>;
   /** The owner's own view only: names for people who asked from the public page and are not in the workspace yet. */
   pendingJoinNames?: Record<string, string>;
-  /** "Viewers can ask to join" on an "Anyone with the link" session: on unless the owner turned it off. */
-  askToJoin?: boolean;
   /** The READER's own ask to pick this session up: pending, or declined by the owner. */
   pickupRequest?: "pending" | "declined" | null;
   /** The owner's own view only: teammates waiting for an answer to "Ask to pick up", and their request ids. */
@@ -542,7 +580,8 @@ export interface LocalSessionPickupOutcome {
 
 export interface LocalSessionUsage { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
 
-export type LocalSessionApprovalMode = "acceptEdits" | "plan" | "default";
+/** Claude's session mode switches; "session" is Codex's "allow for this conversation"; "similar" applies the tool's own suggested allow rule for the rest of the session. */
+export type LocalSessionApprovalMode = "acceptEdits" | "plan" | "default" | "session" | "similar";
 export interface LocalSessionPendingApproval {
   approvalId: string;
   tool: string;
@@ -555,16 +594,10 @@ export interface LocalSessionPendingApproval {
   full?: boolean;
   /** The tool call's input as the Mac shipped it; whole only when `full`. */
   input?: Record<string, unknown>;
-  /** Session-scoped mode switches the tool itself offered with this prompt. */
+  /** Session-scoped choices the tool itself offered with this prompt. */
   modes: LocalSessionApprovalMode[];
-}
-
-export interface PrivateSendApproval {
-  approvalId: string;
-  inputDigest: string;
-  destination: string;
-  text: string;
-  requestId: string;
+  /** What "similar" allows for the rest of the session ("npm run *"); present whenever it is offered. */
+  similar?: string;
 }
 
 export interface LocalSessionAuditEntry {
@@ -672,17 +705,6 @@ export type LocalSessionCommandReceipt = {
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }
   | { actorUserId?: never; actor: { kind: "agent" | "session"; id: string }; invocationExpiresAt: number });
 
-/** An agent's ask to message (or stop) a session, waiting on `awaiting_approval` for its owner. */
-export interface AgentAskReceipt {
-  requestId: string;
-  sessionId: string;
-  kind: "send" | "interrupt";
-  text: string | null;
-  agentName?: string;
-  state: "awaiting_approval" | "pending" | "dispatched" | "applied" | "rejected" | "unknown";
-  reason?: string;
-}
-
 export interface LocalSessionOfflineOutbox {
   commands: LocalSessionCommandReceipt[];
 }
@@ -697,7 +719,7 @@ export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "age
 /** `interaction`: an agent paused on a task, waiting for a human to confirm or answer. */
 /** `waiting` / `finished`: one of your shared sessions paused for your input, or ended a long turn. */
 /** `login`: an agent needs a website login. (A sign-in code is typed into the shared browser, never asked for here.) */
-export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "agent_ask" | "login" | "extension" | "reconnect";
+export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "login" | "extension" | "reconnect";
 export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session";
 
 export interface ActivityActor {

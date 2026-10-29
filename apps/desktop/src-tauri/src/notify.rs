@@ -18,11 +18,9 @@
 //! itself accepts a request from an app that is switched off and then presents
 //! it as nothing, so the permission is checked before every request.
 //!
-//! A held message or an agent's ask (Task 7b) is a notification of the `REQUEST_CATEGORY`
-//! that carries its whole decision in `userInfo`. Whichever process macOS hands the Allow or
-//! Decline to, the window or `serve`, sends that decision itself
-//! (`local_sessions::held_notice::on_action`): nothing is forwarded between processes. That
-//! core needs no Tauri: `serve` installs it with `install_headless`.
+//! `REQUEST_CATEGORY` (Allow and Decline) is kept for a `Center` that posts requests; nothing
+//! posts one now (held sends and agent asks are gone: agents message through the engine), so
+//! a press on an old banner decides nothing. `serve` installs the delegate with `install_headless`.
 
 use std::collections::BTreeMap;
 use tauri::AppHandle;
@@ -87,14 +85,14 @@ impl Center for Native {
     }
 }
 
-/// A press on a request notification: Allow or Decline is answered from this process, with
-/// the decision the notification carries. Anything else (a plain click) is not a decision.
+/// A press on a request notification's Allow or Decline: taken, and it decides nothing. Anything
+/// else (a plain click) is not a decision.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn act(id: String, action: &str, title: String, info: BTreeMap<String, String>) -> bool {
     if action != ALLOW && action != DECLINE {
         return false;
     }
-    crate::local_sessions::held_notice::on_action(Notice { id, title, body: String::new(), info }, action.to_owned());
+    let _ = (id, title, info);
     true
 }
 
@@ -112,7 +110,7 @@ pub fn install_headless() {
     macos::install(None);
 }
 
-/// `lightbulb join`: raise the macOS prompt once, waiting up to `wait` for the answer. A no-op
+/// `lightbulb pair`: raise the macOS prompt once, waiting up to `wait` for the answer. A no-op
 /// once someone has answered it, and outside an app bundle.
 pub fn ask_once(wait: std::time::Duration) {
     #[cfg(target_os = "macos")]
@@ -127,18 +125,59 @@ pub fn ask_once(wait: std::time::Duration) {
     let _ = wait;
 }
 
-/// Shows a native notification; `true` once the OS accepted it with permission
-/// to show it. `tag` is the request identifier (a repeat replaces the earlier
-/// banner, like the browser API) and comes back on `notification:clicked`.
-/// `subtitle` and `thread_id` mirror the phone push: the conversation kind line,
-/// and the key macOS groups one conversation's banners under.
+/// The "only when Lightbulb isn't focused" setting: the banner is held back while one of the
+/// app's windows is focused.
+pub(crate) fn held_for_focus(only_unfocused: bool, app_focused: bool) -> bool {
+    only_unfocused && app_focused
+}
+
+/// The webview's banner: `post`, unless `only_unfocused` (the person's "only when Lightbulb isn't
+/// focused") and one of the app's windows is focused. A held-back banner answers `true` — handled
+/// on purpose — so the webview does not fall back to a toast. `sound` false is a silent banner; an
+/// older webview sends neither new field and gets today's banner with sound.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn native_notify(
+    app: AppHandle,
     title: String,
     body: Option<String>,
     tag: Option<String>,
     subtitle: Option<String>,
     thread_id: Option<String>,
+    sound: Option<bool>,
+    only_unfocused: Option<bool>,
+) -> bool {
+    use tauri::Manager;
+    let focused = app.windows().values().any(|window| window.is_focused().unwrap_or(false));
+    if held_for_focus(only_unfocused.unwrap_or(false), focused) {
+        return true;
+    }
+    post(title, body, tag, subtitle, thread_id, sound.unwrap_or(true)).await
+}
+
+/// A banner this process posts itself (pickup, start, resume, agent Chrome), always with sound.
+pub async fn show(
+    title: String,
+    body: Option<String>,
+    tag: Option<String>,
+    subtitle: Option<String>,
+    thread_id: Option<String>,
+) -> bool {
+    post(title, body, tag, subtitle, thread_id, true).await
+}
+
+/// Shows a native notification; `true` once the OS accepted it with permission
+/// to show it. `tag` is the request identifier (a repeat replaces the earlier
+/// banner, like the browser API) and comes back on `notification:clicked`.
+/// `subtitle` and `thread_id` mirror the phone push: the conversation kind line,
+/// and the key macOS groups one conversation's banners under.
+async fn post(
+    title: String,
+    body: Option<String>,
+    tag: Option<String>,
+    subtitle: Option<String>,
+    thread_id: Option<String>,
+    sound: bool,
 ) -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -153,7 +192,7 @@ pub async fn native_notify(
             thread_id.as_deref(),
             &identifier,
             None,
-            true,
+            sound,
         ) {
             Some(accepted) => accepted.await.unwrap_or(false),
             None => false,
@@ -161,7 +200,7 @@ pub async fn native_notify(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (title, body, tag, subtitle, thread_id);
+        let _ = (title, body, tag, subtitle, thread_id, sound);
         false
     }
 }
@@ -475,8 +514,7 @@ mod macos {
 mod tests {
     use super::*;
 
-    /// Only Allow and Decline are decisions (an Allow here would send one, so tests never press
-    /// it: `held_notice` covers that path against a stub server).
+    /// Only Allow and Decline are decisions.
     #[test]
     fn notify_a_plain_click_is_not_a_decision() {
         let info = BTreeMap::new();
@@ -488,6 +526,15 @@ mod tests {
         assert_eq!(session_click("message-123", &with_session), None);
         assert!(!act("lightbulb.request.r1".into(), "com.apple.UNNotificationDismissActionIdentifier", String::new(), info));
         assert_eq!((REQUEST_CATEGORY, ALLOW, DECLINE), ("lightbulb.request", "allow", "decline"));
+    }
+
+    /// "Only when Lightbulb isn't focused" holds a banner back only while the app is focused.
+    #[test]
+    fn notify_focus_gate() {
+        assert!(held_for_focus(true, true));
+        assert!(!held_for_focus(true, false));
+        assert!(!held_for_focus(false, true));
+        assert!(!held_for_focus(false, false));
     }
 
     #[cfg(target_os = "macos")]

@@ -98,9 +98,9 @@ async def test_start_builds_authorize_url(monkeypatch):
     # joined scopes (google uses space separator)
     assert q["scope"] == [
         "openid email profile"
-        " https://www.googleapis.com/auth/gmail.send"
-        " https://www.googleapis.com/auth/calendar.events"
-        " https://www.googleapis.com/auth/drive.file"
+        " https://www.googleapis.com/auth/gmail.modify"
+        " https://www.googleapis.com/auth/calendar"
+        " https://www.googleapis.com/auth/drive"
     ]
     # google's extra authorize params
     assert q["access_type"] == ["offline"]

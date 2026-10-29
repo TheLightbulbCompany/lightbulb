@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 # gog has no field for the account email in the OAuth token response, so we fetch it
 # from the OIDC userinfo endpoint (openid + email scopes). The Gmail profile endpoint
-# is NOT usable: it needs a read-capable Gmail scope and we only hold gmail.send.
+# is not used: userinfo needs only the identity scopes every grant carries.
 _USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 
 # Google's OAuth2 revocation endpoint. POSTing the refresh token here invalidates

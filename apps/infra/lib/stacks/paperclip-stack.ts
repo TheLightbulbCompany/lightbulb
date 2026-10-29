@@ -13,6 +13,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { ROOT_DOMAIN } from "../domains";
 import { logGroupPath } from "../table-names";
+import { DEV_SPOT } from "./container-stack";
 
 // Single source of truth for the pinned (extended) Paperclip image. Bump
 // paperclip-version.json at the repo root; the overlay it patches lives at
@@ -316,11 +317,12 @@ export class PaperclipStack extends cdk.Stack {
 
     // ─────────────────────────────────────────────────────────────────
     // Task definition: 1 vCPU / 4 GB Fargate, upstream image. v2026.916 OOM-killed at 1 GB on
-    // prod's data during startup recovery (2026-09-24), so the floor is 4 GB.
+    // prod's data during startup recovery (2026-09-24), so the floor is 4 GB. Dev gets half a
+    // vCPU (30-day avg 7%, cost review 2026-10-27); 4 GB is the most Fargate allows at 0.5 vCPU.
     // ─────────────────────────────────────────────────────────────────
     const taskDefinition = new ecs.FargateTaskDefinition(this, "PaperclipTaskDef", {
       family: `lightbulb-${env}-paperclip-server`,
-      cpu: 1024,
+      cpu: env === "prod" ? 1024 : 512,
       memoryLimitMiB: 4096,
       executionRole,
       taskRole,
@@ -614,6 +616,8 @@ export class PaperclipStack extends cdk.Stack {
       // task-aware, so a second task reaps a sibling's in-flight runs as
       // process_lost, and live events + agent start locks are process-local.
       desiredCount: 1,
+      // Dev on Spot: a reclaim is the same ~1-2 min gap a deploy already costs (min 0 / max 100).
+      ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
       securityGroups: [this.taskSecurityGroup],
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       assignPublicIp: false,

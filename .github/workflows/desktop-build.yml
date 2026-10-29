@@ -215,7 +215,8 @@ jobs:
           -name '*.dylib' -o \
           -name '*.so' -o \
           -name 'spawn-helper' -o \
-          -name 'node-*-apple-darwin' \
+          -name 'node-*-apple-darwin' -o \
+          -name 'lightbulb' \
         \) -type f -print0 > "$CANDIDATES"
         while IFS= read -r -d '' f; do
           if file -b "$f" | grep -q "Mach-O"; then

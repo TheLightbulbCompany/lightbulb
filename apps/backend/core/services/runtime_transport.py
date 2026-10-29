@@ -316,10 +316,12 @@ def _invoke_envelope(arn: str, owner_id: str, envelope: dict, read_timeout: floa
 
 #: The winner's lease: the 90 s cold budget plus margin. A holder whose task dies lets it lapse.
 WAKE_LEASE_S = 120
-#: How far inside AgentCore's own idle / lifetime cut-offs "warm" stops being trusted.
-WARM_MARGIN_S = 600
-#: Only move ``warm_until`` when it moves this far, or every invoke is a DynamoDB write.
-WARM_EXTEND_STEP_S = 300
+#: How far inside AgentCore's own idle / lifetime cut-offs "warm" stops being trusted. A third of
+#: the 15 min idle window, so 10 min of it is trusted.
+WARM_MARGIN_S = 300
+#: Only move ``warm_until`` when it moves this far, or every invoke is a DynamoDB write. Must stay
+#: well under IDLE_TIMEOUT_S - WARM_MARGIN_S, or a warm session is never extended.
+WARM_EXTEND_STEP_S = 120
 _WAKE_POLL_S = 1.0
 
 

@@ -1,18 +1,26 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
 import { ApiError, audienceLine, NEW_SCREEN, personColor, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
 import type { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { createInputQueue, dropMouseReports, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
+import { createInputQueue, dropMouseReports, dropProbeReplies, inputRefused, SHIFT_ENTER } from "./sessionInput";
 
 const WATCH_EVERY_MS = 15_000;
+/** A watch refused as "not running" before this view has a picture is asked again after 1 s, doubling to 4 s. */
+const NOT_RUNNING_RETRY_MS = 1_000;
+const NOT_RUNNING_RETRY_MAX_MS = 4_000;
 /** A diff or a ping comes at least every 10 s; this long with no frame, or only pings that do not match the screen it has, and the picture is frozen, so it says Reconnecting. */
 const STALE_AFTER_MS = 30_000;
 /** A viewer that lost frames asks the Mac for its lines again at most this often: each ask is a history burst out of the session's budget. */
 const REPAIR_EVERY_MS = 30_000;
 // How long a view's own fresh ask has to bring its snapshot before a ping may ask again.
 const FRESH_ASK_WAIT_MS = SNAPSHOT_WAIT_MS + 5_000;
+/** xterm and its two addons, one chunk: `preloadTerminal` starts it as a session opens, before its row arrives. */
+const loadTerminal = () => Promise.all([import("@xterm/xterm"), import("@xterm/addon-webgl"), import("@xterm/addon-unicode11")])
+  .then(([{ Terminal }, { WebglAddon }, { Unicode11Addon }]) => ({ Terminal, WebglAddon, Unicode11Addon }));
+let loading: ReturnType<typeof loadTerminal> | null = null;
+export const preloadTerminal = () => { loading ??= loadTerminal().catch((e) => { loading = null; throw e; }); return loading; };
 const decode = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
 /** Clears the visible screen only: xterm's erase never pushes it into scrollback, so history stays.
  *  First it leaves the alternate screen and drops the scroll region, so modes the last screen set
@@ -27,7 +35,7 @@ type Extent = { w: number; h: number };
 /** Readable fits the width only and holds the floor; Fit shows the whole screen, however small. */
 export const terminalScale = (size: TerminalSize, grid: Extent, box: Extent): number =>
   size === "fit" ? Math.min(1, box.w / grid.w, box.h / grid.h) : Math.min(1, Math.max(MIN_SCALE, box.w / grid.w));
-/** The panel's size as the Mac takes it (owner ruling 2026-10-14): `claim` says the panel is used now. */
+/** The panel's size as the Mac takes it: `claim` (only ever with typed keys, ruling 2026-10-27) says the panel is used now. */
 export type PanelSize = { cols: number; rows: number; claim: boolean };
 /** How long the box must stay one size before the Mac is asked for it. */
 const RESIZE_DEBOUNCE_MS = 250;
@@ -47,10 +55,10 @@ const atBottom = (el: HTMLElement) => el.scrollTop + el.clientHeight >= el.scrol
  *  (owner, allowed sender or team control, re-derived by the caller each render); then keystrokes
  *  go to the Mac with the screen epoch they were typed against. A refusal (`inputRefused`) stops input
  *  until the `session` prop changes; an offline Mac (409 LOCAL_SESSION_OFFLINE, transient)
- *  loses only that batch. The grid is drawn at the Mac's own cols x rows. A person who can type
- *  resizes the session to this panel when they open it, show it again or type (they are its latest
- *  user, tmux's `window-size latest`, owner ruling 2026-10-14), and again as the panel resizes while
- *  they still are: the grid then fits the box at scale 1. Anyone else, and anyone after the Mac's own
+ *  loses only that batch. The grid is drawn at the Mac's own cols x rows. Opening or watching never
+ *  resizes the session (owner ruling 2026-10-27): the view scales the Mac's grid. A person who types
+ *  takes the size with their keys (tmux's `window-size latest`), and again as the panel resizes while
+ *  they still are its latest user: the grid then fits the box at scale 1. Anyone else, and anyone after the Mac's own
  *  terminal took the size back, sees the grid scaled (`terminalScale`), and where the scaled picture
  *  is larger than the box, the box scrolls. The wheel is this view's alone and
  *  never xterm's (`onWheel`): the box moves while it can, and only then the terminal's own
@@ -65,7 +73,10 @@ export type SessionFrames = {
 };
 const accessGone = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404);
 
-export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false, resizable = false, kept = false, frames }: {
+export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false, resizable = false, kept = false, frames, keys }: {
+  /** Set while this view can type: sends `data` as typed keys against the screen's epoch, and settles when
+   *  the Mac's relay took them or refused them (not fire-and-forget like typing, so a caller can say so). */
+  keys?: MutableRefObject<((data: string) => Promise<unknown>) | null>;
   session: Pick<LocalSession, "sessionId" | "generation">;
   /** Absent, frames are read off `onEvent` with no subscription of this view's own (tests). */
   frames?: SessionFrames;
@@ -121,9 +132,9 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   typing.current = { canType, resizable, input, session, refuse: (k: string) => setRefusedFor(k) };
   const termRef = useRef<Terminal | null>(null);
   // Asks the Mac for this panel's size (set by the terminal effect below); `claim`: the person uses it now.
-  const sendSize = useRef<(claim: boolean) => void>(() => {});
-  useEffect(() => { if (termRef.current) termRef.current.options.disableStdin = !canType; if (canType) sendSize.current(false); }, [canType]);
-  useEffect(() => { if (resizable) sendSize.current(false); }, [resizable]);
+  const sendSize = useRef<() => void>(() => {});
+  useEffect(() => { if (termRef.current) termRef.current.options.disableStdin = !canType; if (canType) sendSize.current(); }, [canType]);
+  useEffect(() => { if (resizable) sendSize.current(); }, [resizable]);
   // The screen this view last asked for (a session's, or its kept one): `watch` may change identity
   // between renders, and each fresh ask costs every viewer a history burst.
   const asked = useRef("");
@@ -139,7 +150,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   // The teammate who typed last (S8): the cursor in their colour, their name in the bar, for the
   // frame's `forMs`. Every frame says who it is now, so the owner's keys put the plain cursor back.
   const [typist, setTypist] = useState<{ name: string; color: string } | null>(null);
-  const screenKey = `${session.sessionId}:${kept}`;
+  // With the generation: a resumed session (same id, new process) is a new screen, so its first watch asks afresh.
+  const screenKey = `${session.sessionId}:${session.generation}:${kept}`;
   // The frames channel is held until access is lost (403/404 or a full session on a watch). A
   // refused subscribe is released and claimed again, 1 s doubling to 15 s, so the socket asks
   // anew; a refusal that lasts is a refused watch too, which ends it.
@@ -182,16 +194,30 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     return () => { clearTimeout(timer); release(); };
   }, [framesChannel, claim, gone, claimRound, session.sessionId, hidden]);
   useEffect(() => { if (subscribed && !hidden) { setReady(true); retryIn.current = 1_000; } }, [subscribed, hidden]);
+  // Whether this view has a picture yet: until then a "not running" watch is asked again soon (below).
+  const pictured = useRef(false);
+  pictured.current = seen;
   useEffect(() => {
     if (!ready) return;
     let refused = false;
     setFull(null);
+    // A resumed session reads Running before its new process registers on the Mac, and the watch says
+    // "not running" until then. Asked again only at the 15 s renewal, the picture came ~7 s after
+    // Running (prod 2026-10-27): ask afresh at 1, 2, 4 s while this view has no picture.
+    let soon: ReturnType<typeof setTimeout> | undefined;
+    let again = NOT_RUNNING_RETRY_MS;
     const ping = (fresh: boolean) => void watch(session.sessionId, fresh).then((counts) => {
       setAudience(audienceLine(counts));
     }).catch((e) => {
       // A refused watch (Only me, offline, ended, full) is a session nobody watches through this view: no count.
       setAudience("");
       if (!(e instanceof ApiError)) return;
+      const code = (e.body as { code?: string } | null)?.code;
+      if (code === "LOCAL_SESSION_OFFLINE" && !pictured.current && !refused && again <= NOT_RUNNING_RETRY_MAX_MS && document.visibilityState !== "hidden") {
+        clearTimeout(soon);
+        soon = setTimeout(() => { if (!refused && !pictured.current) start(true); }, again);
+        again *= 2;
+      }
       // The session already has its most live viewers: say so, and stop asking (no retry loop).
       const full = e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_VIEWERS_FULL";
       if (full || accessGone(e)) { refused = true; clearInterval(timer); lost.current(); }
@@ -216,7 +242,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     };
     if (document.visibilityState !== "hidden") start(asked.current !== screenKey);
     document.addEventListener("visibilitychange", onVisibility);
-    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisibility); };
+    return () => { clearInterval(timer); clearTimeout(soon); document.removeEventListener("visibilitychange", onVisibility); };
   }, [session.sessionId, screenKey, watch, ready]);
   useEffect(() => {
     let term: Terminal | null = null;
@@ -260,9 +286,10 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       setTypist(who ? { name: who.name, color } : null);
       if (term) term.options.theme = { ...theme, cursor: color ? token(color) : undefined };
     };
-    // The panel's size: none while it is not measurable (hidden, or no picture yet). The first one
-    // sent after the panel is opened or shown again claims the session; later ones apply only while
-    // this panel is still its latest user (the Mac's holder decides, `run::latest_user`).
+    // The panel's size: none while it is not measurable (hidden, or no picture yet). Opening or looking
+    // never resizes the session (owner ruling 2026-10-27, superseding 2026-10-14): the view scales the
+    // Mac's grid. Keys carry the size and claim it; after that, a resize of the panel follows (claim
+    // false: it applies only while this panel is still the latest user, `run::latest_user`).
     let claimed = false;
     let sentSize = "";
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -271,20 +298,29 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       if (!typing.current.resizable || !term || !order.synced || !shown?.offsetWidth || !shown.offsetHeight || !around?.clientWidth || !around.clientHeight) return undefined;
       return { ...panelGrid({ w: shown.offsetWidth, h: shown.offsetHeight }, { cols: term.cols, rows: term.rows }, { w: around.clientWidth, h: around.clientHeight }), claim };
     };
-    sendSize.current = (claim: boolean) => {
+    sendSize.current = () => {
       const now = typing.current;
-      if (!alive || !now.canType || !now.input) return;
-      const size = panelSize(claim || !claimed);
-      if (!size) { claimed = false; return; }
+      if (!alive || !claimed || !now.canType || !now.input) return;
+      const size = panelSize(false);
+      if (!size) return;
       const sized = `${size.cols}x${size.rows}`;
-      if (!size.claim && sized === sentSize) return;
-      claimed = true; sentSize = sized;
+      if (sized === sentSize) return;
+      sentSize = sized;
       void now.input(new Uint8Array(0), order.epoch, size).catch(() => { /* best effort: the view scales meanwhile */ });
     };
-    const onShown = () => { if (document.visibilityState === "hidden") claimed = false; else sendSize.current(false); };
+    const onShown = () => { if (document.visibilityState === "hidden") claimed = false; else sendSize.current(); };
     document.addEventListener("visibilitychange", onShown);
     let pending = "";
     let frameId = 0;
+    if (keys) keys.current = async (data) => {
+      const now = typing.current;
+      if (!alive || !now.canType || !now.input) throw new Error("This terminal cannot take keys now.");
+      const key = `${now.session.sessionId}:${now.session.generation}`;
+      const size = panelSize(true);
+      if (size) { claimed = true; sentSize = `${size.cols}x${size.rows}`; }
+      try { return await now.input(new TextEncoder().encode(data), order.epoch, size); }
+      catch (e) { if (inputRefused(e)) now.refuse(key); throw e; }
+    };
     // One call at a time keeps keystrokes in order; a refusal drops what is queued behind it, at once,
     // and for as long as the session is the one refused: a restarted one (a new generation) gets a new queue.
     let queue: { key: string; send: ReturnType<typeof createInputQueue> } | null = null;
@@ -308,8 +344,6 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       const [gw, gh, bw, bh] = [shown.offsetWidth, shown.offsetHeight, around.clientWidth, around.clientHeight];
       setSeenAt((was) => was && was.grid.w === gw && was.grid.h === gh && was.box.w === bw && was.box.h === bh ? was : { grid: { w: gw, h: gh }, box: { w: bw, h: bh } });
       if (following.current) around.scrollTop = around.scrollHeight;
-      // The first picture drawn in a panel just opened: the person is using it.
-      if (!claimed) sendSize.current(false);
     };
     // The session's program (Claude Code) turns mouse tracking on, and xterm then takes every wheel
     // as a mouse report and cancels it (Terminal.ts bindMouse: its custom wheel handler cannot stop
@@ -400,11 +434,22 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
         });
       }
     };
-    void import("@xterm/xterm").then(({ Terminal }) => {
+    void preloadTerminal().then(({ Terminal, WebglAddon, Unicode11Addon }) => {
       if (!alive || !host.current) return;
+      // `allowProposedApi`: the Unicode 11 width table is a proposed API in xterm 5.5.
       term = new Terminal({ disableStdin: true, cursorBlink: false, scrollback: 5000, fontSize: 13,
-        fontFamily: "Menlo, 'SF Mono', monospace", theme });
+        fontFamily: "Menlo, 'SF Mono', monospace", theme, allowProposedApi: true });
       term.open(host.current);
+      // Emoji and CJK widths as Claude Code and Codex lay them out (Unicode 11, not xterm's default 6).
+      term.loadAddon(new Unicode11Addon());
+      term.unicode.activeVersion = "11";
+      // The GPU renderer draws block and box glyphs itself (Claude's logo is one slab in the DOM
+      // renderer, prod 2026-10-27). No WebGL2, or a lost context: xterm's DOM renderer, as before.
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term.loadAddon(webgl);
+      } catch { /* no WebGL2 here: the DOM renderer draws */ }
       termRef.current = term;
       term.options.disableStdin = !typing.current.canType;
       term.attachCustomKeyEventHandler((e) => {
@@ -448,11 +493,11 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
       fit();
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => sendSize.current(false), RESIZE_DEBOUNCE_MS);
+      resizeTimer = setTimeout(() => sendSize.current(), RESIZE_DEBOUNCE_MS);
     });
     if (box.current) observer?.observe(box.current);
-    return () => { alive = false; pending = ""; clearTimeout(resizeTimer); document.removeEventListener("visibilitychange", onShown); clearTimeout(typistTimer); setTypist(null); if (frameId) cancelAnimationFrame(frameId); termRef.current = null; clearTimeout(stale); clearTimeout(settle); off(); observer?.disconnect(); around?.removeEventListener("wheel", onWheel, { capture: true }); term?.dispose(); onLive(false); };
-  }, [session.sessionId, session.generation, onEvent, onLive]);
+    return () => { alive = false; pending = ""; if (keys) keys.current = null; clearTimeout(resizeTimer); document.removeEventListener("visibilitychange", onShown); clearTimeout(typistTimer); setTypist(null); if (frameId) cancelAnimationFrame(frameId); termRef.current = null; clearTimeout(stale); clearTimeout(settle); off(); observer?.disconnect(); around?.removeEventListener("wheel", onWheel, { capture: true }); term?.dispose(); onLive(false); };
+  }, [session.sessionId, session.generation, onEvent, onLive, keys]);
   return <>
     <div className="session-terminal-view session-terminal-frame" data-live={live} role="region" aria-label={canType ? "Live terminal" : "Live terminal (view only)"}>
       <div className="session-terminal-size" role="group" aria-label="Terminal size">

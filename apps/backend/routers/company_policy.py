@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.repositories import billing_repo, container_repo, integrations_repo, slack_installs_repo
-from core.services import account_wipe, company_stripe, slack_install_service, website_logins
+from core.services import account_wipe, company_stripe, link_wallet, slack_install_service, website_logins
 from core.services.credentials import integration_secret_store
 from core.services.owner_facts import write_owner_facts
 from routers import connections
@@ -168,6 +168,15 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
                 "company_policy: revoke-all could not delete website login %s owner_id=%s", login["id"], owner_id
             )
             failed.append(f"website_login:{login['id']}")
+
+    # 2e. The Link wallet: its tokens are a credential copy we hold, and the grant is the owner's
+    # own Link account. Revoked at Link, then deleted (runs whether or not the feature flag is on).
+    try:
+        if await link_wallet.disconnect(owner_id):
+            revoked.append("link_wallet")
+    except Exception:  # noqa: BLE001 -- report it, keep going
+        logger.exception("company_policy: revoke-all could not disconnect the link wallet owner_id=%s", owner_id)
+        failed.append("link_wallet")
 
     # 3. Stripe Connect: the disconnect route's service path — sever the
     # platform link and unbind. The owner's account itself is untouched.

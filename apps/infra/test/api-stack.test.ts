@@ -1045,6 +1045,9 @@ describe("ApiStack — message search (OpenSearch Serverless)", () => {
     expect(text).toContain("role/lightbulb-dev-backend-task");
     expect(text).toContain("aoss:WriteDocument");
     expect(text).toContain("aoss:DeleteIndex");
+    // Session search extends an existing index's mapping: the indexer (and only it) may update an index.
+    expect(text).toMatch(/aoss:CreateIndex[^\]]*aoss:UpdateIndex[^\]]*aoss:WriteDocument/);
+    expect(text.match(/aoss:UpdateIndex/g)).toHaveLength(1);
     expect(text).not.toContain("aoss:*");
   });
 

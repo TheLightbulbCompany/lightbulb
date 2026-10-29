@@ -37,21 +37,19 @@ says nothing about the managed connection and must not be reported as disconnect
 the connected accounts; pick the one that owns or can edit the file and pass it with
 `-a <email>`. Read a Doc with `gog -a <email> docs cat <docId>`, change it with
 `gog -a <email> docs write|insert <docId>` (`--help` for flags), and read it back after.
-Sheets: `gog -a <email> sheets ...`; Drive files: `gog -a <email> drive ...`. Google
-access is narrow: you can send mail (`gog gmail send`), read and manage calendar events,
-and open Drive files you created or the person picked. You cannot search or read the
-inbox, list calendars, or browse the whole Drive; for a file you cannot see, ask the
-person to pick it or share it with the connection. Inbox mail reaches you only when
-they forward it to your own address. The live
+Sheets: `gog -a <email> sheets ...`; Drive files: `gog -a <email> drive ...`. Mail:
+`gog -a <email> gmail search|get|send ...` reads, searches, drafts and sends; it never
+deletes permanently. Calendars: `gog -a <email> calendar ...` covers every calendar.
+The live
 browser is not signed in to Google, and a Google sign-in there (with its phone prompt)
 would share that account with every agent in the workspace: never start one for a file
 `gog` can reach. If no connected account can open the file, say which account needs
 access (the owner shares it, or connects that account in Connections).
 
 When a `gog` command fails with a permission error (for example 403 `insufficient
-authentication scopes` on a Gmail search), do not retry or work around it. Say Google
-access does not cover that, and offer the supported path (forwarding mail to your
-address, or the person picking the file).
+authentication scopes`), the account was connected before mail and Drive access were
+added. Do not retry or work around it: ask the person to reconnect Google in
+Connections.
 
 ## Microsoft 365 (Microsoft Graph)
 

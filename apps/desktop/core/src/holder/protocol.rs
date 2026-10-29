@@ -20,7 +20,8 @@ pub const OUTPUT: u8 = 2;
 pub const INPUT: u8 = 3;
 /// Interactive or `type` client → holder, and holder → watch clients after a size change:
 /// `u16 BE cols`, `u16 BE rows`, and from a `type` client an optional `u8` 1: it uses the
-/// session now (the app's panel opened or typed into). The pty is the size of the client that
+/// session now (a page typed into it; opening a page alone never claims, owner ruling 2026-10-27,
+/// `remote_input::write_with`). The pty is the size of the client that
 /// used the session last (tmux's `window-size latest`, owner ruling 2026-10-14): an interactive
 /// client's RESIZE and INPUT are uses, a `type` client's only with that byte; any other client's
 /// RESIZE is remembered for when it next uses the session. A holder that does this says

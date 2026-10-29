@@ -76,6 +76,7 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
     from core.services.company_identity import slugify
     from core.services.hermes_profiles import put_owner_object
     from core.services.messaging import load_agent_roster
+    from core.services import network_login
     from core.services.website_logins import _humans_to_ask
 
     roster, org, members = await asyncio.gather(
@@ -108,8 +109,10 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
         "workspace": (org or {}).get("name") or owner_id,
         "sessions": sessions + apps,
         "wake": wake,
-        # The sidecar's gate: only computers whose sign-in proof names one of these people.
+        # The sidecar's gate: only computers whose sign-in proof names one of these people, and
+        # never a computer its person signed out (``network_login.revoke``).
         "members": members,
+        "revoked_keys": await network_login.revoked_keys(members),
     }
     if prior.get("joined"):
         doc["joined"] = True  # on a network an admin added it to (``join_network``)
@@ -137,6 +140,7 @@ async def _write_and_ping(owner_id: str, apps: list[dict]) -> None:
     # and an invoke here would cold-start the workspace (~55 s) from an agent edit.
     if await _session_is_warm(owner_id):
         await container_rpc.call(owner_id, "network.sessions", {})
+        await drain_ops(owner_id)  # the member is up and just refreshed: send what waited for it
 
 
 async def app_title(user_id: str, client: str) -> str:
@@ -283,13 +287,24 @@ async def _asked(owner_id: str, target: str) -> list[str]:
     return [h for h in humans if app_person(h) == app[1]]
 
 
+async def _invalidate_activity(owner_id: str, user_id: str) -> None:
+    from core.services.live_events import get_live_event_publisher
+    from core.services.messaging import make_live_event
+
+    try:
+        await get_live_event_publisher().publish_user(
+            owner_id, user_id, make_live_event("runtime.resource.invalidated", {"resource": "activity"})
+        )
+    except Exception:  # noqa: BLE001 -- the badge catches up on the next focus
+        logger.warning("network hold activity live event failed owner=%s", owner_id)
+
+
 async def hold_notice(owner_id: str, notice: dict) -> None:
     """The bridge's content-free notice ``{holdId, state, label, target}``: ``open`` files one
     Needs-you item per person asked (once per hold), ``closed`` resolves it for all of them."""
     from botocore.exceptions import ClientError
 
     from core.repositories import messaging_repo
-    from core.services.webhook_agents import _invalidate_activity
 
     hold_id = notice["holdId"]
     key = _hold_key(owner_id, hold_id)
@@ -338,7 +353,6 @@ async def hold_notice(owner_id: str, notice: dict) -> None:
 
 async def _file_hold_items(owner_id: str, hold: dict) -> None:
     from core.repositories import messaging_repo
-    from core.services.webhook_agents import _invalidate_activity
 
     asked = hold.get("askedUserIds") or []
     sk = messaging_repo.activity_sk(hold["createdAt"], hold_item_id(hold["holdId"]))
@@ -453,6 +467,19 @@ async def ring(token: str) -> bool:
     return True
 
 
+async def wake(owner_id: str) -> bool:
+    """Ring this workspace's own doorbell (the queued ``network_wake``, rate-limited by
+    ``_queue_wake``). False when it has none: it was never on a network."""
+    from core.repositories import messaging_repo
+
+    key = _netwake_key(owner_id)
+    row = await messaging_repo._get(key["pk"], key["sk"])
+    if not row or not row.get("tokenHash"):
+        return False
+    await _queue_wake(owner_id, str(row["tokenHash"]))
+    return True
+
+
 async def _queue_wake(owner_id: str, digest: str) -> None:
     """At most one ``network_wake`` per workspace per ``WAKE_WINDOW_S`` reaches the work queue."""
     from botocore.exceptions import ClientError
@@ -499,3 +526,108 @@ async def _queue_wake(owner_id: str, digest: str) -> None:
         logger.info("network wake skipped (within %ss) owner=%s", WAKE_WINDOW_S, owner_id)
         return
     logger.info("network wake queued owner=%s", owner_id)
+
+
+# ---------------------------------------------------------------------------
+# cloud-member ops (memory.*): only while the runtime is up
+# ---------------------------------------------------------------------------
+
+
+async def call_op(owner_id: str, op: str, params: dict, timeout: float = 30.0) -> dict | None:
+    """One cloud-member op over the runtime RPC path (``container_rpc.call``). ``None`` when the
+    runtime is parked: this never cold-starts it (an invoke would, ~55 s)."""
+    if not await _session_is_warm(owner_id):
+        return None
+    return await container_rpc.call(owner_id, op, params, timeout_s=timeout)
+
+
+def _op_pk(owner_id: str) -> str:
+    from core.repositories import messaging_repo
+
+    return messaging_repo.owner_pk(owner_id)
+
+
+async def queue_op(owner_id: str, op: str, params: dict) -> None:
+    """Persist an op for ``drain_ops`` (run when the runtime is next up). Params are JSON text."""
+    from core.repositories import messaging_repo
+
+    sk = f"MEMOP#{int(time.time() * 1000):013d}#{uuid.uuid4().hex[:8]}"
+    # Params can carry fact text: a runtime parked past the window loses the op, not the privacy.
+    expires = int(time.time()) + OP_TTL_S
+    item = {"pk": _op_pk(owner_id), "sk": sk, "op": op, "params": json.dumps(params), "expiresAt": expires}
+    await run_in_thread(messaging_repo._table().put_item, Item=item)
+
+
+_MAX_ATTEMPTS = 5
+_CLAIM_S = 120
+OP_TTL_S = 30 * 86400  # a queued op's lifetime (``expiresAt``: the messaging table's TTL attribute)
+
+
+async def drain_ops(owner_id: str) -> int:
+    """Send queued ops in order. Never raises (it runs on the edit path); returns how many were
+    sent. Each row is claimed with a conditional write before it is sent, so two drains cannot
+    both send it. An op that fails is retried on later drains, up to ``_MAX_ATTEMPTS``, then
+    dropped with a warning naming the op and owner (never the params)."""
+    try:
+        return await _drain(owner_id)
+    except Exception as exc:  # noqa: BLE001 -- params can carry fact text: log the class only
+        logger.warning("queued ops drain failed owner=%s error=%s", owner_id, type(exc).__name__)
+        return 0
+
+
+async def _drain(owner_id: str) -> int:
+    from boto3.dynamodb.conditions import Key
+    from botocore.exceptions import ClientError
+
+    from core.repositories import messaging_repo
+
+    table = messaging_repo._table()
+    query = {"KeyConditionExpression": Key("pk").eq(_op_pk(owner_id)) & Key("sk").begins_with("MEMOP#")}
+    rows: list[dict] = []
+    while True:
+        page = await run_in_thread(table.query, **query)
+        rows += page["Items"]
+        if not page.get("LastEvaluatedKey"):
+            break
+        query["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    sent = 0
+    for row in rows:
+        key = {"pk": row["pk"], "sk": row["sk"]}
+        now = int(time.time())
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key=key,
+                UpdateExpression="SET claimed_until = :u",
+                ConditionExpression="attribute_exists(pk) AND (attribute_not_exists(claimed_until) OR claimed_until < :now)",
+                ExpressionAttributeValues={":u": now + _CLAIM_S, ":now": now},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # another drain has it, or it is already sent
+            raise
+        failed = False
+        try:
+            answer = await call_op(owner_id, row["op"], json.loads(row["params"]), 30.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("queued op failed owner=%s op=%s error=%s", owner_id, row["op"], type(exc).__name__)
+            answer, failed = {}, True
+        if answer is None:  # parked: leave the rest for the next drain
+            await run_in_thread(table.update_item, Key=key, UpdateExpression="REMOVE claimed_until")
+            break
+        if not failed:
+            await run_in_thread(table.delete_item, Key=key)
+            sent += 1
+            continue
+        attempts = int(row.get("attempts") or 0) + 1
+        if attempts >= _MAX_ATTEMPTS:
+            logger.warning("queued op dropped after %d attempts owner=%s op=%s", attempts, owner_id, row["op"])
+            await run_in_thread(table.delete_item, Key=key)
+        else:
+            await run_in_thread(
+                table.update_item,
+                Key=key,
+                UpdateExpression="SET attempts = :a REMOVE claimed_until",
+                ExpressionAttributeValues={":a": attempts},
+            )
+    return sent

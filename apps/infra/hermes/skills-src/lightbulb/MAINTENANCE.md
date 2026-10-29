@@ -16,8 +16,8 @@ stale text until it was deleted). Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`
 (`terminal`, `file`, `web`, `memory`, `skills`, `browser`, `secrets`) plus our
 own plugin tools in `apps/infra/hermes/plugins/lightbulb/__init__.py`
-(`send_room_message`, `hire_suggestion`, `request_approval`, `suggest_idea`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — its direct-or-ask
-send rule is `agent_command` in `apps/backend/core/services/local_sessions.py`).
+(`send_room_message`, `hire_suggestion`, `request_approval`, `suggest_idea`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — read-only, `resources` and `read`;
+an agent messages a session with `lightbulb_network`, through the engine).
 
 MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   code. This skill is the fleet's knowledge of the platform. It is SPLIT: a
@@ -32,7 +32,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  routers/ses_inbound.py (email wake — any authenticated sender while the row's
                                  `send_to_anyone` is on, the default; else allowlisted senders only) and
                                  core/services/agent_mail_send.py (the same flag gates `--to`/`--reply`);
-                                 the Google scopes in providers.yaml (gmail.send, calendar.events, drive.file)
+                                 the Google scopes in providers.yaml (gmail.modify, calendar, drive)
   - Send a file in chat ..... references/platform-primitives.md ("Send a file in chat" row)
                               <- apps/infra/hermes/bridge/turn.py (MEDIA_PREFIX, MEDIA_CONTENT_TYPES,
                                  ATTACHMENT_MAX_BYTES_BY_TYPE incl. video, MAX_ATTACHMENTS, _within: own profile or
@@ -50,10 +50,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  .scratch/ and /tmp share the microVM's ~4 GB disk across teammates until it is
                                  recycled; numbered slots filled it twice for the founder's engineering agent
                                  (2026-10-07/08). Mirrors bridge/turn.py `_repo_rule`; edit both together.
-  - gog scope-denied ........ references/integrations.md ("Google Workspace (`gog`)": say Google access does not
-                              cover it; offer forwarding / the file picker; never a browser sign-in)
-                              <- Google is the platform app now (docs/superpowers/plans/2026-10-23-google-verification.md);
-                                 its scopes are the providers.yaml `google` list. Update when phase 3 adds gmail.readonly/drive.
+  - gog scope-denied ........ references/integrations.md ("Google Workspace (`gog`)": ask for a reconnect in
+                              Connections; never a browser sign-in)
+                              <- Google is the platform app, unverified under the 100-user exemption; its scopes are
+                                 the providers.yaml `google` list. A 403 means a grant from before the scopes widened.
   - Plain words, no plumbing  SKILL.md ("Talk to people in plain words, never plumbing")
                               <- observed prod 2026-09-29: an agent told #general "PAPERCLIP_RUN_ID is empty (this is
                                  a webchat session, not a heartbeat)". No code enforces it; the verifier footer that
@@ -142,7 +142,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md ("Browsing");
                                  apps/frontend/src/components/messaging/SessionBrowserTab.tsx + LocalSessionPanel.tsx (the tab);
                                  BrowserFrameView.tsx (session mode); routes /messaging/sessions/{id}/browser/{viewing,input}
-                                 native_mcp.rs + native_tools.rs (use_browser); apps/backend/core/services/hosted_mcp.py (use_browser); routers/messaging.py (/local-sessions/device/sessions/{id}/browser-place)
+                                 the engine's `lightbulb` MCP (use_browser, signed by the computer); apps/backend/core/services/session_browser.py (place_by_native);
+                                 routers/messaging.py (/local-sessions/device/sessions/browser-place, computer_person)
   - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row, a pointer only) + references/surfaces.md
                               (Browser row: "Which tool", extensions, recording, downloads) +
                               references/platform-primitives.md (pointer)
@@ -231,21 +232,18 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  (put_link: one link, audience, publicId); core/services/session_pickup.py (set_pickup: the
                                  continue switch); apps/infra/lambda/pub-authorizer; apps/desktop/src-tauri/src/session_continue.rs
                                  (`lightbulb continue`).
-  - Session live vs transcript  references/surfaces.md (running = live terminal; a session inside an app (packages/shared/src/messaging/sessionStates.ts conversationOnly) = its conversation under sessionScreenNotice's one line, in LocalSessionPanel and on the phone; a running session with no live terminal (plain claude, codex --no-daemon) = its conversation (transcript, composer, approvals) for members on web, desktop and phone under one hint line; the public link stays terminal-only; ended = final screen + "Ended · <time>" + Resume while the owner's app runs, then "screen is gone"; offline = "Mac offline" + Resume greyed + Pick up; Share every new session off at pairing; no transcript beside a live terminal; sidebar lists live, All sessions lists every session; no message box under a live terminal)
+  - Session live vs transcript  references/surfaces.md (running = live terminal; a session inside an app (packages/shared/src/messaging/sessionStates.ts conversationOnly) = its conversation under sessionScreenNotice's one line, in LocalSessionPanel and on the phone; a running session with no live terminal (plain claude, codex --no-daemon) = its conversation (transcript, composer, approvals) for members on web, desktop and phone under one hint line; the public link stays terminal-only; ended = final screen + "Ended · <time>" + Resume while the owner's app runs, then "screen is gone"; offline = "Mac offline" + Resume greyed + Pick up; one sharing switch per Mac, on at pairing, sets Share every new session with it (LocalSessions.tsx setEnabled); no transcript beside a live terminal; sidebar lists live, All sessions lists every session; no message box under a live terminal)
                               <- apps/desktop/src-tauri/src/holder/run.rs (ended mode), local_sessions/session_states.rs,
                                  apps/backend/core/services/{local_sessions,session_screen}.py (screenAvailable, terminalReason),
                                  apps/frontend/src/components/desktop/DesktopPermissionsGate.tsx (live default).
   - Session status/title/id .. references/surfaces.md (sessions list: waiting-approval = waits for its person; title = person's name else conversation title; one conversation = one sessionId)
                               <- apps/frontend/src/components/messaging/{LocalSessionPanel,RoomDirectory,SessionTerminalView}.tsx.
-  - Session ask to join ..... references/surfaces.md ("Ask to join" paragraph)
-                              <- apps/backend/core/services/local_sessions.py (request_join / decide_join / remove_sender,
-                                 allowedSenders + joinRequests, may_control; ASK_AGAIN_AFTER_S = the ten-minute Ask again
-                                 window, mirrored by ASK_AGAIN_AFTER_MS + joinRequestView in
-                                 packages/shared/src/messaging/sessionControls.ts: no time-out, reminder, "closed before" from
-                                 closed_joins / joinClosed -> joinRequestClosed, said for JOIN_CLOSED_TTL_S); core/services/activity.py (join_request item,
-                                 Allow / Decline); core/services/local_session_relay.py (cleared on Ended and on a new
-                                 generation); apps/frontend/src/components/messaging/LocalSessionPanel.tsx (Ask to join /
-                                 Requested / declined line); SessionDetails.tsx (People you let in, Remove).
+  - Session teammates/control references/surfaces.md ("Teammates and control" + "Ask to join from the public page")
+                              <- apps/backend/core/services/local_sessions.py (may_control = owner, teamControl, allowedSenders;
+                                 request_join refuses members; decide_join / remove_sender); core/services/session_links.py
+                                 (ask_to_join, link viewers only, always on); core/services/native_session_tools.py (sendable);
+                                 apps/frontend/src/components/messaging/LocalSessionPanel.tsx ("Only <owner> can type" line);
+                                 SessionDetails.tsx (People you let in, Remove).
   - Session live terminal ... references/surfaces.md ("Live terminal" paragraph)
                               <- apps/frontend/src/components/messaging/{LocalSessionPanel,SessionTerminalView}.tsx
                                  (terminal in the panel, ended/offline/notice panels, no transcript, "<name> typing" + typist cursor, read-only for
@@ -374,7 +372,13 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  (409 name_taken, 429 rate_limited). Pinned by apps/infra/hermes/tests/test_voice_skill.py.
   - Provisioning rail ....... references/money.md
                               <- apps/backend/routers/company_provisioning.py (container routes, refusal codes);
-                                 core/services/provisioning_workflow.py (STATES); core/services/owner_facts.py (the `provisioning` facts list)
+                                 core/services/provisioning_workflow.py (STATES, account_id_for's refusals incl.
+                                 services_account_needed); core/services/owner_facts.py (the `provisioning` facts list)
+  - Buying things ........... references/money.md ("Buying things")
+                              <- plugins/lightbulb/__init__.py (`request_purchase`, PURCHASE_SCHEMA); backend
+                                 routers/company_link_wallet.py (agent door, refusal codes), core/services/purchases.py (policy),
+                                 core/services/link_wallet.py. Every route 404s until Link's OAuth client is configured. Pinned by
+                                 apps/infra/hermes/tests/test_plugin_request_purchase.py.
   - Budgets (monthly caps) .. references/money.md
                               <- apps/frontend Settings -> Budgets panel; routers/teams/budgets.py (BFF proxy, admin-gated writes);
                                  Paperclip budget engine (PATCH companies/agents budgets, GET budgets/overview). Real spend fed by
@@ -388,8 +392,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  _REPRODUCIBLE_DIRS node_modules/*venv/.next/dist/build, work/ of other conversations never
                                  restored, save at end of turn);
                                  apps/infra/hermes/Dockerfile (global npm installs as root, then USER 1000; no dockerd);
-                                 the provisioning-rail fallback = core/config.py STRIPE_PROVISIONING_ENABLED +
-                                 routers/company_provisioning.py container_catalog (`provisioning_unavailable`);
+                                 the provisioning-rail fallback = routers/company_provisioning.py container_catalog
+                                 (nothing offered that fits the task);
                                  Hermes's bundled github / requesting-code-review skills (/opt/hermes/skills, the base image);
                                  PyPI package graphifyy (its `graphify` entry point; `graphify query --graph`,
                                  `graphify update . --no-cluster` = AST only), mirrored by this repo's own
@@ -497,6 +501,14 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/frontend/src/components/messaging/openui/ (web renderers, press -> reply),
                                  apps/mobile/src/components/chat/openui/ (phone; lands with the mobile PR). SKILL.md: the "Ask with a card"
                                  non-negotiable and "How you reply in chat" (docs/research/2026-10-13-employee-voice-and-consumer-agents.md rung 1).
+  - Workspace actions ....... SKILL.md (routing row + "Lightbulb's own data changes only through Lightbulb tools" non-negotiable)
+                              + references/workspace.md (the action list and each action's args)
+                              <- apps/infra/hermes/plugins/lightbulb/__init__.py (`lightbulb_workspace`) -> apps/backend/routers/messaging.py
+                                 AGENT_ACTIONS / agent_actor (acts as the turn's requester; no person = refused). Args mirror
+                                 UpsertRoomMemberRequest/CreateRoomRequest/PatchRoomRequest (core/services/messaging.py) and
+                                 MessageSearchRequest/SessionSearchRequest (core/services/message_search.py): edit both together.
+                                 Lesson 2026-10-18: a hand-written member row skipped the delivery cursor and silenced an agent.
+                                 lightbulb-api.sh's owner-only refusal points room/member/search actions at the tool.
   - Writing a document ...... references/documents.md
                               <- owner complaint 2026-10-16 (a GTM document opened with "Observed … UTC",
                                  "Decision", "Current-state audit" and task-id bullets); the pane header now carries

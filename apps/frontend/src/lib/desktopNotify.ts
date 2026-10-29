@@ -100,7 +100,13 @@ export async function notificationPermission(request = false): Promise<Notificat
 export async function nativeNotify(
   title: string,
   body?: string,
-  opts?: { onClick?: () => void; tag?: string; subtitle?: string; threadId?: string },
+  opts?: {
+    onClick?: () => void; tag?: string; subtitle?: string; threadId?: string;
+    /** Silent banner when false. The browser API has no sound switch; the OS decides there. */
+    sound?: boolean;
+    /** The desktop app holds the banner back while one of its windows is focused (answering true). */
+    onlyUnfocused?: boolean;
+  },
 ): Promise<boolean> {
   const tauri = getTauri();
   if (tauri) {
@@ -110,7 +116,10 @@ export async function nativeNotify(
       routeClicks(tauri);
     }
     try {
-      return (await tauri.invoke("native_notify", { title, body, tag: opts?.tag, subtitle: opts?.subtitle, threadId: opts?.threadId })) === true;
+      return (await tauri.invoke("native_notify", {
+        title, body, tag: opts?.tag, subtitle: opts?.subtitle, threadId: opts?.threadId,
+        sound: opts?.sound, onlyUnfocused: opts?.onlyUnfocused,
+      })) === true;
     } catch {
       return false;
     }

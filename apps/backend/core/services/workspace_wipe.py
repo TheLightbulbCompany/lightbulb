@@ -115,6 +115,7 @@ from core.services.account_wipe import (
     _delete_paperclip_company_call,
     _NO_PAPERCLIP_ROW,
     _preview_step,
+    _runtime_detail,
     _refuse_bootstrap_account,
     _skip,
     _step,
@@ -527,16 +528,13 @@ async def _runtime_run(snap: WorkspaceSnapshot) -> str:
         await wipe_owner_voice(snap.org_id)
     except Exception:  # noqa: BLE001
         logger.warning("voice wipe failed owner=%s", snap.org_id, exc_info=True)
-    if snap.container is None:
-        # Re-read: a provision racing the wipe may have created the row after
-        # the snapshot. The seam deletes unconditionally, so call it anyway —
-        # it is idempotent on a missing row and returns None.
-        row_at_death = await delete_workspace_runtime(snap.org_id, delete_profiles=True)
-        if row_at_death is None:
-            return "no containers row"
-    else:
-        row_at_death = await delete_workspace_runtime(snap.org_id, delete_profiles=True)
-    detail = "agentcore runtime + boot secret + S3 profiles + containers row + channel-links removed"
+    # With no snapshot row, call anyway: a provision racing the wipe may have created
+    # the row after the snapshot. The seam is idempotent on a missing row (returns None).
+    report: dict = {}
+    row_at_death = await delete_workspace_runtime(snap.org_id, delete_profiles=True, report=report)
+    if snap.container is None and row_at_death is None:
+        return "no containers row"
+    detail = _runtime_detail(report)
     late_hashes = owner_gate_token_hashes(row_at_death)
     swept = await delete_gate_token_rows(late_hashes) if late_hashes else 0
     if swept:

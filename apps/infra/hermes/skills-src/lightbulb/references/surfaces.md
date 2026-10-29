@@ -97,17 +97,16 @@ board yourself. Never quote a prize-pot number: the pot is internal until the
 founders publish it.
 # Shared local-session workspace notices
 
-**Which sessions are shared**: on a Mac where its owner turned session sharing on, a Claude
-Code or Codex session is shared when it was started in Lightbulb (**New session**, a remote
-start, a pick-up, a resume, `lightbulb claude` / `lightbulb codex` in any folder), when **Share
-every new session** was on as it started, or when its person chose **Share to Lightbulb** in it
-(a line above the Claude Code prompt, or the `lightbulb` plugin's share skill in Claude Code and
-Codex). Every other session is only its person's: nothing of it leaves the Mac, and you cannot
-see or message it. A shared session is shared whole, from its start. Its person can stop
-sharing one session or turn sharing off for the Mac. When a
-person pairs a Mac, **Share every new session** starts off (they can turn it on there or later
-in Settings); while it is on, a plain `claude` or `codex` typed in a new terminal tab runs
-through Lightbulb.
+**Which sessions are shared**: a Mac has one sharing switch (**Share my sessions with my
+workspace** when it is paired, **Session sharing** in Settings → Desktop; on by default at
+pairing). While it is on, every new Claude Code or Codex session is shared: one started in
+Lightbulb (**New session**, a remote start, a pick-up, a resume, `lightbulb claude` /
+`lightbulb codex`), and a plain `claude` or `codex` typed in a new terminal tab, which runs
+through Lightbulb. An older session is shared when its person chooses **Share to Lightbulb** in
+it (a line above the Claude Code prompt, or the `lightbulb` plugin's share skill in Claude Code
+and Codex). A session that is not shared is only its person's: nothing of it leaves the Mac,
+and you cannot see or message it. A shared session is shared whole, from its start. Its person
+can set one session to **Only me** or turn sharing off for the Mac.
 A running session shows its live terminal when Lightbulb started it, when it is a Claude Code
 background session, or when it is a plain Codex session (Codex's own background service runs
 it, and Lightbulb opens one more Codex terminal on the same conversation). A running session with no live
@@ -164,13 +163,13 @@ Claude app, the Codex app, an IDE) has no terminal to show, so Lightbulb shows i
 The person who owns it can press **Open in a terminal**. Their Mac starts a copy of that
 conversation in a live terminal, in the same folder (it must be an approved folder). The copy
 has the whole history so far; the app's own session keeps running separately. The new terminal
-is a normal shared session, so teammates can watch it, ask to join and type.
+is a normal shared session, so teammates can watch it, and type while its owner lets teammates control it.
 
 Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
 opening one from that list opens the session in that room's right column.
 Opening a session from the sidebar Sessions section or from a session link
 instead fills the middle with the sharer's DM beside it. A running session
-shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input (the box returns only if the Mac refuses remote typing). A viewer who cannot type sees a "Watching · Ask to join" line instead. An ended session that Lightbulb hosted keeps its final screen, read-only, under "Ended · <time>"
+shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input (the box returns only if the Mac refuses remote typing). A viewer who cannot type sees a "Watching · Only <owner> can type in this session." line instead. An ended session that Lightbulb hosted keeps its final screen, read-only, under "Ended · <time>"
 with Resume, for as long as the owner's Lightbulb app runs; once the app quits or restarts the
 panel says the screen is gone, still with Resume. Nothing of the screen is saved anywhere. A
 session whose Mac is offline shows "Mac offline" with Resume greyed out, the follow-up box, and
@@ -203,14 +202,16 @@ Starting the same conversation again on the Mac lists it again.
 
 **Claude Code or Codex without the Mac app** (Linux, Windows, or a Mac with no
 Lightbulb app): the person installs the `lightbulb` plugin from the public
-marketplace `TheLightbulbCompany/lightbulb-plugin`. It gives the hosted
-`lightbulb` MCP server and the `lightbulb-session-sharing` skill. It does not
-share sessions; only the Mac app does that. Claude Code:
+marketplace `TheLightbulbCompany/lightbulb-plugin`. It gives skills and hooks
+(the `lightbulb-session-sharing` skill among them). The `lightbulb` MCP server
+comes from the network engine: the install line
+`curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh`,
+then `lightbulb login` to add the workspace tools. The plugin does not share
+sessions; only the Mac app does that. Claude Code:
 `claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin`, then
 `claude plugin install lightbulb@lightbulb`. Codex:
 `codex plugin marketplace add TheLightbulbCompany/lightbulb-plugin`, then
-`codex plugin add lightbulb@lightbulb` and `codex mcp login lightbulb`. On first
-use they sign in to Lightbulb and choose the workspace. On a Mac that runs the
+`codex plugin add lightbulb@lightbulb`. On a Mac that runs the
 Lightbulb app, tell them not to add this marketplace: the app installs its own
 copy under the same name `lightbulb`.
 
@@ -255,8 +256,8 @@ only**. When you are mentioned there, the people are talking about the session, 
 answer in that chat as a normal reply, after you `read` the session with
 `lightbulb_local_sessions` (the session is in your turn's `sessions` list under the same
 title). Never send a chat message into the session, and never send the session work because
-of a chat message: a person who wants the session to do something types in its terminal (if
-admitted) or uses **Ask to join**. Setting the session to **Only me** empties the chat of everyone but its owner;
+of a chat message: a person who wants the session to do something types in its terminal (while
+**Let teammates control this session** is on) or asks its owner. Setting the session to **Only me** empties the chat of everyone but its owner;
 ending the session makes the chat read-only. Session chats do not appear in search.
 
 **Access** is where the owner sets **Let teammates control this session** (follow-ups and permission
@@ -295,26 +296,19 @@ person outside the workspace sees **Ask to join** (signed out, it signs them up
 first). The owner gets the same Needs-you item, naming them with their email,
 plus an email. **Allow** also makes them a member of the workspace (an ordinary
 member, never an admin) with that session's controls; a **Decline** is not
-announced to them. The owner turns this off per session with **Viewers can ask
-to join** under **Who can see this** (on by default). There is no join link on
-the page.
+announced to them. Link viewers can always ask; there is no switch for it and no
+join link on the page.
 
-**Ask to join**: a teammate who cannot send to someone's session taps **Ask to
-join** (it then reads **Requested**, with "Waiting for <owner> to answer."). A
-request does not time out: it stays open until the owner answers or the session
-ends or restarts. After ten minutes without an answer the person can tap **Ask
-again**, which notifies the owner again ("<name> is still waiting to join
-<session>"), at most once every ten minutes; **Ask to pick up** works the same
-way. If the session restarts first, the person reads "Your request closed before
-<owner> answered" and can ask again. The owner gets a Needs-you Activity item,
-"<name> wants to join <session>", with **Allow** and **Decline**, plus a
-notification. Allow lets just that person send follow-ups and answer permission
-prompts; the rest of the workspace stays read-only. Decline shows the person
-"<owner> declined your request.", and they may ask again. The owner removes an
-allowed person under **Access** → **People you let in**. Asking, allowing,
-declining and removing are logged in the transcript. Everything is cleared when
-the session ends. Only people ask and are allowed: you cannot ask to join, and
-an allowed person's permission never extends to an agent acting for them.
+**Teammates and control**: membership is the trust. A workspace member types into
+someone's session, sends follow-ups and answers its permission prompts only while
+its owner has **Let teammates control this session** on, with no ask and no Allow;
+while it is off they watch. Members never ask to join (only an outside viewer of an
+**Anyone with the link** page does, above). **Ask to pick up** is separate: a
+teammate asks when **Let people continue** is off; after ten minutes without an
+answer they can **Ask again**. The owner removes a person let in from the public page
+under **Access** → **People you let in**. Asking, allowing, declining and removing
+are logged in the transcript, and everything is cleared when the session ends. You
+cannot ask to join, and a person's permission never extends to an agent acting for them.
 
 **Live terminal**: a running held session shows its real terminal in the
 session panel (desktop app on the owner's Mac; the owner types there, **End**
@@ -325,9 +319,9 @@ renderer and Codex sessions in Codex's inline mode (no alternate screen), so a
 watcher can scroll back through such a session's earlier output (a Claude Code
 background session still shows only the current screen; in a Codex session the
 mouse wheel scrolls the terminal, not Codex's own fullscreen transcript);
-while no frame has arrived it says "Connecting…", and after 30 s of silence "Reconnecting…". The owner, anyone accepted through **Ask to join**, or everyone when
+while no frame has arrived it says "Connecting…", and after 30 s of silence "Reconnecting…". The owner, a link viewer let in through **Ask to join**, or every member when
 **Let teammates control this session** is on can type straight into it,
-including answering the tool's own prompts; others watch read-only and see a "Watching · Ask to join" line. There is no message
+including answering the tool's own prompts; others watch read-only and see a "Watching · Only <owner> can type in this session." line. There is no message
 box under a live terminal. Setting the session to **Only me** or removing someone cuts their
 input at once, and so does leaving the workspace; while a teammate types, every view shows
 "<name> typing" and the cursor in their colour. You never get the screen or keyboard: you cannot watch or type into a

@@ -389,7 +389,7 @@ async def set_pickup(
             if not store._is_cancelled(exc):
                 raise
             continue
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         if sessions.pending_pickups(row):
             await sessions._push_presence(updated)  # a pending ask froze the owner's Mac; lift it now
         return sessions._session_public(updated, auth.user_id)
@@ -528,10 +528,20 @@ def _blob(stored: dict) -> dict:
     return {"bytes": stored["bytes"], "sha256": stored["sha256"]}
 
 
+def _ticket_remote(remote: str) -> str:
+    """The author's Mac stores the remote already reduced to `host/org/repo`. Every desktop's
+    ticket parser runs that through `normalize_remote`, which reads only URL and scp forms, so
+    the bare form was refused as "malformed" (every code pick-up since #3330). An https URL
+    reduces to the same `host/org/repo` on every installed desktop."""
+    return remote if "://" in remote or ":" in remote else f"https://{remote}"
+
+
 def _manifest_public(manifest: dict) -> Manifest:
+    code = manifest["code"]
     return Manifest.model_validate(
         {
-            **{key: manifest[key] for key in ("series", "code", "sidecars", "ended")},
+            **{key: manifest[key] for key in ("series", "sidecars", "ended")},
+            "code": {**code, "remote": _ticket_remote(code["remote"])} if code else None,
             "parts": [{key: value for key, value in part.items() if key != "hashed"} for part in manifest["parts"]],
             **{key: manifest[key] for key in ("claudeVersion", "conversationId", "cwdName", "cwdRelative")},
             "snapshotAt": iso(manifest["snapshotAt"]),
@@ -590,7 +600,7 @@ async def report_outcome(auth: AuthContext, session_id: str, pickup_id: str, out
             raise
         return  # a retried outcome: already audited and already announced
     # An open session view refetches its audit on this, so the owner sees the pick-up at once.
-    await publish_resources_changed(owner, row["humanUserId"])
+    await publish_resources_changed(owner, row["humanUserId"], session_id=sid)
 
 
 async def lineage(owner: str, sid: str) -> dict | None:
@@ -792,7 +802,7 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
                 raise
     else:
         raise DeviceRefused(503)
-    await publish_resources_changed(owner, row["humanUserId"])
+    await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
 
 
 async def mark_unavailable(row: dict, enrollment: dict, reason: str) -> None:
@@ -821,7 +831,7 @@ async def mark_unavailable(row: dict, enrollment: dict, reason: str) -> None:
                 raise
     else:
         raise DeviceRefused(503)
-    await publish_resources_changed(owner, row["humanUserId"])
+    await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
 
 
 # --- Expiry -------------------------------------------------------------------------------------
@@ -959,7 +969,7 @@ async def retire(
     for prefix in retired:
         await run_in_thread(delete_prefix, prefix)
     if allowed:
-        await publish_resources_changed(owner, row["humanUserId"])
+        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
     return updated
 
 

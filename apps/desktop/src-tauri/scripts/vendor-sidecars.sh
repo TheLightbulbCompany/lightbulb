@@ -5,6 +5,7 @@
 #   - openclaw-host-<triple>/                     (per-arch npm install)
 #   - lightbulb-browser-service-<triple>          (per-arch launcher shim)
 #   - chrome-devtools-mcp/                        (pinned npm install, any arch)
+#   - lightbulb                                   (the network engine, arm64)
 #
 # All of them ship as bundle RESOURCES (Contents/Resources/bin/), never
 # externalBin: a script in Contents/MacOS is signed via xattrs, which the
@@ -52,6 +53,10 @@ OPENCLAW_VERSION="2026.8.1"
 # arch-independent copy and nothing for the pre-sign step to sign); engines
 # wants node ^22.12.0, which NODE_VERSION satisfies.
 CHROME_DEVTOOLS_MCP_VERSION="1.10.1"
+# The network engine (TheLightbulbCompany/cli): the one `lightbulb` MCP server, bundled as
+# Contents/Resources/bin/lightbulb (engine.rs installs it when none or an older one is installed).
+ENGINE_TAG="v0.6.6"
+ENGINE_SHA256="eb3b5c0dd9f71e28111722733c7085de72d9e58e57d351a2e452860167c48c67"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
@@ -217,6 +222,20 @@ EOF
     printf 'CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1\nCHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS=1\n' > "$DIR/mcp.env"
 }
 
+# The engine release is arm64 only; its tools.json must match the backend's copy.
+vendor_engine() {
+    echo "==> Vendoring the lightbulb engine ${ENGINE_TAG}"
+    local TARBALL="$TMP_DIR/lightbulb-macos-arm64.tar.gz"
+    curl -fsSL -o "$TARBALL" "https://github.com/TheLightbulbCompany/cli/releases/download/${ENGINE_TAG}/lightbulb-macos-arm64.tar.gz"
+    echo "${ENGINE_SHA256}  ${TARBALL}" | shasum -a 256 -c -
+    tar -xzf "$TARBALL" -C "$BIN_DIR" lightbulb
+    chmod +x "$BIN_DIR/lightbulb"
+    # The arm64 binary runs only on an arm64 Mac: an Intel host vendors it unchecked.
+    if [ "$(uname -m)" = "arm64" ]; then
+        "$BIN_DIR/lightbulb" mcp --tools-json | cmp - "$TAURI_DIR/../../backend/core/services/network_tools.json"
+    fi
+}
+
 # CI passes a single target triple; local dev (no args) vendors both
 # so `cargo tauri dev` works on either arch without re-running.
 TARGET="${1:-}"
@@ -241,6 +260,7 @@ case "$TARGET" in
         ;;
 esac
 vendor_chrome_devtools_mcp
+vendor_engine
 
 rm -rf "$TMP_DIR"
 echo "==> Sidecars vendored at $BIN_DIR"

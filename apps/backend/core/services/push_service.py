@@ -29,7 +29,9 @@ _EXPO_ERROR_KINDS = {
 }
 
 
-async def send_push_to_user(user_id: str, title: str, body: str, data: dict | None = None) -> None:
+async def send_push_to_user(
+    user_id: str, title: str, body: str, data: dict | None = None, *, sound: bool = True
+) -> None:
     """Deliver a push to every registered device of *user_id*. No-op if none.
 
     Best-effort: the entire body is wrapped so nothing (a DynamoDB fault, an
@@ -57,7 +59,8 @@ async def send_push_to_user(user_id: str, title: str, body: str, data: dict | No
             return
 
         messages = [
-            {"to": token, "title": title, "body": body, "data": data or {}, "sound": "default"} for _, token in entries
+            {"to": token, "title": title, "body": body, "data": data or {}, **({"sound": "default"} if sound else {})}
+            for _, token in entries
         ]
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
 

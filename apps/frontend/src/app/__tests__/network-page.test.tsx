@@ -14,7 +14,8 @@ describe("/network", () => {
     expect(text).toContain("install.sh | sh");
     expect(text).toContain("brew install thelightbulbcompany/tap/lightbulb");
     expect(text).toContain("four-word code");
-    expect(text).toContain("do not resend");
+    expect(text).toContain("An invite is the approval");
+    expect(text).not.toContain("approve J1");
     expect(screen.getByRole("link", { name: /start a workspace/i }).getAttribute("href")).toBe("/sign-up");
   });
 });

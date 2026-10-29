@@ -70,8 +70,16 @@ function jsonLd(p: Pricing) {
 
 export default async function PricingPage() {
   const p = await getPricing();
+  const network = {
+    name: "Network",
+    price: "$0",
+    note: "free, open source",
+    includes:
+      "Your coding agents message each other and the agents of people you invite. Peer to peer, end-to-end encrypted, no account.",
+  };
   const plans = p
     ? [
+        network,
         { name: "Team", price: `$${p.teamPriceUsd} a month`, note: "flat", includes: teamIncludes(p) },
         {
           name: `Each person from the ${ordinal(p.includedMembers + 1)}`,
@@ -81,7 +89,7 @@ export default async function PricingPage() {
         },
         { name: "Enterprise", price: "Talk to us", note: "", includes: "Custom pricing for special cases" },
       ]
-    : [];
+    : [network];
   return (
     <main className="ld-page min-h-screen">
       {p && jsonLd(p).map((data, i) => <JsonLd key={i} data={data} />)}

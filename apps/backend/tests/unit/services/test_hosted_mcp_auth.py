@@ -113,36 +113,6 @@ async def test_send_resolves_thread_root_and_member_mentions(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_room_target_search_does_not_offer_offline_queue(monkeypatch):
-    monkeypatch.setattr("core.services.webhook_agents.targets", AsyncMock(return_value=[]))
-    session = SimpleNamespace(
-        session_id=str(uuid.uuid4()),
-        human_user_id="user_sender",
-        provider="claude",
-        display_title="Offline",
-        title=None,
-        cwd_name="lightbulb",
-        status="offline",
-        capabilities=SimpleNamespace(send_mode="queue"),
-        capabilities_verified=True,
-        control_unavailable_reason=None,
-        team_control=False,
-        allowed_senders=[],
-        shared=False,
-    )
-    monkeypatch.setattr(hosted_mcp, "_caller", lambda: AuthContext(user_id="user_sender", org_id="org_test"))
-    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda *_: AuthContext(user_id="user_sender", org_id="org_test"))
-    monkeypatch.setattr(
-        hosted_mcp.local_sessions,
-        "list_workspace_sessions",
-        AsyncMock(return_value=SimpleNamespace(sessions=[session])),
-    )
-    monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Tester"))
-    result = await hosted_mcp.find_sessions()
-    assert result["sessions"][0]["canSend"] is False
-    assert result["sessions"][0]["shared"] is False  # the caller's own Only me session says so
-
-
 def test_client_identity_names_known_clients_and_falls_back_to_host():
     assert hosted_mcp.client_identity("https://claude.ai/oauth/claude-code-client-metadata") == (
         "claude-code",
@@ -232,7 +202,7 @@ async def test_person_send_posts_into_the_dm_it_finds_or_opens(monkeypatch):
     room_id, request_id = str(uuid.uuid4()), uuid.uuid4()
     pin.return_value = {"destination": "person:user_b"}
     person_dm = AsyncMock(return_value=room_id)
-    monkeypatch.setattr(hosted_mcp.native_session_tools, "person_dm", person_dm)
+    monkeypatch.setattr(hosted_mcp, "person_dm", person_dm)
     update = AsyncMock(return_value={"Attributes": {"roomId": room_id}})
     monkeypatch.setattr(hosted_mcp, "run_in_thread", update)
     monkeypatch.setattr(hosted_mcp.messaging_repo, "_table", lambda: SimpleNamespace(update_item=None))
@@ -260,31 +230,6 @@ async def test_person_send_posts_into_the_dm_it_finds_or_opens(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_session_send_is_a_follow_up_under_the_persons_control_authority(monkeypatch):
-    auth, pin = _hosted_sender(monkeypatch)
-    sid, request_id = str(uuid.uuid4()), uuid.uuid4()
-    target = {"sessionId": sid, "ownerId": "org_test", "humanUserId": "user_sender", "generation": "g1"}
-    authorize = AsyncMock(return_value=(target, {}))
-    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", authorize)
-    send = AsyncMock(return_value={"state": "pending", "delivery": "now"})
-    monkeypatch.setattr(hosted_mcp.native_session_tools, "session_send", send)
-    record = AsyncMock()
-    monkeypatch.setattr(hosted_mcp, "_record_outcome", record)
-    post = AsyncMock()
-    monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
-
-    result = await hosted_mcp.send_message("run the tests", request_id, session_id=sid)
-
-    assert result == {"sessionId": sid, "requestId": str(request_id), "state": "pending", "delivery": "now"}
-    authorize.assert_awaited_once_with(auth, None, sid)  # a read: session_send holds the unallowed
-    pin.assert_awaited_once_with(auth, request_id, f"session:{sid}")
-    send.assert_awaited_once_with(auth, target, "run the tests", str(request_id), via_client="Claude Code")
-    post.assert_not_awaited()  # nothing is posted to a room
-    with pytest.raises(hosted_mcp.messaging.ApiProblem):
-        await hosted_mcp.send_message("x", uuid.uuid4(), session_id=sid, mention_ids=["a"])
-
-
-@pytest.mark.asyncio
 async def test_receipt_reads_the_pinned_destination(monkeypatch):
     auth = AuthContext(user_id="user_sender", org_id="org_test")
     monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: auth)
@@ -295,13 +240,8 @@ async def test_receipt_reads_the_pinned_destination(monkeypatch):
     key = hosted_mcp._sent_key(auth, request_id)
     assert (await hosted_mcp.message_receipt(request_id)) == {"state": "unknown"}
 
-    pins[key] = {"destination": f"session:{sid}"}
-    get_command = AsyncMock(return_value=SimpleNamespace(state="applied"))
-    monkeypatch.setattr(hosted_mcp.local_sessions, "get_command", get_command)
-    assert (await hosted_mcp.message_receipt(request_id))["state"] == "applied"
-    get_command.assert_awaited_once_with(auth, None, sid, str(request_id))
-    get_command.side_effect = hosted_mcp.messaging.ApiProblem("LOCAL_SESSION_NOT_FOUND", "gone")
-    assert (await hosted_mcp.message_receipt(request_id))["state"] == "unknown"
+    pins[key] = {"destination": f"session:{sid}"}  # a hub session send: no longer taken
+    assert (await hosted_mcp.message_receipt(request_id)) == {"state": "unknown"}
 
     pins[key] = {"destination": f"room:{room_id}"}
     room_receipt = AsyncMock(return_value={"state": "posted"})
@@ -311,7 +251,7 @@ async def test_receipt_reads_the_pinned_destination(monkeypatch):
 
     # A person send's receipt reads its pinned room, so a DM that became a group DM still resolves.
     person_dm = AsyncMock(side_effect=AssertionError("a receipt never re-resolves the DM"))
-    monkeypatch.setattr(hosted_mcp.native_session_tools, "person_dm", person_dm)
+    monkeypatch.setattr(hosted_mcp, "person_dm", person_dm)
     pins[key] = {"destination": "person:user_b", "roomId": room_id}
     assert (await hosted_mcp.message_receipt(request_id)) == {"state": "posted"}
     assert room_receipt.await_args.args == (auth, room_id, request_id)
@@ -339,7 +279,7 @@ async def test_a_refused_person_send_opens_no_dm(monkeypatch):
     _auth, pin = _hosted_sender(monkeypatch)
     pin.return_value = {"destination": "person:user_b"}
     person_dm = AsyncMock(side_effect=hosted_mcp.messaging.ApiProblem("ROOM_NOT_FOUND", "none"))
-    monkeypatch.setattr(hosted_mcp.native_session_tools, "person_dm", person_dm)
+    monkeypatch.setattr(hosted_mcp, "person_dm", person_dm)
     with pytest.raises(hosted_mcp.messaging.ApiProblem) as error:
         await hosted_mcp.send_message("   ", uuid.uuid4(), person_id="user_b")
     assert error.value.error.code == "INVALID_REQUEST"
@@ -379,163 +319,6 @@ async def test_a_person_send_refuses_a_dm_that_became_a_group(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refused_session_send_says_why_and_its_receipt_reads_rejected(monkeypatch):
-    from mcp.server.mcpserver.exceptions import ToolError
-
-    auth, _ = _hosted_sender(monkeypatch)
-    sid, request_id = str(uuid.uuid4()), uuid.uuid4()
-    refusal = hosted_mcp.messaging.ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
-    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", AsyncMock(side_effect=refusal))
-    record = AsyncMock()
-    monkeypatch.setattr(hosted_mcp, "_record_outcome", record)
-    with pytest.raises(ToolError, match="LOCAL_SESSION_FORBIDDEN: Only the session's owner"):
-        await hosted_mcp.send_message("hi", request_id, session_id=sid)
-    record.assert_awaited_once_with(auth, request_id, refusal="LOCAL_SESSION_FORBIDDEN")
-
-    key = hosted_mcp._sent_key(auth, request_id)
-    pins = {key: {"destination": f"session:{sid}", "refusal": "LOCAL_SESSION_FORBIDDEN"}}
-    monkeypatch.setattr(hosted_mcp.messaging_repo, "_get", AsyncMock(side_effect=lambda pk, sk: pins.get((pk, sk))))
-    gone = hosted_mcp.messaging.ApiProblem("LOCAL_SESSION_NOT_FOUND", "gone")
-    monkeypatch.setattr(hosted_mcp.local_sessions, "get_command", AsyncMock(side_effect=gone))
-    assert await hosted_mcp.message_receipt(request_id) == {
-        "sessionId": sid,
-        "requestId": str(request_id),
-        "state": "rejected",
-        "reason": "LOCAL_SESSION_FORBIDDEN",
-    }
-
-
-@pytest.mark.asyncio
-async def test_an_accepted_send_is_recorded_and_clears_an_earlier_transient_refusal(monkeypatch):
-    auth, _ = _hosted_sender(monkeypatch)
-    sid, request_id = str(uuid.uuid4()), uuid.uuid4()
-    # The first attempt was refused with a transient code and recorded it on the pin row.
-    pinned = {"destination": f"session:{sid}", "refusal": "LOCAL_SESSION_OFFLINE"}
-    monkeypatch.setattr(hosted_mcp, "_pin_destination", AsyncMock(return_value=pinned))
-    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", AsyncMock(return_value=(sid, None)))
-    monkeypatch.setattr(
-        hosted_mcp.native_session_tools,
-        "session_send",
-        AsyncMock(return_value={"state": "queued", "delivery": "queued"}),
-    )
-    record = AsyncMock()
-    monkeypatch.setattr(hosted_mcp, "_record_outcome", record)
-    assert (await hosted_mcp.send_message("hi", request_id, session_id=sid))["state"] == "queued"
-    record.assert_awaited_once_with(auth, request_id, accepted="queued")
-
-
-@pytest.mark.asyncio
-async def test_a_refused_retry_never_undoes_an_accepted_send(monkeypatch):
-    from mcp.server.mcpserver.exceptions import ToolError
-
-    auth, _ = _hosted_sender(monkeypatch)
-    sid, request_id = str(uuid.uuid4()), uuid.uuid4()
-    # The first attempt was admitted but its response was lost; sharing was switched off since.
-    pinned = {"destination": f"session:{sid}", "accepted": "queued"}
-    monkeypatch.setattr(hosted_mcp, "_pin_destination", AsyncMock(return_value=pinned))
-    off = hosted_mcp.messaging.ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sharing is off.")
-    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", AsyncMock(side_effect=off))
-    record = AsyncMock()
-    monkeypatch.setattr(hosted_mcp, "_record_outcome", record)
-    assert (await hosted_mcp.send_message("hi", request_id, session_id=sid))["state"] == "queued"
-    record.assert_not_awaited()
-    # Different text under the same id is a ledger conflict, never a replay of the accepted state.
-    conflict = hosted_mcp.messaging.ApiProblem("IDEMPOTENCY_CONFLICT", "request_id was used with other text.")
-    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", AsyncMock(return_value=(sid, None)))
-    monkeypatch.setattr(hosted_mcp.native_session_tools, "session_send", AsyncMock(side_effect=conflict))
-    with pytest.raises(ToolError, match="IDEMPOTENCY_CONFLICT"):
-        await hosted_mcp.send_message("other text", request_id, session_id=sid)
-
-    key = hosted_mcp._sent_key(auth, request_id)
-    monkeypatch.setattr(
-        hosted_mcp.messaging_repo, "_get", AsyncMock(side_effect=lambda pk, sk: {key: pinned}.get((pk, sk)))
-    )
-    monkeypatch.setattr(hosted_mcp.local_sessions, "get_command", AsyncMock(side_effect=off))
-    assert await hosted_mcp.message_receipt(request_id) == {
-        "sessionId": sid,
-        "requestId": str(request_id),
-        "state": "queued",
-    }
-
-
-@pytest.mark.asyncio
-async def test_record_outcome_writes_accepted_as_final_and_a_refusal_only_before_it(monkeypatch):
-    from botocore.exceptions import ClientError
-
-    auth = AuthContext(user_id="user_sender", org_id="org_test")
-    calls = []
-
-    def update_item(**kwargs):
-        calls.append(kwargs)
-        if "ConditionExpression" in kwargs:
-            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
-
-    monkeypatch.setattr(hosted_mcp.messaging_repo, "_table", lambda: SimpleNamespace(update_item=update_item))
-    request_id = uuid.uuid4()
-    await hosted_mcp._record_outcome(auth, request_id, accepted="queued")
-    await hosted_mcp._record_outcome(auth, request_id, refusal="LOCAL_SESSION_FORBIDDEN")  # swallowed
-    assert [c["UpdateExpression"] for c in calls] == [
-        "SET accepted = if_not_exists(accepted, :s) REMOVE refusal",
-        "SET refusal = :c",
-    ]
-    assert calls[1]["ConditionExpression"] == "attribute_not_exists(accepted)"
-
-
-@pytest.mark.asyncio
-async def test_pin_conflict_on_a_session_send_is_a_readable_tool_error(monkeypatch):
-    from mcp.server.mcpserver.exceptions import ToolError
-
-    _, pin = _hosted_sender(monkeypatch)
-    pin.side_effect = hosted_mcp.messaging.ApiProblem(
-        "IDEMPOTENCY_CONFLICT", "request_id was used for another destination."
-    )
-    with pytest.raises(ToolError, match="IDEMPOTENCY_CONFLICT"):
-        await hosted_mcp.send_message("hi", uuid.uuid4(), session_id=str(uuid.uuid4()))
-
-
-@pytest.mark.asyncio
-async def test_receipt_reads_rejected_even_when_get_command_refuses_again(monkeypatch):
-    auth = AuthContext(user_id="user_sender", org_id="org_test")
-    monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: auth)
-    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda *_scope: auth)
-    sid, request_id = str(uuid.uuid4()), uuid.uuid4()
-    pin = {"destination": f"session:{sid}", "refusal": "LOCAL_SESSION_FORBIDDEN"}
-    monkeypatch.setattr(hosted_mcp.messaging_repo, "_get", AsyncMock(return_value=pin))
-    off = hosted_mcp.messaging.ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session sharing is disabled.")
-    monkeypatch.setattr(hosted_mcp.local_sessions, "get_command", AsyncMock(side_effect=off))
-    result = await hosted_mcp.message_receipt(request_id)
-    assert result["state"] == "rejected" and result["reason"] == "LOCAL_SESSION_FORBIDDEN"
-
-
-@pytest.mark.asyncio
-async def test_use_browser_moves_a_session_its_caller_may_control(monkeypatch):
-    from mcp.server.mcpserver.exceptions import ToolError
-
-    sid = "11111111-1111-4111-8111-111111111111"
-    monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: AuthContext(user_id="user_sender", org_id="org_test"))
-    monkeypatch.setattr(
-        hosted_mcp, "_net_caller", lambda *_scope: AuthContext(user_id="user_sender", org_id="org_test")
-    )
-    authorize = AsyncMock(return_value=({"ownerId": "org_test", "sessionId": sid}, {}))
-    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", authorize)
-    monkeypatch.setattr(
-        hosted_mcp.session_browser,
-        "set_place",
-        AsyncMock(return_value={"sessionId": sid, "browser": "mac", "note": hosted_mcp.session_browser.PLACE_NOTE}),
-    )
-    moved = await hosted_mcp.use_browser("mac", sid)
-    assert moved["browser"] == "mac" and "restart the lightbulb-browser MCP server" in moved["note"]
-    assert authorize.await_args.kwargs == {"owner_only": True}
-    authorize.return_value = ({"ownerId": "org_test", "sessionId": sid, "unshared": True}, {})
-    with pytest.raises(ToolError, match="Share this session to use the Lightbulb browser"):
-        await hosted_mcp.use_browser("cloud", sid)
-    authorize.side_effect = hosted_mcp.messaging.ApiProblem(
-        "LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that."
-    )
-    with pytest.raises(ToolError, match="LOCAL_SESSION_FORBIDDEN"):
-        await hosted_mcp.use_browser("cloud", sid)
-
-
 def test_a_dynamically_registered_client_is_named_by_its_registration_never_its_opaque_id():
     # Prod e2e 2026-10-21: Cursor registered itself (client id "4BqxUPBmdW6cyWca") and the
     # message read "4BqxUPBmdW6cyWca via Isol8 Admin".

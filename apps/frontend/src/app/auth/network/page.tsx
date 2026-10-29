@@ -9,7 +9,8 @@ import { ApiError, useApi } from "@/lib/api";
 
 // `lightbulb login` and `lightbulb invite --agents` open this page; the person types the code
 // their terminal shows (the link carries none, so a link alone confirms nothing). Login ties
-// that computer to the signed-in person (a free account needs no workspace); --agents (a
+// that computer to the signed-in person (a free account needs no workspace) and to the selected
+// workspace, the one its workspace tools act in; --agents (a
 // workspace admin, on a computer already theirs) adds the selected workspace's agents to that
 // computer's network.
 
@@ -101,7 +102,7 @@ function ConfirmComputer() {
     body = (
       <h1 className="text-xl font-semibold">
         {agents
-          ? `Done. Allow ${organization?.name ?? "your workspace"} on ${computer} when it asks.`
+          ? `Done. ${organization?.name ?? "Your workspace"} is joining the network on ${computer}.`
           : "This computer is signed in. You can close this tab."}
       </h1>
     );
@@ -135,7 +136,9 @@ function ConfirmComputer() {
     body = (
       <>
         <h1 className="text-xl font-semibold mb-2">
-          {agents ? `Add ${organization?.name}'s agents to ${computer}'s network?` : `Sign in ${computer} as you?`}
+          {agents
+            ? `Add ${organization?.name}'s agents to ${computer}'s network?`
+            : `Sign in ${computer} as you${organization ? `, for ${organization.name}` : ""}?`}
         </h1>
         <p className="text-sm text-muted-foreground mb-4 max-w-sm">
           {`Requested ${ago(seen.startedAt)}${seen.ip ? ` from ${seen.ip}` : ""}. `}

@@ -393,7 +393,17 @@ fn history_on(conn: &mut UnixStream, max: usize) -> Option<Vec<u8>> {
 /// The Codex thread this holder's provider is on, as its own `SessionStart` hook recorded it
 /// (spec §5.4: a Codex rollout may be written by a shared app server, not the holder's child).
 pub fn thread(info: &HolderInfo) -> Option<String> {
-    let text = std::fs::read_to_string(info.socket.with_extension("thread")).ok()?;
+    thread_at(&info.socket.with_extension("thread"))
+}
+
+/// The Codex thread holder `id` in `dir` is on (`thread`), read from its one small file without
+/// asking the holder: what an End checks before it ends a held Codex.
+pub fn bound_thread(dir: &Path, id: &str) -> Option<String> {
+    thread_at(&dir.join(format!("{id}.thread")))
+}
+
+fn thread_at(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
     let thread = text.trim();
     uuid::Uuid::parse_str(thread).is_ok().then(|| thread.to_owned())
 }

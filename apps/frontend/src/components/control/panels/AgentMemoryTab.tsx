@@ -5,8 +5,15 @@ import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 
 import { useApi } from "@/lib/api";
+import { sessionPermalink } from "@/components/messaging/messageLinks";
 
-interface Memory { id: string; text: string; createdAt: string; confirmed: boolean }
+interface Memory {
+  id: string; text: string; createdAt: string; confirmed: boolean;
+  source?: "room" | "network"; // network: a mirrored log entry, which cannot be shared or confirmed
+  status?: "current" | "contested" | "replaced";
+  history?: { value: string; speaker: string; occurredAt: string }[];
+}
+interface Draft { id: string; kind: "lesson" | "finding"; text: string; evidence: string[] }
 interface MemoryList { private: Memory[]; team: Memory[]; truncated: boolean }
 
 const BTN = "text-xs font-medium text-[var(--link)] hover:underline disabled:opacity-50";
@@ -53,8 +60,23 @@ export function AgentMemoryTab() {
     () => api.get("/memory") as Promise<MemoryList>,
     { shouldRetryOnError: false },
   );
+  const { data: drafts, mutate: refetchDrafts } = useSWR<{ drafts: Draft[] }>(
+    ["/memory/drafts", scope],
+    () => api.get("/memory/drafts") as Promise<{ drafts: Draft[] }>,
+    { shouldRetryOnError: false },
+  );
+  const [settled, setSettled] = useState<ReadonlySet<string>>(new Set());
+  const suggested = (drafts?.drafts ?? []).filter((d) => !settled.has(d.id));
+  // A session id is a link only when it is one of the viewer's own sessions (else plain text).
+  const { data: sessions } = useSWR<{ sessions: { id: string }[] }>(
+    suggested.length ? ["/sessions", scope] : null,
+    () => api.get("/sessions") as Promise<{ sessions: { id: string }[] }>,
+    { shouldRetryOnError: false },
+  );
+  const openable = new Set((sessions?.sessions ?? []).map((s) => s.id));
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [err, setErr] = useState<string | null>(null);
+  const [contestedOnly, setContestedOnly] = useState(false);
   const [, bump] = useState(0);
   // One refetch at HOLD_MS after each successful action: the overlay expires then, and the server list is current by now.
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -85,6 +107,19 @@ export function AgentMemoryTab() {
     }
   }
 
+  // The approved entry reaches the list above ~60 s later; it is not faked into it.
+  async function settle(d: Draft, verb: "approve" | "dismiss") {
+    const run = () =>
+      (api.post(`/memory/drafts/${d.id}/${verb}`, {}) as Promise<unknown>).catch((e: { status?: number }) => {
+        if (e?.status === 404 || e?.status === 409) void refetchDrafts(); // settled elsewhere: it should disappear
+        throw e;
+      });
+    await act(d.id, run, () => {
+      setSettled((x) => new Set(x).add(d.id));
+      void refetchDrafts();
+    });
+  }
+
   // Put a confirmed team row in the overlay; the old record (if its id changed) stays hidden.
   function hold(old: Memory, newId: string | undefined) {
     const until = Date.now() + HOLD_MS;
@@ -100,11 +135,13 @@ export function AgentMemoryTab() {
         <div className="mt-1 flex items-center gap-3 text-xs text-[var(--fg-mute)]">
           <span>{new Date(m.createdAt).toLocaleDateString()}</span>
           {m.confirmed ? <span className="text-[var(--live)]">Confirmed</span> : null}
-          {kind === "private" ? (
+          {m.status === "contested" ? <span className="text-[var(--alert)]">Contested</span> : null}
+          {added.get(m.id)?.scope === scope ? <span>Pending</span> : null}
+          {kind === "private" && m.source !== "network" ? (
             <button type="button" className={BTN} disabled={busy.has(m.id)}
               onClick={() => act(m.id, () => api.post(`/memory/${m.id}/share`, {}), (r) => hold(m, r.id))}>Share with team</button>
           ) : null}
-          {kind === "team" && !m.confirmed ? (
+          {kind === "team" && !m.confirmed && m.source !== "network" ? (
             <button type="button" className={BTN} disabled={busy.has(m.id)}
               onClick={() => act(m.id, () => api.post(`/memory/${m.id}/confirm`, {}), (r) => hold(m, r.id))}>Confirm</button>
           ) : null}
@@ -118,17 +155,46 @@ export function AgentMemoryTab() {
               }
             }}>Delete</button>
         </div>
+        {m.history?.map((h, i) => (
+          <p key={i} className="mt-1 text-xs text-[var(--fg-mute)]">
+            {/* A contested record's other side is a current value too, not an old one. */}
+            {m.status === "contested" ? "Also:" : "Was"} {h.value} · {h.speaker} · {new Date(h.occurredAt).toLocaleDateString()}
+          </p>
+        ))}
+      </li>
+    );
+  }
+
+  function draftRow(d: Draft) {
+    return (
+      <li key={d.id} className="border-b border-[var(--plane-edge)] py-2">
+        <p className="whitespace-pre-wrap break-words text-sm text-[var(--fg)]">{d.text}</p>
+        <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-[var(--fg-mute)]">
+          <span className="rounded border border-[var(--plane-edge)] px-1">{d.kind}</span>
+          {d.evidence.map((id) =>
+            openable.has(id) ? (
+              <a key={id} href={sessionPermalink(id)} className={BTN}>{id}</a>
+            ) : (
+              <span key={id}>{id}</span>
+            ),
+          )}
+          {d.kind === "lesson" ? (
+            <button type="button" className={BTN} disabled={busy.has(d.id)} onClick={() => void settle(d, "approve")}>Approve</button>
+          ) : null}
+          <button type="button" className={BTN} disabled={busy.has(d.id)} onClick={() => void settle(d, "dismiss")}>Dismiss</button>
+        </div>
       </li>
     );
   }
 
   function section(title: string, note: string, rows: Memory[], kind: "private" | "team") {
+    if (contestedOnly) rows = rows.filter((m) => m.status === "contested");
     return (
       <section className="mt-4">
         <h3 className="label-caps text-[var(--fg-mute)]">{title}</h3>
         <p className="mb-1 text-xs text-[var(--fg-mute)]">{note}</p>
         {rows.length ? <ul>{rows.map((m) => row(m, kind))}</ul>
-          : <p className="py-2 text-sm text-[var(--fg-soft)]">Nothing remembered yet. New facts appear a few minutes after a conversation.</p>}
+          : <p className="py-2 text-sm text-[var(--fg-soft)]">{contestedOnly ? "No contested memories" : "Nothing remembered yet. New facts appear a few minutes after a conversation."}</p>}
       </section>
     );
   }
@@ -137,8 +203,21 @@ export function AgentMemoryTab() {
   if (error || !data) return <p className="py-4 text-sm text-[var(--alert)]">Memory is unavailable right now.</p>;
   return (
     <div className="py-4">
-      <p className="text-xs text-[var(--fg-mute)]">Shared by every agent in this workspace.</p>
+      <div className="flex items-center justify-between text-xs text-[var(--fg-mute)]">
+        <p>Shared by every agent in this workspace.</p>
+        <label className="flex items-center gap-1">
+          <input type="checkbox" checked={contestedOnly} onChange={(e) => setContestedOnly(e.target.checked)} />
+          Contested only
+        </label>
+      </div>
       {err ? <p role="alert" className="mt-2 text-xs text-[var(--alert)]">{err}</p> : null}
+      {suggested.length ? (
+        <section className="mt-4">
+          <h3 className="label-caps text-[var(--fg-mute)]">Suggested</h3>
+          <p className="mb-1 text-xs text-[var(--fg-mute)]">Lessons drawn from uploaded sessions. Approve to add one to memory.</p>
+          <ul>{suggested.map(draftRow)}</ul>
+        </section>
+      ) : null}
       {section("Only you", "From your direct messages with agents. Only you and the agents in those messages see these.", data.private, "private")}
       {section("Team", "Every member and every agent can recall these.", data.team, "team")}
       {data.truncated ? <p className="mt-2 text-xs text-[var(--fg-mute)]">Showing 200 of them.</p> : null}

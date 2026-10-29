@@ -32,6 +32,12 @@ export interface Connection {
   display_name: string;
   acquisition: "paste_token" | "direct_oauth" | "aws_sts" | "container_login";
   status: "connected" | "disconnected" | "unavailable" | "reconnect_required";
+  /**
+   * Why a `reconnect_required` grant died: the provider's OAuth error
+   * (`invalid_grant: Invalid refresh token`) or our own short code
+   * (`no_access_token`, `bad_expiry`, `no_refresh_token`). Null otherwise.
+   */
+  reconnect_reason?: string | null;
   /** Whether this Hermes runtime can deliver the grant to an agent. */
   runtime_supported?: boolean;
   /**

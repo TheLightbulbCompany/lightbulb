@@ -125,7 +125,7 @@ describe("PaperclipStack — Fargate service shape", () => {
     // :latest).
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       Family: "lightbulb-dev-paperclip-server",
-      Cpu: "1024",
+      Cpu: "512",
       Memory: "4096",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
@@ -236,7 +236,10 @@ describe("PaperclipStack — Fargate service shape", () => {
   test("Fargate service runs in private subnets with no public IP", () => {
     template.hasResourceProperties("AWS::ECS::Service", {
       ServiceName: "lightbulb-dev-paperclip-server",
-      LaunchType: "FARGATE",
+      CapacityProviderStrategy: [
+        { CapacityProvider: "FARGATE_SPOT", Weight: 1 },
+        { CapacityProvider: "FARGATE", Weight: 0 },
+      ],
       DesiredCount: 1,
       DeploymentConfiguration: Match.objectLike({
         DeploymentCircuitBreaker: Match.objectLike({

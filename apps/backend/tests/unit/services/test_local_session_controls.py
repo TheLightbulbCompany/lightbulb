@@ -165,61 +165,29 @@ async def test_an_approval_lands_only_on_the_exact_open_prompt(transport):
 
 
 @pytest.mark.asyncio
-async def test_private_native_send_is_visible_and_approvable_only_to_its_owner(transport):
-    # This is Claude's held PermissionRequest hook, not a Codex native intent.
-    await service.set_enrollment(
-        ALICE,
-        service.EnrollmentRequest(deviceId=relay_tests.MAC, cliDeviceId=relay_tests.CLI, enabled=True),
-    )
-    connect(transport)
-    sid = (
-        await relay(transport).handle_message(
-            "conn-1", registration(provider="claude", providerVersion="2.1.269", activeTurnId=None)
-        )
-    )["sessionId"]
-    event = {
-        **APPROVAL,
-        "text": "Lightbulb message",
-        "tool": {
-            **APPROVAL["tool"],
-            "name": "mcp__lightbulb_native_sessions__send",
-            "input": {**APPROVAL["tool"]["input"], "summary": "Lightbulb message", "exact": False},
-        },
-    }
-    detail = {
-        "approvalId": APPROVAL_ID,
-        "inputDigest": DIGEST,
-        "destination": "person:user-b",
-        "text": "Private\nbody",
-        "requestId": "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449",
-    }
-    batch = {
-        "type": "local.session.events",
-        "sessionId": sid,
-        "generation": "generation-1",
-        "batchId": "private-send-1",
-        "afterSeq": 0,
-        "events": [event],
-        "privateApproval": detail,
-    }
-    await relay(transport).handle_message("conn-1", batch)
-    await relay(transport).handle_message("conn-1", batch)  # A lost ACK must not duplicate the prompt.
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="waiting-approval", activeTurnId=None))
-    assert (await service.get_private_send_approval(ALICE, sid)).model_dump(by_alias=True) == detail
-    public = (await service.get_session(BOB, sid)).model_dump(by_alias=True)
-    assert public["pendingApproval"]["summary"] == "Lightbulb message"
-    assert public["pendingApproval"]["exact"] is False
-    assert "privateSendApproval" not in public
-    assert "Private\nbody" not in json.dumps((await service.list_events(BOB, None, sid)).model_dump(by_alias=True))
-    await service.set_team_control(ALICE, sid, True)
-    with pytest.raises(ApiProblem, match="unavailable"):
-        await service.get_private_send_approval(BOB, sid)
-    with pytest.raises(ApiProblem, match="owner"):
-        await service.submit_command(BOB, None, sid, approve())
-    assert (await service.submit_command(ALICE, None, sid, approve())).decision == "allow"
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="busy", activeTurnId=None))
-    with pytest.raises(ApiProblem, match="unavailable"):
-        await service.get_private_send_approval(ALICE, sid)
+async def test_allow_similar_and_allow_for_the_conversation_land_only_where_offered(transport):
+    sid = await start(transport)
+    tool_input = {**APPROVAL["tool"]["input"], "modes": ["session", "similar"], "similar": "git push *"}
+    await waiting(transport, sid, {**APPROVAL, "tool": {**APPROVAL["tool"], "input": tool_input}})
+    public = (await service.get_session(ALICE, sid)).model_dump(by_alias=True)["pendingApproval"]
+    assert public["modes"] == ["session", "similar"] and public["similar"] == "git push *"
+    receipt = await service.submit_command(ALICE, None, sid, approve(mode="similar"))
+    assert receipt.model_dump(by_alias=True)["mode"] == "similar"
+    await service.submit_command(ALICE, None, sid, approve(requestId="approve-2", mode="session"))
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert transport[3][-1][1]["command"]["mode"] in {"similar", "session"}
+    with pytest.raises(ApiProblem, match="not offered"):
+        await service.submit_command(ALICE, None, sid, approve(requestId="approve-3", mode="acceptEdits"))
+
+
+def test_similar_is_never_offered_without_the_rule_it_allows():
+    base = {"approvalId": APPROVAL_ID, "tool": "Bash", "inputDigest": DIGEST, "exact": True}
+    assert service.PendingApproval(**base, modes=["similar", "session"]).modes == ["session"]
+    shown = service.PendingApproval(**base, modes=["similar"], similar="npm run *")
+    assert shown.model_dump(by_alias=True)["similar"] == "npm run *"
+    assert "similar" not in service.PendingApproval(**base).model_dump(by_alias=True)
+    with pytest.raises(ValueError):
+        service.PendingApproval(**base, modes=["bypassPermissions"])
 
 
 @pytest.mark.asyncio
@@ -484,7 +452,23 @@ async def ask(auth, sid, pushes=None):
         patch("core.services.push_service.send_push_to_user", push),
         patch("core.services.messaging.human_display_name", _name),
     ):
-        return await service.request_join(auth, sid)
+        return await seed_ask(auth, sid)
+
+
+async def seed_ask(auth, sid):
+    """Owner ruling 2026-10-26: only an "Anyone with the link" viewer asks to join. This files the
+    pending request ``session_links.ask_to_join`` writes, without its outsider label (so Allow
+    needs no Clerk call), and says it as that ask does."""
+
+    def change(row):
+        if (row.get("joinRequests") or {}).get(auth.user_id, {}).get("state") == "pending":
+            return None
+        return {**row, "joinRequests": {**(row.get("joinRequests") or {}), auth.user_id: service._new_request()}}
+
+    row, audit = await service._change_session(auth, sid, change, "join_requested", None)
+    if audit is not None:
+        await service._notify_join_request(row, auth.user_id)
+    return service._session_public(row, auth.user_id)
 
 
 async def decide(auth, sid, user_id, decision, pushes, live=None):
@@ -525,31 +509,6 @@ def joins(page):
 
 
 @pytest.mark.asyncio
-async def test_asking_again_reminds_the_owner_once_per_window_under_the_same_request(transport):
-    """ISOA-729: a request never times out, so the person who asked can nudge the owner."""
-    sid = await start(transport)
-    pushes = []
-    first = await ask(BOB, sid, pushes)
-    assert first.join_requested_at  # the client offers Ask again ASK_AGAIN_AFTER_S after this
-    await ask(BOB, sid, pushes)  # inside the window: nothing
-    with patch.object(service, "ASK_AGAIN_AFTER_S", 0):  # the window has passed
-        again = await ask(BOB, sid, pushes)
-    assert again.join_request == "pending" and again.join_request_id == first.join_request_id
-    await ask(BOB, sid, pushes)  # inside the new window: nothing
-    assert [(p[0], p[1]) for p in pushes] == [
-        (ALICE.user_id, "Bob wants to join a session"),
-        (ALICE.user_id, "Bob is still waiting to join a session"),
-    ]
-    live = [json.loads(h["events"][0]) for h in transport[4]]
-    asks = [e["eventId"] for e in live if e["type"] == "workspace.session.attention"]
-    assert len(asks) == len(set(asks)) == 2  # the reminder is its own event, not a duplicate to drop
-    # Still one open Needs-you item, and it answers the same request.
-    [item] = joins(await feed(ALICE))
-    assert item.state == "open"
-    assert (await service.get_session(ALICE, sid)).pending_join_ids == {BOB.user_id: first.join_request_id}
-
-
-@pytest.mark.asyncio
 async def test_a_restart_tells_the_person_whose_ask_it_dropped_until_they_ask_again(transport):
     """ISOA-729: the session view remounts on a new generation, so only the server can say this."""
     sid = await start(transport)
@@ -566,11 +525,6 @@ async def test_a_restart_tells_the_person_whose_ask_it_dropped_until_they_ask_ag
     assert "joinRequestClosed" not in (await service.get_session(CAROL, sid)).model_dump(by_alias=True)
     with patch.object(service, "JOIN_CLOSED_TTL_S", 0):  # bounded: it stops being said
         assert (await service.get_session(BOB, sid)).join_request_closed is None
-    again = await ask(BOB, sid)
-    assert again.join_request == "pending" and again.join_request_closed is None
-    assert (
-        "joinClosed" not in await repo.get_session(OWNER, sid) or not (await repo.get_session(OWNER, sid))["joinClosed"]
-    )
 
 
 @pytest.mark.asyncio
@@ -585,17 +539,10 @@ async def test_an_end_then_a_resume_also_tells_the_person_whose_ask_was_dropped(
         "conn-1", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
     )
     assert (await service.get_session(BOB, sid)).join_request_closed == "restarted"
-    # Once the owner lets everyone send, there is nothing left to say.
-    await service.set_team_control(ALICE, sid, True)
-    assert (await service.get_session(BOB, sid)).join_request_closed is None
-    # Let in means said: switching team control off again does not bring the notice back.
-    await service.set_team_control(ALICE, sid, False)
-    assert (await service.get_session(BOB, sid)).join_request_closed is None
-    assert "joinClosed" not in await repo.get_session(OWNER, sid)
 
 
 @pytest.mark.asyncio
-async def test_ask_to_join_is_idempotent_and_tells_only_the_owner(transport):
+async def test_an_ask_to_join_tells_only_the_owner(transport):
     sid = await start(transport)
     pushes = []
     first = await ask(BOB, sid, pushes)
@@ -611,8 +558,6 @@ async def test_ask_to_join_is_idempotent_and_tells_only_the_owner(transport):
     live = [json.loads(h["events"][0]) for h in transport[4]]
     assert [e["payload"]["state"] for e in live if e["type"] == "workspace.session.attention"] == ["join_request"]
     assert any(e["type"] == "workspace.sessions.changed" for e in live)
-    with pytest.raises(ApiProblem, match="your own"):
-        await ask(ALICE, sid)
 
     page = await feed(ALICE)
     item = joins(page)[0]
@@ -629,14 +574,35 @@ async def test_ask_to_join_is_idempotent_and_tells_only_the_owner(transport):
 
 
 @pytest.mark.asyncio
-async def test_turning_on_team_control_answers_a_pending_ask(transport):
+async def test_members_never_ask_teammates_control_is_their_only_gate(transport):
+    """Owner ruling 2026-10-26: trust = membership. Off: a member watches and cannot ask. On: a
+    member types with no ask and no Allow."""
     sid = await start(transport)
-    await ask(BOB, sid)
-    assert (await service.get_session(ALICE, sid)).pending_joins == [BOB.user_id]
-    await service.set_team_control(ALICE, sid, True)
+    with pytest.raises(ApiProblem, match="teammates control"):
+        await service.request_join(BOB, sid)
+    with pytest.raises(ApiProblem, match="owner"):
+        await service.submit_command(BOB, None, sid, send("send-off"))
     assert (await service.get_session(ALICE, sid)).pending_joins is None
+    assert joins(await feed(ALICE)) == []
+    await service.set_team_control(ALICE, sid, True)
+    assert (await service.submit_command(BOB, None, sid, send("send-on"))).actor_user_id == BOB.user_id
+    assert (await service.get_session(ALICE, sid)).pending_joins is None
+
+
+@pytest.mark.asyncio
+async def test_turning_on_team_control_answers_an_old_member_ask_and_keeps_a_link_viewers(transport):
+    sid = await start(transport)
+    await seed_ask(BOB, sid)  # a member's ask left by a client from before the ruling
+
+    def outsider(row):
+        ask = {**service._new_request(), "outsider": True, "name": "Carol (carol@x.com)"}
+        return {**row, "joinRequests": {**row["joinRequests"], CAROL.user_id: ask}}
+
+    await service._change_session(CAROL, sid, outsider, "join_requested", None)
+    assert (await service.get_session(ALICE, sid)).pending_joins == sorted([BOB.user_id, CAROL.user_id])
+    await service.set_team_control(ALICE, sid, True)
+    assert (await service.get_session(ALICE, sid)).pending_joins == [CAROL.user_id]
     assert (await service.get_session(BOB, sid)).join_request is None
-    assert all(not item.actions for item in joins(await feed(ALICE)))
 
 
 @pytest.mark.asyncio
@@ -654,7 +620,6 @@ async def test_allow_lets_exactly_that_person_send(transport):
     assert (await service.submit_command(BOB, None, sid, send())).actor_user_id == BOB.user_id
     with pytest.raises(ApiProblem, match="owner"):
         await service.submit_command(CAROL, None, sid, send("send-carol"))
-    assert (await ask(BOB, sid)).join_request is None  # already allowed: nothing to ask
     assert await actions(sid) == [
         ("join_requested", BOB.user_id),
         ("join_requested", CAROL.user_id),
@@ -736,7 +701,7 @@ async def test_an_agent_never_rides_a_persons_allow(transport, db, monkeypatch):
     await ask(BOB, sid)
     await service.decide_join(ALICE, sid, BOB.user_id, "allow")
     caller = grants.verify(grants.mint(OWNER, ROOM, "friday", OTHER_ROOM, BOB.user_id))
-    with pytest.raises(ApiProblem, match="owner"):
+    with pytest.raises(ApiProblem, match="Only a person"):
         await service.submit_command(caller, ROOM, sid, send("agent-1"))
 
 
@@ -823,8 +788,9 @@ async def test_join_routes(transport):
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             app.dependency_overrides[get_current_user] = lambda: BOB
-            asked = await client.post(f"{base}/join-requests")
-            assert asked.status_code == 200 and asked.json()["joinRequest"] == "pending"
+            # Members never ask (owner ruling 2026-10-26); a link viewer's ask is answered here.
+            assert (await client.post(f"{base}/join-requests")).status_code == 403
+            await seed_ask(BOB, sid)
             decide = f"{base}/join-requests/{BOB.user_id}"
             assert (await client.post(decide, json={"decision": "allow"})).status_code == 403
             app.dependency_overrides[get_current_user] = lambda: ALICE
@@ -883,7 +849,7 @@ async def test_decline_tells_the_requester_once(transport):
 
 @pytest.mark.asyncio
 async def test_sharing_and_join_events_land_on_the_person_who_acted(transport):
-    """Growth funnel: a link made, a link opened, an ask to reply, an answer. Each lands on
+    """Growth funnel: a link made, a link opened, an answer to an ask. Each lands on
     the person who did it, names the session's author, and carries no transcript text."""
     sid = await start(transport)
     await _events(transport, sid, 1)
@@ -897,7 +863,6 @@ async def test_sharing_and_join_events_land_on_the_person_who_acted(transport):
     assert [(c.kwargs["event"], c.kwargs["distinct_id"]) for c in capture.call_args_list] == [
         ("share_link_created", ALICE.user_id),
         ("share_link_opened", BOB.user_id),
-        ("session_join_requested", BOB.user_id),
         ("session_join_decided", ALICE.user_id),
     ]
     for call in capture.call_args_list:

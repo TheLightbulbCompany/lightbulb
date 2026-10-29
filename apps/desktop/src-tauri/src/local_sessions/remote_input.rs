@@ -163,7 +163,7 @@ pub(crate) fn cursor_typist(holder: &str, now: Instant) -> Option<(Typist, Insta
     CURSOR.lock().ok()?.get(holder).filter(|(_, at)| now.saturating_duration_since(*at) < CURSOR_FOR).cloned()
 }
 
-/// The app's panel size: (cols, rows, whether the panel is used now: opened or typed into).
+/// The app's panel size: (cols, rows, whether the panel claims the size; it takes it only with keys).
 pub(super) type PanelSize = (u16, u16, bool);
 /// Keys for the holder, whether the session's owner typed them, the teammate who did, and the
 /// panel's size when the frame carries one (owner ruling 2026-10-14: the session takes the size of
@@ -247,11 +247,13 @@ fn write_with(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>, 
                 break;
             }
             // The size first: keys typed in the panel are drawn at the panel's size. An older
-            // holder ignores a `type` client's RESIZE.
+            // holder ignores a `type` client's RESIZE. Only typing takes the size (owner ruling
+            // 2026-10-27): a page that opens the session and only watches leaves the owner's
+            // terminal at its size, and adapts to it.
             let resized = size.is_none_or(|(cols, rows, claim)| {
                 let mut payload = cols.to_be_bytes().to_vec();
                 payload.extend_from_slice(&rows.to_be_bytes());
-                payload.push(claim as u8);
+                payload.push((claim && !keys.is_empty()) as u8);
                 c.write_all(&encode(RESIZE, &payload)).is_ok()
             });
             let typed_ok = resized && (keys.is_empty() || {
@@ -803,12 +805,15 @@ mod tests {
         let (tx, rx) = sync_channel(QUEUE);
         tx.send((b"ls\r".to_vec(), true, None, Some((120, 40, true)))).unwrap();
         tx.send((vec![], false, None, Some((100, 30, false)))).unwrap();
+        tx.send((vec![], true, None, Some((54, 20, true)))).unwrap();
         drop(tx);
         let holder = std::cell::RefCell::new(Some(holder));
         write_with("sid", "gen", &ctl, &rx, |_, _| holder.borrow_mut().take().map(|conn| (conn, true, "h".to_owned())));
         assert_eq!(read_frame(&mut peer).unwrap(), (RESIZE, vec![0, 120, 0, 40, 1]));
         assert_eq!(read_frame(&mut peer).unwrap(), (OWNER_INPUT, b"ls\r".to_vec()));
         assert_eq!(read_frame(&mut peer).unwrap(), (RESIZE, vec![0, 100, 0, 30, 0]), "a size alone, no keys");
+        assert_eq!(read_frame(&mut peer).unwrap(), (RESIZE, vec![0, 54, 0, 20, 0]),
+            "opening the session in a page claims nothing: the owner's terminal keeps its size until the page types");
     }
 
     #[test]

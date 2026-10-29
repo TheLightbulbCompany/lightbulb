@@ -8,13 +8,15 @@ import type { SessionSource } from "./useLocalSessionHistory";
 
 const listWorkspaceSessions = vi.fn(async () => ({ sessions: [] }));
 let handler: ((event: LiveEvent) => void) | null = null;
+const getLocalSession = vi.fn();
 const source = {
-  client: { listWorkspaceSessions, listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() },
+  client: { listWorkspaceSessions, getLocalSession, listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() },
   onEvent: (h: (event: LiveEvent) => void) => { handler = h; return () => { handler = null; }; },
   connectionRevision: 1,
 } as unknown as SessionSource;
 
-afterEach(() => { cleanup(); vi.useRealTimers(); listWorkspaceSessions.mockClear(); handler = null; });
+afterEach(() => { cleanup(); vi.useRealTimers(); listWorkspaceSessions.mockClear(); getLocalSession.mockReset(); handler = null; });
+const hint = (payload: object) => ({ eventId: "h", type: "workspace.sessions.changed", payload: { humanUserId: "alice", ...payload } } as unknown as LiveEvent);
 
 describe("useWorkspaceSessions", () => {
   it("fetches once, polls every 30s, and stops when disabled", async () => {
@@ -81,5 +83,47 @@ describe("useWorkspaceSessions", () => {
     await act(async () => { await result.current.refresh(); });
     expect(result.current.sessions).toHaveLength(1);
     expect(result.current.error).toBe("Could not refresh shared sessions.");
+  });
+
+  it("re-reads only the named session on a hint that names one, and patches it in", async () => {
+    listWorkspaceSessions.mockResolvedValueOnce({ sessions: [{ sessionId: "a", status: "busy" }, { sessionId: "b", status: "idle" }] } as never);
+    const { result } = renderHook(() => useWorkspaceSessions(source));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(2));
+    getLocalSession.mockResolvedValueOnce({ sessionId: "a", status: "waiting-approval", pendingApproval: { approvalId: "p1" } });
+    act(() => handler?.(hint({ sessionId: "a" })));
+    await waitFor(() => expect(result.current.sessions[0].status).toBe("waiting-approval"));
+    expect(getLocalSession).toHaveBeenCalledWith("a");
+    expect(listWorkspaceSessions).toHaveBeenCalledTimes(1); // no whole-list refetch
+    expect(result.current.sessions[1]).toEqual({ sessionId: "b", status: "idle" });
+  });
+
+  it("refetches the list for a session it does not list, a refused read, or an end", async () => {
+    const { ApiError } = await import("../api/error");
+    listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "a", status: "busy" }] } as never);
+    const { result } = renderHook(() => useWorkspaceSessions(source));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    act(() => handler?.(hint({ sessionId: "new" })));
+    await waitFor(() => expect(listWorkspaceSessions).toHaveBeenCalledTimes(2));
+    expect(getLocalSession).not.toHaveBeenCalled();
+    getLocalSession.mockRejectedValueOnce(new ApiError(404, { code: "LOCAL_SESSION_NOT_FOUND" }, "gone"));
+    act(() => handler?.(hint({ sessionId: "a" })));
+    await waitFor(() => expect(listWorkspaceSessions).toHaveBeenCalledTimes(3));
+    getLocalSession.mockResolvedValueOnce({ sessionId: "a", status: "ended" });
+    act(() => handler?.(hint({ sessionId: "a" })));
+    await waitFor(() => expect(listWorkspaceSessions).toHaveBeenCalledTimes(4));
+  });
+
+  it("keeps a patched row over an older list read that answers after it", async () => {
+    listWorkspaceSessions.mockResolvedValueOnce({ sessions: [{ sessionId: "a", status: "busy" }] } as never);
+    const { result } = renderHook(() => useWorkspaceSessions(source));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    let answer: (v: unknown) => void = () => {};
+    listWorkspaceSessions.mockImplementationOnce(() => new Promise(r => { answer = r; }) as never);
+    act(() => handler?.(hint({})));  // a list read starts, still with the old row
+    getLocalSession.mockResolvedValueOnce({ sessionId: "a", status: "idle" });
+    act(() => handler?.(hint({ sessionId: "a" })));
+    await waitFor(() => expect(result.current.sessions[0].status).toBe("idle"));
+    await act(async () => { answer({ sessions: [{ sessionId: "a", status: "busy" }] }); });
+    expect(result.current.sessions[0].status).toBe("idle");
   });
 });

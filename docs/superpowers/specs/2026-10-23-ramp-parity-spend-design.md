@@ -119,13 +119,15 @@ Metronome, the Metronome fast-gate reservation, and the existing approval rail
 - **Reuse:** `stripe_provisioning.py`, `provisioning_workflow.py`, the
   `projects/{provider}` secret custody, the owner-approval gate.
 - **Build:**
-  1. **Re-point the client** to the `2026-09-16.preview` surface: `projects`,
-     `resources`, `provider_connections`, `projects/prepare`; drop the 404'd
-     `account_requests`/`payment_method_requests` paths and map to the new
-     resource/project model (confirm exact shapes against the gated API ref).
-  2. **Company-account creation** via Accounts v2 core + **embedded onboarding**
-     (`docs.stripe.com/connect/embedded-onboarding`), including the email-OTP
-     step — the OTP is entered in the browser only ([[otp-codes-browser-only]]).
+  1. **Re-point the client** to the **`2026-09-30.preview`** surface (the guide's
+     version; `2026-09-16` is stale): `provider_connection_requests` replace
+     `account_requests`, `livemode` is explicit on resource create and the payment
+     profile/method, and `reveal_access_configuration` replaces `environment_info`.
+  2. **Company-account creation** via Accounts v2 core + **hosted onboarding**
+     (owner decision; Account Links, `account_update` for corrections), then a
+     `projects_ready` gate: retrieve the account and require the projects capability
+     active before any workflow starts. The email-OTP step stays browser-only
+     ([[otp-codes-browser-only]]).
   3. **Validate** end to end on one real connected account in a gated flow, then
      flip `STRIPE_PROVISIONING_ENABLED` (dev first, then a prod dispatch).
   4. **Correct CLAUDE.md** — the "every state-changing call 500s, leave OFF" note

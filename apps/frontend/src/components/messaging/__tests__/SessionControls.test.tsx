@@ -72,38 +72,24 @@ it("keeps a prompt it cannot show whole deny-only, and offers only suggested mod
   expect(c.submitLocalSessionCommand).toHaveBeenLastCalledWith("s1", expect.objectContaining({ decision: "allow", mode: "acceptEdits" }));
 });
 
+it("offers Claude's own similar-commands rule, naming what it allows", async () => {
+  const c = client();
+  render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval, summary: "npm run greet", modes: ["similar"], similar: "npm run *" } })} client={c} own ownerName="You" />);
+  await userEvent.click(screen.getByRole("button", { name: "Allow similar commands for this session (npm run *)" }));
+  expect(c.submitLocalSessionCommand).toHaveBeenCalledWith("s1", expect.objectContaining({ decision: "allow", mode: "similar" }));
+});
+
+it("answers a Codex prompt the same way, with Codex's own choices", async () => {
+  const c = client();
+  render(<SessionApprovalCard session={session({ provider: "codex", pendingApproval: { ...pendingApproval, summary: "/bin/zsh -lc 'mkdir -p /tmp/x'", modes: ["session"] } })} client={c} own ownerName="You" />);
+  expect(screen.getByText("Codex wants to use Bash")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Allow for this conversation" }));
+  expect(c.submitLocalSessionCommand).toHaveBeenCalledWith("s1", expect.objectContaining({ decision: "allow", mode: "session" }));
+});
+
 it("draws nothing when the session is not waiting", () => {
   const { container } = render(<SessionApprovalCard session={session({ status: "busy" })} client={client()} own ownerName="You" />);
   expect(container).toBeEmptyDOMElement();
-});
-
-it("shows a private send only to its owner before enabling approval", async () => {
-  const detail = { approvalId: pendingApproval.approvalId, inputDigest: pendingApproval.inputDigest,
-    destination: "person:bob", text: "First line\nSecond line", requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449" };
-  const c = { ...client(), getPrivateSendApproval: vi.fn(async () => detail) };
-  const privateSession = session({ pendingApproval: { ...pendingApproval,
-    tool: "mcp__lightbulb_native_sessions__send", summary: "Lightbulb message", exact: false, modes: [] } });
-  const { rerender } = render(<SessionApprovalCard session={privateSession} client={c} own ownerName="You" />);
-  const message = (_: string, element: Element | null) => element?.tagName === "PRE" && element.textContent === detail.text;
-  expect(await screen.findByText(message)).toBeInTheDocument();
-  expect(screen.getByText("To: person:bob")).toBeInTheDocument();
-  expect(screen.getByText(`Request ID: ${detail.requestId}`)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
-  rerender(<SessionApprovalCard session={session({ ...privateSession, teamControl: true })} client={c} own={false} ownerName="Alice" />);
-  expect(screen.queryByText(message)).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
-});
-
-it("lets the owner retry a failed private detail load", async () => {
-  const detail = { approvalId: pendingApproval.approvalId, inputDigest: pendingApproval.inputDigest,
-    destination: "room:one", text: "send this", requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449" };
-  const c = { ...client(), getPrivateSendApproval: vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(detail) };
-  render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval,
-    tool: "mcp__lightbulb_native_sessions__send", exact: false, modes: [] } })} client={c} own ownerName="You" />);
-  await userEvent.click(await screen.findByRole("button", { name: "Retry loading message" }));
-  expect(await screen.findByText("send this")).toBeInTheDocument();
-  expect(c.getPrivateSendApproval).toHaveBeenCalledTimes(2);
-  expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
 });
 
 // Hashed outside the component: sorted keys, compact, as the Mac digests the call.

@@ -117,6 +117,9 @@ export function Navbar() {
         <Link href="/blog" data-section="blog" className={initialActive("blog")}>
           Blog
         </Link>
+        <Link href="/network" data-section="network" className={initialActive("network")}>
+          Network
+        </Link>
         <Link href="/pricing" data-section="pricing" className={initialActive("pricing")}>
           Pricing
         </Link>
@@ -134,10 +137,10 @@ export function Navbar() {
               href="/sign-up"
               className="nav-mobile-login"
               onClick={() =>
-                captureSignupCta({ ctaId: "nav_mobile_sign_up", label: "Start free", surface: "landing_nav_mobile" })
+                captureSignupCta({ ctaId: "nav_mobile_sign_up", label: "Try free", surface: "landing_nav_mobile" })
               }
             >
-              Start free
+              Try free
             </Link>
           </>
         )}
@@ -182,21 +185,8 @@ export function Navbar() {
               Log in
             </Link>
             <Link
-              href="/sign-up"
-              className="nav-login"
-              onClick={() =>
-                captureSignupCta({
-                  ctaId: "nav_sign_up",
-                  label: "Start free",
-                  surface: "landing_nav",
-                })
-              }
-            >
-              Start free
-            </Link>
-            <Link
               href="/request-setup"
-              className="btn-primary"
+              className="nav-login"
               onClick={() =>
                 captureSignupCta({
                   ctaId: "nav_request_setup",
@@ -207,6 +197,20 @@ export function Navbar() {
               }
             >
               Request setup
+            </Link>
+            {/* Self-serve is the one filled button, matching the hero. */}
+            <Link
+              href="/sign-up"
+              className="btn-primary"
+              onClick={() =>
+                captureSignupCta({
+                  ctaId: "nav_sign_up",
+                  label: "Try free",
+                  surface: "landing_nav",
+                })
+              }
+            >
+              Try free
             </Link>
           </>
         )}

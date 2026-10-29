@@ -118,6 +118,7 @@ def test_login_hands_the_computer_a_proof_of_its_person_and_polls_once(env):
     claims = network_proof.verify(polled["proof"], mac.key)
     assert claims["sub"] == "user_ada" and claims["exp"] - claims["iat"] == network_proof.LIFE_S
     assert claims["auth_time"] == claims["iat"]  # the browser login itself
+    assert claims["org"] == ORG  # the browser's active workspace: the one the tools act in
     assert network_proof.verify(polled["proof"], Computer().key) is None  # another computer's
     assert _poll(client, s["code"]) == {"status": "expired"}  # single use
 
@@ -265,7 +266,8 @@ def test_a_free_account_with_no_workspace_signs_a_computer_in(env):
     client, who, *_ = env
     who["ctx"] = AuthContext(user_id="user_free", org_id=None)
     mac = Computer()
-    assert network_proof.verify(_login(client, mac)["proof"], mac.key)["sub"] == "user_free"
+    claims = network_proof.verify(_login(client, mac)["proof"], mac.key)
+    assert claims["sub"] == "user_free" and "org" not in claims
 
 
 def test_an_admin_takes_the_workspace_off_its_network(env, monkeypatch):
@@ -279,7 +281,7 @@ def test_an_admin_takes_the_workspace_off_its_network(env, monkeypatch):
     leave.assert_awaited_once_with(ORG)
 
 
-def test_a_renewal_keeps_the_login_time_and_ends_after_ninety_days(env):
+def test_a_renewal_keeps_the_login_time_and_has_no_age_cap(env):
     client, *_ = env
     mac = Computer()
 
@@ -288,11 +290,35 @@ def test_a_renewal_keeps_the_login_time_and_ends_after_ninety_days(env):
 
     now = int(time.time())
     late = now - network_proof.LIFE_S + 3 * 86_400  # in its last week
-    logged_in = now - 60 * 86_400
-    renewed = refresh(network_proof.mint(mac.key, "user_ada", now=late, auth_time=logged_in)).json()["proof"]
-    assert network_proof.verify(renewed, mac.key)["auth_time"] == logged_in
-    stale = refresh(network_proof.mint(mac.key, "user_ada", now=late, auth_time=now - 91 * 86_400))
-    assert stale.status_code == 401 and "lightbulb login" in stale.json()["detail"]
+    for logged_in in (now - 60 * 86_400, now - 400 * 86_400):  # no 90-day cap: a live account renews
+        renewed = refresh(network_proof.mint(mac.key, "user_ada", now=late, auth_time=logged_in))
+        assert renewed.status_code == 200
+        assert network_proof.verify(renewed.json()["proof"], mac.key)["auth_time"] == logged_in
+    # A renewal keeps the workspace chosen at login.
+    renewed = refresh(network_proof.mint(mac.key, "user_ada", now=late, org="org_9")).json()["proof"]
+    assert network_proof.verify(renewed, mac.key)["org"] == "org_9"
+
+
+def test_every_refresh_checks_the_account_even_far_from_expiry(env):
+    client, *_ = env
+    mac = Computer()
+    fresh = network_proof.mint(mac.key, "user_ada")
+    clerk_admin.get_user_strict.return_value = {"id": "user_ada", "banned": True}
+    response = client.post("/api/v1/network/proof/refresh", json={**mac.signed(client, "refresh"), "proof": fresh})
+    assert response.status_code == 401
+
+
+def test_a_signed_out_computer_cannot_refresh(env):
+    import asyncio
+
+    client, *_ = env
+    mac = Computer()
+    late = int(time.time()) - network_proof.LIFE_S + 3 * 86_400
+    old = network_proof.mint(mac.key, "user_ada", now=late)
+    asyncio.run(network_login.revoke("user_ada", mac.key))
+    response = client.post("/api/v1/network/proof/refresh", json={**mac.signed(client, "refresh"), "proof": old})
+    assert response.status_code == 401 and "lightbulb login" in response.json()["detail"]
+    assert asyncio.run(network_login.revoked_keys(["user_ada", "user_bob"])) == [mac.key]
 
 
 def test_a_renewal_needs_a_live_account_and_fails_closed_when_clerk_cannot_say(env):
@@ -312,3 +338,39 @@ def test_a_renewal_needs_a_live_account_and_fails_closed_when_clerk_cannot_say(e
     clerk_admin.get_user_strict.side_effect = None
     clerk_admin.get_user_strict.return_value = {"id": "user_ada"}
     assert refresh().status_code == 200
+
+
+def test_logout_signs_the_computer_out_everywhere_and_a_new_login_lifts_it(env, monkeypatch):
+    import asyncio
+
+    from core.services import network_route
+
+    client, *_ = env
+    closed, published = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(network_route, "sign_out", closed)
+    monkeypatch.setattr(network_member, "publish_sessions", published)
+    monkeypatch.setattr(clerk_admin, "list_user_organizations", AsyncMock(return_value=[{"id": ORG}]))
+    mac = Computer()
+    proof = _login(client, mac)["proof"]
+    published.assert_not_awaited()  # nothing to lift on a first login
+
+    def logout(token):
+        return client.post("/api/v1/network/proof/revoke", json={**mac.signed(client, "logout"), "proof": token})
+
+    # Another key's signature, or a login-purpose one, signs nobody out.
+    forged = {**Computer().signed(client, "logout"), "key": mac.key, "proof": proof}
+    assert client.post("/api/v1/network/proof/revoke", json=forged).status_code == 401
+    login_sig = {**mac.signed(client, "login"), "proof": proof}
+    assert client.post("/api/v1/network/proof/revoke", json=login_sig).status_code == 401
+    assert not asyncio.run(network_login.is_revoked("user_ada", mac.key))
+
+    assert logout(proof).json() == {"state": "signed_out"}
+    assert asyncio.run(network_login.revoked_keys(["user_ada"])) == [mac.key]
+    closed.assert_awaited_once_with("user_ada", mac.key)
+    published.assert_awaited_once_with(ORG)  # the workspace's engines refuse it now
+    assert logout(network_proof.mint(Computer().key, "user_ada")).status_code == 200  # another's proof
+    assert closed.await_count == 1
+
+    _login(client, mac)
+    assert not asyncio.run(network_login.is_revoked("user_ada", mac.key))
+    assert published.await_count == 2  # the lift is republished too

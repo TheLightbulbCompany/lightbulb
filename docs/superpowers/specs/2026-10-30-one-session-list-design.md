@@ -1,6 +1,6 @@
 # One session list (design)
 
-Status: draft for the founder, 30 Oct 2026. Not built. Builder-checked once (see §9).
+Status: founder rulings in §8, build contract in §10. Step 1 built 30 Oct 2026. Builder-checked once (see §9).
 
 Research this rests on, with file:line for every claim (read these before planning):
 - `docs/research/2026-10-30-sessions-visibility-map.md`: the three session systems as shipped.
@@ -260,3 +260,77 @@ Calls made in this document, for the founder to check while reading: seven days 
 Run 30 Oct 2026 on the first draft. Six questions.
 - Answered in the document: (1) who writes status after Step 3 (§4.1 "only status writer", §4.4); (3) a finished background job with a live process (§4.1 table); (4) where the workspace's team id comes from (§4.5 backend); (5) the local-only fields own rows carry so Step 3 needs no second engine release (§4.1, §4.2); (6) the parked cloud member (§4.1, §4.3).
 - Theirs: (2) the owner's own unshared sessions in the sidebar, now T4.
+
+---
+
+## 10. Build contract for Steps 2, 3 and 4 (30 Oct 2026)
+
+Founder ruling, 30 Oct: finish the remaining steps with subagent-driven development, in separate worktrees, against one agreed architecture, consolidating at the end. This section is that agreement. A step changes it only by a ruling recorded in its ledger and repeated in its PR.
+
+### 10.1 Who owns what
+
+| Piece | Owner | Others |
+|---|---|---|
+| Foundation PR (below) | merged first, to main | every step branches from main after it |
+| `apps/desktop/src-tauri/src/local_sessions/*` discovery and status | Step 3 | Step 2 does not touch them |
+| Backend `networkSessionId` and the `LocalSession` model | Step 3 | |
+| `useSessionRows`'s body and `sidebarSessionList`'s data | Step 3 | Step 4 reads the hook only |
+| `RoomDirectory`'s Sessions section, `SessionListRow`, `AllSessionsView` layout | Step 4 | Step 3 keeps them compiling and changes only their data source |
+| `network.invite`, `network.team`, `/network/join-line`, `/network/team`, sign-in and join in the app, the sidebar footer's connect state and notice | Step 2 | |
+| Engine change for instance invites | Step 2, on a fresh CLI branch from main after 0.8.0 merges | |
+| Hermes engine pin, plugin default filter, `skills-src/lightbulb/references/surfaces.md`, re-vendored `network_tools.json` | Engine release step, before Step 3 | |
+
+### 10.2 The foundation PR
+
+Small, merged before the three steps start. Nothing user-visible changes.
+- `apps/desktop/src-tauri/src/engine_client.rs`: connects to `~/.lightbulb/connect/sock`, one newline-JSON request per call with a timeout, and an optional subscription. One Tauri command, `engine_ask(op, body)`, restricted to an allowlist: `directory`, `sessions`, `team.get`, `team.join`, `team.leave`, `subscribe`. Registered in `lib.rs`.
+- `packages/shared/src/messaging/sessionRow.ts`: the `SessionRow` type below and a pure `mergeSessionRows(backendRows, engineRows, viewer)` with unit tests.
+- `apps/frontend/src/components/messaging/useSessionRows.ts`: returns `SessionRow[]`. In the foundation it maps the backend list only, so behaviour is unchanged. `RoomDirectory` and `AllSessionsView` read it.
+
+### 10.3 `SessionRow`
+
+```ts
+type SessionState = 'busy' | 'waiting' | 'idle' | 'done' | 'offline' | 'parked' | 'ended';
+interface SessionRow {
+  id: string;                  // networkSessionId when known, else the backend sessionId
+  backend?: LocalSession;      // the joined backend row; every action and detail reads it
+  engine?: EngineRecord;       // the joined directory record
+  source: 'shared' | 'network';// 'network' = no backend row: info only, plus Share on own rows
+  person: { name: string; userId?: string; isViewer: boolean };
+  computer?: string;
+  agent: string;
+  title: string;
+  folder?: string;
+  repo?: string;
+  branch?: string;
+  state: SessionState;
+  waitingFor?: string;
+  lastSeenAt?: number;         // offline
+  endedAt?: number;
+  endedReason?: string;
+  resume?: string;             // own ended rows only
+}
+```
+
+State comes from `engine` when joined, else from `backend`. Actions come only from `backend`. A row with no `backend` has no Open, Join, Resume or End.
+
+### 10.4 Compatibility rules
+
+- **The window loads the hosted web app, and desktop builds lag it.** The frontend calls `engine_ask` only when the command exists. Without it (an older app, web, phone), `useSessionRows` returns the backend list exactly as today. Web and phone never read an engine.
+- **The backend list stays,** written by the Mac from the engine's state after Step 3. Older Macs keep writing it their own way. `networkSessionId` is optional on the model.
+- **Engine floor:** the app bundles engine ≥ 0.8.0 from Step 3 on, and `engine_ask` failing is shown in the footer (§4.4), never as an empty list.
+- **Rollout order:** engine 0.8.0, then Hermes pin and roll, then foundation, then Steps 3 and 2 (either order, separate PRs), then Step 4, then a desktop release carrying all of it.
+
+### 10.5 Step 4's design decisions (controller's defaults; founder reviews screenshots before merge)
+
+The research is `docs/research/2026-10-30-sessions-sidebar-design-research.md`. Its six questions are answered so the work can proceed; each is a two-way door.
+1. **Grouping:** a "Needs you" group on top (only `waiting` rows and failed ended rows of the viewer's own), then per person, viewer first. This honours the 2026-10-13 ruling against ranking by status, since only `waiting` moves. A persisted switch offers person, state, and repo.
+2. **Counts:** the Dock badge counts the viewer's own `waiting` rows only, as today.
+3. **Network-only rows and workspace agents:** their own collapsible group, "On the network", below people. The viewer's own unshared rows stay under the viewer, dimmed, with Share.
+4. **Retention:** seven days everywhere, from the engine. Pins and archives stay per browser for now.
+5. **Row:** one line: avatar, harness mark, title, state. Second line only when it carries news: waiting reason, or folder and PR. Computer and repo in the hover and in All sessions.
+6. **Overflow:** no global cap. Each group folds with "… N more" and a count in its header, and keeps waiting and pinned rows visible. Search and filters in the sidebar. All sessions stays the full table.
+
+### 10.6 Consolidation
+
+Each step opens its own PR from its own worktree, off main. Merge order per §10.4. After the last merge, one consolidation pass on main: run the three steps' acceptance rows (A5-A10) together on a local desktop build, the full suites in CI, and record the results on the final PR.

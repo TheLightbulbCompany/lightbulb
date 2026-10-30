@@ -177,6 +177,8 @@ def world(monkeypatch):
 
         monkeypatch.setattr(svc.wf_repo, "patch", AsyncMock(side_effect=wf_patch))
         monkeypatch.setattr(svc.api, "remove_resource", AsyncMock(return_value={}))
+        monkeypatch.setattr(svc.api, "rotate_credentials", AsyncMock(return_value={"status": "errored"}))
+        monkeypatch.setattr(svc.api, "reveal_access_configuration", AsyncMock())
         monkeypatch.setattr(svc.clerk_admin, "get_organization", AsyncMock(return_value={"name": " Acme  Co "}))
 
         rooms = {
@@ -1288,3 +1290,49 @@ async def test_a_refused_vercel_token_is_reported_as_itself_not_as_an_old_build_
     assert "hosting credential" in res["error"]["message"] and "rotate" in res["error"]["next"]
     rec = await svc.apps_repo.get(src["app_id"])
     assert rec["publish_error"]["code"] == "vercel_forbidden" and rec.get("publish_pending") is None
+
+
+async def test_a_refused_vercel_token_is_renewed_through_stripe_and_the_publish_retried(world, monkeypatch):
+    src, _, _ = await _ready_preview(world)
+    key = (OWNER, f"apps/{src['app_id']}/vercel/prod")
+    new = {**VERCEL, "token": "vtok_NEW"}
+
+    def reveal(account, resource):
+        world.vercel.refused = False  # Vercel accepts the rotated token
+        return {"configuration": new, "expires_at": None}
+
+    rotate = AsyncMock(return_value={"status": "complete"})
+    monkeypatch.setattr(svc.api, "rotate_credentials", rotate)
+    monkeypatch.setattr(svc.api, "reveal_access_configuration", AsyncMock(side_effect=reveal))
+    world.vercel.refused = True
+    res = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    assert res.get("error") is None and res["state"] == "building"
+    rotate.assert_awaited_once()
+    assert rotate.await_args.args[0] == "acct_1" and rotate.await_args.args[1].startswith("res_")
+    assert world.secrets[key]["token"] == "vtok_NEW"
+    assert world.vercel.calls[-1].headers["authorization"] == "Bearer vtok_NEW"
+
+
+async def test_a_pending_rotation_reports_the_refusal_and_is_not_resent_within_the_hour(world, monkeypatch):
+    src, _, _ = await _ready_preview(world)
+    key = (OWNER, f"apps/{src['app_id']}/vercel/prod")
+    rotate = AsyncMock(return_value={"status": "pending"})
+    monkeypatch.setattr(svc.api, "rotate_credentials", rotate)
+    world.vercel.refused = True
+    for _ in range(2):
+        res = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+        assert res["error"]["code"] == "vercel_forbidden" and "renew" in res["error"]["next"]
+    rotate.assert_awaited_once()
+    svc.api.reveal_access_configuration.assert_not_awaited()
+    assert world.secrets[key] == VERCEL
+
+
+async def test_a_vercel_failure_that_is_not_a_refusal_never_rotates(world, monkeypatch):
+    src, _, _ = await _ready_preview(world)
+    original = world.vercel.handler
+    world.vercel.handler = lambda req: httpx.Response(500, json={"error": {"code": "internal", "message": "boom"}})
+    monkeypatch.setattr(vercel_client, "_transport", httpx.MockTransport(lambda req: world.vercel.handler(req)))
+    res = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    world.vercel.handler = original
+    assert res["error"]["code"].startswith("vercel_") and res["error"]["code"] not in svc._REFUSED
+    svc.api.rotate_credentials.assert_not_awaited()

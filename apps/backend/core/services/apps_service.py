@@ -608,19 +608,51 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
     if not lease:
         return rows, None
     try:
-        return rows, await _steps(app, creds, dev_db, live_db)
+        return rows, await _steps(app, rows, creds, dev_db, live_db)
     finally:
         if await apps_repo.release_lease(app["app_id"], lease):
             app["progress_lease_until"] = None
 
 
 _REFUSED = frozenset({"vercel_forbidden", "vercel_unauthorized", "vercel_not_authorized"})
+_RENEW_EVERY = timedelta(hours=1)
+
+
+def _refused(e: vercel.VercelError) -> bool:
+    return e.code in ("forbidden", "unauthorized", "not_authorized") or e.status in (401, 403)
+
+
+async def _renew_vercel(app: dict, rows: dict) -> bool:
+    """Rotate the app's refused Vercel token through Stripe Projects and store the new one. At most one
+    attempt per app an hour, so a token refused for another reason can't loop rotations. Stripe's doc:
+    complete -> read the new access configuration; errored -> stop; pending -> don't resend."""
+    last = app.get("credential_renewed_at")
+    if last and datetime.now(UTC) - datetime.fromisoformat(last) < _RENEW_EVERY:
+        return False
+    await _patch(app, {"credential_renewed_at": utc_now_iso()})
+    try:
+        account = await provisioning_workflow.account_id_for(app["owner_id"])
+        resource = rows[("vercel", "project", "prod")]["resource_id"]
+        status = (await api.rotate_credentials(account, resource)).get("status")
+        if status == "complete":
+            config = (await api.reveal_access_configuration(account, resource)).get("configuration") or {}
+            if config.get("token"):
+                key = f"apps/{app['app_id']}/vercel/prod"
+                old = await integration_secret_store.get(app["owner_id"], key) or {}
+                await integration_secret_store.put(app["owner_id"], key, {**old, **config})
+                logger.warning("apps: %s vercel credential renewed through Stripe", app["app_id"])
+                return True
+            status = "complete_without_token"
+    except Exception as e:  # noqa: BLE001 - a failed renewal falls back to reporting the refusal
+        status = type(e).__name__
+    logger.warning("apps: %s vercel credential not renewed: %s", app["app_id"], status)
+    return False
 
 
 def _vercel_error(e: vercel.VercelError, next_default: str) -> AppError:
     """A Vercel failure in the person's words. A refused token is named as such: on Demo Lab (30 Oct
     2026) Vercel stopped accepting the app's token three hours after Stripe issued it."""
-    if e.code in ("forbidden", "unauthorized", "not_authorized") or e.status in (401, 403):
+    if _refused(e):
         return {
             "code": f"vercel_{e.code}",
             "message": "Vercel no longer accepts the app's hosting credential.",
@@ -629,7 +661,9 @@ def _vercel_error(e: vercel.VercelError, next_default: str) -> AppError:
     return {"code": f"vercel_{e.code}", "message": str(e), "next": next_default}
 
 
-async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | None) -> AppError | None:
+async def _steps(
+    app: dict, rows: dict, creds: dict, dev_db: dict | None, live_db: dict | None, *, renewed: bool = False
+) -> AppError | None:
     try:
         if not app.get("protection_off"):
             await vercel.disable_protection(creds)
@@ -669,6 +703,9 @@ async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | No
         await _verify(app, creds, "domain")
         await _preview_alias(app, creds)
     except vercel.VercelError as e:
+        if _refused(e) and not renewed and await _renew_vercel(app, rows):
+            creds = await _secret(app, rows, "vercel", "prod", "token") or creds
+            return await _steps(app, rows, creds, dev_db, live_db, renewed=True)
         logger.warning("apps: %s vercel step failed: %s", app["app_id"], e.code)
         return _vercel_error(e, "run up again in a minute")
     except _WorkspaceUnknown:
@@ -875,15 +912,20 @@ async def publish(
                 cost_cents,
             )
         await _patch(app, {"published_migrations": sorted(published | {n for n, _ in new})})
-    try:
-        if not app.get("domain"):
-            await _patch(app, {"domain": await _add_domain(app, creds, preview=False)})
-        dep_id = await _deploy(app, creds, source_id, production=True)
-    except vercel.VercelError as e:
-        logger.warning("apps: %s publish failed: %s", app_id, e.code)
-        err = _vercel_error(e, "publish again")
-        await _patch(app, {"publish_error": err})  # Canvas shows the real reason, not an older build error
-        return await _result(app, rows, err, cost_cents)
+    for attempt in (1, 2):
+        try:
+            if not app.get("domain"):
+                await _patch(app, {"domain": await _add_domain(app, creds, preview=False)})
+            dep_id = await _deploy(app, creds, source_id, production=True)
+            break
+        except vercel.VercelError as e:
+            if attempt == 1 and _refused(e) and await _renew_vercel(app, rows):
+                creds = await _secret(app, rows, "vercel", "prod", "token") or creds
+                continue
+            logger.warning("apps: %s publish failed: %s", app_id, e.code)
+            err = _vercel_error(e, "publish again")
+            await _patch(app, {"publish_error": err})  # Canvas shows the real reason, not an older build error
+            return await _result(app, rows, err, cost_cents)
     pending = {
         "deployment_id": dep_id,
         "source_id": source_id,

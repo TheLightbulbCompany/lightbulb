@@ -64,7 +64,7 @@ export async function serve(dir: string, opts: ServeOpts = {}): Promise<Served> 
     if (stopped) return;
     stopped = true;
     if (app?.pid) try { process.kill(-app.pid, "SIGKILL"); } catch { /* gone */ }
-    if (container) await sh("docker", ["rm", "-f", container], { timeout: 30_000 }).catch(() => {});
+    if (container) await sh("docker", ["rm", "-f", "-v", container], { timeout: 30_000 }).catch(() => {});
   };
   const fail = async (msg: string): Promise<Served> => {
     log += `\n[serve] ${msg}\n`;

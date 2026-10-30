@@ -771,10 +771,14 @@ async def _renew_vercel(app: dict, rows: dict, creds: dict) -> dict | None:
         logger.warning("apps: %s vercel credential not read: %s", app["app_id"], type(e).__name__)
         return None
     if fresh:
-        if state not in _UNSETTLED:
+        if state in _UNSETTLED:
+            if _renewal_age(renewal) < _RENEW_EVERY or not _refused(await _probe(app, fresh)):
+                await _patch(app, {"credential_renewal": {"state": "needs_reveal", "at": utc_now_iso()}})
+                return await _settle(app, fresh)
+            state = None  # that older rotation did land (the token changed), and its token has since expired
+        elif not _refused(await _probe(app, fresh)):
             return fresh
-        await _patch(app, {"credential_renewal": {"state": "needs_reveal", "at": utc_now_iso()}})
-        return await _settle(app, fresh)
+        stored = fresh  # Stripe still holds a dead token, just not the one we had: rotate it
     # An old needs_reveal is an earlier rotation whose token has since died too.
     recent = state in ("complete", "needs_reveal") and _renewal_age(renewal) < _RENEW_EVERY
     if state in _RENEWAL_HOLDS or recent:
@@ -1095,6 +1099,19 @@ async def publish(
     published = set(app.get("published_migrations") or [])
     new = [(n, sql) for n, sql in migrations if n not in published]
     if new:
+        # A dead token must not fail the deploy after the live schema has already moved.
+        async def usable(c: dict) -> dict:
+            refusal = await _probe(app, c)
+            if _refused(refusal):  # anything else (a deleted preview, a blip) is the deploy's to find
+                raise refusal
+            return c
+
+        try:
+            creds = await _with_token(app, rows, creds, usable)
+        except vercel.VercelError as e:
+            err = _vercel_error(app, e, "publish again")
+            await _patch(app, {"publish_error": err})
+            return await _result(app, rows, err, cost_cents)
         try:
             await apps_db.apply_live(live_db["connection_string"], migrations=[sql for _, sql in new])
         except apps_db.AppsDbError as e:

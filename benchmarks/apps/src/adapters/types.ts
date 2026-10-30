@@ -14,5 +14,5 @@ export type ProbeResult = { id: string; pass: boolean; detail: string };
 export type RunStatus = BuildResult["status"] | "contract_modified" | "serve_failed";
 export type RunRecord = Omit<BuildResult, "status"> & {
   status: RunStatus; reason?: string; builder: string; model: string; billing: Billing; taskId: string; run: number;
-  journeys: { id: string; pass: boolean }[]; probes: ProbeResult[]; judge: number; judgeReason?: string; judgeFailed?: boolean; score: number; passed: boolean; overRunCap: boolean; minutesToRunnable: number | null;
+  journeys: { id: string; pass: boolean; error?: string }[]; probes: ProbeResult[]; judge: number; judgeReason?: string; judgeFailed?: boolean; score: number; passed: boolean; overRunCap: boolean; minutesToRunnable: number | null;
 };

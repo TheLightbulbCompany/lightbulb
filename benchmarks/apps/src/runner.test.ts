@@ -145,4 +145,12 @@ describe("runner", () => {
     ] }] };
     expect(journeyResults(rep)).toEqual([{ id: "ok", pass: true }, { id: "skip", pass: false }, { id: "bad", pass: false }]);
   });
+
+  it("a failed journey keeps its first error message, colour codes stripped", () => {
+    const rep = { suites: [{ specs: [
+      { title: "bad", tests: [{ status: "unexpected", results: [{ status: "failed", error: { message: "\u001b[31mTimeout 5000ms\u001b[39m waiting for getByTestId('x')" } }] }] },
+      { title: "ok", tests: [{ status: "expected", results: [{ status: "passed" }] }] },
+    ] }] };
+    expect(journeyResults(rep)).toEqual([{ id: "bad", pass: false, error: "Timeout 5000ms waiting for getByTestId('x')" }, { id: "ok", pass: true }]);
+  });
 });

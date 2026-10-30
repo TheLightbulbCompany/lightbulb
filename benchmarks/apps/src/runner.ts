@@ -39,10 +39,15 @@ export async function playwrightJourneys(task: Task, url: string): Promise<{ id:
 }
 
 /** A journey passes only if every test under that title ran and was expected; skipped is a failure. */
-export function journeyResults(report: any): { id: string; pass: boolean }[] {
-  const found: { id: string; pass: boolean }[] = [];
+export function journeyResults(report: any): { id: string; pass: boolean; error?: string }[] {
+  const found: { id: string; pass: boolean; error?: string }[] = [];
   const walk = (s: any) => {
-    for (const sp of s.specs ?? []) found.push({ id: sp.title, pass: (sp.tests ?? []).length > 0 && sp.tests.every((t: any) => t.status === "expected" || t.status === "flaky") });
+    for (const sp of s.specs ?? []) {
+      const pass = (sp.tests ?? []).length > 0 && sp.tests.every((t: any) => t.status === "expected" || t.status === "flaky");
+      // keep the first failure message (ANSI stripped, first 400 chars) so a failed journey says why without a re-run
+      const error = pass ? undefined : (sp.tests ?? []).flatMap((t: any) => t.results ?? []).map((r: any) => r.error?.message).find(Boolean)?.replace(/\u001b\[[0-9;]*m/g, "").slice(0, 400);
+      found.push(error ? { id: sp.title, pass, error } : { id: sp.title, pass });
+    }
     for (const c of s.suites ?? []) walk(c);
   };
   walk(report);

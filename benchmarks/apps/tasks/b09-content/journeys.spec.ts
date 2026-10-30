@@ -18,7 +18,7 @@ test("editor publishes a post and the public can read it, drafts stay hidden", a
   await writePost(page, live, "live-" + tag, true);
   await writePost(page, draft, "draft-" + tag, false);
   await page.goto(url("/admin/posts"));
-  await expect(page.getByTestId("admin-post-row")).toHaveCount(2);
+  await expect(page.getByTestId("admin-post-row").filter({ hasText: tag })).toHaveCount(2); // the admin list is the whole blog's, so other tests' posts are there too
   const anon = await browser.newContext();
   const pub = await anon.newPage();
   await pub.goto(url("/blog"));

@@ -28,3 +28,29 @@ export function countFixLoops(stream: string): number {
   }
   return loops;
 }
+
+/** Codex `--json`: tokens summed over every `turn.completed` (a run has many turns). Null if none arrived. */
+export function parseCodexUsage(stream: string): { tokensIn: number; tokensOut: number } | null {
+  const turns = events(stream).filter((e: any) => e.type === "turn.completed");
+  if (!turns.length) return null;
+  return {
+    tokensIn: turns.reduce((a, e: any) => a + (e.usage?.input_tokens ?? 0), 0),
+    tokensOut: turns.reduce((a, e: any) => a + (e.usage?.output_tokens ?? 0) + (e.usage?.reasoning_output_tokens ?? 0), 0),
+  };
+}
+
+// Approximation: a fix loop is a file_change touching an already-changed file after any failed command_execution.
+export function countCodexFixLoops(stream: string): number {
+  const changed = new Set<string>();
+  let failed = false, loops = 0;
+  for (const e of events(stream) as any[]) {
+    const it = e.type === "item.completed" ? e.item : null;
+    if (it?.type === "command_execution" && (it.status === "failed" || (it.exit_code ?? 0) !== 0)) failed = true;
+    if (it?.type === "file_change") {
+      const paths: string[] = (it.changes ?? []).map((c: any) => c.path);
+      if (failed && paths.some((p) => changed.has(p))) { loops++; failed = false; }
+      paths.forEach((p) => changed.add(p));
+    }
+  }
+  return loops;
+}

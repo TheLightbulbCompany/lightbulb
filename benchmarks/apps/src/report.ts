@@ -11,6 +11,7 @@ const median = (xs: number[]) => {
   const m = Math.floor(s.length / 2);
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
+const sub = (r: RunRecord) => r.billing === "subscription";
 const usd = (x: number) => (Number.isNaN(x) ? "unknown" : `$${x.toFixed(2)}`);
 
 /** Summarise a results dir into report.md (also returned). */
@@ -48,10 +49,11 @@ export function writeReport(resultsDir: string): string {
     const p3 = rs.some((r) => !r.passed) ? "no" : rs.length >= suite.runs ? "yes" : `incomplete (${rs.length}/${suite.runs})`;
     if (p3 === "yes") cubed++;
     const mean = rs.reduce((a, r) => a + r.score, 0) / rs.length;
-    lines.push(`| ${id} | ${p3} | ${mean.toFixed(2)} | ${median(rs.map((r) => r.minutes)).toFixed(1)} | ${usd(median(rs.filter((r) => !r.costUnknown).map((r) => r.dollars)))} | ${rs.reduce((a, r) => a + r.fixLoops, 0)} |`);
+    lines.push(`| ${id} | ${p3} | ${mean.toFixed(2)} | ${median(rs.map((r) => r.minutes)).toFixed(1)} | ${rs.every(sub) ? "subscription" : usd(median(rs.filter((r) => !r.costUnknown && !sub(r)).map((r) => r.dollars)))} | ${rs.reduce((a, r) => a + r.fixLoops, 0)} |`);
   }
   const unknown = recs.filter((r) => r.costUnknown).length;
-  const spend = recs.filter((r) => !r.costUnknown).reduce((a, r) => a + r.dollars, 0);
+  const subs = recs.filter(sub).length;
+  const spend = recs.filter((r) => !r.costUnknown && !sub(r)).reduce((a, r) => a + r.dollars, 0);
   const noJudge = recs.filter((r) => r.judgeFailed).length;
   const never = suite.tasks.filter((t) => !byTask.has(t));
   const meanAll = recs.length ? recs.reduce((a, r) => a + r.score, 0) / recs.length : 0;
@@ -60,7 +62,7 @@ export function writeReport(resultsDir: string): string {
     ...(never.length ? [`- Never ran: ${never.join(", ")}`] : []),
     `- Mean score: ${meanAll.toFixed(2)} over ${recs.length} runs`,
     `- Median minutes per run: ${median(recs.map((r) => r.minutes)).toFixed(1)}`,
-    `- Spend: ${usd(spend)}${unknown ? ` (plus ${unknown} run${unknown > 1 ? "s" : ""} with unknown cost, not included)` : ""}`,
+    `- Spend: ${subs === recs.length && subs ? "subscription (no per-run dollars)" : usd(spend) + (subs ? ` plus ${subs} subscription run${subs > 1 ? "s" : ""}` : "")}${unknown ? ` (plus ${unknown} run${unknown > 1 ? "s" : ""} with unknown cost, not included)` : ""}`,
     `- Fix loops: ${recs.reduce((a, r) => a + r.fixLoops, 0)}`,
     ...(noJudge ? [`- ${noJudge} run${noJudge > 1 ? "s" : ""} had no judge score (counted as 0)`] : []));
   return save(resultsDir, lines);

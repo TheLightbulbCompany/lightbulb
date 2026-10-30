@@ -55,7 +55,7 @@ export const GRACE_MS = 15_000;
 const sleep = (ms: number) => new Promise<"grace">((r) => setTimeout(() => r("grace"), ms));
 
 export async function runTask(task: Task, adapter: BuilderAdapter, opts: { run: number; outDir: string; keepWorkdir?: boolean }, deps: Deps): Promise<RunRecord> {
-  const model = process.env.EVAL_MODEL ?? "claude-sonnet-5";
+  const model = process.env.EVAL_MODEL ?? adapter.defaultModel ?? "claude-sonnet-5";
   const workdir = mkdtempSync(join(tmpdir(), `apps-${task.id}-`));
   let serveLog = "";
   let rec!: RunRecord;
@@ -70,7 +70,8 @@ export async function runTask(task: Task, adapter: BuilderAdapter, opts: { run: 
     const ac = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     const timedOut = new Promise<"timeout">((r) => { timer = setTimeout(() => { ac.abort(); r("timeout"); }, task.timeoutMin * 60_000); });
-    const base: Pick<RunRecord, "builder" | "model" | "taskId" | "run" | "journeys" | "probes" | "judge" | "score" | "passed" | "overRunCap" | "minutesToRunnable"> = { builder: adapter.name, model, taskId: task.id, run: opts.run, journeys: [], probes: [], judge: 0, score: 0, passed: false, overRunCap: false, minutesToRunnable: null };
+    const billing = adapter.billing ?? "api";
+    const base: Pick<RunRecord, "builder" | "model" | "billing" | "taskId" | "run" | "journeys" | "probes" | "judge" | "score" | "passed" | "overRunCap" | "minutesToRunnable"> = { builder: adapter.name, model, billing, taskId: task.id, run: opts.run, journeys: [], probes: [], judge: 0, score: 0, passed: false, overRunCap: false, minutesToRunnable: null };
     const zero = { dir: workdir, tokensIn: 0, tokensOut: 0, dollars: 0, fixLoops: 0, log: "" };
     const t0 = Date.now();
     const mins = () => (Date.now() - t0) / 60_000;
@@ -81,7 +82,7 @@ export async function runTask(task: Task, adapter: BuilderAdapter, opts: { run: 
       if (first === "timeout") built = await Promise.race([buildP, sleep(GRACE_MS)]); // the abort kills the builder, so it settles with its partial cost
       if (built === "grace" || "thrown" in built) {
         // no cost reported: unknown spend, the suite counts the per-run cap
-        rec = { ...base, ...zero, minutes: mins(), status: first === "timeout" ? "timeout" : "error", costUnknown: true, reason: built === "grace" ? "builder did not stop after abort" : String(built.thrown) };
+        rec = { ...base, ...zero, minutes: mins(), status: first === "timeout" ? "timeout" : "error", costUnknown: billing === "api", reason: built === "grace" ? "builder did not stop after abort" : String(built.thrown) };
       } else {
         rec = { ...base, ...built, overRunCap: built.dollars > RUN_CAP_USD };
         if (first === "timeout") rec.status = "timeout";
@@ -109,7 +110,7 @@ export async function runTask(task: Task, adapter: BuilderAdapter, opts: { run: 
         }
       }
     } catch (e) {
-      rec = { ...base, ...zero, minutes: mins(), status: ac.signal.aborted ? "timeout" : "error", costUnknown: true, reason: String(e) };
+      rec = { ...base, ...zero, minutes: mins(), status: ac.signal.aborted ? "timeout" : "error", costUnknown: billing === "api", reason: String(e) };
     } finally { clearTimeout(timer); }
 
     mkdirSync(opts.outDir, { recursive: true });
@@ -136,6 +137,7 @@ export async function runSuite(adapter: BuilderAdapter, opts: { tasks?: string[]
     for (let run = 1; run <= runs; run++) {
       if (spent >= budget) return outDir;
       const r = await runTask(task, adapter, { run, outDir }, deps);
+      if (r.billing === "subscription") continue; // subscription runs cost no dollars
       spent += r.costUnknown ? RUN_CAP_USD : r.dollars; // unknown cost counts the per-run cap so the suite cap stays conservative
     }
   return outDir;

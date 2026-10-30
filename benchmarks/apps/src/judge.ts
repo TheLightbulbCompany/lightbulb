@@ -1,8 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import type { Task } from "./adapters/types";
+import { runCodex } from "./adapters/codex";
 import { signUpOn } from "./probes";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -74,7 +76,7 @@ async function screenshots(url: string, dir: string, task: Task): Promise<Buffer
  * LLM judge: screenshots + screens rubric + prompt → Claude → 0..1.
  * Never throws: any failure (no key, screenshots, API, unparseable reply) returns NaN and is logged; the runner records it.
  */
-export async function judge(url: string, dir: string, task: Task, o: { fetch?: typeof fetch; shots?: Buffer[]; apiKey?: string; retryMs?: number } = {}): Promise<number> {
+export async function judgeAnthropic(url: string, dir: string, task: Task, o: { fetch?: typeof fetch; shots?: Buffer[]; apiKey?: string; retryMs?: number } = {}): Promise<number> {
   const key = o.apiKey ?? process.env.ANTHROPIC_API_KEY ?? "";
   try {
     if (!key) throw new Error("ANTHROPIC_API_KEY is not set");
@@ -97,4 +99,42 @@ export async function judge(url: string, dir: string, task: Task, o: { fetch?: t
     console.error(`[judge] ${task.id}: ${e instanceof Error ? e.message : e}; no score`);
     return NaN;
   }
+}
+
+const SCHEMA = { type: "object", properties: { score: { type: "number" }, reason: { type: "string" } }, required: ["score", "reason"], additionalProperties: false };
+
+/** The final `agent_message` of a `codex exec --json` stream. */
+const lastMessage = (stream: string): string => {
+  let text = "";
+  for (const l of stream.split("\n")) try { const e = JSON.parse(l); if (e.type === "item.completed" && e.item?.type === "agent_message") text = e.item.text; } catch { /* not json */ }
+  return text;
+};
+
+/**
+ * Default judge: Codex (ChatGPT subscription), read-only sandbox, screenshots via -i, JSON shaped by --output-schema.
+ * Never throws: any failure returns NaN and is logged. EVAL_JUDGE=anthropic uses the Messages API instead.
+ */
+export async function judge(url: string, dir: string, task: Task, o: { shots?: Buffer[]; run?: typeof runCodex; anthropic?: Parameters<typeof judgeAnthropic>[3] } = {}): Promise<number> {
+  if (process.env.EVAL_JUDGE === "anthropic") return judgeAnthropic(url, dir, task, o.anthropic);
+  const tmp = mkdtempSync(join(tmpdir(), "judge-"));
+  try {
+    const shots = (o.shots ?? (await screenshots(url, dir, task))).slice(0, MAX_IMAGES);
+    const files = shots.map((b, i) => { const f = join(tmp, `shot${i}.png`); writeFileSync(f, b); return f; });
+    const schema = join(tmp, "schema.json");
+    writeFileSync(schema, JSON.stringify(SCHEMA));
+    const prompt = judgeRequest(task, readFileSync(join(root, "judge/rubric-screens.md"), "utf8"), []).messages[0].content[0].text;
+    const model = process.env.EVAL_JUDGE_MODEL;
+    // -i takes a list, so it goes last, after the prompt
+    const args = [
+      "exec", "--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only",
+      "-C", tmp, "--output-schema", schema, ...(model ? ["-m", model] : []), prompt, ...files.flatMap((f) => ["-i", f]),
+    ];
+    let r = await (o.run ?? runCodex)(args, tmp);
+    if (r.code !== 0) r = await (o.run ?? runCodex)(args, tmp); // one retry on non-zero exit
+    if (r.code !== 0) throw new Error(`codex exited ${r.code}: ${r.out.slice(-200)}`);
+    return parseJudgeScore(lastMessage(r.out));
+  } catch (e) {
+    console.error(`[judge] ${task.id}: ${e instanceof Error ? e.message : e}; no score`);
+    return NaN;
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
 }

@@ -34,7 +34,7 @@ export const claudeArgs = (prompt: string, model: string) =>
   ["--bare", "-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--model", model, "--max-budget-usd", String(RUN_CAP_USD)];
 
 export const claudeCodeAdapter: BuilderAdapter = {
-  name: "claude-code",
+  name: "claude-code", billing: "api", defaultModel: "claude-sonnet-5",
   async build(task, workdir, signal) {
     const model = process.env.EVAL_MODEL ?? "claude-sonnet-5";
     const start = Date.now();
@@ -43,7 +43,7 @@ export const claudeCodeAdapter: BuilderAdapter = {
     const result = (status: BuildResult["status"], extra = ""): BuildResult => {
       const r = parseResult(out);
       return {
-        dir: workdir, tokensIn: r?.tokensIn ?? 0, tokensOut: r?.tokensOut ?? 0, dollars: r?.dollars ?? 0, costUnknown: !r && !!out,
+        dir: workdir, tokensIn: r?.tokensIn ?? 0, tokensOut: r?.tokensOut ?? 0, dollars: r?.dollars ?? 0, billing: "api", costUnknown: !r && !!out,
         minutes: (Date.now() - start) / 60_000, fixLoops: countFixLoops(out), status,
         log: `${header}${extra}${out}`,
       };

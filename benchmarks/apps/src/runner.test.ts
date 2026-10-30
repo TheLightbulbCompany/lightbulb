@@ -65,6 +65,14 @@ describe("runner", () => {
     expect(readdirSync(dir).some((f) => f.endsWith(".build.log"))).toBe(true);
   });
 
+  it("subscription runs do not count toward suite spend", async () => {
+    const a: BuilderAdapter = { ...adapter(() => ({ dollars: 200, billing: "subscription" })), billing: "subscription" };
+    const dir = await runSuite(a, { tasks: ["b01-todo", "b02-slotline"], runs: 3, budgetUsd: 400, resultsRoot: out() }, mk());
+    const recs = readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "suite.json");
+    expect(recs.length).toBe(6); // would stop at 2 if the 200s counted
+    expect(JSON.parse(readFileSync(join(dir, recs[0]), "utf8")).billing).toBe("subscription");
+  });
+
   it("timed-out run keeps the cost the builder reported", async () => {
     const t = { ...task(), timeoutMin: 0.0005 };
     const a: BuilderAdapter = { name: "fake", build: (_t, dir, signal) => new Promise((r) => signal!.addEventListener("abort", () => r(res({ dir, status: "timeout", dollars: 10, tokensIn: 5 })))) };

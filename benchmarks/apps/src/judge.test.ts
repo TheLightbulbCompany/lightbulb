@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task } from "./adapters/types";
-import { judge, judgeRequest, parseJudgeScore } from "./judge";
+import { judge, judgeAnthropic, judgeRequest, parseJudgeScore } from "./judge";
 
 const task = (prompt = "Build a to-do app."): Task => ({ id: "b01-todo", kind: "internal-tool", type: "build", prompt, fixture: "blank", journeys: "j", probes: [], timeoutMin: 45 });
 const png = Buffer.from("fake-png");
@@ -41,7 +41,7 @@ describe("judge", () => {
       calls.push({ url, init });
       return new Response(JSON.stringify({ content: [{ type: "text", text: '{"score": 0.5}' }] }), { status: 200 });
     }) as unknown as typeof fetch;
-    const score = await judge("http://x", "/nowhere", task(), { fetch: fake, shots: [png, png], apiKey: "k-test" });
+    const score = await judgeAnthropic("http://x", "/nowhere", task(), { fetch: fake, shots: [png, png], apiKey: "k-test" });
     expect(score).toBeCloseTo(0.5, 6);
     expect(calls[0].url).toBe("https://api.anthropic.com/v1/messages");
     const h = calls[0].init.headers as Record<string, string>;
@@ -53,20 +53,20 @@ describe("judge", () => {
   it("an API error, a missing key or a screenshot crash gives NaN (no score) instead of crashing the run", async () => {
     let n = 0;
     const fail = (async () => { n++; return new Response("overloaded", { status: 529 }); }) as unknown as typeof fetch;
-    expect(await judge("http://x", "/nowhere", task(), { fetch: fail, shots: [png], apiKey: "k", retryMs: 1 })).toBeNaN();
+    expect(await judgeAnthropic("http://x", "/nowhere", task(), { fetch: fail, shots: [png], apiKey: "k", retryMs: 1 })).toBeNaN();
     expect(n).toBe(2); // one retry on 5xx
     n = 0;
     const bad = (async () => { n++; return new Response("bad", { status: 400 }); }) as unknown as typeof fetch;
-    expect(await judge("http://x", "/nowhere", task(), { fetch: bad, shots: [png], apiKey: "k" })).toBeNaN();
+    expect(await judgeAnthropic("http://x", "/nowhere", task(), { fetch: bad, shots: [png], apiKey: "k" })).toBeNaN();
     expect(n).toBe(1); // no retry on 4xx other than 429
-    expect(await judge("http://x", "/nowhere", task(), { fetch: fail, shots: [png], apiKey: "" })).toBeNaN();
-    expect(await judge("http://127.0.0.1:1", "/nowhere", task(), { fetch: fail, apiKey: "k", retryMs: 1 })).toBeNaN();
+    expect(await judgeAnthropic("http://x", "/nowhere", task(), { fetch: fail, shots: [png], apiKey: "" })).toBeNaN();
+    expect(await judgeAnthropic("http://127.0.0.1:1", "/nowhere", task(), { fetch: fail, apiKey: "k", retryMs: 1 })).toBeNaN();
   }, 60_000);
 
   it("retries once on 429 and then scores", async () => {
     let n = 0;
     const flaky = (async () => (n++ === 0 ? new Response("slow down", { status: 429 }) : new Response(JSON.stringify({ content: [{ type: "text", text: '{"score": 0.7}' }] })))) as unknown as typeof fetch;
-    expect(await judge("http://x", "/nowhere", task(), { fetch: flaky, shots: [png], apiKey: "k", retryMs: 1 })).toBeCloseTo(0.7, 6);
+    expect(await judgeAnthropic("http://x", "/nowhere", task(), { fetch: flaky, shots: [png], apiKey: "k", retryMs: 1 })).toBeCloseTo(0.7, 6);
   });
 
   it("screenshots the contract's static pages, not dynamic or API routes", async () => {
@@ -80,7 +80,7 @@ describe("judge", () => {
       return new Response(JSON.stringify({ content: [{ type: "text", text: '{"score": 1}' }] }));
     }) as unknown as typeof fetch;
     try {
-      expect(await judge(`http://127.0.0.1:${(srv.address() as any).port}`, dir, task(), { fetch: fake, apiKey: "k" })).toBe(1);
+      expect(await judgeAnthropic(`http://127.0.0.1:${(srv.address() as any).port}`, dir, task(), { fetch: fake, apiKey: "k" })).toBe(1);
       expect(images).toBe(2); // "/" and "/a"
     } finally { srv.close(); }
   }, 60_000);
@@ -95,7 +95,7 @@ describe("judge", () => {
     writeFileSync(join(dir, "contract.json"), JSON.stringify({ routes: ["/a"], testids: [] }));
     const fake = (async () => new Response(JSON.stringify({ content: [{ type: "text", text: '{"score": 0.3}' }] }))) as unknown as typeof fetch;
     try {
-      expect(await judge(`http://127.0.0.1:${(srv.address() as any).port}`, dir, task(), { fetch: fake, apiKey: "k" })).toBeCloseTo(0.3, 6);
+      expect(await judgeAnthropic(`http://127.0.0.1:${(srv.address() as any).port}`, dir, task(), { fetch: fake, apiKey: "k" })).toBeCloseTo(0.3, 6);
     } finally { srv.close(); }
   }, 60_000);
 
@@ -113,8 +113,30 @@ describe("judge", () => {
     writeFileSync(join(dir, "contract.json"), JSON.stringify({ routes: ["/auth/sign-up", "/a"], testids: [] }));
     const fake = (async () => new Response(JSON.stringify({ content: [{ type: "text", text: '{"score": 1}' }] }))) as unknown as typeof fetch;
     try {
-      expect(await judge(`http://127.0.0.1:${(srv.address() as any).port}`, dir, task(), { fetch: fake, apiKey: "k" })).toBe(1);
+      expect(await judgeAnthropic(`http://127.0.0.1:${(srv.address() as any).port}`, dir, task(), { fetch: fake, apiKey: "k" })).toBe(1);
       expect(seen.at(-1)).toBe("a-in");
     } finally { srv.close(); }
   }, 60_000);
+});
+
+describe("codex judge", () => {
+  const msg = (text: string) => JSON.stringify({ type: "item.completed", item: { type: "agent_message", text } });
+  it("passes read-only sandbox, schema and images; parses the final message; clamps", async () => {
+    let args: string[] = [];
+    const run = (async (a: string[]) => { args = a; return { code: 0, out: msg("thinking") + "\n" + msg('{"score": 1.4, "reason": "x"}') }; }) as any;
+    expect(await judge("http://x", "/nowhere", task(), { shots: Array(9).fill(png), run })).toBe(1);
+    expect(args).toEqual(expect.arrayContaining(["--sandbox", "read-only", "--output-schema", "--ignore-user-config"]));
+    expect(args.join(" ")).not.toMatch(/dangerously|workspace-write|danger-full-access/);
+    expect(args.filter((x) => x === "-i")).toHaveLength(6);
+  });
+  it("retries once on non-zero exit, then NaN; junk reply is NaN", async () => {
+    let n = 0;
+    const bad = (async () => { n++; return { code: 1, out: "nope" }; }) as any;
+    expect(await judge("http://x", "/nowhere", task(), { shots: [png], run: bad })).toBeNaN();
+    expect(n).toBe(2);
+    const flaky = (async () => (n++ % 2 === 0 ? { code: 1, out: "" } : { code: 0, out: msg('{"score":0.4,"reason":"r"}') })) as any;
+    n = 0;
+    expect(await judge("http://x", "/nowhere", task(), { shots: [png], run: flaky })).toBeCloseTo(0.4, 6);
+    expect(await judge("http://x", "/nowhere", task(), { shots: [png], run: (async () => ({ code: 0, out: msg("hello") })) as any })).toBeNaN();
+  });
 });

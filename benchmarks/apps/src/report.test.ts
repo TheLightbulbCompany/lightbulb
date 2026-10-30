@@ -59,6 +59,12 @@ describe("report", () => {
     expect(md).toMatch(/Spend: \$4\.00/);
   });
 
+  it("shows subscription where billing is subscription", () => {
+    const md = writeReport(results([rec("b01-todo", 1, { billing: "subscription", dollars: 0 }), rec("b01-todo", 2, { billing: "subscription", dollars: 0 }), rec("b01-todo", 3, { billing: "subscription", dollars: 0 })], good));
+    expect(row(md, "b01-todo")).toMatch(/\| subscription \|/);
+    expect(md).toMatch(/Spend: subscription/);
+  });
+
   it("withholds scores when controls.json is missing, and flags a missing judge-on-reference score", () => {
     const md = writeReport(results([rec("b01-todo", 1)]));
     expect(md).toMatch(/controls\.json missing/);

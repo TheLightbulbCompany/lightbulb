@@ -10,7 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const RULES_PATH = "apps/infra/hermes/skills-src/lightbulb/references/software-projects.md";
 export const RUN_CAP_USD = 15;
 export const STRIPPED = ["Repository", "Deploy to Vercel", "AWS within the connector's limits", "Continuous integration", "Pull-request review", "A database, hosting or another paid service"];
-export const STAGE0_NOTE = "## How this app will be run\nPostgres is available at runtime in `DATABASE_URL`. If you need tables, use Drizzle with a `drizzle.config.ts` and generated migrations; they are applied with `pnpm drizzle-kit migrate` before the build. The app is started with `pnpm build && pnpm start`. `CRON_SECRET` is set in the environment. The names the checks rely on are in `contract.json`; do not change that file.";
+export const STAGE0_NOTE = "## How this app will be run\nPostgres is available at runtime in `DATABASE_URL`. If you need tables, use Drizzle with a `drizzle.config.ts` and generated migrations; they are applied with `pnpm drizzle-kit migrate` before the build. The app is started with `pnpm build && pnpm start` and served over plain http at `http://localhost:<port>`. `CRON_SECRET` is set in the environment. The names the checks rely on are in `contract.json`; do not change that file.";
 
 export function buildRules(md: string): string {
   const kept = md.split(/^(?=## )/m).filter((s) => !STRIPPED.some((h) => s.startsWith(`## ${h}\n`)));

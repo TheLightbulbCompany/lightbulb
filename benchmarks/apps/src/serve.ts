@@ -121,7 +121,9 @@ export async function serve(dir: string, opts: ServeOpts = {}): Promise<Served> 
     app.on("error", (e) => { log += `\n[serve] start failed: ${e}\n`; exited = true; });
     log += `\n$ pnpm start -p ${port}\n`;
 
-    const url = `http://127.0.0.1:${port}`;
+    // `next start` without -H builds request URLs (req.nextUrl.origin) on localhost; a browser on 127.0.0.1 sends a different Origin,
+    // so a same-origin check that is correct on any real host would refuse every write. Serve on the origin Next reports.
+    const url = `http://localhost:${port}`;
     const deadline = Date.now() + START_MS;
     while (Date.now() < deadline && !exited) {
       if (await fetch(url, { signal: AbortSignal.timeout(2000) }).then(() => true, () => false)) {

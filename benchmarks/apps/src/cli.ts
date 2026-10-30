@@ -7,11 +7,11 @@ import { runProbes } from "./probes";
 import { writeReport } from "./report";
 import { runSuite } from "./runner";
 
-// pnpm tsx src/cli.ts suite [--adapter codex|claude-code] [--tasks a,b] [--runs 3]
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { adapter: { type: "string", default: "codex" }, tasks: { type: "string" }, runs: { type: "string" } } });
+// pnpm tsx src/cli.ts suite [--adapter codex|claude-code] [--tasks a,b] [--runs 3] [--keep]  (--keep leaves each run's workdir in $TMPDIR; its path is in the run record)
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { adapter: { type: "string", default: "codex" }, tasks: { type: "string" }, runs: { type: "string" }, keep: { type: "boolean" } } });
 const adapter = { codex: codexAdapter, "claude-code": claudeCodeAdapter }[values.adapter!];
-if (positionals[0] !== "suite" || !adapter) { console.error("usage: cli.ts suite [--adapter codex|claude-code] [--tasks a,b] [--runs 3]"); process.exit(2); }
-const dir = await runSuite(adapter, { tasks: values.tasks?.split(","), runs: values.runs ? Number(values.runs) : undefined,
+if (positionals[0] !== "suite" || !adapter) { console.error("usage: cli.ts suite [--adapter codex|claude-code] [--tasks a,b] [--runs 3] [--keep]"); process.exit(2); }
+const dir = await runSuite(adapter, { tasks: values.tasks?.split(","), runs: values.runs ? Number(values.runs) : undefined, keepWorkdir: values.keep,
   // the report withholds scores when controls.json is missing or red
   onStart: async (out: string) => {
     const c = await writeControls(out);

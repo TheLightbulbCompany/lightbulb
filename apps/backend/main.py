@@ -1058,6 +1058,11 @@ from routers import company_provisioning  # noqa: E402
 
 app.include_router(company_provisioning.router, prefix="/api/v1/company/provisioning", tags=["company-provisioning"])
 
+# Apps on the provisioning rail: builders under /build, Canvas and the admin on the rest.
+from routers import apps as apps_routes  # noqa: E402
+
+app.include_router(apps_routes.router, prefix="/api/v1/apps", tags=["apps"])
+
 # Capability policy + revoke-all (the P0d slice — row + surface only;
 # enforcement in the rails is P1).
 from routers import company_policy  # noqa: E402

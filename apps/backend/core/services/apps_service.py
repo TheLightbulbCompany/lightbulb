@@ -25,10 +25,10 @@ import httpx
 
 from core.config import settings
 from core.dynamodb import plain, utc_now_iso
-from core.repositories import apps_repo
+from core.repositories import apps_repo, messaging_repo
 from core.repositories import provisioning_workflow_repo as wf_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import apps_db, apps_dns, apps_source, network_proof, provisioning_workflow
+from core.services import apps_db, apps_dns, apps_source, messaging, network_proof, provisioning_workflow
 from core.services import stripe_provisioning as api
 from core.services import vercel_client as vercel
 from core.services.credentials import integration_secret_store
@@ -49,6 +49,9 @@ _DESTRUCTIVE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _COMMENTS = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
+_DB_URL = re.compile(r"postgres(?:ql)?://\S+")
+# A line the starter's /api/_lightbulb/errors route printed (plan 2 logs browser errors with this marker).
+_CLIENT_MARKS = ("[lightbulb:client]", "/api/_lightbulb/errors")
 
 
 @dataclass(frozen=True)
@@ -221,10 +224,12 @@ async def _check_destructive(app: dict, files: dict[str, bytes], approved: str |
 # --- workflows ----------------------------------------------------------------------------------
 
 
-async def _rows(app: dict) -> dict[tuple, dict]:
+async def _rows(app: dict, all_rows: list[dict] | None = None) -> dict[tuple, dict]:
     """The latest workflow row for each of the app's three resources."""
     out: dict[tuple, dict] = {}
-    rows = [r for r in await wf_repo.list_for_owner(app["owner_id"]) if r.get("app_id") == app["app_id"]]
+    if all_rows is None:
+        all_rows = await wf_repo.list_for_owner(app["owner_id"])
+    rows = [r for r in all_rows if r.get("app_id") == app["app_id"]]
     for r in sorted(rows, key=lambda r: r.get("created_at") or ""):
         out[((r.get("provider_name") or "").lower(), r.get("service_ref"), r.get("environment"))] = r
     return out
@@ -696,21 +701,18 @@ async def remove(owner_id: str, app_id: str, *, confirm_name: str, user_id: str)
     return {"state": "destroyed"}
 
 
-async def status(owner_id: str, app_id: str) -> AppStatus:
-    app = await _owned(owner_id, app_id)
-    rows, _ = await _progress(app)
-    state, _ = _state(app, rows)
+def _view(app: dict, rows: dict, state: str) -> AppStatus:
     preview = app.get("preview")
     return {
-        "app_id": app_id,
+        "app_id": app["app_id"],
         "name": app["name"],
         "room_id": app["room_id"],
-        "state": await _record_state(app, state),
+        "state": state,
         "open_to": app["open_to"],
         "budget_usd": app["budget_usd"],
         "preview_url": app.get("preview_url"),
         "live_url": app.get("live_url"),
-        "canvas_url": _canvas_url(app_id),
+        "canvas_url": _canvas_url(app["app_id"]),
         "live_version": app.get("live_version"),
         "origin": app.get("origin") or {},
         "versions": [
@@ -730,3 +732,92 @@ async def status(owner_id: str, app_id: str) -> AppStatus:
         "spend_month_cents": None,  # R9: no data source yet
         "preview": {k: preview[k] for k in ("deployment_id", "commit", "ready_at")} if preview else None,
     }
+
+
+async def status(owner_id: str, app_id: str) -> AppStatus:
+    app = await _owned(owner_id, app_id)
+    rows, _ = await _progress(app)
+    state, _ = _state(app, rows)
+    return _view(app, rows, await _record_state(app, state))
+
+
+async def update_settings(
+    owner_id: str, app_id: str, *, open_to: str | None = None, budget_usd: int | None = None
+) -> AppStatus:
+    """R36: the budget is only stored (the next approval's provider limit uses it). A new ``open_to``
+    reaches Vercel on this same read: the env fingerprint changes, so ``_push_env`` re-pushes."""
+    app = await _owned(owner_id, app_id)
+    fields = {k: v for k, v in (("open_to", open_to), ("budget_usd", budget_usd)) if v is not None}
+    if fields:
+        await _patch(app, fields)
+    return await status(owner_id, app_id)
+
+
+async def list_apps(owner_id: str, user_id: str) -> list[dict]:
+    """Canvas's rows: the record as stored (no provider calls), names resolved here, destroyed apps hidden."""
+    apps = [plain(a) for a in await apps_repo.list_for_owner(owner_id) if a.get("state") != "destroyed"]
+    if not apps:
+        return []
+    all_rows = await wf_repo.list_for_owner(owner_id)
+    room_ids = sorted({a["room_id"] for a in apps})
+    metas = dict(zip(room_ids, await asyncio.gather(*(messaging_repo.get_room(r) for r in room_ids)), strict=True))
+    live = {r: m for r, m in metas.items() if m and not m.get("deletedAt")}
+    member = dict(
+        zip(
+            live,
+            await asyncio.gather(
+                *(messaging.still_reads_room(owner_id, user_id, r, m["ownerId"]) for r, m in live.items())
+            ),
+            strict=True,
+        )
+    )
+    people = sorted({a["created_by"] for a in apps if a.get("created_by")})
+    names = dict(zip(people, await asyncio.gather(*(messaging.human_display_name(u) for u in people)), strict=True))
+    agents: dict[str, str] = {}
+    if any(a.get("actor_kind") == "agent" for a in apps):
+        try:
+            agents = {r["id"]: r["name"] for r in await messaging.load_agent_roster(owner_id)}
+        except messaging.ApiProblem:
+            logger.warning("apps: roster unavailable; agent names left empty")
+    out = []
+    for a in apps:
+        row = _view(a, await _rows(a, all_rows), a.get("state") or "")
+        del row["versions"]
+        uid = a.get("created_by")
+        row.update(
+            # R35: an invited app still opens for its room; invitees use their links.
+            can_open=a["open_to"] in ("public", "workspace") or bool(member.get(a["room_id"])),
+            room_name=(live.get(a["room_id"]) or {}).get("name"),
+            created_by_name=names.get(uid) if uid and names.get(uid) != uid else None,
+            agent_name=agents.get(a.get("actor_id")) if a.get("actor_kind") == "agent" else None,
+        )
+        out.append(row)
+    return out
+
+
+async def errors(owner_id: str, app_id: str) -> dict:
+    """R25: the last 50 browser (client) and server lines of the live deployment, else the latest
+    preview; build events when there are no runtime logs. Every app secret and any database URL is
+    replaced with ``[redacted]``."""
+    app = await _owned(owner_id, app_id)
+    rows = await _rows(app)
+    creds = await _secret(app, rows, "vercel", "prod", "token")
+    live = next((v for v in app.get("versions") or [] if v.get("n") == app.get("live_version")), None)
+    dep = (live or app.get("preview") or {}).get("deployment_id")
+    if not creds or not dep:
+        return {"client": [], "server": []}
+    lines = await vercel.runtime_logs(creds, dep, limit=200)
+    client = [x for x in lines if any(m in x["message"] for m in _CLIENT_MARKS)]
+    server = [x for x in lines if x not in client] if lines else await vercel.deployment_events(creds, dep, limit=50)
+    keys = [f"apps/{app_id}/{p}/{e}" for p, _, e in _RESOURCES] + [f"apps/{app_id}/lightbulb"]
+    blobs = await asyncio.gather(*(integration_secret_store.get(owner_id, k) for k in keys))
+    values = {v for b in blobs if b for v in b.values() if isinstance(v, str) and len(v) >= 8}
+    secret_re = re.compile("|".join(re.escape(v) for v in sorted(values, key=len, reverse=True)) or r"(?!)")
+
+    def clean(xs: list[dict]) -> list[dict]:
+        return [
+            {"at": x.get("at"), "message": _DB_URL.sub("[redacted]", secret_re.sub("[redacted]", x["message"]))}
+            for x in xs[-50:]
+        ]
+
+    return {"client": clean(client), "server": clean(server)}

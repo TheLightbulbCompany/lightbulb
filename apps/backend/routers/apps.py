@@ -1,0 +1,223 @@
+"""Apps — /api/v1/apps/*.
+
+Builders (a workspace agent's hook token, or a signed-in computer's proof) build under ``/build``;
+members read the list from Canvas, and the org admin changes settings or removes an app. Thin over
+``core/services/apps_service.py``; this file only authenticates, gates and maps errors.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.repositories.apps_repo import NameTaken
+from core.services import apps_service as svc
+from core.services import network_login, network_proof
+from core.services.apps_db import AppsDbError
+from core.services.apps_source import MAX_BYTES, SourceNotFound, SourceRefused, SourceTooLarge
+from core.services.container_auth import _require_hook_token
+from core.services.provisioning_workflow import WorkflowRefused
+from core.services.stripe_provisioning import ProvisioningError
+from core.services.vercel_client import VercelError
+from routers.company_provisioning import PAID_MESSAGE, Owner, _refusal, _stripe_failure
+from routers.teams._guards import require_always_on_entitlement
+
+router = APIRouter()
+
+MAX_UPLOAD = MAX_BYTES + 1024 * 1024  # the archive plus the form's other fields
+_AGENT_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
+_RETRY = "try again; if it keeps failing, report it"
+_STATUS = {
+    "app_not_found": 404,
+    "app_destroyed": 404,
+    "source_not_found": 404,
+    "version_not_found": 404,
+    "approval_invalid": 403,
+    "invalid_name": 422,
+    "source_refused": 422,
+}
+
+
+async def _run(call):
+    """Every service failure as a ``{code, message, next?}`` detail. Messages come from the
+    exceptions' own safe fields; nothing here formats a credential."""
+    try:
+        return await call
+    except svc.AppsRefused as e:
+        detail = {"code": e.code, "message": e.message, **({"next": e.next} if e.next else {})}
+        raise HTTPException(status_code=_STATUS.get(e.code, 409), detail=detail) from None
+    except WorkflowRefused as e:
+        raise _refusal(e) from None
+    except ProvisioningError as e:
+        raise _stripe_failure(e) from None
+    except VercelError as e:
+        raise HTTPException(502, {"code": f"vercel_{e.code}", "message": str(e), "next": _RETRY}) from None
+    except AppsDbError as e:
+        raise HTTPException(502, {"code": e.code, "message": str(e), "next": _RETRY}) from None
+    except NameTaken:
+        raise HTTPException(
+            409, {"code": "name_taken", "message": "Another workspace uses that name.", "next": "pick another name"}
+        ) from None
+    except SourceTooLarge:
+        raise _too_large() from None
+    except SourceRefused as e:
+        raise HTTPException(422, {"code": "source_refused", "message": str(e)}) from None
+    except SourceNotFound:
+        raise HTTPException(404, {"code": "source_not_found", "message": "That source was not uploaded."}) from None
+
+
+def _too_large() -> HTTPException:
+    return HTTPException(413, {"code": "source_too_large", "message": f"The archive is over {MAX_BYTES} bytes."})
+
+
+# --- builders -----------------------------------------------------------------------------------
+
+
+async def builder_caller(request: Request) -> svc.BuilderCaller:
+    """A hook token (``Authorization`` + ``X-Lightbulb-Owner``) or a computer proof; nothing else."""
+    owner = request.headers.get("X-Lightbulb-Owner")
+    if owner and request.headers.get("Authorization", "").startswith("Bearer "):
+        await _require_hook_token(owner, request)
+        agent = request.headers.get("X-Lightbulb-Agent-Id") or "agent"  # R14: optional
+        if not _AGENT_ID_RE.fullmatch(agent):
+            raise HTTPException(422, {"code": "invalid_agent_id", "message": "X-Lightbulb-Agent-Id is malformed."})
+        caller = svc.BuilderCaller(owner_id=owner, actor_id=agent, actor_kind="agent")
+    elif request.headers.get("X-Lightbulb-Proof"):
+        auth, _ = await network_login.computer_identity(request)
+        if not auth.org_id:
+            raise HTTPException(
+                409,
+                {
+                    "code": "workspace_required",
+                    "message": "Apps belong to a workspace, and this computer is signed in to none.",
+                    "next": "join or create a workspace, then lightbulb login again",
+                },
+            )
+        caller = svc.BuilderCaller(owner_id=auth.org_id, actor_id=auth.user_id, actor_kind="person")
+    else:
+        raise HTTPException(status_code=401, detail="missing credentials")
+    await require_always_on_entitlement(caller.owner_id, message=PAID_MESSAGE)  # R22
+    return caller
+
+
+Builder = Annotated[svc.BuilderCaller, Depends(builder_caller)]
+
+
+def _size_cap(request: Request) -> None:
+    """Before the proof check reads the body: refuse a declared oversize upload unread."""
+    if int(request.headers.get("content-length") or 0) > MAX_UPLOAD:
+        raise _too_large()
+
+
+class Origin(BaseModel):
+    kind: str = Field(max_length=64)
+    ref: str | None = Field(default=None, max_length=512)
+
+
+class UpBody(BaseModel):
+    name: str = Field(max_length=63)
+    room_id: str = Field(max_length=128)
+    services: list[Annotated[str, Field(max_length=64)]] = Field(max_length=20)
+    open_to: Literal["room", "workspace", "invited", "public"]
+    budget_usd: int = Field(ge=0)
+    source_id: str = Field(max_length=128)
+    origin: Origin
+    issue_id: str | None = Field(default=None, max_length=128)
+    approved_destructive: str | None = Field(default=None, max_length=128)
+    cost_cents: int | None = Field(default=None, ge=0)
+
+
+class PublishBody(BaseModel):
+    source_id: str = Field(max_length=128)
+    reason: str = Field(default="", max_length=2000)
+    approved_destructive: str | None = Field(default=None, max_length=128)
+    cost_cents: int | None = Field(default=None, ge=0)
+
+
+class RollbackBody(BaseModel):
+    version: int | None = Field(default=None, ge=1)
+
+
+@router.post("/build/source", dependencies=[Depends(_size_cap)])
+async def put_source(request: Request, caller: Builder):
+    # Parsed by hand, after builder_caller: the proof check hashes the raw body first, and FastAPI's
+    # own form parsing would consume the stream before it (Starlette replays the cached body here).
+    async with request.form(max_part_size=4096) as form:
+        archive = form.get("archive")
+        fields = {k: form.get(k) for k in ("name", "room_id", "commit")}
+        if not hasattr(archive, "read") or not all(isinstance(v, str) and v for v in fields.values()):
+            raise HTTPException(422, {"code": "invalid_request", "message": "name, room_id, commit and archive"})
+        data = await archive.read(MAX_UPLOAD + 1)
+    if len(data) > MAX_UPLOAD:
+        raise _too_large()
+    return await _run(svc.put_source(caller.owner_id, **fields, archive=data, actor=caller))
+
+
+@router.post("/build/up")
+async def up(body: UpBody, caller: Builder):
+    fields = {**body.model_dump(), "origin": body.origin.model_dump(exclude_none=True)}
+    return await _run(svc.up(caller.owner_id, **fields, actor=caller))
+
+
+@router.post("/build/{app_id}/publish")
+async def publish(app_id: str, body: PublishBody, caller: Builder):
+    return await _run(svc.publish(caller.owner_id, app_id, **body.model_dump(), actor=caller))
+
+
+@router.post("/build/{app_id}/rollback")
+async def rollback(app_id: str, body: RollbackBody, caller: Builder):
+    return await _run(svc.rollback(caller.owner_id, app_id, version=body.version))
+
+
+@router.post("/build/{app_id}/destroy")
+async def destroy(app_id: str, caller: Builder):
+    return await _run(svc.destroy(caller.owner_id, app_id, actor=caller))
+
+
+@router.get("/build/{app_id}/status")
+async def status(app_id: str, caller: Builder):
+    return await _run(svc.status(caller.owner_id, app_id))
+
+
+@router.get("/build/{app_id}/errors")
+async def errors(app_id: str, caller: Builder):
+    return await _run(svc.errors(caller.owner_id, app_id))
+
+
+# --- members ------------------------------------------------------------------------------------
+
+
+@router.get("/issuer")
+async def issuer():
+    return {"keys": [network_proof.public_key()]}
+
+
+@router.get("/")
+async def list_apps(auth: Annotated[AuthContext, Depends(get_current_user)]):
+    owner_id = resolve_owner_id(auth)
+    return {"apps": await _run(svc.list_apps(owner_id, auth.user_id))}
+
+
+class SettingsBody(BaseModel):
+    open_to: Literal["room", "workspace", "invited", "public"] | None = None
+    budget_usd: int | None = Field(default=None, ge=0, strict=True)
+
+
+class RemoveBody(BaseModel):
+    confirm_name: str = Field(max_length=63)
+
+
+@router.patch("/{app_id}")
+async def update_settings(app_id: str, body: SettingsBody, owner_id: Owner):
+    return await _run(svc.update_settings(owner_id, app_id, open_to=body.open_to, budget_usd=body.budget_usd))
+
+
+@router.delete("/{app_id}")
+async def remove(
+    app_id: str, body: RemoveBody, owner_id: Owner, auth: Annotated[AuthContext, Depends(get_current_user)]
+):
+    return await _run(svc.remove(owner_id, app_id, confirm_name=body.confirm_name, user_id=auth.user_id))

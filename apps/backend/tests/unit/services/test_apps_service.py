@@ -715,3 +715,55 @@ async def test_sources_are_pruned_but_keep_live_and_wanted(world):
         await _source({**SRC_V1, "app/page.tsx": f"p{i}"}, f"c{i}")
     sources = (await svc.apps_repo.get(src["app_id"]))["sources"]
     assert len(sources) == 11 and src["source_id"] in sources
+
+
+# --- task 13: routes' service helpers -----------------------------------------------------------
+
+
+async def test_update_settings_stores_and_repushes_open_to(world):
+    src, _, _ = await _ready_preview(world)
+    st = await svc.update_settings(OWNER, src["app_id"], open_to="public", budget_usd=50)
+    assert (st["open_to"], st["budget_usd"]) == ("public", 50)
+    app = await svc.apps_repo.get(src["app_id"])
+    assert (app["open_to"], app["budget_usd"]) == ("public", 50)
+    pushed = [i for post in world.vercel.env_posts() for i in post if i["key"] == "LIGHTBULB_OPEN_TO"]
+    assert pushed[-1]["value"] == "public"
+
+
+async def test_errors_split_client_and_server_and_redact(world, monkeypatch):
+    src, _, dep_id = await _ready_preview(world)
+    cookie = world.secrets[(OWNER, f"apps/{src['app_id']}/lightbulb")]["cookie_secret"]
+    logs = AsyncMock(
+        return_value=[
+            {"at": 1, "message": f"[lightbulb:client] TypeError at {DEV_DB} cookie={cookie}"},
+            {"at": 2, "message": f"db down postgresql://u:p@h/db token={VERCEL['token']}"},
+        ]
+    )
+    events = AsyncMock(return_value=[])
+    monkeypatch.setattr(svc.vercel, "runtime_logs", logs)
+    monkeypatch.setattr(svc.vercel, "deployment_events", events)
+    out = await svc.errors(OWNER, src["app_id"])
+    assert logs.await_args.args[1] == dep_id
+    assert [x["at"] for x in out["client"]] == [1] and [x["at"] for x in out["server"]] == [2]
+    text = json.dumps(out)
+    for secret in (DEV_DB, "DEVPW", cookie, VERCEL["token"], "u:p@h"):
+        assert secret not in text
+    assert "[redacted]" in out["client"][0]["message"]
+    events.assert_not_awaited()
+
+
+async def test_errors_fall_back_to_build_events(world, monkeypatch):
+    src, _, dep_id = await _ready_preview(world)
+    monkeypatch.setattr(svc.vercel, "runtime_logs", AsyncMock(return_value=[]))
+    events = AsyncMock(return_value=[{"at": 5, "message": "Error: build failed"}])
+    monkeypatch.setattr(svc.vercel, "deployment_events", events)
+    assert await svc.errors(OWNER, src["app_id"]) == {
+        "client": [],
+        "server": [{"at": 5, "message": "Error: build failed"}],
+    }
+    assert events.await_args.args[1] == dep_id
+
+
+async def test_errors_empty_before_any_deployment(world):
+    src = await _source()
+    assert await svc.errors(OWNER, src["app_id"]) == {"client": [], "server": []}

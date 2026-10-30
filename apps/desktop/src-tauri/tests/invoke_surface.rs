@@ -1,8 +1,11 @@
 //! The page's whole reach into this Mac is the `generate_handler!` list in `lib.rs`. A page is a
 //! remote origin, so no engine operation (approve, admit, policy, invite) is a command at all, and
-//! every command that widens what agents may do asks a native "Allow" before it writes.
+//! every command that widens what agents may do asks a native "Allow" before it writes. The one
+//! door to the engine is `engine_ask`, whose allowlist `engine_client`'s tests pin.
 
 const LIB: &str = include_str!("../src/lib.rs");
+
+const ENGINE_DOOR: &str = "engine_client::engine_ask";
 
 /// Every command, with the call that writes the change when it widens access (None: it does
 /// not widen access, and why).
@@ -43,6 +46,8 @@ const COMMANDS: &[(&str, Option<&str>, &str)] = &[
     // goes on; shell_integration.rs belongs to an open PR (#4384), so the ask lands after it.
     ("shell_integration::shell_integration_set", None, "Q4 ask follows #4384"),
     ("holder::panel::terminal_panel", None, "shows a held terminal"),
+    // Spec 2026-10-30 §10.2, §4.5: team.join runs without a native ask; the engine only checks no agent is above the app.
+    (ENGINE_DOOR, None, "reads, and team.join/team.leave; never approve, admit, policy or invite"),
 ];
 
 fn handler_list() -> Vec<String> {
@@ -64,7 +69,7 @@ fn body(command: &str) -> String {
 
 #[test]
 fn no_engine_op_is_a_tauri_command() {
-    for command in handler_list() {
+    for command in handler_list().into_iter().filter(|c| c != ENGINE_DOOR) {
         for op in ["approve", "admit", "policy", "invite", "engine", "network", "allow"] {
             assert!(!command.to_lowercase().contains(op), "{command} looks like an engine operation; the engine raises its own dialogs");
         }

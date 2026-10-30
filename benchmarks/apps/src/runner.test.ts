@@ -117,7 +117,19 @@ describe("runner", () => {
     expect(JSON.parse(readFileSync(join(dir, "suite.json"), "utf8"))).toEqual({ tasks: ["b01-todo", "b02-slotline"], runs: 3 });
   });
 
-  it("a skipped Playwright test is a failed journey", () => {
+  it("runs journeys, then the judge, then the probes", async () => {
+    const calls: string[] = [];
+    const d = mk();
+    await runTask(task(), adapter(() => ({})), { run: 1, outDir: out() }, {
+      ...d,
+      journeys: async (...a) => { calls.push("journeys"); return d.journeys!(...a); },
+      judge: async (...a) => { calls.push("judge"); return d.judge(...a); },
+      probes: async (...a) => { calls.push("probes"); return d.probes(...a); },
+    });
+    expect(calls).toEqual(["journeys", "judge", "probes"]);
+  });
+
+    it("a skipped Playwright test is a failed journey", () => {
     const rep = { suites: [{ specs: [
       { title: "ok", tests: [{ status: "expected" }] },
       { title: "skip", tests: [{ status: "skipped" }] },

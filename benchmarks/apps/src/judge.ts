@@ -57,7 +57,9 @@ async function screenshots(url: string, dir: string, task: Task): Promise<Buffer
     await page.goto("/auth/sign-up").catch(() => {});
     if (await page.getByTestId("signup-name").count()) { // the task has accounts: judge the signed-in app
       shots.push(await page.screenshot());
-      await signUpOn(page, "Judge");
+      page.setDefaultTimeout(10_000);
+      // Broken auth is the app's problem, not a judge failure: judge the signed-out screens.
+      await signUpOn(page, "Judge").catch((e) => console.error(`[judge] ${task.id}: sign-up failed, judging signed-out screens: ${String(e).split("\n")[0]}`));
     }
     for (const r of pages.filter((p) => !p.startsWith("/auth/"))) {
       if (shots.length >= MAX_IMAGES) break;

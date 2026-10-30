@@ -93,7 +93,7 @@ describe("secret-in-client", () => {
 });
 
 /** A tiny app with cookie sign-up and a per-user /api/things; `leaky` lists everyone's things, `idor` scopes the list but serves any id. */
-async function thingsApp(mode: "safe" | "leaky" | "idor" | "broken") {
+async function thingsApp(mode: "safe" | "leaky" | "idor" | "broken" | "empty") {
   const leaky = mode === "leaky";
   const users = new Map<string, string>(); // session -> user id
   const things: { id: string; owner: string; title: string }[] = [{ id: "seed1", owner: "journey-user", title: "someone else's" }];
@@ -111,8 +111,8 @@ async function thingsApp(mode: "safe" | "leaky" | "idor" | "broken") {
     if (u.pathname === "/api/things" && mode === "broken") return json(res, { error: "boom" }, 500);
     if (u.pathname === "/api/things") return json(res, things.filter((t) => leaky || t.owner === who));
     const m = /^\/api\/things\/(\w+)$/.exec(u.pathname);
-    const t = m && things.find((x) => x.id === m[1] && (mode !== "safe" || x.owner === who));
-    return t ? json(res, t) : json(res, { error: "not found" }, 404);
+    const t = m && things.find((x) => x.id === m[1] && (mode === "idor" || mode === "leaky" || x.owner === who));
+    return t ? json(res, t) : mode === "empty" ? json(res, {}) : json(res, { error: "not found" }, 404);
   });
 }
 
@@ -200,17 +200,61 @@ describe.skipIf(!process.env.EVAL_IT)("probes against Postgres", () => {
     } finally { await bad.close(); }
   }, 120_000);
 
+  /** Cookie-auth app whose `/form` page has a sign-out <form> (server-action style) before the message form. */
+  const signOutFormApp = (withMessageForm: boolean) => {
+    const sessions = new Set<string>();
+    let n = 0;
+    const authForm = (k: "signup" | "signin") => `<form method="post">${k === "signup" ? `<input name="name" data-testid="signup-name">` : ""}<input name="email" type="email" data-testid="${k}-email"><input name="password" type="password" data-testid="${k}-password"><button data-testid="${k}-submit">Go</button></form>`;
+    return fakeApp((req, res, body) => {
+      const path = new URL(req.url!, "http://x").pathname;
+      const sid = /sid=(\w+)/.exec(req.headers.cookie ?? "")?.[1];
+      const signedIn = !!sid && sessions.has(sid);
+      if (path === "/auth/sign-up" || path === "/auth/sign-in") {
+        if (req.method === "GET") return html(res, authForm(path.endsWith("up") ? "signup" : "signin"));
+        const s = `s${++n}`; sessions.add(s);
+        res.writeHead(303, { location: "/form", "set-cookie": `sid=${s}; Path=/` }); return res.end();
+      }
+      if (path === "/signout") { if (sid) sessions.delete(sid); res.writeHead(303, { location: "/auth/sign-in" }); return res.end(); }
+      if (!signedIn && path !== "/") { res.writeHead(307, { location: "/auth/sign-in" }); return res.end(); }
+      if (path === "/form" && req.method === "POST") {
+        const msg = new URLSearchParams(body).get("message") ?? "";
+        execFileSync("docker", ["exec", "-i", container, "psql", "-U", "postgres", "-v", `m=${msg}`], { input: "insert into contact_messages(body) values (:'m');" });
+        res.writeHead(303, { location: "/form" }); return res.end();
+      }
+      return html(res, `<form method="post" action="/signout"><button data-testid="sign-out-button">Sign out</button></form>` + (withMessageForm ? `<form method="post"><textarea name="message"></textarea><button type="submit">Send</button></form>` : ""));
+    });
+  };
+
+  it("sql-injection skips the sign-out form and stays signed in; fails when no payload reached a target form", async () => {
+    freshTables();
+    const probe: ProbeSpec[] = [{ id: "sqli", kind: "sql-injection", target: "/form" }];
+    const ok = await signOutFormApp(true);
+    try {
+      const r = (await runProbes(ok.url, contractDir(), probe, databaseUrl, task()))[0];
+      expect(r.pass, r.detail).toBe(true);
+      expect(psql("select count(*) from contact_messages where body like '%EVALSQLI%'")).toBe("1"); // the marker round reached the message form
+    } finally { await ok.close(); }
+    const only = await signOutFormApp(false);
+    try {
+      const r = (await runProbes(only.url, contractDir(), probe, databaseUrl, task()))[0];
+      expect(r.pass).toBe(false);
+      expect(r.detail).toMatch(/no payload reached the target form/);
+    } finally { await only.close(); }
+  }, 180_000);
+
   it("list-only cross-user-read fetches ids from the database and catches an open record route", async () => {
-    psql("drop table if exists things; create table things(id text primary key); insert into things values ('seed1')");
+    psql("drop table if exists stuff; drop table if exists users; create table users(id text primary key); insert into users select 'u' || g from generate_series(1, 60) g; create table stuff(id text primary key); insert into stuff values ('seed1')");
     const probe: ProbeSpec[] = [{ id: "c", kind: "cross-user-read", target: "/api/things" }];
-    const [safe, idor] = await Promise.all([thingsApp("safe"), thingsApp("idor")]);
+    const [safe, idor, empty] = await Promise.all([thingsApp("safe"), thingsApp("idor"), thingsApp("empty")]);
     try {
       const ok = (await runProbes(safe.url, contractDir(), probe, databaseUrl, task()))[0];
       expect(ok.pass, ok.detail).toBe(true);
+      const blank = (await runProbes(empty.url, contractDir(), probe, databaseUrl, task()))[0]; // 200 {} for a foreign id is not a leak
+      expect(blank.pass, blank.detail).toBe(true);
       const bad = (await runProbes(idor.url, contractDir(), probe, databaseUrl, task()))[0];
       expect(bad.pass).toBe(false);
       expect(bad.detail).toContain("/api/things/seed1");
-    } finally { await Promise.all([safe.close(), idor.close()]); }
+    } finally { await Promise.all([safe.close(), idor.close(), empty.close()]); }
   }, 60_000);
 
   it("destructive-migration passes when seeded rows survive a rename and fails when they are dropped", async () => {

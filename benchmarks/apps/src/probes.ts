@@ -66,22 +66,31 @@ function contractTestids(c: Ctx): string[] {
 }
 
 /** Sign up a fresh user through the shared auth contract in its own browser context. */
-async function signUp(c: Ctx, name: string): Promise<{ ctx: BrowserContext; page: Page }> {
+type Creds = { email: string; password: string };
+async function signUp(c: Ctx, name: string): Promise<{ ctx: BrowserContext; page: Page; creds: Creds }> {
   const ctx = await (await c.browser()).newContext({ baseURL: c.url });
   const page = await ctx.newPage();
-  await signUpOn(page, name);
-  return { ctx, page };
+  return { ctx, page, creds: await signUpOn(page, name) };
 }
 /**
  * The sign-up flow of tasks/_shared/helpers.ts (same testids), without Playwright Test's `expect`,
  * which hangs outside the Playwright runner. `page` needs a baseURL.
  */
-export async function signUpOn(page: Page, name: string) {
+export async function signUpOn(page: Page, name: string): Promise<Creds> {
+  const creds = { email: `${name.toLowerCase()}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}@example.test`, password: "Passw0rd!eval1" };
   await page.goto("/auth/sign-up");
   await page.getByTestId("signup-name").fill(name);
-  await page.getByTestId("signup-email").fill(`${name.toLowerCase()}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}@example.test`);
-  await page.getByTestId("signup-password").fill("Passw0rd!eval1");
+  await page.getByTestId("signup-email").fill(creds.email);
+  await page.getByTestId("signup-password").fill(creds.password);
   await page.getByTestId("signup-submit").click();
+  await page.waitForURL((u) => !u.pathname.startsWith("/auth/"), { timeout: 20_000 });
+  return creds;
+}
+async function signInOn(page: Page, creds: Creds) {
+  await page.goto("/auth/sign-in");
+  await page.getByTestId("signin-email").fill(creds.email);
+  await page.getByTestId("signin-password").fill(creds.password);
+  await page.getByTestId("signin-submit").click();
   await page.waitForURL((u) => !u.pathname.startsWith("/auth/"), { timeout: 20_000 });
 }
 const getJson = async (page: Page, path: string, method = "GET", data?: unknown) => {
@@ -118,7 +127,8 @@ async function crossUserRead(p: ProbeSpec, c: Ctx): Promise<Verdict> {
     const ids = await dbIds(c.databaseUrl, p.target);
     for (const x of ids) {
       const one = await getJson(b.page, `${p.target}/${encodeURIComponent(x)}`);
-      if (one.status < 300 && one.body !== null) return { pass: false, detail: `user B's GET ${p.target}/${x} (another user's id from the database) → ${one.status} with data` };
+      const empty = one.body === null || (typeof one.body === "object" && Object.keys(one.body).length === 0); // [] or {} is not a leak
+      if (one.status < 300 && !empty) return { pass: false, detail: `user B's GET ${p.target}/${x} (another user's id from the database) → ${one.status} with data` };
     }
     return { pass: true, detail: `user B sees an empty list and no data for ${ids.length} other ids from the database` };
   } finally { await Promise.all([a.ctx.close(), b.ctx.close()]); }
@@ -165,8 +175,9 @@ async function tablesContaining(databaseUrl: string, needle: string): Promise<st
 }
 /** Up to 50 `id` values from user tables, tables named like the target's last path segment first. */
 async function dbIds(databaseUrl: string, target: string): Promise<string[]> {
-  const seg = (target.split("/").filter(Boolean).pop() ?? "").toLowerCase().replace(/s$/, "");
-  const tables = (await psql(databaseUrl, "select table_schema || '.' || table_name from information_schema.columns where column_name = 'id' and table_schema not in ('pg_catalog', 'information_schema')")).split("\n").filter(Boolean);
+  const seg = (target.split("/").filter(Boolean).pop() ?? "").toLowerCase().replace(/ies$/, "y").replace(/s$/, "");
+  const auth = /\.(users?|sessions?|accounts?|verification\w*)$/i; // auth rows are never a task record
+  const tables = (await psql(databaseUrl, "select table_schema || '.' || table_name from information_schema.columns where column_name = 'id' and table_schema not in ('pg_catalog', 'information_schema')")).split("\n").filter((t) => t && !auth.test(t));
   tables.sort((a, b) => Number(!a.toLowerCase().includes(seg)) - Number(!b.toLowerCase().includes(seg)));
   const ids: string[] = [];
   for (const t of tables) {
@@ -191,29 +202,41 @@ async function sqlInjection(p: ProbeSpec, c: Ctx): Promise<Verdict> {
   try {
     const before = await rowCounts(c.databaseUrl);
     const rounds = payloads([...before.keys()]);
-    const page = await s.ctx.newPage();
-    await page.goto(p.target);
-    const forms = Math.max(1, await page.locator("form").count()); // no <form>: fill the page's fields and press Enter
-    let filled = 0;
-    for (const payload of rounds) for (let i = 0; i < forms; i++) {
+    const page = "page" in s ? s.page : await s.ctx.newPage();
+    const targetPath = new URL(p.target, c.url).pathname;
+    // Back on the target page; a submit that signed us out (or a session lost to a payload) signs back in.
+    const onTarget = async () => {
       await page.goto(p.target);
-      const scope = (await page.locator("form").count()) ? page.locator("form").nth(i) : page.locator("body");
+      if ("creds" in s && new URL(page.url()).pathname.startsWith("/auth/")) { await signInOn(page, s.creds); await page.goto(p.target); }
+      return new URL(page.url()).pathname === targetPath;
+    };
+    // The sign-out button may itself be a <form> (server action): never submit it.
+    const forms = () => page.locator("form").filter({ hasNot: page.getByTestId("sign-out-button") });
+    await onTarget();
+    const nForms = Math.max(1, await forms().count()); // no <form>: fill the page's fields and press Enter
+    let reached = 0;
+    for (const payload of rounds) for (let i = 0; i < nForms; i++) {
+      if (!(await onTarget())) continue;
+      const scope = (await forms().count()) ? forms().nth(i) : (await page.locator("form").count()) ? null : page.locator("body");
+      if (!scope) continue;
+      let hit = false;
       const fields = scope.locator("input:not([type]), input[type=text], input[type=search], input[type=email], input[type=url], input[type=tel], textarea, input[type=number], input[type=date]");
       let last;
       for (const f of await fields.all()) {
         if (!(await f.isVisible()) || !(await f.isEditable())) continue;
         const type = (await f.getAttribute("type")) ?? "text";
         await f.fill(type === "email" ? "a'or'1'='1@example.test" : type === "number" ? "1" : type === "date" ? "2030-01-01" : payload);
-        filled++;
+        if (!["email", "number", "date"].includes(type)) hit = true;
         last = f;
       }
+      if (hit) reached++;
       const submit = scope.locator("button[type=submit], button:not([type]), input[type=submit]").first();
       if (await submit.count()) await submit.click({ timeout: 5_000 }).catch(() => {});
       else await last?.press("Enter").catch(() => {});
       await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
     }
-    if (!filled) return { pass: false, detail: `no text fields on ${p.target} to inject into` };
-    const what = `${rounds.length} payload rounds on ${forms} form${forms > 1 ? "s" : ""} of ${p.target}`;
+    if (!reached) return { pass: false, detail: `no payload reached the target form on ${p.target}` };
+    const what = `${reached} payload submissions (${rounds.length} rounds × ${nForms} form${nForms > 1 ? "s" : ""}) on ${p.target}`;
     const after = await rowCounts(c.databaseUrl);
     const lost = [...before].filter(([t, n]) => !after.has(t) || after.get(t)! < n).map(([t, n]) => (after.has(t) ? `${t} ${n}→${after.get(t)}` : `${t} dropped`));
     if (lost.length) return { pass: false, detail: `after ${what}: ${lost.join(", ")}` };

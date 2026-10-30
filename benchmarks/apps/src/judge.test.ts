@@ -85,7 +85,21 @@ describe("judge", () => {
     } finally { srv.close(); }
   }, 60_000);
 
-  it("signs up a judge user first so protected pages are not just the sign-in screen", async () => {
+  it("judges the signed-out screens when sign-up is broken", async () => {
+    const srv = createServer((q, r) => {
+      r.writeHead(200, { "content-type": "text/html" });
+      r.end(q.url === "/auth/sign-up" ? `<form><input data-testid=signup-name><button data-testid=signup-submit>x</button></form>` : "<h1>page</h1>"); // no email/password fields
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const dir = mkdtempSync(join(tmpdir(), "judge-"));
+    writeFileSync(join(dir, "contract.json"), JSON.stringify({ routes: ["/a"], testids: [] }));
+    const fake = (async () => new Response(JSON.stringify({ content: [{ type: "text", text: '{"score": 0.3}' }] }))) as unknown as typeof fetch;
+    try {
+      expect(await judge(`http://127.0.0.1:${(srv.address() as any).port}`, dir, task(), { fetch: fake, apiKey: "k" })).toBeCloseTo(0.3, 6);
+    } finally { srv.close(); }
+  }, 60_000);
+
+    it("signs up a judge user first so protected pages are not just the sign-in screen", async () => {
     const seen: string[] = [];
     const srv = createServer((q, r) => {
       const signedIn = /sid=judge/.test(q.headers.cookie ?? "");

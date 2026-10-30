@@ -1,17 +1,18 @@
 "use client";
 
-// Admin-only settings for one app: who can open it, invites, monthly budget, database console, removal.
-// The backend re-enforces admin with 403; hiding this for members is only a courtesy.
+// Settings for the creator (can_publish) or a workspace admin for one app: who can open it, invites, monthly budget, database console, removal.
+// The backend re-enforces who may change these with 403; hiding this for others is only a courtesy.
 import { useState } from "react";
-import { notifyError } from "@/lib/notify";
+import { notifyError, notifySuccess } from "@/lib/notify";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { useApps, type AppRow } from "@/hooks/useApps";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { PublishButton, type PublishCtl } from "./PublishButton";
+import { LiveLink, Problem, displayName } from "./appText";
 import "./canvas.css";
 
 const CHOICES: { value: AppRow["open_to"]; label: string }[] = [
-  { value: "room", label: "This room" },
+  { value: "room", label: "" }, // "#room (this room)", filled in from the app
   { value: "workspace", label: "Everyone in the workspace" },
   { value: "invited", label: "People I invite" },
   { value: "public", label: "Anyone with the link" },
@@ -41,17 +42,21 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
   const [removing, setRemoving] = useState(false);
   const [typed, setTyped] = useState("");
   const [note, setNote] = useState<string | null>(null);
+  const [dataErr, setDataErr] = useState<string | null | undefined>(undefined); // undefined: none; null: link unavailable
+  const dn = displayName(app);
   const hasDb = (app.resources ?? []).some((r) => r.provider === "neon" && r.resource_id);
   const budgetNum = Number(budget);
   const budgetOk = budget.trim() !== "" && Number.isInteger(budgetNum) && budgetNum >= 0;
-  if (!isAdmin) return null;
+  if (!(app.can_publish === true || isAdmin)) return null;
 
   // The hook already surfaces API errors; these handlers only keep the panel usable.
   const room = `#${app.room_name ?? "this room"}`;
-  const warning = pending && whoLosesAccess(openTo, pending, room);
+  const warning = pending === "public"
+    ? `Anyone with the link will be able to open it, including people outside the workspace, without signing in.${hasDb ? " They can see and submit what the app shows them." : ""}`
+    : pending && whoLosesAccess(openTo, pending, room);
   const pick = (value: OpenTo) => {
     if (value === openTo) { setPending(null); return; }
-    if (whoLosesAccess(openTo, value, room)) setPending(value); else { setPending(null); choose(value); }
+    if (value === "public" || whoLosesAccess(openTo, value, room)) setPending(value); else { setPending(null); choose(value); }
   };
   const choose = async (value: OpenTo) => {
     const before = openTo;
@@ -61,26 +66,27 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
   const sendInvites = async () => {
     const list = emails.split(/[\s,;]+/).filter(Boolean);
     if (!list.length) return;
-    try { await invite(app.app_id, list); setEmails(""); setNote(`Invited ${list.length}.`); } catch { /* shown by the hook */ }
+    try { await invite(app.app_id, list); setEmails(""); setNote(`Sent ${list.length} ${list.length === 1 ? "invite" : "invites"}.`); } catch { /* shown by the hook */ }
   };
   const saveBudget = async () => {
-    try { await update(app.app_id, { budget_usd: budgetNum }); setNote("Budget saved."); } catch { /* shown by the hook */ }
+    try { await update(app.app_id, { budget_usd: budgetNum }); setNote("Spending limit saved."); } catch { /* shown by the hook */ }
   };
   // The tab opens synchronously in the click (Safari blocks a window.open after an await).
   const openData = async () => {
+    setDataErr(undefined);
     const w = openPendingTab();
     if (!w) { notifyError("Your browser blocked the new tab — allow popups for this site and try again."); return; }
     try {
       const url = await databaseLink(app);
       if (url) navigatePendingTab(w, url);
-      else { closePendingTab(w); notifyError("This provider doesn't offer a console link right now."); }
-    } catch { closePendingTab(w); }
+      else { closePendingTab(w); setDataErr(null); }
+    } catch (err) { closePendingTab(w); setDataErr((err as Error)?.message ?? ""); }
   };
   const doRemove = async () => {
-    try { await remove(app.app_id, typed); (onRemoved ?? onClose)(); } catch { /* shown by the hook */ }
+    try { await remove(app.app_id, app.name); notifySuccess(`Removed ${dn}.`); (onRemoved ?? onClose)(); } catch { /* shown by the hook */ }
   };
 
-  return <section className="app-settings" aria-label={`${app.name} settings`}>
+  return <section className="app-settings" aria-label={`${dn} settings`}>
     <div className="app-settings__head">
       <h3 className="canvas__heading">Settings</h3>
       <button type="button" className="app-view__btn" onClick={onClose}>Close</button>
@@ -91,40 +97,53 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
       <legend className="canvas__heading">Who can open it</legend>
       {CHOICES.map((c) => <label key={c.value} className="app-settings__row">
         <input type="radio" name={`open-to-${app.app_id}`} checked={(pending ?? openTo) === c.value} onChange={() => pick(c.value)} />
-        {c.label}
+        {c.value === "room" ? `${room} (this room)` : c.label}
       </label>)}
       {pending && warning && <div role="alert" className="app-settings__row">
         <p className="canvas__notice">{warning}</p>
-        <button type="button" className="app-view__btn" onClick={() => { const v = pending; setPending(null); choose(v); }}>Change who can open it</button>
+        <button type="button" className="app-view__btn" onClick={() => { const v = pending; setPending(null); choose(v); }}>{pending === "public" ? "Make it public" : "Change who can open it"}</button>
         <button type="button" className="app-view__btn" onClick={() => setPending(null)}>Cancel</button>
       </div>}
+      {openTo === "public" && <div className="app-settings__row">
+        {app.live_url ? <LiveLink url={app.live_url} /> : <span className="canvas__notice">Publish it to get the link.</span>}
+      </div>}
       {openTo === "invited" && <div className="app-settings__row">
-        <label htmlFor={`emails-${app.app_id}`}>Email addresses</label>
+        <label htmlFor={`emails-${app.app_id}`}>Email addresses (one per line or separated by commas)</label>
+        <span className="canvas__notice">Each person gets an email with a link to {dn} only. No Lightbulb account needed.</span>
         <textarea id={`emails-${app.app_id}`} value={emails} rows={3} onChange={(e) => setEmails(e.target.value)} />
         <button type="button" className="app-view__btn" disabled={!emails.trim()} onClick={sendInvites}>Invite</button>
       </div>}
     </fieldset>
 
     <div className="app-settings__group">
-      <label htmlFor={`budget-${app.app_id}`}>Monthly budget (USD)</label>
+      <label htmlFor={`budget-${app.app_id}`}>Monthly spending limit ($)</label>
+      <span className="canvas__notice">What {dn} may spend each month on hosting and data. Spent so far: ${(app.spend_month_cents / 100).toFixed(2)}.</span>
       <input id={`budget-${app.app_id}`} type="number" min={0} step={1} value={budget} onChange={(e) => setBudget(e.target.value)} />
-      <button type="button" className="app-view__btn" disabled={!budgetOk} onClick={saveBudget}>Save budget</button>
+      <button type="button" className="app-view__btn" disabled={!budgetOk} onClick={saveBudget}>Save limit</button>
     </div>
 
     <div className="app-settings__group"><PublishButton app={app} ctl={publishCtl} /></div>
 
     <div className="app-settings__group">
-      <button type="button" className="app-view__btn" disabled={!hasDb} onClick={openData}>Data and backups</button>
-      {!hasDb && <span className="canvas__notice">This app doesn&apos;t store data yet.</span>}
+      <button type="button" className="app-view__btn" disabled={!hasDb} onClick={openData}>Data and backups ↗</button>
+      {hasDb
+        ? <span className="canvas__notice">Opens where {dn}&apos;s data is kept (Neon). Restoring a backup replaces today&apos;s data.</span>
+        : <span className="canvas__notice">This app doesn&apos;t store data yet.</span>}
+      {dataErr === null && <Problem>This app&apos;s data page isn&apos;t available right now.</Problem>}
+      {typeof dataErr === "string" && <Problem raw={dataErr}>We couldn&apos;t open the data page. Try again.</Problem>}
     </div>
 
     <div className="app-settings__group">
       {!removing
         ? <button type="button" className="app-view__btn" onClick={() => setRemoving(true)}>Remove app…</button>
         : <>
-          <label htmlFor={`confirm-${app.app_id}`}>Type the app name to confirm</label>
+          <p className="canvas__notice">Removing {dn} takes it offline for everyone and deletes its data. This can&apos;t be undone.</p>
+          <label htmlFor={`confirm-${app.app_id}`}>Type {dn} to confirm</label>
           <input id={`confirm-${app.app_id}`} value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
-          <button type="button" className="app-view__btn" disabled={typed !== app.name} onClick={doRemove}>Remove {app.name}</button>
+          <span className="publish">
+            <button type="button" className="app-view__btn app-view__btn--danger" disabled={typed.trim().toLowerCase() !== dn.toLowerCase()} onClick={doRemove}>Remove {dn}</button>
+            <button type="button" className="app-view__btn" onClick={() => { setRemoving(false); setTyped(""); }}>Cancel</button>
+          </span>
         </>}
     </div>
   </section>;

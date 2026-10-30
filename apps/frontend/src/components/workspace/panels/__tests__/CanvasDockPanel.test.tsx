@@ -8,7 +8,7 @@ vi.mock("../../workspaceController", () => ({ updatePanelParams: vi.fn() }));
 vi.mock("@/components/canvas/AppView", () => ({ AppView: () => <div>app view</div> }));
 import { CanvasDockPanel } from "../CanvasDockPanel";
 
-const row = (over: Record<string, unknown> = {}) => ({ app_id: "a1", name: "Invoices", room_id: "r", state: "ready", open_to: "room",
+const row = (over: Record<string, unknown> = {}) => ({ app_id: "a1", name: "Invoices", room_id: "r", room_name: "finance", state: "ready", open_to: "room",
   budget_usd: 1, preview_url: null, live_url: null, live_version: 1, last_opened_at: null, spend_month_cents: 0, can_open: true, ...over });
 const base = { apps: [], loading: false, error: null, refresh: vi.fn(), open: vi.fn() };
 const panel = (app?: string) => render(<CanvasDockPanel {...({ id: "p", params: { app } } as unknown as React.ComponentProps<typeof CanvasDockPanel>)} />);
@@ -20,16 +20,28 @@ describe("CanvasDockPanel deep link", () => {
     hook = { ...base, error: new Error("x") };
     panel("a1");
     expect(screen.getByRole("alert")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
     expect(screen.queryByText(/isn't in this workspace/)).toBeNull();
   });
 
   it("a building app is named, not opened", () => {
     hook = { ...base, apps: [row({ state: "building" })] };
     panel("a1");
-    expect(screen.getByText(/Invoices · building/)).toBeTruthy();
+    expect(screen.getByText("Invoices")).toBeTruthy();
+    expect(screen.getByText(/The agent is making the preview\. It'll post in #finance/)).toBeTruthy();
     expect(screen.queryByText("app view")).toBeNull();
     expect(screen.getByRole("button", { name: "All apps" })).toBeTruthy();
+  });
+
+  it.each([
+    ["awaiting_approval", /Waiting for the owner to approve: the card is in #finance/],
+    ["provisioning", /Setting up its hosting and data/],
+    ["failed", /Something went wrong\. Ask the agent in #finance/],
+  ] as const)("%s shows its status line in the open view", (state, re) => {
+    hook = { ...base, apps: [row({ state, live_version: null })] };
+    panel("a1");
+    expect(screen.getByText(re)).toBeTruthy();
+    expect(screen.queryByText("app view")).toBeNull();
   });
 
   it("a ready app renders the view", () => {

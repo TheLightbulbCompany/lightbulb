@@ -19,6 +19,7 @@ export type AppRow = {
   live_version: number | null;
   last_opened_at: string | null;
   spend_month_cents: number;
+  display_name?: string; // person-facing name; Canvas title-cases the slug when absent
   created_by_name?: string;
   agent_name?: string;
   can_open: boolean;
@@ -94,7 +95,7 @@ export function useApps() {
       const res = await api.post(`/company/provisioning/resources/neon/${encodeURIComponent(target.resource_id!)}/dashboard-link`, {}) as { url?: string | null };
       return res.url ?? null;
     } catch (err) {
-      notifyApiError(err, "The database console could not be opened. Try again.");
+      notifyApiError(err, "We couldn't open the data page. Try again.");
       throw err;
     }
   };

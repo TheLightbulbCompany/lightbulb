@@ -4,6 +4,7 @@
 // usePublish owns the phase and the one interval; AppView calls it and passes the result to the header and the settings.
 import { useEffect, useState } from "react";
 import { useApps, type AppRow } from "@/hooks/useApps";
+import { LiveLink, Problem, audience, liveLine, roomOf } from "./appText";
 import "./canvas.css";
 
 const POLL_MS = 5_000;
@@ -55,13 +56,26 @@ function OwnPublish({ app }: { app: AppRow }) {
 }
 
 function PublishView({ app, ctl: { phase, done, failed, start, refresh } }: { app: AppRow; ctl: PublishCtl }) {
+  const [confirming, setConfirming] = useState(false);
   const eligible = app.can_publish === true && app.state === "ready" && !!app.preview_url;
-  const publishAgain = eligible && <button type="button" className="app-view__btn" onClick={start}>Publish</button>;
+  const who = app.open_to === "room" ? roomOf(app) : audience(app).replace("people you invited", "people you invite");
+  const publishAgain = eligible && (confirming
+    ? <span className="publish" role="group" aria-label="Confirm publish">
+      <span className="canvas__notice">Make this preview live for {who}? You can undo it from the room.</span>
+      <button type="button" className="app-view__btn app-view__btn--primary" onClick={() => { setConfirming(false); start(); }}>Publish</button>
+      <button type="button" className="app-view__btn" onClick={() => setConfirming(false)}>Cancel</button>
+    </span>
+    : <button type="button" className="app-view__btn app-view__btn--primary" onClick={() => setConfirming(true)}>Publish</button>);
   if (done) return <span className="publish"><span role="status" className="canvas__notice">
-    {app.live_url ? <>Live at <a href={app.live_url} target="_blank" rel="noopener noreferrer">{app.live_url}</a></> : "Live"}</span>{publishAgain}</span>;
-  if (failed || phase.k === "failed") return <span className="publish">
-    <span role="alert" className="canvas__notice">{phase.k === "failed" ? phase.msg : app.error?.message || "Publishing failed."}</span>
-    <button type="button" className="app-view__btn" onClick={start}>Retry</button></span>;
+    {liveLine(app)}</span>
+    {app.open_to === "public" && app.live_url && <LiveLink url={app.live_url} />}{publishAgain}</span>;
+  if (failed || phase.k === "failed") {
+    const raw = phase.k === "failed" ? phase.msg : app.error?.message;
+    return <span className="publish">
+      <Problem raw={raw} action={<button type="button" className="app-view__btn" onClick={start}>Try again</button>}>
+        This version didn&apos;t go live.{app.live_version != null ? " People still see the last live version." : ""} Try again, or ask the agent in {roomOf(app)} to fix it.
+      </Problem></span>;
+  }
   if (phase.k === "slow") return <span className="publish"><span role="status" className="canvas__notice">Still publishing — check back in a minute</span>
     <button type="button" className="app-view__btn" onClick={refresh}>Refresh</button></span>;
   if (phase.k === "publishing") return <span role="status" className="canvas__notice">Publishing…</span>;

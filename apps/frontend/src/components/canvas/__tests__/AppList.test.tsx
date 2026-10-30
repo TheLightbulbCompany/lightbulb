@@ -22,7 +22,7 @@ describe("AppList", () => {
     expect(screen.getByText("everyone here")).toBeTruthy();
     expect(screen.getByText("invited people")).toBeTruthy();
     expect(screen.getByText("anyone with the link")).toBeTruthy();
-    expect(screen.getAllByText("$3.20 this month").length).toBe(4);
+    expect(screen.getAllByText("$3.20 spent this month").length).toBe(4);
     fireEvent.click(screen.getByRole("button", { name: /Invoices/ }));
     expect(props.onOpen).toHaveBeenCalledWith("a1");
   });
@@ -51,22 +51,43 @@ describe("AppList", () => {
   it("building apps are listed but not openable", () => {
     const onOpen = vi.fn();
     render(<AppList {...props} onOpen={onOpen} apps={[app({ state: "building" })]} />);
-    expect(screen.getByText("building")).toBeTruthy();
+    expect(screen.getByText("The agent is making the preview. It'll post in #finance when it's ready.")).toBeTruthy();
     fireEvent.click(screen.getByText("Invoices"));
     expect(onOpen).not.toHaveBeenCalled();
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("empty state copy", () => {
-    render(<AppList {...props} apps={[]} />);
-    expect(screen.getByText("No apps yet. Ask an agent in a room to build one.")).toBeTruthy();
+  it("shows a title-cased display name, not the slug, and hides zero spend", () => {
+    render(<AppList {...props} apps={[app({ name: "workshop-signup", spend_month_cents: 0 }), app({ app_id: "a2", name: "x-y", display_name: "Fancy Name", spend_month_cents: 0 })]} />);
+    expect(screen.getByText("Workshop Signup")).toBeTruthy();
+    expect(screen.getByText("Fancy Name")).toBeTruthy();
+    expect(screen.queryByText("workshop-signup")).toBeNull();
+    expect(screen.queryByText(/spent this month/)).toBeNull();
   });
 
-  it("retry calls refresh", () => {
+  it.each([
+    ["awaiting_approval", "Waiting for the owner to approve: the card is in #finance."],
+    ["provisioning", "Setting up its hosting and data, usually a few minutes."],
+    ["failed", "Something went wrong. Ask the agent in #finance."],
+  ] as const)("%s row shows its status line", (state, line) => {
+    render(<AppList {...props} apps={[app({ state })]} />);
+    expect(screen.getByText(line)).toBeTruthy();
+  });
+
+  it("loading and empty copy", () => {
+    const { unmount } = render(<AppList {...props} loading apps={[]} />);
+    expect(screen.getByText("Loading apps…")).toBeTruthy();
+    unmount();
+    render(<AppList {...props} apps={[]} />);
+    expect(screen.getByText(/No apps yet\. In any room, ask an agent for one, like "a sign-up page for our workshop", and it appears here\./)).toBeTruthy();
+  });
+
+  it("a load failure says what happened, Try again retries, raw text is under Details", () => {
     const onRetry = vi.fn();
-    render(<AppList {...props} onRetry={onRetry} error={new Error("x")} apps={[]} />);
-    expect(screen.getByRole("alert")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    render(<AppList {...props} onRetry={onRetry} error={new Error("503 upstream")} apps={[]} />);
+    expect(screen.getByRole("alert").textContent).toContain("We couldn't load the apps.");
+    expect(screen.getByText("Details").closest("details")!.textContent).toContain("503 upstream");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(onRetry).toHaveBeenCalled();
   });
 });

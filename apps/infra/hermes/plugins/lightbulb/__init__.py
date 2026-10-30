@@ -1,6 +1,7 @@
 """The `lightbulb` Hermes tool plugin: the room tools OpenClaw gave us for free."""
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import logging
@@ -700,6 +701,160 @@ def _request_approval(args: dict, **_kw) -> str:
     return json.dumps(result)
 
 
+# ---- ask_person: a question, or a blocked report, as a Paperclip interaction ---------------------
+# Paperclip's issue-thread interactions already reach Activity's Needs you ("has a question for
+# you", core/services/activity.py render_interaction) and wake the assignee when answered. Agents
+# only had a hand-built raw API call for them, so a blocked agent left a comment nobody read
+# (G1, 30 Oct: ISOA-867 sat 8 days). One named tool, like request_approval above.
+ASK_PERSON_SCHEMA = {
+    "name": "ask_person",
+    "description": "Ask a person a question on your task: it shows in their Needs you, and their answer "
+                   "wakes you with it. Use it instead of guessing between options, and instead of a "
+                   "comment when you are blocked (blocked: true also marks the task blocked). Give 2 to 4 "
+                   "likely answers, recommended first, or none for a typed answer. One open question per "
+                   "task: a new one replaces your earlier unanswered one, so ask everything in one. In a "
+                   "room conversation, ask in your reply instead.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "One sentence."},
+            "options": {"type": "array", "items": {"type": "string"},
+                        "description": "2 to 4 likely answers, recommended first."},
+            "details": {"type": "string", "description": "What the person needs to know to answer."},
+            "task": {"type": "string",
+                     "description": "The task this is about, like WAL-6. Defaults to the task you are running."},
+            "blocked": {"type": "boolean", "description": "True when the work cannot continue until the answer."},
+        },
+        "required": ["question"],
+    },
+}
+ASK_IN_REPLY = "No task to ask on: in a room conversation, ask in your reply instead."
+
+
+def _ask_person(args: dict, **_kw) -> str:
+    question = str(args.get("question") or "").strip()
+    options = [str(o).strip() for o in (args.get("options") or []) if str(o).strip()]
+    if not question:
+        return "question is required."
+    if options and not 2 <= len(options) <= 4:
+        return "Give 2 to 4 options, or none for a typed answer."
+    ref = str(args.get("task") or "").strip() or _scope_secret("PAPERCLIP_TASK_ID")
+    run_id = _scope_secret("PAPERCLIP_RUN_ID")
+    if not ref or not run_id:  # the fork's create requires the agent's run (routes requireAgentRunId)
+        return ASK_IN_REPLY
+    base, key = _scope_secret("PAPERCLIP_API_URL").rstrip("/"), _scope_secret("PAPERCLIP_API_KEY")
+    if not base or not key:
+        return "ask_person is unavailable: this turn has no Paperclip credentials."
+    choices = ([{"id": f"o{i}", "label": label[:1000]} for i, label in enumerate(options, 1)]
+               or [{"id": "answer", "label": "Type your answer", "freeText": True}])
+    prompt = {"id": "q1", "prompt": question[:4000], "selectionMode": "single", "required": True,
+              "options": choices}
+    if str(args.get("details") or "").strip():
+        prompt["helpText"] = str(args["details"]).strip()[:4000]
+    body = {"kind": "ask_user_questions", "resolverPolicy": "board_only",
+            "continuationPolicy": "wake_assignee", "title": question[:240],
+            "payload": {"version": 1, "supersedeOnUserComment": True, "questions": [prompt]}}
+    try:
+        try:
+            issue = _paperclip_call("GET", f"{base}/api/issues/{urllib.parse.quote(ref)}", key)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return f"Question not created: task {ref} was not found."
+            raise
+        me = _paperclip_call("GET", f"{base}/api/agents/me", key)
+        company = _paperclip_call("GET", f"{base}/api/companies/{me['companyId']}", key)
+        # The fork replays a key only for the same run and an identical body, and 409s anything else
+        # under it (issue-thread-interactions.ts isEquivalentCreateRequest), so both are in the key.
+        digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:24]
+        body["idempotencyKey"] = f"ask:{issue['id']}:{run_id}:{digest}"
+        made = _paperclip_call("POST", f"{base}/api/issues/{issue['id']}/interactions", key, body, run_id)
+        if made.get("status", "pending") != "pending":  # a replay of a card already answered or expired
+            return f"Question not created: this exact question is already {made.get('status')} on this task."
+        blocked = False
+        if args.get("blocked"):  # after the card exists: a failed ask never leaves the task parked
+            change = {"status": "blocked", "unblockDescriptor": {
+                "owner": {"agentId": me["id"]},  # an agent may name only itself (heartbeat.md)
+                "action": f"Resume when the person answers: {question}"[:500]}}
+            try:
+                _paperclip_call("PATCH", f"{base}/api/issues/{issue['id']}", key, change, run_id)
+                blocked = True
+            except urllib.error.HTTPError:
+                pass  # the question is out; the result says the task is not blocked
+    except urllib.error.HTTPError as exc:
+        return f"Question not created: {_http_error_text(exc)}."
+    except Exception as exc:  # noqa: BLE001
+        return f"Question not created: {type(exc).__name__}."
+    ident = issue.get("identifier") or issue["id"]
+    return json.dumps({"interactionId": made.get("id"), "blocked": blocked,
+                       "link": f"{_app_url()}/{company.get('issuePrefix')}/issues/{ident}"})
+
+
+# ---- lightbulb_board: counts and lists from the board, never from memory -----------------------
+# G1 (30 Oct): an agent said "only 3 open cards" with 55 open. The fork's list route
+# (pc:server/src/routes/issues.ts:7884) returns a bare array, `limit` clamped to 1000
+# (services/issues.ts:216-217), `offset`, comma-separated `status`, `assigneeAgentId`, free-text `q`.
+BOARD_STATUSES = ("backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled")
+BOARD_OPEN = tuple(s for s in BOARD_STATUSES if s not in ("done", "cancelled"))
+BOARD_PAGE = 1000
+BOARD_MAX_ROWS = 2000  # ponytail: a hard cap, flagged as truncated; count server-side if boards outgrow it
+BOARD_SHOWN = 50
+BOARD_SCHEMA = {
+    "name": "lightbulb_board",
+    "description": "Count or list the workspace's tasks from the board itself. Use it before stating any "
+                   "number of tasks or any task's status; never state one from memory. Defaults to every "
+                   "open status (not done or cancelled) for everyone.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "status": {"type": "array", "items": {"type": "string", "enum": list(BOARD_STATUSES)}},
+            "assignee": {"type": "string", "description": "\"me\", an agent's name, or omit for everyone."},
+            "query": {"type": "string", "description": "Words to match in task titles."},
+        },
+    },
+}
+BOARD_DOWN = "The board is unavailable right now. Do not state a number."
+
+
+def _board(args: dict, **_kw) -> str:
+    statuses = [str(s) for s in (args.get("status") or BOARD_OPEN)]
+    if bad := [s for s in statuses if s not in BOARD_STATUSES]:
+        return f"Unknown status: {', '.join(bad)}. Use {', '.join(BOARD_STATUSES)}."
+    base, key = _scope_secret("PAPERCLIP_API_URL").rstrip("/"), _scope_secret("PAPERCLIP_API_KEY")
+    if not base or not key:
+        return "lightbulb_board is unavailable: this turn has no Paperclip credentials."
+    try:
+        me = _paperclip_call("GET", f"{base}/api/agents/me", key)
+        company = me["companyId"]
+        agents = _paperclip_call("GET", f"{base}/api/companies/{company}/agents", key)
+        names = {a["id"]: a.get("name") or a["id"] for a in agents if isinstance(a, dict) and a.get("id")}
+        params = {"status": ",".join(statuses)}
+        who = str(args.get("assignee") or "").strip()
+        if who.lower() == "me":
+            params["assigneeAgentId"] = me["id"]
+        elif who:
+            match = [i for i, n in names.items() if str(n).lower() == who.lower()]
+            if not match:
+                return f"No agent named {who} on this board."
+            params["assigneeAgentId"] = match[0]
+        if str(args.get("query") or "").strip():
+            params["q"] = str(args["query"]).strip()
+        rows: list = []
+        while len(rows) < BOARD_MAX_ROWS:
+            page = _paperclip_call("GET", f"{base}/api/companies/{company}/issues?" + urllib.parse.urlencode(
+                {**params, "limit": BOARD_PAGE, "offset": len(rows)}), key)
+            if not page:  # only an empty page ends it: the server may clamp below what we asked
+                break
+            rows.extend(page)
+    except Exception:  # noqa: BLE001 -- no status, no URL, no detail reaches the agent
+        return BOARD_DOWN
+    truncated = len(rows) >= BOARD_MAX_ROWS
+    rows = rows[:BOARD_MAX_ROWS]
+    shown = [{"identifier": r.get("identifier") or r.get("id"), "title": r.get("title"), "status": r.get("status"),
+              "assignee": names.get(r.get("assigneeAgentId")) if r.get("assigneeAgentId") else None}
+             for r in rows[:BOARD_SHOWN]]
+    return json.dumps({"total": len(rows), "issues": shown, "truncated": truncated})
+
+
 def _log_memory_full(tool_name: str = "", result=None, **_kw) -> None:
     """Hermes refuses a built-in memory write over its char budget and tells only the model."""
     if tool_name == "memory" and isinstance(result, str) and "would exceed the limit" in result:
@@ -813,6 +968,10 @@ def register(ctx) -> None:
                       description=PURCHASE_SCHEMA["description"], emoji="💳")
     ctx.register_tool("request_approval", "lightbulb", APPROVAL_SCHEMA, _request_approval,
                       description=APPROVAL_SCHEMA["description"], emoji="✅")
+    ctx.register_tool("ask_person", "lightbulb", ASK_PERSON_SCHEMA, _ask_person,
+                      description=ASK_PERSON_SCHEMA["description"], emoji="❓")
+    ctx.register_tool("lightbulb_board", "lightbulb", BOARD_SCHEMA, _board,
+                      description=BOARD_SCHEMA["description"], emoji="📋")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,
                       description=SESSIONS_SCHEMA["description"], emoji="🖥️")
     ctx.register_tool("lightbulb_network", "lightbulb", NETWORK_SCHEMA, _network,

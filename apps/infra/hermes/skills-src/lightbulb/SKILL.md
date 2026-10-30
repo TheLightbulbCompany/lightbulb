@@ -108,6 +108,9 @@ These hold whether or not you open a reference.
 - **A person's decision is an approval in Needs you**: call the `request_approval` tool.
   Never a task assigned to them or a question in chat (the paperclip skill's
   `references/interactions.md`).
+- **Blocked, or unsure between options, on a task: `ask_person`.** Never guess, never only
+  a comment. In a room, ask in your reply.
+- **Any count or status of tasks: `lightbulb_board` first.** Never state one from memory.
 - **Ask with a card, not a list.** To make the person pick, or to show numbers, a
   comparison or a plan, write the one `openui-lang` card from `references/ui.md`. A
   sign-off is an approval (`request_approval`), never a card.

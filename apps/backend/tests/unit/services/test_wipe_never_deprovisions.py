@@ -54,6 +54,8 @@ _FORBIDDEN = (
     "provisioning_workflow",
     "provisioning_landing",
     "provisioning_approvals",
+    "apps_service",
+    "apps_sweeper",
     "remove_resource",
     "unlink_resource",
     "rotate_credentials",

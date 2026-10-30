@@ -47,6 +47,10 @@ SRC_V1 = {
 SRC_V2 = {**SRC_V1, "drizzle/0001_add.sql": "ALTER TABLE shifts ADD COLUMN who text;", "app/page.tsx": "v2"}
 
 
+# What production returned for an expired token.
+DEAD_403 = {"error": {"code": "forbidden", "message": "Not authorized", "invalidToken": True}}
+
+
 class Vercel:
     def __init__(self):
         self.calls: list[httpx.Request] = []
@@ -72,7 +76,7 @@ class Vercel:
         self.calls.append(req)
         p = req.url.path
         if self.refused:
-            return httpx.Response(403, json={"error": {"code": "forbidden", "message": "Not authorized"}})
+            return httpx.Response(403, json=DEAD_403)
         if p == "/v13/deployments":
             dep_id = f"dpl_{len(self.deployments) + 1}"
             self.deployments[dep_id] = {"readyState": "QUEUED", "url": f"{dep_id}.vercel.app"}
@@ -91,6 +95,8 @@ class Vercel:
             return httpx.Response(400 if self.alias_fails else 200, json={})
         if p.endswith("/files"):
             return httpx.Response(200, json={})
+        if p.endswith("/events"):
+            return httpx.Response(200, json=[])
         return httpx.Response(200, json={})
 
 
@@ -180,6 +186,7 @@ def world(monkeypatch):
         monkeypatch.setattr(svc.api, "remove_resource", AsyncMock(return_value={}))
         monkeypatch.setattr(svc.api, "rotate_credentials", AsyncMock(return_value={"status": "errored"}))
         monkeypatch.setattr(svc.api, "reveal_access_configuration", AsyncMock())
+        monkeypatch.setattr(svc, "_SETTLE_S", 0)
         monkeypatch.setattr(svc.clerk_admin, "get_organization", AsyncMock(return_value={"name": " Acme  Co "}))
 
         rooms = {
@@ -1353,7 +1360,8 @@ async def test_publish_exactly_as_in_production_progress_passes_the_deploy_is_re
     res = await _publish(src)
     assert res.get("error") is None and res["state"] == "building"
     assert world.vercel.calls[0].method == "POST" and world.vercel.calls[0].url.path.endswith("/domains")
-    assert world.vercel.calls[1].url.path == "/v13/deployments/dpl_1"  # the probe, before anything is rotated
+    assert world.vercel.calls[1].url.path == "/v13/deployments/dpl_1"  # the new token checked, after the rotation
+    assert world.vercel.calls[1].headers["authorization"] == "Bearer vtok_NEW"
     rotate.assert_awaited_once()
     assert rotate.await_args.args[0] == "acct_1" and rotate.await_args.args[1].startswith("res_")
     assert reveal.await_count == 2  # first to look, then for the rotated one
@@ -1519,7 +1527,8 @@ async def test_R5b_reveal_failing_after_complete_is_owed_and_the_next_attempt_re
 
 async def test_R5c_owed_reveal_runs_from_a_read_with_nothing_else_to_ask_vercel(world, monkeypatch):
     src, _, _ = await _settled_preview(world)
-    await svc.apps_repo.patch(src["app_id"], {"credential_renewal": {"state": "needs_reveal", "at": "2026-10-30"}})
+    fresh = {"state": "needs_reveal", "at": datetime.now(UTC).isoformat()}
+    await svc.apps_repo.patch(src["app_id"], {"credential_renewal": fresh})
     rotate, reveal = _renewal(monkeypatch)
     world.vercel.refused = True
     await svc.status(OWNER, src["app_id"])
@@ -1578,23 +1587,6 @@ async def test_an_odd_json_403_from_one_endpoint_never_rotates_and_stays_reporte
     assert (await _rec(src))["publish_error"]["code"] == "vercel_forbidden"
 
 
-async def test_a_network_error_on_the_probe_never_rotates(world, monkeypatch):
-    src, _, _ = await _settled_preview(world)
-    rotate, reveal = _renewal(monkeypatch)
-
-    def answer(req):
-        if req.url.path.endswith("/domains"):
-            return httpx.Response(403, json=JSON_403)
-        if req.method == "GET":
-            raise httpx.ConnectError("down")
-        return None
-
-    _vercel_answers(world, monkeypatch, answer)
-    await _publish(src)
-    rotate.assert_not_awaited()
-    reveal.assert_not_awaited()
-
-
 async def test_a_probe_with_no_deployment_reads_the_project_env(world):
     await vercel_client.read_probe(VERCEL, None)
     assert world.vercel.paths("GET")[-1] == ("GET", "/v10/projects/prj_1/env")
@@ -1651,22 +1643,7 @@ async def test_a_cancel_mid_rotation_leaves_pending(world, monkeypatch):
     assert (await _rec(src))["credential_renewal"]["state"] == "pending"
 
 
-async def test_a_token_that_lands_after_pending_is_used_but_the_hold_stays(world, monkeypatch):
-    src, _, _ = await _settled_preview(world)
-    rotate, _ = _renewal(monkeypatch, rotate="pending")
-    world.vercel.refused = True
-    await _publish(src)
-    monkeypatch.setattr(svc.api, "reveal_access_configuration", AsyncMock(side_effect=_new_token_accepted(world)))
-    res = await _publish(src)
-    rotate.assert_awaited_once()
-    assert world.secrets[(OWNER, f"apps/{src['app_id']}/vercel/prod")]["token"] == "vtok_NEW"
-    rec = await _rec(src)
-    assert rec["credential_renewal"]["state"] == "pending" and rec.get("publish_pending")
-    assert rec.get("publish_error") is None
-    assert res["error"]["code"] == "credential_renewal_stuck" and res["state"] == "building"
-
-
-async def test_a_rotated_token_refused_at_once_stops_rather_than_rotating_every_hour(world, monkeypatch):
+async def test_a_rotated_token_refused_twice_stops_rather_than_rotating_again(world, monkeypatch):
     src, _, _ = await _settled_preview(world)
     answers = iter([{"configuration": VERCEL}, {"configuration": NEW}])
     rotate, _ = _renewal(monkeypatch, reveal=lambda a, r: next(answers, {"configuration": NEW}))
@@ -1679,7 +1656,7 @@ async def test_a_rotated_token_refused_at_once_stops_rather_than_rotating_every_
     rotate.assert_awaited_once()
 
 
-async def test_a_token_that_dies_again_rotates_again_only_after_the_hour(world, monkeypatch):
+async def test_a_token_that_dies_again_rotates_again_only_after_the_spacing(world, monkeypatch):
     src, _, _ = await _settled_preview(world)
     key = (OWNER, f"apps/{src['app_id']}/vercel/prod")
     world.secrets[key] = dict(NEW)
@@ -1742,3 +1719,325 @@ async def test_a_vercel_failure_that_is_not_a_refusal_never_rotates(world, monke
     assert res["error"]["code"] == "vercel_internal"
     rotate.assert_not_awaited()
     reveal.assert_not_awaited()
+
+
+# --- a token lives one hour: the ordinary path, wherever Vercel is called ---------------------------
+
+
+def _dies_then_rotates(world, monkeypatch):
+    """Stripe keeps returning the dead token until the rotation, then the new one, which Vercel takes."""
+    held = {"configuration": VERCEL}
+
+    async def rotate(account, resource):
+        held["configuration"] = NEW
+        world.vercel.refused = False
+        return {"status": "complete"}
+
+    rot = AsyncMock(side_effect=rotate)
+    rev = AsyncMock(side_effect=lambda a, r: dict(held))
+    monkeypatch.setattr(svc.api, "rotate_credentials", rot)
+    monkeypatch.setattr(svc.api, "reveal_access_configuration", rev)
+    world.vercel.refused = True
+    world.vercel.calls.clear()
+    return rot
+
+
+async def _two_versions(world):
+    src, _, _ = await _ready_preview(world)
+    await _publish(src)
+    world.vercel.finish("dpl_2")
+    await svc.status(OWNER, src["app_id"])
+    src2 = await _source(SRC_V2, "c2")
+    await svc.publish(OWNER, src["app_id"], source_id=src2["source_id"], actor=PERSON)
+    world.vercel.finish("dpl_3")
+    await svc.status(OWNER, src["app_id"])
+    return src
+
+
+def _assert_recovered_quietly(world, src, rot, caplog):
+    rot.assert_awaited_once()
+    assert world.secrets[(OWNER, f"apps/{src['app_id']}/vercel/prod")]["token"] == "vtok_NEW"
+    assert world.vercel.calls[-1].headers["authorization"] == "Bearer vtok_NEW"
+    loud = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING and "apps:" in r.getMessage()]
+    assert not loud, loud
+
+
+@pytest.fixture
+def info_log(caplog):
+    caplog.set_level(logging.INFO, logger=svc.logger.name)
+    return caplog
+
+
+async def test_token_dead_at_the_deploy_recovers_through_one_rotation(world, monkeypatch, info_log):
+    src, _, _ = await _settled_preview(world)
+    rot = _dies_then_rotates(world, monkeypatch)
+    res = await _publish(src)
+    assert res.get("error") is None and res["state"] == "building"
+    assert (await _rec(src))["credential_renewal"]["state"] == "complete"
+    _assert_recovered_quietly(world, src, rot, info_log)
+    assert "rotation: complete" in info_log.text  # below WARNING, and still findable
+
+
+async def test_token_dead_at_the_poll_recovers_through_one_rotation(world, monkeypatch, info_log):
+    from core.services import apps_sweeper
+
+    src, _, _ = await _ready_preview(world)
+    await _publish(src)
+    world.vercel.finish("dpl_2")
+    rot = _dies_then_rotates(world, monkeypatch)
+    await apps_sweeper.sweep_once()
+    rec = await _rec(src)
+    assert rec["state"] == "live" and rec.get("publish_error") is None
+    _assert_recovered_quietly(world, src, rot, info_log)
+
+
+async def test_token_dead_at_rollback_recovers_through_one_rotation(world, monkeypatch, info_log):
+    src = await _two_versions(world)
+    rot = _dies_then_rotates(world, monkeypatch)
+    res = await svc.rollback(OWNER, src["app_id"], version=None)
+    assert res["error"]["code"] == "code_only" and res["version"] == 1
+    assert world.vercel.paths()[-1] == ("POST", "/v1/projects/prj_1/rollback/dpl_2")
+    _assert_recovered_quietly(world, src, rot, info_log)
+
+
+async def test_token_dead_at_errors_recovers_through_one_rotation(world, monkeypatch, info_log):
+    src, _, _ = await _ready_preview(world)
+    rot = _dies_then_rotates(world, monkeypatch)
+    assert await svc.errors(OWNER, src["app_id"]) == {"client": [], "server": []}
+    assert world.vercel.calls[-1].url.path.endswith("/events")
+    _assert_recovered_quietly(world, src, rot, info_log)
+
+
+async def test_token_dead_at_the_preview_alias_is_not_swallowed(world, monkeypatch):
+    src, _, _ = await _ready_preview(world)
+    await svc.apps_repo.patch(
+        src["app_id"], {"preview_domain": {"name": "crew-preview.apps.example.com", "verified": True}}
+    )
+    rot = _dies_then_rotates(world, monkeypatch)
+    await svc.status(OWNER, src["app_id"])
+    rot.assert_awaited_once()
+    assert (await _rec(src))["preview_alias_for"] == "dpl_1"
+
+
+async def test_two_concurrent_readers_rotate_once(world, monkeypatch):
+    src = await _two_versions(world)
+    rot = _dies_then_rotates(world, monkeypatch)
+    results = await asyncio.gather(
+        svc.errors(OWNER, src["app_id"]), svc.errors(OWNER, src["app_id"]), return_exceptions=True
+    )
+    rot.assert_awaited_once()
+    assert world.secrets[(OWNER, f"apps/{src['app_id']}/vercel/prod")]["token"] == "vtok_NEW"
+    assert any(isinstance(r, dict) for r in results)
+    for r in results:  # one that lost the race says try again, never that a person must look
+        if not isinstance(r, dict):
+            assert isinstance(r, svc.AppsRefused) and r.code == svc._REFUSAL_CODE and "few minutes" in r.next
+    assert isinstance(await svc.errors(OWNER, src["app_id"]), dict)
+    rot.assert_awaited_once()
+
+
+async def test_rollback_and_errors_on_a_token_still_dead_say_so_in_words(world, monkeypatch):
+    src = await _two_versions(world)
+    _renewal(monkeypatch, rotate="errored")
+    world.vercel.refused = True
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.rollback(OWNER, src["app_id"], version=None)
+    assert e.value.code == svc._REFUSAL_CODE and "Lightbulb's team" in e.value.next
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.errors(OWNER, src["app_id"])
+    assert e.value.code == svc._REFUSAL_CODE
+    assert (await _rec(src))["live_version"] == 2  # the rollback did not happen
+
+
+async def test_destroy_and_remove_never_call_vercel(world, monkeypatch):
+    src, _, _ = await _ready_preview(world)
+    world.vercel.refused = True
+    world.vercel.calls.clear()
+    await svc.destroy(OWNER, src["app_id"], actor=PERSON)
+    await svc.remove(OWNER, src["app_id"], confirm_name="crew", user_id="user_1")
+    assert world.vercel.calls == []
+
+
+def test_every_vercel_credential_goes_through_with_token():
+    """A new caller of the app's Vercel credential has to come through here, and so past ``_with_token``."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(svc))
+    fns = {f.name: f for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef | ast.FunctionDef)}
+
+    def calls(fn):
+        return [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
+
+    holders = {
+        name
+        for name, fn in fns.items()
+        for c in calls(fn)
+        if ast.unparse(c.func) == "_secret" and any(ast.unparse(a) == "'vercel'" for a in c.args)
+    }
+    assert holders == {"_progress", "publish", "rollback", "errors"}
+    wrapped = {"_with_token", "_with_token_for_route"}
+    assert "_steps" in {ast.unparse(c.func) for c in calls(fns["_progress"])}
+    for name in ("_steps", "publish", "rollback", "errors"):
+        assert wrapped & {ast.unparse(c.func) for c in calls(fns[name])}, name
+
+
+@pytest.mark.parametrize(
+    ("error", "dead"),
+    [
+        ({"code": "forbidden", "invalidToken": True}, True),
+        ({"code": "forbidden"}, False),
+        ({"code": "forbidden", "invalidToken": "true"}, False),
+        ({"code": "forbidden", "invalidToken": False}, False),
+        ({"code": "forbidden", "invalidToken": True, "saml": True}, False),
+        ({"code": "forbidden", "invalidToken": True, "message": "SAML sign-in required"}, False),
+    ],
+)
+def test_only_invalid_token_without_saml_means_dead(error, dead):
+    with pytest.raises(vercel_client.VercelError) as e:
+        vercel_client._raise(VERCEL, 403, {"error": error})
+    assert e.value.invalid_token is dead
+
+
+async def test_a_saml_refusal_never_rotates_and_is_reported_as_itself(world, monkeypatch):
+    src, _, _ = await _settled_preview(world)
+    rotate, reveal = _renewal(monkeypatch)
+    body = {"error": {"code": "forbidden", "message": "Not authorized", "invalidToken": True, "saml": True}}
+    _vercel_answers(world, monkeypatch, lambda req: httpx.Response(403, json=body))
+    res = await _publish(src)
+    rotate.assert_not_awaited()
+    reveal.assert_not_awaited()
+    assert res["error"]["code"] == "vercel_forbidden"
+
+
+async def test_a_cancelled_rotation_that_landed_clears_its_hold_and_renews_again(world, monkeypatch):
+    src, _, _ = await _settled_preview(world)
+    _renewal(monkeypatch)
+    monkeypatch.setattr(svc.api, "rotate_credentials", AsyncMock(side_effect=asyncio.CancelledError()))
+    world.vercel.refused = True
+    with pytest.raises(asyncio.CancelledError):
+        await _publish(src)
+    assert (await _rec(src))["credential_renewal"]["state"] == "pending"
+    rotate, _ = _renewal(monkeypatch, reveal=_new_token_accepted(world))
+    res = await _publish(src)
+    rotate.assert_not_awaited()  # nothing sent to Stripe
+    assert res.get("error") is None
+    assert (await _rec(src))["credential_renewal"]["state"] == "complete"
+    # That token dies in its turn: the app is not stuck.
+    await svc.apps_repo.patch(src["app_id"], {"publish_pending": None})
+    await _age_renewal(src)
+    rotate, _ = _renewal(monkeypatch, reveal=lambda a, r: {"configuration": NEW})
+    world.vercel.refused = True
+    await _publish(src)
+    rotate.assert_awaited_once()
+
+
+async def test_a_stored_token_that_works_clears_a_hold_from_a_status_read(world, monkeypatch):
+    src, _, _ = await _settled_preview(world)
+    for state in ("pending", "errored", "needs_reveal"):
+        await svc.apps_repo.patch(src["app_id"], {"credential_renewal": {"state": state, "at": "2026-10-30"}})
+        rotate, reveal = _renewal(monkeypatch)
+        st = await svc.status(OWNER, src["app_id"])
+        assert st.get("error") is None
+        assert (await _rec(src))["credential_renewal"]["state"] == "complete"
+        rotate.assert_not_awaited()
+        reveal.assert_not_awaited()
+
+
+async def test_an_old_needs_reveal_whose_token_died_rotates_instead_of_sticking(world, monkeypatch):
+    src, _, _ = await _settled_preview(world)
+    await svc.apps_repo.patch(src["app_id"], {"credential_renewal": {"state": "needs_reveal", "at": "2026-10-30"}})
+    rot = _dies_then_rotates(world, monkeypatch)
+    st = await svc.status(OWNER, src["app_id"])
+    rot.assert_awaited_once()
+    assert st.get("error") is None and (await _rec(src))["credential_renewal"]["state"] == "complete"
+
+
+@pytest.mark.parametrize("exc", [svc.api.TransientProvisioningError("rate_limited", "429"), RuntimeError("down")])
+async def test_a_rotation_that_never_landed_stays_held(world, monkeypatch, exc):
+    src, _, _ = await _settled_preview(world)
+    rotate, reveal = _renewal(monkeypatch, rotate=exc)
+    world.vercel.refused = True
+    await _publish(src)
+    await _age_renewal(src, hours=24)
+    st = await svc.status(OWNER, src["app_id"])
+    rotate.assert_awaited_once()
+    assert st["error"]["code"] in ("credential_renewal_stuck", svc._REFUSAL_CODE)
+    assert (await _rec(src))["credential_renewal"]["state"] == "pending"
+    assert svc._renewal_hold(await _rec(src))["code"] == "credential_renewal_stuck"
+
+
+async def test_a_new_token_refused_once_then_accepted_is_not_a_hold(world, monkeypatch):
+    src, _, _ = await _settled_preview(world)
+    rot = _dies_then_rotates(world, monkeypatch)
+    real, seen = svc._probe, []
+
+    async def probe(app, creds):
+        seen.append(creds["token"])
+        if len(seen) == 1:
+            return vercel_client.VercelError("forbidden", "Not authorized", 403, invalid_token=True)
+        return await real(app, creds)
+
+    monkeypatch.setattr(svc, "_probe", probe)
+    res = await _publish(src)
+    rot.assert_awaited_once()
+    assert seen == ["vtok_NEW", "vtok_NEW"] and res.get("error") is None
+    assert (await _rec(src))["credential_renewal"]["state"] == "complete"
+
+
+async def test_a_new_token_refused_twice_holds_until_it_works(world, monkeypatch):
+    src, _, _ = await _settled_preview(world)
+    rotate, _ = _renewal(monkeypatch, reveal=[{"configuration": VERCEL}, {"configuration": NEW}])
+    world.vercel.refused = True
+    await _publish(src)
+    assert (await _rec(src))["credential_renewal"]["state"] == "errored"
+    world.vercel.refused = False
+    await svc.status(OWNER, src["app_id"])
+    rotate.assert_awaited_once()
+    rec = await _rec(src)
+    assert rec["credential_renewal"]["state"] == "complete" and rec.get("publish_error") is None
+
+
+async def test_a_stored_refusal_on_a_deleted_deployment_does_not_block_a_deploy(world, monkeypatch):
+    src, _, _ = await _settled_preview(world)
+    await svc.apps_repo.patch(src["app_id"], {"publish_error": svc._refusal(await _rec(src))})
+    rotate, _ = _renewal(monkeypatch)
+    gone = {"error": {"code": "not_found", "message": "gone"}}
+    _vercel_answers(
+        world,
+        monkeypatch,
+        lambda req: httpx.Response(404, json=gone) if req.url.path == "/v13/deployments/dpl_1" else None,
+    )
+    res = await _publish(src)
+    rotate.assert_not_awaited()
+    assert res.get("error") is None and (await _rec(src)).get("publish_pending")
+
+
+async def test_a_renewal_never_writes_back_a_secret_that_was_removed(world, monkeypatch):
+    src, _, _ = await _ready_preview(world)
+    rows = await svc._rows(await _rec(src))
+    del world.secrets[(OWNER, f"apps/{src['app_id']}/vercel/prod")]
+    rotate, reveal = _renewal(monkeypatch, reveal=lambda a, r: {"configuration": NEW})
+    assert await svc._renew_vercel(dict(await _rec(src)), rows, VERCEL) is None
+    rotate.assert_not_awaited()
+    reveal.assert_not_awaited()
+    assert (OWNER, f"apps/{src['app_id']}/vercel/prod") not in world.secrets
+
+
+async def test_a_rotation_in_flight_is_not_a_hold_until_it_has_had_its_time(world):
+    now = datetime.now(UTC)
+    young = {"credential_renewal": {"state": "pending", "at": now.isoformat()}}
+    old = {"credential_renewal": {"state": "pending", "at": (now - timedelta(minutes=6)).isoformat()}}
+    assert svc._renewal_hold(young) is None and "few minutes" in svc._refusal(young)["next"]
+    assert svc._renewal_hold(old)["code"] == "credential_renewal_stuck"
+
+
+async def test_a_changed_token_found_outside_the_steps_settles_the_hold_there(world, monkeypatch):
+    """No later read has to come along: by then this token may be dead and the hold stuck."""
+    src, _, _ = await _settled_preview(world)
+    stale = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    await svc.apps_repo.patch(src["app_id"], {"credential_renewal": {"state": "pending", "at": stale}})
+    rotate, _ = _renewal(monkeypatch, reveal=_new_token_accepted(world))
+    world.vercel.refused = True
+    assert await svc.errors(OWNER, src["app_id"]) == {"client": [], "server": []}
+    rotate.assert_not_awaited()
+    assert (await _rec(src))["credential_renewal"]["state"] == "complete"

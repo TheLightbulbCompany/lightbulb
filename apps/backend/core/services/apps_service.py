@@ -47,6 +47,8 @@ from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from core.auth import AuthContext
 
 logger = logging.getLogger(__name__)
@@ -589,6 +591,8 @@ async def _preview_alias(app: dict, creds: dict) -> None:
         try:
             await vercel.assign_alias(creds, ready["deployment_id"], host)
         except vercel.VercelError as e:  # keep the *.vercel.app url; the next read tries again
+            if _refused(e):
+                raise
             logger.warning("apps: %s preview alias not assigned: %s", app["app_id"], e.code)
             return
         await _patch(app, {"preview_alias_for": ready["deployment_id"], "preview_url": f"https://{host}"})
@@ -621,18 +625,32 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
             app["progress_lease_until"] = None
 
 
-_REFUSED = frozenset({"forbidden", "unauthorized", "not_authorized"})  # Vercel's JSON codes for a token it won't take
-_REFUSAL_CODE = "vercel_credential_refused"  # only ever written after a probe confirmed the refusal
-_RENEWAL_HOLDS = frozenset({"pending", "errored"})  # no automatic rotation until a person removes the field
-_RENEW_EVERY = timedelta(hours=1)
+_REFUSAL_CODE = "vercel_credential_refused"
+_RENEWAL_HOLDS = frozenset({"pending", "errored"})  # no rotation until the token works or a person removes the field
+_UNSETTLED = _RENEWAL_HOLDS | {"needs_reveal"}
+_RENEW_EVERY = timedelta(minutes=10)  # tokens live one hour; this only stops one dying fast from looping
+_ROTATION_WINDOW = timedelta(minutes=5)  # a younger pending is a rotation in flight, not yet anyone's problem
+_SETTLE_S = 5  # a new token Vercel refuses gets one more look after this long before it counts as refused
 
 
 def _refused(e: vercel.VercelError | None) -> bool:
-    return e is not None and e.status in (401, 403) and e.code in _REFUSED
+    return e is not None and e.invalid_token
+
+
+def _renewal_age(renewal: dict) -> timedelta:
+    """How long since ``at``; unreadable counts as old."""
+    try:
+        at = datetime.fromisoformat(renewal["at"])
+    except (KeyError, TypeError, ValueError):
+        return timedelta.max
+    return datetime.now(UTC) - (at if at.tzinfo else at.replace(tzinfo=UTC))
 
 
 def _renewal_hold(app: dict) -> AppError | None:
-    if (app.get("credential_renewal") or {}).get("state") not in _RENEWAL_HOLDS:
+    renewal = app.get("credential_renewal") or {}
+    if renewal.get("state") not in _RENEWAL_HOLDS:
+        return None
+    if renewal["state"] == "pending" and _renewal_age(renewal) < _ROTATION_WINDOW:
         return None
     return {
         "code": "credential_renewal_stuck",
@@ -654,7 +672,8 @@ def _refusal(app: dict) -> AppError:
 
 
 async def _probe(app: dict, creds: dict) -> vercel.VercelError | None:
-    """One read the token must be able to do. The failure, if any: only ``_refused`` of it means the token."""
+    """One read the token must be able to do. The failure, if any: only ``_refused`` of it means the token.
+    Never decides a rotation; it clears what is stored and checks a new token."""
     known = app.get("publish_pending") or app.get("preview_pending") or app.get("preview") or {}
     try:
         await vercel.read_probe(creds, known.get("deployment_id"))
@@ -671,26 +690,40 @@ async def _store_revealed(app: dict, account: str, resource: str, stored: dict) 
         return None
     fresh = {**stored, **config}
     await integration_secret_store.put(app["owner_id"], f"apps/{app['app_id']}/vercel/prod", fresh)
-    logger.warning("apps: %s stored a new vercel credential from Stripe", app["app_id"])
+    logger.info("apps: %s stored a new vercel credential from Stripe", app["app_id"])
     return fresh
 
 
-async def _renew_vercel(app: dict, rows: dict, creds: dict) -> dict | None:
-    """After a confirmed refusal: the credentials to retry with, or None to report it.
+async def _settle(app: dict, fresh: dict) -> dict | None:
+    """A rotation's token is stored: ``complete`` if Vercel takes it. Refused twice is ``errored``, so a token
+    refused at issue doesn't rotate again every ``_RENEW_EVERY``; the next read that finds it working clears that."""
+    failure = await _probe(app, fresh)
+    if _refused(failure):
+        await asyncio.sleep(_SETTLE_S)
+        failure = await _probe(app, fresh)
+    done = "errored" if _refused(failure) else "complete"
+    await _patch(app, {"credential_renewal": {"state": done, "at": utc_now_iso()}})
+    return None if done == "errored" else fresh
 
-    Reveal first; rotate only when Stripe still holds the refused token. The claim on
-    ``credential_renewal`` (compare-and-set on ``at``) is written as ``pending`` before the POST, so a
-    crash, a timeout or a cancel leaves the outcome-unknown state. Stripe's doc: pending -> don't resend;
-    errored -> stop; complete -> read the new configuration, which ``needs_reveal`` keeps owed. pending and
-    errored hold until a person removes ``credential_renewal`` from the record; a reveal still picks up a
-    token that lands later, but never clears the hold. Rotations that work are spaced by ``_RENEW_EVERY``.
+
+async def _renew_vercel(app: dict, rows: dict, creds: dict) -> dict | None:
+    """After Vercel refused ``creds``: the credentials to retry with, or None to report it. Ordinary: tokens live one
+    hour and nothing refreshes them, so an app idle for longer comes through here at its next Vercel call.
+
+    Reveal first; rotate only when Stripe still holds the refused token. The claim on ``credential_renewal``
+    (compare-and-set on ``at``) is written as ``pending`` before the POST, so a crash, a timeout or a cancel leaves
+    the outcome-unknown state. Stripe's doc: pending -> don't resend; errored -> stop; complete -> read the new
+    configuration, which ``needs_reveal`` keeps owed. A changed token means the rotation landed, and settles any
+    of them with nothing sent to Stripe. A rotation that never landed stays held: docs/runbooks/provisioning-requires-review.md.
     """
     await _reload(app)
     renewal = app.get("credential_renewal") or {}
     state = renewal.get("state")
     try:
         key = f"apps/{app['app_id']}/vercel/prod"
-        stored = await integration_secret_store.get(app["owner_id"], key) or {}
+        stored = await integration_secret_store.get(app["owner_id"], key)
+        if not stored:
+            return None  # removed since this reader read it: never write it back
         if stored.get("token") and stored["token"] != creds["token"]:
             return stored  # another reader replaced it after this one read its copy
         account = await provisioning_workflow.account_id_for(app["owner_id"])
@@ -700,11 +733,13 @@ async def _renew_vercel(app: dict, rows: dict, creds: dict) -> dict | None:
         logger.warning("apps: %s vercel credential not read: %s", app["app_id"], type(e).__name__)
         return None
     if fresh:
-        if state == "needs_reveal":
-            await _patch(app, {"credential_renewal": {"state": "complete", "at": utc_now_iso()}})
-        return fresh
-    recent = state == "complete" and datetime.now(UTC) - datetime.fromisoformat(renewal["at"]) < _RENEW_EVERY
-    if state in _RENEWAL_HOLDS or state == "needs_reveal" or recent:
+        if state not in _UNSETTLED:
+            return fresh
+        await _patch(app, {"credential_renewal": {"state": "needs_reveal", "at": utc_now_iso()}})
+        return await _settle(app, fresh)
+    # An old needs_reveal is an earlier rotation whose token has since died too.
+    recent = state in ("complete", "needs_reveal") and _renewal_age(renewal) < _RENEW_EVERY
+    if state in _RENEWAL_HOLDS or recent:
         return None
     claim = {"credential_renewal": {"state": "pending", "at": utc_now_iso()}}
     if await _patch(app, claim, expect={"credential_renewal.at": renewal.get("at")}) is None:
@@ -717,7 +752,12 @@ async def _renew_vercel(app: dict, rows: dict, creds: dict) -> dict | None:
         status = "errored"
     except Exception:  # noqa: BLE001 - unknown outcome
         status = "pending"
-    logger.warning("apps: %s vercel credential rotation: %s", app["app_id"], status)
+    logger.log(
+        logging.INFO if status == "complete" else logging.WARNING,
+        "apps: %s vercel credential rotation: %s",
+        app["app_id"],
+        status,
+    )
     if status == "errored":
         await _patch(app, {"credential_renewal": {"state": "errored", "at": utc_now_iso()}})
     if status != "complete":
@@ -728,78 +768,46 @@ async def _renew_vercel(app: dict, rows: dict, creds: dict) -> dict | None:
     except Exception as e:  # noqa: BLE001 - the state says what is owed
         logger.warning("apps: %s rotated vercel credential not read: %s", app["app_id"], type(e).__name__)
         return None
-    if not fresh:
-        return None
-    # A token refused straight after issue would otherwise rotate again every hour with nobody looking.
-    done = "errored" if _refused(await _probe(app, fresh)) else "complete"
-    await _patch(app, {"credential_renewal": {"state": done, "at": utc_now_iso()}})
-    return None if done == "errored" else fresh
+    return await _settle(app, fresh) if fresh else None
 
 
-async def _on_vercel_error(
-    app: dict, rows: dict, creds: dict, e: vercel.VercelError, next_default: str, *, renew: bool
-) -> tuple[dict | None, AppError]:
-    """Every Vercel failure in a step or a deploy: the credentials to retry with, if any, and the error in the
-    person's words. A 401/403 says something about one call; only the probe says it about the token."""
-    if e.status in (401, 403) and _refused(await _probe(app, creds)):
-        return (await _renew_vercel(app, rows, creds) if renew else None), _refusal(app)
-    return None, {"code": f"vercel_{e.code}", "message": str(e), "next": next_default}
-
-
-async def _steps(
-    app: dict, rows: dict, creds: dict, dev_db: dict | None, live_db: dict | None, *, renewed: bool = False
-) -> AppError | None:
+async def _with_token[T](app: dict, rows: dict, creds: dict, op: Callable[[dict], Awaitable[T]]) -> T:
+    """The one way to run Vercel operations: ``op(creds)``, and if Vercel says the token is dead, renew and run
+    it once more. Raises what Vercel said last. ``test_every_vercel_credential_goes_through_with_token`` holds this."""
     try:
-        # A step may make no Vercel call at all, so a stored refusal is checked by asking.
-        refusal_stored = (app.get("publish_error") or {}).get("code") == _REFUSAL_CODE
-        if refusal_stored or (app.get("credential_renewal") or {}).get("state") == "needs_reveal":
-            if failure := await _probe(app, creds):
-                raise failure
-            if refusal_stored:
-                await _patch(app, {"publish_error": None}, expect={"publish_error.code": _REFUSAL_CODE})
-        if not app.get("protection_off"):
-            await vercel.disable_protection(creds)
-            await _patch(app, {"protection_off": True})
-        await _push_env(app, creds, dev_db, live_db)
-        await _check_preview(app, creds)
-        await _check_publish(app, creds)
-        want = app.get("preview_want")
-        wanted = _source(app, want) if want else {}
-        if dev_db and want and app.get("preview_migrations") != wanted.get("migrations_key", wanted.get("migrations")):
-            if app.get("error"):  # a failed reset/build waits for the next `up`, not every read
-                return None
-            migrations, seed = _migrations(await _files(app["owner_id"], app["app_id"], want))
-            names = [n for n, _ in migrations]
-            try:
-                await apps_db.reset_preview(
-                    dev_db["connection_string"], migrations=[sql for _, sql in migrations], seed_sql=seed
-                )
-            except apps_db.AppsDbError as e:
-                await _patch(
-                    app, {"error": {"code": e.code, "message": str(e), "next": "fix the migration and run up again"}}
-                )
-                return None
-            await _patch(app, {"preview_migrations": wanted.get("migrations_key", names)})
-        built = {"source_id": want, "sample": not dev_db}
-        if want and app.get("preview_built") != built:
-            dep_id = await _deploy(app, creds, want, production=False)
-            commit = _source(app, want)["commit"]
-            await _patch(
-                app,
-                {
-                    "preview_built": built,
-                    "error": None,
-                    "preview_pending": {"deployment_id": dep_id, "commit": commit, "source_id": want},
-                },
-            )
-        await _verify(app, creds, "domain")
-        await _preview_alias(app, creds)
+        return await op(creds)
     except vercel.VercelError as e:
-        fresh, err = await _on_vercel_error(app, rows, creds, e, "run up again in a minute", renew=not renewed)
-        if fresh:
-            return await _steps(app, rows, fresh, dev_db, live_db, renewed=True)
+        if not _refused(e):
+            raise
+        fresh = await _renew_vercel(app, rows, creds)
+        if not fresh:
+            raise
+    return await op(fresh)
+
+
+async def _with_token_for_route[T](app: dict, rows: dict, creds: dict, op: Callable[[dict], Awaitable[T]]) -> T:
+    """``_with_token`` for a route with no error field: a token still dead is said in the person's words."""
+    try:
+        return await _with_token(app, rows, creds, op)
+    except vercel.VercelError as e:
+        if not _refused(e):
+            raise
+        err = _refusal(app)
+        raise AppsRefused(err["code"], err["message"], err["next"]) from None
+
+
+def _vercel_error(app: dict, e: vercel.VercelError, next_default: str) -> AppError:
+    if _refused(e):
+        return _refusal(app)
+    return {"code": f"vercel_{e.code}", "message": str(e), "next": next_default}
+
+
+async def _steps(app: dict, rows: dict, creds: dict, dev_db: dict | None, live_db: dict | None) -> AppError | None:
+    try:
+        return await _with_token(app, rows, creds, lambda c: _run_steps(app, c, dev_db, live_db))
+    except vercel.VercelError as e:
         logger.warning("apps: %s vercel step failed: %s", app["app_id"], e.code)
-        return err
+        return _vercel_error(app, e, "run up again in a minute")
     except _WorkspaceUnknown:
         logger.warning("apps: %s workspace name unavailable", app["app_id"])
         return {
@@ -807,6 +815,60 @@ async def _steps(
             "message": "Couldn't read the workspace.",
             "next": "run up again in a minute",
         }
+
+
+async def _run_steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | None) -> AppError | None:
+    # A step may make no Vercel call at all, so what is stored about the token is checked by asking. A working token
+    # clears it, with nothing sent to Stripe; a dead one goes to renewal, which picks up a rotation that has landed.
+    renewal = app.get("credential_renewal") or {}
+    refusal_stored = (app.get("publish_error") or {}).get("code") == _REFUSAL_CODE
+    if refusal_stored or renewal.get("state") in _UNSETTLED:
+        failure = await _probe(app, creds)
+        if _refused(failure):
+            raise failure
+        if not failure:
+            if refusal_stored:
+                await _patch(app, {"publish_error": None}, expect={"publish_error.code": _REFUSAL_CODE})
+            if renewal.get("state") in _UNSETTLED:
+                settled = {"credential_renewal": {"state": "complete", "at": utc_now_iso()}}
+                await _patch(app, settled, expect={"credential_renewal.at": renewal.get("at")})
+    if not app.get("protection_off"):
+        await vercel.disable_protection(creds)
+        await _patch(app, {"protection_off": True})
+    await _push_env(app, creds, dev_db, live_db)
+    await _check_preview(app, creds)
+    await _check_publish(app, creds)
+    want = app.get("preview_want")
+    wanted = _source(app, want) if want else {}
+    if dev_db and want and app.get("preview_migrations") != wanted.get("migrations_key", wanted.get("migrations")):
+        if app.get("error"):  # a failed reset/build waits for the next `up`, not every read
+            return None
+        migrations, seed = _migrations(await _files(app["owner_id"], app["app_id"], want))
+        names = [n for n, _ in migrations]
+        try:
+            await apps_db.reset_preview(
+                dev_db["connection_string"], migrations=[sql for _, sql in migrations], seed_sql=seed
+            )
+        except apps_db.AppsDbError as e:
+            await _patch(
+                app, {"error": {"code": e.code, "message": str(e), "next": "fix the migration and run up again"}}
+            )
+            return None
+        await _patch(app, {"preview_migrations": wanted.get("migrations_key", names)})
+    built = {"source_id": want, "sample": not dev_db}
+    if want and app.get("preview_built") != built:
+        dep_id = await _deploy(app, creds, want, production=False)
+        commit = _source(app, want)["commit"]
+        await _patch(
+            app,
+            {
+                "preview_built": built,
+                "error": None,
+                "preview_pending": {"deployment_id": dep_id, "commit": commit, "source_id": want},
+            },
+        )
+    await _verify(app, creds, "domain")
+    await _preview_alias(app, creds)
     return None
 
 
@@ -1005,20 +1067,19 @@ async def publish(
                 cost_cents,
             )
         await _patch(app, {"published_migrations": sorted(published | {n for n, _ in new})})
-    for attempt in (1, 2):
-        try:
-            if not app.get("domain"):
-                await _patch(app, {"domain": await _add_domain(app, creds, preview=False)})
-            dep_id = await _deploy(app, creds, source_id, production=True)
-            break
-        except vercel.VercelError as e:
-            fresh, err = await _on_vercel_error(app, rows, creds, e, "publish again", renew=attempt == 1)
-            if fresh:
-                creds = fresh
-                continue
-            logger.warning("apps: %s publish failed: %s", app_id, e.code)
-            await _patch(app, {"publish_error": err})  # Canvas shows the real reason, not an older build error
-            return await _result(app, rows, err, cost_cents)
+
+    async def deploy(c: dict) -> str:
+        if not app.get("domain"):
+            await _patch(app, {"domain": await _add_domain(app, c, preview=False)})
+        return await _deploy(app, c, source_id, production=True)
+
+    try:
+        dep_id = await _with_token(app, rows, creds, deploy)
+    except vercel.VercelError as e:
+        err = _vercel_error(app, e, "publish again")
+        logger.warning("apps: %s publish failed: %s", app_id, e.code)
+        await _patch(app, {"publish_error": err})  # Canvas shows the real reason, not an older build error
+        return await _result(app, rows, err, cost_cents)
     pending = {
         "deployment_id": dep_id,
         "source_id": source_id,
@@ -1061,7 +1122,7 @@ async def rollback(owner_id: str, app_id: str, *, version: int | None) -> UpResu
     creds = await _secret(app, rows, "vercel", "prod", "token")
     if not creds:
         raise AppsRefused("not_ready", "The app's Vercel project is not set up.")
-    await vercel.rollback(creds, target["deployment_id"])
+    await _with_token_for_route(app, rows, creds, lambda c: vercel.rollback(c, target["deployment_id"]))
     cancelled = app.get("publish_pending")
     # The rollback wins over a publish in flight; `rolled_back` makes the next release promote itself.
     await _patch(app, {"live_version": n, "live_source_id": None, "rolled_back": True, "publish_pending": None})
@@ -1250,9 +1311,14 @@ async def errors(owner_id: str, app_id: str) -> dict:
     dep = (live or app.get("preview") or {}).get("deployment_id")
     if not creds or not dep:
         return {"client": [], "server": []}
-    lines = await vercel.runtime_logs(creds, dep, limit=200)
+
+    async def read(c: dict) -> tuple[list[dict], list[dict]]:
+        lines = await vercel.runtime_logs(c, dep, limit=200)
+        return lines, [] if lines else await vercel.deployment_events(c, dep, limit=50)
+
+    lines, events = await _with_token_for_route(app, rows, creds, read)
     client = [x for x in lines if any(m in x["message"] for m in _CLIENT_MARKS)]
-    server = [x for x in lines if x not in client] if lines else await vercel.deployment_events(creds, dep, limit=50)
+    server = [x for x in lines if x not in client] if lines else events
     keys = [f"apps/{app_id}/{p}/{e}" for p, _, e in _RESOURCES] + [f"apps/{app_id}/lightbulb"]
     blobs = await asyncio.gather(*(integration_secret_store.get(owner_id, k) for k in keys))
     values = {v for b in blobs if b for v in b.values() if isinstance(v, str) and len(v) >= 8}

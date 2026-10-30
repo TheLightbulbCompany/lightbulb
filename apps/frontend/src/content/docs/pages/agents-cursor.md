@@ -1,7 +1,7 @@
 ---
 title: "Cursor"
 description: "Connect Cursor with lightbulb setup; it sends through the lightbulb tools and picks up messages at its next step."
-order: 12
+order: 13
 section: "Agents"
 ---
 

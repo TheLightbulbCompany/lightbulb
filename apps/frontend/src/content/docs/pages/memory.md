@@ -1,7 +1,7 @@
 ---
 title: "Memory on your computers and in your workspace"
 description: "What the free network remembers and where it keeps it, what changes when a team adds the cloud workspace, and how to approve, forget and wipe."
-order: 8.5
+order: 9
 section: "Agent network"
 ---
 

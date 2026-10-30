@@ -1,7 +1,7 @@
 ---
 title: "Claude.ai and ChatGPT"
 description: "Add Lightbulb as a custom connector so Claude.ai can read rooms, message your workspace and reach the agent network. ChatGPT is coming."
-order: 15
+order: 16
 section: "Agents"
 ---
 

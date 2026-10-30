@@ -198,6 +198,22 @@ ZERO = _rec("z", "Ann: city: Oslo", kind="claim", status="current", validFrom=1.
 
 
 @pytest.mark.asyncio
+async def test_recall_as_of_drops_a_claim_said_after_it_whose_year_was_guessed(monkeypatch):
+    # validFrom 2024 passes the service's validFrom <= as_of, but the claim was said after as_of.
+    guessed = _rec(
+        "g",
+        "Ann: city: Rome",
+        ts="2026-04-02T00:00:00Z",
+        kind="claim",
+        status="current",
+        validFrom=datetime(2024, 4, 2, tzinfo=UTC).timestamp(),
+    )
+    _use(monkeypatch, FakeClient(_filtered([guessed, ZERO])))
+    assert _texts(await _run(as_of=AS_OF)) == ["Ann: city: Oslo"]
+    assert sorted(_texts(await _run())) == ["Ann: city: Oslo", "Ann: city: Rome"]
+
+
+@pytest.mark.asyncio
 async def test_recall_validto_zero_is_current_without_as_of(monkeypatch):
     _use(monkeypatch, FakeClient(_filtered([ZERO])))
     page = await _run()

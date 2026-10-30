@@ -348,8 +348,11 @@ export class ContainerStack extends cdk.Stack {
                   type: "NUMBER",
                   extractionConfig: {
                     llmExtractionConfig: {
+                      // Haiku guessed the year from its own sense of "now" (2024 for claims said in
+                      // 2026, prod 30 Oct 2026): name where the year comes from and give an epoch anchor.
+                      // ponytail: the anchor is 2026/2027; move it forward when 2028 is near.
                       definition:
-                        "The date the fact became true; when no date is stated, the date of the conversation it came from. Read from the record text's fixed form when it has one: the date after '(since '; for a Contested record, the earlier of the two dates. Epoch seconds at 00:00 UTC.",
+                        "The date the fact became true; when no date is stated, the date of the conversation it came from: the date shown with its messages, never a year you assume. Read from the record text's fixed form when it has one: the date after '(since '; for a Contested record, the earlier of the two dates. Epoch seconds at 00:00 UTC: 2026-01-01 is 1767225600 and 2027-01-01 is 1798761600; add 86400 per day after the year's first.",
                     },
                   },
                 },

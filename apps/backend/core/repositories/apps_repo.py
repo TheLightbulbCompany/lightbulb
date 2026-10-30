@@ -347,6 +347,29 @@ async def put_invite(
     )
 
 
+async def list_invites(target_app_id: str) -> list[dict]:
+    """Every invite of one app. ponytail: a filtered scan (invites are in no index, and the table is
+    small, as for ``list_pending``); index ``target_app_id`` if Settings gets slow."""
+    from boto3.dynamodb.conditions import Attr
+
+    kwargs: dict = {
+        "FilterExpression": Attr("kind").eq("invite") & Attr("target_app_id").eq(target_app_id),
+        "ConsistentRead": True,  # a revoked invite must not come back on the next read
+    }
+    items: list[dict] = []
+    while True:
+        resp = await run_in_thread(_table().scan, **kwargs)
+        items.extend(resp.get("Items", []))
+        if not resp.get("LastEvaluatedKey"):
+            return items
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+
+async def delete_invite(item_key: str) -> None:
+    """``item_key``: the row's ``app_id`` (``INVITE#<hash>``). A claim of a deleted invite fails its condition."""
+    await run_in_thread(_table().delete_item, Key={"app_id": item_key})
+
+
 async def claim_invite(token_hash: str, now: str) -> dict | None:
     """Mark the invite used, in one conditional write: ``None`` when it was never issued, is used
     (even by a concurrent claim) or expired at ``now`` (ISO, same format as ``expires_at``)."""

@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { AppRow } from "@/hooks/useApps";
 
 const open = vi.fn();
 const refresh = vi.fn();
 const publish = vi.fn();
+const askAgent = vi.fn();
+const rollback = vi.fn();
 let admin = false;
-vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ open, refresh, publish }) }));
+vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ open, refresh, publish, askAgent, rollback, listInvites: async () => [] }) }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => admin }));
 import { AppView } from "../AppView";
 
@@ -16,7 +18,7 @@ const app = (over: Partial<AppRow> = {}): AppRow => ({
   spend_month_cents: 0, can_open: true, ...over,
 });
 
-beforeEach(() => { vi.restoreAllMocks(); open.mockReset(); refresh.mockReset(); publish.mockReset(); admin = false; });
+beforeEach(() => { vi.restoreAllMocks(); open.mockReset(); refresh.mockReset(); publish.mockReset(); askAgent.mockReset(); rollback.mockReset(); admin = false; });
 
 describe("AppView", () => {
   it("requests a pass and sets it as the frame src", async () => {
@@ -285,6 +287,17 @@ describe("AppView", () => {
       expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
     });
 
+    it("a publish that fails on a live app ends Publishing…, with the row's error", async () => {
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      const { rerender } = render(<AppView app={ready()} onBack={vi.fn()} />);
+      await clickPublish();
+      await screen.findByText("Publishing…");
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      rerender(<AppView app={ready({ publish_failed: true, error: { message: "Deploy rejected" } })} onBack={vi.fn()} />);
+      expect(screen.queryByText("Publishing…")).toBeNull();
+      expect(screen.getByText(/This version didn't go live\. People still see the last live version\./)).toBeTruthy();
+    });
+
     it("polling stops on unmount", async () => {
       publish.mockResolvedValue({ app_id: "a1", state: "building" });
       const { unmount } = render(<AppView app={ready()} onBack={vi.fn()} />);
@@ -361,6 +374,238 @@ describe("AppView", () => {
       fireEvent.click(screen.getByRole("button", { name: "Publish" }));
       fireEvent.click(screen.getAllByRole("button", { name: "Publish" })[0]);
       expect(publish).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("ask the agent to fix it", () => {
+    const failed = (over: Partial<AppRow> = {}) => app({ state: "failed", live_version: null, live_url: null, preview_url: "https://p", can_publish: true, error: { message: "Build broke" }, ...over });
+    const ask = () => screen.findByRole("button", { name: "Ask the agent to fix it" });
+    beforeEach(() => open.mockResolvedValue("https://p.apps.test/?pass=1"));
+
+    it("posts once, then says so and takes the button away", async () => {
+      let finish = () => {};
+      askAgent.mockReturnValue(new Promise<void>((r) => { finish = r; }));
+      render(<AppView app={failed()} onBack={vi.fn()} />);
+      fireEvent.click(await ask());
+      const busy = screen.getByRole("button", { name: "Asking…" }) as HTMLButtonElement;
+      expect(busy.disabled).toBe(true);
+      fireEvent.click(busy);
+      await act(async () => finish());
+      expect(askAgent).toHaveBeenCalledTimes(1);
+      expect(askAgent).toHaveBeenCalledWith("a1", undefined); // the backend reads the stored error
+      expect(screen.getByRole("status").textContent).toBe("Asked the agent in #finance. It'll post there.");
+      expect(screen.queryByRole("button", { name: "Ask the agent to fix it" })).toBeNull();
+    });
+
+    it("someone outside the room is told why, and the raw text stays under Details", async () => {
+      askAgent.mockRejectedValue(Object.assign(new Error("Only members"), { status: 403 }));
+      render(<AppView app={failed()} onBack={vi.fn()} />);
+      fireEvent.click(await ask());
+      await screen.findByText(/You're not in #finance, so this can't be posted as you\. Join it, or ask someone in it\./);
+      expect(screen.getAllByText("Details").some((d) => d.closest("details")!.textContent!.includes("Only members"))).toBe(true);
+    });
+
+    it("any other failure can be tried again", async () => {
+      askAgent.mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce(undefined);
+      render(<AppView app={failed()} onBack={vi.fn()} />);
+      fireEvent.click(await ask());
+      await screen.findByText(/We couldn't ask in #finance\. Try again\./);
+      fireEvent.click(await ask());
+      expect((await screen.findByRole("status")).textContent).toContain("Asked the agent");
+    });
+
+    it("a member who can't manage the app gets no button", async () => {
+      render(<AppView app={failed({ can_publish: false })} onBack={vi.fn()} />);
+      await screen.findByTitle("Invoices");
+      expect(screen.queryByRole("button", { name: "Ask the agent to fix it" })).toBeNull();
+    });
+
+    it("no agent in the room says what to do, not Try again", async () => {
+      askAgent.mockRejectedValue(Object.assign(new Error("There is no agent"), { status: 409, body: { detail: { code: "no_agent" } } }));
+      render(<AppView app={failed()} onBack={vi.fn()} />);
+      fireEvent.click(await ask());
+      const alert = await screen.findByText(/There's no agent in #finance to ask\. Add one to the room\./);
+      expect(alert.textContent).not.toContain("We couldn't ask");
+      expect(screen.queryByText(/We couldn't ask/)).toBeNull();
+    });
+
+    it("a live app with a failed publish says so and offers it", async () => {
+      render(<AppView app={app({ can_publish: true, publish_failed: true, error: { message: "Build broke" } })} onBack={vi.fn()} />);
+      await ask();
+      expect(screen.getByRole("alert").textContent).toContain("The last version didn't go live. People still see the version before it.");
+      expect(screen.queryByText(/Something went wrong/)).toBeNull();
+    });
+
+    it("a healthy app has no button", async () => {
+      render(<AppView app={app({ can_publish: true })} onBack={vi.fn()} />);
+      await screen.findByTitle("Invoices");
+      expect(screen.queryByRole("button", { name: "Ask the agent to fix it" })).toBeNull();
+    });
+
+    it("a refused publish sends the refusal the person saw, and a retry hides the button while it runs", async () => {
+      publish.mockRejectedValueOnce(new Error("That change deletes data")).mockReturnValueOnce(new Promise(() => {}));
+      askAgent.mockResolvedValue(undefined);
+      render(<AppView app={app({ can_publish: true, preview_url: "https://p" })} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      fireEvent.click(screen.getAllByRole("button", { name: "Publish" })[0]);
+      fireEvent.click(await ask());
+      await waitFor(() => expect(askAgent).toHaveBeenCalledWith("a1", "That change deletes data"));
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      await screen.findByText("Publishing…");
+      expect(screen.queryByRole("button", { name: "Ask the agent to fix it" })).toBeNull();
+    });
+  });
+
+  describe("put back the previous version", () => {
+    const AT = "2026-10-02T12:00:00+00:00";
+    const DATE = new Date(AT).toLocaleDateString(undefined, { dateStyle: "medium" });
+    const two = (over: Partial<AppRow> = {}) => app({ can_publish: true, previous_version: { n: 2, at: AT }, ...over });
+    const button = () => screen.findByRole("button", { name: "Put back the previous version" });
+    beforeEach(() => open.mockResolvedValue("https://x.apps.test/?pass=1"));
+
+    it("confirms in plain words first; Cancel changes nothing", async () => {
+      render(<AppView app={two({ display_name: "Workshop Sign-up" })} onBack={vi.fn()} />);
+      fireEvent.click(await button());
+      expect(screen.getByText(`Workshop Sign-up goes back to the version live on ${DATE}. Its data stays as it is.`)).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(rollback).not.toHaveBeenCalled();
+      await button();
+    });
+
+    it("goes back to the version it named, says so and reloads the frame", async () => {
+      rollback.mockResolvedValue(undefined);
+      render(<AppView app={two()} onBack={vi.fn()} />);
+      fireEvent.click(await button());
+      expect(open).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole("button", { name: "Put it back" }));
+      await screen.findByText(`Invoices is back to the version live on ${DATE}.`);
+      expect(rollback).toHaveBeenCalledWith("a1", 2);
+      await waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+    });
+
+    it("keeps the line when the first version comes back and the button goes", async () => {
+      rollback.mockResolvedValue(undefined);
+      const { rerender } = render(<AppView app={two()} onBack={vi.fn()} />);
+      fireEvent.click(await button());
+      fireEvent.click(screen.getByRole("button", { name: "Put it back" }));
+      await screen.findByText(/is back to the version/);
+      rerender(<AppView app={two({ live_version: 1, previous_version: null })} onBack={vi.fn()} />);
+      expect(screen.getByText(/is back to the version/)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Put back the previous version" })).toBeNull();
+    });
+
+    it("a failure says nothing changed, raw text under Details, and can be retried", async () => {
+      rollback.mockRejectedValue(new Error("vercel 502"));
+      render(<AppView app={two()} onBack={vi.fn()} />);
+      fireEvent.click(await button());
+      fireEvent.click(screen.getByRole("button", { name: "Put it back" }));
+      expect((await screen.findByRole("alert")).textContent).toContain("Invoices didn't change. Try again.");
+      expect(screen.getByText("Details").closest("details")!.textContent).toContain("vercel 502");
+      await button();
+    });
+
+    it("shows only for someone who manages an app with an earlier version", async () => {
+      render(<AppView app={two({ can_publish: false })} onBack={vi.fn()} />);
+      await screen.findByTitle("Invoices");
+      expect(screen.queryByRole("button", { name: "Put back the previous version" })).toBeNull();
+      cleanup();
+      render(<AppView app={app({ can_publish: true, previous_version: null })} onBack={vi.fn()} />);
+      await screen.findByTitle("Invoices");
+      expect(screen.queryByRole("button", { name: "Put back the previous version" })).toBeNull();
+    });
+
+    it("hides while publishing, and a put-back after a publish doesn't read as still publishing", async () => {
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      rollback.mockResolvedValue(undefined);
+      const { rerender } = render(<AppView app={two({ live_version: 3, preview_url: "https://p" })} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      fireEvent.click(screen.getAllByRole("button", { name: "Publish" })[0]);
+      await screen.findByText("Publishing…");
+      expect(screen.queryByRole("button", { name: "Put back the previous version" })).toBeNull();
+      rerender(<AppView app={two({ live_version: 4, previous_version: { n: 3, at: AT } })} onBack={vi.fn()} />);
+      fireEvent.click(await button());
+      fireEvent.click(screen.getByRole("button", { name: "Put it back" }));
+      await screen.findByText(/is back to the version/);
+      rerender(<AppView app={two({ live_version: 3 })} onBack={vi.fn()} />);
+      expect(screen.queryByText("Publishing…")).toBeNull();
+    });
+
+    it("says a rebuild takes a few minutes, in the confirm and after it", async () => {
+      rollback.mockResolvedValue({ app_id: "a1", state: "building", rebuilding: true });
+      render(<AppView app={two({ previous_version: { n: 2, at: AT, rebuild: true } })} onBack={vi.fn()} />);
+      fireEvent.click(await button());
+      expect(screen.getByRole("group", { name: "Confirm putting back" }).textContent).toContain("takes a few minutes");
+      fireEvent.click(screen.getByRole("button", { name: "Put it back" }));
+      await screen.findByText(`Invoices is going back to the version live on ${DATE}. This takes a few minutes.`);
+      expect(screen.queryByText(/is back to the version/)).toBeNull();
+    });
+
+    it("an instant put-back doesn't mention a rebuild", async () => {
+      render(<AppView app={two({ previous_version: { n: 2, at: AT, rebuild: false } })} onBack={vi.fn()} />);
+      fireEvent.click(await button());
+      expect(screen.getByRole("group", { name: "Confirm putting back" }).textContent).not.toContain("few minutes");
+    });
+
+    it("says an agent's publish in flight will be cancelled", async () => {
+      render(<AppView app={two({ state: "building", publishing: true })} onBack={vi.fn()} />);
+      fireEvent.click(await button());
+      expect(screen.getByRole("group", { name: "Confirm putting back" }).textContent).toContain("The publish in progress will be cancelled.");
+    });
+
+    it("a version that can't be rebuilt doesn't say Try again", async () => {
+      rollback.mockRejectedValue(Object.assign(new Error("source gone"), { status: 409, body: { detail: { code: "version_unavailable" } } }));
+      render(<AppView app={two({ previous_version: { n: 2, at: AT, rebuild: true } })} onBack={vi.fn()} />);
+      fireEvent.click(await button());
+      fireEvent.click(screen.getByRole("button", { name: "Put it back" }));
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toContain("That version can't be put back any more");
+      expect(alert.textContent).not.toContain("Try again");
+    });
+
+    it("the line goes when a later version lands", async () => {
+      rollback.mockResolvedValue(undefined);
+      const { rerender } = render(<AppView app={two()} onBack={vi.fn()} />);
+      fireEvent.click(await button());
+      fireEvent.click(screen.getByRole("button", { name: "Put it back" }));
+      await screen.findByText(/is back to the version/);
+      rerender(<AppView app={two({ live_version: 2, previous_version: { n: 1, at: AT } })} onBack={vi.fn()} />);
+      expect(screen.getByText(/is back to the version/)).toBeTruthy(); // the put-back's own drop keeps it
+      rerender(<AppView app={two({ live_version: 4 })} onBack={vi.fn()} />);
+      await waitFor(() => expect(screen.queryByText(/is back to the version/)).toBeNull());
+    });
+
+    it("the line goes when a publish starts", async () => {
+      rollback.mockResolvedValue(undefined);
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      render(<AppView app={two({ state: "live", preview_url: "https://p", preview_newer: true })} onBack={vi.fn()} />);
+      fireEvent.click(await button());
+      fireEvent.click(screen.getByRole("button", { name: "Put it back" }));
+      await screen.findByText(/is back to the version/);
+      fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+      fireEvent.click(screen.getAllByRole("button", { name: "Publish" })[0]);
+      await screen.findByText("Publishing…");
+      expect(screen.queryByText(/is back to the version/)).toBeNull();
+    });
+
+    it("a live app can publish a newer preview, also after a put-back", async () => {
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      rollback.mockResolvedValue(undefined);
+      const row = (over: Partial<AppRow> = {}) => two({ state: "live", preview_url: "https://p", preview_newer: true, ...over });
+      const { rerender } = render(<AppView app={row()} onBack={vi.fn()} />);
+      await screen.findByRole("button", { name: "Publish" });
+      fireEvent.click(await button());
+      fireEvent.click(screen.getByRole("button", { name: "Put it back" }));
+      await screen.findByText(/is back to the version/);
+      rerender(<AppView app={row({ live_version: 2, previous_version: { n: 1, at: AT } })} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      fireEvent.click(screen.getAllByRole("button", { name: "Publish" })[0]);
+      await waitFor(() => expect(publish).toHaveBeenCalledWith("a1"));
+    });
+
+    it("a live app showing the preview that is already live has nothing to publish", async () => {
+      render(<AppView app={two({ state: "live", preview_url: "https://p", preview_newer: false })} onBack={vi.fn()} />);
+      await screen.findByTitle("Invoices");
+      expect(screen.queryByRole("button", { name: "Publish" })).toBeNull();
     });
   });
 });

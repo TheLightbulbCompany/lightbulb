@@ -56,6 +56,7 @@ export function sessionRowMatches(row: SessionRow, query: string): boolean;
 export function ownWaitingCount(rows: readonly SessionRow[]): number;  // isViewer && state === "waiting"
 export function sessionRowGroups(entries: readonly SidebarRow[], options: { groupBy: SessionGroupBy; show: SessionShow; query: string; marks: SessionMarks; now?: number }):
   { groups: SessionGroup[]; archived: SidebarRow[]; hidden: number; listed: number };
+export function sessionRowDropped(row: SessionRow, now?: number): boolean;  // rule 1 below
 export function foldedEntries(entries: readonly SidebarRow[], options: { limit: number; keep: (entry: SidebarRow) => boolean }): SidebarRow[];
 // shared: groupByDay<T>(items, at: (item: T) => number, now?) -> { key; title; data: T[] }[], with sessionHistory delegating to it. Exported from index.ts.
 ```

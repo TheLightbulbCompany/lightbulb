@@ -796,3 +796,14 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 
 /* A session search hit's turn (LocalSessionPanel focusSeq). */
 .native-session-row[data-search-hit] { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 6px; }
+.session-group-header { display: flex; align-items: center; gap: 4px; width: 100%; min-height: 22px; padding: 0 8px 0 4px; font-size: var(--text-caption); font-weight: 500; color: var(--muted-foreground); border-radius: 6px; text-align: left; }
+.session-group-header svg { width: 12px; height: 12px; flex-shrink: 0; }
+button.session-group-header:hover { background: color-mix(in srgb, var(--midnight) 5%, transparent); }
+button.session-group-header:focus-visible, .session-group-more:focus-visible, .session-filter:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.session-group-header--needs { padding-left: 8px; font-weight: 600; color: var(--foreground); }
+.session-group-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.session-group + .session-group { margin-top: 6px; }
+.session-group-more { display: block; width: 100%; padding: 2px 8px 2px 36px; font-size: var(--text-caption); color: var(--muted-foreground); text-align: left; border-radius: 6px; }
+.session-group-more:hover { color: var(--foreground); }
+.session-filter { display: block; height: 28px; width: calc(100% - 16px); margin: 2px 8px 6px; padding: 0 10px; font-size: var(--text-ui); border: 1px solid var(--border); border-radius: 6px; background: transparent; }
+.session-count--waiting { color: var(--midnight); background: var(--brass); }

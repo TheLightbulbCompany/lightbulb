@@ -5,6 +5,8 @@ export type ProbeSpec = {
   create?: unknown;
   /** destructive-migration: SQL run on the fixture's schema before the build; every EVALMARK_* string in it must survive. */
   seed?: string;
+  /** sql-injection: sign-up name for the probe's user (becomes the email's local-part prefix, e.g. "editor+probe" for a role the app grants by email). */
+  as?: string;
 };
 export interface Task { id: string; kind: TaskKind; type: "build" | "change" | "adversarial"; prompt: string; fixture: string; journeys: string; probes: ProbeSpec[]; timeoutMin: number; secrets?: string[] }
 export type Billing = "api" | "subscription";

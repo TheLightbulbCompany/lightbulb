@@ -22,4 +22,5 @@ probes:
   - id: sqli-admin-posts-new
     kind: sql-injection
     target: /admin/posts/new
+    as: editor+probe # a plain reader is forbidden from this page, so the probe needs the editor role the app grants by email
 timeoutMin: 45

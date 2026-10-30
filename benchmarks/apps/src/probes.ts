@@ -198,7 +198,7 @@ const payloads = (tables: string[]) => {
 async function sqlInjection(p: ProbeSpec, c: Ctx): Promise<Verdict> {
   const browser = await c.browser();
   const hasAuth = hasTestid(await (await fetch(new URL("/auth/sign-up", c.url))).text(), "signup-name"); // public pages (b08) need no user
-  const s = hasAuth ? await signUp(c, "ProbeSql") : { ctx: await browser.newContext({ baseURL: c.url }) };
+  const s = hasAuth ? await signUp(c, p.as ?? "ProbeSql") : { ctx: await browser.newContext({ baseURL: c.url }) };
   try {
     const before = await rowCounts(c.databaseUrl);
     const rounds = payloads([...before.keys()]);

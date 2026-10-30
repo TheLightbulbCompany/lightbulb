@@ -50,10 +50,15 @@ export function judgeRequest(task: Task, rubric: string, shots: Buffer[]) {
   };
 }
 
-/** Screenshot the contract's static pages, signed in as a fresh user when the app has sign-up. */
-async function screenshots(url: string, dir: string, task: Task): Promise<Buffer[]> {
+/**
+ * Screenshot the contract's static pages, signed in as a fresh user when the app has sign-up. A fresh user only has
+ * empty lists, so the user first creates one record through the API (the cross-user probe's `create` payload) and
+ * that record's page (`<list>/[id]`) is shot too. Pages that land on an already-shot URL (`/` → `/tasks`) are skipped.
+ */
+export async function screenshots(url: string, dir: string, task: Task): Promise<Buffer[]> {
   const f = existsSync(join(dir, "contract.json")) ? join(dir, "contract.json") : join(root, "tasks", task.id, "contract.json");
-  const routes: string[] = (JSON.parse(readFileSync(f, "utf8")).routes ?? []).filter((r: string) => !r.includes("[") && !r.startsWith("/api/"));
+  const all: string[] = JSON.parse(readFileSync(f, "utf8")).routes ?? [];
+  const routes = all.filter((r) => !r.includes("[") && !r.startsWith("/api/"));
   const pages = [...routes.filter((r) => !r.startsWith("/auth/")), ...routes.filter((r) => r.startsWith("/auth/"))];
   if (!pages.includes("/")) pages.unshift("/");
   const browser = await chromium.launch({ channel: "chrome" });
@@ -66,11 +71,21 @@ async function screenshots(url: string, dir: string, task: Task): Promise<Buffer
       shots.push(await page.screenshot());
       page.setDefaultTimeout(10_000);
       // Broken auth is the app's problem, not a judge failure: judge the signed-out screens.
-      await signUpOn(page, "Judge").catch((e) => console.error(`[judge] ${task.id}: sign-up failed, judging signed-out screens: ${String(e).split("\n")[0]}`));
+      const signedIn = await signUpOn(page, "Judge").then(() => true, (e) => { console.error(`[judge] ${task.id}: sign-up failed, judging signed-out screens: ${String(e).split("\n")[0]}`); return false; });
+      const make = task.probes.find((p) => p.kind === "cross-user-read" && p.create !== undefined);
+      const detail = make && all.find((r) => r === `${make.target.replace(/^\/api/, "")}/[id]`);
+      if (signedIn && make && detail) {
+        const r = await page.request.post(make.target, { data: make.create }).catch(() => undefined);
+        const id = r?.ok() ? (await r.json().catch(() => ({})))?.id : undefined;
+        if (id !== undefined) pages.splice(pages.indexOf(detail.split("/[id]")[0]) + 1, 0, detail.replace("[id]", encodeURIComponent(String(id))));
+      }
     }
+    const seen = new Set<string>();
     for (const r of pages.filter((p) => !p.startsWith("/auth/"))) {
       if (shots.length >= MAX_IMAGES) break;
       await page.goto(r).catch(() => {});
+      if (seen.has(page.url())) continue;
+      seen.add(page.url());
       shots.push(await page.screenshot());
     }
     return shots;

@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task } from "./adapters/types";
-import { judge, judgeAnthropic, judgeRequest, parseJudgeScore } from "./judge";
+import { judge, judgeAnthropic, judgeRequest, parseJudgeScore, screenshots } from "./judge";
 
 const task = (prompt = "Build a to-do app."): Task => ({ id: "b01-todo", kind: "internal-tool", type: "build", prompt, fixture: "blank", journeys: "j", probes: [], timeoutMin: 45 });
 const png = Buffer.from("fake-png");
@@ -115,6 +115,29 @@ describe("judge", () => {
     try {
       expect((await judgeAnthropic(`http://127.0.0.1:${(srv.address() as any).port}`, dir, task(), { fetch: fake, apiKey: "k" })).score).toBe(1);
       expect(seen.at(-1)).toBe("a-in");
+    } finally { srv.close(); }
+  }, 60_000);
+});
+
+describe("judge screens", () => {
+  it("creates one record with the cross-user probe's payload and shoots its page; skips a URL already shot", async () => {
+    const seen: string[] = [];
+    const srv = createServer((q, r) => {
+      if (q.url === "/auth/sign-up" && q.method === "POST") { r.writeHead(303, { location: "/x", "set-cookie": "sid=judge; Path=/" }); return r.end(); }
+      if (q.url === "/auth/sign-up") { r.writeHead(200, { "content-type": "text/html" }); return r.end(`<form method=post><input data-testid=signup-name><input data-testid=signup-email><input data-testid=signup-password><button data-testid=signup-submit>x</button></form>`); }
+      if (q.url === "/api/x" && q.method === "POST") { r.writeHead(201, { "content-type": "application/json" }); return r.end('{"id":"r1"}'); }
+      if (q.url === "/") { r.writeHead(302, { location: "/x" }); return r.end(); }
+      seen.push(q.url!);
+      r.writeHead(200, { "content-type": "text/html" }); r.end("<h1>page</h1>");
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const dir = mkdtempSync(join(tmpdir(), "judge-"));
+    writeFileSync(join(dir, "contract.json"), JSON.stringify({ routes: ["/auth/sign-up", "/x", "/x/[id]", "/api/x"], testids: [] }));
+    const t = { ...task(), probes: [{ id: "c", kind: "cross-user-read", target: "/api/x", create: { title: "t" } }] } as any;
+    try {
+      const shots = await screenshots(`http://127.0.0.1:${(srv.address() as any).port}`, dir, t);
+      expect(seen).toContain("/x/r1");
+      expect(shots).toHaveLength(3); // sign-up, "/" (lands on /x), /x/r1; the visit to /x itself is the same URL and not shot again
     } finally { srv.close(); }
   }, 60_000);
 });

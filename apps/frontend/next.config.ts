@@ -41,14 +41,14 @@ const apiOrigin = (() => {
   }
 })();
 
+// Canvas frames apps: published ones on the apps domain, pre-publish opens on the Vercel preview URL.
+const APPS_DOMAIN = process.env.NEXT_PUBLIC_APPS_DOMAIN || "apps.thelightbulb.company";
+
 // A Clerk publishable key is `pk_(live|test)_<base64 of "<frontend-api-host>$">`,
 // so the instance's own host comes out of the key this build was compiled with —
 // more robust than a literal that silently goes stale. Anything unparseable
 // falls back to the conventional host; the `*.clerk.accounts.dev` wildcard below
 // covers development instances either way.
-// Canvas frames apps: published ones on the apps domain, pre-publish opens on the Vercel preview URL.
-const APPS_DOMAIN = process.env.NEXT_PUBLIC_APPS_DOMAIN ?? "apps.thelightbulb.company";
-
 const clerkOrigins = (() => {
   const fallback = `https://clerk.${ROOT_DOMAIN}`;
   const key = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";

@@ -12,10 +12,10 @@ export function CanvasDockPanel({ id, params }: PanelProps) {
   const close = () => updatePanelParams(id, { app: undefined });
   const open = params.app ? apps.find((a) => a.app_id === params.app) : undefined;
   if (params.app) {
-    if (open) return <AppView app={open} onBack={close} />;
+    if (open) return <AppView key={open.app_id} app={open} onBack={close} />;
     return <div className="canvas">
       <p className="canvas__notice">{loading ? "Opening…" : "That app isn't in this workspace."}</p>
-      {!loading && <button type="button" className="underline" onClick={close}>All apps</button>}
+      {!loading && <button type="button" className="app-view__btn" onClick={close}>All apps</button>}
     </div>;
   }
   return <AppList apps={apps} loading={loading} error={error} onRetry={refresh}

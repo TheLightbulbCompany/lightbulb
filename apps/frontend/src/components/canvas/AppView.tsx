@@ -1,7 +1,7 @@
 "use client";
 
 // One app in the pane: a pass from POST /apps/{id}/open becomes the iframe src (never logged or stored).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useApps, type AppRow } from "@/hooks/useApps";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
@@ -10,19 +10,24 @@ import "./canvas.css";
 export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const { open, refresh } = useApps();
   const isAdmin = useIsWorkspaceAdmin();
-  const [url, setUrl] = useState<string | null>(null);
-  const [refusal, setRefusal] = useState<string | null>(null);
+  const [pass, setPass] = useState<{ id: string; url: string } | null>(null);
+  const [refusal, setRefusal] = useState<{ id: string; msg: string } | null>(null);
+  const [tabError, setTabError] = useState<string | null>(null);
+  const current = useRef(app.app_id);
+  current.current = app.app_id;
+  // State is tagged with its app so a render right after a switch never shows the previous app's pass.
+  const url = pass?.id === app.app_id ? pass.url : null;
+  const refused = refusal?.id === app.app_id ? refusal.msg : null;
   const [settingsOpen, setSettingsOpen] = useState(false); // Task 4b renders AppSettings from this
 
   useEffect(() => {
     let cancelled = false;
-    setUrl(null);
-    setRefusal(null);
+    setTabError(null);
     open(app.app_id).then(
-      (u) => { if (!cancelled) setUrl(u); },
+      (u) => { if (!cancelled) { setPass({ id: app.app_id, url: u }); setRefusal(null); } },
       (err: unknown) => {
         if (cancelled) return;
-        setRefusal((err as Error)?.message || "This app can't be opened right now.");
+        setRefusal({ id: app.app_id, msg: (err as Error)?.message || "This app can't be opened right now." });
         refresh(); // the server recomputes can_open, so the list greys the row
       },
     );
@@ -31,10 +36,15 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   }, [app.app_id]);
 
   const openInTab = async () => {
+    const id = app.app_id;
+    setTabError(null);
     try {
-      window.open(await open(app.app_id), "_blank", "noopener");
+      const u = await open(id);
+      window.open(u, "_blank", "noopener");
     } catch (err) {
-      setRefusal((err as Error)?.message || "This app can't be opened right now.");
+      if (current.current !== id) return;
+      setTabError((err as Error)?.message || "This app can't be opened right now.");
+      refresh();
     }
   };
 
@@ -47,7 +57,8 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
       {isAdmin && <button type="button" className="app-view__btn" aria-expanded={settingsOpen}
         onClick={() => setSettingsOpen((v) => !v)}>Settings</button>}
     </header>
-    {refusal ? <p role="alert" className="canvas__notice">{refusal}</p>
+    {tabError && <p role="alert" className="canvas__notice">{tabError}</p>}
+    {refused ? <p role="alert" className="canvas__notice">{refused}</p>
       : url ? <iframe key={app.app_id} title={app.name} src={url} className="canvas__frame"
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups" />
       : <p className="canvas__notice">Opening…</p>}

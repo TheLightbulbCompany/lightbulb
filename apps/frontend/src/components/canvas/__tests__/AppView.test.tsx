@@ -68,4 +68,38 @@ describe("AppView", () => {
     await waitFor(() => expect(win).toHaveBeenCalledWith("https://x/two", "_blank", "noopener"));
     expect(open).toHaveBeenCalledTimes(2);
   });
+
+  it("the second app's frame never carries the first app's url", async () => {
+    let release!: (u: string) => void;
+    open.mockResolvedValueOnce("https://a1.apps.test/").mockImplementationOnce(() => new Promise<string>((r) => { release = r; }));
+    const { rerender } = render(<AppView app={app()} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    rerender(<AppView app={app({ app_id: "a2", name: "Pipeline" })} onBack={vi.fn()} />);
+    expect(document.querySelector("iframe")).toBeNull();
+    expect(screen.getByText("Opening…")).toBeTruthy();
+    release("https://a2.apps.test/");
+    expect((await screen.findByTitle("Pipeline")).getAttribute("src")).toBe("https://a2.apps.test/");
+  });
+
+  it("ignores a stale open() that resolves after an app switch", async () => {
+    let late!: (u: string) => void;
+    open.mockImplementationOnce(() => new Promise<string>((r) => { late = r; })).mockResolvedValueOnce("https://a2.apps.test/");
+    const { rerender } = render(<AppView app={app()} onBack={vi.fn()} />);
+    rerender(<AppView app={app({ app_id: "a2", name: "Pipeline" })} onBack={vi.fn()} />);
+    await screen.findByTitle("Pipeline");
+    late("https://a1.apps.test/");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.querySelectorAll("iframe")).toHaveLength(1);
+    expect(screen.getByTitle("Pipeline").getAttribute("src")).toBe("https://a2.apps.test/");
+  });
+
+  it("open-in-tab failure keeps the frame, shows an alert and refreshes", async () => {
+    open.mockResolvedValueOnce("https://x/one").mockRejectedValueOnce(new Error("No longer allowed"));
+    render(<AppView app={app()} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    fireEvent.click(screen.getByRole("button", { name: "Open in its own tab" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("No longer allowed");
+    expect(screen.getByTitle("Invoices")).toBeTruthy();
+    expect(refresh).toHaveBeenCalled();
+  });
 });

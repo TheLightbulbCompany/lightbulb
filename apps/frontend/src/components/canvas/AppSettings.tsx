@@ -16,10 +16,25 @@ const CHOICES: { value: AppRow["open_to"]; label: string }[] = [
   { value: "public", label: "Anyone with the link" },
 ];
 
+type OpenTo = AppRow["open_to"];
+
+// Who stops being able to open the app if it moves from `from` to `to`; null when nobody does (widening).
+function whoLosesAccess(from: OpenTo, to: OpenTo, room: string): string | null {
+  if (from === to || to === "public" || (from === "room" && to === "workspace")) return null;
+  if (from === "public") {
+    const outside = to === "room" ? `outside ${room}` : to === "workspace" ? "outside the workspace" : "you haven't invited";
+    return `Anyone with the link ${outside} will lose access.`;
+  }
+  if (from === "invited") return "People you invited from outside will lose access.";
+  if (to === "room") return `Everyone in the workspace outside ${room} will lose access.`;
+  return `${from === "room" ? `People in ${room}` : "Everyone in the workspace"} will lose access unless you invite them.`;
+}
+
 export function AppSettings({ app, onClose, onRemoved }: { app: AppRow; onClose(): void; onRemoved?(): void }) {
   const { update, invite, remove, databaseLink } = useApps();
   const isAdmin = useIsWorkspaceAdmin();
   const [openTo, setOpenTo] = useState(app.open_to);
+  const [pending, setPending] = useState<OpenTo | null>(null);
   const [emails, setEmails] = useState("");
   const [budget, setBudget] = useState(String(app.budget_usd));
   const [removing, setRemoving] = useState(false);
@@ -31,7 +46,12 @@ export function AppSettings({ app, onClose, onRemoved }: { app: AppRow; onClose(
   if (!isAdmin) return null;
 
   // The hook already surfaces API errors; these handlers only keep the panel usable.
-  const choose = async (value: AppRow["open_to"]) => {
+  const room = `#${app.room_name ?? "this room"}`;
+  const warning = pending && whoLosesAccess(openTo, pending, room);
+  const pick = (value: OpenTo) => {
+    if (whoLosesAccess(openTo, value, room)) setPending(value); else { setPending(null); choose(value); }
+  };
+  const choose = async (value: OpenTo) => {
     const before = openTo;
     setOpenTo(value);
     try { await update(app.app_id, { open_to: value }); } catch { setOpenTo(before); }
@@ -68,9 +88,14 @@ export function AppSettings({ app, onClose, onRemoved }: { app: AppRow; onClose(
     <fieldset className="app-settings__group">
       <legend className="canvas__heading">Who can open it</legend>
       {CHOICES.map((c) => <label key={c.value} className="app-settings__row">
-        <input type="radio" name={`open-to-${app.app_id}`} checked={openTo === c.value} onChange={() => choose(c.value)} />
+        <input type="radio" name={`open-to-${app.app_id}`} checked={(pending ?? openTo) === c.value} onChange={() => pick(c.value)} />
         {c.label}
       </label>)}
+      {pending && warning && <div role="alert" className="app-settings__row">
+        <p className="canvas__notice">{warning}</p>
+        <button type="button" className="app-view__btn" onClick={() => { const v = pending; setPending(null); choose(v); }}>Change who can open it</button>
+        <button type="button" className="app-view__btn" onClick={() => setPending(null)}>Cancel</button>
+      </div>}
       {openTo === "invited" && <div className="app-settings__row">
         <label htmlFor={`emails-${app.app_id}`}>Email addresses</label>
         <textarea id={`emails-${app.app_id}`} value={emails} rows={3} onChange={(e) => setEmails(e.target.value)} />

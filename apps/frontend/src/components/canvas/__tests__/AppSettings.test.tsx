@@ -29,10 +29,51 @@ describe("AppSettings", () => {
     render(<AppSettings app={app()} onClose={vi.fn()} />);
     expect(screen.queryByLabelText("Email addresses")).toBeNull();
     fireEvent.click(screen.getByLabelText("People I invite"));
+    fireEvent.click(screen.getByRole("button", { name: "Change who can open it" }));
     await waitFor(() => expect(update).toHaveBeenCalledWith("a1", { open_to: "invited" }));
     fireEvent.change(await screen.findByLabelText("Email addresses"), { target: { value: "a@x.com, b@x.com\nc@x.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Invite" }));
     await waitFor(() => expect(invite).toHaveBeenCalledWith("a1", ["a@x.com", "b@x.com", "c@x.com"]));
+  });
+
+  it("widening applies on one click", async () => {
+    render(<AppSettings app={app()} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("Everyone in the workspace"));
+    await waitFor(() => expect(update).toHaveBeenCalledWith("a1", { open_to: "workspace" }));
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
+  it("narrowing asks first and names who loses access", async () => {
+    render(<AppSettings app={app({ open_to: "workspace" })} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("This room"));
+    expect(screen.getByText("Everyone in the workspace outside #finance will lose access.")).toBeTruthy();
+    expect(update).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Change who can open it" }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith("a1", { open_to: "room" }));
+  });
+
+  it("choosing people I invite asks first", () => {
+    render(<AppSettings app={app()} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("People I invite"));
+    expect(screen.getByText(/People in #finance will lose access unless you invite them/)).toBeTruthy();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("cancel keeps the current audience and sends nothing", () => {
+    render(<AppSettings app={app()} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("People I invite"));
+    expect((screen.getByLabelText("People I invite") as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect((screen.getByLabelText("This room") as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("invited to workspace names the outside invitees", () => {
+    render(<AppSettings app={app({ open_to: "invited" })} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("Everyone in the workspace"));
+    expect(screen.getByText("People you invited from outside will lose access.")).toBeTruthy();
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("data and backups opens the provider console link", async () => {

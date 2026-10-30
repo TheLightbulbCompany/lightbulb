@@ -165,6 +165,13 @@ def world(monkeypatch):
         monkeypatch.setattr(svc.wf_repo, "patch", AsyncMock(side_effect=wf_patch))
         monkeypatch.setattr(svc.api, "remove_resource", AsyncMock(return_value={}))
 
+        rooms = {
+            "room_1": {"roomId": "room_1", "ownerId": OWNER},
+            "r": {"roomId": "r", "ownerId": OWNER},
+            "r_other": {"ownerId": "org_other"},
+        }
+        monkeypatch.setattr(svc.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: rooms.get(r)))
+
         vercel = Vercel()
         monkeypatch.setattr(vercel_client, "_transport", httpx.MockTransport(vercel.handler))
         reset = AsyncMock()
@@ -600,7 +607,9 @@ async def test_bad_name_and_other_owner(world):
         await svc.status("org_other", src["app_id"])
     assert e.value.code == "app_not_found"
     with pytest.raises(svc.apps_repo.NameTaken):
-        await svc.put_source("org_other", name="crew", room_id="r", commit="c", archive=_tar(SRC_V1), actor=PERSON)
+        await svc.put_source(
+            "org_other", name="crew", room_id="r_other", commit="c", archive=_tar(SRC_V1), actor=PERSON
+        )
 
 
 # --- fix round 1 --------------------------------------------------------------------------------
@@ -767,3 +776,26 @@ async def test_errors_fall_back_to_build_events(world, monkeypatch):
 async def test_errors_empty_before_any_deployment(world):
     src = await _source()
     assert await svc.errors(OWNER, src["app_id"]) == {"client": [], "server": []}
+
+
+async def test_room_must_belong_to_the_callers_workspace(world, monkeypatch):
+    """R46: neither put_source nor up attaches an app to another workspace's (or a deleted) room."""
+    rooms = {
+        "room_1": {"roomId": "room_1", "ownerId": OWNER},
+        "room_x": {"roomId": "room_x", "ownerId": "org_other"},
+        "room_del": {"roomId": "room_del", "ownerId": OWNER, "deletedAt": "t"},
+    }
+    monkeypatch.setattr(svc.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: rooms.get(r)))
+    for room in ("room_x", "room_del", "room_missing"):
+        with pytest.raises(svc.AppsRefused) as e:
+            await svc.put_source(OWNER, name="crew", room_id=room, commit="c", archive=_tar(SRC_V1), actor=PERSON)
+        assert e.value.code == "room_not_found"
+    assert await svc.apps_repo.get_by_name(OWNER, "crew") is None
+    src = await _source()
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.up(
+            OWNER, name="crew", room_id="room_x", services=[], open_to="room", budget_usd=0,
+            source_id=src["source_id"], actor=PERSON, origin={"kind": "idea"},
+        )  # fmt: skip
+    assert e.value.code == "room_not_found"
+    assert (await svc.apps_repo.get(src["app_id"]))["room_id"] == "room_1"

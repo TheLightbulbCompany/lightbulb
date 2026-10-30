@@ -34,6 +34,7 @@ _RETRY = "try again; if it keeps failing, report it"
 _STATUS = {
     "app_not_found": 404,
     "app_destroyed": 404,
+    "room_not_found": 404,
     "source_not_found": 404,
     "version_not_found": 404,
     "approval_invalid": 403,
@@ -107,10 +108,21 @@ async def builder_caller(request: Request) -> svc.BuilderCaller:
 Builder = Annotated[svc.BuilderCaller, Depends(builder_caller)]
 
 
-def _size_cap(request: Request) -> None:
-    """Before the proof check reads the body: refuse a declared oversize upload unread."""
-    if int(request.headers.get("content-length") or 0) > MAX_UPLOAD:
+async def _size_cap(request: Request) -> None:
+    """Before the proof check reads the body: refuse a declared oversize upload unread, and count a
+    chunked one as it arrives. The body is kept on the request so the proof hash and ``form()`` replay it."""
+    declared = request.headers.get("content-length")
+    if declared is not None and not declared.isdigit():
+        raise HTTPException(400, {"code": "invalid_request", "message": "Content-Length is malformed."})
+    if int(declared or 0) > MAX_UPLOAD:
         raise _too_large()
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_UPLOAD:
+            raise _too_large()
+        chunks.append(chunk)
+    request._body = b"".join(chunks)
 
 
 class Origin(BaseModel):
@@ -196,7 +208,8 @@ async def issuer():
     return {"keys": [network_proof.public_key()]}
 
 
-@router.get("/")
+@router.get("")
+@router.get("/", include_in_schema=False)
 async def list_apps(auth: Annotated[AuthContext, Depends(get_current_user)]):
     owner_id = resolve_owner_id(auth)
     return {"apps": await _run(svc.list_apps(owner_id, auth.user_id))}

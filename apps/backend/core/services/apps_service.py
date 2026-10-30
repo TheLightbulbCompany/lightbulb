@@ -135,6 +135,13 @@ async def _owned(owner_id: str, app_id: str) -> dict:
     return plain(app)
 
 
+async def _check_room(owner_id: str, room_id: str) -> None:
+    """R46: an app belongs to a room of the caller's own workspace (membership is not required)."""
+    meta = await messaging_repo.get_room(room_id) if room_id else None
+    if not meta or meta.get("deletedAt") or meta.get("ownerId") != owner_id:
+        raise AppsRefused("room_not_found", "That room is not in this workspace.", "pick a room of this workspace")
+
+
 async def _patch(app: dict, fields: dict) -> dict:
     app.update(fields)
     await apps_repo.patch(app["app_id"], fields)
@@ -537,6 +544,7 @@ async def put_source(
 ) -> dict:
     """R32: the source upload creates the app record; ``up`` fills in the rest."""
     _check_name(name)
+    await _check_room(owner_id, room_id)
     app = await apps_repo.get_by_name(owner_id, name)
     if app is None:
         app = await apps_repo.create(
@@ -580,6 +588,7 @@ async def up(
     cost_cents: int | None = None,
 ) -> UpResult:
     _check_name(name)
+    await _check_room(owner_id, room_id)
     found = await apps_repo.get_by_name(owner_id, name)
     if not found:
         raise AppsRefused("source_not_found", "Upload the app's source first.", "upload the source, then run up")
@@ -787,7 +796,8 @@ async def list_apps(owner_id: str, user_id: str) -> list[dict]:
         row.update(
             # R35: an invited app still opens for its room; invitees use their links.
             can_open=a["open_to"] in ("public", "workspace") or bool(member.get(a["room_id"])),
-            room_name=(live.get(a["room_id"]) or {}).get("name"),
+            # Only a room the caller is in is named to them.
+            room_name=(live.get(a["room_id"]) or {}).get("name") if member.get(a["room_id"]) else None,
             created_by_name=names.get(uid) if uid and names.get(uid) != uid else None,
             agent_name=agents.get(a.get("actor_id")) if a.get("actor_kind") == "agent" else None,
         )

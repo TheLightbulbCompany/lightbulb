@@ -243,6 +243,9 @@ def test_destructive_source_needs_an_approved_card(client, monkeypatch):
     monkeypatch.setattr(svc.apps_repo, "get_by_name", AsyncMock(return_value=record))
     monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(return_value=record))
     monkeypatch.setattr(svc.apps_source, "get", AsyncMock(return_value=tar))
+    monkeypatch.setattr(
+        svc.messaging_repo, "get_room", AsyncMock(return_value={"roomId": "room_1", "ownerId": "org_a"})
+    )
     patch_ = AsyncMock()
     monkeypatch.setattr(svc.apps_repo, "patch", patch_)
     body = {**UP_BODY, "source_id": "s2"}
@@ -311,3 +314,68 @@ def test_builder_cannot_touch_another_owners_app(client, monkeypatch):
         kw = {"json": {}} if method == "post" else {}
         r = getattr(client, method)(f"{BASE}/app_1/{path}", headers=HOOK, **kw)
         assert r.status_code == 404, path
+
+
+def _multipart(form: dict, archive: bytes) -> tuple[bytes, str]:
+    boundary = "lbboundary"
+    parts = [
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in form.items()
+    ]
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="archive"; filename="s.tgz"\r\n'
+        "Content-Type: application/gzip\r\n\r\n".encode()
+        + archive
+        + b"\r\n"
+    )
+    return b"".join(parts) + f"--{boundary}--\r\n".encode(), f"multipart/form-data; boundary={boundary}"
+
+
+def test_chunked_upload_is_bounded_and_replayed_for_both_auth_paths(client, proof, monkeypatch):
+    """No Content-Length: the cap counts the stream; under it, the proof hash and the form both see the body."""
+    put = AsyncMock(return_value={"app_id": "app_1", "source_id": "s1"})
+    monkeypatch.setattr(svc, "put_source", put)
+    seen = []
+
+    async def identity(request):
+        seen.append(await request.body())
+        return AuthContext(user_id="user_1", org_id="org_a"), "label"
+
+    proof.side_effect = identity
+    body, ctype = _multipart({"name": "crew", "room_id": "room_1", "commit": "c1"}, b"tarbytes")
+
+    def chunks(data):
+        def gen():
+            yield from (data[i : i + 7] for i in range(0, len(data), 7))
+
+        return gen()
+
+    for headers in (HOOK, PROOF):
+        r = client.post(f"{BASE}/source", content=chunks(body), headers={**headers, "Content-Type": ctype})
+        assert r.status_code == 200, r.text
+        assert put.await_args.kwargs["archive"] == b"tarbytes"
+    assert seen == [body]
+
+    monkeypatch.setattr(mod, "MAX_UPLOAD", 20)
+    calls = put.await_count
+    for headers in (HOOK, PROOF):
+        r = client.post(f"{BASE}/source", content=chunks(body), headers={**headers, "Content-Type": ctype})
+        assert r.status_code == 413 and r.json()["detail"]["code"] == "source_too_large"
+    assert put.await_count == calls and seen == [body]
+
+    monkeypatch.setattr(mod, "MAX_UPLOAD", 1 << 30)
+    r = client.post(f"{BASE}/source", content=body, headers={**HOOK, "Content-Type": ctype, "Content-Length": "12x"})
+    assert r.status_code == 400
+
+
+def test_room_outside_the_workspace_is_404(client, monkeypatch):
+    monkeypatch.setattr(svc.messaging_repo, "get_room", AsyncMock(return_value={"roomId": "r", "ownerId": "org_b"}))
+    monkeypatch.setattr(svc.apps_repo, "get_by_name", AsyncMock(side_effect=AssertionError("no record touched")))
+    r = client.post(f"{BASE}/up", json=UP_BODY, headers=HOOK)
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "room_not_found"
+    r = client.post(
+        f"{BASE}/source",
+        data={"name": "crew", "room_id": "r", "commit": "c1"},
+        files={"archive": ("s.tgz", b"x", "application/gzip")},
+        headers=HOOK,
+    )
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "room_not_found"

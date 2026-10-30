@@ -110,7 +110,8 @@ def test_list_marks_can_open_by_room_membership(member, monkeypatch):
     monkeypatch.setattr(svc.messaging, "load_agent_roster", AsyncMock(return_value=[{"id": "agt_1", "name": "Friday"}]))
     monkeypatch.setattr(svc, "_progress", AsyncMock(side_effect=AssertionError("the list must not call providers")))
 
-    r = member.get(f"{BASE}/")
+    assert member.get(f"{BASE}/").status_code == 200
+    r = member.get(BASE, follow_redirects=False)
     assert r.status_code == 200
     rows = {a["name"]: a for a in r.json()["apps"]}
     assert "gone" not in rows
@@ -123,6 +124,7 @@ def test_list_marks_can_open_by_room_membership(member, monkeypatch):
         "pub": True,
     }
     assert rows["mine"]["room_name"] == "Ops" and rows["pub"]["room_name"] is None
+    assert rows["theirs"]["room_name"] is None  # a room the caller is not in is not named
     assert rows["mine"]["created_by_name"] == "Ada" and rows["mine"]["agent_name"] is None
     assert rows["theirs"]["agent_name"] == "Friday" and rows["theirs"]["created_by_name"] is None
     assert rows["mine"]["resources"] == [

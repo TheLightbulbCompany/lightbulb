@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/ledgerly/fixtures.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/cuj-tests/ledgerly/fixtures.ts. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
 // Shared Ledgerly suite helpers (design/app-4-ledgerly.md, "Test fixtures &
 // conventions"). Imported by all three checkpoint suites.
 //

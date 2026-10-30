@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/slotline/fixtures.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/cuj-tests/slotline/fixtures.ts. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
 // Shared Slotline suite helpers (design/app-5-slotline.md, "Test fixtures &
 // conventions"). Imported by all three checkpoint suites.
 //

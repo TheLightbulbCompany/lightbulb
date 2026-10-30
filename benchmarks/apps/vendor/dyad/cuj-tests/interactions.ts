@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/interactions.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/cuj-tests/interactions.ts. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
 import { expect, type Page } from "@playwright/test";
 
 // Test IDs remain mandatory. A menu's contents need not exist until it opens.

@@ -1,4 +1,4 @@
-<!-- Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/DESIGN.md), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header. -->
+<!-- Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/DESIGN.md. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company. -->
 # App-Builder Benchmark — Design
 
 Status: **proposed — gated on the spike plan in §7** · Authored: 2026-07-28 · Home: `benchmarks/app-builder/`

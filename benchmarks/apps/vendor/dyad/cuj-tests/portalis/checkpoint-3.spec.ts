@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/portalis/checkpoint-3.spec.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/cuj-tests/portalis/checkpoint-3.spec.ts. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
 import { clickMenuItem } from "../interactions";
 // Portalis — checkpoint 3 CUJ suite (design/app-3-portalis.md, "CUJ suite
 // (checkpoint 3)" + "Security probes (checkpoint 3)").

@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/ledgerly/checkpoint-3.spec.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/cuj-tests/ledgerly/checkpoint-3.spec.ts. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
 // Ledgerly — checkpoint 3 CUJ suite (design/app-4-ledgerly.md, M3 CUJ table +
 // M3 security probes). 11 CUJs (4 regression + 7 new) + 11 probes.
 //

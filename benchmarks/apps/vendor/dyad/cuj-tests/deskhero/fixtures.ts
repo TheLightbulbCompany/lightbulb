@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/deskhero/fixtures.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/cuj-tests/deskhero/fixtures.ts. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
 // Shared Deskhero suite helpers (design/app-2-deskhero.md, "Suite mechanics").
 //
 // Independence contract: the checkpoint suites are NOT serial. Every test

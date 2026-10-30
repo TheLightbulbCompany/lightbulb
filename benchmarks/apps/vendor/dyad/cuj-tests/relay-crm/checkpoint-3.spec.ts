@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/relay-crm/checkpoint-3.spec.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/cuj-tests/relay-crm/checkpoint-3.spec.ts. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
 // Relay CRM — checkpoint 3 CUJ suite (design/app-1-relay-crm.md, "CUJ suite
 // (checkpoint 3)" + "Security probes (checkpoint 3)").
 // 12 CUJs (4 regression + 8 new) + 8 probes. Same conventions as checkpoint 1:

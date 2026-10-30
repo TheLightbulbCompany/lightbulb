@@ -83,6 +83,7 @@ def paid(monkeypatch):
 def proof(monkeypatch):
     m = AsyncMock(return_value=(AuthContext(user_id="user_1", org_id="org_a", org_role="org:member"), "label"))
     monkeypatch.setattr(mod.network_login, "computer_identity", m)
+    monkeypatch.setattr(mod.network_login, "signed_proof", lambda request: ("key", "challenge", {"sub": "user_1"}))
     return m
 
 
@@ -379,3 +380,22 @@ def test_room_outside_the_workspace_is_404(client, monkeypatch):
         headers=HOOK,
     )
     assert r.status_code == 404 and r.json()["detail"]["code"] == "room_not_found"
+
+
+def test_unauthenticated_upload_is_refused_before_the_body_is_read(client, hook, monkeypatch):
+    """Neither credential, a bad hook token, or a bad proof signature: 401 with the stream untouched."""
+    put = AsyncMock()
+    monkeypatch.setattr(svc, "put_source", put)
+    hook.side_effect = HTTPException(status_code=401, detail="invalid hook token")
+    for headers in ({}, HOOK, PROOF):  # PROOF here is unpatched: the real header-only check refuses it
+        pulled = []
+
+        def gen():
+            for i in range(1000):
+                pulled.append(i)
+                yield b"x" * 1024
+
+        r = client.post(f"{BASE}/source", content=gen(), headers={**headers, "Content-Type": "multipart/form-data"})
+        assert r.status_code == 401, headers
+        assert len(pulled) <= 1, headers  # the transport may prime one chunk; the app read none
+    put.assert_not_awaited()

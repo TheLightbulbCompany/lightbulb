@@ -78,16 +78,23 @@ def _too_large() -> HTTPException:
 # --- builders -----------------------------------------------------------------------------------
 
 
-async def builder_caller(request: Request) -> svc.BuilderCaller:
-    """A hook token (``Authorization`` + ``X-Lightbulb-Owner``) or a computer proof; nothing else."""
+async def _caller(request: Request, *, upload: bool = False) -> svc.BuilderCaller:
+    """A hook token (``Authorization`` + ``X-Lightbulb-Owner``) or a computer proof; nothing else.
+    ``upload``: the body is read (bounded) only after the headers authenticate the caller."""
     owner = request.headers.get("X-Lightbulb-Owner")
     if owner and request.headers.get("Authorization", "").startswith("Bearer "):
         await _require_hook_token(owner, request)
         agent = request.headers.get("X-Lightbulb-Agent-Id") or "agent"  # R14: optional
         if not _AGENT_ID_RE.fullmatch(agent):
             raise HTTPException(422, {"code": "invalid_agent_id", "message": "X-Lightbulb-Agent-Id is malformed."})
+        if upload:
+            await _read_capped(request)
         caller = svc.BuilderCaller(owner_id=owner, actor_id=agent, actor_kind="agent")
     elif request.headers.get("X-Lightbulb-Proof"):
+        if upload:
+            # Signature + issued proof first (headers only); the full check below hashes the body.
+            network_login.signed_proof(request)
+            await _read_capped(request)
         auth, _ = await network_login.computer_identity(request)
         if not auth.org_id:
             raise HTTPException(
@@ -105,14 +112,22 @@ async def builder_caller(request: Request) -> svc.BuilderCaller:
     return caller
 
 
+async def builder_caller(request: Request) -> svc.BuilderCaller:
+    return await _caller(request)
+
+
+async def _upload_caller(request: Request) -> svc.BuilderCaller:
+    return await _caller(request, upload=True)
+
+
 Builder = Annotated[svc.BuilderCaller, Depends(builder_caller)]
 
 
-async def _size_cap(request: Request) -> None:
-    """Before the proof check reads the body: refuse a declared oversize upload unread, and count a
-    chunked one as it arrives. The body is kept on the request so the proof hash and ``form()`` replay it."""
+async def _read_capped(request: Request) -> None:
+    """Refuse a declared oversize upload unread, and count a chunked one as it arrives. The body is
+    kept on the request so the proof hash and ``form()`` replay it."""
     declared = request.headers.get("content-length")
-    if declared is not None and not declared.isdigit():
+    if declared is not None and not (declared.isascii() and declared.isdigit()):
         raise HTTPException(400, {"code": "invalid_request", "message": "Content-Length is malformed."})
     if int(declared or 0) > MAX_UPLOAD:
         raise _too_large()
@@ -154,8 +169,8 @@ class RollbackBody(BaseModel):
     version: int | None = Field(default=None, ge=1)
 
 
-@router.post("/build/source", dependencies=[Depends(_size_cap)])
-async def put_source(request: Request, caller: Builder):
+@router.post("/build/source")
+async def put_source(request: Request, caller: Annotated[svc.BuilderCaller, Depends(_upload_caller)]):
     # Parsed by hand, after builder_caller: the proof check hashes the raw body first, and FastAPI's
     # own form parsing would consume the stream before it (Starlette replays the cached body here).
     async with request.form(max_part_size=4096) as form:

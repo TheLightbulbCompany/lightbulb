@@ -396,16 +396,10 @@ def _same_target(signed: str, path: str, query: str) -> bool:
     return unquote(signed_path) == unquote(path) and pairs(signed_query) == pairs(query)
 
 
-async def computer_person(request: Request, *, free_ok: bool = False) -> tuple[AuthContext, str]:
-    """(``free_ok``: a person in no workspace is returned with ``org_id=None`` instead of a 409.)
-    A signed-in computer's call (``lightbulb login``): the person its proof names, in the
-    workspace chosen at login, and the engine-verified label of the calling session. Each call is signed over its
-    method, path, query, body hash and a timestamp, and is good once, within ``TOOLS_SKEW_S``."""
-    import hashlib
-
-    from core.dynamodb import run_in_thread
-    from core.services import clerk_admin
-
+def signed_proof(request: Request) -> tuple[str, str, dict]:
+    """The header-only half of ``computer_person``: the call's signature and the issuer's proof check
+    out (no body, no I/O). Returns (computer key, challenge text, claims); 401 otherwise. Lets a route
+    authenticate before it reads a large body; ``computer_person`` still runs the rest."""
     proof = request.headers.get("X-Lightbulb-Proof", "")
     sig = request.headers.get("X-Lightbulb-Sig", "")
     challenge = _challenge(request)
@@ -417,7 +411,24 @@ async def computer_person(request: Request, *, free_ok: bool = False) -> tuple[A
     if not isinstance(key, str) or not verify(key, "tools", challenge, sig):
         raise HTTPException(status_code=401, detail=_BAD_PROOF)
     claims = network_proof.verify(proof, key)
-    if claims is None or await is_revoked(claims["sub"], key):
+    if claims is None:
+        raise HTTPException(status_code=401, detail=_SIGN_IN_AGAIN)
+    return key, challenge, claims
+
+
+async def computer_person(request: Request, *, free_ok: bool = False) -> tuple[AuthContext, str]:
+    """(``free_ok``: a person in no workspace is returned with ``org_id=None`` instead of a 409.)
+    A signed-in computer's call (``lightbulb login``): the person its proof names, in the
+    workspace chosen at login, and the engine-verified label of the calling session. Each call is signed over its
+    method, path, query, body hash and a timestamp, and is good once, within ``TOOLS_SKEW_S``."""
+    import hashlib
+
+    from core.dynamodb import run_in_thread
+    from core.services import clerk_admin
+
+    sig = request.headers.get("X-Lightbulb-Sig", "")
+    key, challenge, claims = signed_proof(request)
+    if await is_revoked(claims["sub"], key):
         raise HTTPException(status_code=401, detail=_SIGN_IN_AGAIN)
     ts, method, path, body_hash, label = challenge.split(" ", 4)
     if (

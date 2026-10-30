@@ -1,0 +1,29 @@
+# Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/specs/portalis/m1.md. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
+id: b06-portalis
+kind: portal
+type: build
+prompt: |
+  Please build Portalis, a portal where companies (organizations) manage their own space. People sign up (name, email, password; signed in straight away, no email verification) and sign in and out. Signed-in people land on `/orgs`, which lists the organizations they belong to, or shows an empty state with a link to create one. The home address is only a redirect: sign-in when signed out, `/orgs` when signed in.
+
+  Creating an organization takes a name and a unique lowercase slug (a taken slug shows an error and creates nothing). The creator becomes its first member with the role `org_admin`. An organization has an overview page (its name, links to Settings and Members), a settings page where the name and a description can be edited (changes persist, show a saved message, and show up on `/orgs`). After creating an organization the person lands on its overview, and clicking an organization card on `/orgs` opens its overview, and a members page with a table of members (email, role) and a member count.
+
+  Rules: every organization id that appears in an address or in JSON is a UUID, never a counter. Every page and request under an organization must check on the server that the signed-in person is a member of it; a signed-in non-member sees a "not authorised" element and none of the organization's data, and signed-out visitors go to sign-in. Authenticated pages must show writes immediately (no caching of signed-in data across requests). Each organization card carries `data-org-id`; each member row carries `data-member-email` and `data-user-id`, where the user id is exactly the `id` that `GET /api/me` returns for that person (`GET /api/me` returns the caller's own `{ id, email, name }`, 401 when signed out). `GET /api/orgs` returns the caller's own organizations as an array of `{ id, name, slug }`, 401 when signed out.
+
+  Names the checks rely on. Please use these exactly, because an automatic check drives the app by them.
+
+  Pages: `/auth/sign-up`, `/auth/sign-in`, `/orgs`, `/orgs/new`, `/orgs/{orgId}`, `/orgs/{orgId}/settings`, `/orgs/{orgId}/members`, `/api/me`, `/api/orgs`.
+
+  Elements: give each of these a `data-testid` attribute with exactly this value: `signup-name`, `signup-email`, `signup-password`, `signup-submit`, `signup-error`, `signin-email`, `signin-password`, `signin-submit`, `signin-error`, `user-menu`, `sign-out-button`, `orgs-empty-state`, `create-org-link`, `org-list`, `org-card`, `org-card-name`, `org-name-input`, `org-slug-input`, `create-org-submit`, `create-org-error`, `org-header-name`, `nav-settings`, `nav-members`, `settings-name-input`, `settings-description-input`, `settings-save`, `settings-saved`, `members-table`, `member-count`, `member-row`, `member-email`, `member-role`, `not-authorized`.
+fixture: blank
+journeys: journeys.spec.ts
+probes:
+  - id: unauth-orgs
+    kind: unauthenticated-route
+    target: /orgs
+  - id: cross-user-api-orgs
+    kind: cross-user-read
+    target: /api/orgs
+  - id: sqli-orgs-new
+    kind: sql-injection
+    target: /orgs/new
+timeoutMin: 45

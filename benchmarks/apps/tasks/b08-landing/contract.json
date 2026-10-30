@@ -1,0 +1,20 @@
+{
+  "routes": [
+    "/",
+    "/robots.txt",
+    "/sitemap.xml"
+  ],
+  "testids": [
+    "section-hero",
+    "section-features",
+    "section-pricing",
+    "section-faq",
+    "section-contact",
+    "contact-name",
+    "contact-email",
+    "contact-message",
+    "contact-submit",
+    "contact-error",
+    "contact-success"
+  ]
+}

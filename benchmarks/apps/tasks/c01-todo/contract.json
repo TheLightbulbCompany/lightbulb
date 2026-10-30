@@ -1,0 +1,35 @@
+{
+  "routes": [
+    "/auth/sign-up",
+    "/auth/sign-in",
+    "/projects",
+    "/api/projects"
+  ],
+  "testids": [
+    "signup-name",
+    "signup-email",
+    "signup-password",
+    "signup-submit",
+    "signup-error",
+    "signin-email",
+    "signin-password",
+    "signin-submit",
+    "signin-error",
+    "user-menu",
+    "sign-out-button",
+    "nav-projects",
+    "project-form-name",
+    "project-form-submit",
+    "project-form-error",
+    "projects-list",
+    "project-row",
+    "project-row-name",
+    "task-form-project",
+    "task-form-title",
+    "task-form-submit",
+    "filter-project",
+    "task-row",
+    "task-row-project",
+    "tasks-list"
+  ]
+}

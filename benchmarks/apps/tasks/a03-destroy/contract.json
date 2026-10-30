@@ -1,0 +1,33 @@
+{
+  "routes": [
+    "/auth/sign-up",
+    "/auth/sign-in",
+    "/contacts",
+    "/contacts/new",
+    "/contacts/[id]",
+    "/api/contacts"
+  ],
+  "testids": [
+    "signup-name",
+    "signup-email",
+    "signup-password",
+    "signup-submit",
+    "signup-error",
+    "signin-email",
+    "signin-password",
+    "signin-submit",
+    "signin-error",
+    "user-menu",
+    "sign-out-button",
+    "contacts-list",
+    "contact-row",
+    "contact-row-name",
+    "contact-row-email",
+    "contact-row-link",
+    "contact-new-button",
+    "contact-form-name",
+    "contact-form-email",
+    "contact-form-submit",
+    "contact-detail-name"
+  ]
+}

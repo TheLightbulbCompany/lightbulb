@@ -1,0 +1,36 @@
+{
+  "routes": [
+    "/auth/sign-up",
+    "/auth/sign-in",
+    "/staff/join",
+    "/practitioners/[id]/availability",
+    "/bookings/new",
+    "/api/staff/claim",
+    "/api/slots",
+    "/api/me"
+  ],
+  "testids": [
+    "signup-name",
+    "signup-email",
+    "signup-password",
+    "signup-submit",
+    "signup-error",
+    "signin-email",
+    "signin-password",
+    "signin-submit",
+    "signin-error",
+    "user-menu",
+    "sign-out-button",
+    "role-badge",
+    "staff-code-input",
+    "staff-code-submit",
+    "staff-code-error",
+    "forbidden-message",
+    "booking-form-practitioner",
+    "booking-form-service",
+    "booking-form-date",
+    "slot-option",
+    "booking-form-submit",
+    "booking-row"
+  ]
+}

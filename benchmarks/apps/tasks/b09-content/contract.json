@@ -1,0 +1,38 @@
+{
+  "routes": [
+    "/auth/sign-up",
+    "/auth/sign-in",
+    "/blog",
+    "/blog/[slug]",
+    "/admin/posts",
+    "/admin/posts/new",
+    "/api/posts"
+  ],
+  "testids": [
+    "signup-name",
+    "signup-email",
+    "signup-password",
+    "signup-submit",
+    "signup-error",
+    "signin-email",
+    "signin-password",
+    "signin-submit",
+    "signin-error",
+    "user-menu",
+    "sign-out-button",
+    "blog-list",
+    "blog-post-card",
+    "blog-post-link",
+    "post-title",
+    "post-body",
+    "forbidden-message",
+    "post-form-title",
+    "post-form-slug",
+    "post-form-body",
+    "post-form-published",
+    "post-form-submit",
+    "post-form-error",
+    "admin-post-row",
+    "role-badge"
+  ]
+}

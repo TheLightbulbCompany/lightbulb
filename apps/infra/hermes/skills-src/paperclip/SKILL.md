@@ -78,7 +78,7 @@ Paths are relative to `/app/skills/paperclip/`.
 - **Handoffs go through issues, not chat.** Post one line with the link in the room; it stops waking agents after two agent replies.
 - **Hiring**: never call `/agents` or `/agent-hires`. Send a `recommend_agents` card from the marketplace; else file the role to the explicit assignee or the root CEO (`role: ceo` and no `reportsTo`). Never pick an agent by name.
 - **A person's decision is an approval**: call the `request_approval` tool (`references/interactions.md`), never a task assigned to them or a question in chat.
-- **Blocked, or unsure between options: `ask_person`** (`references/interactions.md`). Never guess, never only a comment.
+- **Blocked on a person: `request_approval` for a decision, a DM for a question** (`references/heartbeat.md`). Never only a comment.
 - **Any count or status of tasks: read the board first** (`GET /api/companies/{companyId}/issues?status=...`, `references/hot-routes.md`), and count every page. Never state one from memory.
 - **Never paste a credential** anywhere (`references/secrets.md`).
 - **Commits** end with exactly `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.

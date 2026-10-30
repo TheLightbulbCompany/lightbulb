@@ -45,29 +45,6 @@ Approval wakes you with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`
 (`references/heartbeat.md` Step 2). A reject does **not** wake you; the person's
 next message or comment will.
 
-## When you need an answer, not a sign-off: ask_person
-
-An approval is a yes or no on something you made. When you need an
-**answer**, such as which account, which of two readings of the ask, or a fact
-only the person has, call the **`ask_person`** tool on your task. Do not guess,
-and do not leave the question in a comment.
-
-```
-ask_person(question="Which Stripe account should the invoices come from?",
-           options=["Live account", "Test account"],
-           details="Both are connected; the client said 'the usual one'.")
-```
-
-- Give 2 to 4 likely answers, recommended first, or none for a typed answer.
-- `blocked=true` when the work cannot go on until the answer; it also parks the
-  task as blocked (`references/heartbeat.md`).
-- It shows in the person's Needs you, and their answer wakes you with it.
-- One open question per task: a new `ask_person` on the same task replaces
-  your earlier unanswered one, so put everything you need in one question. A
-  comment from the person cancels the card; ask again if you still need the
-  answer.
-- In a room conversation, ask in your reply instead; the person is there.
-
 ## MCP Tool Approval Gates
 
 Some MCP tools are configured as **ask first**; their `tools/list` description

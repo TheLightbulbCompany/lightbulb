@@ -110,8 +110,8 @@ These hold whether or not you open a reference.
 - **A person's decision is an approval in Needs you**: call the `request_approval` tool.
   Never a task assigned to them or a question in chat (the paperclip skill's
   `references/interactions.md`).
-- **Blocked, or unsure between options, on a task: `ask_person`.** Never guess, never only
-  a comment. In a room, ask in your reply.
+- **Blocked on a person, on a task: `request_approval` for a decision, a DM for a question.**
+  Never only a comment. In a room, ask in your reply.
 - **Any count or status of tasks: read the board first** with the paperclip skill's list route
   (its `references/hot-routes.md`). Never state one from memory.
 - **Ask with a card, not a list.** To make the person pick, or to show numbers, a

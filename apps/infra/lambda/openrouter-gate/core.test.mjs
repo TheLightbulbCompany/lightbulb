@@ -131,14 +131,69 @@ test('a capped 402 on an empty account (the key has money left) is the paging 50
   assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
   assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1));
 });
-test('a capped 402 is the account, never the key: a nearly spent key still pages instead of capping', async () => {
-  const f = await runDs(cappedOwners.base, dsBody(), upstream402(async () => ({ limit: 0.25, limit_remaining: 0.001, usage_daily: 0.249 })));
+const liveKeyLimit = '{"error":{"message":"Key limit exceeded (daily limit). Manage it using https://openrouter.ai/settings/keys","code":403}}';
+const keyLimit403 = (keyInfoImpl) => f => { f.deps.keyInfoImpl = keyInfoImpl; f.deps.forwardImpl = async p => { p.writeHead(403, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":{"message":"Upstream returned 403"}}')); p.end(liveKeyLimit); return { status: 403, preGeneration: true }; }; };
+// OpenRouter's documented 402 shape (docs/api-reference/limits), with a key and prompt text planted to prove neither is logged.
+const refusal402 = JSON.stringify({ error: { code: 402, message: `This request requires more credits, or fewer max_tokens. sk-or-secret ${'x'.repeat(1000)}`, metadata: { limit_source: 'openrouter_key_limit', scope: 'key_limit', reason: 'key_limit', flagged_input: 'PROMPT-TEXT' } } });
+const body402 = (keyInfoImpl) => f => { f.deps.keyInfoImpl = keyInfoImpl; f.deps.forwardImpl = async p => { p.writeHead(402, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":{"message":"Upstream returned 402"}}')); p.end(refusal402); return { status: 402, preGeneration: true }; }; };
+const refusalLine = f => f.calls.logs.find(entry => entry.upstream_status);
+test('a capped 402 with less daily allowance left than the request could cost is the daily cap, stamped', async () => {
+  const f = await runDs(cappedOwners.paid_default, dsBody(), body402(async () => ({ limit: 0.25, limit_remaining: 0.004 })));
+  assert.equal(f.calls.head.status, 429);
+  assert.equal(JSON.parse(Buffer.concat(f.calls.chunks).toString()).error.code, 'trial_daily_cap');
+  assert.equal(f.calls.updates.find(u => u.TableName === 'billing').ExpressionAttributeValues[':day'].S, today());
+  assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.cap_hit'] === 1));
+  assert.equal(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1), false);
+});
+test('the affordability line follows the request: dearer output prices a larger remainder into the cap', async () => {
+  const dear = f => { f.deps.env = { ...dsEnv, MODEL_POLICY_JSON: JSON.stringify({ ...deepseek, max_price: { prompt: 0.1, completion: 2 } }) }; };
+  const capped = await runDs(cappedOwners.base, dsBody(), f => { dear(f); body402(async () => ({ limit: 0.25, limit_remaining: 0.012 }))(f); });
+  assert.equal(capped.calls.head.status, 429);
+  const paging = await runDs(cappedOwners.base, dsBody(), body402(async () => ({ limit: 0.25, limit_remaining: 0.012 })));
+  assert.equal(paging.calls.head.status, 503);
+});
+test('a capped 402 with real daily allowance left stays the paging 503, and says why', async () => {
+  const f = await runDs(cappedOwners.paid_default, dsBody(), body402(async () => ({ limit: 0.25, limit_remaining: 0.2 })));
+  assert.equal(f.calls.head.status, 503);
+  assert.equal(JSON.parse(Buffer.concat(f.calls.chunks).toString()).error.code, 'provider_unavailable');
+  assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
+  assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1));
+  assert.equal(refusalLine(f).limit_remaining, 0.2);
+});
+test('a capped 402 whose key read fails is the 503, with no stamp', async () => {
+  const f = await runDs(cappedOwners.paid_default, dsBody(), body402(async () => { throw new Error('timeout'); }));
   assert.equal(f.calls.head.status, 503);
   assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
   assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1));
+  assert.equal(refusalLine(f).limit_remaining, null);
 });
-const liveKeyLimit = '{"error":{"message":"Key limit exceeded (daily limit). Manage it using https://openrouter.ai/settings/keys","code":403}}';
-const keyLimit403 = (keyInfoImpl) => f => { f.deps.keyInfoImpl = keyInfoImpl; f.deps.forwardImpl = async p => { p.writeHead(403, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":{"message":"Upstream returned 403"}}')); p.end(liveKeyLimit); return { status: 403, preGeneration: true }; }; };
+test('a capped 402 on a key with no limit (limit_remaining null) is the account, not a spent key', async () => {
+  const f = await runDs(cappedOwners.base, dsBody(), body402(async () => ({ limit: null, limit_remaining: null })));
+  assert.equal(f.calls.head.status, 503);
+  assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
+  assert.equal(refusalLine(f).limit_remaining, null);
+});
+test('the refusal line carries the reason fields, a capped message, and no key or prompt', async () => {
+  const f = await runDs(cappedOwners.paid_default, dsBody('PROMPT-TEXT'), body402(async () => ({ limit: 0.25, limit_remaining: 0.2 })));
+  const line = refusalLine(f);
+  assert.equal(line.upstream_status, 402);
+  assert.equal(line.upstream_code, '402');
+  assert.equal(line.limit_source, 'openrouter_key_limit');
+  assert.equal(line.scope, 'key_limit');
+  assert.ok(line.upstream_message.startsWith('This request requires more credits'));
+  assert.ok(line.upstream_message.length <= 300);
+  const logged = JSON.stringify(f.calls.logs);
+  assert.equal(logged.includes('sk-or-'), false);
+  assert.equal(logged.includes('PROMPT-TEXT'), false);
+});
+test('a key-limit 403 logs its refusal the same way; an unparseable body still logs the status', async () => {
+  const f = await runDs(cappedOwners.trial, dsBody(), keyLimit403(async () => ({ limit: 0.25, limit_remaining: 0.2485 })));
+  assert.equal(refusalLine(f).upstream_status, 403);
+  assert.ok(refusalLine(f).upstream_message.startsWith('Key limit exceeded'));
+  const bare = await runDs(cappedOwners.trial, dsBody(), upstream402(async () => ({ limit: 0.25, limit_remaining: 0.2 })));
+  assert.equal(refusalLine(bare).upstream_status, 402);
+  assert.equal(refusalLine(bare).limit_source, null);
+});
 test('"Key limit exceeded" on a key that really spent its day is the daily cap', async () => {
   const f = await runDs(cappedOwners.trial, dsBody(), keyLimit403(async () => ({ limit: 0.25, limit_remaining: 0.001 })));
   assert.equal(f.calls.head.status, 429);

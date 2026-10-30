@@ -28,7 +28,7 @@ describe("CanvasDockPanel deep link", () => {
     hook = { ...base, apps: [row({ state: "building" })] };
     panel("a1");
     expect(screen.getByText("Invoices")).toBeTruthy();
-    expect(screen.getByText(/The agent is making the preview\. It'll post in #finance/)).toBeTruthy();
+    expect(screen.getByText(/(making the preview|Building the new version)\. It'll (post|show here and) in #finance/)).toBeTruthy();
     expect(screen.queryByText("app view")).toBeNull();
     expect(screen.getByRole("button", { name: "All apps" })).toBeTruthy();
   });

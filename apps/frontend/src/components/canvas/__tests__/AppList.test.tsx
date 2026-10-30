@@ -50,8 +50,9 @@ describe("AppList", () => {
 
   it("building apps are listed but not openable", () => {
     const onOpen = vi.fn();
-    render(<AppList {...props} onOpen={onOpen} apps={[app({ state: "building" })]} />);
-    expect(screen.getByText("The agent is making the preview. It'll post in #finance when it's ready.")).toBeTruthy();
+    render(<AppList {...props} onOpen={onOpen} apps={[app({ state: "building", live_version: null }), app({ app_id: "a2", name: "Pipeline", state: "building" })]} />);
+    expect(screen.getByText("The agent is making the preview. It'll post in #finance when it's ready.")).toBeTruthy(); // first build
+    expect(screen.getByText("Building the new version. It'll show here and in #finance when it's ready.")).toBeTruthy(); // a publish or a change
     fireEvent.click(screen.getByText("Invoices"));
     expect(onOpen).not.toHaveBeenCalled();
     expect(screen.queryByRole("button")).toBeNull();

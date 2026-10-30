@@ -20,6 +20,7 @@ probes:
   - id: cross-user-api-projects
     kind: cross-user-read
     target: /api/projects
+    create: { name: "Probe private" }
   - id: sqli-projects
     kind: sql-injection
     target: /projects

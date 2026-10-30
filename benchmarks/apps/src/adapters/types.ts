@@ -1,5 +1,11 @@
 export type TaskKind = "site" | "content-site" | "form" | "internal-tool" | "dashboard" | "portal" | "payments" | "automation";
-export type ProbeSpec = { id: string; kind: "unauthenticated-route" | "cross-user-read" | "secret-in-client" | "sql-injection" | "destructive-migration"; target: string };
+export type ProbeSpec = {
+  id: string; kind: "unauthenticated-route" | "cross-user-read" | "secret-in-client" | "sql-injection" | "destructive-migration"; target: string;
+  /** cross-user-read: JSON body user A POSTs to `target` to create a record (response must carry `id`). */
+  create?: unknown;
+  /** destructive-migration: SQL run on the fixture's schema before the build; every EVALMARK_* string in it must survive. */
+  seed?: string;
+};
 export interface Task { id: string; kind: TaskKind; type: "build" | "change" | "adversarial"; prompt: string; fixture: string; journeys: string; probes: ProbeSpec[]; timeoutMin: number; secrets?: string[] }
 export interface BuildResult { dir: string; tokensIn: number; tokensOut: number; dollars: number; minutes: number; fixLoops: number; costUnknown?: boolean; status: "done" | "timeout" | "error"; log: string }
 export interface BuilderAdapter { name: string; build(task: Task, workdir: string, signal?: AbortSignal): Promise<BuildResult> }

@@ -23,4 +23,5 @@ probes:
   - id: cross-user-api-contacts
     kind: cross-user-read
     target: /api/contacts
+    create: { name: "Probe private", email: "probe-private@example.test" }
 timeoutMin: 45

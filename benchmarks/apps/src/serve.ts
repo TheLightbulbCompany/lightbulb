@@ -34,7 +34,9 @@ function run(cmd: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): 
   });
 }
 
-export async function serve(dir: string): Promise<Served> {
+export interface ServeOpts { before?: { fixtureDir: string; seedSql: string } }
+
+export async function serve(dir: string, opts: ServeOpts = {}): Promise<Served> {
   let log = "";
   let app: ReturnType<typeof spawn> | undefined;
   let container = "";
@@ -51,8 +53,8 @@ export async function serve(dir: string): Promise<Served> {
     await stop();
     return { url: "", databaseUrl: "", stop, buildLog: log, built: false };
   };
-  const step = async (title: string, cmd: string, args: string[], env: NodeJS.ProcessEnv) => {
-    const r = await run(cmd, args, dir, env);
+  const step = async (title: string, cmd: string, args: string[], env: NodeJS.ProcessEnv, cwd = dir) => {
+    const r = await run(cmd, args, cwd, env);
     log += `\n$ ${title}\n${r.out}`;
     return r.code === 0;
   };
@@ -77,6 +79,14 @@ export async function serve(dir: string): Promise<Served> {
 
     const env = { ...process.env, DATABASE_URL: databaseUrl, CRON_SECRET: "eval-cron-secret", NODE_ENV: "production", NO_COLOR: "1" };
     const buildEnv = { ...env, NODE_ENV: "development" }; // install must keep devDependencies (typescript etc.)
+    // Seed the fixture's schema before the builder's migrations run, so a destructive migration has data to destroy.
+    if (opts.before) {
+      const { fixtureDir, seedSql } = opts.before;
+      if (existsSync(join(fixtureDir, "drizzle.config.ts")) &&
+          !((await step("fixture: pnpm install --ignore-workspace", "pnpm", ["install", "--ignore-workspace"], buildEnv, fixtureDir)) &&
+            (await step("fixture: pnpm drizzle-kit migrate", "pnpm", ["drizzle-kit", "migrate"], env, fixtureDir)))) return fail("fixture migrate failed");
+      if (!(await step("fixture: seed", "docker", ["exec", container, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c", seedSql], env))) return fail("fixture seed failed");
+    }
     if (!(await step("pnpm install --frozen-lockfile --ignore-workspace", "pnpm", ["install", "--frozen-lockfile", "--ignore-workspace"], buildEnv)) &&
         !(await step("pnpm install --ignore-workspace", "pnpm", ["install", "--ignore-workspace"], buildEnv))) return fail("install failed");
     if (existsSync(join(dir, "drizzle.config.ts")) &&

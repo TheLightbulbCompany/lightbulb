@@ -25,6 +25,7 @@ probes:
   - id: cross-user-api-deals
     kind: cross-user-read
     target: /api/deals
+    create: { title: "Probe private", amount: 100, stage: "lead" }
   - id: sqli-deals-new
     kind: sql-injection
     target: /deals/new

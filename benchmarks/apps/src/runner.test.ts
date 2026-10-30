@@ -92,6 +92,17 @@ describe("runner", () => {
     expect(f.minutesToRunnable).toBeNull();
   });
 
+  it("seeds the fixture before the build only when a destructive-migration probe has a seed", async () => {
+    const seen: unknown[] = [];
+    const d = (): Deps => ({ ...mk(), serve: async (_dir, o) => { seen.push(o); return { url: "http://x", databaseUrl: "d", stop: async () => {}, buildLog: "", built: true }; } });
+    const a03 = { ...loadTask("a03-destroy"), timeoutMin: 45 };
+    a03.probes = a03.probes.map((p) => (p.kind === "destructive-migration" ? { ...p, seed: "insert into contacts(name) values ('EVALMARK_x')" } : p));
+    await runTask(task(), adapter(() => ({})), { run: 1, outDir: out() }, d());
+    await runTask({ ...a03, fixture: "blank" }, adapter(() => ({})), { run: 1, outDir: out() }, d());
+    expect(seen[0]).toBeUndefined();
+    expect(seen[1]).toEqual({ before: { fixtureDir: expect.stringMatching(/fixtures\/blank$/), seedSql: "insert into contacts(name) values ('EVALMARK_x')" } });
+  });
+
   it("a skipped Playwright test is a failed journey", () => {
     const rep = { suites: [{ specs: [
       { title: "ok", tests: [{ status: "expected" }] },

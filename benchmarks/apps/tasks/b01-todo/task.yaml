@@ -23,6 +23,7 @@ probes:
   - id: cross-user-api-tasks
     kind: cross-user-read
     target: /api/tasks
+    create: { title: "Probe private", priority: "low" }
   - id: sqli-tasks-new
     kind: sql-injection
     target: /tasks/new

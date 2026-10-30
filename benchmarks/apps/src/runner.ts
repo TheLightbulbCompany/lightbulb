@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { parse } from "yaml";
 import { RUN_CAP_USD } from "./adapters/claude-code";
 import type { BuilderAdapter, BuildResult, ProbeResult, ProbeSpec, RunRecord, Task } from "./adapters/types";
-import { serve as realServe, type Served } from "./serve";
+import { serve as realServe, type Served, type ServeOpts } from "./serve";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const tasksDir = join(root, "tasks");
@@ -16,7 +16,7 @@ const sh = promisify(execFile);
 export interface Deps {
   probes: (url: string, dir: string, probes: ProbeSpec[], databaseUrl: string, task: Task) => Promise<ProbeResult[]>;
   judge: (url: string, dir: string, task: Task) => Promise<number>;
-  serve?: (dir: string) => Promise<Served>;
+  serve?: (dir: string, opts?: ServeOpts) => Promise<Served>;
   journeys?: (task: Task, url: string) => Promise<{ id: string; pass: boolean }[]>;
 }
 
@@ -89,7 +89,8 @@ export async function runTask(task: Task, adapter: BuilderAdapter, opts: { run: 
         if (rec.status !== "done") rec.reason = `build ${rec.status}`;
         else if (!now || !now.equals(contract)) { rec.status = "contract_modified"; rec.reason = "contract.json was changed or deleted"; }
         else {
-          const s = await (deps.serve ?? realServe)(workdir);
+          const seed = task.probes.find((p) => p.kind === "destructive-migration" && p.seed)?.seed;
+          const s = await (deps.serve ?? realServe)(workdir, seed ? { before: { fixtureDir: join(root, "fixtures", task.fixture), seedSql: seed } } : undefined);
           serveLog = s.buildLog;
           try {
             if (!s.built) { rec.status = "serve_failed"; rec.reason = "app did not build or start"; }

@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { serve } from "./serve.js";
 
 const fx = (n: string) => resolve(import.meta.dirname, "__fixtures__", n);
@@ -35,6 +37,17 @@ describe.skipIf(!process.env.EVAL_IT)("serve", () => {
     psql(ca, "create table t(x int); insert into t values (1)");
     expect(psql(ca, "select count(*) from t")).toBe("1");
     expect(() => psql(cb, "select count(*) from t")).toThrow();
+  }, T);
+
+  it("before seeds the database ahead of the app's own install and migrate", async () => {
+    const fixtureDir = mkdtempSync(join(tmpdir(), "fixture-")); // no drizzle.config.ts: nothing to migrate, seed only
+    const s = await serve(fx("trivial-app"), { before: { fixtureDir, seedSql: "create table contacts(name text); insert into contacts values ('EVALMARK_1')" } }); open.push(s);
+    expect(s.built).toBe(true);
+    expect(psql(containerOn(s.databaseUrl), "select name from contacts")).toBe("EVALMARK_1");
+    expect(s.buildLog.indexOf("seed")).toBeLessThan(s.buildLog.indexOf("pnpm install"));
+    const bad = await serve(fx("trivial-app"), { before: { fixtureDir, seedSql: "insert into nope values (1)" } }); open.push(bad);
+    expect(bad.built).toBe(false);
+    expect(bad.buildLog).toMatch(/seed failed/);
   }, T);
 
   it("stop removes the container", async () => {

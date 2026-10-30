@@ -29,6 +29,7 @@ probes:
   - id: cross-user-api-tickets
     kind: cross-user-read
     target: /api/tickets
+    create: { subject: "Probe private", body: "x", priority: "low" }
   - id: sqli-tickets-new
     kind: sql-injection
     target: /tickets/new

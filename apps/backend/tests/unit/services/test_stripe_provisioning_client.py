@@ -517,3 +517,28 @@ def test_every_path_the_client_speaks_is_in_the_reference():
     assert used and used <= _REFERENCE_PATHS, sorted(used - _REFERENCE_PATHS)
     for gone in ("identity", "charges", "deep_links", "list_projects", "list_resources", "charges_usage"):
         assert not hasattr(mod, gone), gone
+
+
+@pytest.mark.asyncio
+async def test_create_resource_sends_environment_when_given():
+    raw = MagicMock(return_value={"id": "res_1"})
+    kw = dict(service_ref="svc_1", provider="prvdr_1", project=None, name="n", configuration={}, livemode=False)
+    with patch.object(mod, "_raw", raw):
+        await mod.create_resource("acct_1", environment="prod", **kw)
+        assert raw.call_args.args[3]["environment"] == "prod"
+        await mod.create_resource("acct_1", **kw)
+        assert "environment" not in raw.call_args.args[3]
+
+
+@pytest.mark.asyncio
+async def test_update_limit_posts_string_amount_and_provider_override():
+    raw = MagicMock(return_value={"id": "pp_1"})
+    with patch.object(mod, "_raw", raw):
+        await mod.update_limit(
+            "acct_1", max_amount=1000, currency="usd", recurring_interval="month", provider="prvdr_x"
+        )
+    _m, url, _o, body = raw.call_args.args
+    assert url.endswith("/payment_profile/update_limit")
+    assert body["usage_limits"]["max_amount"] == "1000"
+    assert body["provider"] == "prvdr_x"
+    assert body["livemode"] is mod.is_livemode()

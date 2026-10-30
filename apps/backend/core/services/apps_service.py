@@ -875,17 +875,20 @@ async def open_app(owner_id: str, app_id: str, *, auth: AuthContext, target: str
 
 
 async def invite(owner_id: str, app_id: str, *, emails: list[str], user_id: str) -> dict:
-    """One single-use, 14-day link per email, to this app only. A room or workspace app becomes
-    "invited" (a public one stays public); ``update_settings`` re-pushes LIGHTBULB_OPEN_TO."""
+    """One single-use, 14-day link per email, to this app only; a room or workspace app then becomes
+    "invited" (``update_settings`` re-pushes LIGHTBULB_OPEN_TO). R48: a public app needs no pass, so
+    its invitees get the plain address and nothing is stored."""
     app = await _owned(owner_id, app_id)
     base = (app.get("live_url") or app.get("preview_url") or "").rstrip("/")
     if not base:
         raise AppsRefused("not_ready", "The app has no address yet.", "wait for the preview build")
-    if app["open_to"] in ("room", "workspace"):
-        await update_settings(owner_id, app_id, open_to="invited")
-        app["open_to"] = "invited"
+    public = app["open_to"] == "public"
     expires_at = (datetime.now(UTC) + INVITE_LIFE).isoformat()
+    links = {}
     for email in emails:
+        if public:
+            links[email] = base
+            continue
         token = _random.token_urlsafe(32)
         await apps_repo.put_invite(
             hashlib.sha256(token.encode()).hexdigest(),
@@ -895,14 +898,19 @@ async def invite(owner_id: str, app_id: str, *, emails: list[str], user_id: str)
             expires_at=expires_at,
             created_by=user_id,
         )
-        link = f"{base}/_lightbulb/invite#t={token}"
+        links[email] = f"{base}/_lightbulb/invite#t={token}"
+    if app["open_to"] in ("room", "workspace"):  # only once the links exist
+        await update_settings(owner_id, app_id, open_to="invited")
+        app["open_to"] = "invited"
+    once = "" if public else " The link works once and expires in 14 days."
+    for email, link in links.items():
         # send_email never raises; a failed send still counts (the admin can invite again).
         await email_service.send_email(
             to=email,
             subject=f"You're invited to {app['name']}",
             html=f'<p>You\'re invited to open {app["name"]}.</p><p><a href="{link}">Open {app["name"]}</a></p>'
-            "<p>The link works once and expires in 14 days.</p>",
-            text=f"You're invited to open {app['name']}.\n\n{link}\n\nThe link works once and expires in 14 days.",
+            + (f"<p>{once.strip()}</p>" if once else ""),
+            text=f"You're invited to open {app['name']}.\n\n{link}\n{once}".rstrip() + "\n",
             from_addr=settings.EMAIL_FROM_WELCOME,
             kind="apps_invite",
         )

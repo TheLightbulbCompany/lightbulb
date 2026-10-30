@@ -3,9 +3,12 @@
 import json
 import os
 from unittest.mock import AsyncMock
+from unittest.mock import patch as mpatch
 
+import boto3
 import pytest
 from fastapi.testclient import TestClient
+from moto import mock_aws
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -200,7 +203,6 @@ ROOM = "0b6f8d4e-1c2a-4f3b-9d5e-7a8b9c0d1e2f"
 
 
 def _claims(url: str) -> dict:
-
     token = url.split("#token=", 1)[1]
     return json.loads(network_proof._unb64(token.split(".")[1]))
 
@@ -280,10 +282,6 @@ def test_open_sets_last_opened_at(member, opening):
 @pytest.fixture
 def invites(monkeypatch):
     """A moto apps table holding two apps of org_a; mail is captured, provider reads stubbed."""
-    import boto3
-    from moto import mock_aws
-    from unittest.mock import patch as mpatch
-
     monkeypatch.setattr(settings, "NETWORK_PROOF_KEY", "proof-key")
     with mock_aws():
         resource = boto3.resource("dynamodb", region_name="us-east-1")
@@ -338,11 +336,19 @@ def test_invites_require_admin_and_set_open_to_invited(member, invites):
     assert len(stored) == 2 and all(_token(m) not in str(stored) for m in sent)
     assert admin.post(f"{BASE}/app_zzz/invites", json={"emails": ["a@x.co"]}).status_code == 404
 
+
+def test_invites_to_a_public_app_send_the_plain_url(invites):
+    """R48: a public app needs no pass, so nothing is stored and the mail carries no token."""
+    table, sent = invites
     table.update_item(
         Key={"app_id": "app_b"}, UpdateExpression="SET open_to = :p", ExpressionAttributeValues={":p": "public"}
     )
-    r = admin.post(f"{BASE}/app_b/invites", json={"emails": ["a@x.co"]})
-    assert r.json() == {"invited": 1, "open_to": "public"}  # public is left alone
+    r = _as("admin").post(f"{BASE}/app_b/invites", json={"emails": ["a@x.co"]})
+    assert r.status_code == 200 and r.json() == {"invited": 1, "open_to": "public"}
+    assert table.get_item(Key={"app_id": "app_b"})["Item"]["open_to"] == "public"
+    assert not [i for i in table.scan()["Items"] if i["app_id"].startswith("INVITE#")]
+    (mail,) = sent
+    assert "#t=" not in mail["html"] + mail["text"] and "https://beta.apps.test" in mail["text"]
 
 
 def test_invite_token_works_once_and_expires(invites):

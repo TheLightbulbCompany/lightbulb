@@ -50,6 +50,21 @@ from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
 
+# Kinds whose recipients are outsiders (an app's invitees, R49): their addresses never reach a log line.
+_MASKED_KINDS = frozenset({"apps_invite"})
+
+
+def _log_to(kind: str, to: str | list[str]) -> str | list[str]:
+    if kind not in _MASKED_KINDS:
+        return to
+
+    def mask(addr: str) -> str:
+        local, _, domain = addr.rpartition("@")
+        return f"{local[:1]}***@{domain}"
+
+    return [mask(a) for a in to] if isinstance(to, list) else mask(to)
+
+
 # Hard ceiling so a hung SES request cannot block the calling coroutine.
 # The worker thread may keep running after this fires — acceptable for
 # best-effort mail, matching email_service's timeout posture.
@@ -109,7 +124,7 @@ async def send_ses_email(
         # CloudWatch to see it — and for support tickets the email IS the
         # only capture path, so a silent skip loses the request outright.
         put_metric("email.send", dimensions={"result": "skipped_unconfigured", "kind": kind})
-        logger.warning("AGENT_EMAIL_DOMAIN not configured; skipping %s SES send to %s", kind, to)
+        logger.warning("AGENT_EMAIL_DOMAIN not configured; skipping %s SES send to %s", kind, _log_to(kind, to))
         return None
 
     try:
@@ -157,11 +172,11 @@ async def send_ses_email(
             )
         ses_id = resp.get("MessageId") if isinstance(resp, dict) else None
         put_metric("email.send", dimensions={"result": "ok", "kind": kind})
-        logger.info("sent %s email to %s id=%s ses_id=%s", kind, to, message_id, ses_id)
+        logger.info("sent %s email to %s id=%s ses_id=%s", kind, _log_to(kind, to), message_id, ses_id)
         return message_id
     except Exception:
         put_metric("email.send", dimensions={"result": "error", "kind": kind})
-        logger.exception("send_ses_email failed for %s to %s", kind, to)
+        logger.exception("send_ses_email failed for %s to %s", kind, _log_to(kind, to))
         return None
 
 

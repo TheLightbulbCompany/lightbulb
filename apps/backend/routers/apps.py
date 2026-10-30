@@ -255,6 +255,13 @@ async def errors(app_id: str, caller: Builder):
     return await _run(svc.errors(caller.owner_id, app_id))
 
 
+@router.post("/build/{app_id}/test-link")
+async def test_link(app_id: str, caller: Builder, response: Response):
+    """The builder's own short-lived way past the preview's door. Never live."""
+    response.headers["Cache-Control"] = "no-store"  # a pass: never cached
+    return {"url": await _run(svc.test_link(caller.owner_id, app_id, actor=caller))}
+
+
 # --- members ------------------------------------------------------------------------------------
 
 

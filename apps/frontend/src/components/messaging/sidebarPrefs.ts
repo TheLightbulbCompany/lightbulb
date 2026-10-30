@@ -1,9 +1,11 @@
 import type { SessionMarks } from "@lightbulb/shared";
 import type { SidebarSort } from "./roomSections";
+import type { SessionGroupBy, SessionShow } from "./sessionGroups";
 
 const SIDEBAR_PREFS_KEY_PREFIX = "lightbulb.messaging.sidebar.";
-export interface SidebarPrefs { collapsed: string[]; sort: SidebarSort }
-const EMPTY: SidebarPrefs = { collapsed: [], sort: "recent" };
+export interface SidebarPrefs { collapsed: string[]; sort: SidebarSort; sessionGroupBy: SessionGroupBy; sessionShow: SessionShow; sessionsExpanded: string[] }
+const EMPTY: SidebarPrefs = { collapsed: [], sort: "recent", sessionGroupBy: "person", sessionShow: "all", sessionsExpanded: [] };
+const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
 
 export function readSidebarPrefs(scope: string): SidebarPrefs {
   try {
@@ -11,10 +13,13 @@ export function readSidebarPrefs(scope: string): SidebarPrefs {
     if (!raw) return EMPTY;
     const parsed = JSON.parse(raw) as Partial<SidebarPrefs>;
     return {
-      collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed.filter((value) => typeof value === "string") : [],
+      collapsed: strings(parsed.collapsed),
       // A stored "alpha" was the old default, written on any collapse toggle whether or not
       // anyone chose it -- so it reads as the new default; A–Z is now stored as "name".
       sort: parsed.sort === "unread" || parsed.sort === "name" ? parsed.sort : "recent",
+      sessionGroupBy: parsed.sessionGroupBy === "state" || parsed.sessionGroupBy === "repo" ? parsed.sessionGroupBy : "person",
+      sessionShow: parsed.sessionShow === "mine" || parsed.sessionShow === "live" ? parsed.sessionShow : "all",
+      sessionsExpanded: strings(parsed.sessionsExpanded),
     };
   } catch {
     return EMPTY;

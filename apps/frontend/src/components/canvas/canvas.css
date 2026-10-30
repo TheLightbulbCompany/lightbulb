@@ -1,0 +1,12 @@
+/* Canvas: the apps list. Tokens only; hairlines, no shadows; one column at any width. */
+.canvas { display: flex; flex-direction: column; gap: 24px; padding: 16px; color: var(--fg); }
+.canvas__heading { margin: 0 0 4px; font-size: var(--text-caption); font-weight: 600; color: var(--fg-mute); }
+.canvas__notice { font-size: var(--text-ui); color: var(--fg-mute); }
+.app-list { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; padding: 0; list-style: none; }
+.app-item + .app-item { border-top: 1px solid var(--plane-edge); }
+.app-item__row { display: grid; gap: 4px; width: 100%; min-width: 0; padding: 10px 0; text-align: left; color: var(--fg); }
+.app-item__row[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
+button.app-item__row:hover .app-item__name { text-decoration: underline; }
+button.app-item__row:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; border-radius: 4px; }
+.app-item__name { font-weight: 600; overflow-wrap: anywhere; }
+.app-item__line { font-size: var(--text-ui); color: var(--fg-mute); overflow-wrap: anywhere; }

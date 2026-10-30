@@ -40,7 +40,7 @@ from core.services.paperclip_provisioning import STARTER_ROLE_KEYS as _STARTER_K
 from core.services.usage_service import record_usage
 
 # Where a message came from when not the chat surface itself; carried on the stored message.
-MessageVia = Literal["lightbulb_mcp", "ideas", "front_desk", "text"]
+MessageVia = Literal["lightbulb_mcp", "ideas", "front_desk", "text", "apps"]
 
 logger = logging.getLogger(__name__)
 

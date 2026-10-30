@@ -117,6 +117,7 @@ def no_network(monkeypatch):
     monkeypatch.setattr("core.repositories.billing_repo.get_table", _no_network)
     monkeypatch.setattr("core.repositories.provisioning_workflow_repo.get_table", _no_network)
     monkeypatch.setattr("core.repositories.apps_repo.get_table", _no_network)
+    monkeypatch.setattr("core.repositories.messaging_repo._table", _no_network)
     # `request`, not `_raw`: `request` turns a raw failure into a TRANSIENT
     # error, which a poll would happily swallow as backoff.
     monkeypatch.setattr(mod.api, "request", _no_network)
@@ -2308,3 +2309,45 @@ async def test_payment_setup_resume_applies_the_app_limit():
         "acct_1", max_amount=1000, currency="usd", recurring_interval="month", provider="prvdr_1"
     )
     assert move.await_args.kwargs["to_state"] == "connecting_provider"
+
+
+# --- approval wakes the app's room -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_approval_posts_line_with_paperclip_user():
+    """Paperclip has no Clerk user: "paperclip" is no room member, so the line
+    is authored by the room's creator."""
+    from core.services import apps_room
+
+    row = _row(state="awaiting_approval", approval_id="apr_1", app_id="app_1", environment="prod")
+    moved = {**row, "state": "connecting_provider"}
+
+    async def member(owner_id, user_id, room_id):
+        if user_id != "user_creator":
+            raise apps_room.messaging.ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+        return {}, {}
+
+    with (
+        patch.object(mod, "shared_admin_client", return_value=_admin({"id": "apr_1", "status": "approved"})),
+        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+        patch.object(mod.repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod, "_fresh_snapshot", AsyncMock(return_value=row.get("approval") or {})),
+        patch.object(mod, "_apply_app_limit", AsyncMock()),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=moved)),
+        patch.object(apps_room.apps_repo, "get", AsyncMock(return_value={**APP, "room_id": "room_1"})),
+        patch.object(apps_room.messaging, "require_room_member", member),
+        patch.object(
+            apps_room.messaging_repo,
+            "list_members",
+            AsyncMock(return_value=[{"kind": "human", "id": "user_creator", "role": "owner"}]),
+        ),
+        patch.object(apps_room.messaging, "create_human_message", AsyncMock()) as post,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "connecting_provider"
+    post.assert_awaited_once()
+    auth, room_id, request = post.await_args.args
+    assert (auth.user_id, auth.org_id, room_id) == ("user_creator", "org_a", "room_1")
+    assert request.text == "approved: posthog/svc_analytics for crew-schedule, setting up"
+    assert post.await_args.kwargs == {"via": "apps", "wake": True}

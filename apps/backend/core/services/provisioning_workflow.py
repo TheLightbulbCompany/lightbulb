@@ -39,7 +39,7 @@ from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import apps_repo, billing_repo
 from core.repositories import provisioning_workflow_repo as repo
-from core.services import owner_facts, provisioning_approvals, stripe_provisioning as api, work_products
+from core.services import apps_room, owner_facts, provisioning_approvals, stripe_provisioning as api, work_products
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.provisioning_landing import land_credentials
@@ -616,18 +616,21 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
             )
             if approval_id is None:
                 return await _no_board(row)
-            return await repo.transition(
-                workflow_id,
-                from_state="awaiting_approval",
-                to_state="awaiting_user_action",
-                fields={
-                    "awaiting": "payment_setup",
-                    "approval_id": approval_id,
-                    "usage_limit": limits,
-                    "approved_by": approved_by,
-                    "approved_at": utc_now_iso(),
-                    "user_action_since": utc_now_iso(),
-                },
+            return await _approved_line(
+                approved_by,
+                await repo.transition(
+                    workflow_id,
+                    from_state="awaiting_approval",
+                    to_state="awaiting_user_action",
+                    fields={
+                        "awaiting": "payment_setup",
+                        "approval_id": approval_id,
+                        "usage_limit": limits,
+                        "approved_by": approved_by,
+                        "approved_at": utc_now_iso(),
+                        "user_action_since": utc_now_iso(),
+                    },
+                ),
             )
 
     await _apply_app_limit(account_id, row, fresh)
@@ -635,9 +638,20 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
     approved = {"approval": fresh, "approved_by": approved_by, "approved_at": utc_now_iso()}
     if usage_limit:
         approved["usage_limit"] = usage_limit
-    return await repo.transition(
-        workflow_id, from_state="awaiting_approval", to_state="connecting_provider", fields=approved
+    return await _approved_line(
+        approved_by,
+        await repo.transition(
+            workflow_id, from_state="awaiting_approval", to_state="connecting_provider", fields=approved
+        ),
     )
+
+
+async def _approved_line(approved_by: str, moved: dict | None) -> dict | None:
+    """Only the caller whose transition WON posts: a second click or the phone
+    approval read after the route both find the row moved and post nothing."""
+    if moved:
+        await apps_room.post_approval_line(owner_id=moved["owner_id"], user_id=approved_by, workflow=moved)
+    return moved
 
 
 async def on_rejected(workflow_id: str) -> dict | None:

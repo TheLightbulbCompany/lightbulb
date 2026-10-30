@@ -448,6 +448,8 @@ class Settings(BaseSettings):
     # (the root thelightbulb.company zone). Empty zone id = DNS calls fail loudly.
     APPS_DOMAIN: str = "apps.thelightbulb.company"
     APPS_HOSTED_ZONE_ID: str = ""
+    # Resume a builder agent's dead turn without a person (core/services/apps_run.py). Off: today's note.
+    APPS_BUILD_WAKE: bool = True
 
     # Stripe Link Agent Wallet (agent purchases). Unconfigured (any of the three empty):
     # every route 404s and the UI hides. CLIENT_ID/SECRET come from Link's OAuth client

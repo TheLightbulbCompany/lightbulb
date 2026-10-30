@@ -32,6 +32,28 @@ async def _author(owner_id: str, user_id: str, room_id: str) -> str | None:
     return None
 
 
+async def _builder(app: dict, room_id: str) -> dict | None:
+    """The member who builds this app: ``actor_id`` when it can run (a hook-token CLI with no agent
+    header stores the placeholder "agent", which is nobody), else the only agent with an open run,
+    else the first agent that can run. ``None``: nobody in the room can."""
+    agents = sorted(
+        (
+            m
+            for m in await messaging_repo.list_members(room_id)
+            if m.get("kind") == "agent" and m.get("listenMode") != "observe"
+        ),
+        key=lambda m: m["id"],
+    )
+    if not agents:
+        return None
+    actor = next((m for m in agents if m["id"] == app.get("actor_id")), None)
+    if actor or len(agents) == 1:
+        return actor or agents[0]
+    running = {r.get("agentId") for r in await messaging_repo.list_open_runs_for_room(app["owner_id"], room_id)}
+    busy = [m for m in agents if m["id"] in running]
+    return busy[0] if len(busy) == 1 else agents[0]
+
+
 async def post_approval_line(*, owner_id: str, user_id: str, workflow: dict) -> None:
     """One wake line per approved app workflow. Never raises: the approval has
     already happened and must not fail on a chat line."""
@@ -55,11 +77,8 @@ async def post_approval_line(*, owner_id: str, user_id: str, workflow: dict) -> 
         env = "live" if workflow.get("environment") == "prod" else "preview"
         display = app.get("display_name") or app.get("name")
         # Address the builder agent so the line wakes it, not just the room.
-        mentions = (
-            [messaging.MemberRef(kind="agent", id=app["actor_id"])]
-            if app.get("actor_kind") == "agent" and app.get("actor_id")
-            else []
-        )
+        builder = await _builder(app, room_id) if app.get("actor_kind") == "agent" else None
+        mentions = [messaging.MemberRef(kind="agent", id=builder["id"])] if builder else []
         await messaging.create_human_message(
             AuthContext(user_id=author, org_id=owner_id),
             room_id,

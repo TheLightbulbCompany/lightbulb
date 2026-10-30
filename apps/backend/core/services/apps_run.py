@@ -1,0 +1,321 @@
+"""Resume a builder agent's turn that died in the middle of building an app.
+
+A failed room turn is deliberately not retried for anyone else (``post_run_failure_message``), so
+until now a dead build turn waited for a person (Demo Lab, 30 Oct 2026). Events here only write the
+sparse ``build`` map and set ``due_at``; only the sweeper (``advance``) wakes. Wake 1 is a system
+line in the room; later ones are Paperclip issues, because a room wake replays the same Hermes
+session and a refusal caused by its history would repeat.
+
+``build``: due_at (epoch s), armed_at, why (failed | stall), stuck,
+attempts.wake (reset by a source upload), wake{n (never reset), via, at, sent, message_id|issue_id}.
+"""
+
+from __future__ import annotations
+
+import logging
+import random
+import time
+from datetime import UTC, datetime, timedelta
+
+from core.config import settings
+from core.constants import SYSTEM_ACTOR_ID
+from core.dynamodb import plain
+from core.repositories import apps_repo, billing_repo, messaging_repo
+from core.services import apps_room, apps_service
+from core.services.chat_gate import budget_block_reason
+from core.services.paperclip_admin_client import shared_admin_client
+from core.services.paperclip_admin_session import get_admin_session_cookie
+from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
+from core.services.trial_cap import DAILY_CAP, INCLUDED_CAP
+
+logger = logging.getLogger(__name__)
+
+WAKE_DELAYS_S = (60, 300, 1800)  # before wake 1, 2, 3
+_DELAY_WORDS = ("a minute", "5 minutes", "30 minutes")
+MAX_WAKES = len(WAKE_DELAYS_S)
+STALL_S = 20 * 60  # a turn that ended in prose with the next move still the agent's
+TOUCHED_S = 6 * 3600  # an app nobody touched for this long is not being built
+HOLD_S = 2 * 60  # a run is open or the server is deploying: look again
+LEASE_S = 90  # a sweeper that crashed mid-wake: the next one resends under the same key
+ISSUE_HOLD_S = 2 * 3600  # ponytail: an issue whose run died may stay open; past this it counts as dead
+_DAILY = frozenset({DAILY_CAP, INCLUDED_CAP})
+_OPEN_ISSUE = frozenset({"backlog", "todo", "in_progress", "in_review"})
+
+
+def _now() -> int:
+    return int(time.time())
+
+
+def _after_midnight(now: int) -> int:
+    """After 00:00 UTC, spread so a whole fleet of capped builds does not wake at once."""
+    today = datetime.fromtimestamp(now, UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    return int((today + timedelta(days=1)).timestamp()) + random.randint(0, 600)
+
+
+def _phase(app: dict, rows: dict) -> str:
+    """Whose move it is: finished, server, owner, ready (a person looks at the preview) or open (the agent's)."""
+    if app.get("state") == "destroyed":
+        return "finished"
+    if app.get("preview_pending") or app.get("publish_pending"):
+        return "server"
+    state = apps_service._state(app, rows)[0]
+    if state == "provisioning":
+        return "server"
+    if state == "awaiting_approval" and rows:  # no rows: the agent uploaded source and never ran `up`
+        return "owner"
+    if state == "ready":
+        sources = app.get("sources") or {}
+        newest = max(sources, key=lambda s: sources[s].get("at") or "", default=None)
+        return "finished" if app.get("live_version") and newest == app.get("live_source_id") else "ready"
+    return "open"
+
+
+async def _builds_here(owner_id: str, row: dict, now: int) -> dict | None:
+    """The unfinished app this turn belongs to: its room, its builder's row, touched within 6 h."""
+    if row.get("eventKind") == "room_event":
+        return None
+    here = [
+        a
+        for a in await apps_repo.list_for_owner(owner_id)
+        if a.get("room_id") == row.get("roomId") and a.get("actor_kind") == "agent" and a.get("state") != "destroyed"
+    ]
+    if not here:
+        return None
+    latest = max(here, key=lambda a: a.get("updated_at") or "")
+    app = plain(await apps_repo.get(latest["app_id"], consistent_read=True) or {})
+    if not app or now - datetime.fromisoformat(app["updated_at"]).timestamp() > TOUCHED_S:
+        return None
+    builder = await apps_room._builder(app, app["room_id"])
+    return app if builder and builder["id"] == row.get("agentId") else None
+
+
+async def _write(app: dict, **fields) -> dict | None:
+    """``None``: a sweeper's wake landed since this copy was read, and its schedule stands."""
+    build = app.get("build") or {}
+    return await apps_repo.patch(
+        app["app_id"], {"build": {**build, **fields}}, expect={"build.wake.n": (build.get("wake") or {}).get("n")}
+    )
+
+
+async def on_turn_failed(owner_id: str, row: dict, *, budget_reason: str | None, agent_name: str) -> str | None:
+    """Schedule the resume of a builder's failed turn. Returns the room line to show instead of
+    today's failure note, or ``None`` when this is not such a turn. Never raises."""
+    if not settings.APPS_BUILD_WAKE or row.get("abortRequestedAt"):
+        return None
+    try:
+        now = _now()
+        app = await _builds_here(owner_id, row, now)
+        if app is None or _phase(app, await apps_service._rows(app)) in ("finished", "server", "owner"):
+            return None
+        display = apps_service._display(app)
+        if budget_reason in _DAILY:
+            await _write(app, due_at=_after_midnight(now), armed_at=now, why="failed")
+            return f"{display} continues tomorrow; today's allowance is used."
+        build = app.get("build") or {}
+        if budget_reason or build.get("stuck"):
+            return None
+        attempts = int((build.get("attempts") or {}).get("wake") or 0)
+        if attempts >= MAX_WAKES:  # the sweeper posts the one stuck line
+            await _write(app, due_at=now, armed_at=now, why="failed")
+            return None
+        await _write(app, due_at=now + WAKE_DELAYS_S[attempts], armed_at=now, why="failed")
+        return f"{agent_name} lost its place on {display}. Trying again in {_DELAY_WORDS[attempts]}."
+    except Exception:  # noqa: BLE001 — the failure note must still post
+        logger.warning("apps build: failed turn not scheduled owner=%s", owner_id, exc_info=True)
+        return None
+
+
+async def on_run_ended(owner_id: str, row: dict) -> None:
+    """A Stop cancels any retry. A completed turn with the next move still the agent's (a model's
+    refusal ends as completed prose, which the failure hook never sees) arms the stall timer; any
+    other completed turn settles the build. Never raises."""
+    outcome = row.get("outcome")
+    if not settings.APPS_BUILD_WAKE or outcome not in ("completed", "aborted"):
+        return
+    try:
+        now = _now()
+        app = await _builds_here(owner_id, row, now)
+        if app is None:
+            return
+        build = app.get("build") or {}
+        if outcome == "completed" and not build.get("stuck"):
+            if _phase(app, await apps_service._rows(app)) == "open":
+                attempts = int((build.get("attempts") or {}).get("wake") or 0)
+                delay = max(STALL_S, WAKE_DELAYS_S[attempts]) if attempts < MAX_WAKES else STALL_S
+                await _write(app, due_at=now + delay, armed_at=now, why="stall")
+                return
+        if build.get("due_at") is not None:
+            await _write(app, due_at=None)
+    except Exception:  # noqa: BLE001 — the run is already closed
+        logger.warning("apps build: run end not recorded owner=%s", owner_id, exc_info=True)
+
+
+async def _post(app: dict, key: str, text: str, targets: list[dict] | None = None) -> dict | None:
+    """A system line in the app's room. The key is the receipt: a resend replays it. ``None``: the room is gone."""
+    room_id = app["room_id"]
+    try:
+        message, _ = await messaging_repo.create_message(
+            room_id=room_id,
+            owner_id=app["owner_id"],
+            idemp_pk=messaging_repo.room_pk(room_id),
+            idemp_sk=messaging_repo.human_idemp_sk(SYSTEM_ACTOR_ID, key),
+            req_hash=messaging_repo.request_hash(key),
+            author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+            text=text,
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+            run_id=None,
+            dispatch_targets=targets or [],
+            source_agent_id=None,
+            client_message_id=None,
+        )
+        return message
+    except (messaging_repo.RoomArchived, messaging_repo.RoomNotFound):
+        return None
+
+
+async def _wake_room(app: dict, builder: dict, n: int) -> dict:
+    name = builder.get("displayName") or "Agent"
+    message = await _post(
+        app,
+        f"apps-build:{app['app_id']}:{n}",
+        f"{name}, your last turn on {apps_service._display(app)} stopped before it finished. Continue from "
+        "where it stopped and post here when it's done. If you are waiting on a person, say what you need.",
+        [{"agentId": builder["id"], "eventKind": "user_request"}],
+    )
+    if message is None:
+        raise RuntimeError("room gone")
+    return {"message_id": message["messageId"]}
+
+
+async def _wake_issue(app: dict, builder: dict, n: int) -> dict:
+    """A Paperclip issue runs in its own fresh session. The key replays a retry's issue (see ``ideas``)."""
+    admin = shared_admin_client()
+    display = apps_service._display(app)
+    issue = await admin.create_issue(
+        session_cookie=await get_admin_session_cookie(admin._http),
+        company_id=await resolve_company_id_for_owner(app["owner_id"]),
+        body={
+            "title": f"Continue building {display}",
+            "description": (
+                f"Your earlier turns on the app `{app['name']}` stopped before it finished, and the room "
+                "turn could not resume it. Run `lightbulb app status --json`, continue from where it "
+                "stopped, and post in the room when it's done or if you need a person.\n\n"
+                f"## From\nThe app's room: room `{app['room_id']}`."
+            ),
+            "status": "todo",
+            "assigneeAgentId": builder["id"],
+            "idempotencyKey": f"apps-build:{app['app_id']}:{n}",
+            "allowDuplicate": True,
+        },
+    )
+    return {"issue_id": issue["id"]}
+
+
+async def _issue_status(wake: dict, now: int) -> str | None:
+    """``open``, ``done`` or ``None`` for the last wake's issue. Paperclip not answering reads as open."""
+    if wake.get("via") != "issue" or not wake.get("issue_id") or now - int(wake.get("at") or 0) > ISSUE_HOLD_S:
+        return None
+    try:
+        admin = shared_admin_client()
+        issue = await admin.get_issue(
+            session_cookie=await get_admin_session_cookie(admin._http), issue_id=wake["issue_id"]
+        )
+    except Exception:  # noqa: BLE001
+        logger.info("apps build: issue status unavailable", exc_info=True)
+        return "open"
+    status = issue.get("status")
+    return "open" if status in _OPEN_ISSUE else "done" if status == "done" else None
+
+
+async def _hold(app: dict, build: dict, now: int) -> None:
+    gone = now - int(build.get("armed_at") or 0) > TOUCHED_S
+    await _write(app, due_at=None if gone else now + HOLD_S)
+
+
+async def _stuck(app: dict, build: dict, builder: dict | None) -> None:
+    """One line, then nothing until a source upload."""
+    name = (builder or {}).get("displayName") or "an agent"
+    n = (build.get("wake") or {}).get("n") or 0
+    await _post(
+        app,
+        f"apps-build-stuck:{app['app_id']}:{n}",
+        f"{apps_service._display(app)} needs a person. Try again in Canvas or ask {name}.",
+    )
+    await _write(app, due_at=None, stuck=True)
+
+
+async def advance(app: dict) -> None:
+    """One due build, from a fresh read: wait, settle, give up or wake. At most one message per wake:
+    the compare-and-set on ``wake.n`` and ``due_at`` admits one sweeper, and the receipt key absorbs a resend."""
+    now = _now()
+    app = plain(await apps_repo.get(app["app_id"], consistent_read=True) or {})
+    build = app.get("build") or {}
+    due = build.get("due_at")
+    if due is None or due > now:
+        return
+    phase = _phase(app, await apps_service._rows(app))
+    if phase in ("finished", "owner"):
+        await _write(app, due_at=None)
+        return
+    wake = build.get("wake") or {}
+    if phase == "server" or await messaging_repo.list_open_runs_for_room(app["owner_id"], app["room_id"]):
+        await _hold(app, build, now)
+        return
+    issue = await _issue_status(wake, now)
+    if issue == "open":
+        await _hold(app, build, now)
+        return
+    if phase == "ready" and (build.get("why") == "stall" or issue == "done"):
+        await _write(app, due_at=None)  # the turn ended fine and the preview waits for a person
+        return
+    account = await billing_repo.get_by_owner_id(app["owner_id"])
+    reason = await budget_block_reason(app["owner_id"], account)
+    if reason in _DAILY:
+        today = datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d")
+        await _post(
+            app,
+            f"apps-build-budget:{app['app_id']}:{today}",
+            f"{apps_service._display(app)} continues tomorrow; today's allowance is used.",
+        )
+        await _write(app, due_at=_after_midnight(now))
+        return
+    if reason:
+        await _write(app, due_at=None)
+        return
+    builder = await apps_room._builder(app, app["room_id"])
+    attempts = int((build.get("attempts") or {}).get("wake") or 0)
+    unsent = bool(wake.get("n")) and not wake.get("sent")  # a sweeper died mid-wake: same key, same attempt
+    if builder is None or (attempts >= MAX_WAKES and not unsent):
+        await _stuck(app, build, builder)
+        return
+    if unsent:
+        n, via, at = int(wake["n"]), wake["via"], wake["at"]
+    else:
+        n, at = int(wake.get("n") or 0) + 1, now
+        via = "room" if attempts == 0 else "issue"
+        attempts += 1
+    claim = {
+        **build,
+        "due_at": now + LEASE_S,
+        "attempts": {"wake": attempts},
+        "wake": {"n": n, "via": via, "at": at},
+    }
+    won = await apps_repo.patch(
+        app["app_id"], {"build": claim}, expect={"build.wake.n": wake.get("n"), "build.due_at": due}
+    )
+    if won is None:
+        return
+    send = _wake_room if via == "room" else _wake_issue
+    try:
+        ref = await send(app, builder, n)
+    except Exception as exc:  # noqa: BLE001 — the attempt is spent; the cap bounds a wake that cannot land
+        logger.warning("apps build: wake %s of %s failed: %s", n, app["app_id"], type(exc).__name__)
+        ref = {"failed": True}
+    next_in = WAKE_DELAYS_S[attempts] if attempts < MAX_WAKES else STALL_S
+    await _write(
+        {**app, "build": claim},
+        due_at=now + next_in,
+        wake={"n": n, "via": via, "at": at, "sent": True, **ref},
+    )

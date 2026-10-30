@@ -982,6 +982,15 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
     apps = [plain(a) for a in await apps_repo.list_for_owner(owner_id) if a.get("state") != "destroyed"]
     if not apps:
         return []
+    # A publish or a preview has to land even when no builder reads `status`: Canvas's poll steps
+    # the pending ones (leased, one reader per app; at most three per read so a big list stays cheap).
+    # The first publish on Demo Lab sat in "building" for 21 minutes with the agent down (30 Oct 2026).
+    for a in [a for a in apps if a.get("publish_pending") or a.get("preview_pending")][:3]:
+        try:
+            rows, _ = await _progress(a)
+            await _record_state(a, _state(a, rows)[0])
+        except Exception as e:  # noqa: BLE001 — the list renders whatever a provider does
+            logger.warning("apps: list could not step %s: %s", a["app_id"], type(e).__name__)
     all_rows = await wf_repo.list_for_owner(owner_id)
     room_ids = sorted({a["room_id"] for a in apps})
     metas = dict(zip(room_ids, await asyncio.gather(*(messaging_repo.get_room(r) for r in room_ids)), strict=True))

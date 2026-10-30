@@ -1145,3 +1145,20 @@ async def test_services_content_files_only_the_three_workflows(world):
 def test_display_default_splits_words_on_dash_and_underscore():
     assert svc._display({"name": "workshop-signup"}) == "Workshop Signup"
     assert svc._display({"name": "crm_v2"}) == "Crm V2"
+
+
+async def test_canvas_list_settles_a_pending_publish_without_the_builder(world, monkeypatch):
+    """Nothing but the builder's own reads stepped a publish; with the agent down, Demo Lab's first
+    publish sat in "building" for 21 minutes. Canvas's list now steps pending deployments itself."""
+    src, _, _ = await _ready_preview(world)
+    await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    world.vercel.finish("dpl_2")
+    monkeypatch.setattr(svc.messaging, "still_reads_room", AsyncMock(return_value=True))
+    monkeypatch.setattr(svc.messaging, "human_display_name", AsyncMock(return_value="Dana"))
+    from core.auth import AuthContext
+
+    auth = AuthContext(user_id="user_1", org_id=OWNER)
+    rows = await svc.list_apps(OWNER, auth)
+    row = next(r for r in rows if r["app_id"] == src["app_id"])
+    assert (row["state"], row["live_version"]) == ("live", 1)
+    assert (await svc.apps_repo.get(src["app_id"])).get("publish_pending") is None

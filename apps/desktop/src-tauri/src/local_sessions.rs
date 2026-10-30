@@ -1,6 +1,7 @@
 //! Opt-in native terminal sharing. Provider processes and credentials stay local.
 mod approval;
 mod claude;
+mod engine_view;
 pub(crate) mod codex;
 mod hooked;
 pub mod enrollment;

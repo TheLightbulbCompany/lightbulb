@@ -426,7 +426,7 @@ fn attention(home: &Path, row: &Value, job: Option<&str>) -> Attention {
     let line = |v: &Value, max: usize| v.as_str().map(str::trim).filter(|t| !t.is_empty()).map(|t| t.chars().take(max).collect::<String>());
     // `listing_status` is the one rule for an open prompt: a blocked job is not one (#4414).
     let waiting = listing_status(row) == "waiting-approval";
-    let note = (row["state"] == "blocked" && !waiting)
+    let note = (row["state"] == "blocked")
         .then_some(job)
         .flatten()
         .and_then(|job| {
@@ -440,7 +440,7 @@ fn attention(home: &Path, row: &Value, job: Option<&str>) -> Attention {
             let state: Value = serde_json::from_str(&text).ok()?;
             line(&state["needs"], 300).or_else(|| line(&state["detail"], 300))
         });
-    Attention { done: row["state"] == "done", waiting_for: waiting.then(|| line(&row["waitingFor"], 120)).flatten(), note, agents: 0 }
+    Attention { done: matches!(row["state"].as_str(), Some("done" | "failed" | "stopped")), waiting_for: waiting.then(|| line(&row["waitingFor"], 120)).flatten(), note, agents: 0 }
 }
 
 /// A run a program started (`claude -p`, the Agent SDK), not a person: plugins such as
@@ -710,7 +710,7 @@ pub(super) async fn discover(home: &Path) -> Result<Discovery> {
     let Some(program) = provider_program(home, "claude") else {
         return Ok(Discovery { sessions: vec![], conversations: BTreeSet::new(), jobs: BTreeSet::new() });
     };
-    let rows = listing(&program).await?;
+    let rows: Vec<Value> = super::engine_view::read().await?.live.iter().filter(|r| r.provider == "claude").map(super::engine_view::listing_row).collect();
     let (conversations, jobs) = listed(&rows);
     let mut sessions = vec![];
     for row in rows {
@@ -763,7 +763,7 @@ pub(super) fn listing_status(row: &Value) -> &'static str {
     match row["state"].as_str() {
         Some("working") => return "busy",
         Some("blocked") => return if row["status"].as_str() == Some("waiting") { "waiting-approval" } else { "idle" },
-        Some("done" | "idle") => return "idle",
+        Some("done" | "failed" | "stopped" | "idle") => return "idle",
         _ => {}
     }
     match row["status"].as_str() {
@@ -1873,9 +1873,12 @@ pub(in crate::local_sessions) mod tests {
         fs::write(jobs.join("state.json"), "{\"state\":\"blocked\",\"needs\":\"run lightbulb login, then press Resume\",\"detail\":\"d\"}").unwrap();
         let blocked = json!({"kind":"background","id":"251719c2","state":"blocked","status":"idle"});
         assert_eq!(attention(home.path(), &blocked, Some("251719c2")), Attention { note: Some("run lightbulb login, then press Resume".into()), ..Default::default() });
-        // An open prompt is the prompt, never the note.
+        // An open prompt does not drop the hand-off note.
         let prompt = json!({"state":"blocked","status":"waiting","waitingFor":"permission prompt"});
-        assert_eq!(attention(home.path(), &prompt, Some("251719c2")), Attention { waiting_for: Some("permission prompt".into()), ..Default::default() });
+        assert_eq!(attention(home.path(), &prompt, Some("251719c2")), Attention { waiting_for: Some("permission prompt".into()), note: Some("run lightbulb login, then press Resume".into()), ..Default::default() });
+        for state in ["failed", "stopped"] {
+            assert!(attention(home.path(), &json!({"state": state}), None).done, "{state}");
+        }
         assert_eq!(attention(home.path(), &json!({"state":"done","status":"busy"}), None), Attention { done: true, ..Default::default() });
         assert_eq!(attention(home.path(), &json!({"status":"idle","waitingFor":"stale"}), None), Attention::default());
     }

@@ -18,7 +18,8 @@ export type AppRow = {
   live_url: string | null;
   live_version: number | null;
   last_opened_at: string | null;
-  spend_month_cents: number;
+  spend_month_cents: number | null; // null: the backend does not know yet
+  requested_by?: string; // the person who asked for the app
   display_name?: string; // person-facing name; Canvas title-cases the slug when absent
   created_by_name?: string;
   agent_name?: string;

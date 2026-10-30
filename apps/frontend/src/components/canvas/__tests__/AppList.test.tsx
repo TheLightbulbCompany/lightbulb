@@ -65,6 +65,17 @@ describe("AppList", () => {
     expect(screen.queryByText(/spent this month/)).toBeNull();
   });
 
+  it("hides the spend line when spend is null", () => {
+    render(<AppList {...props} apps={[app({ spend_month_cents: null })]} />);
+    expect(screen.queryByText(/spent this month/)).toBeNull();
+    expect(screen.queryByText(/NaN|\$0/)).toBeNull();
+  });
+
+  it("awaiting row names who asked when requested_by is present", () => {
+    render(<AppList {...props} apps={[app({ state: "awaiting_approval", requested_by: "Dana" })]} />);
+    expect(screen.getByText("Waiting for the owner to approve Dana's request: the card is in #finance.")).toBeTruthy();
+  });
+
   it.each([
     ["awaiting_approval", "Waiting for the owner to approve: the card is in #finance."],
     ["provisioning", "Setting up its hosting and data, usually a few minutes."],

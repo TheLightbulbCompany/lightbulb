@@ -135,14 +135,22 @@ describe("AppSettings", () => {
     open.mockRestore();
   });
 
-  it("no data link says the page isn't available", async () => {
+  it("a null data link closes the tab and hides the button, keeping the Neon text", async () => {
     databaseLink.mockResolvedValue(null);
     const tab = { location: { href: "" }, close: vi.fn(), opener: {} };
     const open = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
     render(<AppSettings app={app()} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Data and backups ↗" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("This app's data page isn't available right now.");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Data and backups ↗" })).toBeNull());
+    expect(tab.close).toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("Invoices's data is kept in Neon.")).toBeTruthy();
     open.mockRestore();
+  });
+
+  it("null spend says not yet known, never $0 or NaN", () => {
+    render(<AppSettings app={app({ spend_month_cents: null })} onClose={vi.fn()} />);
+    expect(screen.getByText("What Invoices may spend each month on hosting and data. Spent so far: not yet known.")).toBeTruthy();
   });
 
   it("going public asks one confirmation, then shows the live link with Copy link", async () => {

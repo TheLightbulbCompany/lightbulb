@@ -23,7 +23,7 @@ function Row({ app, onOpen, canManage }: { app: AppRow; onOpen: (appId: string) 
     <span className="app-item__name">{displayName(app)}</span>
     <span className="app-item__line">{status ?? `asked by ${app.created_by_name ?? "someone"} in #${app.room_name ?? "room"}`}</span>
     <span className="app-item__line">
-      <span>{blocked ? `ask in #${app.room_name ?? "room"}` : whoCanOpen(app)}</span> · <span>{last}</span>{app.spend_month_cents > 0 && <> · <span>${(app.spend_month_cents / 100).toFixed(2)} spent this month</span></>}
+      <span>{blocked ? `ask in #${app.room_name ?? "room"}` : whoCanOpen(app)}</span> · <span>{last}</span>{(app.spend_month_cents ?? 0) > 0 && <> · <span>${(app.spend_month_cents! / 100).toFixed(2)} spent this month</span></>}
     </span>
   </>;
   // An admin opens a blocked app too: the view shows the refusal and Settings, the only way to change who can open it.

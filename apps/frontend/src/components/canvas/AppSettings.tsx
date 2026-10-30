@@ -42,8 +42,9 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
   const [removing, setRemoving] = useState(false);
   const [typed, setTyped] = useState("");
   const [note, setNote] = useState<string | null>(null);
-  const [dataErr, setDataErr] = useState<string | null | undefined>(undefined); // undefined: none; null: link unavailable
+  const [dataErr, setDataErr] = useState<string | undefined>(undefined);
   const dn = displayName(app);
+  const [noLink, setNoLink] = useState(false); // the dashboard-link route returned no url for this app
   const hasDb = (app.resources ?? []).some((r) => r.provider === "neon" && r.resource_id);
   const budgetNum = Number(budget);
   const budgetOk = budget.trim() !== "" && Number.isInteger(budgetNum) && budgetNum >= 0;
@@ -79,7 +80,7 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
     try {
       const url = await databaseLink(app);
       if (url) navigatePendingTab(w, url);
-      else { closePendingTab(w); setDataErr(null); }
+      else { closePendingTab(w); setNoLink(true); }
     } catch (err) { closePendingTab(w); setDataErr((err as Error)?.message ?? ""); }
   };
   const doRemove = async () => {
@@ -117,7 +118,7 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
 
     <div className="app-settings__group">
       <label htmlFor={`budget-${app.app_id}`}>Monthly spending limit ($)</label>
-      <span className="canvas__notice">What {dn} may spend each month on hosting and data. Spent so far: ${(app.spend_month_cents / 100).toFixed(2)}.</span>
+      <span className="canvas__notice">What {dn} may spend each month on hosting and data. Spent so far: {app.spend_month_cents == null ? "not yet known" : `$${(app.spend_month_cents / 100).toFixed(2)}`}.</span>
       <input id={`budget-${app.app_id}`} type="number" min={0} step={1} value={budget} onChange={(e) => setBudget(e.target.value)} />
       <button type="button" className="app-view__btn" disabled={!budgetOk} onClick={saveBudget}>Save limit</button>
     </div>
@@ -125,11 +126,12 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
     <div className="app-settings__group"><PublishButton app={app} ctl={publishCtl} /></div>
 
     <div className="app-settings__group">
-      <button type="button" className="app-view__btn" disabled={!hasDb} onClick={openData}>Data and backups ↗</button>
-      {hasDb
+      {!noLink && <button type="button" className="app-view__btn" disabled={!hasDb} onClick={openData}>Data and backups ↗</button>}
+      {noLink
+        ? <span className="canvas__notice">{dn}&apos;s data is kept in Neon.</span>
+        : hasDb
         ? <span className="canvas__notice">Opens where {dn}&apos;s data is kept (Neon). Restoring a backup replaces today&apos;s data.</span>
         : <span className="canvas__notice">This app doesn&apos;t store data yet.</span>}
-      {dataErr === null && <Problem>This app&apos;s data page isn&apos;t available right now.</Problem>}
       {typeof dataErr === "string" && <Problem raw={dataErr}>We couldn&apos;t open the data page. Try again.</Problem>}
     </div>
 

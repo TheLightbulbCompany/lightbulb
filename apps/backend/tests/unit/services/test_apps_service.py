@@ -53,6 +53,7 @@ class Vercel:
         self.verified = False
         self.alias_fails = False
         self.promote_fails = False
+        self.refused = False  # Vercel no longer accepts the token: 403 on everything
 
     def paths(self, method=None):
         return [(r.method, r.url.path) for r in self.calls if method in (None, r.method)]
@@ -69,6 +70,8 @@ class Vercel:
     def handler(self, req: httpx.Request) -> httpx.Response:
         self.calls.append(req)
         p = req.url.path
+        if self.refused:
+            return httpx.Response(403, json={"error": {"code": "forbidden", "message": "Not authorized"}})
         if p == "/v13/deployments":
             dep_id = f"dpl_{len(self.deployments) + 1}"
             self.deployments[dep_id] = {"readyState": "QUEUED", "url": f"{dep_id}.vercel.app"}
@@ -1270,3 +1273,18 @@ async def test_publish_stops_when_a_live_migration_fails(world):
     assert res["error"]["code"] == "migrate_failed" and res["error"]["next"] == "fix the migration and publish again"
     assert len(world.vercel.created()) == n  # nothing deployed
     assert (await svc.apps_repo.get(src["app_id"])).get("published_migrations") in (None, [])
+
+
+async def test_a_refused_vercel_token_is_reported_as_itself_not_as_an_old_build_error(world):
+    """Demo Lab, 30 Oct 2026: Vercel started refusing the app's token; publish failed with 'forbidden'
+    but the result and Canvas showed the previous build's error. This attempt's failure wins and is stored."""
+    src, _, _ = await _ready_preview(world)
+    await svc.apps_repo.patch(
+        src["app_id"], {"publish_error": {"code": "build_failed", "message": "old build error", "next": "fix"}}
+    )
+    world.vercel.refused = True
+    res = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    assert res["error"]["code"] == "vercel_forbidden"
+    assert "hosting credential" in res["error"]["message"] and "rotate" in res["error"]["next"]
+    rec = await svc.apps_repo.get(src["app_id"])
+    assert rec["publish_error"]["code"] == "vercel_forbidden" and rec.get("publish_pending") is None

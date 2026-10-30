@@ -614,6 +614,21 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
             app["progress_lease_until"] = None
 
 
+_REFUSED = frozenset({"vercel_forbidden", "vercel_unauthorized", "vercel_not_authorized"})
+
+
+def _vercel_error(e: vercel.VercelError, next_default: str) -> AppError:
+    """A Vercel failure in the person's words. A refused token is named as such: on Demo Lab (30 Oct
+    2026) Vercel stopped accepting the app's token three hours after Stripe issued it."""
+    if e.code in ("forbidden", "unauthorized", "not_authorized") or e.status in (401, 403):
+        return {
+            "code": f"vercel_{e.code}",
+            "message": "Vercel no longer accepts the app's hosting credential.",
+            "next": "renew the hosting credential (rotate it through Stripe Projects), then try again",
+        }
+    return {"code": f"vercel_{e.code}", "message": str(e), "next": next_default}
+
+
 async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | None) -> AppError | None:
     try:
         if not app.get("protection_off"):
@@ -655,7 +670,7 @@ async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | No
         await _preview_alias(app, creds)
     except vercel.VercelError as e:
         logger.warning("apps: %s vercel step failed: %s", app["app_id"], e.code)
-        return {"code": f"vercel_{e.code}", "message": str(e), "next": "run up again in a minute"}
+        return _vercel_error(e, "run up again in a minute")
     except _WorkspaceUnknown:
         logger.warning("apps: %s workspace name unavailable", app["app_id"])
         return {
@@ -727,7 +742,9 @@ async def _result(app: dict, rows: dict, transient: AppError | None, cost_cents:
     if cost_cents is not None:
         res["cost_cents"] = cost_cents
     if err or transient:
-        res["error"] = err or transient
+        # This attempt's failure first: a stale stored error must not hide why the new publish failed
+        # (a Vercel 'forbidden' sat behind an old build error on Demo Lab, 30 Oct 2026).
+        res["error"] = transient or err
     return res
 
 
@@ -825,6 +842,8 @@ async def publish(
     src = _source(app, source_id)
     rows, transient = await _progress(app)
     pending = app.get("publish_pending")
+    if transient and transient["code"] in _REFUSED:
+        await _patch(app, {"publish_error": transient})  # a refused credential is not a blip: keep it visible
     if (
         transient
         or (pending and pending["source_id"] == source_id)
@@ -862,9 +881,9 @@ async def publish(
         dep_id = await _deploy(app, creds, source_id, production=True)
     except vercel.VercelError as e:
         logger.warning("apps: %s publish failed: %s", app_id, e.code)
-        return await _result(
-            app, rows, {"code": f"vercel_{e.code}", "message": str(e), "next": "publish again"}, cost_cents
-        )
+        err = _vercel_error(e, "publish again")
+        await _patch(app, {"publish_error": err})  # Canvas shows the real reason, not an older build error
+        return await _result(app, rows, err, cost_cents)
     pending = {
         "deployment_id": dep_id,
         "source_id": source_id,

@@ -1,0 +1,6 @@
+name: lightbulb-crm
+services: ["vercel/project"]
+open_to: room
+budget_usd: 10
+kind: internal-tool
+origin: {"kind":"ask"}

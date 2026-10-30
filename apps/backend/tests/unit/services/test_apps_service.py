@@ -1011,6 +1011,51 @@ async def test_a_read_holding_the_lease_keeps_others_off_vercel(world):
     assert (await svc.apps_repo.get(src["app_id"]))["progress_lease_until"] is None
 
 
+async def test_a_pass_that_outlived_its_lease_does_not_free_the_next_holders(world):
+    src = await _source()
+    await _up(src)
+    mine = await svc.apps_repo.take_lease(src["app_id"], seconds=0)  # A's pass runs past its lease
+    theirs = await svc.apps_repo.take_lease(src["app_id"], seconds=60)
+    assert mine and theirs and theirs != mine
+    assert await svc.apps_repo.release_lease(src["app_id"], mine) is False
+    assert (await svc.apps_repo.get(src["app_id"]))["progress_lease_until"] == theirs
+    assert await svc.apps_repo.release_lease(src["app_id"], theirs) is True
+
+
+async def test_a_reader_from_before_the_release_does_not_undo_live(world):
+    src, _, _ = await _ready_preview(world)
+    stale = await svc._owned(OWNER, src["app_id"])  # read before the publish settled
+    await _go_live(world, src)
+    assert (await svc.apps_repo.get(src["app_id"]))["state"] == "live"
+    await svc._record_state(copy.deepcopy(stale), "building")
+    assert (await svc.apps_repo.get(src["app_id"]))["state"] == "live"
+    # a reader that finds the lease held reports the record, not its old copy
+    later = (svc.datetime.now(svc.UTC) + svc.timedelta(seconds=30)).isoformat()
+    await svc.apps_repo.patch(src["app_id"], {"progress_lease_until": later})
+    rows, _ = await svc._progress(stale)
+    assert stale["state"] == "live" and await svc._record_state(stale, svc._state(stale, rows)[0]) == "live"
+
+
+async def test_an_old_publishs_failure_does_not_drop_a_newer_publish(world):
+    src, _, _ = await _ready_preview(world)
+    src2 = await _source(SRC_V2, "c2")
+    await svc.publish(OWNER, src["app_id"], source_id=src2["source_id"], actor=PERSON)
+    old = f"dpl_{len(world.vercel.created())}"
+    stale = await svc._owned(OWNER, src["app_id"])  # a leased reader still holding publish A
+    src3 = await _source({**SRC_V2, "app/page.tsx": "v3"}, "c3")
+    await svc.publish(OWNER, src["app_id"], source_id=src3["source_id"], actor=PERSON)
+    new = f"dpl_{len(world.vercel.created())}"
+    assert new != old
+    world.vercel.finish(old, "ERROR", "Type error")
+    await svc._check_publish(stale, VERCEL)
+    assert (await svc.apps_repo.get(src["app_id"]))["publish_pending"]["deployment_id"] == new
+    assert stale["publish_pending"]["deployment_id"] == new  # carried on from the record
+    world.vercel.finish(new)
+    st = await svc.status(OWNER, src["app_id"])
+    assert st["state"] == "live" and st["live_version"] == 1
+    assert st["versions"][-1]["deployment_id"] == new
+
+
 def _approvals(monkeypatch, cards):
     admin = SimpleNamespace(_http=None, get_approval=AsyncMock(side_effect=lambda **kw: cards.get(kw["approval_id"])))
     monkeypatch.setattr(svc, "shared_admin_client", lambda: admin)

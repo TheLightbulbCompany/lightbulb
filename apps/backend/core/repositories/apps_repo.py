@@ -35,7 +35,9 @@ async def get(app_id: str, *, consistent_read: bool = False) -> dict | None:
     return resp.get("Item")
 
 
-async def patch(app_id: str, fields: dict) -> dict:
+async def patch(app_id: str, fields: dict, *, expect: dict | None = None) -> dict | None:
+    """``expect`` maps a field (dotted for a nested one) to the value it must still hold; when another
+    writer changed it first nothing is written and the result is ``None``."""
     sets = ["updated_at = :now"]
     names: dict[str, str] = {}
     values: dict = {":now": utc_now_iso()}
@@ -45,22 +47,46 @@ async def patch(app_id: str, fields: dict) -> dict:
         sets.append(f"#f{i} = :f{i}")
         names[f"#f{i}"] = key
         values[f":f{i}"] = ddb_safe(value)
+    conds = ["attribute_exists(app_id)"]
+    for i, (path, value) in enumerate(sorted((expect or {}).items())):
+        parts = path.split(".")
+        names.update({f"#e{i}_{j}": part for j, part in enumerate(parts)})
+        ref = ".".join(f"#e{i}_{j}" for j in range(len(parts)))
+        if value is None:
+            conds.append(f"(attribute_not_exists({ref}) OR attribute_type({ref}, :null_t))")
+            values[":null_t"] = "NULL"
+        else:
+            conds.append(f"{ref} = :e{i}")
+            values[f":e{i}"] = ddb_safe(value)
     kwargs = {"ExpressionAttributeNames": names} if names else {}
-    resp = await run_in_thread(
-        _table().update_item,
-        Key={"app_id": app_id},
-        UpdateExpression="SET " + ", ".join(sets),
-        ConditionExpression="attribute_exists(app_id)",
-        ExpressionAttributeValues=values,
-        ReturnValues="ALL_NEW",
-        **kwargs,
-    )
+    try:
+        resp = await run_in_thread(
+            _table().update_item,
+            Key={"app_id": app_id},
+            UpdateExpression="SET " + ", ".join(sets),
+            ConditionExpression=" AND ".join(conds),
+            ExpressionAttributeValues=values,
+            ReturnValues="ALL_NEW",
+            **kwargs,
+        )
+    except ClientError as e:
+        if expect and e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return None
+        raise
     return resp.get("Attributes")
 
 
-async def take_lease(app_id: str, *, seconds: int) -> bool:
-    """Hold ``progress_lease_until`` for ``seconds`` unless another holder's is still running."""
+async def clear_pending_if(app_id: str, field: str, deployment_id: str, fields: dict) -> dict | None:
+    """Drop ``field`` (a pending deployment) only while it still names ``deployment_id``, so an old
+    build's failure never wipes a newer one written since. ``None`` = it was replaced (re-read)."""
+    return await patch(app_id, {field: None, **fields}, expect={f"{field}.deployment_id": deployment_id})
+
+
+async def take_lease(app_id: str, *, seconds: int) -> str | None:
+    """Hold ``progress_lease_until`` for ``seconds`` unless another holder's is still running.
+    Returns the value written, which the holder hands back to ``release_lease``; ``None`` = not taken."""
     now = datetime.now(UTC)
+    until = (now + timedelta(seconds=seconds)).isoformat()
     try:
         await run_in_thread(
             _table().update_item,
@@ -68,11 +94,24 @@ async def take_lease(app_id: str, *, seconds: int) -> bool:
             UpdateExpression="SET progress_lease_until = :until",
             ConditionExpression="attribute_exists(app_id) AND (attribute_not_exists(progress_lease_until) OR "
             "attribute_type(progress_lease_until, :null_t) OR progress_lease_until < :now)",
-            ExpressionAttributeValues={
-                ":until": (now + timedelta(seconds=seconds)).isoformat(),
-                ":now": now.isoformat(),
-                ":null_t": "NULL",
-            },
+            ExpressionAttributeValues={":until": until, ":now": now.isoformat(), ":null_t": "NULL"},
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return None
+        raise
+    return until
+
+
+async def release_lease(app_id: str, lease: str) -> bool:
+    """Clear the lease only if it is still ours: a pass that outlived it must not free the next holder's."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"app_id": app_id},
+            UpdateExpression="SET progress_lease_until = :null",
+            ConditionExpression="progress_lease_until = :mine",
+            ExpressionAttributeValues={":null": None, ":mine": lease},
         )
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":

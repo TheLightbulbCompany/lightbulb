@@ -196,9 +196,12 @@ def _notify(app: dict) -> None:
         return
 
 
-async def _patch(app: dict, fields: dict) -> dict:
+async def _patch(app: dict, fields: dict, *, expect: dict | None = None) -> dict | None:
+    if expect is None:
+        await apps_repo.patch(app["app_id"], fields)
+    elif await apps_repo.patch(app["app_id"], fields, expect=expect) is None:
+        return None  # another writer changed the record first; ``app`` is left as read
     app.update(fields)
-    await apps_repo.patch(app["app_id"], fields)
     if set(fields) != {"progress_lease_until"}:  # the lease moves on every step; nothing visible changed
         _notify(app)
     return app
@@ -481,7 +484,7 @@ async def _check_preview(app: dict, creds: dict) -> None:
             },
         )
     elif st["readyState"] in ("ERROR", "CANCELED"):
-        await _patch(app, {"preview_pending": None, "error": _build_failed(st)})
+        await _clear_pending(app, "preview_pending", {"error": _build_failed(st)})
 
 
 async def _check_publish(app: dict, creds: dict) -> None:
@@ -526,7 +529,22 @@ async def _check_publish(app: dict, creds: dict) -> None:
         _notify(app)
     elif st["readyState"] in ("ERROR", "CANCELED"):
         err = {**_build_failed(st), "next": "fix the error and publish again"}
-        await _patch(app, {"publish_pending": None, "publish_error": err})
+        await _clear_pending(app, "publish_pending", {"publish_error": err})
+
+
+async def _clear_pending(app: dict, field: str, fields: dict) -> None:
+    # A publish/up may have written a newer pending deployment since this copy was read; keep it.
+    if await apps_repo.clear_pending_if(app["app_id"], field, app[field]["deployment_id"], fields) is None:
+        await _reload(app)
+        return
+    app.update({field: None, **fields})
+    _notify(app)
+
+
+async def _reload(app: dict) -> None:
+    fresh = plain(await apps_repo.get(app["app_id"], consistent_read=True))
+    app.clear()
+    app.update(fresh)
 
 
 def _build_failed(st: dict) -> dict:
@@ -585,15 +603,15 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
     dev_db = await _secret(app, rows, "neon", "dev", "connection_string")
     live_db = await _secret(app, rows, "neon", "prod", "connection_string")
     # R56: one read at a time steps an app (no double build/reset); another read reports the record.
-    if not await apps_repo.take_lease(app["app_id"], seconds=_LEASE_S):
+    lease = await apps_repo.take_lease(app["app_id"], seconds=_LEASE_S)
+    await _reload(app)  # what the last holder left; without the lease, so the caller reports it, not an old copy
+    if not lease:
         return rows, None
     try:
-        fresh = plain(await apps_repo.get(app["app_id"], consistent_read=True))  # what the last holder left
-        app.clear()
-        app.update(fresh)
         return rows, await _steps(app, creds, dev_db, live_db)
     finally:
-        await _patch(app, {"progress_lease_until": None})
+        if await apps_repo.release_lease(app["app_id"], lease):
+            app["progress_lease_until"] = None
 
 
 async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | None) -> AppError | None:
@@ -676,7 +694,8 @@ def _state(app: dict, rows: dict) -> tuple[str, AppError | None]:
 async def _record_state(app: dict, state: str) -> str:
     record = "live" if state == "ready" and app.get("live_version") else state
     if app.get("state") != record:
-        await _patch(app, {"state": record})
+        # Only over the state this copy saw: a reader from before a release must not undo its "live".
+        await _patch(app, {"state": record}, expect={"state": app.get("state")})
     return record
 
 

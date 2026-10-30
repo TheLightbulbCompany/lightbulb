@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 PASS_S = 30  # one pass per half minute across the fleet
 TICK_S = 10  # how often each instance asks for the pass
 MAX_APPS = 25  # per pass; a pending deployment needs 1-2 Vercel calls
+STEP_S = 55  # one slow provider call must not hold the whole pass
+
+
+async def _step(app: dict) -> None:
+    rows, _ = await apps_service._progress(app)
+    await apps_service._record_state(app, apps_service._state(app, rows)[0])
 
 
 async def sweep_once() -> int:
@@ -29,9 +35,10 @@ async def sweep_once() -> int:
     stepped = 0
     for raw in await apps_repo.list_pending(limit=MAX_APPS):
         app = plain(raw)
+        if app.get("state") == "destroyed":
+            continue
         try:
-            rows, _ = await apps_service._progress(app)
-            await apps_service._record_state(app, apps_service._state(app, rows)[0])
+            await asyncio.wait_for(_step(app), STEP_S)
             stepped += 1
         except Exception as exc:  # noqa: BLE001 — one app's provider trouble never stops the pass
             logger.warning("apps sweep: %s failed: %s", app.get("app_id"), type(exc).__name__)

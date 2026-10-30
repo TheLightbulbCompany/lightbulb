@@ -1,7 +1,7 @@
 {
-  "upstream": "ghcr.io/thelightbulbcompany/paperclip@sha256:a8f1ed159ed6071ce393c65cb886719cd9dc2928a090c105ff0ac00b432543af",
-  "upstreamCommit": "6eb7687634eb4740b91255aeaa2676af58a685c0",
-  "upstreamCreated": "2026-10-27T11:03:44Z",
+  "upstream": "ghcr.io/thelightbulbcompany/paperclip@sha256:dfc20b389b2e4f41fc44ebe9d9e7a2711c7ae0aabf42a85ef4347c54a4c59320",
+  "upstreamCommit": "0fe55327c31040abeae44328dcf00c47dffffe48",
+  "upstreamCreated": "2026-10-30T17:27:13Z",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/paperclip-extended",
   "dev": {
     "tag": "6eb76876-2abc832"

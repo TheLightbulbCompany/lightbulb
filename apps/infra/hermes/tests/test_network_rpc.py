@@ -164,3 +164,31 @@ def test_the_image_pins_an_engine_that_speaks_memory():
     )
     assert len(pins) == 1
     assert tuple(map(int, pins[0])) >= (0, 7, 0)
+
+
+def test_network_invite_returns_ticket_and_team_id(net):
+    net.answer(**{"team.invite": {"ticket": "T-1", "expires_at": 1790000000},
+                  "team.get": {"team_id": "tm1", "members": [{"key": "me"}]}})
+    assert _rpc("network.invite") == {"ok": True, "payload": {
+        "ticket": "T-1", "team_id": "tm1", "expires_at": 1790000000}}
+    assert _sent(net, "team.invite")[0] == {"op": "team.invite", "mode": "once", "code": False}
+    assert _sent(net, "team.get")
+
+
+def test_network_invite_refused_is_an_op_error(net):
+    net.answer(**{"team.invite": {"ok": False, "error": "unsupported"}})
+    answer = _rpc("network.invite")
+    assert answer["ok"] is False and answer["error"]["code"] == "unsupported"
+
+
+def test_network_team_counts_members(net):
+    net.answer(**{"team.get": {"team_id": "tm1", "members": [{"key": "a"}, {"key": "b"}]}})
+    assert _rpc("network.team") == {"ok": True, "payload": {"team_id": "tm1", "member_count": 2}}
+
+
+def test_network_invite_logs_no_ticket(net, caplog):
+    caplog.set_level(logging.DEBUG)
+    net.answer(**{"team.invite": {"ticket": "TICKET-secret9", "expires_at": 1},
+                  "team.get": {"team_id": "tm1", "members": []}})
+    _rpc("network.invite")
+    assert "TICKET" not in caplog.text

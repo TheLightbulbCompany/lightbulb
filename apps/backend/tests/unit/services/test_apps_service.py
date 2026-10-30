@@ -1125,3 +1125,8 @@ async def test_services_content_files_only_the_three_workflows(world):
     ]
     assert filed == [("vercel", "project", "prod"), ("neon", "postgres", "prod"), ("neon", "postgres", "dev")]
     assert not any("content" in str(c.kwargs) for c in world.start.await_args_list)
+
+
+def test_display_default_splits_words_on_dash_and_underscore():
+    assert svc._display({"name": "workshop-signup"}) == "Workshop Signup"
+    assert svc._display({"name": "crm_v2"}) == "Crm V2"

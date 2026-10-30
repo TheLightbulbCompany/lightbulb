@@ -84,9 +84,19 @@ async def test_create_deployment_sends_files_and_nextjs_settings(calls):
 async def test_deployment_state_maps_ready_and_error(calls):
     seen, routes = calls
     routes[("GET", "/v13/deployments/dpl_1")] = (200, {"readyState": "ERROR", "url": "u", "errorMessage": "boom"})
-    assert await vc.deployment_state(CREDS, "dpl_1") == {"readyState": "ERROR", "url": "u", "errorMessage": "boom"}
-    routes[("GET", "/v13/deployments/dpl_1")] = (200, {"readyState": "READY", "url": "u"})
-    assert await vc.deployment_state(CREDS, "dpl_1") == {"readyState": "READY", "url": "u", "errorMessage": None}
+    assert await vc.deployment_state(CREDS, "dpl_1") == {
+        "readyState": "ERROR",
+        "url": "u",
+        "errorMessage": "boom",
+        "target": None,
+    }
+    routes[("GET", "/v13/deployments/dpl_1")] = (200, {"readyState": "READY", "url": "u", "target": "production"})
+    assert await vc.deployment_state(CREDS, "dpl_1") == {
+        "readyState": "READY",
+        "url": "u",
+        "errorMessage": None,
+        "target": "production",
+    }
     assert len(seen) == 2 and seen[0].url.params["teamId"] == "team_1"
 
 
@@ -126,12 +136,7 @@ async def test_add_domain_returns_verification_and_lowest_rank_cname(calls):
         {"recommendedCNAME": [{"rank": 2, "value": "b."}, {"rank": 1, "value": "c.vercel-dns.com."}]},
     )
     out = await vc.add_domain(CREDS, "a.example.com")
-    assert out == {
-        "verified": False,
-        "verification": [{"type": "TXT"}],
-        "cname": "c.vercel-dns.com.",
-        "git_branch": None,
-    }
+    assert out == {"verified": False, "verification": [{"type": "TXT"}], "cname": "c.vercel-dns.com."}
     assert body(seen[0]) == {"name": "a.example.com"}
     cfg = seen[1]
     assert cfg.url.params["projectIdOrName"] == "prj_1" and cfg.url.params["teamId"] == "team_1"
@@ -171,63 +176,12 @@ async def test_add_domain_owned_elsewhere_still_raises(calls):
     assert e.value.code == "domain_already_in_use"
 
 
-async def test_add_domain_on_a_branch_sends_it(calls):
+async def test_alias_deployment_is_scoped_to_the_project(calls):
     seen, routes = calls
-    routes[("POST", "/v10/projects/prj_1/domains")] = (200, {"verified": False, "gitBranch": "b"})
-    routes[("GET", "/v6/domains/a.example.com/config")] = (200, {"recommendedCNAME": []})
-    out = await vc.add_domain(CREDS, "a.example.com", git_branch="b")
-    assert body(seen[0]) == {"name": "a.example.com", "gitBranch": "b"} and out["git_branch"] == "b"
-
-
-async def test_add_domain_refused_branch_adds_it_plain(calls, monkeypatch):
-    seen = []
-
-    def handler(req):
-        seen.append(req)
-        if req.method == "POST" and "gitBranch" in body(req):
-            return httpx.Response(400, json={"error": {"code": "bad_request", "message": "x"}})
-        if req.url.path.startswith("/v9/"):
-            return httpx.Response(404, json={"error": {"code": "not_found", "message": "n"}})
-        return httpx.Response(200, json={"verified": False})
-
-    monkeypatch.setattr(vc, "_transport", httpx.MockTransport(handler))
-    out = await vc.add_domain(CREDS, "a.example.com", git_branch="b")
-    assert body(seen[2]) == {"name": "a.example.com"} and out["git_branch"] is None
-
-
-async def test_add_domain_on_another_project_with_a_branch_still_raises(calls):
-    _, routes = calls
-    routes[("POST", "/v10/projects/prj_1/domains")] = (
-        409,
-        {"error": {"code": "domain_already_in_use", "message": "x"}},
-    )
-    routes[("GET", "/v9/projects/prj_1/domains/a.example.com")] = (
-        404,
-        {"error": {"code": "not_found", "message": "n"}},
-    )
-    with pytest.raises(vc.VercelError) as e:
-        await vc.add_domain(CREDS, "a.example.com", git_branch="b")
-    assert e.value.code == "domain_already_in_use"
-
-
-async def test_set_domain_branch(calls):
-    seen, routes = calls
-    path = "/v9/projects/prj_1/domains/a.example.com"
-    routes[("PATCH", path)] = (200, {"gitBranch": "b"})
-    assert await vc.set_domain_branch(CREDS, "a.example.com", "b") is True
-    assert body(seen[0]) == {"gitBranch": "b"}
-    routes[("PATCH", path)] = (400, {"error": {"code": "bad_request", "message": "x"}})
-    assert await vc.set_domain_branch(CREDS, "a.example.com", "b") is False
-    routes[("PATCH", path)] = (500, {"error": {"code": "boom", "message": "x"}})
-    with pytest.raises(vc.VercelError):
-        await vc.set_domain_branch(CREDS, "a.example.com", "b")
-
-
-async def test_alias_deployment(calls):
-    _, routes = calls
     path = "/v4/aliases/a.example.com"
     routes[("GET", path)] = (200, {"deploymentId": "dpl_1"})
     assert await vc.alias_deployment(CREDS, "a.example.com") == "dpl_1"
+    assert seen[0].url.params["projectId"] == "prj_1"
     routes[("GET", path)] = (404, {"error": {"code": "not_found", "message": "n"}})
     assert await vc.alias_deployment(CREDS, "a.example.com") is None
 

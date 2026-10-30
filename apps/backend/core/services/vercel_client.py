@@ -18,8 +18,6 @@ import httpx
 API = "https://api.vercel.com"
 TIMEOUT_S = 30
 LOGS_WINDOW_S = 8  # R56: how long runtime_logs reads the stream, inside API Gateway's 30 s
-# Nothing is ever pushed to it: naming a branch only makes a project domain stop being a production domain.
-PREVIEW_BRANCH = "lightbulb-preview"
 
 # Tests swap in an httpx.MockTransport; production leaves it None.
 _transport: httpx.AsyncBaseTransport | None = None
@@ -153,7 +151,7 @@ async def create_deployment(
 
 async def deployment_state(creds: dict, deployment_id: str) -> dict:
     d = await _call(creds, "GET", f"/v13/deployments/{_q(deployment_id)}")
-    return {"readyState": d.get("readyState"), "url": d.get("url"), "errorMessage": d.get("errorMessage")}
+    return {k: d.get(k) for k in ("readyState", "url", "errorMessage", "target")}
 
 
 async def read_probe(creds: dict, deployment_id: str | None) -> None:
@@ -211,41 +209,21 @@ async def runtime_logs(creds: dict, deployment_id: str, *, limit: int = 50) -> l
     return rows
 
 
-async def add_domain(creds: dict, name: str, *, git_branch: str | None = None) -> dict:
-    """``git_branch``: production deployments never get this domain. Vercel doesn't document whether a project with
-    no Git link accepts one, so a 400 for a domain not yet here adds it plain; the caller sees ``git_branch`` empty."""
-    pid, n, url = _pid(creds), _q(name), f"/v10/projects/{_pid(creds)}/domains"
+async def add_domain(creds: dict, name: str) -> dict:
+    pid, n = _pid(creds), _q(name)
     try:
-        d = await _call(creds, "POST", url, json={"name": name, **({"gitBranch": git_branch} if git_branch else {})})
+        d = await _call(creds, "POST", f"/v10/projects/{pid}/domains", json={"name": name})
     except VercelError as e:
         if e.status not in (400, 409):
             raise
         try:  # idempotent: already on THIS project is success; another project/team still raises
             d = await _call(creds, "GET", f"/v9/projects/{pid}/domains/{n}")
         except VercelError:
-            if not git_branch or e.status != 400:
-                raise e from None
-            d = await _call(creds, "POST", url, json={"name": name})
+            raise e from None
     cfg = await _call(creds, "GET", f"/v6/domains/{n}/config", params={"projectIdOrName": pid})
     ranked = [c for c in cfg.get("recommendedCNAME") or [] if isinstance(c, dict) and c.get("value")]
     cname = min(ranked, key=_rank)["value"] if ranked else "cname.vercel-dns.com."
-    return {
-        "verified": d.get("verified"),
-        "verification": d.get("verification", []),
-        "cname": cname,
-        "git_branch": d.get("gitBranch"),
-    }
-
-
-async def set_domain_branch(creds: dict, name: str, branch: str) -> bool:
-    """Whether the domain now belongs to ``branch``. False: Vercel refused the branch (400), the domain is unchanged."""
-    try:
-        d = await _call(creds, "PATCH", f"/v9/projects/{_pid(creds)}/domains/{_q(name)}", json={"gitBranch": branch})
-    except VercelError as e:
-        if e.status != 400:
-            raise
-        return False
-    return d.get("gitBranch") == branch
+    return {"verified": d.get("verified"), "verification": d.get("verification", []), "cname": cname}
 
 
 async def verify_domain(creds: dict, name: str) -> bool:
@@ -257,17 +235,6 @@ async def assign_alias(creds: dict, deployment_id: str, alias: str) -> None:
     await _call(creds, "POST", f"/v2/deployments/{_q(deployment_id)}/aliases", json={"alias": alias}, expect=None)
 
 
-async def alias_deployment(creds: dict, alias: str) -> str | None:
-    """The deployment a host serves right now (custom domains resolve here too); None if it serves nothing."""
-    try:
-        d = await _call(creds, "GET", f"/v4/aliases/{_q(alias)}")
-    except VercelError as e:
-        if e.status != 404:
-            raise
-        return None
-    return d.get("deploymentId")
-
-
 async def promote(creds: dict, deployment_id: str) -> None:
     """Point production at a deployment (no rebuild). Needed after a rollback: Vercel then stops
     auto-assigning production domains to new production deployments."""
@@ -276,6 +243,17 @@ async def promote(creds: dict, deployment_id: str) -> None:
 
 async def rollback(creds: dict, deployment_id: str) -> None:
     await _call(creds, "POST", f"/v1/projects/{_pid(creds)}/rollback/{_q(deployment_id)}", expect=None)
+
+
+async def alias_deployment(creds: dict, host: str) -> str | None:
+    """The deployment ``host`` points at right now; None when this project has no such alias."""
+    try:
+        d = await _call(creds, "GET", f"/v4/aliases/{_q(host)}", params={"projectId": _pid(creds)})
+    except VercelError as e:
+        if e.status == 404:
+            return None
+        raise
+    return d.get("deploymentId")
 
 
 async def disable_protection(creds: dict) -> None:

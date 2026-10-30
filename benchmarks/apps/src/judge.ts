@@ -129,8 +129,9 @@ export async function judge(url: string, dir: string, task: Task, o: { shots?: B
       "exec", "--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only",
       "-C", tmp, "--output-schema", schema, ...(model ? ["-m", model] : []), prompt, ...files.flatMap((f) => ["-i", f]),
     ];
-    let r = await (o.run ?? runCodex)(args, tmp);
-    if (r.code !== 0) r = await (o.run ?? runCodex)(args, tmp); // one retry on non-zero exit
+    const call = () => (o.run ?? runCodex)(args, tmp, AbortSignal.timeout(5 * 60_000)); // a hung judge must not block the suite
+    let r = await call();
+    if (r.code !== 0) r = await call(); // one retry on non-zero exit
     if (r.code !== 0) throw new Error(`codex exited ${r.code}: ${r.out.slice(-200)}`);
     return parseJudgeScore(lastMessage(r.out));
   } catch (e) {

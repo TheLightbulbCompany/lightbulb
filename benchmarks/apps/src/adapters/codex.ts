@@ -19,6 +19,7 @@ export function runCodex(args: string[], cwd: string, signal?: AbortSignal, spaw
       const p = spawn("codex", args, { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
       const kill = () => { try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ } };
       signal?.addEventListener("abort", kill, { once: true });
+      if (signal?.aborted) kill();
       p.stdout?.on("data", (d) => (out += d));
       p.stderr?.on("data", (d) => (out += d));
       p.on("error", (e) => { out += String(e); done({ code: 1, out }); });

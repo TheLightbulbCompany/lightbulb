@@ -18,8 +18,10 @@ describe("codex stream", () => {
     expect(parseCodexUsage("garbage")).toBeNull();
     expect(parseCodexUsage(sample)).toEqual({ tokensIn: 47136, tokensOut: 87 });
   });
-  it("counts a fix loop only for a file_change to an already-changed file after a failed command", () => {
-    expect(countCodexFixLoops(sample)).toBe(0); // real sample: edits went through the shell, no file_change items
+  it("counts a fix loop when a failed command later passes, or a file is re-edited after a failure", () => {
+    const run = (command: string, exit_code: number) => ({ type: "item.completed", item: { type: "command_execution", command, status: exit_code ? "failed" : "completed", exit_code } });
+    expect(countCodexFixLoops([run("pnpm build", 1), run("sed -i x a.ts", 0), run("pnpm build", 0)].map(ev).join("\n"))).toBe(1);
+    expect(countCodexFixLoops([run("pnpm build", 1), run("pnpm lint", 0)].map(ev).join("\n"))).toBe(0);
     expect(countCodexFixLoops([edit("a"), fail, edit("a"), edit("a")].map(ev).join("\n"))).toBe(1);
     expect(countCodexFixLoops([edit("a"), fail, edit("b")].map(ev).join("\n"))).toBe(0);
   });

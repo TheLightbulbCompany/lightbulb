@@ -41,11 +41,16 @@ export function parseCodexUsage(stream: string): { tokensIn: number; tokensOut: 
 
 // Approximation: a fix loop is a file_change touching an already-changed file after any failed command_execution.
 export function countCodexFixLoops(stream: string): number {
-  const changed = new Set<string>();
+  // codex mostly edits through the shell, so a loop is also: a command fails, then the same command later succeeds
+  const changed = new Set<string>(), failedCmds = new Set<string>();
   let failed = false, loops = 0;
   for (const e of events(stream) as any[]) {
     const it = e.type === "item.completed" ? e.item : null;
-    if (it?.type === "command_execution" && (it.status === "failed" || (it.exit_code ?? 0) !== 0)) failed = true;
+    if (it?.type === "command_execution") {
+      const cmd = String(it.command ?? "").trim();
+      if (it.status === "failed" || (it.exit_code ?? 0) !== 0) { failed = true; failedCmds.add(cmd); }
+      else if (failedCmds.delete(cmd)) { loops++; failed = false; continue; }
+    }
     if (it?.type === "file_change") {
       const paths: string[] = (it.changes ?? []).map((c: any) => c.path);
       if (failed && paths.some((p) => changed.has(p))) { loops++; failed = false; }

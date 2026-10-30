@@ -47,7 +47,7 @@ export function MessagingDirectory({ onOpenRoom, onNavigate }: { onOpenRoom?: (r
 export function MessagingConversation() {
   const { roomProps, sessionFocus, openSession, closeSession, setSessionChat, setSessionChatRoomId, sessionSource, resolveSessionOwner, workspaceSessions, scope, directoryProps } = useMessagingWorkspace();
   if (sessionFocus?.all) {
-    return <AllSessionsView key={scope} entries={directoryProps.sessions ?? []} loading={workspaceSessions.loading}
+    return <AllSessionsView key={scope} entries={directoryProps.sessionRows ?? []} loading={workspaceSessions.loading}
       onOpenSession={openSession} onClose={closeSession} onRename={directoryProps.onRenameSession}
       onRemove={directoryProps.onRemoveSession} onRemoveEnded={directoryProps.onRemoveEndedSessions} />;
   }

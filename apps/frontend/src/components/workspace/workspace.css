@@ -383,7 +383,7 @@
   height: calc(100cqh - 12.5rem);
 }
 
-/* The rail: the four places, always reachable. */
+/* The rail: the five places, always reachable. */
 .workspace-rail {
   grid-area: rail;
   font-family: var(--font-sans);

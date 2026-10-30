@@ -8,6 +8,7 @@ import { ControlDockPanel } from "./panels/ControlDockPanel";
 import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
 import { BrowserDockPanel } from "./panels/BrowserDockPanel";
 import { ActivityDockPanel } from "./panels/ActivityDockPanel";
+import { CanvasDockPanel } from "./panels/CanvasDockPanel";
 import { MailDockPanel } from "./panels/MailDockPanel";
 import { ArtifactDockPanel } from "./panels/ArtifactDockPanel";
 import { IdeasDockPanel } from "./panels/IdeasDockPanel";
@@ -25,6 +26,7 @@ export const PANEL_COMPONENTS: Record<PanelKind, ComponentType<PanelProps>> = {
   "file-viewer": FileViewerDockPanel,
   browser: BrowserDockPanel,
   activity: ActivityDockPanel,
+  canvas: CanvasDockPanel,
   mail: MailDockPanel,
   ideas: IdeasDockPanel,
   artifact: ArtifactDockPanel,

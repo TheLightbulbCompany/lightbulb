@@ -401,6 +401,15 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  the review routine = skills-src/paperclip/references/routines.md (an agent may create a
                                  routine assigned to itself; `schedule` trigger) + references/platform-primitives.md
                                  (Automations: a GitHub trigger added from the routine's own detail panel, owner-side).
+  - Apps ................... references/apps.md + references/apps-reviewer.md + SKILL.md routing rows
+                              <- the `lightbulb app` CLI (TheLightbulbCompany/cli src/apps/: commands new|up|publish|rollback|
+                                 status|destroy|check|evidence|report-broken-tool, `next` = fix|diagnose|undo fix caps, the done
+                                 gate `done`, `--approved` for the destructive-migration gate, `publish` needs review evidence)
+                                 + its starter (AGENTS.md, playbooks/<kind>.md, .lightbulb/{plan,lessons,known-fixes}.md);
+                                 backend routers/apps.py (/api/v1/apps/build/*: UpResult state|preview_url|canvas_url|sample_data|
+                                 cost_cents|error.next) + apps_room.py post_approval_line (the approval's wake line, why
+                                 apps.md says end the turn); Canvas apps/frontend/src/components/canvas/ + hooks/useApps.ts.
+                                 Room words (preview, live, publish, undo, Canvas) are spec 2026-10-28-apps-design.md §2.
   - Skills (dirs/scope) ..... references/skills.md
                               <- apps/backend/core/services/hermes_profiles.py (SKILLS_DIR_LIGHTBULB,
                                  SKILLS_DIR_HERMES_BUNDLED, SKILLS_EXTERNAL_DIRS, the `skills` config block);

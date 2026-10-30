@@ -43,13 +43,13 @@ import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity
 import { WorkspaceHeader } from "../WorkspaceHeader";
 
 describe("WorkspaceHeader", () => {
-  // The four places and nothing else (spec 3.1): Browser, Files and Mail open in the right
+  // The five places and nothing else (spec 3.1): Browser, Files and Mail open in the right
   // pane; Home, Hire, Invite and Connections each have a home elsewhere.
-  it("reads Chat, Activity, Work, Library, in that order, and nothing else", () => {
+  it("reads Chat, Activity, Work, Library, Canvas, in that order, and nothing else", () => {
     render(<WorkspaceHeader />);
     const rail = screen.getByRole("navigation", { name: "Workspace" });
     const labels = [...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
-    expect(labels.slice(labels.indexOf("Chat"), labels.indexOf("Library") + 1)).toEqual(["Chat", "Activity", "Work", "Library"]);
+    expect(labels.slice(labels.indexOf("Chat"), labels.indexOf("Canvas") + 1)).toEqual(["Chat", "Activity", "Work", "Library", "Canvas"]);
     for (const gone of ["Mail", "Browser", "Files", "Home", "Messages", "Hire an agent", "Invite people", "Connections"]) {
       expect(screen.queryByRole("button", { name: gone })).toBeNull();
     }

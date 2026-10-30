@@ -59,6 +59,7 @@ describe("places", () => {
     ["teams-routines", "work"],
     ["teams-search", "work"],
     ["teams-artifacts", "library"],
+    ["canvas", "canvas"],
   ])("%s opens the %s place's main view", (key, place) => {
     openPanel(key);
     expect(snap().place).toBe(place);

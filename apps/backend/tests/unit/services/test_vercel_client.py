@@ -17,6 +17,10 @@ def calls(monkeypatch):
     def handler(req: httpx.Request) -> httpx.Response:
         seen.append(req)
         status, body = routes.get((req.method, req.url.path), (200, {}))
+        if isinstance(body, Exception):
+            raise body
+        if isinstance(body, str):
+            return httpx.Response(status, text=body)
         return httpx.Response(status, json=body)
 
     monkeypatch.setattr(vc, "_transport", httpx.MockTransport(handler))
@@ -81,24 +85,112 @@ async def test_deployment_state_maps_ready_and_error(calls):
     assert len(seen) == 2 and seen[0].url.params["teamId"] == "team_1"
 
 
-async def test_deployment_events_maps_messages(calls):
+async def test_deployment_events_oldest_first_and_filters_empty(calls):
     seen, routes = calls
     routes[("GET", "/v3/deployments/dpl_1/events")] = (
         200,
-        [{"created": 1000, "text": "Installing"}, {"created": 2000, "payload": {"text": "Built"}}],
+        [
+            {"created": 2000, "payload": {"text": "Built"}},
+            {"created": 1500, "text": ""},
+            {"created": 1000, "text": "Installing"},
+        ],
     )
     out = await vc.deployment_events(CREDS, "dpl_1", limit=10)
     assert out == [{"at": 1000, "message": "Installing"}, {"at": 2000, "message": "Built"}]
-    assert seen[0].url.params["limit"] == "10" and seen[0].url.params["teamId"] == "team_1"
+    p = seen[0].url.params
+    assert p["limit"] == "10" and p["direction"] == "backward" and p["teamId"] == "team_1"
 
 
-async def test_add_domain_returns_verification_and_cname(calls):
+async def test_runtime_logs_parses_ndjson_and_keeps_tail(calls):
+    seen, routes = calls
+    lines = [{"timestampInMs": i, "message": f"m{i}"} for i in range(1, 5)] + [{"timestampInMs": 9, "message": ""}]
+    routes[("GET", "/v1/projects/prj_1/deployments/dpl_1/runtime-logs")] = (
+        200,
+        "\n".join(json.dumps(x) for x in lines) + "\n",
+    )
+    out = await vc.runtime_logs(CREDS, "dpl_1", limit=2)
+    assert out == [{"at": 3, "message": "m3"}, {"at": 4, "message": "m4"}]
+    assert seen[0].url.params["teamId"] == "team_1"
+
+
+async def test_add_domain_returns_verification_and_lowest_rank_cname(calls):
     seen, routes = calls
     routes[("POST", "/v10/projects/prj_1/domains")] = (200, {"verified": False, "verification": [{"type": "TXT"}]})
-    routes[("GET", "/v9/projects/prj_1/domains/a.example.com")] = (200, {"cname": "c.vercel-dns.com."})
+    routes[("GET", "/v6/domains/a.example.com/config")] = (
+        200,
+        {"recommendedCNAME": [{"rank": 2, "value": "b."}, {"rank": 1, "value": "c.vercel-dns.com."}]},
+    )
     out = await vc.add_domain(CREDS, "a.example.com")
     assert out == {"verified": False, "verification": [{"type": "TXT"}], "cname": "c.vercel-dns.com."}
     assert body(seen[0]) == {"name": "a.example.com"}
+    cfg = seen[1]
+    assert cfg.url.params["projectIdOrName"] == "prj_1" and cfg.url.params["teamId"] == "team_1"
+
+
+async def test_add_domain_cname_falls_back(calls):
+    _, routes = calls
+    routes[("POST", "/v10/projects/prj_1/domains")] = (200, {"verified": True})
+    routes[("GET", "/v6/domains/a.example.com/config")] = (200, {"recommendedCNAME": []})
+    assert (await vc.add_domain(CREDS, "a.example.com"))["cname"] == "cname.vercel-dns.com."
+
+
+async def test_add_domain_idempotent_when_already_on_this_project(calls):
+    _, routes = calls
+    routes[("POST", "/v10/projects/prj_1/domains")] = (
+        409,
+        {"error": {"code": "domain_already_in_use", "message": "x"}},
+    )
+    routes[("GET", "/v9/projects/prj_1/domains/a.example.com")] = (200, {"verified": True})
+    routes[("GET", "/v6/domains/a.example.com/config")] = (200, {"recommendedCNAME": []})
+    out = await vc.add_domain(CREDS, "a.example.com")
+    assert out["verified"] is True
+
+
+async def test_add_domain_owned_elsewhere_still_raises(calls):
+    _, routes = calls
+    routes[("POST", "/v10/projects/prj_1/domains")] = (
+        409,
+        {"error": {"code": "domain_already_in_use", "message": "x"}},
+    )
+    routes[("GET", "/v9/projects/prj_1/domains/a.example.com")] = (
+        404,
+        {"error": {"code": "not_found", "message": "n"}},
+    )
+    with pytest.raises(vc.VercelError) as e:
+        await vc.add_domain(CREDS, "a.example.com")
+    assert e.value.code == "domain_already_in_use"
+
+
+async def test_upsert_env_partial_failure_raises_without_values(calls):
+    _, routes = calls
+    routes[("POST", "/v10/projects/prj_1/env")] = (
+        201,
+        {"created": [], "failed": [{"error": {"code": "invalid_name", "message": "bad envvalue123"}}]},
+    )
+    with pytest.raises(vc.VercelError) as e:
+        await vc.upsert_env(CREDS, {"K": "envvalue123"}, ["production"])
+    assert e.value.code == "invalid_name" and "envvalue123" not in str(e.value)
+
+
+async def test_create_deployment_omits_null_target(calls):
+    seen, routes = calls
+    routes[("POST", "/v13/deployments")] = (200, {"id": "d"})
+    await vc.create_deployment(CREDS, name="app", files=[], target=None, build_command="b")
+    assert "target" not in body(seen[0])
+
+
+async def test_bad_response_and_network_error_and_quoting(calls):
+    seen, routes = calls
+    routes[("GET", "/v13/deployments/dpl_1")] = (200, [1])
+    with pytest.raises(vc.VercelError) as e:
+        await vc.deployment_state(CREDS, "dpl_1")
+    assert e.value.code == "bad_response"
+    routes[("GET", "/v13/deployments/dpl_1")] = (200, httpx.ConnectError("boom tok_SECRET"))
+    with pytest.raises(vc.VercelError) as e:
+        await vc.deployment_state(CREDS, "dpl_1")
+    assert e.value.code == "network" and "tok_SECRET" not in str(e.value)
+    await vc.rollback(CREDS, "a/b")
+    assert seen[-1].url.raw_path.startswith(b"/v1/projects/prj_1/rollback/a%2Fb")
 
 
 async def test_verify_domain(calls):
@@ -147,12 +239,14 @@ async def test_token_never_in_logs(calls, caplog):
     _, routes = calls
     routes[("GET", "/v13/deployments/d")] = (200, {"readyState": "READY"})
     routes[("GET", "/v3/deployments/d/events")] = (200, [])
+    routes[("GET", "/v1/projects/prj_1/deployments/d/runtime-logs")] = (200, "")
     routes[("POST", "/v9/projects/prj_1/domains/x/verify")] = (200, {})
     with caplog.at_level(logging.DEBUG):
         await vc.upsert_env(CREDS, {"K": "envvalue123"}, ["production"])
         await vc.upload_file(CREDS, b"x")
         await vc.deployment_state(CREDS, "d")
         await vc.deployment_events(CREDS, "d")
+        await vc.runtime_logs(CREDS, "d")
         await vc.verify_domain(CREDS, "x")
         await vc.rollback(CREDS, "d")
         await vc.disable_protection(CREDS)

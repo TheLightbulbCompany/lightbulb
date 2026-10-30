@@ -42,6 +42,9 @@ export function statusLine(app: AppRow): string | null {
   }
 }
 
+/** The backend's refusal code (`{detail: {code}}`), for the refusals where "Try again" would be false. */
+export const refusalCode = (err: unknown) => (err as { body?: { detail?: { code?: string } } })?.body?.detail?.code;
+
 /** Plain words first; the server's own text only behind "Details". */
 export function Problem({ children, raw, action }: { children: ReactNode; raw?: string | null; action?: ReactNode }) {
   return <span role="alert" className="canvas__notice">

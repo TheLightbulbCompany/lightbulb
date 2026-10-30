@@ -80,7 +80,7 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
     try {
       await revokeInvite(app.app_id, email);
       setInvited((now) => (now === "failed" ? now : now.filter((e) => e !== email)));
-      setNote(`${email}'s invite link no longer works.`);
+      setNote(`${email}'s invite link no longer works. If they already opened it, they keep access for up to a day.`);
     } catch { /* shown by the hook */ }
   };
   const saveBudget = async () => {

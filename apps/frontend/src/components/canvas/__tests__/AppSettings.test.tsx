@@ -268,7 +268,7 @@ describe("AppSettings", () => {
       listInvites.mockResolvedValue(["a@x.com", "b@x.com"]);
       render(<AppSettings app={app({ open_to: "invited" })} onClose={vi.fn()} />);
       fireEvent.click(await screen.findByRole("button", { name: "Remove a@x.com" }));
-      expect((await screen.findByRole("status")).textContent).toBe("a@x.com's invite link no longer works.");
+      expect((await screen.findByRole("status")).textContent).toBe("a@x.com's invite link no longer works. If they already opened it, they keep access for up to a day.");
       expect(revokeInvite).toHaveBeenCalledWith("a1", "a@x.com");
       expect(rows()).toEqual(["b@x.com · Remove"]);
     });

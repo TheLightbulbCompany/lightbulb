@@ -1270,3 +1270,161 @@ async def test_publish_stops_when_a_live_migration_fails(world):
     assert res["error"]["code"] == "migrate_failed" and res["error"]["next"] == "fix the migration and publish again"
     assert len(world.vercel.created()) == n  # nothing deployed
     assert (await svc.apps_repo.get(src["app_id"])).get("published_migrations") in (None, [])
+
+
+# --- putting a version back across a sharing change (review of #4521) -------------------------
+
+
+async def _land(world, app_id):
+    """Finish the pending production build (a sharing change also rebuilds the preview, after it)."""
+    world.vercel.finish((await svc.apps_repo.get(app_id))["publish_pending"]["deployment_id"])
+    return await svc.status(OWNER, app_id)
+
+
+async def _closed_after_public(world):
+    """v1 and v2 built while public; the owner closes it, which lands v3 as room. Returns the source."""
+    src, _, _ = await _ready_preview(world)
+    await svc.update_settings(OWNER, src["app_id"], open_to="public")
+    await svc.status(OWNER, src["app_id"])
+    await _go_live(world, src)
+    await _go_live(world, await _source(SRC_V2, "c2"))
+    await svc.update_settings(OWNER, src["app_id"], open_to="room")
+    assert (await _land(world, src["app_id"]))["live_version"] == 3
+    return src
+
+
+def _instant_rollbacks(world):
+    return [p for _, p in world.vercel.paths() if "/rollback/" in p]
+
+
+async def test_versions_are_stamped_with_who_could_open_them(world):
+    src = await _closed_after_public(world)
+    app = await svc.apps_repo.get(src["app_id"])
+    assert [v["open_to"] for v in app["versions"]] == ["public", "public", "room"]
+
+
+async def test_put_back_over_a_sharing_change_rebuilds_with_the_current_door(world):
+    """The deployment of v1 has the door off in its env: serving it again would reopen a closed app."""
+    src = await _closed_after_public(world)
+    n = len(world.vercel.created())
+    res = await svc.rollback(OWNER, src["app_id"], version=1)
+    assert _instant_rollbacks(world) == []
+    prod = world.vercel.created()[n:]
+    assert len(prod) == 1 and prod[0]["target"] == "production" and {f["file"] for f in prod[0]["files"]} == set(SRC_V1)
+    assert res["rebuilding"] is True and res["version"] == 3 and "few minutes" in res["error"]["message"]
+    app = await svc.apps_repo.get(src["app_id"])
+    assert app["live_version"] == 3 and app["publish_pending"]["source_id"] == src["source_id"]  # v3 serves until then
+    st = await _land(world, src["app_id"])
+    assert st["live_version"] == 4 and [v["commit"] for v in st["versions"]] == ["c1", "c2", "c2", "c1"]
+    app = await svc.apps_repo.get(src["app_id"])
+    assert app["versions"][-1]["open_to"] == "room" and app["open_to"] == "room"
+    assert app["live_source_id"] == src["source_id"]
+
+
+async def test_opening_an_app_then_putting_back_rebuilds_too(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    await svc.update_settings(OWNER, src["app_id"], open_to="public")
+    await _land(world, src["app_id"])
+    assert (await svc.apps_repo.get(src["app_id"]))["live_version"] == 2
+    assert (await svc.rollback(OWNER, src["app_id"], version=1))["rebuilding"] is True
+    assert _instant_rollbacks(world) == []
+
+
+async def test_put_back_with_the_same_sharing_is_instant(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    await _go_live(world, await _source(SRC_V2, "c2"))
+    n = len(world.vercel.created())
+    res = await svc.rollback(OWNER, src["app_id"], version=1)
+    assert len(_instant_rollbacks(world)) == 1 and len(world.vercel.created()) == n
+    assert "rebuilding" not in res and res["error"]["message"] == "Version 1 is live again."
+
+
+async def test_a_version_with_no_stamp_counts_as_different(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    await _go_live(world, await _source(SRC_V2, "c2"))
+    app = await svc.apps_repo.get(src["app_id"])
+    versions = [{k: v for k, v in x.items() if k != "open_to"} for x in svc.plain(app["versions"])]
+    await svc.apps_repo.patch(src["app_id"], {"versions": versions})
+    assert (await svc.rollback(OWNER, src["app_id"], version=1))["rebuilding"] is True
+    assert _instant_rollbacks(world) == []
+
+
+async def test_put_back_refuses_rather_than_reopen_when_the_source_is_gone(world):
+    src = await _closed_after_public(world)
+    app = svc.plain(await svc.apps_repo.get(src["app_id"]))
+    del app["sources"][src["source_id"]]
+    await svc.apps_repo.patch(src["app_id"], {"sources": app["sources"]})
+    n = len(world.vercel.created())
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.rollback(OWNER, src["app_id"], version=1)
+    assert e.value.code == "version_unavailable"
+    assert _instant_rollbacks(world) == [] and len(world.vercel.created()) == n
+    assert await svc.apps_repo.take_lease(src["app_id"], seconds=1)  # a refusal frees the lease
+
+
+async def test_rollback_holds_the_lease_and_says_busy_without_it(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    await _go_live(world, await _source(SRC_V2, "c2"))
+    theirs = await svc.apps_repo.take_lease(src["app_id"], seconds=60)
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.rollback(OWNER, src["app_id"], version=1)
+    assert e.value.code == "busy" and _instant_rollbacks(world) == []
+    assert await svc.apps_repo.release_lease(src["app_id"], theirs)
+    await svc.rollback(OWNER, src["app_id"], version=1)
+    assert await svc.apps_repo.take_lease(src["app_id"], seconds=1)  # released again
+
+
+@pytest.mark.parametrize("across_sharing", [False, True])
+async def test_rollback_clears_a_failed_publish(world, across_sharing):
+    if across_sharing:
+        src = await _closed_after_public(world)
+    else:
+        src, _, _ = await _ready_preview(world)
+        await _go_live(world, src)
+        await _go_live(world, await _source(SRC_V2, "c2"))
+    await svc.apps_repo.patch(src["app_id"], {"publish_error": {"code": "build_failed", "message": "no"}})
+    res = await svc.rollback(OWNER, src["app_id"], version=1)
+    assert (await svc.apps_repo.get(src["app_id"])).get("publish_error") is None
+    assert res["error"]["code"] == "code_only"
+
+
+def _previous(app):
+    return (svc._previous_version(svc.plain(app)) or {}).get("n")
+
+
+async def test_previous_version_is_what_was_live_not_arithmetic(world):
+    """v3 is broken, the person puts back v2, v4 is broken too: "previous" must not be the v3 they fled."""
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    await _go_live(world, await _source(SRC_V2, "c2"))
+    await _go_live(world, await _source({**SRC_V2, "app/page.tsx": "v3"}, "c3"))
+    assert _previous(await svc.apps_repo.get(src["app_id"])) == 2
+    await svc.rollback(OWNER, src["app_id"], version=2)
+    assert _previous(await svc.apps_repo.get(src["app_id"])) == 1  # back again goes further back
+    await _go_live(world, await _source({**SRC_V2, "app/page.tsx": "v4"}, "c4"))
+    app = await svc.apps_repo.get(src["app_id"])
+    assert app["live_version"] == 4 and _previous(app) == 2
+    await svc.rollback(OWNER, src["app_id"], version=None)  # the builder's "previous" is the same one
+    assert (await svc.apps_repo.get(src["app_id"]))["live_version"] == 2
+
+
+async def test_previous_version_after_a_rebuilt_put_back_skips_what_was_fled(world):
+    src = await _closed_after_public(world)  # v1, v2 public; v3 room
+    await svc.rollback(OWNER, src["app_id"], version=2)
+    # a sharing change while it rebuilds replaces the build and keeps the history
+    await svc.update_settings(OWNER, src["app_id"], open_to="workspace")
+    await _land(world, src["app_id"])
+    app = await svc.apps_repo.get(src["app_id"])
+    assert app["live_version"] == 4 and app["versions"][-1]["open_to"] == "workspace"
+    assert _previous(app) == 1  # v4 is v2's source: "previous" is what v2 replaced, not the v3 they left
+
+
+async def test_previous_version_of_an_unstamped_record_falls_back_to_the_number_before(world):
+    versions = [{"n": 1, "at": "a"}, {"n": 2, "at": "b"}]
+    assert svc._previous_version({"versions": versions, "live_version": 2})["n"] == 1
+    assert svc._previous_version({"versions": versions, "live_version": 1}) is None
+    assert svc._previous_version({"versions": [], "live_version": None}) is None

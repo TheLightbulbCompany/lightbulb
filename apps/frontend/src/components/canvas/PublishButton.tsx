@@ -60,7 +60,9 @@ function OwnPublish({ app }: { app: AppRow }) {
 function PublishView({ app, ctl: { phase, done, failed, start, refresh } }: { app: AppRow; ctl: PublishCtl }) {
   const [confirming, setConfirming] = useState(false);
   // A failed publish keeps its preview; Publish is how the person retries without the agent.
-  const eligible = app.can_publish === true && (app.state === "ready" || app.state === "failed") && !!app.preview_url;
+  // An app that is live lists as "live": it can publish a preview that isn't what it already serves.
+  const eligible = app.can_publish === true && !!app.preview_url
+    && (app.state === "ready" || app.state === "failed" || (app.state === "live" && app.preview_newer === true));
   const who = app.open_to === "room" ? roomOf(app) : audience(app).replace("people you invited", "people you invite");
   const publishAgain = eligible && (confirming
     ? <span className="publish" role="group" aria-label="Confirm publish">

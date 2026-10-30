@@ -9,24 +9,25 @@ import { PublishButton, usePublish } from "./PublishButton";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { notifyError } from "@/lib/notify";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
-import { Problem, displayName, roomOf, statusLine } from "./appText";
+import { Problem, displayName, refusalCode, roomOf, statusLine } from "./appText";
 import "./canvas.css";
 
 /** "Ask the agent to fix it": one message in the app's room, as the person. Remounts per failure, so a new one can ask again. */
 function AskAgent({ app, error }: { app: AppRow; error?: string }) {
   const { askAgent } = useApps();
-  const [state, setState] = useState<"idle" | "asking" | "asked" | { status?: number; raw: string }>("idle");
+  const [state, setState] = useState<"idle" | "asking" | "asked" | { status?: number; code?: string; raw: string }>("idle");
   const room = roomOf(app);
   if (state === "asked") return <p role="status" className="canvas__notice">Asked the agent in {room}. It&apos;ll post there.</p>;
   const ask = async () => {
     setState("asking");
     try { await askAgent(app.app_id, error); setState("asked"); }
-    catch (err) { setState({ status: (err as { status?: number })?.status, raw: (err as Error)?.message ?? "" }); }
+    catch (err) { setState({ status: (err as { status?: number })?.status, code: refusalCode(err), raw: (err as Error)?.message ?? "" }); }
   };
   return <div className="canvas__notice publish">
     <button type="button" className="app-view__btn" disabled={state === "asking"} onClick={ask}>{state === "asking" ? "Asking…" : "Ask the agent to fix it"}</button>
     {typeof state === "object" && <Problem raw={state.raw}>{state.status === 403
       ? `You're not in ${room}, so this can't be posted as you. Join it, or ask someone in it.`
+      : state.code === "no_agent" ? `There's no agent in ${room} to ask. Add one to the room.`
       : `We couldn't ask in ${room}. Try again.`}</Problem>}
   </div>;
 }
@@ -34,23 +35,30 @@ function AskAgent({ app, error }: { app: AppRow; error?: string }) {
 /** "Put back the previous version", confirmed in place like Publish. */
 function PutBack({ app, previous, onDone }: { app: AppRow; previous: NonNullable<AppRow["previous_version"]>; onDone(line: string): void }) {
   const { rollback } = useApps();
-  const [state, setState] = useState<"idle" | "confirm" | "working" | { raw: string }>("idle");
+  const [state, setState] = useState<"idle" | "confirm" | "working" | { code?: string; raw: string }>("idle");
   const dn = displayName(app);
   const date = new Date(previous.at).toLocaleDateString(undefined, { dateStyle: "medium" });
   const putBack = async () => {
     setState("working");
     // The line lives in the view: going back to the first version removes this button with the refreshed row.
-    try { await rollback(app.app_id, previous.n); setState("idle"); onDone(`${dn} is back to the version live on ${date}.`); }
-    catch (err) { setState({ raw: (err as Error)?.message ?? "" }); }
+    try {
+      const res = await rollback(app.app_id, previous.n);
+      setState("idle");
+      onDone(res?.rebuilding ? `${dn} is going back to the version live on ${date}. This takes a few minutes.` : `${dn} is back to the version live on ${date}.`);
+    } catch (err) { setState({ code: refusalCode(err), raw: (err as Error)?.message ?? "" }); }
   };
   if (state === "working") return <span role="status" className="canvas__notice">Putting it back…</span>;
   if (state === "confirm") return <span className="publish" role="group" aria-label="Confirm putting back">
-    <span className="canvas__notice">{dn} goes back to the version live on {date}. Its data stays as it is.</span>
+    <span className="canvas__notice">{dn} goes back to the version live on {date}. Its data stays as it is.
+      {previous.rebuild && " Who can open it has changed since then, so it's rebuilt first: this takes a few minutes, and the current version stays up until it's done."}
+      {app.publishing && " The publish in progress will be cancelled."}</span>
     <button type="button" className="app-view__btn app-view__btn--primary" onClick={putBack}>Put it back</button>
     <button type="button" className="app-view__btn" onClick={() => setState("idle")}>Cancel</button>
   </span>;
   return <span className="publish">
-    {typeof state === "object" && <Problem raw={state.raw}>{dn} didn&apos;t change. Try again.</Problem>}
+    {typeof state === "object" && <Problem raw={state.raw}>{state.code === "version_unavailable"
+      ? `That version can't be put back any more, so ${dn} didn't change. Publish a new version instead.`
+      : `${dn} didn't change. Try again.`}</Problem>}
     <button type="button" className="app-view__btn" onClick={() => setState("confirm")}>Put back the previous version</button>
   </span>;
 }
@@ -78,6 +86,13 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const publishCtl = usePublish(app);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [putBackLine, setPutBackLine] = useState<{ id: string; text: string } | null>(null);
+  const lastLive = useRef(app.live_version ?? 0);
+  // The line is about the version that was put back: a publish starting or a later version landing ends it.
+  useEffect(() => {
+    const rose = (app.live_version ?? 0) > lastLive.current;
+    lastLive.current = app.live_version ?? 0;
+    if (rose || publishCtl.phase.k !== "idle") setPutBackLine(null);
+  }, [app.live_version, publishCtl.phase.k]);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,7 +130,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const retry = <button type="button" className="app-view__btn" onClick={() => setAttempt((n) => n + 1)}>Try again</button>;
   const { phase } = publishCtl;
   const publishing = (phase.k === "publishing" || phase.k === "slow") && !publishCtl.done && !publishCtl.failed;
-  // A live app keeps serving through a failed publish: the row says "ready", so it is named here.
+  // A live app keeps serving through a failed publish: the row says "live", so it is named here.
   const liveAppFailed = app.state !== "failed" && app.publish_failed === true && phase.k === "idle";
   const askable = canManage && !publishing && (app.state === "failed" || app.publish_failed === true || phase.k === "failed");
 

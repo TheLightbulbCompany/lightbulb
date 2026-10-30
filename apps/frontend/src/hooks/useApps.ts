@@ -13,7 +13,7 @@ export type AppRow = {
   name: string;
   room_id: string;
   room_name?: string;
-  state: "awaiting_approval" | "provisioning" | "building" | "ready" | "failed" | "destroyed";
+  state: "awaiting_approval" | "provisioning" | "building" | "ready" | "live" | "failed" | "destroyed";
   open_to: "room" | "workspace" | "invited" | "public";
   budget_usd: number;
   preview_url: string | null;
@@ -28,8 +28,10 @@ export type AppRow = {
   can_open: boolean;
   can_publish?: boolean; // mock (R17): plan 1 computes it
   error?: { message: string } | null; // the last build/publish failure, when the backend reports one
-  publish_failed?: boolean; // a live app's state stays "ready" through a failed publish
-  previous_version?: { n: number; at: string } | null; // what "Put back the previous version" goes back to
+  publish_failed?: boolean; // a live app's state stays "live" through a failed publish
+  publishing?: boolean; // a publish is in flight, this person's or an agent's: putting back cancels it
+  preview_newer?: boolean; // the ready preview isn't what is live, so Publish has something to do
+  previous_version?: { n: number; at: string; rebuild?: boolean } | null; // what "Put back the previous version" goes back to; rebuild: it takes a few minutes
   resources?: { provider: string; service: string; state: string; resource_id?: string; environment?: string }[];
 };
 
@@ -110,10 +112,11 @@ export function useApps() {
     await api.post(`/apps/${encodeURIComponent(appId)}/ask-agent`, error ? { error: error.slice(0, 2000) } : {});
   };
 
-  /** Puts the named version live again. Errors propagate: the caller shows them inline. */
-  const rollback = async (appId: string, version: number): Promise<void> => {
-    await api.post(`/apps/${encodeURIComponent(appId)}/rollback`, { version });
+  /** Puts the named version live again, or starts rebuilding it. Errors propagate: the caller shows them inline. */
+  const rollback = async (appId: string, version: number): Promise<{ rebuilding?: boolean }> => {
+    const res = await api.post(`/apps/${encodeURIComponent(appId)}/rollback`, { version }) as { rebuilding?: boolean };
     await mutate();
+    return res;
   };
 
   const remove = async (appId: string, confirmName: string): Promise<void> => {

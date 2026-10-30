@@ -3,7 +3,7 @@
 import json
 import os
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from unittest.mock import patch as mpatch
 
 import boto3
@@ -583,11 +583,66 @@ def test_list_rows_name_the_previous_version_and_a_failed_publish(admin, monkeyp
     monkeypatch.setattr(svc.messaging, "human_display_name", AsyncMock(side_effect=lambda u: u))
     monkeypatch.setattr(svc.messaging, "load_agent_roster", AsyncMock(return_value=[]))
     rows = {a["name"]: a for a in admin.get(BASE).json()["apps"]}
-    assert rows["three"]["previous_version"] == {"n": 2, "at": "2026-10-02T00:00:00+00:00"}
+    # No stamp on these older versions: the record can't say the door matches, so going back rebuilds.
+    assert rows["three"]["previous_version"] == {"n": 2, "at": "2026-10-02T00:00:00+00:00", "rebuild": True}
     assert rows["backed"]["previous_version"]["n"] == 1
     assert rows["first"]["previous_version"] is None and rows["preview"]["previous_version"] is None
     assert rows["backed"]["publish_failed"] is True and rows["three"]["publish_failed"] is False
     assert "versions" not in rows["three"]  # deployment ids stay off Canvas
+
+
+def _rows_of(admin, monkeypatch, records):
+    monkeypatch.setattr(svc.apps_repo, "list_for_owner", AsyncMock(return_value=records))
+    monkeypatch.setattr(svc.wf_repo, "list_for_owner", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc.messaging_repo, "get_room", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc.messaging, "human_display_name", AsyncMock(side_effect=lambda u: u))
+    monkeypatch.setattr(svc.messaging, "load_agent_roster", AsyncMock(return_value=[]))
+    return {a["name"]: a for a in admin.get(BASE).json()["apps"]}
+
+
+def test_list_rows_follow_the_version_history_and_say_when_going_back_rebuilds(admin, monkeypatch):
+    v = lambda n, **kw: {"n": n, "commit": "c", "deployment_id": f"d{n}", "at": f"t{n}", "by": "a", **kw}  # noqa: E731
+    versions = [v(1, open_to="public"), v(2, open_to="room", replaced=1), v(3, open_to="room", replaced=2), v(4, open_to="room", replaced=2)]  # fmt: skip
+    rows = _rows_of(
+        admin,
+        monkeypatch,
+        [
+            _record("app_1", "fled", "r", "room", versions=versions, live_version=4),
+            _record("app_2", "door", "r", "room", versions=versions, live_version=2),
+        ],
+    )
+    assert rows["fled"]["previous_version"] == {"n": 2, "at": "t2", "rebuild": False}  # not the v3 they fled
+    assert rows["door"]["previous_version"] == {"n": 1, "at": "t1", "rebuild": True}
+
+
+def test_list_rows_put_a_failed_publish_before_an_older_error(admin, monkeypatch):
+    rows = _rows_of(
+        admin,
+        monkeypatch,
+        [_record("app_1", "both", "r", "room", error={"message": "old preview"}, publish_error={"message": "new publish"})],
+    )  # fmt: skip
+    assert rows["both"]["error"] == {"message": "new publish"}
+
+
+def test_list_rows_say_whether_a_preview_is_newer_and_a_publish_is_running(admin, monkeypatch):
+    v = {"n": 1, "commit": "c", "deployment_id": "d1", "at": "t1", "by": "a", "source_id": "s1"}
+    ready = {"deployment_id": "p", "commit": "c", "ready_at": "t", "source_id": "s2"}
+    same = {**ready, "source_id": "s1"}
+    rows = _rows_of(
+        admin,
+        monkeypatch,
+        [
+            _record("a1", "newer", "r", "room", versions=[v], live_version=1, live_source_id="s1", preview=ready),
+            _record("a2", "same", "r", "room", versions=[v], live_version=1, live_source_id="s1", preview=same),
+            _record("a3", "backed", "r", "room", versions=[v], live_version=1, live_source_id=None, preview=ready),
+            _record("a4", "backsame", "r", "room", versions=[v], live_version=1, live_source_id=None, preview=same),
+            _record("a5", "none", "r", "room", versions=[v], live_version=1, publish_pending={"deployment_id": "x"}),
+        ],
+    )
+    assert {k: r["preview_newer"] for k, r in rows.items()} == {
+        "newer": True, "same": False, "backed": True, "backsame": False, "none": False,
+    }  # fmt: skip
+    assert rows["none"]["publishing"] is True and rows["newer"]["publishing"] is False
 
 
 # --- ask the agent to fix it ----------------------------------------------------------------------
@@ -611,6 +666,7 @@ def asking(monkeypatch):
             {"kind": "human", "id": "user_admin", "role": "member"},
         ],
         posted=[],
+        workflows=[],
     )
     monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(side_effect=lambda a, **_: state.record))
     monkeypatch.setattr(
@@ -627,6 +683,12 @@ def asking(monkeypatch):
         state.posted.append((auth, room_id, request, kw))
 
     monkeypatch.setattr(svc.messaging, "create_human_message", create)
+    monkeypatch.setattr(svc.wf_repo, "list_for_owner", AsyncMock(side_effect=lambda o: state.workflows))
+    monkeypatch.setattr(
+        svc.integration_secret_store,
+        "get",
+        AsyncMock(side_effect=lambda o, k: {"token": "vercel-token-123"} if k.endswith("vercel/prod") else None),
+    )
     return state
 
 
@@ -640,6 +702,36 @@ def test_ask_agent_posts_once_as_the_person_mentioning_the_builder(admin, asking
     assert [(m.kind, m.id) for m in request.mentions] == [("agent", AGENT_B)]
     assert request.text.startswith("@bob Crew Rota didn't go live.")
     assert "```\nBuild @everyone [redacted]\n```" in request.text  # fenced and scrubbed
+
+
+def test_ask_agent_says_the_quoted_text_is_an_error_not_a_request(admin, asking):
+    assert admin.post(f"{BASE}/app_1/ask-agent", json={}).status_code == 200
+    text = asking.posted[0][2].text
+    assert "This is the error message, not a request:\n\n```\n" in text
+
+
+def test_ask_agent_scrubs_the_apps_own_secrets(admin, asking):
+    asking.record = {**asking.record, "publish_error": {"message": "401 with vercel-token-123 and postgres://u:p@db/x"}}
+    assert admin.post(f"{BASE}/app_1/ask-agent", json={}).status_code == 200
+    assert admin.post(f"{BASE}/app_1/ask-agent", json={"error": "saw vercel-token-123"}).status_code == 200
+    assert "```\n401 with [redacted] and [redacted]\n```" in asking.posted[0][2].text
+    assert "```\nsaw [redacted]\n```" in asking.posted[1][2].text
+
+
+def test_ask_agent_sends_the_failed_publish_over_an_older_preview_error(admin, asking):
+    asking.record = {**asking.record, "error": {"message": "old preview"}, "publish_error": {"message": "new publish"}}
+    assert admin.post(f"{BASE}/app_1/ask-agent", json={}).status_code == 200
+    assert "new publish" in asking.posted[0][2].text and "old preview" not in asking.posted[0][2].text
+
+
+def test_ask_agent_has_an_answer_for_a_provisioning_failure(admin, asking):
+    """It is computed, never stored: without this Ask is a 409 and "Try again" forever."""
+    asking.record = {**asking.record, "publish_error": None}
+    asking.workflows = [
+        {"app_id": "app_1", "provider_name": "Neon", "service_ref": "postgres", "environment": "prod", "state": "failed"}
+    ]  # fmt: skip
+    assert admin.post(f"{BASE}/app_1/ask-agent", json={}).status_code == 200
+    assert "neon/postgres (live) did not finish setting up." in asking.posted[0][2].text
 
 
 def test_ask_agent_uses_the_refusal_canvas_saw_and_needs_some_failure(admin, asking):
@@ -683,6 +775,15 @@ def test_list_and_revoke_invites(invites):
         Item={"app_id": "INVITE#old", "kind": "invite", "target_app_id": "app_a", "invite_owner_id": "org_a",
               "email": "old@x.co", "expires_at": "2020-01-01T00:00:00+00:00"}
     )  # fmt: skip
+    # Another workspace's row naming this app: never listed, never revoked.
+    table.put_item(
+        Item={"app_id": "INVITE#foreign", "kind": "invite", "target_app_id": "app_a", "invite_owner_id": "org_other",
+              "email": "bo@x.co", "expires_at": "2099-01-01T00:00:00+00:00"}
+    )  # fmt: skip
+    table.put_item(
+        Item={"app_id": "INVITE#foreign2", "kind": "invite", "target_app_id": "app_a", "invite_owner_id": "org_other",
+              "email": "zed@x.co", "expires_at": "2099-01-01T00:00:00+00:00"}
+    )  # fmt: skip
     r = admin.get(f"{BASE}/app_a/invites")
     assert r.status_code == 200 and r.json() == {"emails": ["bo@x.co", "cy@x.co"]}  # no hashes, no expired
     assert "INVITE#" not in r.text
@@ -693,6 +794,7 @@ def test_list_and_revoke_invites(invites):
     assert admin.get(f"{BASE}/app_b/invites").json() == {"emails": ["bo@x.co"]}  # this app's links only
     assert admin.request("DELETE", f"{BASE}/app_a/invites", json={"email": "not-an-email"}).status_code == 422
     assert admin.request("DELETE", f"{BASE}/app_a/invites", json={"email": "no@x.co"}).json() == {"revoked": 0}
+    assert table.get_item(Key={"app_id": "INVITE#foreign"}).get("Item")  # same email, another owner: left alone
 
     bo_a, cy, bo_a2, bo_b = (_token(m) for m in sent)
     app.dependency_overrides.clear()
@@ -701,6 +803,14 @@ def test_list_and_revoke_invites(invites):
     assert anyone.get(f"{BASE}/invite/{bo_a2}").status_code == 404
     assert anyone.get(f"{BASE}/invite/{cy}").status_code == 200
     assert anyone.get(f"{BASE}/invite/{bo_b}").status_code == 200
+
+
+async def test_invite_scan_reads_consistently(monkeypatch):
+    table = MagicMock()
+    table.scan.return_value = {"Items": []}
+    monkeypatch.setattr(svc.apps_repo, "_table", lambda: table)
+    await svc.apps_repo.list_invites("app_a")
+    assert table.scan.call_args.kwargs["ConsistentRead"] is True  # a revoke must not reappear on the next read
 
 
 def test_invite_email_names_the_app_by_its_display_name_escaped(invites):

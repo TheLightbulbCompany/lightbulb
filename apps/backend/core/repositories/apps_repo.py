@@ -352,7 +352,10 @@ async def list_invites(target_app_id: str) -> list[dict]:
     small, as for ``list_pending``); index ``target_app_id`` if Settings gets slow."""
     from boto3.dynamodb.conditions import Attr
 
-    kwargs: dict = {"FilterExpression": Attr("kind").eq("invite") & Attr("target_app_id").eq(target_app_id)}
+    kwargs: dict = {
+        "FilterExpression": Attr("kind").eq("invite") & Attr("target_app_id").eq(target_app_id),
+        "ConsistentRead": True,  # a revoked invite must not come back on the next read
+    }
     items: list[dict] = []
     while True:
         resp = await run_in_thread(_table().scan, **kwargs)

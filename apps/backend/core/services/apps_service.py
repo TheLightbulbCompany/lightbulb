@@ -1017,10 +1017,11 @@ async def put_source(
     keep = {app.get("live_source_id"), app.get("preview_want"), (app.get("publish_pending") or {}).get("source_id")}
     recent = sorted(sources, key=lambda k: sources[k]["at"])[-10:]
     sources = {k: v for k, v in sources.items() if k in keep or k in recent}
-    fields: dict = {"sources": sources}
-    if app.get("build"):  # new source is progress: the builder's wake count starts over (apps_run)
-        fields["build"] = {**app["build"], "due_at": None, "attempts": {"wake": 0}, "stuck": False}
-    await apps_repo.patch(app["app_id"], fields)
+    is_new = source_id not in (app.get("sources") or {})
+    await apps_repo.patch(app["app_id"], {"sources": sources})
+    from core.services import apps_run  # it imports this module
+
+    await apps_run.record_upload(app, actor.actor_id, actor.actor_kind, is_new=is_new)
     return {"app_id": app["app_id"], "source_id": source_id}
 
 

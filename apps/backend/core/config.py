@@ -449,7 +449,8 @@ class Settings(BaseSettings):
     APPS_DOMAIN: str = "apps.thelightbulb.company"
     APPS_HOSTED_ZONE_ID: str = ""
     # Resume a builder agent's dead turn without a person (core/services/apps_run.py). Off: today's note.
-    APPS_BUILD_WAKE: bool = True
+    # Stays off until it has had a dev run against a real room, dispatcher and Paperclip.
+    APPS_BUILD_WAKE: bool = False
 
     # Stripe Link Agent Wallet (agent purchases). Unconfigured (any of the three empty):
     # every route 404s and the UI hides. CLIENT_ID/SECRET come from Link's OAuth client

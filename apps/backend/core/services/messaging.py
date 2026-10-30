@@ -4498,7 +4498,7 @@ async def end_run_and_announce(owner_id: str, run_id: str, **kwargs: Any) -> dic
         from core.services import meeting_notes  # a meeting's notes run owes its organizer one mail
 
         await meeting_notes.on_notes_run_ended(owner_id, row)
-        from core.services import apps_run  # a builder's turn: a Stop cancels its retry, prose arms the stall timer
+        from core.services import apps_run  # a builder's turn ended or was stopped: nothing left to retry
 
         await apps_run.on_run_ended(owner_id, row)
     return row

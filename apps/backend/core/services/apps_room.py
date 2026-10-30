@@ -32,10 +32,11 @@ async def _author(owner_id: str, user_id: str, room_id: str) -> str | None:
     return None
 
 
-async def _builder(app: dict, room_id: str) -> dict | None:
-    """The member who builds this app: ``actor_id`` when it can run (a hook-token CLI with no agent
-    header stores the placeholder "agent", which is nobody), else the only agent with an open run,
-    else the first agent that can run. ``None``: nobody in the room can."""
+async def _builder(app: dict, room_id: str, *, guess: bool = True) -> dict | None:
+    """The member who builds this app: the one recorded at the source upload, else ``actor_id``, when
+    they can run (a hook-token CLI with no agent header stores the placeholder "agent", which is nobody).
+    ``guess``: otherwise someone who can hear it, for a line that must reach somebody: the only agent, the
+    only one with an open run, the first. A wake never guesses."""
     agents = sorted(
         (
             m
@@ -44,11 +45,14 @@ async def _builder(app: dict, room_id: str) -> dict | None:
         ),
         key=lambda m: m["id"],
     )
-    if not agents:
+    for wanted in ((app.get("build") or {}).get("builder"), app.get("actor_id")):
+        named = next((m for m in agents if m["id"] == wanted), None)
+        if named:
+            return named
+    if not guess or not agents:
         return None
-    actor = next((m for m in agents if m["id"] == app.get("actor_id")), None)
-    if actor or len(agents) == 1:
-        return actor or agents[0]
+    if len(agents) == 1:
+        return agents[0]
     running = {r.get("agentId") for r in await messaging_repo.list_open_runs_for_room(app["owner_id"], room_id)}
     busy = [m for m in agents if m["id"] in running]
     return busy[0] if len(busy) == 1 else agents[0]

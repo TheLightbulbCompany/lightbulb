@@ -85,6 +85,10 @@ Post these lines as written; fill in the `{braces}`. `{app}` is the app's name a
 "people in #{room}" (the start), "everyone in the workspace", "people you invited" or "anyone with
 the link".
 
+Progress notes while building are optional: one plain sentence about what the person will get
+("Setting up the sign-up form and where the answers go"), never a library, table, type or file
+name, and at most one every few minutes. The lines below stay exactly as specified.
+
 - Preview ready: "Your preview of {app} is ready in Canvas: {canvas_url}. It {what it does}; it
   keeps {what data it saves or reads}. Only people in #{room} can open it for now. Say "publish"
   (or press Publish in Canvas) to make it live." Only if `cost_cents` is present, add "Building it

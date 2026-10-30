@@ -112,6 +112,60 @@ async def test_a_profile_write_failure_is_raised_after_the_secret_and_pointer_la
     assert secret and pointer.await_count == 1
 
 
+APP_KEY = "apps/app_1/neon/prod"
+
+
+@pytest.mark.asyncio
+async def test_app_landing_skips_every_profile_and_uses_app_secret_key(stores):
+    secret, pointer, patched = stores
+    env = {"connection_string": "postgres://x", "project_id": "neon_p"}
+    await mod.land_credentials(
+        owner_id="o1",
+        resource={**POINTER, "provider": "neon"},
+        env=env,
+        land_in_profiles=False,
+        secret_provider=APP_KEY,
+    )
+    assert secret == {("o1", APP_KEY): env}
+    # No company pointer (Settings, revoke, build_provisioned_env) and no agent profile.
+    pointer.assert_not_awaited()
+    assert patched == []
+
+
+@pytest.mark.asyncio
+async def test_app_landing_still_refuses_a_reserved_name(stores):
+    from core.services.provisioning_workflow import WorkflowRefused
+
+    secret, _, _ = stores
+    with pytest.raises(WorkflowRefused):
+        await mod.land_credentials(
+            owner_id="o1", resource=POINTER, env={"LIGHTBULB_X": "x"}, land_in_profiles=False, secret_provider=APP_KEY
+        )
+    assert not secret
+
+
+@pytest.mark.asyncio
+async def test_build_provisioned_env_never_includes_app_secrets(stores):
+    secret, pointer, _ = stores
+    await mod.land_credentials(owner_id="o1", resource=POINTER, env={"RESEND_API_KEY": "re_123"})
+    await mod.land_credentials(
+        owner_id="o1",
+        resource={**POINTER, "resource_id": "res-app", "env_keys": ["RESEND_API_KEY", "token"]},
+        env={"RESEND_API_KEY": "app_value", "token": "vercel_t"},
+        land_in_profiles=False,
+        secret_provider=APP_KEY,
+    )
+    # The integrations rows are exactly what the landings recorded.
+    rows = [
+        {"provider": mod.integrations_repo.projects_key(p), "actor": "projects", "provider_resources": [r]}
+        for (_, p, r) in (c.args for c in pointer.await_args_list)
+    ]
+    with patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=rows)):
+        env = await mod.build_provisioned_env("o1")
+    assert env == {"RESEND_API_KEY": "re_123"}
+    assert secret[("o1", APP_KEY)]["RESEND_API_KEY"] == "app_value"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["PAPERCLIP_API_KEY", "AWS_SECRET_ACCESS_KEY", "OPENROUTER_API_KEY"])
 async def test_a_reserved_env_name_is_refused_before_any_write(stores, name):

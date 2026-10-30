@@ -2037,6 +2037,35 @@ async def test_bind_records_the_apps_project_not_the_companys():
 
 
 @pytest.mark.asyncio
+async def test_bind_lands_an_app_credential_under_the_app_not_the_company():
+    row = _approved(state="provisioning", resource_id="res_1", app_id="app_1", environment="prod")
+    env_info = {"resource": "res_1", "configuration": {"project_id": "p", "token": "t"}}
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "stripe_project_id": "proj_app"})),
+        patch.object(mod.api, "get_resource", AsyncMock(return_value={"id": "res_1", "status": "complete"})),
+        patch.object(mod.api, "reveal_access_configuration", AsyncMock(return_value=env_info)),
+        patch.object(mod, "land_credentials", AsyncMock()) as land,
+        patch.object(mod.repo, "transition", AsyncMock(side_effect=[_row(state="binding"), _row(state="active")])),
+    ):
+        await mod.advance(row)
+    kw = land.await_args.kwargs
+    assert kw["land_in_profiles"] is False
+    # One key per RESOURCE: Neon and Vercel both reveal `project_id`.
+    assert kw["secret_provider"] == "apps/app_1/posthog/prod"
+    assert {k: kw["resource"][k] for k in ("level", "app_id", "environment")} == {
+        "level": "app",
+        "app_id": "app_1",
+        "environment": "prod",
+    }
+    assert mod.work_products.register.await_args.kwargs["metadata"] == {
+        "workflow_id": "pwf_1",
+        "level": "app",
+        "app_id": "app_1",
+        "environment": "prod",
+    }
+
+
+@pytest.mark.asyncio
 async def test_create_resource_threads_environment():
     with (
         patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "stripe_project_id": "proj_app"})),

@@ -1148,11 +1148,22 @@ async def _bind(account_id: str, row: dict, resource: dict) -> dict:
         "status": "active",
         "env_keys": sorted(env),
         "dashboard_url": None,  # deep links are minted on click, never stored
-        "level": "company",  # spec §3.4
         "workflow_id": row["workflow_id"],
         "project_id": project_id,
     }
-    await land_credentials(owner_id=row["owner_id"], resource=pointer, env=env)
+    scope = {"level": "company"}  # spec §3.4
+    landing = {}
+    if row.get("app_id"):
+        # An app's credential stays in Secrets Manager under the app, one key per RESOURCE
+        # (Neon and Vercel both reveal `project_id`), and never reaches an agent profile.
+        environment = row.get("environment") or "prod"
+        scope = {"level": "app", "app_id": row["app_id"], "environment": environment}
+        landing = {
+            "land_in_profiles": False,
+            "secret_provider": f"apps/{row['app_id']}/{row['provider_name'].lower()}/{environment}",
+        }
+    pointer.update(scope)
+    await land_credentials(owner_id=row["owner_id"], resource=pointer, env=env, **landing)
     # Best-effort receipt on the originating issue; `register` skips (debug
     # log, None) when the row carries no issue_id and never raises — a missing
     # receipt must not fail the rail.
@@ -1163,7 +1174,7 @@ async def _bind(account_id: str, row: dict, resource: dict) -> dict:
         title=f"Provisioned {row['service_ref']}",
         issue_id=row.get("issue_id"),
         external_id=row["resource_id"],
-        metadata={"workflow_id": row["workflow_id"], "level": "company"},
+        metadata={"workflow_id": row["workflow_id"], **scope},
     )
     # Stamp the NAMES onto the workflow row too, so the facts file stays a
     # single query and can never disagree with the pointer.

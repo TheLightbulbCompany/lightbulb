@@ -1,6 +1,7 @@
 """The `lightbulb` Hermes tool plugin: the room tools OpenClaw gave us for free."""
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import logging
@@ -700,6 +701,89 @@ def _request_approval(args: dict, **_kw) -> str:
     return json.dumps(result)
 
 
+# ---- ask_person: a question, or a blocked report, as a Paperclip interaction ---------------------
+# Paperclip's issue-thread interactions already reach Activity's Needs you ("has a question for
+# you", core/services/activity.py render_interaction) and wake the assignee when answered. Agents
+# only had a hand-built raw API call for them, so a blocked agent left a comment nobody read
+# (G1, 30 Oct: ISOA-867 sat 8 days). One named tool, like request_approval above.
+ASK_PERSON_SCHEMA = {
+    "name": "ask_person",
+    "description": "Ask a person a question on your task: it shows in their Needs you, and their answer "
+                   "wakes you with it. Use it instead of guessing between options, and instead of a "
+                   "comment when you are blocked (blocked: true also marks the task blocked). Give 2 to 4 "
+                   "likely answers, recommended first, or none for a typed answer. In a room conversation, "
+                   "ask in your reply instead.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "One sentence."},
+            "options": {"type": "array", "items": {"type": "string"},
+                        "description": "2 to 4 likely answers, recommended first."},
+            "details": {"type": "string", "description": "What the person needs to know to answer."},
+            "task": {"type": "string",
+                     "description": "The task this is about, like WAL-6. Defaults to the task you are running."},
+            "blocked": {"type": "boolean", "description": "True when the work cannot continue until the answer."},
+        },
+        "required": ["question"],
+    },
+}
+ASK_IN_REPLY = "No task to ask on: in a room conversation, ask in your reply instead."
+
+
+def _ask_person(args: dict, **_kw) -> str:
+    question = str(args.get("question") or "").strip()
+    options = [str(o).strip() for o in (args.get("options") or []) if str(o).strip()]
+    if not question:
+        return "question is required."
+    if options and not 2 <= len(options) <= 4:
+        return "Give 2 to 4 options, or none for a typed answer."
+    ref = str(args.get("task") or "").strip() or _scope_secret("PAPERCLIP_TASK_ID")
+    if not ref:
+        return ASK_IN_REPLY
+    base, key = _scope_secret("PAPERCLIP_API_URL").rstrip("/"), _scope_secret("PAPERCLIP_API_KEY")
+    if not base or not key:
+        return "ask_person is unavailable: this turn has no Paperclip credentials."
+    run_id = _scope_secret("PAPERCLIP_RUN_ID") or None
+    try:
+        try:
+            issue = _paperclip_call("GET", f"{base}/api/issues/{urllib.parse.quote(ref)}", key)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return f"Question not created: task {ref} was not found."
+            raise
+        me = _paperclip_call("GET", f"{base}/api/agents/me", key)
+        company = _paperclip_call("GET", f"{base}/api/companies/{me['companyId']}", key)
+        blocked = False
+        if args.get("blocked"):
+            change = {"status": "blocked", "unblockDescriptor": {
+                "owner": {"agentId": me["id"]},  # an agent may name only itself (heartbeat.md)
+                "action": f"Resume when the person answers: {question}"[:500]}}
+            try:
+                _paperclip_call("PATCH", f"{base}/api/issues/{issue['id']}", key, change, run_id)
+                blocked = True
+            except urllib.error.HTTPError as exc:
+                blocked = exc.code == 422  # already blocked; the question still goes out
+        choices = ([{"id": f"o{i}", "label": label[:1000]} for i, label in enumerate(options, 1)]
+                   or [{"id": "answer", "label": "Type your answer", "freeText": True}])
+        prompt = {"id": "q1", "prompt": question[:4000], "selectionMode": "single", "required": True,
+                  "options": choices}
+        if str(args.get("details") or "").strip():
+            prompt["helpText"] = str(args["details"]).strip()[:4000]
+        digest = hashlib.sha256(question.encode()).hexdigest()[:16]
+        body = {"kind": "ask_user_questions", "resolverPolicy": "board_only",
+                "continuationPolicy": "wake_assignee", "idempotencyKey": f"ask:{issue['id']}:{digest}",
+                "title": question[:240],
+                "payload": {"version": 1, "supersedeOnUserComment": True, "questions": [prompt]}}
+        made = _paperclip_call("POST", f"{base}/api/issues/{issue['id']}/interactions", key, body, run_id)
+    except urllib.error.HTTPError as exc:
+        return f"Question not created: {_http_error_text(exc)}."
+    except Exception as exc:  # noqa: BLE001
+        return f"Question not created: {type(exc).__name__}."
+    ident = issue.get("identifier") or issue["id"]
+    return json.dumps({"interactionId": made.get("id"), "blocked": blocked,
+                       "link": f"{_app_url()}/{company.get('issuePrefix')}/issues/{ident}"})
+
+
 def _log_memory_full(tool_name: str = "", result=None, **_kw) -> None:
     """Hermes refuses a built-in memory write over its char budget and tells only the model."""
     if tool_name == "memory" and isinstance(result, str) and "would exceed the limit" in result:
@@ -813,6 +897,8 @@ def register(ctx) -> None:
                       description=PURCHASE_SCHEMA["description"], emoji="💳")
     ctx.register_tool("request_approval", "lightbulb", APPROVAL_SCHEMA, _request_approval,
                       description=APPROVAL_SCHEMA["description"], emoji="✅")
+    ctx.register_tool("ask_person", "lightbulb", ASK_PERSON_SCHEMA, _ask_person,
+                      description=ASK_PERSON_SCHEMA["description"], emoji="❓")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,
                       description=SESSIONS_SCHEMA["description"], emoji="🖥️")
     ctx.register_tool("lightbulb_network", "lightbulb", NETWORK_SCHEMA, _network,

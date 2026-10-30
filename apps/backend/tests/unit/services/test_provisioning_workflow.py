@@ -2179,3 +2179,38 @@ async def test_unchanged_catalog_before_app_resource_post_still_creates():
     ):
         await mod._create_resource("acct_1", row)
     create.assert_awaited_once()
+
+
+# --- per-provider limit from the app budget ---------------------------------
+
+
+async def _approve_app_row(service):
+    approval = mod.snapshot_of(service, PROVIDER, CONFIG, environment="crew-schedule — live")
+    row = _row(state="awaiting_approval", approval=approval, app_id="app_1", environment="prod")
+    with (
+        patch.object(mod.repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "budget_usd": 10})),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[service])),
+        patch.object(mod.api, "payment_profile", AsyncMock(return_value={"id": "pp_1"})),
+        patch.object(mod.api, "update_limit", AsyncMock(return_value={})) as limit,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="connecting_provider"))) as move,
+    ):
+        await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_admin")
+    return limit, move
+
+
+@pytest.mark.asyncio
+async def test_paid_app_resource_sets_provider_limit_from_budget():
+    limit, move = await _approve_app_row(_paid("$20/mo"))
+    # cents; the client stringifies it ("1000") on the wire
+    limit.assert_awaited_once_with(
+        "acct_1", max_amount=1000, currency="usd", recurring_interval="month", provider="prvdr_1"
+    )
+    assert move.await_args.kwargs["to_state"] == "connecting_provider"
+
+
+@pytest.mark.asyncio
+async def test_free_app_resource_sets_no_limit():
+    limit, move = await _approve_app_row(SERVICE)
+    limit.assert_not_awaited()
+    assert move.await_args.kwargs["to_state"] == "connecting_provider"

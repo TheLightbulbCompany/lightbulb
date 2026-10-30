@@ -599,6 +599,18 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
                 },
             )
 
+    if row.get("app_id") and fresh.get("pricing_type") == "paid":
+        # The app's budget caps this provider (cents). A Stripe failure here
+        # propagates, like the payment_profile read above.
+        budget = (await apps_repo.get(row["app_id"]) or {}).get("budget_usd") or 0
+        await api.update_limit(
+            account_id,
+            max_amount=int(budget * 100),
+            currency="usd",
+            recurring_interval="month",
+            provider=row["provider_id"],
+        )
+
     approved = {"approval": fresh, "approved_by": approved_by, "approved_at": utc_now_iso()}
     if usage_limit:
         approved["usage_limit"] = usage_limit

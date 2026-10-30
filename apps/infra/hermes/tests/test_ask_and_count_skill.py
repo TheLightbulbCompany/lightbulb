@@ -1,4 +1,5 @@
-"""Blocked or unsure goes to ask_person; a count of tasks comes from lightbulb_board.
+"""Blocked or unsure goes to ask_person; a count of tasks comes from the board itself,
+through the Paperclip skill's own list route (no wrapper tool: it called the same route).
 
 G1 (30 Oct 2026, 42 real failures): the paperclip skill told a blocked agent that "the comment is
 what gets a human's attention", and nobody read the comments (ISOA-867 sat 8 days, ISOA-752 had
@@ -34,7 +35,8 @@ def test_both_skills_carry_the_ask_and_count_rules(tmp_path):
     for rel in ("paperclip/SKILL.md", "lightbulb/SKILL.md"):
         text = (out / rel).read_text()
         assert "`ask_person`" in text, rel
-        assert "`lightbulb_board`" in text, rel
+        assert "`lightbulb_board`" not in text, rel
+        assert "Any count or status of tasks" in text, rel
 
 
 def test_the_waiting_posture_rule_agrees_with_ask_person(tmp_path):
@@ -50,3 +52,17 @@ def test_the_skill_says_one_open_question_per_task(tmp_path):
     text = (_built(tmp_path) / "paperclip/references/interactions.md").read_text()
     assert "does not make a second card" not in text
     assert "One open question per task" in text
+
+
+def test_the_count_rule_points_at_the_skills_own_list_route(tmp_path):
+    text = (_built(tmp_path) / "paperclip/SKILL.md").read_text()
+    assert "references/hot-routes.md" in text.split("Any count or status of tasks", 1)[1].split("\n", 1)[0]
+
+
+def test_no_wrapper_board_tool_is_registered():
+    import sys
+    sys.path.insert(0, str(HERMES / "plugins"))
+    import lightbulb
+
+    assert not hasattr(lightbulb, "_board")
+    assert "lightbulb_board" not in (HERMES / "plugins/lightbulb/plugin.yaml").read_text()

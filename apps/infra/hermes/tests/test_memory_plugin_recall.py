@@ -98,7 +98,7 @@ def test_prefetch_malformed_page_returns_board_only(mod, backend, reply):
     backend.reply = reply
     backend.board = [{"identifier": "ISOA-9", "title": "Launch page"}]
     out = provider(mod, FakeClient()).prefetch(said("launch?"))
-    assert out.startswith("Task board right now") and "Remembered" not in out
+    assert out.startswith("Task board, partial") and "Remembered" not in out
 
 
 @pytest.mark.parametrize("reply", [[], {"results": [None]}, {"results": "x"}])

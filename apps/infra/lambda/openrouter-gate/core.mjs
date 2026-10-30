@@ -19,11 +19,25 @@ export async function keyInfo(key) {
   if (!res.ok) throw new Error(`key info ${res.status}`);
   return (await res.json())?.data ?? {};
 }
-async function keyIsSpent(key, keyInfoImpl) {
+// null means unproven: a failed read or a key with no limit never stamps a whole day.
+async function keyRemainingUsd(key, keyInfoImpl) {
   try {
-    const remaining = Number((await keyInfoImpl(key))?.limit_remaining);
-    return Number.isFinite(remaining) && remaining < SPENT_BELOW_USD;
-  } catch { return false; } // unproven: never stamp a whole day on a failed check
+    const remaining = (await keyInfoImpl(key))?.limit_remaining;
+    return remaining == null || !Number.isFinite(Number(remaining)) ? null : Number(remaining);
+  } catch { return null; }
+}
+// What this request could cost at the policy's ceiling (max_price is USD per million tokens).
+// ponytail: prompt tokens guessed at 4 bytes each; send the real count if a request ever lands between.
+function requestCeilingUsd(body, policy, promptBytes) {
+  const output = Math.max(body.max_tokens ?? 0, body.max_completion_tokens ?? 0);
+  return (output * policy.max_price.completion + (promptBytes / 4) * policy.max_price.prompt) / 1e6;
+}
+// OpenRouter's reason, for the log: named fields only (metadata.flagged_input can echo the prompt).
+function refusalFields(status, upstreamBody) {
+  let error;
+  try { error = JSON.parse(upstreamBody)?.error; } catch { /* not JSON: the status still logs */ }
+  const text = value => value == null ? null : String(value).replace(/sk-or-[\w-]+/g, '[key]').slice(0, 300);
+  return { upstream_status: status, upstream_code: text(error?.code), limit_source: text(error?.metadata?.limit_source), scope: text(error?.metadata?.scope), reason: text(error?.metadata?.reason), upstream_message: text(error?.message) };
 }
 
 // Shared by chat and the models-list probe: same bearer -> owner_id -> denied check.
@@ -194,11 +208,13 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     // A capped owner's per-key daily limit: OpenRouter answers 403 "Key limit exceeded".
     // Answer with the daily-cap 429 the limit card renders. Every 403 is held until its body
     // says why: a disabled key must surface as itself, not a cap, and "Key limit exceeded" on a
-    // key with money left (any owner) means the account is empty. A 402 is OpenRouter's
-    // insufficient-credits answer — the ACCOUNT, never the key (a key's daily limit is the 403) —
-    // so a capped 402 is always the paging 503. It used to be taken as the cap outright, which
-    // stamped every trial capped for the day and never paged (2026-10-26, $0.0005 left).
-    let capHit = false, held403 = null, held402 = false, keyLimit = false;
+    // key with money left (any owner) means the account is empty. A 402 is either: OpenRouter's docs
+    // list limit_source openrouter_key_limit as well as openrouter_credits. Only the key's remaining
+    // allowance tells them apart: too little for this request is the cap (2026-10-30, $0.004 left,
+    // 503s for the rest of the day); real allowance left is the empty account and the paging 503.
+    // Every capped 402 used to be taken as the cap, which stamped every trial for the day and never
+    // paged (2026-10-26, $0.0005 left on the account).
+    let capHit = false, held403 = null, held402 = false, keyLimit = false, refusal = '';
     const result = await forwardImpl({ body, key: secret,
       writeHead: (upstreamStatus, headers) => {
         if (capped && upstreamStatus === 402) { held403 = []; held402 = true; return; }
@@ -208,14 +224,21 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       write: chunk => capHit || (held403 ? held403.push(chunk) > 0 : responder.write(chunk)),
       waitForDrain: () => { if (!responder.waitForDrain) throw new Error('Client drain unavailable'); return responder.waitForDrain(); }, onGenerationId,
       end: (upstreamBody = '') => {
-        if (held403 && (held402 || /key limit exceeded/i.test(upstreamBody))) { keyLimit = true; return; } // answered below, once the key's spend is read
+        if (held403 && (held402 || /key limit exceeded/i.test(upstreamBody))) { keyLimit = true; refusal = upstreamBody; return; } // answered below, once the key's spend is read
         else if (held403) { responder.writeHead(403, { 'content-type': 'application/json' }); held403.forEach(chunk => responder.write(chunk)); }
         if (capHit) responder.write(dailyCap().body());
         responder.end();
       },
       abortSignal: responder.abortSignal });
     if (keyLimit) {
-      if (!held402 && await keyIsSpent(secret, keyInfoImpl)) {
+      const remaining = await keyRemainingUsd(secret, keyInfoImpl);
+      // Owner question: what did OpenRouter actually say when it refused?
+      log(JSON.stringify({ ...refusalFields(held402 ? 402 : 403, refusal), limit_remaining: remaining, owner_id: ownerId, tier, request_id: requestId }));
+      const spentBelow = capped ? Math.max(SPENT_BELOW_USD, requestCeilingUsd(body, policy, Buffer.byteLength(raw))) : SPENT_BELOW_USD;
+      // OpenRouter names the 402's source: only openrouter_key_limit is the key's cap. Credits and the
+      // in-flight budget are the account (the latter transient), so they stay the paging 503. Absent: the heuristic.
+      const notTheKey = ['openrouter_credits', 'openrouter_in_flight_budget'].includes(refusalFields(0, refusal).limit_source);
+      if (remaining !== null && !notTheKey && remaining < spentBelow) {
         if (capped) {
           capHit = true;
           responder.writeHead(429, { 'content-type': 'application/json' }); responder.write(dailyCap().body()); responder.end();

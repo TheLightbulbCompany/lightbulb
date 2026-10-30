@@ -281,7 +281,9 @@ async def test_runtime_logs_returns_tail_when_stream_stays_open(calls, monkeypat
             yield b'{"timestampInMs": 1, "message": "a"}\n{"timestampInMs": 2, "message": "b"}\n'
             await asyncio.sleep(10)
 
-    monkeypatch.setattr(vc, "TIMEOUT_S", 0.2)
+    # R56: the stream window is its own (short) constant, not the per-request timeout
+    assert vc.LOGS_WINDOW_S <= 8 < vc.TIMEOUT_S
+    monkeypatch.setattr(vc, "LOGS_WINDOW_S", 0.2)
     monkeypatch.setattr(vc, "_transport", httpx.MockTransport(lambda req: httpx.Response(200, stream=Hang())))
     assert await vc.runtime_logs(CREDS, "d", limit=1) == [{"at": 2, "message": "b"}]
 

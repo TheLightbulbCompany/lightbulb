@@ -7,6 +7,7 @@ credentials never mix with the company's or another app's.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from botocore.exceptions import ClientError
 
@@ -55,6 +56,29 @@ async def patch(app_id: str, fields: dict) -> dict:
         **kwargs,
     )
     return resp.get("Attributes")
+
+
+async def take_lease(app_id: str, *, seconds: int) -> bool:
+    """Hold ``progress_lease_until`` for ``seconds`` unless another holder's is still running."""
+    now = datetime.now(UTC)
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"app_id": app_id},
+            UpdateExpression="SET progress_lease_until = :until",
+            ConditionExpression="attribute_exists(app_id) AND (attribute_not_exists(progress_lease_until) OR "
+            "attribute_type(progress_lease_until, :null_t) OR progress_lease_until < :now)",
+            ExpressionAttributeValues={
+                ":until": (now + timedelta(seconds=seconds)).isoformat(),
+                ":now": now.isoformat(),
+                ":null_t": "NULL",
+            },
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
 
 
 async def set_stripe_project_id(app_id: str, project_id: str) -> bool:

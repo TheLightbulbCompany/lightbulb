@@ -28,7 +28,7 @@ from routers.teams._guards import require_always_on_entitlement
 
 router = APIRouter()
 
-MAX_UPLOAD = MAX_BYTES + 1024 * 1024  # the archive plus the form's other fields
+MAX_UPLOAD = MAX_BYTES + 512 * 1024  # the archive plus the form's other fields, under API Gateway's 10 MB
 _AGENT_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
 _RETRY = "try again; if it keeps failing, report it"
 _STATUS = {

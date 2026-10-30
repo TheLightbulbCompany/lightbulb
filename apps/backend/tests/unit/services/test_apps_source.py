@@ -165,3 +165,12 @@ async def test_hardlink_git_dir_duplicates_trailing_and_commit(s3):
 async def test_get_missing_raises_source_not_found(s3):
     with pytest.raises(apps_source.SourceNotFound):
         await apps_source.get("o1", "a1", "deadbeef")
+
+
+def test_limits_fit_api_gateway():
+    """R55: API Gateway (HTTP API) caps a payload at 10 MB; the upload route follows MAX_BYTES."""
+    from routers import apps as route
+
+    assert apps_source.MAX_BYTES == 9 * 1024 * 1024
+    assert apps_source.MAX_UNCOMPRESSED == 100 * 1024 * 1024
+    assert apps_source.MAX_BYTES < route.MAX_UPLOAD <= 10_000_000

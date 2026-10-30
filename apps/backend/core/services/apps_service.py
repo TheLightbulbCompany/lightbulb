@@ -56,6 +56,8 @@ _COMMENTS = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 _DB_URL = re.compile(r"postgres(?:ql)?://\S+")
 # A line the starter's /api/_lightbulb/errors route printed (plan 2 logs browser errors with this marker).
 _CLIENT_MARKS = ("[lightbulb:client]", "/api/_lightbulb/errors")
+_UPLOADS = 8  # concurrent file uploads per deploy
+_LEASE_S = 60  # one read steps an app at a time (R56)
 
 
 @dataclass(frozen=True)
@@ -342,9 +344,15 @@ async def _redeploy_live(app: dict, creds: dict) -> None:
 
 async def _deploy(app: dict, creds: dict, source_id: str, *, production: bool) -> str:
     files = await _files(app["owner_id"], app["app_id"], source_id)
-    listing = [
-        {"file": p, "sha": await vercel.upload_file(creds, data), "size": len(data)} for p, data in files.items()
-    ]
+    gate = asyncio.Semaphore(_UPLOADS)
+
+    async def upload(data: bytes) -> str:
+        async with gate:
+            return await vercel.upload_file(creds, data)
+
+    # R56: concurrent, so a request stays inside API Gateway's 30 s.
+    shas = await asyncio.gather(*(upload(data) for data in files.values()))
+    listing = [{"file": p, "sha": sha, "size": len(data)} for (p, data), sha in zip(files.items(), shas, strict=True)]
     dep = await vercel.create_deployment(
         creds,
         name=app["name"],
@@ -477,6 +485,19 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
         return rows, None
     dev_db = await _secret(app, rows, "neon", "dev", "connection_string")
     live_db = await _secret(app, rows, "neon", "prod", "connection_string")
+    # R56: one read at a time steps an app (no double build/reset); another read reports the record.
+    if not await apps_repo.take_lease(app["app_id"], seconds=_LEASE_S):
+        return rows, None
+    try:
+        fresh = plain(await apps_repo.get(app["app_id"], consistent_read=True))  # what the last holder left
+        app.clear()
+        app.update(fresh)
+        return rows, await _steps(app, creds, dev_db, live_db)
+    finally:
+        await _patch(app, {"progress_lease_until": None})
+
+
+async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | None) -> AppError | None:
     try:
         if not app.get("protection_off"):
             await vercel.disable_protection(creds)
@@ -485,10 +506,9 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
         await _check_preview(app, creds)
         await _check_publish(app, creds)
         want = app.get("preview_want")
-        # ponytail: no lock; two concurrent reads can both reset/deploy (an extra build). Lock per app if seen.
         if dev_db and want and app.get("preview_migrations") != _source(app, want).get("migrations"):
             if app.get("error"):  # a failed reset/build waits for the next `up`, not every read
-                return rows, None
+                return None
             migrations, seed = _migrations(await _files(app["owner_id"], app["app_id"], want))
             names = [n for n, _ in migrations]
             try:
@@ -499,7 +519,7 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
                 await _patch(
                     app, {"error": {"code": e.code, "message": str(e), "next": "fix the migration and run up again"}}
                 )
-                return rows, None
+                return None
             await _patch(app, {"preview_migrations": names})
         built = {"source_id": want, "sample": not dev_db}
         if want and app.get("preview_built") != built:
@@ -513,8 +533,8 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
         await _preview_alias(app, creds)
     except vercel.VercelError as e:
         logger.warning("apps: %s vercel step failed: %s", app["app_id"], e.code)
-        return rows, {"code": f"vercel_{e.code}", "message": str(e), "next": "run up again in a minute"}
-    return rows, None
+        return {"code": f"vercel_{e.code}", "message": str(e), "next": "run up again in a minute"}
+    return None
 
 
 # --- results ------------------------------------------------------------------------------------

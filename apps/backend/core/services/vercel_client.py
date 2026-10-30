@@ -17,6 +17,7 @@ import httpx
 
 API = "https://api.vercel.com"
 TIMEOUT_S = 30
+LOGS_WINDOW_S = 8  # R56: how long runtime_logs reads the stream, inside API Gateway's 30 s
 
 # Tests swap in an httpx.MockTransport; production leaves it None.
 _transport: httpx.AsyncBaseTransport | None = None
@@ -163,12 +164,12 @@ async def deployment_events(creds: dict, deployment_id: str, *, limit: int = 50)
 
 
 async def runtime_logs(creds: dict, deployment_id: str, *, limit: int = 50) -> list[dict]:
-    """Last ``limit`` runtime log lines. Streamed; if the stream is still open at TIMEOUT_S, returns what was read."""
+    """Last ``limit`` runtime log lines. Streamed; if the stream is still open at LOGS_WINDOW_S, returns what was read."""
     h = _headers(creds)
     path = f"/v1/projects/{_pid(creds)}/deployments/{_q(deployment_id)}/runtime-logs"
     rows: list[dict] = []
     try:
-        async with asyncio.timeout(TIMEOUT_S), _client() as c:
+        async with asyncio.timeout(LOGS_WINDOW_S), _client() as c:
             async with c.stream("GET", API + path, params={"teamId": creds["org_id"]}, headers=h) as r:
                 if r.status_code >= 300:
                     try:

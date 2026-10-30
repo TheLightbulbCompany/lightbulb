@@ -13,8 +13,9 @@ from botocore.exceptions import ClientError
 
 from core.config import settings
 
-MAX_BYTES = 100 * 1024 * 1024
-MAX_UNCOMPRESSED = 500 * 1024 * 1024
+# R55: API Gateway (HTTP API) refuses payloads over 10 MB; the CLI refuses at MAX_BYTES too.
+MAX_BYTES = 9 * 1024 * 1024
+MAX_UNCOMPRESSED = 100 * 1024 * 1024
 MAX_MEMBERS = 20_000
 
 

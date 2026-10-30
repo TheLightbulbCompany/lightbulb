@@ -4,7 +4,7 @@ import asyncio
 
 import psycopg
 
-TIMEOUT_S = 120
+TIMEOUT_S = 25  # R56: the reset runs inside a request, under API Gateway's 30 s
 
 
 class AppsDbError(Exception):

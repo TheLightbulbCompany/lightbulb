@@ -896,3 +896,40 @@ async def test_remove_is_busy_when_a_card_cannot_be_cancelled(world):
         await svc.remove(OWNER, src["app_id"], confirm_name="crew", user_id="user_1")
     assert e.value.code == "busy"
     assert (await svc.apps_repo.get(src["app_id"]))["state"] != "destroyed"
+
+
+async def test_deploy_uploads_files_concurrently_eight_at_a_time(world, monkeypatch):
+    """R56: a deploy's uploads run side by side so the request fits API Gateway's 30 s."""
+    import asyncio
+
+    live = {"now": 0, "max": 0}
+
+    async def upload(creds, data):
+        live["now"] += 1
+        live["max"] = max(live["max"], live["now"])
+        await asyncio.sleep(0.01)
+        live["now"] -= 1
+        return f"sha{len(data)}"
+
+    monkeypatch.setattr(svc.vercel, "upload_file", upload)
+    src = await _source({**SRC_V1, **{f"app/f{i}.ts": "x" * i for i in range(20)}})
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])
+    assert live["max"] == 8
+    assert len(world.vercel.created()[0]["files"]) == 23
+
+
+async def test_a_read_holding_the_lease_keeps_others_off_vercel(world):
+    """R56: while one read steps the app, another only reports; the lease is released after."""
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    later = (svc.datetime.now(svc.UTC) + svc.timedelta(seconds=30)).isoformat()
+    await svc.apps_repo.patch(src["app_id"], {"progress_lease_until": later})
+    res = await svc.status(OWNER, src["app_id"])
+    assert world.vercel.calls == [] and world.reset.await_count == 0 and res["state"] == "building"
+    earlier = (svc.datetime.now(svc.UTC) - svc.timedelta(seconds=1)).isoformat()
+    await svc.apps_repo.patch(src["app_id"], {"progress_lease_until": earlier})
+    assert (await svc.status(OWNER, src["app_id"]))["state"] == "building"
+    assert (await svc.apps_repo.get(src["app_id"]))["progress_lease_until"] is None

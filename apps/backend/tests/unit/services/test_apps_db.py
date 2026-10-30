@@ -109,3 +109,10 @@ async def test_preview_writes_never_reach_live(pg_factory):
     await reset_preview(live, migrations=[MIG], seed_sql="INSERT INTO t VALUES (9, 'live');")
     await reset_preview(preview, migrations=[MIG], seed_sql=SEED)
     assert await _rows(live) == [9]
+
+
+def test_reset_fits_inside_a_request():
+    """R56: API Gateway gives a request 30 s."""
+    from core.services import apps_db
+
+    assert apps_db.TIMEOUT_S <= 25

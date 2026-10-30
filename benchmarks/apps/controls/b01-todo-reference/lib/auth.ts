@@ -1,6 +1,6 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { and, eq, gt } from "drizzle-orm";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { sessions, users } from "@/db/schema";
 import { db } from "./db";
@@ -15,16 +15,21 @@ export function hashPassword(pw: string): string {
 }
 export function checkPassword(pw: string, stored: string): boolean {
   const [salt, hash] = stored.split(":");
+  if (!salt || !hash) return false; // malformed stored hash: no match, no throw
   const want = Buffer.from(hash, "hex");
-  const got = scryptSync(pw, Buffer.from(salt, "hex"), want.length);
-  return timingSafeEqual(got, want);
+  if (!want.length) return false;
+  return timingSafeEqual(scryptSync(pw, Buffer.from(salt, "hex"), want.length), want);
 }
+/** Burn the same scrypt time as a real check, so an unknown email is not faster than a wrong password. */
+export const DUMMY_HASH = hashPassword("not-a-real-password");
 
 /** Start a session for `userId` and set its httpOnly cookie. */
 export async function startSession(userId: string) {
   const token = randomBytes(32).toString("hex");
   await db.insert(sessions).values({ tokenHash: sha(token), userId, expiresAt: new Date(Date.now() + WEEK * 1000) });
-  (await cookies()).set(COOKIE, token, { httpOnly: true, sameSite: "lax", path: "/", maxAge: WEEK });
+  // `secure` only over https in production: the eval serves the built app over plain http on localhost, where a Secure cookie would never come back.
+  const secure = process.env.NODE_ENV === "production" && (await headers()).get("x-forwarded-proto") === "https";
+  (await cookies()).set(COOKIE, token, { httpOnly: true, sameSite: "lax", path: "/", maxAge: WEEK, secure });
 }
 
 export async function endSession() {

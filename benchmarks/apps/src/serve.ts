@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { parse, stringify } from "yaml";
 
 const sh = promisify(execFile);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -36,20 +37,19 @@ function run(cmd: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): 
 
 const BUILD_ALLOW = ["esbuild", "sharp", "@tailwindcss/oxide", "unrs-resolver"];
 /**
- * Make `dir` its own pnpm workspace root with a narrow build-script allowlist (pnpm 12 `allowBuilds`, older `onlyBuiltDependencies`).
+ * Make `dir` its own pnpm workspace root with a build-script allowlist (pnpm 12 `allowBuilds`, older `onlyBuiltDependencies`).
  * pnpm 12 fails installs that leave dependency build scripts unapproved; a yaml here also stops the monorepo workspace from adopting the dir.
- * The builder's own entries are kept.
+ * Authoritative: builder output is untrusted and installs run on the host, so whatever the builder wrote under those keys
+ * (or dangerouslyAllowAllBuilds) is dropped; their other settings are kept.
  */
 export function writeBuildAllowlist(dir: string) {
   const f = join(dir, "pnpm-workspace.yaml");
-  let y = existsSync(f) ? readFileSync(f, "utf8").replace(/\s*$/, "\n") : "";
-  const has = (key: string, name: string) => new RegExp(`^\\s*(-\\s*)?['"]?${name.replace(/[/@]/g, "\\$&")}['"]?\\s*(:|$)`, "m").test(y.split(new RegExp(`^${key}:`, "m"))[1]?.split(/^\S/m)[0] ?? "");
-  const q = (n: string) => (n.startsWith("@") ? `"${n}"` : n);
-  if (!/^allowBuilds:/m.test(y)) y += "allowBuilds:\n" + BUILD_ALLOW.map((n) => `  ${q(n)}: true\n`).join("");
-  else for (const n of BUILD_ALLOW) if (!has("allowBuilds", n)) y = y.replace(/^allowBuilds:\s*\n/m, (m) => `${m}  ${q(n)}: true\n`);
-  if (!/^onlyBuiltDependencies:/m.test(y)) y += "onlyBuiltDependencies:\n" + BUILD_ALLOW.map((n) => `  - ${q(n)}\n`).join("");
-  else for (const n of BUILD_ALLOW) if (!has("onlyBuiltDependencies", n)) y = y.replace(/^onlyBuiltDependencies:\s*\n/m, (m) => `${m}  - ${q(n)}\n`);
-  writeFileSync(f, y);
+  let cfg: Record<string, unknown> = {};
+  try { const y = parse(existsSync(f) ? readFileSync(f, "utf8") : ""); if (y && typeof y === "object" && !Array.isArray(y)) cfg = y; } catch { /* unreadable yaml: start clean */ }
+  for (const k of Object.keys(cfg)) if (/^(allowBuilds|onlyBuiltDependencies|dangerouslyAllowAllBuilds|neverBuiltDependencies|ignoredBuiltDependencies)$/i.test(k.replace(/-/g, ""))) delete cfg[k];
+  cfg.allowBuilds = Object.fromEntries(BUILD_ALLOW.map((n) => [n, true]));
+  cfg.onlyBuiltDependencies = [...BUILD_ALLOW];
+  writeFileSync(f, stringify(cfg));
 }
 
 export interface ServeOpts { before?: { fixtureDir: string; seedSql: string } }

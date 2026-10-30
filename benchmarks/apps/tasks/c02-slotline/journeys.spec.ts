@@ -60,7 +60,7 @@ test("the slot picker offers the grid and booking removes the slot", async ({ br
   await pg.getByTestId("booking-form-date").fill(DATE);
   await expect(pg.getByTestId("slot-option")).toHaveCount(3);
   await pg.getByTestId("slot-option").nth(1).click();
-  await pg.getByTestId("booking-form-submit").click();
+  await Promise.all([pg.waitForResponse((r) => r.request().method() !== "GET"), pg.getByTestId("booking-form-submit").click()]); // let the write land before navigating
   await pg.goto(url("/bookings"));
   await expect(pg.getByTestId("booking-row")).toHaveAttribute("data-start", "2030-01-14T17:00:00.000Z");
   const after = (await api(pg, "GET", "/api/slots?practitionerId=" + p.id + "&serviceId=" + s.id + "&date=" + DATE)).body;

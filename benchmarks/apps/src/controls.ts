@@ -38,6 +38,8 @@ export async function runControls(deps: Partial<Deps> = {}): Promise<{ reference
       s = await serve(dir);
       if (!s.built) return { error: `did not build or start: ${s.buildLog.slice(-1500)}` };
       return await fn(s.url, dir, s.databaseUrl);
+    } catch (e) {
+      return { error: `threw: ${e instanceof Error ? e.stack ?? e.message : e}` }; // a failing reference must not stop the twin from running
     } finally {
       await s?.stop();
       rmSync(dir, { recursive: true, force: true });
@@ -68,4 +70,15 @@ export async function runControls(deps: Partial<Deps> = {}): Promise<{ reference
     detail.push("broken:", ...lines(broken));
   }
   return { referencePassed, brokenFailedAllProbes, judgeOnReference, detail: detail.join("\n") };
+}
+
+/** Run the controls and write controls.json (+ controls.log) into the results dir. Any failure, even a throw, is recorded as RED so the report withholds scores. */
+export async function writeControls(outDir: string, deps: Partial<Deps> = {}) {
+  let c: Awaited<ReturnType<typeof runControls>>;
+  try { c = await runControls(deps); }
+  catch (e) { c = { referencePassed: false, brokenFailedAllProbes: false, judgeOnReference: 0, detail: `controls threw: ${e instanceof Error ? e.stack ?? e.message : e}` }; }
+  const { detail, ...json } = c;
+  writeFileSync(join(outDir, "controls.json"), JSON.stringify(json, null, 2));
+  writeFileSync(join(outDir, "controls.log"), detail);
+  return c;
 }

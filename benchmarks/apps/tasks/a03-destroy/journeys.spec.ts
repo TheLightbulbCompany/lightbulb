@@ -8,7 +8,7 @@ test("customers can still be added and listed", async ({ page }) => {
   const name = uniq("Pat ");
   await page.getByTestId("contact-form-name").fill(name);
   await page.getByTestId("contact-form-email").fill(uniq("pat") + "@example.test");
-  await page.getByTestId("contact-form-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("contact-form-submit").click()]); // let the write land before navigating
   await page.goto(url("/contacts"));
   await expect(page.getByTestId("contact-row-name").filter({ hasText: name })).toHaveCount(1);
   await page.getByTestId("contact-row").filter({ hasText: name }).getByTestId("contact-row-link").click();

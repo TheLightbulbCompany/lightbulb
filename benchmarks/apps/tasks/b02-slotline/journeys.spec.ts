@@ -7,7 +7,7 @@ async function seed(page: import("@playwright/test").Page) {
   await page.goto(url("/practitioners/new"));
   await page.getByTestId("practitioner-form-name").fill(pn);
   await page.getByTestId("practitioner-form-specialty").fill("GP");
-  await page.getByTestId("practitioner-form-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("practitioner-form-submit").click()]); // let the write land before navigating
   await page.goto(url("/services/new"));
   await page.getByTestId("service-form-name").fill(sn);
   await page.getByTestId("service-form-duration").fill("30");
@@ -32,7 +32,7 @@ test("a booking is stored in UTC with a server-computed end", async ({ page }) =
   await page.getByTestId("booking-form-practitioner").selectOption({ label: pn });
   await page.getByTestId("booking-form-service").selectOption({ label: sn });
   await page.getByTestId("booking-form-start").fill("2030-01-15T10:00");
-  await page.getByTestId("booking-form-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("booking-form-submit").click()]); // let the write land before navigating
   await page.goto(url("/bookings"));
   const row = page.getByTestId("booking-row").first();
   await expect(row).toHaveAttribute("data-start", "2030-01-15T17:00:00.000Z");
@@ -47,7 +47,7 @@ test("cancelling keeps the booking", async ({ page }) => {
   await page.getByTestId("booking-form-practitioner").selectOption({ label: pn });
   await page.getByTestId("booking-form-service").selectOption({ label: sn });
   await page.getByTestId("booking-form-start").fill("2030-01-16T09:00");
-  await page.getByTestId("booking-form-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("booking-form-submit").click()]); // let the write land before navigating
   await page.goto(url("/bookings"));
   await page.getByTestId("booking-row-link").first().click();
   await page.getByTestId("booking-cancel-button").click();

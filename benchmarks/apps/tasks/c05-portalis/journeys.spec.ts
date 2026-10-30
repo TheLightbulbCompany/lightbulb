@@ -73,7 +73,7 @@ test("projects live in one org, and the switcher lists every org", async ({ brow
   await a.page.goto(url("/orgs/" + a.orgId + "/projects/new"));
   const name = uniq("Apollo ");
   await a.page.getByTestId("project-name-input").fill(name);
-  await a.page.getByTestId("project-create-submit").click();
+  await Promise.all([a.page.waitForResponse((r) => r.request().method() !== "GET"), a.page.getByTestId("project-create-submit").click()]); // let the write land before navigating
   await a.page.goto(url("/orgs/" + a.orgId + "/projects"));
   await expect(a.page.getByTestId("project-row").filter({ hasText: name })).toHaveCount(1);
   const p = (await api(a.page, "GET", "/api/orgs/" + a.orgId + "/projects")).body[0];

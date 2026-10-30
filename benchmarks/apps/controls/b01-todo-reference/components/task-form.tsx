@@ -11,8 +11,7 @@ export function TaskForm() {
     e.preventDefault();
     const b = Object.fromEntries(new FormData(e.currentTarget)) as Record<string, string>;
     if (!b.title.trim()) return setError("Title is required");
-    const r = await fetch("/api/tasks", { method: "POST", keepalive: true, // survives an immediate navigation
-       headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
+    const r = await fetch("/api/tasks", { method: "POST",  headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
     if (!r.ok) return setError((await r.json().catch(() => null))?.error ?? "Something went wrong");
     router.push("/tasks");
     router.refresh();

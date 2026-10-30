@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { serve } from "./serve.js";
+import { parse } from "yaml";
+import { serve, writeBuildAllowlist } from "./serve.js";
 
 const fx = (n: string) => resolve(import.meta.dirname, "__fixtures__", n);
 const containerOn = (databaseUrl: string) =>
@@ -12,6 +13,22 @@ const labelled = () =>
   execFileSync("docker", ["ps", "-q", "--filter", "label=lightbulb-eval=1"]).toString().split("\n").filter(Boolean).length;
 const psql = (c: string, sql: string) =>
   execFileSync("docker", ["exec", c, "psql", "-U", "postgres", "-tAc", sql]).toString().trim();
+
+describe("writeBuildAllowlist", () => {
+  it("is authoritative: builder allow-all and extra packages are dropped, other settings kept", () => {
+    const dir = mkdtempSync(join(tmpdir(), "allow-"));
+    writeFileSync(join(dir, "pnpm-workspace.yaml"), 'dangerouslyAllowAllBuilds: true\nallowBuilds: {"*": true, evil: true}\nonlyBuiltDependencies:\n  - evil\noverrides:\n  foo: 1.0.0\n');
+    writeBuildAllowlist(dir);
+    const y = parse(readFileSync(join(dir, "pnpm-workspace.yaml"), "utf8"));
+    const four = ["esbuild", "sharp", "@tailwindcss/oxide", "unrs-resolver"];
+    expect(Object.keys(y.allowBuilds).sort()).toEqual([...four].sort());
+    expect(Object.values(y.allowBuilds)).toEqual([true, true, true, true]);
+    expect([...y.onlyBuiltDependencies].sort()).toEqual([...four].sort());
+    expect(y.dangerouslyAllowAllBuilds).toBeUndefined();
+    expect(y.overrides).toEqual({ foo: "1.0.0" });
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
 
 describe.skipIf(!process.env.EVAL_IT)("serve", () => {
   const open: Array<{ stop(): Promise<void> }> = [];
@@ -62,8 +79,8 @@ describe.skipIf(!process.env.EVAL_IT)("serve", () => {
       expect(s.built).toBe(true);
       expect(psql(containerOn(s.databaseUrl), "select count(*) from information_schema.tables where table_name in ('users','sessions','tasks')")).toBe("3");
       const y = readFileSync(join(dir, "pnpm-workspace.yaml"), "utf8");
-      expect(y).toMatch(/allowBuilds:[\s\S]*esbuild: true/);
-      expect(y).toMatch(/onlyBuiltDependencies:[\s\S]*- esbuild/);
+      expect(parse(y).allowBuilds.esbuild).toBe(true);
+      expect(parse(y).onlyBuiltDependencies).toContain("esbuild");
       expect(lock(join(root, "pnpm-lock.yaml"))).toBe(before);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, T);

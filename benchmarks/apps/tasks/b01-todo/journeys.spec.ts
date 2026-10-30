@@ -9,7 +9,7 @@ test("sign up, add a task, see it listed", async ({ page }) => {
   await page.getByTestId("task-new-button").click();
   await page.getByTestId("task-form-title").fill(title);
   await page.getByTestId("task-form-priority").selectOption("high");
-  await page.getByTestId("task-form-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("task-form-submit").click()]); // let the write land before navigating
   await page.goto(url("/tasks"));
   await expect(page.getByTestId("task-row").filter({ hasText: title })).toHaveCount(1);
 });
@@ -40,7 +40,7 @@ test("complete, reopen, filter and delete", async ({ page }) => {
   await page.getByTestId("task-row").filter({ hasText: title }).getByTestId("task-row-link").click();
   await page.getByTestId("task-reopen-button").click();
   await expect(page.getByTestId("task-detail-status")).toHaveText("open");
-  await page.getByTestId("task-delete-button").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("task-delete-button").click()]); // let the write land before navigating
   await page.goto(url("/tasks"));
   await expect(page.getByTestId("task-row").filter({ hasText: title })).toHaveCount(0);
 });

@@ -8,7 +8,7 @@ async function restaurantWithItem(page: import("@playwright/test").Page) {
   await page.getByTestId("restaurant-form-name").fill(name);
   await page.getByTestId("restaurant-form-cuisine").fill("American");
   await page.getByTestId("restaurant-form-address").fill("1 Main St");
-  await page.getByTestId("restaurant-form-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("restaurant-form-submit").click()]); // let the write land before navigating
   await page.goto(url("/restaurants"));
   const id = await page.getByTestId("restaurant-row").filter({ hasText: name }).getAttribute("data-restaurant-id");
   await page.goto(url("/restaurants/" + id + "/manage"));

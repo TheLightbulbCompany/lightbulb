@@ -5,11 +5,11 @@ export function TaskActions({ id, done }: { id: string; done: boolean }) {
   const router = useRouter();
   const btn = "rounded border px-3 py-1.5";
   async function patch(done: boolean) {
-    await fetch(`/api/tasks/${id}`, { method: "PATCH", keepalive: true, headers: { "content-type": "application/json" }, body: JSON.stringify({ done }) });
+    await fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ done }) });
     router.refresh();
   }
   async function remove() {
-    await fetch(`/api/tasks/${id}`, { method: "DELETE", keepalive: true });
+    await fetch(`/api/tasks/${id}`, { method: "DELETE" });
     router.push("/tasks");
     router.refresh();
   }

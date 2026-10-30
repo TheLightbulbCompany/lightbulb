@@ -11,7 +11,7 @@ test("create a ticket and see it in the list", async ({ page }) => {
   await page.getByTestId("ticket-subject").fill(subject);
   await page.getByTestId("ticket-body").fill("Third floor printer is jammed");
   await page.getByTestId("ticket-priority").selectOption("high");
-  await page.getByTestId("ticket-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("ticket-submit").click()]); // let the write land before navigating
   await page.goto(url("/tickets"));
   const row = page.getByTestId("ticket-row").filter({ hasText: subject });
   await expect(row).toHaveCount(1);
@@ -34,7 +34,7 @@ test("edit, close, reopen, delete", async ({ page }) => {
   await expect(page.getByTestId("ticket-detail-status")).toHaveText("open");
   await page.getByTestId("ticket-edit").click();
   await page.getByTestId("ticket-subject").fill("VPN still down");
-  await page.getByTestId("ticket-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("ticket-submit").click()]); // let the write land before navigating
   await page.goto(url("/tickets/" + t.id));
   await expect(page.getByTestId("ticket-detail-subject")).toHaveText("VPN still down");
   await page.getByTestId("ticket-close").click();

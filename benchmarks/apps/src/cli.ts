@@ -1,9 +1,7 @@
 import { parseArgs } from "node:util";
 import { claudeCodeAdapter } from "./adapters/claude-code";
 import { codexAdapter } from "./adapters/codex";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { runControls } from "./controls";
+import { writeControls } from "./controls";
 import { judge } from "./judge";
 import { runProbes } from "./probes";
 import { writeReport } from "./report";
@@ -16,9 +14,7 @@ if (positionals[0] !== "suite" || !adapter) { console.error("usage: cli.ts suite
 const dir = await runSuite(adapter, { tasks: values.tasks?.split(","), runs: values.runs ? Number(values.runs) : undefined,
   // the report withholds scores when controls.json is missing or red
   onStart: async (out: string) => {
-    const { detail, ...c } = await runControls();
-    writeFileSync(join(out, "controls.json"), JSON.stringify(c, null, 2));
-    writeFileSync(join(out, "controls.log"), detail);
+    const c = await writeControls(out);
     console.error(`controls: reference ${c.referencePassed ? "ok" : "FAILED"}, broken twin ${c.brokenFailedAllProbes ? "ok" : "FAILED"}, judge ${c.judgeOnReference}`);
   } }, { probes: runProbes, judge });
 writeReport(dir);

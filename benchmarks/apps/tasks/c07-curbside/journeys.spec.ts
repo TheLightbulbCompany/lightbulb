@@ -46,7 +46,7 @@ test("the whole delivery, step by step", async ({ browser }) => {
   }
   const cp = courier.page;
   await cp.goto(url("/courier"));
-  await cp.locator('[data-testid="available-row"][data-order-id="' + s.order.id + '"]').getByTestId("claim-button").click();
+  await Promise.all([cp.waitForResponse((r) => r.request().method() !== "GET"), cp.locator('[data-testid="available-row"][data-order-id="' + s.order.id + '"]').getByTestId("claim-button").click()]); // let the write land before navigating
   await cp.goto(url("/courier/deliveries"));
   const mine = cp.locator('[data-testid="my-delivery-row"][data-order-id="' + s.order.id + '"]');
   await mine.getByTestId("transition-picked_up").click();

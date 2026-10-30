@@ -2,6 +2,8 @@ import { and, desc, eq } from "drizzle-orm";
 import { tasks } from "@/db/schema";
 import { db } from "./db";
 
+const isRealDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s)) && new Date(s).toISOString().slice(0, 10) === s;
+
 export const PRIORITIES = ["low", "medium", "high"];
 
 /** Validate a task payload; returns the clean fields or an error message. */
@@ -11,7 +13,7 @@ export function parseTask(b: any): { error: string } | { title: string; note: st
   const priority = String(b?.priority ?? "medium");
   if (!PRIORITIES.includes(priority)) return { error: "Priority must be low, medium or high" };
   const dueDate = b?.dueDate ? String(b.dueDate) : null;
-  if (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return { error: "Due date must be YYYY-MM-DD" };
+  if (dueDate && !isRealDate(dueDate)) return { error: "Due date must be a real date (YYYY-MM-DD)" };
   return { title, note: b?.note ? String(b.note) : null, priority, dueDate };
 }
 

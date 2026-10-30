@@ -1,0 +1,12 @@
+Lightbulb Apps eval
+
+This directory contains material lifted from Dyad (https://github.com/dyad-sh/dyad),
+commit 0ee4a524, benchmarks/app-builder/:
+  docs/DYAD-DESIGN.md, judge/rubric.md, vendor/dyad/** (specs, CUJ journeys, helpers)
+
+Dyad
+Copyright (c) Dyad contributors.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE-APACHE). Each lifted file carries
+a header naming its upstream path and commit. Nothing from Dyad's src/pro (separately
+licensed) is used.

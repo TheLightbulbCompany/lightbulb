@@ -46,6 +46,9 @@ const apiOrigin = (() => {
 // more robust than a literal that silently goes stale. Anything unparseable
 // falls back to the conventional host; the `*.clerk.accounts.dev` wildcard below
 // covers development instances either way.
+// Canvas frames apps: published ones on the apps domain, pre-publish opens on the Vercel preview URL.
+const APPS_DOMAIN = process.env.NEXT_PUBLIC_APPS_DOMAIN ?? "apps.thelightbulb.company";
+
 const clerkOrigins = (() => {
   const fallback = `https://clerk.${ROOT_DOMAIN}`;
   const key = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";
@@ -93,7 +96,7 @@ const reportOnlyCsp = [
   // a real `frame-src` CSP violation for a blob-URL iframe even though the
   // page that created the blob is same-origin. Report-Only means it doesn't
   // block today, but it would the moment this header is promoted to enforcing.
-  `frame-src 'self' blob: https://js.stripe.com https://connect-js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com https://*.clerk.accounts.dev ${clerkOrigins.join(" ")}`,
+  `frame-src 'self' blob: https://js.stripe.com https://connect-js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} https://*.${APPS_DOMAIN} https://*.vercel.app`,
   "worker-src 'self' blob:",
   "manifest-src 'self'",
   "form-action 'self'",

@@ -164,6 +164,7 @@ def world(monkeypatch):
 
         monkeypatch.setattr(svc.wf_repo, "patch", AsyncMock(side_effect=wf_patch))
         monkeypatch.setattr(svc.api, "remove_resource", AsyncMock(return_value={}))
+        monkeypatch.setattr(svc.clerk_admin, "get_organization", AsyncMock(return_value={"name": " Acme  Co "}))
 
         rooms = {
             "room_1": {"roomId": "room_1", "ownerId": OWNER},
@@ -303,6 +304,10 @@ async def test_up_deploys_preview_when_all_active(world):
     preview = {e["key"]: e["value"] for e in envs[0]}
     assert preview["DATABASE_URL"] == DEV_DB and preview["LIGHTBULB_SAMPLE_DATA"] == "0"
     assert preview["LIGHTBULB_APP"] == "crew" and preview["LIGHTBULB_OPEN_TO"] == "room"
+    assert preview["LIGHTBULB_APP_ID"] == src["app_id"] and preview["LIGHTBULB_APP_NAME"] == "Crew"
+    assert preview["LIGHTBULB_WORKSPACE_NAME"] == "Acme Co"
+    assert preview["NEXT_PUBLIC_LIGHTBULB_API"] == svc.settings.PUBLIC_API_BASE.rstrip("/")
+    assert "BLOB_READ_WRITE_TOKEN" not in preview
     key = json.loads(preview["LIGHTBULB_ISSUER_KEY"])
     assert key["kty"] == "OKP" and key["crv"] == "Ed25519" and key["kid"] and key["x"]
     assert {e["key"]: e["value"] for e in envs[1]}["DATABASE_URL"] == LIVE_DB

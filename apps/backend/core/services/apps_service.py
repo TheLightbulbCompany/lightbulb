@@ -29,7 +29,16 @@ from core.dynamodb import plain, utc_now_iso
 from core.repositories import apps_repo, messaging_repo
 from core.repositories import provisioning_workflow_repo as wf_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import apps_db, apps_dns, apps_source, email_service, messaging, network_proof, provisioning_workflow
+from core.services import (
+    apps_db,
+    apps_dns,
+    apps_source,
+    clerk_admin,
+    email_service,
+    messaging,
+    network_proof,
+    provisioning_workflow,
+)
 from core.services import stripe_provisioning as api
 from core.services import vercel_client as vercel
 from core.services.credentials import integration_secret_store
@@ -327,6 +336,16 @@ async def _cookie_secret(app: dict) -> str:
     return blob["cookie_secret"]
 
 
+async def _workspace_name(app: dict) -> str:
+    """Stored on the record once known: a Clerk blip must not change the env (each change redeploys)."""
+    if app.get("workspace_name"):
+        return app["workspace_name"]
+    name = " ".join(((await clerk_admin.get_organization(app["owner_id"])) or {}).get("name", "").split())
+    if name:
+        await _patch(app, {"workspace_name": name})
+    return name
+
+
 # --- the per-read step --------------------------------------------------------------------------
 
 
@@ -337,6 +356,11 @@ async def _push_env(app: dict, creds: dict, dev_db: dict | None, live_db: dict |
         "LIGHTBULB_APP": app["name"],
         "LIGHTBULB_OPEN_TO": app["open_to"],
         "LIGHTBULB_COOKIE_SECRET": await _cookie_secret(app),
+        "LIGHTBULB_APP_ID": app["app_id"],
+        "LIGHTBULB_APP_NAME": _display(app),
+        "LIGHTBULB_WORKSPACE_NAME": await _workspace_name(app),
+        "NEXT_PUBLIC_LIGHTBULB_API": settings.PUBLIC_API_BASE.rstrip("/"),
+        # BLOB_READ_WRITE_TOKEN: never set; "content" is a starter switch and no blob store is provisioned (R79).
     }
     preview = {**common, "LIGHTBULB_SAMPLE_DATA": "1"}
     if dev_db:

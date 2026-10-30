@@ -180,4 +180,17 @@ describe("useApps", () => {
     mockPost.mockRejectedValue(new Error("no"));
     await expect(result.current.rollback("app_1", 2)).rejects.toThrow("no");
   });
+
+  it("rollback hands back what the server said, so Canvas can tell a rebuild from a version that is back", async () => {
+    mockGet.mockResolvedValue({ apps: [row()] });
+    const { result } = renderHook(() => useApps(), { wrapper });
+    await waitFor(() => expect(result.current.apps).toHaveLength(1));
+    mockPost.mockResolvedValue({ state: "building", rebuilding: true });
+    let res: { rebuilding?: boolean } | undefined;
+    await act(async () => { res = await result.current.rollback("app_1", 2); });
+    expect(res?.rebuilding).toBe(true);
+    mockPost.mockResolvedValue({ state: "live" });
+    await act(async () => { res = await result.current.rollback("app_1", 2); });
+    expect(res?.rebuilding).toBeUndefined();
+  });
 });

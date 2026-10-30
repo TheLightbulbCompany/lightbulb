@@ -232,6 +232,26 @@ async def rollback(creds: dict, deployment_id: str) -> None:
     await _call(creds, "POST", f"/v1/projects/{_pid(creds)}/rollback/{_q(deployment_id)}", expect=None)
 
 
+async def cancel_deployment(creds: dict, deployment_id: str) -> None:
+    """Stop a build. A 400 means it is no longer cancelable (READY, ERROR or CANCELED): nothing to stop."""
+    try:
+        await _call(creds, "PATCH", f"/v12/deployments/{_q(deployment_id)}/cancel", expect=None)
+    except VercelError as e:
+        if e.status != 400:
+            raise
+
+
+async def alias_deployment(creds: dict, host: str) -> str | None:
+    """The deployment ``host`` points at right now; None when this project has no such alias."""
+    try:
+        d = await _call(creds, "GET", f"/v4/aliases/{_q(host)}", params={"projectId": _pid(creds)})
+    except VercelError as e:
+        if e.status == 404:
+            return None
+        raise
+    return d.get("deploymentId")
+
+
 async def disable_protection(creds: dict) -> None:
     await _call(
         creds,

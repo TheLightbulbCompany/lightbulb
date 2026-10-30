@@ -721,7 +721,7 @@ async def test_rollback_while_publishing_cancels_the_publish(world):
     src3 = await _source({**SRC_V2, "app/page.tsx": "v3"}, "c3")
     await svc.publish(OWNER, src["app_id"], source_id=src3["source_id"], actor=PERSON)
     res = await svc.rollback(OWNER, src["app_id"], version=1)
-    assert "cancelled" in res["error"]["message"]
+    assert "won't go live" in res["error"]["message"]
     world.vercel.finish(f"dpl_{len(world.vercel.created())}")
     st = await svc.status(OWNER, src["app_id"])
     assert st["live_version"] == 1 and len(st["versions"]) == 2

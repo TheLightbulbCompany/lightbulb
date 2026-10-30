@@ -412,7 +412,8 @@ async def rotate_credentials(account_id: str, resource_id: str) -> dict:
 async def reveal_access_configuration(account_id: str, resource_id: str) -> dict:
     """The resource's current provider-issued credentials (`configuration`).
     A SECRET: no body, never logged (request logs carry no bodies), and only
-    reached from the workflow's bind step. Not a rotation."""
+    reached from the workflow's bind step and an app's credential renewal. Not a
+    rotation."""
     return await request(account_id, "post", f"{BASE}/resources/{resource_id}/reveal_access_configuration")
 
 

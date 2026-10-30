@@ -24,12 +24,14 @@ _transport: httpx.AsyncBaseTransport | None = None
 
 
 class VercelError(Exception):
-    """Safe to show: never carries the token. ``code`` is machine-readable."""
+    """Safe to show: never carries the token. ``code`` is machine-readable. ``invalid_token``: Vercel said this
+    token is dead (it lives one hour), the one thing that justifies replacing it."""
 
-    def __init__(self, code: str, message: str, status: int | None = None):
+    def __init__(self, code: str, message: str, status: int | None = None, *, invalid_token: bool = False):
         super().__init__(message)
         self.code = code
         self.status = status
+        self.invalid_token = invalid_token
 
 
 def _client() -> httpx.AsyncClient:
@@ -46,7 +48,9 @@ def _raise(creds: dict, status: int, data: Any) -> None:
     err = data.get("error") if isinstance(data, dict) else None
     err = err if isinstance(err, dict) else {}
     msg = str(err.get("message") or f"Vercel returned {status}").replace(creds["token"], "***")
-    raise VercelError(str(err.get("code") or f"http_{status}"), msg, status)
+    # Any mention of saml is Vercel asking for a team sign-in, not a dead token (its CLI's isSAMLError). No flag, no renewal.
+    dead = err.get("invalidToken") is True and "saml" not in str(data).lower()
+    raise VercelError(str(err.get("code") or f"http_{status}"), msg, status, invalid_token=dead)
 
 
 async def _call(
@@ -148,6 +152,15 @@ async def create_deployment(
 async def deployment_state(creds: dict, deployment_id: str) -> dict:
     d = await _call(creds, "GET", f"/v13/deployments/{_q(deployment_id)}")
     return {"readyState": d.get("readyState"), "url": d.get("url"), "errorMessage": d.get("errorMessage")}
+
+
+async def read_probe(creds: dict, deployment_id: str | None) -> None:
+    """Raises what Vercel says to a read this token needs: a deployment it polls, else the project's env list
+    (values stay encrypted and the body is dropped). Tells a refused token from one odd endpoint."""
+    if deployment_id:
+        await deployment_state(creds, deployment_id)
+    else:
+        await _call(creds, "GET", f"/v10/projects/{_pid(creds)}/env")
 
 
 async def deployment_events(creds: dict, deployment_id: str, *, limit: int = 50) -> list[dict]:

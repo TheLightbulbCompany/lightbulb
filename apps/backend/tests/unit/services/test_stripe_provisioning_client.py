@@ -277,7 +277,8 @@ def test_the_retired_provisioning_paths_are_gone():
 
 def test_teardown_cannot_reveal_credentials():
     """`remove` is the owner route's alone (test_wipe_never_deprovisions); the
-    credential reveal is the workflow's bind step's alone. Teardown reaches neither."""
+    credential reveal is the workflow's bind step's and an app's credential renewal's
+    alone. Teardown reaches neither."""
     import pathlib
 
     root = pathlib.Path(mod.__file__).resolve().parents[2]
@@ -289,7 +290,20 @@ def test_teardown_cannot_reveal_credentials():
         for p in (root / d).rglob("*.py")
         if "reveal_access_configuration(" in p.read_text() and p.name != "stripe_provisioning.py"
     )
-    assert users == ["core/services/provisioning_workflow.py"], users
+    assert users == ["core/services/apps_service.py", "core/services/provisioning_workflow.py"], users
+
+    # Inside apps_service, which holds every builder route: one path to a secret and to a rotation.
+    import ast
+
+    tree = ast.parse((root / "core/services/apps_service.py").read_text())
+    fns = [f for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef | ast.FunctionDef)]
+
+    def holders(call: str) -> set[str]:
+        return {f.name for f in fns for n in ast.walk(f) if isinstance(n, ast.Call) and ast.unparse(n.func) == call}
+
+    assert holders("api.reveal_access_configuration") == {"_store_revealed"}
+    assert holders("_store_revealed") == {"_renew_vercel"}
+    assert holders("api.rotate_credentials") == {"_renew_vercel"}
 
 
 @pytest.mark.asyncio

@@ -54,6 +54,8 @@ _FORBIDDEN = (
     "provisioning_workflow",
     "provisioning_landing",
     "provisioning_approvals",
+    "apps_service",
+    "apps_sweeper",
     "remove_resource",
     "unlink_resource",
     "rotate_credentials",
@@ -109,7 +111,7 @@ def test_the_only_caller_of_remove_resource_is_the_owner_route():
     }
     assert holders == {"remove"}, holders
     remove = next(f for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) and f.name == "remove")
-    assert "confirm_name != app[" in ast.unparse(remove), "remove must refuse unless confirm_name matches"
+    assert "confirm_name_mismatch" in ast.unparse(remove), "remove must refuse unless confirm_name matches"
 
 
 def test_wipe_still_deletes_our_own_copies():

@@ -120,3 +120,54 @@ been sitting there, and if a resource exists they are being billed for it. A
 resource nobody wants is removed by the OWNER, from Settings → Connections →
 Remove (typed confirmation) — never by an operator, and never by deleting our
 row, which only makes us forget about infrastructure that keeps charging them.
+
+---
+
+# apps — clearing a held Vercel credential renewal
+
+Stripe's Vercel token for an app lives one hour, and Stripe's reveal keeps
+returning it after it dies. So an app's next deploy, poll, rollback or error read
+after an idle hour rotates it through Stripe with nothing to see. That is routine
+(logged at INFO). Only a rotation with no settled outcome stops and needs you.
+
+**What you see.** The app's `error.code` is `credential_renewal_stuck`, or
+`vercel_credential_refused` with "Lightbulb's team needs to look", and the log says
+`vercel credential rotation: pending` or `errored` (WARNING).
+
+The field is `credential_renewal: {state, at}` on the app's row in
+`lightbulb-prod-apps`. `app_id` is the key.
+
+| `state` | meaning | clears on its own? |
+|---|---|---|
+| `pending` | the POST's outcome is unknown: timeout, 5xx, 429, crash or cancel. Under 5 minutes old it is in flight and not shown as a hold | yes, once a read finds a changed token or the stored token working |
+| `errored` | Stripe refused the rotation, or Vercel refused the new token twice | yes, once a read finds the stored token working |
+| `needs_reveal` | rotation `complete`, new token not stored yet | yes, not a hold |
+| `complete` | settled; another rotation may follow after 10 minutes | n/a |
+
+No route clears a hold, and a held app never rotates by itself: Stripe says not to
+resend while the outcome is unknown.
+
+## To clear one
+
+1. **Don't look for proof at Stripe.** Its docs say reading the Resource later doesn't
+   confirm a rotation, and the preview has no way to fetch the operation. The app
+   already reveals on each read that finds the token dead, so a hold still standing
+   means Stripe is still handing out the same token.
+2. **Wait until `at` is at least an hour old**, so a slow rotation can't be running.
+   For `errored`, read the log line first: if Stripe refused for a reason that still
+   holds (a disconnected account, say), fix that or the next rotation stops here again.
+3. **Remove the field.** The app's next refused Vercel call reveals, then rotates if
+   Stripe still holds the dead token. If the first rotation did land after all, the
+   second replaces a token nobody holds. Compare `at` so you don't erase a newer attempt:
+
+```bash
+aws dynamodb update-item --profile isol8-admin \
+  --table-name lightbulb-prod-apps \
+  --key '{"app_id":{"S":"app_…"}}' \
+  --update-expression 'REMOVE credential_renewal' \
+  --condition-expression 'credential_renewal.#a = :at' \
+  --expression-attribute-names '{"#a":"at"}' \
+  --expression-attribute-values '{":at":{"S":"<the at you read>"}}'
+```
+
+Never call `rotate_credentials` by hand while a rotation is unresolved.

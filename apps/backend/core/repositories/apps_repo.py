@@ -196,6 +196,23 @@ async def list_for_owner(owner_id: str) -> list[dict]:
     return await _query_owner(owner_id)
 
 
+async def list_pending(*, limit: int = 25) -> list[dict]:
+    """Apps with a preview or a publish in flight, for the sweeper. A filtered scan: the table is
+    small, and a cleared pending map is stored as NULL, which cannot key a sparse index."""
+    from boto3.dynamodb.conditions import Attr
+
+    kwargs: dict = {
+        "FilterExpression": Attr("preview_pending").attribute_type("M") | Attr("publish_pending").attribute_type("M")
+    }
+    items: list[dict] = []
+    while True:
+        resp = await run_in_thread(_table().scan, **kwargs)
+        items.extend(resp.get("Items", []))
+        if len(items) >= limit or not resp.get("LastEvaluatedKey"):
+            return items[:limit]
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+
 async def add_version(app_id: str, version: dict) -> dict:
     """Append atomically, so two concurrent builds both land."""
     sets = ["versions = list_append(if_not_exists(versions, :empty), :v)", "updated_at = :now"]

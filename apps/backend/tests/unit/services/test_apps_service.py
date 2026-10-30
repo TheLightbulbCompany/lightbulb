@@ -177,6 +177,8 @@ def world(monkeypatch):
         monkeypatch.setattr(vercel_client, "_transport", httpx.MockTransport(vercel.handler))
         reset = AsyncMock()
         monkeypatch.setattr(svc.apps_db, "reset_preview", reset)
+        apply = AsyncMock()
+        monkeypatch.setattr(svc.apps_db, "apply_live", apply)
         point, remove = AsyncMock(), AsyncMock()
         monkeypatch.setattr(svc.apps_dns, "point", point)
         monkeypatch.setattr(svc.apps_dns, "remove", remove)
@@ -194,6 +196,7 @@ def world(monkeypatch):
                 secrets=secrets,
                 vercel=vercel,
                 reset=reset,
+                apply=apply,
                 point=point,
                 remove=remove,
                 activate=activate,
@@ -436,7 +439,7 @@ async def test_publish_deploys_and_adds_domain_once(world):
     dep = world.vercel.created()[-1]
     assert dep["target"] == "production"
     assert dep["env"] == {"LIGHTBULB_COMMIT": "c1"} and dep["build"] == {"env": {"LIGHTBULB_COMMIT": "c1"}}  # R76
-    assert dep["projectSettings"]["buildCommand"] == "npx drizzle-kit migrate && next build"
+    assert dep["projectSettings"]["buildCommand"] == "next build"  # the backend ran the migrations already
     domains = [r for r in world.vercel.calls if r.url.path.endswith("/domains") and r.method == "POST"]
     hosts = [json.loads(r.content)["name"] for r in domains]
     assert "crew.apps.example.com" in hosts
@@ -1147,18 +1150,45 @@ def test_display_default_splits_words_on_dash_and_underscore():
     assert svc._display({"name": "crm_v2"}) == "Crm V2"
 
 
-async def test_canvas_list_settles_a_pending_publish_without_the_builder(world, monkeypatch):
+async def test_sweeper_settles_a_pending_publish_without_the_builder(world):
     """Nothing but the builder's own reads stepped a publish; with the agent down, Demo Lab's first
-    publish sat in "building" for 21 minutes. Canvas's list now steps pending deployments itself."""
+    publish sat in "building" for 21 minutes. The sweeper steps pending deployments on its own."""
+    from core.services import apps_sweeper
+
     src, _, _ = await _ready_preview(world)
     await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    assert [a["app_id"] for a in await svc.apps_repo.list_pending()] == [src["app_id"]]
+    assert await apps_sweeper.sweep_once() == 1  # still building: stepped, nothing to record yet
     world.vercel.finish("dpl_2")
-    monkeypatch.setattr(svc.messaging, "still_reads_room", AsyncMock(return_value=True))
-    monkeypatch.setattr(svc.messaging, "human_display_name", AsyncMock(return_value="Dana"))
-    from core.auth import AuthContext
+    assert await apps_sweeper.sweep_once() == 1
+    rec = await svc.apps_repo.get(src["app_id"])
+    assert (rec["state"], int(rec["live_version"])) == ("live", 1)
+    assert rec.get("publish_pending") is None
+    assert await svc.apps_repo.list_pending() == []  # settled apps leave the sweep
+    assert await apps_sweeper.sweep_once() == 0
 
-    auth = AuthContext(user_id="user_1", org_id=OWNER)
-    rows = await svc.list_apps(OWNER, auth)
-    row = next(r for r in rows if r["app_id"] == src["app_id"])
-    assert (row["state"], row["live_version"]) == ("live", 1)
-    assert (await svc.apps_repo.get(src["app_id"])).get("publish_pending") is None
+
+async def test_publish_applies_new_migrations_itself_before_the_build(world):
+    """The starter's drizzle config has no credentials, so `drizzle-kit migrate` inside Vercel's build
+    can never connect (both Demo Lab publishes). The backend runs the new migrations on the live
+    database first and records them, so a failed build never re-runs them."""
+    src, _, _ = await _ready_preview(world)
+    pub = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    assert pub["state"] == "building"
+    world.apply.assert_awaited_once()
+    assert world.apply.await_args.args == (LIVE_DB,)
+    assert world.apply.await_args.kwargs == {"migrations": [SRC_V1["drizzle/0000_init.sql"]]}
+    assert (await svc.apps_repo.get(src["app_id"]))["published_migrations"] == ["0000_init.sql"]
+    # the same source again while building: no second apply
+    await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    world.apply.assert_awaited_once()
+
+
+async def test_publish_stops_when_a_live_migration_fails(world):
+    src, _, _ = await _ready_preview(world)
+    world.apply.side_effect = svc.apps_db.AppsDbError("migrate_failed", "live database migration failed: X")
+    n = len(world.vercel.created())
+    res = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    assert res["error"]["code"] == "migrate_failed" and res["error"]["next"] == "fix the migration and publish again"
+    assert len(world.vercel.created()) == n  # nothing deployed
+    assert (await svc.apps_repo.get(src["app_id"])).get("published_migrations") in (None, [])

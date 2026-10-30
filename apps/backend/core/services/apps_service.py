@@ -56,7 +56,7 @@ _RESOURCES = (("vercel", "project", "prod"), ("neon", "postgres", "prod"), ("neo
 _DEAD = frozenset({"rejected", "cancelled"})  # the owner said no: the next `up` asks again
 _BROKEN = frozenset({"failed", "requires_review"})
 _PREVIEW_BUILD = "next build"  # previews never migrate
-_PROD_BUILD = "npx drizzle-kit migrate && next build"
+_PROD_BUILD = "next build"  # publish() applies the live migrations itself, before the build
 _DESTRUCTIVE = re.compile(
     r"\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bRENAME\b|\bALTER\s+COLUMN\b.*\bTYPE\b|\bTRUNCATE\b|\bDELETE\s+FROM\b",
     re.IGNORECASE | re.DOTALL,
@@ -792,14 +792,29 @@ async def publish(
         return await _result(app, rows, transient, cost_cents)
     if any((rows.get(r) or {}).get("state") != "active" for r in _RESOURCES):
         raise AppsRefused("not_ready", "The app's services are not all set up yet.", "run up and wait for the owner")
-    # The production build runs the migrations, so it needs the live database's address in its env.
-    # A row can be active before its secret lands; publishing then builds without DATABASE_URL and
-    # fails with "connection url … required" (e2e, 30 Oct 2026). Wait for the secret instead.
-    if not await _secret(app, rows, "neon", "prod", "connection_string"):
+    # A row can be active before its secret lands; the live app needs its database, so wait for it.
+    live_db = await _secret(app, rows, "neon", "prod", "connection_string")
+    if not live_db:
         raise AppsRefused("not_ready", "The live database is still being set up.", "try again in a minute")
     creds = await _secret(app, rows, "vercel", "prod", "token")
     files = await _files(owner_id, app_id, source_id)
     await _check_destructive(app, files, approved_destructive)
+    # The live schema moves here, not in the Vercel build: new migrations run now, in order, in one
+    # transaction, and are recorded as published before the deploy (a failed build must not re-run them).
+    migrations, _ = _migrations(files)
+    published = set(app.get("published_migrations") or [])
+    new = [(n, sql) for n, sql in migrations if n not in published]
+    if new:
+        try:
+            await apps_db.apply_live(live_db["connection_string"], migrations=[sql for _, sql in new])
+        except apps_db.AppsDbError as e:
+            return await _result(
+                app,
+                rows,
+                {"code": e.code, "message": str(e), "next": "fix the migration and publish again"},
+                cost_cents,
+            )
+        await _patch(app, {"published_migrations": sorted(published | {n for n, _ in new})})
     try:
         if not app.get("domain"):
             await _patch(app, {"domain": await _add_domain(app, creds, preview=False)})
@@ -982,15 +997,6 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
     apps = [plain(a) for a in await apps_repo.list_for_owner(owner_id) if a.get("state") != "destroyed"]
     if not apps:
         return []
-    # A publish or a preview has to land even when no builder reads `status`: Canvas's poll steps
-    # the pending ones (leased, one reader per app; at most three per read so a big list stays cheap).
-    # The first publish on Demo Lab sat in "building" for 21 minutes with the agent down (30 Oct 2026).
-    for a in [a for a in apps if a.get("publish_pending") or a.get("preview_pending")][:3]:
-        try:
-            rows, _ = await _progress(a)
-            await _record_state(a, _state(a, rows)[0])
-        except Exception as e:  # noqa: BLE001 — the list renders whatever a provider does
-            logger.warning("apps: list could not step %s: %s", a["app_id"], type(e).__name__)
     all_rows = await wf_repo.list_for_owner(owner_id)
     room_ids = sorted({a["room_id"] for a in apps})
     metas = dict(zip(room_ids, await asyncio.gather(*(messaging_repo.get_room(r) for r in room_ids)), strict=True))

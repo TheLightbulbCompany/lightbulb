@@ -2,14 +2,15 @@
 
 import { useState, useSyncExternalStore } from "react";
 import { Archive, ArchiveRestore, MailOpen, MoreHorizontal, Pin, PinOff } from "lucide-react";
-import { endedWhy, sessionEndable, sessionLabel, sessionLive, sessionSignalsLine, sessionState, sessionStateLabel, sessionTitle, sessionWaitingLine } from "@lightbulb/shared";
+import { endedWhy, type LocalSession, sessionAgentName, sessionEndable, sessionSignalsLine, sessionStateLabel, sessionToolName, sessionWaitingLine } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { SessionToolIcon } from "./SessionToolIcon";
 import { SessionRenameButton } from "./SessionRenameButton";
 import { SessionRemoveButton } from "./SessionRemoveButton";
 import { ParticipantAvatar } from "./ParticipantAvatar";
-import type { SidebarSession } from "./roomSections";
+import type { SidebarRow } from "./roomSections";
+import { sessionRowAt, sessionRowFailed, sessionRowGone } from "./sessionGroups";
 
 export interface SessionRowMarks {
   pinned: boolean;
@@ -41,71 +42,118 @@ function SessionListTime({ at }: { at: string | null | undefined }) {
   return <span className="session-row-time" aria-hidden="true">{browser ? sessionListTime(at) : ""}</span>;
 }
 
+/** How long ago, in one unit: "now", "5m", "2h", "3d". Empty without a time. */
+export function sessionAge(at: number | undefined, now = Date.now()): string {
+  if (!at) return "";
+  const minutes = Math.max(0, Math.floor((now - at) / 60_000));
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
+const STATE_LABELS = { busy: "Working", waiting: "Waiting on you", idle: "Idle", done: "Done", ended: "Ended" } as const;
+
 /**
- * One session row: the sidebar's live list and the All sessions view share it. Shaped like
- * Happy's (owner ruling 2026-10-13): no status words. The title shimmers while the session
- * works, an orange dot replaces the time while it waits on its person, a blue one while it has
- * output nobody looked at, and a session that is gone is faded. The second line is the folder,
- * and the owner when it is someone else's; `oneLine` (the sidebar) drops it, and the
- * accessible label still carries both.
+ * One session row: the sidebar's list and the All sessions view share it (spec 2026-10-30
+ * sessions-sidebar, "States on the row"). Words only where no shape says it: busy shimmers,
+ * waiting is a brass dot, unread a blue or green one; done, offline, parked, ended and failed say
+ * so at the right edge. The second line is news only in the sidebar (`oneLine`); All sessions
+ * carries the whole description. A row with no backend is not a button: the network knows it, this
+ * browser cannot open it.
  */
-export function SessionListRow({ entry: { session, ownerName, own, owner, unread }, current, onSelect, onRename, onRemove, oneLine = false, marks }: {
-  entry: SidebarSession; current: boolean; onSelect?: (sessionId: string) => void;
+export function SessionListRow({ entry: { row, owner, unread }, current, onSelect, onRename, onRemove, onShare, oneLine = false, marks }: {
+  entry: SidebarRow; current: boolean; onSelect?: (sessionId: string) => void;
   oneLine?: boolean;
   onRename?: (sessionId: string, title: string | null) => Promise<unknown>;
   /** The owner takes a session of their own off the list; a running one is ended first. */
   onRemove?: (sessionId: string) => Promise<unknown>;
+  /** Share an unshared terminal session of the viewer's own (rows with no backend). */
+  onShare?: () => void;
   /** The sidebar's per-viewer row actions (Pin, Mark unread/read, Archive), kept on this browser. */
   marks?: SessionRowMarks;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const label = sessionLabel(session);
-  const live = sessionLive(session);
-  const why = endedWhy(session, own ? "your Mac" : `${ownerName}'s Mac`);
-  const who = own ? "your session" : ownerName;
+  const { backend, state, person } = row;
+  const label = `${sessionToolName(row.agent)} · ${row.title}`;
+  const gone = sessionRowGone(row);
+  const failed = sessionRowFailed(row);
+  const why = endedWhy({ status: state === "ended" ? "ended" : "idle", endedReason: row.endedReason as LocalSession["endedReason"] }, person.isViewer ? "your Mac" : `${person.name}'s Mac`);
+  const who = person.isViewer ? "your session" : person.name;
   const news = unread === "finished" ? ", finished since you looked" : unread ? ", new output" : "";
-  const chat = session.chatUnread ? `, ${session.chatUnread} unread in chat` : "";
-  // An open prompt or a job's hand-off note (spec 2026-10-26 (e)): the dot, and the note as its preview.
-  const waiting = sessionState(session) === "waiting";
-  const waitLine = sessionWaitingLine(session);
-  const where = why ?? (session.cwdName ? `in ${session.cwdName}` : null);
+  const chatUnread = backend?.chatUnread ?? 0;
+  const chat = chatUnread ? `, ${chatUnread} unread in chat` : "";
+  const waiting = state === "waiting";
+  const waitText = row.waitingFor ?? "Waiting for input";
+  const where = why ?? (row.folder ? `in ${row.folder}` : null);
   // Running subagents and the branch's PR (spec 2026-10-26 (f) gaps 16, 15): live rows only.
-  const signals = live ? sessionSignalsLine(session) : null;
-  const second = oneLine ? "" : [own ? null : ownerName, why ?? waitLine ?? session.cwdName, signals].filter(Boolean).join(" · ");
-  return <li className={`room-directory-row room-directory-row--roster session-row${live ? "" : " session-row--gone"}`}
+  const signals = backend && !gone ? sessionSignalsLine(backend) : null;
+  const seen = sessionAge(row.lastSeenAt);
+  const ended = sessionAge(row.endedAt);
+  // A row an engine record joined says its state from `row.state`; the web, with none, keeps its wording.
+  const stateText = !row.engine && backend ? sessionStateLabel(backend)
+    : state === "offline" ? `Offline${seen ? `, last seen ${seen} ago` : ""}`
+      : state === "parked" ? "Parked, wakes when messaged"
+        : failed ? "Failed" : STATE_LABELS[state as keyof typeof STATE_LABELS];
+  const stateExtra = !row.engine && backend ? sessionWaitingLine(backend) : waiting ? row.waitingFor : null;
+  // The word at the right edge, where no shape says the state.
+  const word = failed ? `Failed${ended ? ` ${ended}` : ""}`
+    : state === "done" ? "Done"
+      : state === "offline" ? `Offline${seen ? ` ${seen}` : ""}`
+        : state === "parked" ? "Parked"
+          : state === "ended" ? `Ended${ended ? ` ${ended}` : ""}` : "";
+  const dot = waiting ? "waiting" : unread ?? null;
+  const repo = row.repo ? `${row.repo}${row.branch ? ` (${row.branch})` : ""}` : null;
+  const resumeHint = row.canResume && !backend ? "resume with lightbulb who" : null;
+  const second = oneLine
+    ? (waiting ? waitText : failed ? why ?? "Job failed" : !gone && signals ? [row.folder, signals].filter(Boolean).join(" · ") : "")
+    : [person.isViewer ? null : person.name, row.computer, repo, row.folder, why ?? (waiting ? waitText : failed ? "Job failed" : null), signals, resumeHint].filter(Boolean).join(" · ");
+  const hover = [person.name, sessionAgentName(row.agent), row.computer, repo, row.folder,
+    `${stateText}${why ? `: ${why}` : ""}`, row.canResume && !backend ? "Resume with lightbulb who" : null].filter(Boolean).join("\n");
+  const description = `${label}, ${who}${marks?.pinned ? ", pinned" : ""}${where ? `, ${where}` : ""}, ${stateText}${stateExtra && stateExtra !== stateText ? `, ${stateExtra}` : ""}${signals ? `, ${signals}` : ""}${news}${chat}`;
+  const face = <span className="session-owner-face">
+    <ParticipantAvatar participant={owner} size="sm" showPresence={false} />
+    <span className="session-tool-badge session-tool-badge--corner" aria-hidden="true"><SessionToolIcon provider={row.agent} /></span>
+  </span>;
+  const body = <>
+    {face}
+    <span className="min-w-0 flex-1">
+      <span className={`block truncate${unread ? " font-semibold" : ""}${state === "busy" ? " session-title--working" : ""}`}>{row.title}</span>
+      {second && <span className="block truncate text-caption text-muted-foreground">{second}</span>}
+    </span>
+    <span className="session-row-end">
+      {!!chatUnread && <span className="session-chat-unread" aria-hidden="true">{chatUnread > 99 ? "99+" : chatUnread}</span>}
+      {dot && <span className={`session-unread session-unread--${dot}`} aria-hidden="true" />}
+      {word && (!dot || !oneLine) && <span className={`session-row-state${failed ? " session-row-state--failed" : ""}`} aria-hidden="true">{word}</span>}
+      {!dot && !word && <SessionListTime at={sessionRowAt(row) ? new Date(sessionRowAt(row)).toISOString() : null} />}
+    </span>
+  </>;
+  return <li className={`room-directory-row room-directory-row--roster session-row${gone ? " session-row--gone" : ""}${backend ? "" : " session-row--network"}`}
     onContextMenu={marks ? (event) => { event.preventDefault(); setMenuOpen(true); } : undefined}>
-    <button type="button" className="room-directory-entry" aria-current={current ? "page" : undefined}
-      aria-label={`Open ${label}, ${who}${marks?.pinned ? ", pinned" : ""}${where ? `, ${where}` : ""}, ${sessionStateLabel(session)}${waitLine && waitLine !== sessionStateLabel(session) ? `, ${waitLine}` : ""}${signals ? `, ${signals}` : ""}${news}${chat}`} onClick={() => onSelect?.(session.sessionId)}>
-      <span className="session-owner-face">
-        <ParticipantAvatar participant={owner} size="sm" showPresence={false} />
-        <span className="session-tool-badge session-tool-badge--corner" aria-hidden="true"><SessionToolIcon provider={session.provider} /></span>
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className={`block truncate${unread ? " font-semibold" : ""}${live && session.status === "busy" ? " session-title--working" : ""}`} title={label}>{sessionTitle(session)}{oneLine && signals && <span className="text-caption text-muted-foreground" aria-hidden="true"> · {signals}</span>}</span>
-        {second && <span className="block truncate text-caption text-muted-foreground">{second}</span>}
-      </span>
-      {!!session.chatUnread && <span className="session-chat-unread" aria-hidden="true">{session.chatUnread > 99 ? "99+" : session.chatUnread}</span>}
-      {waiting ? <span className="session-unread session-unread--waiting" aria-hidden="true" />
-        : unread ? <span className={`session-unread session-unread--${unread}`} aria-hidden="true" />
-          : <SessionListTime at={session.lastEventAt ?? session.endedAt} />}
-    </button>
+    {backend
+      ? <button type="button" className="room-directory-entry" title={hover} aria-current={current ? "page" : undefined}
+        aria-label={`Open ${description}`} onClick={() => onSelect?.(backend.sessionId)}>{body}</button>
+      : <div className="room-directory-entry session-row-info" title={hover} aria-current={current ? "page" : undefined}>
+        <span className="sr-only">{description}</span>{body}
+      </div>}
+    {onShare && !backend && person.isViewer && <Button variant="ghost" size="sm" className="session-row-share" aria-label={`Share ${row.title}`} onClick={onShare}>Share</Button>}
     {marks && <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon-sm" className="room-directory-actions" aria-label={`Session actions for ${sessionTitle(session)}`}><MoreHorizontal aria-hidden="true" /></Button>
+        <Button variant="ghost" size="icon-sm" className="room-directory-actions" aria-label={`Session actions for ${row.title}`}><MoreHorizontal aria-hidden="true" /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {marks.archived
           ? <DropdownMenuItem onSelect={marks.onToggleArchive}><ArchiveRestore aria-hidden="true" />Unarchive</DropdownMenuItem>
           : <>
             <DropdownMenuItem onSelect={marks.onTogglePin}>{marks.pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}{marks.pinned ? "Unpin" : "Pin"}</DropdownMenuItem>
-            {/* The open session reads itself at once, so Mark unread is offered on the others only. */}
-            {(unread || !current) && <DropdownMenuItem onSelect={() => marks.onMarkUnread(!unread)}><MailOpen aria-hidden="true" />{unread ? "Mark read" : "Mark unread"}</DropdownMenuItem>}
+            {/* The open session reads itself at once, so Mark unread is offered on the others only; a row with no backend has no read mark. */}
+            {backend && (unread || !current) && <DropdownMenuItem onSelect={() => marks.onMarkUnread(!unread)}><MailOpen aria-hidden="true" />{unread ? "Mark read" : "Mark unread"}</DropdownMenuItem>}
             <DropdownMenuItem onSelect={marks.onToggleArchive}><Archive aria-hidden="true" />Archive</DropdownMenuItem>
           </>}
       </DropdownMenuContent>
     </DropdownMenu>}
-    {!oneLine && own && onRename && <SessionRenameButton session={session} onRename={onRename} icon />}
-    {!oneLine && own && onRemove && (session.status === "ended" || sessionEndable(session))
-      && <SessionRemoveButton name={sessionTitle(session)} live={session.status !== "ended"} onRemove={() => onRemove(session.sessionId)} icon />}
+    {!oneLine && backend && person.isViewer && onRename && <SessionRenameButton session={backend} onRename={onRename} icon />}
+    {!oneLine && backend && person.isViewer && onRemove && (backend.status === "ended" || sessionEndable(backend))
+      && <SessionRemoveButton name={row.title} live={backend.status !== "ended"} onRemove={() => onRemove(backend.sessionId)} icon />}
   </li>;
 }

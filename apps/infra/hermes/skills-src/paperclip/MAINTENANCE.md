@@ -389,3 +389,16 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       bridge/turn.py CHAT_STYLE. Observed prod 2026-10-15: Pulse posted
       status-line, heading and table reports to GTM Strategy. Re-apply on
       re-vendor.
+  28. Blocked or unsure goes to ask_person; counts come from lightbulb_board
+      (SKILL.md Critical Rules, the two lines after "A person's decision is an
+      approval"; references/interactions.md "When you need an answer, not a
+      sign-off: ask_person"; references/heartbeat.md "If the block needs a human
+      decision", which replaced "Say so in a comment ... the comment is what gets
+      a human's attention"). The tools are
+      apps/infra/hermes/plugins/lightbulb/__init__.py _ask_person (a Paperclip
+      ask_user_questions interaction, wake_assignee, optionally parking the
+      issue blocked self-owned) and _board (paged issue list). Observed
+      2026-10-07..28 (docs/research/2026-10-30-production-agents/G1): blocked
+      agents' comments reached nobody (ISOA-867 8 days, ISOA-752), and an agent
+      stated "only 3 open cards" with 55 open. Test:
+      tests/test_ask_and_count_skill.py. Re-apply on re-vendor.

@@ -215,10 +215,16 @@ jq -n --arg agentId "$PAPERCLIP_AGENT_ID" '{
 ```
 
 **If the block needs a human decision, you still cannot name the board or a
-user as the owner.** Say so in a comment — who needs to decide, and what —
-then park the issue with self-ownership as above. You are the one who
-resumes the work once the decision lands, not the board; the comment is what
-gets a human's attention, not the descriptor.
+user as the owner.** Call the `ask_person` tool instead of a comment:
+
+```
+ask_person(question="I need Codex review credits on this repo. Can you add them?",
+           options=["Added", "Skip the review"], blocked=true)
+```
+
+`blocked=true` parks the issue as blocked with you as the owner (the shape
+above), and the question lands in the person's Needs you; their answer wakes
+you with it. A comment alone reaches nobody: no one reads them.
 
 **If you cannot name an action you will actually take when you resume, the
 issue is not blocked — it is abandoned.** Close it, or reduce it to the part

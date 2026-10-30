@@ -235,7 +235,10 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       // Owner question: what did OpenRouter actually say when it refused?
       log(JSON.stringify({ ...refusalFields(held402 ? 402 : 403, refusal), limit_remaining: remaining, owner_id: ownerId, tier, request_id: requestId }));
       const spentBelow = capped ? Math.max(SPENT_BELOW_USD, requestCeilingUsd(body, policy, Buffer.byteLength(raw))) : SPENT_BELOW_USD;
-      if (remaining !== null && remaining < spentBelow) {
+      // OpenRouter names the 402's source: only openrouter_key_limit is the key's cap. Credits and the
+      // in-flight budget are the account (the latter transient), so they stay the paging 503. Absent: the heuristic.
+      const notTheKey = ['openrouter_credits', 'openrouter_in_flight_budget'].includes(refusalFields(0, refusal).limit_source);
+      if (remaining !== null && !notTheKey && remaining < spentBelow) {
         if (capped) {
           capHit = true;
           responder.writeHead(429, { 'content-type': 'application/json' }); responder.write(dailyCap().body()); responder.end();

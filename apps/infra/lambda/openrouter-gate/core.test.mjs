@@ -328,3 +328,35 @@ test('the requests row carries agent_id for a per-agent bearer and omits it for 
   await handleRequest(g.event(), g.responder, g.deps);
   assert.equal('agent_id' in g.calls.puts[0].Item, false);
 });
+// OpenRouter says to branch on limit_source: only openrouter_key_limit is the key's cap.
+const sourced402 = (source, keyInfoImpl) => f => { f.deps.keyInfoImpl = keyInfoImpl; f.deps.forwardImpl = async p => { p.writeHead(402, { 'content-type': 'application/json' }); p.write(Buffer.from('{}')); p.end(JSON.stringify({ error: { code: 402, message: 'refused', metadata: { limit_source: source } } })); return { status: 402, preGeneration: true }; }; };
+const setBody = (f, bytes) => { f.deps.env = { ...dsEnv, MAX_BODY_BYTES: String(bytes + 10000) }; };
+for (const source of ['openrouter_credits', 'openrouter_in_flight_budget']) {
+  test(`a capped 402 from ${source} is the paging 503 even under the line`, async () => {
+    const f = await runDs(cappedOwners.trial, dsBody(), sourced402(source, async () => ({ limit: 0.25, limit_remaining: 0.004 })));
+    assert.equal(f.calls.head.status, 503);
+    assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
+    assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1));
+  });
+}
+test('a capped 402 from openrouter_key_limit under the line is the daily cap', async () => {
+  const f = await runDs(cappedOwners.trial, dsBody(), sourced402('openrouter_key_limit', async () => ({ limit: 0.25, limit_remaining: 0.004 })));
+  assert.equal(f.calls.head.status, 429);
+  assert.equal(f.calls.updates.find(u => u.TableName === 'billing').ExpressionAttributeValues[':day'].S, today());
+});
+test('a 5 MB body at $0.12 left with an in-flight 402 is the 503, never a stamped day', async () => {
+  const f = await runDs(cappedOwners.trial, dsBody('x'.repeat(5000000)), f => { setBody(f, 5200000); sourced402('openrouter_in_flight_budget', async () => ({ limit: 0.25, limit_remaining: 0.12 }))(f); });
+  assert.equal(f.calls.errors.length, 0, f.calls.errors[0]?.message);
+  assert.equal(f.calls.head.status, 503);
+  assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
+});
+test('the ceiling counts the prompt: a 400 KB body lifts the line above $0.011', async () => {
+  const f = await runDs(cappedOwners.trial, dsBody('x'.repeat(400000)), f => { setBody(f, 400000); body402(async () => ({ limit: 0.25, limit_remaining: 0.011 }))(f); });
+  assert.equal(f.calls.errors.length, 0, f.calls.errors[0]?.message);
+  assert.equal(f.calls.head.status, 429);
+});
+test('a paid owner\'s 403 at $0.012 left stays the 503: the ceiling is for capped owners only', async () => {
+  const f = fixture({ plan: 'standard' }); f.deps.env = { ...dsEnv, MODEL_POLICY_JSON: JSON.stringify({ ...deepseek, max_price: { prompt: 0.1, completion: 2 } }) }; keyLimit403(async () => ({ limit: 50, limit_remaining: 0.012 }))(f);
+  await handleRequest(f.event(dsBody()), f.responder, f.deps);
+  assert.equal(f.calls.head.status, 503);
+});

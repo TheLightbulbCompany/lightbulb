@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -252,3 +253,45 @@ async def test_token_never_in_logs(calls, caplog):
         await vc.disable_protection(CREDS)
         await vc.delete_project(CREDS)
     assert "tok_SECRET" not in caplog.text and "envvalue123" not in caplog.text
+
+
+async def test_empty_bodies_ok_for_unread_calls(calls):
+    _, routes = calls
+    routes[("DELETE", "/v9/projects/prj_1")] = (204, "")
+    routes[("POST", "/v1/projects/prj_1/rollback/d")] = (200, "")
+    routes[("PATCH", "/v9/projects/prj_1")] = (200, "")
+    await vc.delete_project(CREDS)
+    await vc.rollback(CREDS, "d")
+    await vc.disable_protection(CREDS)
+
+
+async def test_add_domain_bad_rank_is_last(calls):
+    _, routes = calls
+    routes[("POST", "/v10/projects/prj_1/domains")] = (200, {"verified": True})
+    routes[("GET", "/v6/domains/a.example.com/config")] = (
+        200,
+        {"recommendedCNAME": [{"rank": "x", "value": "bad."}, {"rank": 3, "value": "good."}]},
+    )
+    assert (await vc.add_domain(CREDS, "a.example.com"))["cname"] == "good."
+
+
+async def test_runtime_logs_returns_tail_when_stream_stays_open(calls, monkeypatch):
+    class Hang(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"timestampInMs": 1, "message": "a"}\n{"timestampInMs": 2, "message": "b"}\n'
+            await asyncio.sleep(10)
+
+    monkeypatch.setattr(vc, "TIMEOUT_S", 0.2)
+    monkeypatch.setattr(vc, "_transport", httpx.MockTransport(lambda req: httpx.Response(200, stream=Hang())))
+    assert await vc.runtime_logs(CREDS, "d", limit=1) == [{"at": 2, "message": "b"}]
+
+
+async def test_runtime_logs_error_status(calls):
+    _, routes = calls
+    routes[("GET", "/v1/projects/prj_1/deployments/d/runtime-logs")] = (
+        403,
+        {"error": {"code": "forbidden", "message": "no"}},
+    )
+    with pytest.raises(vc.VercelError) as e:
+        await vc.runtime_logs(CREDS, "d")
+    assert e.value.code == "forbidden"

@@ -35,6 +35,19 @@ def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=_transport, timeout=TIMEOUT_S)
 
 
+def _headers(creds: dict, extra: dict | None = None) -> dict:
+    if not all(creds.get(k) for k in ("token", "org_id", "project_id")):
+        raise VercelError("missing_credentials", "Vercel credentials are incomplete.")
+    return {"Authorization": f"Bearer {creds['token']}", **(extra or {})}
+
+
+def _raise(creds: dict, status: int, data: Any) -> None:
+    err = data.get("error") if isinstance(data, dict) else None
+    err = err if isinstance(err, dict) else {}
+    msg = str(err.get("message") or f"Vercel returned {status}").replace(creds["token"], "***")
+    raise VercelError(str(err.get("code") or f"http_{status}"), msg, status)
+
+
 async def _call(
     creds: dict,
     method: str,
@@ -44,12 +57,10 @@ async def _call(
     json: Any = None,
     content: bytes | None = None,
     headers: dict | None = None,
-    expect: type | str = dict,
+    expect: Any = dict,
 ) -> Any:
-    """One request. ``expect``: dict | list | "ndjson" (a stream read fully, parsed per line)."""
-    if not all(creds.get(k) for k in ("token", "org_id", "project_id")):
-        raise VercelError("missing_credentials", "Vercel credentials are incomplete.")
-    h = {"Authorization": f"Bearer {creds['token']}", **(headers or {})}
+    """One request. ``expect``: a type the body must be, or None for "body not read, empty is fine"."""
+    h = _headers(creds, headers)
     try:
         async with asyncio.timeout(TIMEOUT_S), _client() as c:
             r = await c.request(
@@ -63,23 +74,25 @@ async def _call(
     except (httpx.HTTPError, TimeoutError) as e:
         raise VercelError("network", f"Vercel request failed ({type(e).__name__}).") from None
     try:
-        data = [json_loads(ln) for ln in r.text.splitlines() if ln.strip()] if expect == "ndjson" else r.json()
+        data = r.json()
     except ValueError:
         data = None
     if r.status_code >= 300:
-        err = data.get("error") if isinstance(data, dict) else None
-        err = err if isinstance(err, dict) else {}
-        msg = str(err.get("message") or f"Vercel returned {r.status_code}").replace(creds["token"], "***")
-        raise VercelError(str(err.get("code") or f"http_{r.status_code}"), msg, r.status_code)
-    if expect == "ndjson":
-        expect = list
-    if not isinstance(data, expect):
+        _raise(creds, r.status_code, data)
+    if expect is not None and not isinstance(data, expect):
         raise VercelError("bad_response", "Vercel returned an unexpected response.", r.status_code)
     return data
 
 
 def _pid(creds: dict) -> str:
     return creds.get("project_id", "")
+
+
+def _rank(c: dict) -> float:
+    try:
+        return float(c.get("rank"))
+    except (TypeError, ValueError):
+        return float("inf")
 
 
 def _q(v: str) -> str:
@@ -105,6 +118,7 @@ async def upload_file(creds: dict, data: bytes) -> str:
         "/v2/files",
         content=data,
         headers={"x-vercel-digest": sha, "Content-Type": "application/octet-stream"},
+        expect=None,
     )
     return sha
 
@@ -149,12 +163,32 @@ async def deployment_events(creds: dict, deployment_id: str, *, limit: int = 50)
 
 
 async def runtime_logs(creds: dict, deployment_id: str, *, limit: int = 50) -> list[dict]:
-    """Last ``limit`` runtime log lines (stream+json read fully, within TIMEOUT_S)."""
-    rows = await _call(
-        creds, "GET", f"/v1/projects/{_pid(creds)}/deployments/{_q(deployment_id)}/runtime-logs", expect="ndjson"
-    )
-    out = [{"at": r.get("timestampInMs"), "message": r.get("message") or ""} for r in rows if isinstance(r, dict)]
-    return [e for e in out if e["message"]][-limit:]
+    """Last ``limit`` runtime log lines. Streamed; if the stream is still open at TIMEOUT_S, returns what was read."""
+    h = _headers(creds)
+    path = f"/v1/projects/{_pid(creds)}/deployments/{_q(deployment_id)}/runtime-logs"
+    rows: list[dict] = []
+    try:
+        async with asyncio.timeout(TIMEOUT_S), _client() as c:
+            async with c.stream("GET", API + path, params={"teamId": creds["org_id"]}, headers=h) as r:
+                if r.status_code >= 300:
+                    try:
+                        data = json_loads((await r.aread()).decode() or "null")
+                    except ValueError:
+                        data = None
+                    _raise(creds, r.status_code, data)
+                async for ln in r.aiter_lines():
+                    try:
+                        row = json_loads(ln) if ln.strip() else None
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and row.get("message"):
+                        rows.append({"at": row.get("timestampInMs"), "message": row["message"]})
+                        del rows[:-limit]
+    except TimeoutError:
+        pass  # still-open stream: keep the tail collected so far
+    except httpx.HTTPError as e:
+        raise VercelError("network", f"Vercel request failed ({type(e).__name__}).") from None
+    return rows
 
 
 async def add_domain(creds: dict, name: str) -> dict:
@@ -170,7 +204,7 @@ async def add_domain(creds: dict, name: str) -> dict:
             raise e from None
     cfg = await _call(creds, "GET", f"/v6/domains/{n}/config", params={"projectIdOrName": pid})
     ranked = [c for c in cfg.get("recommendedCNAME") or [] if isinstance(c, dict) and c.get("value")]
-    cname = min(ranked, key=lambda c: float(c.get("rank") or 0))["value"] if ranked else "cname.vercel-dns.com."
+    cname = min(ranked, key=_rank)["value"] if ranked else "cname.vercel-dns.com."
     return {"verified": d.get("verified"), "verification": d.get("verification", []), "cname": cname}
 
 
@@ -180,12 +214,18 @@ async def verify_domain(creds: dict, name: str) -> bool:
 
 
 async def rollback(creds: dict, deployment_id: str) -> None:
-    await _call(creds, "POST", f"/v1/projects/{_pid(creds)}/rollback/{_q(deployment_id)}")
+    await _call(creds, "POST", f"/v1/projects/{_pid(creds)}/rollback/{_q(deployment_id)}", expect=None)
 
 
 async def disable_protection(creds: dict) -> None:
-    await _call(creds, "PATCH", f"/v9/projects/{_pid(creds)}", json={"ssoProtection": None, "passwordProtection": None})
+    await _call(
+        creds,
+        "PATCH",
+        f"/v9/projects/{_pid(creds)}",
+        json={"ssoProtection": None, "passwordProtection": None},
+        expect=None,
+    )
 
 
 async def delete_project(creds: dict) -> None:
-    await _call(creds, "DELETE", f"/v9/projects/{_pid(creds)}")
+    await _call(creds, "DELETE", f"/v9/projects/{_pid(creds)}", expect=None)

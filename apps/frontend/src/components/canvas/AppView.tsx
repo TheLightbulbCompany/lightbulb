@@ -83,7 +83,9 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
       {canManage && <button type="button" className="app-view__btn" aria-expanded={settingsOpen}
         onClick={() => setSettingsOpen((v) => !v)}>Settings</button>}
     </header>
-    {pending && <p className="canvas__notice">{pending}</p>}
+    {app.state === "failed"
+      ? <div className="canvas__notice"><Problem raw={app.error?.message ?? null}>The last publish didn&apos;t land.{canManage ? " Press Publish to try again, or ask" : " Ask"} the agent in {room}.</Problem></div>
+      : pending && <p className="canvas__notice">{pending}</p>}
     {t === "preview" && <p className="canvas__notice">You&apos;re looking at the preview. Only you and {room} see it until it&apos;s published{canManage ? ": press Publish, or say “ship it” in the room" : ""}.</p>}
     {!canManage && <p className="canvas__notice">{app.open_to === "room" ? `Open to ${room}` : `Open to ${whoName}`}. Only {app.created_by_name ?? "the person who asked for it"} or a workspace admin can change who can open it.</p>}
     {settingsOpen && <AppSettings app={app} publishCtl={publishCtl} onClose={() => setSettingsOpen(false)} onRemoved={onBack} />}

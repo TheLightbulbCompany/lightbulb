@@ -44,6 +44,12 @@ describe("CanvasDockPanel deep link", () => {
     expect(screen.queryByText("app view")).toBeNull();
   });
 
+  it("a failed app that still has a preview gets the full view, so Publish can be retried", () => {
+    hook = { ...base, apps: [row({ state: "failed", live_version: null, preview_url: "https://p" })] };
+    panel("a1");
+    expect(screen.getByText("app view")).toBeTruthy();
+  });
+
   it("a ready app renders the view", () => {
     hook = { ...base, apps: [row()] };
     panel("a1");

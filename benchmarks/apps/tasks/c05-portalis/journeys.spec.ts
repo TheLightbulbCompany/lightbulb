@@ -34,7 +34,8 @@ test("invite by link: the invited person joins with exactly the invited role", a
   await a.page.reload();
   await expect(a.page.getByTestId("invite-row").filter({ hasText: invitee.creds.email }).getByTestId("invite-status")).toHaveText("accepted");
   await invitee.page.goto(link);
-  await invitee.page.getByTestId("accept-invite-submit").click();
+  const again = invitee.page.getByTestId("accept-invite-submit");
+  if (await again.count()) await again.click();
   await expect(invitee.page.getByTestId("accept-invite-error")).toBeVisible();
   await a.ctx.close(); await invitee.ctx.close();
 });

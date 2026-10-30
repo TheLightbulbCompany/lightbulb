@@ -1,3 +1,4 @@
+# Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/specs/todo/m1.md. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
 id: b01-todo
 kind: internal-tool
 type: build

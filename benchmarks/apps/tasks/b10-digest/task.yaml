@@ -8,7 +8,7 @@ prompt: |
 
   A scheduled job builds and sends the digests. Make it a route, `GET /api/cron/digest`, so the host's scheduler (for example a Vercel cron entry, configure one to run weekly on Mondays at 08:00 UTC) can call it. For every person with at least one pending item the job creates one digest holding those items, "sends" it, and marks those items as sent so they are never sent twice. There is no email provider in this project, so "send" means recording the digest and logging what would be sent; do not invent API keys. The job supports a dry run, `GET /api/cron/digest?dryRun=1`, which returns what it would do as JSON `{ "dryRun": true, "digests": [{ "email": "...", "itemCount": 2 }] }` and changes nothing: no digest is recorded and no item is marked sent. A real run returns `{ "dryRun": false, "sent": <number of digests> }`. Each person sees their sent digests on `/digests`, newest first, each showing how many items it held (the text of the count element is just the number).
 
-  The job route is the only thing in the app that is reachable without signing in, and it must be locked down with the secret described below.
+  The job route requires the `CRON_SECRET` environment variable as a bearer token (`Authorization: Bearer <CRON_SECRET>`); it is the only thing in the app reachable without signing in.
 
   Names the checks rely on. Please use these exactly, because an automatic check drives the app by them.
 

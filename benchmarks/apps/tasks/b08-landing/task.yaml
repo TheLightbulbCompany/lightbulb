@@ -16,7 +16,7 @@ prompt: |
 fixture: blank
 journeys: journeys.spec.ts
 probes:
-  - id: sqli-
+  - id: sqli-contact-form
     kind: sql-injection
     target: /
 timeoutMin: 45

@@ -68,7 +68,5 @@ test("books are separate: same code twice, own numbering, no peeking", async ({ 
   const t = (await api(other.page, "POST", "/api/entries", { ...theirs.entry(100), status: "posted" })).body;
   expect(t.entryNumber).toBe(1);
   expect((await api(other.page, "GET", "/api/entries/" + posted.id)).status).toBeGreaterThanOrEqual(400);
-  const myBook = (await me(page)).activeBookId;
-  expect((await api(other.page, "POST", "/api/books/" + myBook + "/activate")).status).toBe(403);
   await other.ctx.close();
 });

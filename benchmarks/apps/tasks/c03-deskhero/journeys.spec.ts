@@ -38,11 +38,12 @@ test("workflow: take a ticket, work it, resolve, close", async ({ browser }) => 
   const req = await newUser(browser);
   const t = (await api(req.page, "POST", "/api/tickets", { subject: "Laptop dead", body: "x", priority: "high" })).body;
   expect((await api(req.page, "POST", "/api/tickets/" + t.id + "/transition", { to: "in_progress" })).status).toBe(403);
-  expect((await api(agent.page, "POST", "/api/tickets/" + t.id + "/transition", { to: "closed" })).status).toBe(422);
   await agent.page.goto(url("/agent"));
   await expect(agent.page.getByTestId("queue-unassigned")).toContainText("Laptop dead");
   await agent.page.goto(url("/tickets/" + t.id));
   await agent.page.getByTestId("assign-to-me").click();
+  await expect(agent.page.getByTestId("transition-in_progress")).toBeVisible();
+  expect((await api(agent.page, "POST", "/api/tickets/" + t.id + "/transition", { to: "closed" })).status).toBe(422);
   await agent.page.getByTestId("transition-in_progress").click();
   await expect(agent.page.getByTestId("ticket-detail-status")).toHaveText("in_progress");
   await agent.page.getByTestId("transition-resolved").click();

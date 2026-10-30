@@ -37,6 +37,15 @@ describe("tasks", () => {
     expect(existsSync(join(root, "fixtures/blank/app/page.tsx"))).toBe(true);
   });
 
+  it("change tasks start from their own app's fixture, and probes are present", () => {
+    const want: Record<string, string> = { "c01-todo": "todo-m1", "c02-slotline": "slotline-m1", "c03-deskhero": "deskhero-m1", "c04-ledgerly": "ledgerly-m1", "c05-portalis": "portalis-m1", "c06-relaycrm": "relay-crm-m1", "c07-curbside": "curbside-m1", "a03-destroy": "relay-crm-m1" };
+    for (const [id, f] of Object.entries(want)) expect(tasks.find((t) => t.id === id)!.fixture, id).toBe(f);
+    for (const t of tasks) {
+      expect(t.probes.length, t.id).toBeGreaterThan(0);
+      for (const p of t.probes) expect(p.id, t.id).toMatch(/^[a-z]+(-[a-z0-9]+)+$|^secret-in-client$/);
+    }
+  });
+
   it("no task id mentions mobile", () => {
     for (const t of tasks) expect(`${t.id} ${t.prompt}`.toLowerCase()).not.toContain("mobile");
   });
@@ -50,6 +59,7 @@ describe("tasks", () => {
       const j = spec + (usesAuth ? readFileSync(join(tasksDir, "_shared/helpers.ts"), "utf8") : "");
       const used = [...j.matchAll(/getByTestId\(\s*["'`]([^"'`$]+)["'`]/g)].map((m) => m[1]);
       expect(used.length, t.id).toBeGreaterThan(0);
+      used.push(...[...spec.matchAll(/data-testid=\\?"([^"\\]+)\\?"/g)].map((m) => m[1]));
       for (const u of used) expect(c.testids, `${t.id} uses ${u}`).toContain(u);
     }
   });

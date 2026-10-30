@@ -1,2 +1,2 @@
 import { defineConfig } from "@playwright/test";
-export default defineConfig({ testDir: "tasks", outputDir: "test-results", reporter: "list" });
+export default defineConfig({ testDir: "tasks", outputDir: "test-results", reporter: "list", fullyParallel: false, workers: 1 });

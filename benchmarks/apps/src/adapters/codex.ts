@@ -39,14 +39,14 @@ export function isolatedHome(realCodexHome = process.env.CODEX_HOME ?? join(home
 }
 
 /** Run codex isolated (see isolatedHome) with stdin ignored in its own process group; abort kills the group. Never throws; resolves with output and exit code. */
-export function runCodex(args: string[], cwd: string, signal?: AbortSignal, spawn: Spawn = realSpawn): Promise<{ code: number; out: string }> {
+export function runCodex(args: string[], cwd: string, signal?: AbortSignal, spawn: Spawn = realSpawn, extraEnv: NodeJS.ProcessEnv = {}): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
     let out = "";
     let iso: ReturnType<typeof isolatedHome> | undefined;
     const done = (r: { code: number; out: string }) => { iso?.cleanup(); iso = undefined; resolve(r); };
     try {
       iso = isolatedHome();
-      const p = spawn("codex", args, { cwd, env: iso.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+      const p = spawn("codex", args, { cwd, env: { ...iso.env, ...extraEnv }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
       const kill = () => { try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ } };
       signal?.addEventListener("abort", kill, { once: true });
       if (signal?.aborted) kill();
@@ -59,6 +59,15 @@ export function runCodex(args: string[], cwd: string, signal?: AbortSignal, spaw
 }
 
 const AT_CAPACITY = /Selected model is at capacity/;
+
+/** runCodex with one retry after a pause when the provider is at capacity (not the builder's fault). */
+export async function runCodexRetrying(args: string[], cwd: string, signal: AbortSignal | undefined, spawn: Spawn, onRetry: () => void, extraEnv?: NodeJS.ProcessEnv) {
+  const r = await runCodex(args, cwd, signal, spawn, extraEnv);
+  if (signal?.aborted || !AT_CAPACITY.test(r.out)) return r;
+  onRetry();
+  await new Promise((f) => setTimeout(f, Number(process.env.LIGHTBULB_EVAL_RETRY_MS ?? 60_000)));
+  return runCodex(args, cwd, signal, spawn, extraEnv);
+}
 
 export const makeCodexAdapter = (spawn: Spawn = realSpawn): BuilderAdapter => ({
   name: "codex", billing: "subscription", defaultModel: "codex-default",
@@ -74,12 +83,7 @@ export const makeCodexAdapter = (spawn: Spawn = realSpawn): BuilderAdapter => ({
       const rules = await loadRules();
       header = `[rules source: ${rules.source}] [model: ${model ?? "codex-default"}]\n`;
       const args = codexArgs(`${rules.text}\n\n${task.prompt}`, workdir, model);
-      let r = await runCodex(args, workdir, signal, spawn);
-      if (!signal?.aborted && AT_CAPACITY.test(r.out)) { // provider capacity, not the builder: one retry after a pause
-        header += "[retry] model at capacity\n";
-        await new Promise((f) => setTimeout(f, Number(process.env.LIGHTBULB_EVAL_RETRY_MS ?? 60_000)));
-        r = await runCodex(args, workdir, signal, spawn);
-      }
+      const r = await runCodexRetrying(args, workdir, signal, spawn, () => { header += "[retry] model at capacity\n"; });
       out = r.out;
       return result(signal?.aborted ? "timeout" : r.code === 0 && parseCodexUsage(out) ? "done" : "error");
     } catch (e) {

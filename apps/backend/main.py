@@ -400,6 +400,7 @@ async def lifespan(app: FastAPI):
     from core.services.session_pickup import run_pickup_sweeper
     from core.services.memory_api import run_memory_sweeper
     from core.services.voice_calls import voice_call_sweeper
+    from core.services.apps_sweeper import run_apps_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
     idle_sweeper_stop = asyncio.Event()
@@ -418,6 +419,8 @@ async def lifespan(app: FastAPI):
     digest_task = asyncio.create_task(run_digest_sweeper(digest_stop))
     away_stop = asyncio.Event()
     away_task = asyncio.create_task(run_needs_you_sweeper(away_stop))
+    apps_sweeper_stop = asyncio.Event()
+    apps_sweeper_task = asyncio.create_task(run_apps_sweeper(apps_sweeper_stop))
 
     # Teams event broker — projects approved Paperclip events onto each user's
     # private AppSync channel. REST remains available when it is unconfigured.
@@ -443,6 +446,7 @@ async def lifespan(app: FastAPI):
             "memory_sweeper": memory_sweeper_task,
             "daily_digest": digest_task,
             "needs_you_email": away_task,
+            "apps_sweeper": apps_sweeper_task,
             "running_gauges": gauge_task,
         }
     )
@@ -518,6 +522,7 @@ async def lifespan(app: FastAPI):
             memory_sweeper_task,
             digest_task,
             away_task,
+            apps_sweeper_task,
             gauge_task,
         ):
             task.cancel()
@@ -531,6 +536,7 @@ async def lifespan(app: FastAPI):
             memory_sweeper_task,
             digest_task,
             away_task,
+            apps_sweeper_task,
             gauge_task,
             return_exceptions=True,
         )

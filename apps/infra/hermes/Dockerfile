@@ -141,6 +141,11 @@ RUN npm i -g --allow-scripts=agent-browser agent-browser@0.38.1 && agent-browser
 # they live in the profile and are saved with it.
 RUN npm i -g @jackwener/opencli@2.0.0 && opencli --version
 
+# pnpm for `lightbulb app` (the starter and its checks run pnpm). Without it in the image, each
+# agent installed its own into the profile home, and on Demo Lab that copy rotted into
+# "Cannot find module '../dist/pnpm.cjs'" mid-build (e2e, 30 Oct 2026). Pinned like the rest.
+RUN npm i -g pnpm@10.34.9 && pnpm --version
+
 # Hermes advertises browser_* only when _chromium_installed() is true (browser_tool_install.py:227-242):
 # AGENT_BROWSER_EXECUTABLE_PATH is an existing file (a bare os.path.isfile), OR chrome/chromium is on
 # PATH, OR a Playwright build is cached. The upstream base BUNDLES one -- a 269 MB

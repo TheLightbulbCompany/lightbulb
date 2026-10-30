@@ -28,13 +28,13 @@ describe("CanvasDockPanel deep link", () => {
     hook = { ...base, apps: [row({ state: "building" })] };
     panel("a1");
     expect(screen.getByText("Invoices")).toBeTruthy();
-    expect(screen.getByText(/The agent is making the preview\. It'll post in #finance/)).toBeTruthy();
+    expect(screen.getByText(/(making the preview|Building the new version)\. It'll (post|show here and) in #finance/)).toBeTruthy();
     expect(screen.queryByText("app view")).toBeNull();
     expect(screen.getByRole("button", { name: "All apps" })).toBeTruthy();
   });
 
   it.each([
-    ["awaiting_approval", /Waiting for the owner to approve: the card is in #finance/],
+    ["awaiting_approval", /Waiting for an owner to approve: the cards are in Activity, under Needs you/],
     ["provisioning", /Setting up its hosting and data/],
     ["failed", /Something went wrong\. Ask the agent in #finance/],
   ] as const)("%s shows its status line in the open view", (state, re) => {
@@ -42,6 +42,12 @@ describe("CanvasDockPanel deep link", () => {
     panel("a1");
     expect(screen.getByText(re)).toBeTruthy();
     expect(screen.queryByText("app view")).toBeNull();
+  });
+
+  it("a failed app that still has a preview gets the full view, so Publish can be retried", () => {
+    hook = { ...base, apps: [row({ state: "failed", live_version: null, preview_url: "https://p" })] };
+    panel("a1");
+    expect(screen.getByText("app view")).toBeTruthy();
   });
 
   it("a ready app renders the view", () => {

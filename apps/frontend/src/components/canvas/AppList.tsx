@@ -21,7 +21,7 @@ function Row({ app, onOpen, canManage }: { app: AppRow; onOpen: (appId: string) 
   const last = app.last_opened_at ? `opened ${new Date(app.last_opened_at).toLocaleDateString()}` : "never opened";
   const body = <>
     <span className="app-item__name">{displayName(app)}</span>
-    <span className="app-item__line">{status ?? `asked by ${app.created_by_name ?? "someone"} in #${app.room_name ?? "room"}`}</span>
+    <span className="app-item__line">{status ?? ((app.created_by_name ?? app.requested_by) ? `asked by ${app.created_by_name ?? app.requested_by} in #${app.room_name ?? "room"}` : `from #${app.room_name ?? "room"}`)}</span>
     <span className="app-item__line">
       <span>{blocked ? `ask in #${app.room_name ?? "room"}` : whoCanOpen(app)}</span> · <span>{last}</span>{(app.spend_month_cents ?? 0) > 0 && <> · <span>${(app.spend_month_cents! / 100).toFixed(2)} spent this month</span></>}
     </span>

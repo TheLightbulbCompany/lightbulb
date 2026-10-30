@@ -13,6 +13,10 @@ const mockDel = vi.fn();
 vi.mock("@/lib/api", () => ({
   useApi: () => ({ get: mockGet, post: mockPost, patch: mockPatch, del: mockDel }),
 }));
+let liveHandler: ((e: unknown) => void) | null = null;
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({ onEvent: (h: (e: unknown) => void) => { liveHandler = h; return () => { liveHandler = null; }; } }),
+}));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "u1", orgId: "o1" }) }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
 
@@ -35,6 +39,17 @@ describe("useApps", () => {
     const { result } = renderHook(() => useApps(), { wrapper });
     await waitFor(() => expect(result.current.apps).toHaveLength(1));
     expect(mockGet).toHaveBeenCalledWith("/apps");
+  });
+
+  it("refetches at once on an apps invalidation, and ignores other resources", async () => {
+    mockGet.mockResolvedValue({ apps: [row()] });
+    const { result } = renderHook(() => useApps(), { wrapper });
+    await waitFor(() => expect(result.current.apps).toHaveLength(1));
+    const n = mockGet.mock.calls.length;
+    await act(async () => { liveHandler?.({ type: "runtime.resource.invalidated", payload: { resource: "mail" } }); });
+    expect(mockGet.mock.calls.length).toBe(n);
+    await act(async () => { liveHandler?.({ type: "runtime.resource.invalidated", payload: { resource: "apps", resourceId: "app_1" } }); });
+    await waitFor(() => expect(mockGet.mock.calls.length).toBeGreaterThan(n));
   });
 
   it("hides removed (destroyed) apps", async () => {

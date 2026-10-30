@@ -1019,8 +1019,12 @@ def _render_by_type(key: str, p: _Payload, who: str) -> tuple[str, str | None, A
         preview = ActivityPreview(fields=p.fields([("windowKind", "Window"), ("metric", "Metric")]))
         return ("Budget override needed" + (f" for {scope}" if scope else ""), p.text("guidance", "reason"), preview)
     if key.startswith("lightbulb:"):
+        # The card's own title ("Approve Neon postgres for Acme") and the agent's reason
+        # ("Workshop Signup: hosting (live)") say what this is; the generic label is the fallback.
         label = _LIGHTBULB_CARDS[key.split(":", 1)[1]]
-        return (f"{label} — requested by {who}", p.text("summary", "reason", "title"), None)
+        title = p.text("title", limit=100) or label
+        reason = p.text("reason", limit=120)
+        return (f"{title} — {reason}" if reason else title, p.text("summary", "description"), None)
     return (
         f"Approval requested by {who}",
         p.text("title", "summary", "recommendedAction", "reason"),

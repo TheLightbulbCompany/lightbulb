@@ -15,7 +15,8 @@ export function CanvasDockPanel({ id, params }: PanelProps) {
   const close = () => updatePanelParams(id, { app: undefined });
   const open = params.app ? apps.find((a) => a.app_id === params.app) : undefined;
   if (params.app) {
-    if (open && (["awaiting_approval", "provisioning", "building"].includes(open.state) || (open.state === "failed" && open.live_version == null))) {
+    // A failed app that still has a preview (a publish that did not land) gets the full view: the preview, Publish to retry, Settings.
+    if (open && (["awaiting_approval", "provisioning", "building"].includes(open.state) || (open.state === "failed" && open.live_version == null && !open.preview_url))) {
       return <div className="canvas">
         <h2 className="canvas__heading">{displayName(open)}</h2>
         <p className="canvas__notice">{statusLine(open)}</p>

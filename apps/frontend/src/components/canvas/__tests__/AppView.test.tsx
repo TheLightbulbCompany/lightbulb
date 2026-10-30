@@ -30,6 +30,27 @@ describe("AppView", () => {
     expect(screen.queryByText("v3")).toBeNull();
   });
 
+  it("an app with only a preview opens the preview and says how to make it live", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", can_publish: true })} onBack={vi.fn()} />);
+    const frame = await screen.findByTitle("Invoices");
+    expect(frame.getAttribute("src")).toBe("https://p.apps.test/?pass=1");
+    expect(open).toHaveBeenCalledWith("a1", "preview");
+    expect(screen.getByText(/You're looking at the preview\. Only you and #finance see it until it's published: press Publish, or say “ship it” in the room\./)).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "View" })).toBeNull();
+  });
+
+  it("a failed publish says so in words, keeps the build error under Details, and leaves Publish available", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ state: "failed", live_version: null, live_url: null, preview_url: "https://p", can_publish: true, error: { message: 'Command "npx drizzle-kit migrate && next build" exited with 1' } })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    const alert = screen.getAllByRole("alert").map((a) => a.textContent).join();
+    expect(alert).toContain("The last publish didn't land. Press Publish to try again, or ask the agent in #finance.");
+    expect(alert).toContain('Command "npx drizzle-kit migrate && next build" exited with 1');
+    expect(screen.getByRole("button", { name: "Publish" })).toBeTruthy();
+    expect(screen.queryByText("Something went wrong. Ask the agent in #finance.")).toBeNull();
+  });
+
   it("a 403 says who can open it and where to ask; raw text only under Details", async () => {
     open.mockRejectedValue(Object.assign(new Error("Forbidden"), { status: 403 }));
     render(<AppView app={app({ name: "workshop-signup" })} onBack={vi.fn()} />);
@@ -127,13 +148,6 @@ describe("AppView", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(document.querySelectorAll("iframe")).toHaveLength(1);
     expect(screen.getByTitle("Pipeline").getAttribute("src")).toBe("https://a2.apps.test/");
-  });
-
-  it("before the first publish: no switch, just 'Preview: not live yet.'", async () => {
-    open.mockResolvedValue("https://x/");
-    render(<AppView app={app({ live_version: null })} onBack={vi.fn()} />);
-    expect(screen.getByText("Preview: not live yet.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
   });
 
   it("Preview | Live is a segmented control marking the current view, with the preview line", async () => {

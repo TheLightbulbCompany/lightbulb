@@ -35,8 +35,9 @@ waits for the research.
 
 ## The loop
 
-`lightbulb app check` → fix → `lightbulb app up --json`. `up` commits, checks, sends the code and
-waits for the build (up to ten minutes). Read its `next`. If it starts with fix, diagnose or undo,
+`lightbulb app check` → fix → `lightbulb app up --json`. On the first `up` add
+`--requested-by "<the person's name>"` so Canvas shows who asked. `up` commits, checks, sends the
+code and waits for the build (up to ten minutes). Read its `next`. If it starts with fix, diagnose or undo,
 do that; otherwise do the step it names:
 
 - `fix`: fix the listed problems and run the loop again.
@@ -50,9 +51,10 @@ recent errors.
 
 ## Waiting for approval
 
-If `state` is `awaiting_approval`, the app's accounts need the owner's tap. Post the approval line
-(§ What to say), then **end the turn**. The approval posts a line in this room, and
-that line wakes you; run `lightbulb app up --json` again. Never poll, never sleep in a loop.
+If `state` is `awaiting_approval`, the app's accounts need an owner's tap. The cards are in
+Activity (the bell), under "Needs you", not in this room. Post the approval line (§ What to say),
+then **end the turn**. Each approval posts a line in this room that mentions you; run
+`lightbulb app up --json` again when it does. Never poll, never sleep in a loop.
 
 ## Done means proven
 
@@ -60,6 +62,9 @@ When `up` returns a `preview_url`, open it in the shared browser (`references/su
 Browser), walk the main flow, and record it:
 `lightbulb app evidence --kind browser --file <recording or screenshot> --note "<what you checked>"`.
 Then run `up` again. Post only when it says `"done": true`: the preview line (§ What to say).
+The `preview_url` is for your own check. Never post it: for anyone else it is a locked door
+page. People open the app from Canvas, so the preview line carries `{canvas_url}`. A preview is
+not "live"; say "live" only after `publish` returns.
 Attach the recording to that reply (`references/chat-vs-document.md`). If `sample_data` is true,
 add that it runs on sample data and the real data arrives in a few minutes.
 
@@ -97,8 +102,9 @@ name, and at most one every few minutes. The lines below stay exactly as specifi
   line and again before publishing: "Right now only people in #{room} can open it. For {your
   attendees}, set "Who can open it" to "Anyone with the link" in Canvas → {app} → Settings. You
   can do that yourself, or a workspace admin can."
-- Approval: "To keep its data I need the owner's OK to set up hosting and storage for {app}. Tap
-  Approve on the card above. The preview keeps going meanwhile." Name the owner if you know who.
+- Approval: "To keep its data I need an owner's OK to set up hosting and storage for {app}. The
+  three cards are in Activity, under Needs you; tap Approve on each. The preview keeps going
+  meanwhile." Name the owner if you know who.
 - Checking: "Checking {app} before it goes live: a second agent is trying every page. I'll post
   here when it's live, usually within a few minutes."
 - Review failed: "The check found {n} problems ({short plain list}). Fixing them now, then it goes

@@ -50,8 +50,9 @@ describe("AppList", () => {
 
   it("building apps are listed but not openable", () => {
     const onOpen = vi.fn();
-    render(<AppList {...props} onOpen={onOpen} apps={[app({ state: "building" })]} />);
-    expect(screen.getByText("The agent is making the preview. It'll post in #finance when it's ready.")).toBeTruthy();
+    render(<AppList {...props} onOpen={onOpen} apps={[app({ state: "building", live_version: null }), app({ app_id: "a2", name: "Pipeline", state: "building" })]} />);
+    expect(screen.getByText("The agent is making the preview. It'll post in #finance when it's ready.")).toBeTruthy(); // first build
+    expect(screen.getByText("Building the new version. It'll show here and in #finance when it's ready.")).toBeTruthy(); // a publish or a change
     fireEvent.click(screen.getByText("Invoices"));
     expect(onOpen).not.toHaveBeenCalled();
     expect(screen.queryByRole("button")).toBeNull();
@@ -73,11 +74,17 @@ describe("AppList", () => {
 
   it("awaiting row names who asked when requested_by is present", () => {
     render(<AppList {...props} apps={[app({ state: "awaiting_approval", requested_by: "Dana" })]} />);
-    expect(screen.getByText("Waiting for the owner to approve Dana's request: the card is in #finance.")).toBeTruthy();
+    expect(screen.getByText("Waiting for an owner to approve Dana's request: the cards are in Activity, under Needs you.")).toBeTruthy();
+  });
+
+  it("a row with no known asker says where it came from, never 'someone'", () => {
+    render(<AppList {...props} apps={[app({ created_by_name: undefined, requested_by: undefined })]} />);
+    expect(screen.getByText("from #finance")).toBeTruthy();
+    expect(screen.queryByText(/someone/)).toBeNull();
   });
 
   it.each([
-    ["awaiting_approval", "Waiting for the owner to approve: the card is in #finance."],
+    ["awaiting_approval", "Waiting for an owner to approve: the cards are in Activity, under Needs you."],
     ["provisioning", "Setting up its hosting and data, usually a few minutes."],
     ["failed", "Something went wrong. Ask the agent in #finance."],
   ] as const)("%s row shows its status line", (state, line) => {

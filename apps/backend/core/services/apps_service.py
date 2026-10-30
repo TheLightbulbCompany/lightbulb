@@ -56,7 +56,7 @@ _RESOURCES = (("vercel", "project", "prod"), ("neon", "postgres", "prod"), ("neo
 _DEAD = frozenset({"rejected", "cancelled"})  # the owner said no: the next `up` asks again
 _BROKEN = frozenset({"failed", "requires_review"})
 _PREVIEW_BUILD = "next build"  # previews never migrate
-_PROD_BUILD = "npx drizzle-kit migrate && next build"
+_PROD_BUILD = "next build"  # publish() applies the live migrations itself, before the build
 _DESTRUCTIVE = re.compile(
     r"\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bRENAME\b|\bALTER\s+COLUMN\b.*\bTYPE\b|\bTRUNCATE\b|\bDELETE\s+FROM\b",
     re.IGNORECASE | re.DOTALL,
@@ -177,9 +177,33 @@ async def _check_room(owner_id: str, room_id: str) -> None:
         raise AppsRefused("room_not_found", "That room is not in this workspace.", "pick a room of this workspace")
 
 
-async def _patch(app: dict, fields: dict) -> dict:
+def _notify(app: dict) -> None:
+    """Tell the owner's open Canvas the app changed. Fire-and-forget; never breaks the write."""
+
+    async def _publish() -> None:
+        try:
+            from core.services.live_events import publish_owner_users
+            from core.services.messaging import make_live_event
+
+            event = make_live_event("runtime.resource.invalidated", {"resource": "apps", "resourceId": app["app_id"]})
+            await publish_owner_users(app["owner_id"], event)
+        except Exception:  # noqa: BLE001 — a live nudge never breaks its durable write
+            logger.warning("apps live event failed for %s", app.get("app_id"), exc_info=True)
+
+    try:
+        asyncio.get_running_loop().create_task(_publish())
+    except RuntimeError:
+        return
+
+
+async def _patch(app: dict, fields: dict, *, expect: dict | None = None) -> dict | None:
+    if expect is None:
+        await apps_repo.patch(app["app_id"], fields)
+    elif await apps_repo.patch(app["app_id"], fields, expect=expect) is None:
+        return None  # another writer changed the record first; ``app`` is left as read
     app.update(fields)
-    await apps_repo.patch(app["app_id"], fields)
+    if set(fields) != {"progress_lease_until"}:  # the lease moves on every step; nothing visible changed
+        _notify(app)
     return app
 
 
@@ -312,7 +336,8 @@ async def _ensure_workflows(app: dict, issue_id: str | None) -> None:
                 service_id=service,
                 configuration={"name": name},
                 issue_id=issue_id,
-                reason=f"App {app['name']} ({'live' if env == 'prod' else 'preview'})",
+                # The owner reads this on the card: say what it is for, in words.
+                reason=f"{app.get('display_name') or app['name']}: {'hosting' if provider == 'vercel' else 'a database'} ({'live' if env == 'prod' else 'preview'})",
                 app_id=app["app_id"],
                 environment=env,
             )
@@ -459,7 +484,7 @@ async def _check_preview(app: dict, creds: dict) -> None:
             },
         )
     elif st["readyState"] in ("ERROR", "CANCELED"):
-        await _patch(app, {"preview_pending": None, "error": _build_failed(st)})
+        await _clear_pending(app, "preview_pending", {"error": _build_failed(st)})
 
 
 async def _check_publish(app: dict, creds: dict) -> None:
@@ -501,9 +526,25 @@ async def _check_publish(app: dict, creds: dict) -> None:
         fresh = won or await apps_repo.get(app["app_id"], consistent_read=True)
         app.clear()
         app.update(plain(fresh))
+        _notify(app)
     elif st["readyState"] in ("ERROR", "CANCELED"):
         err = {**_build_failed(st), "next": "fix the error and publish again"}
-        await _patch(app, {"publish_pending": None, "publish_error": err})
+        await _clear_pending(app, "publish_pending", {"publish_error": err})
+
+
+async def _clear_pending(app: dict, field: str, fields: dict) -> None:
+    # A publish/up may have written a newer pending deployment since this copy was read; keep it.
+    if await apps_repo.clear_pending_if(app["app_id"], field, app[field]["deployment_id"], fields) is None:
+        await _reload(app)
+        return
+    app.update({field: None, **fields})
+    _notify(app)
+
+
+async def _reload(app: dict) -> None:
+    fresh = plain(await apps_repo.get(app["app_id"], consistent_read=True))
+    app.clear()
+    app.update(fresh)
 
 
 def _build_failed(st: dict) -> dict:
@@ -562,15 +603,15 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
     dev_db = await _secret(app, rows, "neon", "dev", "connection_string")
     live_db = await _secret(app, rows, "neon", "prod", "connection_string")
     # R56: one read at a time steps an app (no double build/reset); another read reports the record.
-    if not await apps_repo.take_lease(app["app_id"], seconds=_LEASE_S):
+    lease = await apps_repo.take_lease(app["app_id"], seconds=_LEASE_S)
+    await _reload(app)  # what the last holder left; without the lease, so the caller reports it, not an old copy
+    if not lease:
         return rows, None
     try:
-        fresh = plain(await apps_repo.get(app["app_id"], consistent_read=True))  # what the last holder left
-        app.clear()
-        app.update(fresh)
         return rows, await _steps(app, creds, dev_db, live_db)
     finally:
-        await _patch(app, {"progress_lease_until": None})
+        if await apps_repo.release_lease(app["app_id"], lease):
+            app["progress_lease_until"] = None
 
 
 async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | None) -> AppError | None:
@@ -653,7 +694,8 @@ def _state(app: dict, rows: dict) -> tuple[str, AppError | None]:
 async def _record_state(app: dict, state: str) -> str:
     record = "live" if state == "ready" and app.get("live_version") else state
     if app.get("state") != record:
-        await _patch(app, {"state": record})
+        # Only over the state this copy saw: a reader from before a release must not undo its "live".
+        await _patch(app, {"state": record}, expect={"state": app.get("state")})
     return record
 
 
@@ -791,9 +833,29 @@ async def publish(
         return await _result(app, rows, transient, cost_cents)
     if any((rows.get(r) or {}).get("state") != "active" for r in _RESOURCES):
         raise AppsRefused("not_ready", "The app's services are not all set up yet.", "run up and wait for the owner")
+    # A row can be active before its secret lands; the live app needs its database, so wait for it.
+    live_db = await _secret(app, rows, "neon", "prod", "connection_string")
+    if not live_db:
+        raise AppsRefused("not_ready", "The live database is still being set up.", "try again in a minute")
     creds = await _secret(app, rows, "vercel", "prod", "token")
     files = await _files(owner_id, app_id, source_id)
     await _check_destructive(app, files, approved_destructive)
+    # The live schema moves here, not in the Vercel build: new migrations run now, in order, in one
+    # transaction, and are recorded as published before the deploy (a failed build must not re-run them).
+    migrations, _ = _migrations(files)
+    published = set(app.get("published_migrations") or [])
+    new = [(n, sql) for n, sql in migrations if n not in published]
+    if new:
+        try:
+            await apps_db.apply_live(live_db["connection_string"], migrations=[sql for _, sql in new])
+        except apps_db.AppsDbError as e:
+            return await _result(
+                app,
+                rows,
+                {"code": e.code, "message": str(e), "next": "fix the migration and publish again"},
+                cost_cents,
+            )
+        await _patch(app, {"published_migrations": sorted(published | {n for n, _ in new})})
     try:
         if not app.get("domain"):
             await _patch(app, {"domain": await _add_domain(app, creds, preview=False)})

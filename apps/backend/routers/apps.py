@@ -11,7 +11,7 @@ import re
 from typing import Annotated, Literal
 
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field, StringConstraints
 
 from core.config import settings
@@ -264,8 +264,9 @@ async def issuer():
 
 
 @router.get("/invite/{token}")
-async def swap_invite(token: str):
+async def swap_invite(token: str, response: Response):
     """Public: an invite link's one-time token for a 15-minute pass to its app (R41: ``token``)."""
+    response.headers["Cache-Control"] = "no-store"  # a pass: never cached, per origin or otherwise
     try:
         return {"token": await _run(svc.swap_invite(token))}
     except (ClientError, BotoCoreError):  # storage down: a retryable 503, never an unhandled 500

@@ -436,6 +436,7 @@ def test_invite_token_works_once_and_expires(invites):
 
     r = anyone.get(f"{BASE}/invite/{first}")
     assert r.status_code == 200
+    assert r.headers["cache-control"] == "no-store"
     claims = json.loads(network_proof._unb64(r.json()["token"].split(".")[1]))
     assert {k: claims[k] for k in ("sub", "name", "email", "ws", "room", "app")} == {
         "sub": "invite:bo@x.co",

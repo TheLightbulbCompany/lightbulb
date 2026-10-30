@@ -7,6 +7,7 @@ provides_tools:
   - hire_suggestion
   - request_approval
   - ask_person
+  - lightbulb_board
   - suggest_idea
   - lightbulb_local_sessions
   - lightbulb_desktop

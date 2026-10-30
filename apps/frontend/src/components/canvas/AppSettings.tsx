@@ -7,6 +7,7 @@ import { notifyError } from "@/lib/notify";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { useApps, type AppRow } from "@/hooks/useApps";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
+import { PublishButton } from "./PublishButton";
 import "./canvas.css";
 
 const CHOICES: { value: AppRow["open_to"]; label: string }[] = [
@@ -109,6 +110,8 @@ export function AppSettings({ app, onClose, onRemoved }: { app: AppRow; onClose(
       <input id={`budget-${app.app_id}`} type="number" min={0} step={1} value={budget} onChange={(e) => setBudget(e.target.value)} />
       <button type="button" className="app-view__btn" disabled={!budgetOk} onClick={saveBudget}>Save budget</button>
     </div>
+
+    <div className="app-settings__group"><PublishButton key={app.app_id} app={app} /></div>
 
     <div className="app-settings__group">
       <button type="button" className="app-view__btn" disabled={!hasDb} onClick={openData}>Data and backups</button>

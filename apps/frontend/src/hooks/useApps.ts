@@ -22,6 +22,8 @@ export type AppRow = {
   created_by_name?: string;
   agent_name?: string;
   can_open: boolean;
+  can_publish?: boolean; // mock (R17): plan 1 computes it
+  error?: { message: string } | null; // the last build/publish failure, when the backend reports one
   resources?: { provider: string; service: string; state: string; resource_id?: string; environment?: string }[];
 };
 
@@ -45,6 +47,10 @@ export function useApps() {
     const res = await api.post(`/apps/${encodeURIComponent(appId)}/open${suffix}`, {}) as { url: string };
     return res.url;
   };
+
+  /** Starts a publish and returns at once; the caller re-reads the list for progress. Errors propagate: the caller shows the backend's message. */
+  const publish = async (appId: string): Promise<{ state?: string; error?: { message: string } | null }> =>
+    api.post(`/apps/${encodeURIComponent(appId)}/publish`, {}) as Promise<{ state?: string; error?: { message: string } | null }>;
 
   const update = async (appId: string, patch: { open_to?: AppRow["open_to"]; budget_usd?: number }): Promise<AppRow> => {
     try {
@@ -96,6 +102,7 @@ export function useApps() {
     error: (error as Error | undefined) ?? null,
     refresh: () => { void mutate(); },
     open,
+    publish,
     update,
     invite,
     remove,

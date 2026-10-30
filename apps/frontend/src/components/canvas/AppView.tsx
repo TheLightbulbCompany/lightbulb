@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useApps, type AppRow } from "@/hooks/useApps";
 import { AppSettings } from "./AppSettings";
+import { PublishButton } from "./PublishButton";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { notifyError } from "@/lib/notify";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
@@ -64,6 +65,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
       <span className="app-view__version">{app.live_version == null ? "preview" : `v${app.live_version}`}</span>
       {app.live_version != null && app.preview_url && <button type="button" className="app-view__btn" aria-pressed={t === "preview"}
         onClick={() => setTarget({ id: app.app_id, t: t === "preview" ? "live" : "preview" })}>{t === "preview" ? "Live" : "Preview"}</button>}
+      <PublishButton key={app.app_id} app={app} />
       <button type="button" className="app-view__btn" onClick={openInTab}>Open in its own tab</button>
       {isAdmin && <button type="button" className="app-view__btn" aria-expanded={settingsOpen}
         onClick={() => setSettingsOpen((v) => !v)}>Settings</button>}

@@ -117,4 +117,15 @@ describe("useApps", () => {
     await act(() => result.current.databaseLink(row({ resources: [app.resources![0]] })));
     expect(mockPost).toHaveBeenLastCalledWith("/company/provisioning/resources/neon/n_dev/dashboard-link", {});
   });
+
+  it("publish posts to /apps/{id}/publish", async () => {
+    mockGet.mockResolvedValue({ apps: [row()] });
+    mockPost.mockResolvedValue({ app_id: "app_1", state: "building" });
+    const { result } = renderHook(() => useApps(), { wrapper });
+    await waitFor(() => expect(result.current.apps).toHaveLength(1));
+    await expect(result.current.publish("app_1")).resolves.toMatchObject({ state: "building" });
+    expect(mockPost).toHaveBeenCalledWith("/apps/app_1/publish", {});
+    mockPost.mockRejectedValue(new Error("No ready preview"));
+    await expect(result.current.publish("app_1")).rejects.toThrow("No ready preview");
+  });
 });

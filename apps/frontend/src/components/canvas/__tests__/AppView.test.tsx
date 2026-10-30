@@ -1,11 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { AppRow } from "@/hooks/useApps";
 
 const open = vi.fn();
 const refresh = vi.fn();
+const publish = vi.fn();
 let admin = false;
-vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ open, refresh }) }));
+vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ open, refresh, publish }) }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => admin }));
 import { AppView } from "../AppView";
 
@@ -15,7 +16,7 @@ const app = (over: Partial<AppRow> = {}): AppRow => ({
   spend_month_cents: 0, can_open: true, ...over,
 });
 
-beforeEach(() => { vi.restoreAllMocks(); open.mockReset(); refresh.mockReset(); admin = false; });
+beforeEach(() => { vi.restoreAllMocks(); open.mockReset(); refresh.mockReset(); publish.mockReset(); admin = false; });
 
 describe("AppView", () => {
   it("requests a pass and sets it as the frame src", async () => {
@@ -137,5 +138,77 @@ describe("AppView", () => {
     expect(screen.getByTitle("Invoices")).toBeTruthy();
     expect(tab.close).toHaveBeenCalled();
     expect(refresh).toHaveBeenCalled();
+  });
+
+  describe("publish", () => {
+    const ready = (over: Partial<AppRow> = {}) => app({ can_publish: true, preview_url: "https://p", live_version: 3, ...over });
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); open.mockResolvedValue("https://x/"); });
+    afterEach(() => vi.useRealTimers());
+
+    it("members without can_publish don't see Publish", async () => {
+      render(<AppView app={ready({ can_publish: false })} onBack={vi.fn()} />);
+      await screen.findByTitle("Invoices");
+      expect(screen.queryByRole("button", { name: "Publish" })).toBeNull();
+    });
+
+    it("publish shows progress then the live address", async () => {
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      const { rerender } = render(<AppView app={ready()} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      expect(await screen.findByText("Publishing…")).toBeTruthy();
+      expect(publish).toHaveBeenCalledWith("a1");
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Publishing…")).toBeTruthy(); // first read: still version 3
+      rerender(<AppView app={ready({ live_version: 4, live_url: "https://inv.apps.test", state: "building" })} onBack={vi.fn()} />);
+      const link = await screen.findByRole("link", { name: "https://inv.apps.test" });
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toContain("noopener");
+      expect(screen.getByText(/Live at/)).toBeTruthy();
+      await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
+      expect(refresh).toHaveBeenCalledTimes(1); // polling stopped
+    });
+
+    it("publish failure shows the backend message and retry publishes again", async () => {
+      publish.mockRejectedValueOnce(new Error("The build failed: missing env")).mockResolvedValueOnce({ app_id: "a1", state: "building" });
+      render(<AppView app={ready()} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      expect((await screen.findAllByRole("alert")).map((a) => a.textContent).join()).toContain("The build failed: missing env");
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(await screen.findByText("Publishing…")).toBeTruthy();
+      expect(publish).toHaveBeenCalledTimes(2);
+    });
+
+    it("a failed state while publishing shows the row's error", async () => {
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      const { rerender } = render(<AppView app={ready()} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      await screen.findByText("Publishing…");
+      rerender(<AppView app={ready({ state: "failed", error: { message: "Deploy rejected" } })} onBack={vi.fn()} />);
+      expect((await screen.findAllByRole("alert")).map((a) => a.textContent).join()).toContain("Deploy rejected");
+      expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    });
+
+    it("polling stops on unmount", async () => {
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      const { unmount } = render(<AppView app={ready()} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      await screen.findByText("Publishing…");
+      unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+      expect(refresh).not.toHaveBeenCalled();
+    });
+
+    it("gives up after 10 minutes with a Refresh", async () => {
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      render(<AppView app={ready()} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      await screen.findByText("Publishing…");
+      await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 1000); });
+      expect(screen.getByText("Still publishing — check back in a minute")).toBeTruthy();
+      const n = refresh.mock.calls.length;
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+      expect(refresh).toHaveBeenCalledTimes(n + 1);
+    });
   });
 });

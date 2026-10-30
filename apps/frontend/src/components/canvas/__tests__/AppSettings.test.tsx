@@ -6,8 +6,10 @@ const update = vi.fn();
 const invite = vi.fn();
 const remove = vi.fn();
 const databaseLink = vi.fn();
+const publish = vi.fn();
+const refresh = vi.fn();
 let admin = true;
-vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ update, invite, remove, databaseLink }) }));
+vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ update, invite, remove, databaseLink, publish, refresh }) }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => admin }));
 import { AppSettings } from "../AppSettings";
 
@@ -136,5 +138,15 @@ describe("AppSettings", () => {
     admin = false;
     const { container } = render(<AppSettings app={app()} onClose={vi.fn()} />);
     expect(container.innerHTML).toBe("");
+  });
+
+  it("publish is offered in settings too", async () => {
+    publish.mockResolvedValue({ app_id: "a1", state: "building" });
+    const { unmount } = render(<AppSettings app={app({ can_publish: false, preview_url: "https://p" })} onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Publish" })).toBeNull();
+    unmount();
+    render(<AppSettings app={app({ can_publish: true, preview_url: "https://p" })} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    await waitFor(() => expect(publish).toHaveBeenCalledWith("a1"));
   });
 });

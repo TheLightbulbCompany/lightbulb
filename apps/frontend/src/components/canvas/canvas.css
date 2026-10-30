@@ -30,3 +30,4 @@ button.app-item__row:focus-visible { outline: 2px solid var(--fg); outline-offse
 .app-settings__row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .app-settings input[type="number"], .app-settings input:not([type]), .app-settings textarea { max-width: 100%; padding: 4px 8px; border: 1px solid var(--plane-edge); background: transparent; color: var(--fg); }
 .app-settings button:disabled { opacity: 0.55; cursor: not-allowed; }
+.publish { display: inline-flex; align-items: center; gap: 8px; }

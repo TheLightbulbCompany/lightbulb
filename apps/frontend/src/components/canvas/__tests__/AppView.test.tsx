@@ -15,7 +15,7 @@ const app = (over: Partial<AppRow> = {}): AppRow => ({
   spend_month_cents: 0, can_open: true, ...over,
 });
 
-beforeEach(() => { open.mockReset(); refresh.mockReset(); admin = false; });
+beforeEach(() => { vi.restoreAllMocks(); open.mockReset(); refresh.mockReset(); admin = false; });
 
 describe("AppView", () => {
   it("requests a pass and sets it as the frame src", async () => {
@@ -25,7 +25,7 @@ describe("AppView", () => {
     const frame = await screen.findByTitle("Invoices");
     expect(frame.getAttribute("src")).toBe("https://x.apps.test/?pass=1");
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin allow-forms allow-popups");
-    expect(open).toHaveBeenCalledWith("a1");
+    expect(open).toHaveBeenCalledWith("a1", "live");
     expect(screen.getByText("v3")).toBeTruthy();
   });
 
@@ -61,11 +61,13 @@ describe("AppView", () => {
 
   it("open in own tab requests a fresh pass", async () => {
     open.mockResolvedValueOnce("https://x/one").mockResolvedValueOnce("https://x/two");
-    const win = vi.spyOn(window, "open").mockReturnValue(null);
+    const tab = { location: { href: "" }, close: vi.fn(), opener: {} };
+    const win = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
     render(<AppView app={app()} onBack={vi.fn()} />);
     await screen.findByTitle("Invoices");
     fireEvent.click(screen.getByRole("button", { name: "Open in its own tab" }));
-    await waitFor(() => expect(win).toHaveBeenCalledWith("https://x/two", "_blank", "noopener"));
+    expect(win).toHaveBeenCalledWith("", "_blank"); // opened synchronously, before the pass is minted
+    await waitFor(() => expect(tab.location.href).toBe("https://x/two"));
     expect(open).toHaveBeenCalledTimes(2);
   });
 
@@ -93,13 +95,37 @@ describe("AppView", () => {
     expect(screen.getByTitle("Pipeline").getAttribute("src")).toBe("https://a2.apps.test/");
   });
 
+  it("shows preview for a never-published app and v{n} otherwise", async () => {
+    open.mockResolvedValue("https://x/");
+    const { unmount } = render(<AppView app={app({ live_version: null })} onBack={vi.fn()} />);
+    expect(screen.getByText("preview")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
+    unmount();
+    render(<AppView app={app()} onBack={vi.fn()} />);
+    expect(screen.getByText("v3")).toBeTruthy();
+  });
+
+  it("Preview opens the preview target in its own frame and Live returns", async () => {
+    open.mockImplementation(async (id: string, t = "live") => `https://${id}.${t}.test/`);
+    render(<AppView app={app({ preview_url: "https://p" })} onBack={vi.fn()} />);
+    expect((await screen.findByTitle("Invoices")).getAttribute("src")).toBe("https://a1.live.test/");
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.preview.test/"));
+    expect(open).toHaveBeenLastCalledWith("a1", "preview");
+    fireEvent.click(screen.getByRole("button", { name: "Live" }));
+    await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.live.test/"));
+  });
+
   it("open-in-tab failure keeps the frame, shows an alert and refreshes", async () => {
     open.mockResolvedValueOnce("https://x/one").mockRejectedValueOnce(new Error("No longer allowed"));
+    const tab = { location: { href: "" }, close: vi.fn(), opener: {} };
+    vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
     render(<AppView app={app()} onBack={vi.fn()} />);
     await screen.findByTitle("Invoices");
     fireEvent.click(screen.getByRole("button", { name: "Open in its own tab" }));
     expect((await screen.findByRole("alert")).textContent).toContain("No longer allowed");
     expect(screen.getByTitle("Invoices")).toBeTruthy();
+    expect(tab.close).toHaveBeenCalled();
     expect(refresh).toHaveBeenCalled();
   });
 });

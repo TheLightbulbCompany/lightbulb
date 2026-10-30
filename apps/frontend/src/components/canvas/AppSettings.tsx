@@ -86,7 +86,7 @@ export function AppSettings({ app, onClose, onRemoved }: { app: AppRow; onClose(
 
     <div className="app-settings__group">
       <button type="button" className="app-view__btn" disabled={!hasDb} onClick={openData}>Data and backups</button>
-      {!hasDb && <span className="canvas__notice">This app has no database yet.</span>}
+      {!hasDb && <span className="canvas__notice">This app doesn't store data yet.</span>}
     </div>
 
     <div className="app-settings__group">

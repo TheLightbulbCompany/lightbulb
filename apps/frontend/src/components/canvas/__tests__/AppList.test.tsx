@@ -20,7 +20,7 @@ describe("AppList", () => {
     expect(screen.getAllByText(/asked by Dana in #finance/)).toHaveLength(4);
     expect(screen.getAllByText("#finance").length).toBeGreaterThan(0);
     expect(screen.getByText("everyone here")).toBeTruthy();
-    expect(screen.getByText("people you invited")).toBeTruthy();
+    expect(screen.getByText("invited people")).toBeTruthy();
     expect(screen.getByText("anyone with the link")).toBeTruthy();
     expect(screen.getAllByText("$3.20 this month").length).toBe(4);
     fireEvent.click(screen.getByRole("button", { name: /Invoices/ }));
@@ -35,6 +35,17 @@ describe("AppList", () => {
     expect(row.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(row);
     expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("an admin can open a row the viewer cannot; a member cannot", () => {
+    const onOpen = vi.fn();
+    const { unmount } = render(<AppList {...props} canManage onOpen={onOpen} apps={[app({ can_open: false })]} />);
+    fireEvent.click(screen.getByRole("button", { name: /Invoices/ }));
+    expect(onOpen).toHaveBeenCalledWith("a1");
+    unmount();
+    render(<AppList {...props} onOpen={onOpen} apps={[app({ can_open: false })]} />);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByRole("group").getAttribute("aria-disabled")).toBe("true");
   });
 
   it("building apps are listed but not openable", () => {

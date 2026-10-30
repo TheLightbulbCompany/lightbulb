@@ -37,6 +37,23 @@ describe("useApps", () => {
     expect(mockGet).toHaveBeenCalledWith("/apps");
   });
 
+  it("hides removed (destroyed) apps", async () => {
+    mockGet.mockResolvedValue({ apps: [row(), row({ app_id: "app_2", state: "destroyed" })] });
+    const { result } = renderHook(() => useApps(), { wrapper });
+    await waitFor(() => expect(result.current.apps).toHaveLength(1));
+    expect(result.current.apps[0].app_id).toBe("app_1");
+  });
+
+  it("polls every 15 s while an app is awaiting approval, provisioning or building", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockGet.mockResolvedValue({ apps: [row({ state: "provisioning" })] });
+    const { result } = renderHook(() => useApps(), { wrapper });
+    await waitFor(() => expect(result.current.apps).toHaveLength(1));
+    const n = mockGet.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_100); });
+    expect(mockGet.mock.calls.length).toBeGreaterThan(n);
+  });
+
   it("open posts and returns the url", async () => {
     mockGet.mockResolvedValue({ apps: [row()] });
     mockPost.mockResolvedValue({ url: "https://x.test/a" });

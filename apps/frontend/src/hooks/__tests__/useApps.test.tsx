@@ -19,6 +19,7 @@ vi.mock("@/hooks/useLiveEvents", () => ({
 }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "u1", orgId: "o1" }) }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
+import { notifyApiError } from "@/lib/notify";
 
 function wrapper({ children }: { children: ReactNode }) {
   return <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{children}</SWRConfig>;
@@ -142,5 +143,41 @@ describe("useApps", () => {
     expect(mockPost).toHaveBeenCalledWith("/apps/app_1/publish", {});
     mockPost.mockRejectedValue(new Error("No ready preview"));
     await expect(result.current.publish("app_1")).rejects.toThrow("No ready preview");
+  });
+
+  it("listInvites reads the emails; revokeInvite sends one and toasts a failure", async () => {
+    mockGet.mockResolvedValue({ apps: [], emails: ["a@x.com"] });
+    mockDel.mockResolvedValue({ revoked: 1 });
+    const { result } = renderHook(() => useApps(), { wrapper });
+    await expect(result.current.listInvites("a b")).resolves.toEqual(["a@x.com"]);
+    expect(mockGet).toHaveBeenCalledWith("/apps/a%20b/invites");
+    await result.current.revokeInvite("app_1", "a@x.com");
+    expect(mockDel).toHaveBeenCalledWith("/apps/app_1/invites", undefined, { email: "a@x.com" });
+    mockDel.mockRejectedValue(new Error("no"));
+    await expect(result.current.revokeInvite("app_1", "a@x.com")).rejects.toThrow("no");
+    expect(notifyApiError).toHaveBeenCalledWith(expect.any(Error), "The invite could not be removed. Try again.");
+  });
+
+  it("askAgent posts only an error it was given, capped to what the route takes", async () => {
+    mockGet.mockResolvedValue({ apps: [] });
+    mockPost.mockResolvedValue({ asked: true });
+    const { result } = renderHook(() => useApps(), { wrapper });
+    await result.current.askAgent("app_1");
+    expect(mockPost).toHaveBeenLastCalledWith("/apps/app_1/ask-agent", {});
+    await result.current.askAgent("app_1", "x".repeat(2500));
+    expect(mockPost).toHaveBeenLastCalledWith("/apps/app_1/ask-agent", { error: "x".repeat(2000) });
+  });
+
+  it("rollback names the version, then re-reads the list", async () => {
+    mockGet.mockResolvedValue({ apps: [row()] });
+    mockPost.mockResolvedValue({ state: "live" });
+    const { result } = renderHook(() => useApps(), { wrapper });
+    await waitFor(() => expect(result.current.apps).toHaveLength(1));
+    const n = mockGet.mock.calls.length;
+    await act(() => result.current.rollback("app_1", 2));
+    expect(mockPost).toHaveBeenCalledWith("/apps/app_1/rollback", { version: 2 });
+    expect(mockGet.mock.calls.length).toBeGreaterThan(n);
+    mockPost.mockRejectedValue(new Error("no"));
+    await expect(result.current.rollback("app_1", 2)).rejects.toThrow("no");
   });
 });

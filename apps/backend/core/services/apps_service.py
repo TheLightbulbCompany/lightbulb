@@ -18,8 +18,11 @@ import json
 import logging
 import re
 import secrets as _random
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from html import escape
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 import httpx
@@ -110,6 +113,7 @@ class UpResult(TypedDict):
     version: NotRequired[int]
     cost_cents: NotRequired[int]
     error: NotRequired[AppError]
+    rebuilding: NotRequired[bool]  # rollback: the version is on its way, not live yet
 
 
 class AppStatus(TypedDict):
@@ -423,12 +427,17 @@ async def _push_env(app: dict, creds: dict, dev_db: dict | None, live_db: dict |
         await _patch(app, {**fields, "env_fp": fps})
 
 
-async def _redeploy_live(app: dict, creds: dict) -> None:
+async def _redeploy_live(app: dict, creds: dict, *, put_back: dict | None = None) -> None:
     """A production build of what is live (or about to be), through ``publish_pending``: it lands
-    as a new version of the same commit."""
+    as a new version of the same commit. ``put_back``: build this older version instead."""
     pending = app.get("publish_pending") or {}
     live = next((v for v in app.get("versions") or [] if v.get("n") == app.get("live_version")), {})
-    source_id = pending.get("source_id") or app.get("live_source_id") or live.get("source_id")
+    source_id = (
+        (put_back or {}).get("source_id")
+        or pending.get("source_id")
+        or app.get("live_source_id")
+        or live.get("source_id")
+    )
     if not source_id or source_id not in (app.get("sources") or {}):
         if app.get("live_version"):
             logger.warning("apps: %s live source unknown; new settings reach it at the next publish", app["app_id"])
@@ -443,8 +452,11 @@ async def _redeploy_live(app: dict, creds: dict) -> None:
                 "source_id": source_id,
                 "commit": src["commit"],
                 "by": pending.get("by") or "lightbulb",
-                "reason": "sharing changed",
+                "reason": f"put back version {put_back['n']}" if put_back else "sharing changed",
                 "migrations": src.get("migrations") or [],
+                # A rebuilt put-back takes the place of the old version in the history, as an instant one does.
+                **({"replaced": _replaced(put_back)} if put_back else {}),
+                **({"replaced": pending["replaced"]} if not put_back and "replaced" in pending else {}),
             }
         },
     )
@@ -513,6 +525,9 @@ async def _check_publish(app: dict, creds: dict) -> None:
             "at": utc_now_iso(),
             "by": pending["by"],
             "live": True,
+            # _push_env ran first on this copy, so this is what the deployment's env says (see rollback).
+            "open_to": app["open_to"],
+            "replaced": pending.get("replaced", app.get("live_version")),
         }
         fields = {
             "live_source_id": pending["source_id"],
@@ -554,6 +569,29 @@ async def _reload(app: dict) -> None:
     fresh = plain(await apps_repo.get(app["app_id"], consistent_read=True))
     app.clear()
     app.update(fresh)
+
+
+def _replaced(version: dict) -> int | None:
+    """The version live just before this one. An older record has no stamp: the number before it."""
+    return version.get("replaced", version["n"] - 1)
+
+
+def _previous_version(app: dict) -> dict | None:
+    """What "put back the previous version" goes back to: the history, never ``live_version - 1``."""
+    versions = app.get("versions") or []
+    live = next((v for v in versions if v.get("n") == app.get("live_version")), None)
+    return next((v for v in versions if v.get("n") == _replaced(live)), None) if live else None
+
+
+def _preview_source(app: dict) -> str | None:
+    """The source a READY preview shows. A preview from before its source was recorded: the last
+    build is that preview when none is pending."""
+    preview = app.get("preview")
+    if not preview:
+        return None
+    return preview.get("source_id") or (
+        None if app.get("preview_pending") else (app.get("preview_built") or {}).get("source_id")
+    )
 
 
 def _build_failed(st: dict) -> dict:
@@ -1095,12 +1133,8 @@ async def publish(
 async def member_publish(owner_id: str, app_id: str, *, user_id: str) -> UpResult:
     """R69: Canvas publishes what the READY preview shows, as the person (the route checked R73)."""
     app = await _owned(owner_id, app_id)
-    preview = app.get("preview") or {}
-    # A preview from before its source was recorded: the last build is that preview when none is pending.
-    source_id = preview.get("source_id") or (
-        None if app.get("preview_pending") else (app.get("preview_built") or {}).get("source_id")
-    )
-    if not preview or not source_id:
+    source_id = _preview_source(app)
+    if not source_id:
         raise AppsRefused("not_ready", "The app has no ready preview to publish.", "wait for the preview")
     actor = BuilderCaller(owner_id=owner_id, actor_id=user_id, actor_kind="person")
     try:
@@ -1112,27 +1146,66 @@ async def member_publish(owner_id: str, app_id: str, *, user_id: str) -> UpResul
 
 
 async def rollback(owner_id: str, app_id: str, *, version: int | None) -> UpResult:
-    """Code only: the live database is never touched."""
+    """Code only: the live database is never touched. Holds the lease, so a read's late promote
+    can't leave Vercel serving a different version than the record."""
     app = await _owned(owner_id, app_id)
-    n = version if version is not None else (app.get("live_version") or 0) - 1
-    target = next((v for v in app.get("versions") or [] if v["n"] == n), None)
-    if target is None:
-        raise AppsRefused("version_not_found", f"There is no version {n}.", "pick a version from status")
     rows = await _rows(app)
     creds = await _secret(app, rows, "vercel", "prod", "token")
     if not creds:
         raise AppsRefused("not_ready", "The app's Vercel project is not set up.")
-    await _with_token_for_route(app, rows, creds, lambda c: vercel.rollback(c, target["deployment_id"]))
-    cancelled = app.get("publish_pending")
-    # The rollback wins over a publish in flight; `rolled_back` makes the next release promote itself.
-    await _patch(app, {"live_version": n, "live_source_id": None, "rolled_back": True, "publish_pending": None})
+    lease = await apps_repo.take_lease(app_id, seconds=_LEASE_S)
+    if not lease:
+        raise AppsRefused("busy", "The app is being updated right now.", "try again in a minute")
+    try:
+        await _reload(app)
+        return await _with_token_for_route(app, rows, creds, lambda c: _put_back(app, rows, c, version))
+    finally:
+        await apps_repo.release_lease(app_id, lease)
+
+
+async def _put_back(app: dict, rows: dict, creds: dict, version: int | None) -> UpResult:
+    n = version if version is not None else (_previous_version(app) or {"n": 0})["n"]
+    target = next((v for v in app.get("versions") or [] if v["n"] == n), None)
+    if target is None:
+        raise AppsRefused("version_not_found", f"There is no version {n}.", "pick a version from status")
+    cancelled = " The publish in progress was cancelled." if app.get("publish_pending") else ""
+    # R51: a deployment keeps the LIGHTBULB_OPEN_TO it was built with, and `public` is the door off. Serving
+    # one built under other sharing would open or close the live app while the record says otherwise. No
+    # stamp (older records): unknown, so different.
+    rebuilding = target.get("open_to") != app["open_to"]
+    if rebuilding:
+        if target.get("source_id") not in (app.get("sources") or {}):
+            raise AppsRefused(
+                "version_unavailable",
+                f"Version {n} was built with different sharing settings, and its source is no longer kept.",
+                "publish a new version instead",
+            )
+        await _redeploy_live(app, creds, put_back=target)  # the current version serves until this lands
+        await _patch(app, {"publish_error": None})
+        said = f"Version {n} is being rebuilt with the current sharing settings. It goes live in a few minutes."
+    else:
+        await vercel.rollback(creds, target["deployment_id"])
+        # The rollback wins over a publish in flight; `rolled_back` makes the next release promote itself.
+        await _patch(
+            app,
+            {
+                "live_version": n,
+                "live_source_id": None,
+                "rolled_back": True,
+                "publish_pending": None,
+                "publish_error": None,
+            },
+        )
+        said = f"Version {n} is live again."
     res = await _result(app, rows, None)
     res["error"] = {
         "code": "code_only",
-        "message": f"Version {n} is live again." + (" The publish in progress was cancelled." if cancelled else ""),
+        "message": said + cancelled,
         "next": "Data is unchanged. To restore data, use Neon's own restore on the company's account "
         "(Canvas links to it).",
     }
+    if rebuilding:
+        res["rebuilding"] = True
     return res
 
 
@@ -1148,8 +1221,9 @@ async def remove(owner_id: str, app_id: str, *, confirm_name: str, user_id: str)
     app = await apps_repo.get(app_id, consistent_read=True)
     if not app or app.get("owner_id") != owner_id:
         raise AppsRefused("app_not_found", "That app does not exist.")
-    if confirm_name != app["name"]:
-        raise AppsRefused("confirm_name_mismatch", f'Type "{app["name"]}" to confirm.')
+    # Canvas types the display name; the CLI's contract, the slug, keeps working.
+    if confirm_name.strip().casefold() not in (app["name"].casefold(), _display(app).casefold()):
+        raise AppsRefused("confirm_name_mismatch", f'Type "{_display(app)}" to confirm.')
     rows = [r for r in await wf_repo.list_for_owner(owner_id) if r.get("app_id") == app_id]
     busy = AppsRefused("busy", "A resource for this app is being set up right now.", "try again in a minute")
     open_rows = [r for r in rows if r.get("state") not in wf_repo.TERMINAL_STATES]
@@ -1281,6 +1355,9 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
     for a in apps:
         row = _view(a, await _rows(a, all_rows), a.get("state") or "")
         del row["versions"]
+        previous = _previous_version(a)
+        shows = _preview_source(a)
+        serving = next((v for v in a.get("versions") or [] if v.get("n") == a.get("live_version")), {})
         uid = a.get("created_by")
         row.update(
             # R35: an invited app still opens for its room; invitees use their links.
@@ -1293,11 +1370,32 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
             can_publish=can_manage(a, auth),
             # R71: the last persisted failure, message only.
             error={"message": err.get("message", "")}
-            if (err := a.get("error") or a.get("publish_error") or _renewal_hold(a))
+            if (err := a.get("publish_error") or a.get("error") or _renewal_hold(a))
             else None,
+            # A live app's state stays "live" through a failed publish (R63), so Canvas needs this to see it.
+            publish_failed=bool(a.get("publish_error")),
+            # A publish in flight, the person's or an agent's: putting back cancels it.
+            publishing=bool(a.get("publish_pending")),
+            # Whether Publish has anything to do on a live app: pressing it on what is live changes nothing.
+            preview_newer=bool(shows) and shows != (a.get("live_source_id") or serving.get("source_id")),
+            # What "Put back the previous version" goes back to, and whether that takes a rebuild (see rollback).
+            previous_version=(
+                {"n": previous["n"], "at": previous["at"], "rebuild": previous.get("open_to") != a["open_to"]}
+                if previous
+                else None
+            ),
         )
         out.append(row)
     return out
+
+
+async def _scrubber(owner_id: str, app_id: str) -> Callable[[str], str]:
+    """Replaces every app secret and any database URL with ``[redacted]``, for text that leaves the service."""
+    keys = [f"apps/{app_id}/{p}/{e}" for p, _, e in _RESOURCES] + [f"apps/{app_id}/lightbulb"]
+    blobs = await asyncio.gather(*(integration_secret_store.get(owner_id, k) for k in keys))
+    values = {v for b in blobs if b for v in b.values() if isinstance(v, str) and len(v) >= 8}
+    secret_re = re.compile("|".join(re.escape(v) for v in sorted(values, key=len, reverse=True)) or r"(?!)")
+    return lambda text: _DB_URL.sub("[redacted]", secret_re.sub("[redacted]", text))
 
 
 async def errors(owner_id: str, app_id: str) -> dict:
@@ -1319,16 +1417,10 @@ async def errors(owner_id: str, app_id: str) -> dict:
     lines, events = await _with_token_for_route(app, rows, creds, read)
     client = [x for x in lines if any(m in x["message"] for m in _CLIENT_MARKS)]
     server = [x for x in lines if x not in client] if lines else events
-    keys = [f"apps/{app_id}/{p}/{e}" for p, _, e in _RESOURCES] + [f"apps/{app_id}/lightbulb"]
-    blobs = await asyncio.gather(*(integration_secret_store.get(owner_id, k) for k in keys))
-    values = {v for b in blobs if b for v in b.values() if isinstance(v, str) and len(v) >= 8}
-    secret_re = re.compile("|".join(re.escape(v) for v in sorted(values, key=len, reverse=True)) or r"(?!)")
+    scrub = await _scrubber(owner_id, app_id)
 
     def clean(xs: list[dict]) -> list[dict]:
-        return [
-            {"at": x.get("at"), "message": _DB_URL.sub("[redacted]", secret_re.sub("[redacted]", x["message"]))}
-            for x in xs[-50:]
-        ]
+        return [{"at": x.get("at"), "message": scrub(x["message"])} for x in xs[-50:]]
 
     return {"client": clean(client), "server": clean(server)}
 
@@ -1423,18 +1515,88 @@ async def invite(owner_id: str, app_id: str, *, emails: list[str], user_id: str)
         await update_settings(owner_id, app_id, open_to="invited")
         app["open_to"] = "invited"
     once = "" if public else " The link works once and expires in 14 days."
+    shown = _display(app)
     for email, link in links.items():
         # send_email never raises; a failed send still counts (the admin can invite again).
         await email_service.send_email(
             to=email,
-            subject=f"You're invited to {app['name']}",
-            html=f'<p>You\'re invited to open {app["name"]}.</p><p><a href="{link}">Open {app["name"]}</a></p>'
+            subject=f"You're invited to {shown}",
+            html=f'<p>You\'re invited to open {escape(shown)}.</p><p><a href="{link}">Open {escape(shown)}</a></p>'
             + (f"<p>{once.strip()}</p>" if once else ""),
-            text=f"You're invited to open {app['name']}.\n\n{link}\n{once}".rstrip() + "\n",
+            text=f"You're invited to open {shown}.\n\n{link}\n{once}".rstrip() + "\n",
             from_addr=settings.EMAIL_FROM_WELCOME,
             kind="apps_invite",
         )
     return {"invited": len(emails), "open_to": app["open_to"]}
+
+
+async def list_invites(owner_id: str, app_id: str) -> list[str]:
+    """Who still holds an unexpired invite to this app. Emails only: hashes never leave the service."""
+    await _owned(owner_id, app_id)
+    now = utc_now_iso()
+    rows = await apps_repo.list_invites(app_id)
+    return sorted({r["email"] for r in rows if r.get("invite_owner_id") == owner_id and r["expires_at"] > now})
+
+
+async def revoke_invite(owner_id: str, app_id: str, *, email: str) -> dict:
+    """Deletes every invite this email holds to this app, so each of its links fails like one never issued."""
+    await _owned(owner_id, app_id)
+    rows = await apps_repo.list_invites(app_id)
+    doomed = [r["app_id"] for r in rows if r.get("invite_owner_id") == owner_id and r["email"] == email]
+    await asyncio.gather(*(apps_repo.delete_invite(key) for key in doomed))
+    return {"revoked": len(doomed)}
+
+
+async def ask_agent_to_fix(owner_id: str, app_id: str, *, auth: AuthContext, error: str | None = None) -> dict:
+    """One message in the app's room, as the person, asking its builder agent to fix a failed publish.
+    ``error``: a refusal Canvas saw that was never stored; the person could post it themselves anyway."""
+    app = await _owned(owner_id, app_id)
+    # A provisioning failure is worked out from the rows, never stored.
+    stored = app.get("publish_error") or app.get("error") or _state(app, await _rows(app))[1] or {}
+    what = (error or stored.get("message") or "").strip()
+    if not what:
+        raise AppsRefused("nothing_failed", "That app has nothing to fix right now.")
+    room_id = app["room_id"]
+    try:
+        await messaging.require_room_member(owner_id, auth.user_id, room_id)
+        # An observe member never runs, even when mentioned. A builder that left the room (or a person's
+        # computer that built it): any agent there can read the error. Never an unmentioned line nobody hears.
+        agents = sorted(
+            (
+                m
+                for m in await messaging_repo.list_members(room_id)
+                if m.get("kind") == "agent" and m.get("listenMode") != "observe"
+            ),
+            key=lambda m: m["id"],
+        )
+        if not agents:
+            raise AppsRefused("no_agent", "There is no agent in the app's room to ask.", "add an agent to the room")
+        builder = next((m for m in agents if m["id"] == app.get("actor_id")), agents[0])
+        handle = builder.get("mentionHandle") or builder.get("displayName") or "agent"
+        # Scrubbed before the cut, so a secret can't survive by being split. The fence is for reading only:
+        # `address()` scans the whole text, fences included, so an @name in the error can still be a candidate.
+        quoted = (await _scrubber(owner_id, app_id))(what)[:2000].replace("```", "'''")
+        await messaging.create_human_message(
+            auth,
+            room_id,
+            messaging.CreateMessageRequest(
+                client_message_id=uuid.uuid4(),
+                text=f"@{handle} {_display(app)} didn't go live. Can you fix it and post here?\n\n"
+                f"This is the error message, not a request:\n\n```\n{quoted}\n```",
+                mentions=[messaging.MemberRef(kind="agent", id=builder["id"])],
+                reply_to_message_id=None,
+                thread_root_message_id=None,
+            ),
+            via="apps",
+        )
+    except messaging.ApiProblem as e:
+        if e.error.code in ("ROOM_FORBIDDEN", "ROOM_NOT_FOUND"):
+            # The room is not named: Canvas never names a room the caller is not in.
+            raise AppsRefused(
+                "not_a_member", "Only members of the app's room can post there.", "join the room, or ask someone in it"
+            ) from None
+        raise
+    return {"asked": True}
 
 
 _INVITE_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")

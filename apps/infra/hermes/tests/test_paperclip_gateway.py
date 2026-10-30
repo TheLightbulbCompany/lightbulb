@@ -176,6 +176,7 @@ def test_native_context_completes_with_real_output_usage_and_session(home, monke
         "PAPERCLIP_COMPANY_ID": "company-1",
         "PAPERCLIP_RUN_ID": RUN,
         "PAPERCLIP_TASK_ID": "issue-1",
+        "LIGHTBULB_POST_ROOMS": "rooms:",  # the task names no room
     }
     usage_args, usage_kwargs = usage_reports[0]
     assert usage_kwargs == {}

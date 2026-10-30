@@ -31,13 +31,20 @@ OWN_THREAD_REFUSAL = ("Your reply to this thread is delivered automatically when
 VOICE_ROOM_REFUSAL = ("This is a Live voice request: your answer is spoken, and nothing is "
                       "posted to this room.")
 
+# A task run posts by id only to a room its task names (bridge turn.task_rooms).
+TASK_ROOM_REFUSAL = ("Not posted: your task does not name this room. A task run posts by room id "
+                     "only to the room its task names (its From section). To reach a person, use "
+                     "lightbulb-post.sh --user <userId> or --handle <handle> (their DM); a channel, "
+                     "--room '#name'.")
+
 # Task 11: send_room_message tool
 SEND_SCHEMA = {
     "name": "send_room_message",
     "description": "Post a message to a Lightbulb room you sit in. In a room turn, your reply "
                    "to the thread you are answering is posted for you when the turn ends, so "
                    "never send that here; use this for other rooms or threads. In a task run, "
-                   "any room or thread is yours to post in.",
+                   "only a room your task names (its From section) is accepted; reach a "
+                   "channel or a person with lightbulb-post.sh instead.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -68,14 +75,16 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
     if not ctx:
         return NO_TURN
-    # A Paperclip run's answer is its issue result, never a room post, so any room or thread is
-    # the agent's own call; its post is a routine post (hop 1), with no room-run id to bind to.
+    # A Paperclip run's answer is its issue result, never a room post, so a room its task names is
+    # the agent's to post in, any thread; its post is a routine post (hop 1), with no room-run id.
     paperclip = ctx.get("family") == "paperclip"
     room = _normalize_room(str(args.get("roomId", "")))
     if not room:
         return "Invalid roomId: expected a room UUID, optionally prefixed 'lightbulb:'."
     if room == _normalize_room(str(ctx.get("voiceRoomId") or "")):
         return VOICE_ROOM_REFUSAL
+    if paperclip and room not in (ctx.get("postRooms") or []):
+        return TASK_ROOM_REFUSAL
     text = str(args.get("text") or "").strip()
     if not text:
         return "text is required."

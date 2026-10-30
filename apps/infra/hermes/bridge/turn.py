@@ -3874,11 +3874,41 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
     return "completed", None, reply, usage
 
 
+#: The `## From` section paperclip-api.sh writes (with_from_section): its heading line, then
+#: "Filed from room `<id>`." Only that room counts: a task that merely mentions a room id names
+#: no place to post.
+_FROM_ROOM_RE = re.compile(
+    r"^## From[ \t]*\r?\n(?:[ \t]*\r?\n)*Filed from room `([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`",
+    re.MULTILINE | re.IGNORECASE)
+#: The env name lightbulb-post.sh reads. Always non-empty in a task run ("rooms:" names none): an
+#: empty value is the process-wide placeholder every shell sees (_declare_child_env_names).
+POST_ROOMS_ENV = "LIGHTBULB_POST_ROOMS"
+
+
+def task_rooms(agent_id: str, session_id: str, request: dict) -> list[str]:
+    """The room ids a Paperclip run may post to by id: the room in its task's `## From` section.
+    The run's input first; then the session's earlier wakes (the first one carried the full
+    brief), since Paperclip strips the description from a resumed session's prompt. Without this
+    a run picked rooms from its own recall: ISOA-860's run, filed before From sections existed,
+    "looped Prasiddha in" by posting into a group DM quiet since Oct 7 (prod 2026-10-19 04:48Z,
+    room e362794c). A channel stays reachable by '#name' and a person by their DM
+    (lightbulb-post.sh --room '#x' / --user / --handle)."""
+    texts = [str(request.get("input") or "")]
+    db = _session_db(agent_id)
+    if db is not None:
+        try:
+            texts += [str(m.get("content") or "") for m in db.get_messages_as_conversation(_session_tip(db, session_id))
+                      if m.get("role") == "user"]
+        except Exception:  # noqa: BLE001 -- the current input still names the From room on a first wake
+            log.warning("task room scan failed for %s", session_id, exc_info=True)
+    return sorted({m.lower() for text in texts for m in _FROM_ROOM_RE.findall(text)})
+
+
 def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:
     """Execute the native adapter's already-rendered prompt in the run's own session, without room
     re-rendering. Nothing is posted to a room for it: Paperclip gets the answer as the run's
-    result. The agent may still post to any room it sits in (lightbulb-post.sh or
-    send_room_message), as a routine post (hop 1, no run id)."""
+    result. The agent may post, as a routine post (hop 1, no run id), to a room its task names
+    (task_rooms), a channel by name, or a person's DM."""
     agent_id = identity["agentId"]
     run_id = identity["runId"]
     session_id = identity["sessionId"]
@@ -3908,6 +3938,8 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     }
     if identity.get("issueId"):
         env["PAPERCLIP_TASK_ID"] = identity["issueId"]
+    post_rooms = task_rooms(agent_id, session_id, request)
+    env[POST_ROOMS_ENV] = "rooms:" + " ".join(post_rooms)
     # The agent dispositions the issue by calling the Paperclip API from a terminal command,
     # so this identity has to reach a SHELL, not just config.yaml's `${VAR}` resolver. Putting
     # it in the secret scope IS the mechanism: `_declare_child_env_names` makes the names
@@ -3922,7 +3954,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     token = identity.get("localSessionToken")
     ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id,
            "runId": run_id, "sessionKey": session_id, "roomId": None,
-           "localSessionToken": token, "family": "paperclip"}
+           "localSessionToken": token, "family": "paperclip", "postRooms": post_rooms}
     # Paperclip runs need the same brokered MCP bearers as room turns. Without
     # this scope, ${MCP_POSTHOG_ACCESS_TOKEN} stays literal and PostHog returns 401.
     with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):

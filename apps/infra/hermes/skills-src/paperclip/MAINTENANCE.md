@@ -97,7 +97,10 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
      the person, or when asked. A task filed from a room reports back from its
      OWN run, one message to the room in its description's From section
      (lightbulb-post.sh --room; item 24); self-started work posts one result
-     message. Lightbulb-only.
+     message. A task run's room-id posts are limited to rooms its task names
+     (bridge turn.task_rooms, enforced by send_room_message and
+     lightbulb-post.sh); channels by '#name' and DMs by --user stay open.
+     Lightbulb-only.
   7. Webchat capability section (summarised in SKILL.md; full rules in
      references/heartbeat.md): upstream
      documents only the heartbeat worldview; Lightbulb owners drive agents from a

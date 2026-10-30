@@ -207,8 +207,10 @@ summarising this wake's mutations -- issue id + action for each (e.g.
 the budget above produced none. Leave the issue `in_progress` -- never
 `done` -- so the next timer wake finds it and checks it out again.
 
-**Room posts: results, not progress.** `send_room_message` works from a
-Paperclip run and posts to any room you sit in. Post when work finished that
+**Room posts: results, not progress.** From a Paperclip run, post to a
+channel you sit in with `lightbulb-post.sh --room '#name'`, to a person with
+`--user <userId>` (their DM), or by room id to a room your task names (its
+From section); any other room id is refused. Post when work finished that
 the room should know about (what you did and why it matters) or when you need
 someone there; never a status update. This checklist's own summary still goes
 on "Board hygiene" as above.

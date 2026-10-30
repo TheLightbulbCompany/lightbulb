@@ -217,6 +217,12 @@ async def assign_alias(creds: dict, deployment_id: str, alias: str) -> None:
     await _call(creds, "POST", f"/v2/deployments/{_q(deployment_id)}/aliases", json={"alias": alias}, expect=None)
 
 
+async def promote(creds: dict, deployment_id: str) -> None:
+    """Point production at a deployment (no rebuild). Needed after a rollback: Vercel then stops
+    auto-assigning production domains to new production deployments."""
+    await _call(creds, "POST", f"/v10/projects/{_pid(creds)}/promote/{_q(deployment_id)}", expect=None)
+
+
 async def rollback(creds: dict, deployment_id: str) -> None:
     await _call(creds, "POST", f"/v1/projects/{_pid(creds)}/rollback/{_q(deployment_id)}", expect=None)
 

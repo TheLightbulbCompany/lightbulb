@@ -188,6 +188,45 @@ async def add_version(app_id: str, version: dict) -> dict:
     return resp["Attributes"]
 
 
+async def record_release(
+    app_id: str, version: dict, *, pending_deployment_id: str, known_versions: int, fields: dict
+) -> dict | None:
+    """Record a READY production deployment as version ``known_versions + 1``, live, in ONE write that
+    also drops ``publish_pending``. Only while that deployment is still pending and no other version
+    landed since the caller read the record; ``None`` = another reader won (re-read)."""
+    n = known_versions + 1
+    sets = ["versions = list_append(versions, :v)", "live_version = :n", "updated_at = :now"]
+    names = {"#pp": "publish_pending", "#dep": "deployment_id"}
+    values: dict = {
+        ":v": [ddb_safe({**version, "n": n})],
+        ":n": n,
+        ":now": utc_now_iso(),
+        ":dep": pending_deployment_id,
+        ":len": known_versions,
+    }
+    for i, (key, value) in enumerate(sorted(fields.items())):
+        if key in _PROTECTED_FIELDS or key in ("versions", "live_version", "publish_pending"):
+            raise ValueError(f"{key} cannot be set here")
+        sets.append(f"#f{i} = :f{i}")
+        names[f"#f{i}"] = key
+        values[f":f{i}"] = ddb_safe(value)
+    try:
+        resp = await run_in_thread(
+            _table().update_item,
+            Key={"app_id": app_id},
+            UpdateExpression="SET " + ", ".join(sets) + " REMOVE #pp",
+            ConditionExpression="#pp.#dep = :dep AND size(versions) = :len",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return None
+        raise
+    return resp["Attributes"]
+
+
 async def delete(app_id: str) -> None:
     """Remove the app and free its name together."""
     app = await get(app_id, consistent_read=True)

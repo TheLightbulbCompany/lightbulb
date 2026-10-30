@@ -157,7 +157,13 @@ async def _files(owner_id: str, app_id: str, source_id: str) -> dict[str, bytes]
 def _migrations(files: dict[str, bytes]) -> tuple[list[tuple[str, str]], str]:
     """Top-level ``drizzle/*.sql`` sorted by filename (seed excluded), and the seed."""
     names = sorted(p for p in files if re.fullmatch(r"drizzle/[^/]+\.sql", p) and p != "drizzle/seed.sql")
-    return [(p.removeprefix("drizzle/"), files[p].decode()) for p in names], files.get("drizzle/seed.sql", b"").decode()
+    try:
+        sqls = [(p.removeprefix("drizzle/"), files[p].decode()) for p in names]
+        return sqls, files.get("drizzle/seed.sql", b"").decode()
+    except UnicodeDecodeError:
+        raise AppsRefused(
+            "source_refused", "A drizzle/*.sql file is not UTF-8 text.", "save the migration files as UTF-8"
+        ) from None
 
 
 def _source(app: dict, source_id: str) -> dict:
@@ -326,28 +332,41 @@ async def _check_publish(app: dict, creds: dict) -> None:
         return
     st = await vercel.deployment_state(creds, pending["deployment_id"])
     if st["readyState"] == "READY":
-        n = len(app.get("versions") or []) + 1
+        if app.get("rolled_back"):
+            # After an Instant Rollback Vercel stops auto-assigning production domains: promote first,
+            # and record the version only once it is really the one serving.
+            await vercel.promote(creds, pending["deployment_id"])
         version = {
-            "n": n,
             "commit": pending["commit"],
             "deployment_id": pending["deployment_id"],
             "at": utc_now_iso(),
             "by": pending["by"],
             "live": True,
         }
-        app.update(plain(await apps_repo.add_version(app["app_id"], version)))
-        published = sorted(set(app.get("published_migrations") or []) | set(pending.get("migrations") or []))
-        await _patch(
-            app,
-            {
-                "publish_pending": None,
-                "live_source_id": pending["source_id"],
-                "published_migrations": published,
-                "live_url": f"https://{apps_dns.hostname(app['name'])}",
-            },
+        fields = {
+            "live_source_id": pending["source_id"],
+            "published_migrations": sorted(
+                set(app.get("published_migrations") or []) | set(pending.get("migrations") or [])
+            ),
+            "live_url": f"https://{apps_dns.hostname(app['name'])}",
+            "state": "live",
+            "rolled_back": False,
+            "publish_error": None,
+        }
+        won = await apps_repo.record_release(
+            app["app_id"],
+            version,
+            pending_deployment_id=pending["deployment_id"],
+            known_versions=len(app.get("versions") or []),
+            fields=fields,
         )
+        # None: another read recorded it first (or a rollback cancelled it); carry on from the record.
+        fresh = won or await apps_repo.get(app["app_id"], consistent_read=True)
+        app.clear()
+        app.update(plain(fresh))
     elif st["readyState"] in ("ERROR", "CANCELED"):
-        await _patch(app, {"publish_pending": None, "error": _build_failed(st)})
+        err = {**_build_failed(st), "next": "fix the error and publish again"}
+        await _patch(app, {"publish_pending": None, "publish_error": err})
 
 
 def _build_failed(st: dict) -> dict:
@@ -411,6 +430,8 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
         want = app.get("preview_want")
         # ponytail: no lock; two concurrent reads can both reset/deploy (an extra build). Lock per app if seen.
         if dev_db and want and app.get("preview_migrations") != _source(app, want).get("migrations"):
+            if app.get("error"):  # a failed reset/build waits for the next `up`, not every read
+                return rows, None
             migrations, seed = _migrations(await _files(app["owner_id"], app["app_id"], want))
             names = [n for n, _ in migrations]
             try:
@@ -454,12 +475,14 @@ def _state(app: dict, rows: dict) -> tuple[str, AppError | None]:
         }
     if app.get("error"):
         return "failed", app["error"]
+    if app.get("publish_error") and not app.get("live_version"):
+        return "failed", app["publish_error"]
     if states.get(("vercel", "project", "prod")) != "active":  # the preview waits only on Vercel
         waiting = any(s in ("ask", "awaiting_approval") for s in states.values()) or len(rows) < len(_RESOURCES)
         return ("awaiting_approval" if waiting else "provisioning"), None
     if app.get("preview_pending") or app.get("publish_pending") or not app.get("preview"):
         return "building", None
-    return "ready", None
+    return "ready", app.get("publish_error")  # a failed release leaves the live version serving
 
 
 async def _record_state(app: dict, state: str) -> str:
@@ -529,6 +552,9 @@ async def put_source(
     files = await asyncio.to_thread(lambda: dict(apps_source.iter_files(archive)))
     names = [n for n, _ in _migrations(files)[0]]
     sources = {**(app.get("sources") or {}), source_id: {"commit": commit, "at": utc_now_iso(), "migrations": names}}
+    keep = {app.get("live_source_id"), app.get("preview_want"), (app.get("publish_pending") or {}).get("source_id")}
+    recent = sorted(sources, key=lambda k: sources[k]["at"])[-10:]
+    sources = {k: v for k, v in sources.items() if k in keep or k in recent}
     await apps_repo.patch(app["app_id"], {"sources": sources})
     return {"app_id": app["app_id"], "source_id": source_id}
 
@@ -608,7 +634,7 @@ async def publish(
         "reason": reason,
         "migrations": [n for n, _ in _migrations(files)[0]],
     }
-    await _patch(app, {"publish_pending": pending, "error": None})
+    await _patch(app, {"publish_pending": pending, "publish_error": None})
     return await _result(app, rows, None, cost_cents)
 
 
@@ -624,11 +650,13 @@ async def rollback(owner_id: str, app_id: str, *, version: int | None) -> UpResu
     if not creds:
         raise AppsRefused("not_ready", "The app's Vercel project is not set up.")
     await vercel.rollback(creds, target["deployment_id"])
-    await _patch(app, {"live_version": n, "live_source_id": None})
+    cancelled = app.get("publish_pending")
+    # The rollback wins over a publish in flight; `rolled_back` makes the next release promote itself.
+    await _patch(app, {"live_version": n, "live_source_id": None, "rolled_back": True, "publish_pending": None})
     res = await _result(app, rows, None)
     res["error"] = {
         "code": "code_only",
-        "message": f"Version {n} is live again.",
+        "message": f"Version {n} is live again." + (" The publish in progress was cancelled." if cancelled else ""),
         "next": "Data is unchanged. To restore data, use Neon's own restore on the company's account "
         "(Canvas links to it).",
     }

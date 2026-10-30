@@ -117,6 +117,32 @@ async def test_add_version_appends_and_sets_live(apps_table):
 
 
 @pytest.mark.asyncio
+async def test_record_release_is_once_per_pending_deployment(apps_table):
+    from core.repositories import apps_repo
+
+    app = await _new(apps_repo)
+    await apps_repo.patch(app["app_id"], {"publish_pending": {"deployment_id": "dpl_1"}})
+    v = {"commit": "c1", "deployment_id": "dpl_1", "live": True}
+    won = await apps_repo.record_release(
+        app["app_id"], v, pending_deployment_id="dpl_1", known_versions=0, fields={"live_url": "https://x"}
+    )
+    assert [x["n"] for x in won["versions"]] == [1] and won["live_version"] == 1
+    assert "publish_pending" not in won and won["live_url"] == "https://x"
+    # a second reader with the same stale view loses, and nothing is appended
+    assert (
+        await apps_repo.record_release(app["app_id"], v, pending_deployment_id="dpl_1", known_versions=0, fields={})
+        is None
+    )
+    # a new pending deployment but a stale version count also loses (n would collide)
+    await apps_repo.patch(app["app_id"], {"publish_pending": {"deployment_id": "dpl_2"}})
+    assert (
+        await apps_repo.record_release(app["app_id"], v, pending_deployment_id="dpl_2", known_versions=0, fields={})
+        is None
+    )
+    assert len((await apps_repo.get(app["app_id"]))["versions"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_list_for_owner_only_mine_and_delete_frees_name(apps_table):
     from core.repositories import apps_repo
 

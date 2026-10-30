@@ -304,3 +304,12 @@ async def test_assign_alias_posts_alias_to_the_deployment(calls):
     assert r.method == "POST" and r.url.raw_path.startswith(b"/v2/deployments/dpl%2F1/aliases")
     assert r.url.params["teamId"] == "team_1"
     assert body(r) == {"alias": "crew-preview.apps.example.com"}
+
+
+async def test_promote_points_production_at_the_deployment(calls):
+    seen, routes = calls
+    routes[("POST", "/v10/projects/prj_1/promote/dpl_9")] = (201, {})
+    await vc.promote(CREDS, "dpl_9")
+    r = seen[0]
+    assert (r.method, r.url.path) == ("POST", "/v10/projects/prj_1/promote/dpl_9")
+    assert r.url.params["teamId"] == "team_1"

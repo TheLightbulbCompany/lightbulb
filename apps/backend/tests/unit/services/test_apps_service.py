@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+import copy  # noqa: E402
 import io  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
@@ -50,6 +51,7 @@ class Vercel:
         self.deployments: dict[str, dict] = {}
         self.verified = False
         self.alias_fails = False
+        self.promote_fails = False
 
     def paths(self, method=None):
         return [(r.method, r.url.path) for r in self.calls if method in (None, r.method)]
@@ -78,6 +80,8 @@ class Vercel:
             return httpx.Response(200, json={"recommendedCNAME": [{"value": "c.vercel-dns.com.", "rank": 1}]})
         if p.endswith("/verify"):
             return httpx.Response(200, json={"verified": self.verified})
+        if "/promote/" in p:
+            return httpx.Response(500 if self.promote_fails else 201, json={})
         if p.endswith("/aliases"):
             return httpx.Response(400 if self.alias_fails else 200, json={})
         if p.endswith("/files"):
@@ -597,3 +601,117 @@ async def test_bad_name_and_other_owner(world):
     assert e.value.code == "app_not_found"
     with pytest.raises(svc.apps_repo.NameTaken):
         await svc.put_source("org_other", name="crew", room_id="r", commit="c", archive=_tar(SRC_V1), actor=PERSON)
+
+
+# --- fix round 1 --------------------------------------------------------------------------------
+
+
+async def _go_live(world, src):
+    await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    return await svc.status(OWNER, src["app_id"])
+
+
+async def test_two_reads_after_ready_record_one_version(world):
+    src, _, _ = await _ready_preview(world)
+    await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    world.vercel.finish("dpl_2")
+    first = await svc._owned(OWNER, src["app_id"])
+    second = copy.deepcopy(first)  # a concurrent reader with the same view
+    await svc._check_publish(first, VERCEL)
+    await svc._check_publish(second, VERCEL)
+    app = await svc.apps_repo.get(src["app_id"])
+    assert [v["n"] for v in app["versions"]] == [1] and app["live_version"] == 1
+    assert second["live_version"] == 1 and not second.get("publish_pending")
+    st = await svc.status(OWNER, src["app_id"])
+    assert len(st["versions"]) == 1 and st["state"] == "live"
+
+
+async def test_publish_after_rollback_promotes_before_recording(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    await _go_live(world, await _source(SRC_V2, "c2"))
+    await svc.rollback(OWNER, src["app_id"], version=None)
+    src3 = await _source({**SRC_V2, "app/page.tsx": "v3"}, "c3")
+    await svc.publish(OWNER, src["app_id"], source_id=src3["source_id"], actor=PERSON)
+    dep = f"dpl_{len(world.vercel.created())}"
+    world.vercel.finish(dep)
+    world.vercel.promote_fails = True
+    st = await svc.status(OWNER, src["app_id"])
+    assert st["live_version"] == 1 and len(st["versions"]) == 2  # not promoted: not recorded
+    world.vercel.promote_fails = False
+    st = await svc.status(OWNER, src["app_id"])
+    assert ("POST", f"/v10/projects/prj_1/promote/{dep}") in world.vercel.paths()
+    assert st["live_version"] == 3 and len(st["versions"]) == 3
+    # the flag is cleared: the next release is auto-assigned, no promote
+    n_promote = sum("/promote/" in p for _, p in world.vercel.paths())
+    await _go_live(world, await _source({**SRC_V2, "app/page.tsx": "v4"}, "c4"))
+    assert sum("/promote/" in p for _, p in world.vercel.paths()) == n_promote
+
+
+async def test_rollback_while_publishing_cancels_the_publish(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    await _go_live(world, await _source(SRC_V2, "c2"))
+    src3 = await _source({**SRC_V2, "app/page.tsx": "v3"}, "c3")
+    await svc.publish(OWNER, src["app_id"], source_id=src3["source_id"], actor=PERSON)
+    res = await svc.rollback(OWNER, src["app_id"], version=1)
+    assert "cancelled" in res["error"]["message"]
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    st = await svc.status(OWNER, src["app_id"])
+    assert st["live_version"] == 1 and len(st["versions"]) == 2
+
+
+async def test_failing_second_publish_keeps_the_live_version(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    before = await svc.apps_repo.get(src["app_id"])
+    src2 = await _source(SRC_V2, "c2")
+    await svc.publish(OWNER, src["app_id"], source_id=src2["source_id"], actor=PERSON)
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}", "ERROR", "Type error")
+    st = await svc.status(OWNER, src["app_id"])
+    assert st["state"] == "live" and st["live_version"] == 1
+    assert st["live_url"] == before["live_url"] and len(st["versions"]) == 1
+    res = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    assert res["state"] == "ready" and res["version"] == 1
+    assert res["error"]["code"] == "build_failed" and res["error"]["next"] == "fix the error and publish again"
+    # the preview is unaffected: up does not rebuild it
+    n = len(world.vercel.created())
+    await _up(src)
+    assert len(world.vercel.created()) == n
+
+
+async def test_reset_failure_is_not_retried_on_status_reads(world):
+    world.reset.side_effect = svc.apps_db.AppsDbError("reset_failed", "preview database reset failed: X")
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    res = await _up(src)
+    assert res["state"] == "failed" and res["error"]["code"] == "reset_failed"
+    await svc.status(OWNER, src["app_id"])
+    await svc.status(OWNER, src["app_id"])
+    assert world.reset.await_count == 1 and world.vercel.created() == []
+    world.reset.side_effect = None
+    assert (await _up(src))["state"] == "building" and world.reset.await_count == 2
+
+
+async def test_non_utf8_migration_is_refused(world):
+    archive = _tar({"app/page.tsx": "x"})
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name="drizzle/0000_x.sql")
+        info.size = 2
+        tf.addfile(info, io.BytesIO(b"\xff\xfe"))
+    archive = buf.getvalue()
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.put_source(OWNER, name="crew", room_id="r", commit="c", archive=archive, actor=PERSON)
+    assert e.value.code == "source_refused"
+
+
+async def test_sources_are_pruned_but_keep_live_and_wanted(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    for i in range(12):
+        await _source({**SRC_V1, "app/page.tsx": f"p{i}"}, f"c{i}")
+    sources = (await svc.apps_repo.get(src["app_id"]))["sources"]
+    assert len(sources) == 11 and src["source_id"] in sources

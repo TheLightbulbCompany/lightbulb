@@ -207,6 +207,11 @@ async def _patch(app: dict, fields: dict, *, expect: dict | None = None) -> dict
     return app
 
 
+def _preview_app(app: dict) -> str:
+    """The ``app`` claim of a preview-only pass. A name is a DNS label, so ``:`` can't be another app's."""
+    return f"{app['name']}:preview"
+
+
 def _canvas_url(app_id: str) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=canvas&app={app_id}"
 
@@ -394,7 +399,8 @@ async def _push_env(app: dict, creds: dict, dev_db: dict | None, live_db: dict |
         "NEXT_PUBLIC_LIGHTBULB_API": settings.PUBLIC_API_BASE.rstrip("/"),
         # BLOB_READ_WRITE_TOKEN: never set; "content" is a starter switch and no blob store is provisioned (R79).
     }
-    preview = {**common, "LIGHTBULB_SAMPLE_DATA": "1"}
+    # Only the preview names this: a pass for it is refused on the live address (see ``test_link``).
+    preview = {**common, "LIGHTBULB_SAMPLE_DATA": "1", "LIGHTBULB_PREVIEW_APP": _preview_app(app)}
     if dev_db:
         preview.update(DATABASE_URL=dev_db["connection_string"], LIGHTBULB_SAMPLE_DATA="0")
     production = {**common, **({"DATABASE_URL": live_db["connection_string"]} if live_db else {})}
@@ -1111,6 +1117,7 @@ async def errors(owner_id: str, app_id: str) -> dict:
 # --- opening an app (Task 14) -------------------------------------------------------------------
 
 INVITE_LIFE = timedelta(days=14)
+TEST_PASS_S = 300  # to open the link; the door's session then gives a builder 30 minutes to walk it
 
 
 async def open_app(owner_id: str, app_id: str, *, auth: AuthContext, target: str = "live") -> str:
@@ -1141,6 +1148,29 @@ async def open_app(owner_id: str, app_id: str, *, auth: AuthContext, target: str
         name = email
     token = network_proof.mint_app_pass(
         auth.user_id, name=name, email=email, ws=owner_id, room=app["room_id"], app=app["name"]
+    )
+    return f"{url}/_lightbulb/session#token={token}"
+
+
+async def test_link(owner_id: str, app_id: str, *, actor: BuilderCaller) -> str:
+    """The URL that lets the builder and its reviewer walk the preview, never live. The pass's ``app``
+    claim is ``_preview_app``, which only the preview's door accepts (``_push_env``): the live door, and
+    a door from before this claim, refuse it. Not an open: ``last_opened_at`` stays a person's."""
+    app = await _owned(owner_id, app_id)
+    url = (app.get("preview_url") or "").rstrip("/")
+    if not url:
+        raise AppsRefused("not_ready", "The app has no preview yet.", "wait for the preview build")
+    if app["open_to"] == "public":
+        return url
+    logger.info("apps: test link app=%s actor=%s kind=%s", app_id, actor.actor_id, actor.actor_kind)
+    token = network_proof.mint_app_pass(
+        f"builder:{actor.actor_id}",
+        name="Builder agent",
+        email="",
+        ws=owner_id,
+        room=app["room_id"],
+        app=_preview_app(app),
+        life_s=TEST_PASS_S,
     )
     return f"{url}/_lightbulb/session#token={token}"
 

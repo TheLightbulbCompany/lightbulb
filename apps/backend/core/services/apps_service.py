@@ -104,6 +104,7 @@ class UpResult(TypedDict):
 class AppStatus(TypedDict):
     app_id: str
     name: str
+    display_name: str
     room_id: str
     state: str
     open_to: str
@@ -130,6 +131,25 @@ def _check_name(name: str) -> str:
         raise AppsRefused(
             "invalid_name", f"{name!r} is not a valid app name.", "use lowercase letters, digits and dashes"
         ) from None
+
+
+def _display(app: dict) -> str:
+    """R74: the stored display name, else the slug title-cased ("crew-schedule" -> "Crew Schedule")."""
+    return app.get("display_name") or " ".join(w.capitalize() for w in app["name"].split("-"))
+
+
+def can_manage(app: dict, auth: AuthContext) -> bool:
+    """R73: the app's creator or an org admin changes, shares, publishes and removes it."""
+    return auth.is_org_admin or (bool(app.get("created_by")) and app.get("created_by") == auth.user_id)
+
+
+async def require_manager(owner_id: str, app_id: str, auth: AuthContext) -> None:
+    # Not _owned: a removed app's DELETE is retryable (R10), so a destroyed record still answers here.
+    app = await apps_repo.get(app_id, consistent_read=True)
+    if not app or app.get("owner_id") != owner_id:
+        raise AppsRefused("app_not_found", "That app does not exist.")
+    if not can_manage(app, auth):
+        raise AppsRefused("not_allowed", "Only the app's creator or a workspace admin can do that.")
 
 
 async def _owned(owner_id: str, app_id: str) -> dict:
@@ -399,6 +419,7 @@ async def _check_preview(app: dict, creds: dict) -> None:
                 "preview": {
                     "deployment_id": pending["deployment_id"],
                     "commit": pending["commit"],
+                    "source_id": pending.get("source_id"),
                     "ready_at": utc_now_iso(),
                 },
                 # Once protection is scoped (R51) a *.vercel.app url is closed: keep the custom one.
@@ -551,7 +572,11 @@ async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | No
             commit = _source(app, want)["commit"]
             await _patch(
                 app,
-                {"preview_built": built, "error": None, "preview_pending": {"deployment_id": dep_id, "commit": commit}},
+                {
+                    "preview_built": built,
+                    "error": None,
+                    "preview_pending": {"deployment_id": dep_id, "commit": commit, "source_id": want},
+                },
             )
         await _verify(app, creds, "domain")
         await _preview_alias(app, creds)
@@ -647,6 +672,7 @@ async def put_source(
             services=[],
             open_to="room",
             budget_usd=0,
+            display_name=_display({"name": name}),
         )
     if app.get("state") == "destroyed":
         raise AppsRefused("app_destroyed", f"{name} was removed.", "pick another name")
@@ -676,6 +702,7 @@ async def up(
     issue_id: str | None = None,
     approved_destructive: str | None = None,
     cost_cents: int | None = None,
+    requested_by: str | None = None,
 ) -> UpResult:
     _check_name(name)
     await _check_room(owner_id, room_id)
@@ -689,6 +716,12 @@ async def up(
     fields: dict = {"preview_want": source_id}
     if not await _rows(app):  # R52: only a new app takes these from up; afterwards the owner's PATCH does
         fields.update(services=services, open_to=open_to, budget_usd=budget_usd, origin=origin, room_id=room_id)
+        if requested_by and not app.get("created_by"):  # R73: an agent's app gets its human creator
+            try:
+                await messaging.require_room_member(owner_id, requested_by, room_id)
+                fields["created_by"] = requested_by
+            except messaging.ApiProblem:
+                logger.info("apps: %s requested_by is not a member of its room; ignored", app["app_id"])
     if app.get("error"):  # "run up again" after a failure retries the build
         fields.update(error=None, preview_built=None)
     await _patch(app, fields)
@@ -741,6 +774,25 @@ async def publish(
     }
     await _patch(app, {"publish_pending": pending, "publish_error": None})
     return await _result(app, rows, None, cost_cents)
+
+
+async def member_publish(owner_id: str, app_id: str, *, user_id: str) -> UpResult:
+    """R69: Canvas publishes what the READY preview shows, as the person (the route checked R73)."""
+    app = await _owned(owner_id, app_id)
+    preview = app.get("preview") or {}
+    # A preview from before its source was recorded: the last build is that preview when none is pending.
+    source_id = preview.get("source_id") or (
+        None if app.get("preview_pending") else (app.get("preview_built") or {}).get("source_id")
+    )
+    if not preview or not source_id:
+        raise AppsRefused("not_ready", "The app has no ready preview to publish.", "wait for the preview")
+    actor = BuilderCaller(owner_id=owner_id, actor_id=user_id, actor_kind="person")
+    try:
+        return await publish(owner_id, app_id, source_id=source_id, actor=actor)
+    except AppsRefused as e:
+        if e.code == "destructive_migration":
+            e.next = "ask the builder to get the owner's approval"
+        raise
 
 
 async def rollback(owner_id: str, app_id: str, *, version: int | None) -> UpResult:
@@ -816,6 +868,7 @@ def _view(app: dict, rows: dict, state: str) -> AppStatus:
     return {
         "app_id": app["app_id"],
         "name": app["name"],
+        "display_name": _display(app),
         "room_id": app["room_id"],
         "state": state,
         "open_to": app["open_to"],
@@ -852,18 +905,27 @@ async def status(owner_id: str, app_id: str) -> AppStatus:
 
 
 async def update_settings(
-    owner_id: str, app_id: str, *, open_to: str | None = None, budget_usd: int | None = None
+    owner_id: str,
+    app_id: str,
+    *,
+    open_to: str | None = None,
+    budget_usd: int | None = None,
+    display_name: str | None = None,
 ) -> AppStatus:
     """R36: the budget is only stored (the next approval's provider limit uses it). A new ``open_to``
     reaches Vercel on this same read: the env fingerprint changes, so ``_push_env`` re-pushes."""
     app = await _owned(owner_id, app_id)
-    fields = {k: v for k, v in (("open_to", open_to), ("budget_usd", budget_usd)) if v is not None}
+    fields = {
+        k: v
+        for k, v in (("open_to", open_to), ("budget_usd", budget_usd), ("display_name", display_name))
+        if v is not None
+    }
     if fields:
         await _patch(app, fields)
     return await status(owner_id, app_id)
 
 
-async def list_apps(owner_id: str, user_id: str) -> list[dict]:
+async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
     """Canvas's rows: the record as stored (no provider calls), names resolved here, destroyed apps hidden."""
     apps = [plain(a) for a in await apps_repo.list_for_owner(owner_id) if a.get("state") != "destroyed"]
     if not apps:
@@ -876,7 +938,7 @@ async def list_apps(owner_id: str, user_id: str) -> list[dict]:
         zip(
             live,
             await asyncio.gather(
-                *(messaging.still_reads_room(owner_id, user_id, r, m["ownerId"]) for r, m in live.items())
+                *(messaging.still_reads_room(owner_id, auth.user_id, r, m["ownerId"]) for r, m in live.items())
             ),
             strict=True,
         )
@@ -901,6 +963,10 @@ async def list_apps(owner_id: str, user_id: str) -> list[dict]:
             room_name=(live.get(a["room_id"]) or {}).get("name") if member.get(a["room_id"]) else None,
             created_by_name=names.get(uid) if uid and names.get(uid) != uid else None,
             agent_name=agents.get(a.get("actor_id")) if a.get("actor_kind") == "agent" else None,
+            # R73: who may publish (and manage); whether there is a ready preview is the `preview` field.
+            can_publish=can_manage(a, auth),
+            # R71: the last persisted failure, message only.
+            error={"message": err["message"]} if (err := a.get("error") or a.get("publish_error")) else None,
         )
         out.append(row)
     return out

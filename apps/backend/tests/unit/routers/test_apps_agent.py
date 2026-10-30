@@ -157,7 +157,9 @@ def test_up_returns_up_result(client, monkeypatch):
         "src_1",
     )
     assert kw["origin"] == {"kind": "idea", "ref": "i1"} and kw["issue_id"] == "iss_1" and kw["cost_cents"] == 12
-    assert kw["approved_destructive"] is None
+    assert kw["approved_destructive"] is None and kw["requested_by"] is None
+    client.post(f"{BASE}/up", json={**UP_BODY, "requested_by": "user_ada"}, headers=HOOK)
+    assert up.await_args.kwargs["requested_by"] == "user_ada"
 
 
 def test_status_shape_matches_contract(client, monkeypatch):

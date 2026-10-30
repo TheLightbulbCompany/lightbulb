@@ -1005,3 +1005,74 @@ async def test_a_failed_preview_build_keeps_a_live_app_live(world):
     res = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)  # a no-op read
     assert res["state"] == "ready" and res["version"] == 1 and res["error"]["code"] == "build_failed"
     assert (await svc.apps_repo.get(src["app_id"]))["state"] == "live"
+
+
+# --- member publish, requested_by, display name (R69, R73, R74) ---------------------------------
+
+
+async def test_member_publish_needs_a_ready_preview_and_publishes_its_source(world):
+    src = await _source()
+    await _up(src)
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.member_publish(OWNER, src["app_id"], user_id="user_2")
+    assert (e.value.code, e.value.next) == ("not_ready", "wait for the preview")
+
+    src, _, _ = await _ready_preview(world)
+    newer = await _source(SRC_V2, "c2")
+    await _up(newer)  # a newer preview is building; the READY one is still c1
+    deploys = len(world.vercel.created())
+    res = await svc.member_publish(OWNER, src["app_id"], user_id="user_2")
+    assert res["state"] == "building"
+    assert len(world.vercel.created()) == deploys + 1 and world.vercel.created()[-1]["target"] == "production"
+    pending = (await svc.apps_repo.get(src["app_id"]))["publish_pending"]
+    assert (pending["source_id"], pending["commit"], pending["by"]) == (src["source_id"], "c1", "user_2")
+
+
+async def test_member_publish_of_a_destructive_source_asks_for_the_builder(world, monkeypatch):
+    _approvals(monkeypatch, {"card_1": {"status": "approved", "companyId": "co_1", "payload": {"app_name": "crew"}}})
+    src = await _source({**SRC_V1, "drizzle/0001_drop.sql": "ALTER TABLE shifts DROP COLUMN who;"})
+    await _up(src, approved_destructive="card_1")
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    await svc.status(OWNER, src["app_id"])
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.member_publish(OWNER, src["app_id"], user_id="user_2")
+    assert (e.value.code, e.value.next) == ("destructive_migration", "ask the builder to get the owner's approval")
+
+
+AGENT = svc.BuilderCaller(owner_id=OWNER, actor_id="agt_1", actor_kind="agent")
+
+
+async def test_requested_by_is_taken_on_the_first_up_from_a_room_member_only(world, monkeypatch):
+    async def member(owner_id, user_id, room_id):
+        if (owner_id, user_id, room_id) != (OWNER, "user_in", "room_1"):
+            raise svc.messaging.ApiProblem("ROOM_NOT_FOUND", "no")
+        return {}, {}
+
+    monkeypatch.setattr(svc.messaging, "require_room_member", AsyncMock(side_effect=member))
+
+    async def up(name, requested_by, actor=AGENT):
+        src = await svc.put_source(OWNER, name=name, room_id="room_1", commit="c", archive=_tar(SRC_V1), actor=actor)
+        await svc.up(
+            OWNER, name=name, room_id="room_1", services=[], open_to="room", budget_usd=0,
+            source_id=src["source_id"], actor=actor, origin={"kind": "idea"}, requested_by=requested_by,
+        )  # fmt: skip
+        return (await svc.apps_repo.get(src["app_id"]))["created_by"]
+
+    assert await up("one", "user_out") is None  # not in the room: ignored
+    assert await up("one", "user_in") is None  # no longer the first up
+    assert await up("two", "user_in") == "user_in"
+    assert await up("three", "user_in", actor=PERSON) == "user_1"  # a person's app keeps its creator
+
+
+async def test_display_name_defaults_from_the_slug_and_is_settable(world):
+    src = await svc.put_source(
+        OWNER, name="crew-schedule", room_id="room_1", commit="c", archive=_tar(SRC_V1), actor=PERSON
+    )
+    assert (await svc.apps_repo.get(src["app_id"]))["display_name"] == "Crew Schedule"
+    assert (await svc.status(OWNER, src["app_id"]))["display_name"] == "Crew Schedule"
+    st = await svc.update_settings(OWNER, src["app_id"], display_name="Rota")
+    assert st["display_name"] == "Rota"
+    await svc.apps_repo.patch(src["app_id"], {"display_name": None})  # a record from before R74
+    assert (await svc.status(OWNER, src["app_id"]))["display_name"] == "Crew Schedule"

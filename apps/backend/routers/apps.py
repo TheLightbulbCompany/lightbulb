@@ -1,8 +1,8 @@
 """Apps — /api/v1/apps/*.
 
 Builders (a workspace agent's hook token, or a signed-in computer's proof) build under ``/build``;
-members read the list from Canvas, and the org admin changes settings or removes an app. Thin over
-``core/services/apps_service.py``; this file only authenticates, gates and maps errors.
+members read the list from Canvas, and an app's creator or an org admin changes, shares, publishes or
+removes it (R73). Thin over ``core/services/apps_service.py``; this file only authenticates, gates and maps errors.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, StringConstraints
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories.apps_repo import NameTaken
@@ -24,7 +24,7 @@ from core.services.container_auth import _require_hook_token
 from core.services.provisioning_workflow import WorkflowRefused
 from core.services.stripe_provisioning import ProvisioningError
 from core.services.vercel_client import VercelError
-from routers.company_provisioning import PAID_MESSAGE, Owner, _refusal, _stripe_failure
+from routers.company_provisioning import PAID_MESSAGE, _refusal, _stripe_failure
 from routers.teams._guards import require_always_on_entitlement
 
 router = APIRouter()
@@ -37,6 +37,7 @@ _STATUS = {
     "app_destroyed": 404,
     "invite_invalid": 404,
     "not_a_member": 403,
+    "not_allowed": 403,
     "room_not_found": 404,
     "source_not_found": 404,
     "version_not_found": 404,
@@ -159,6 +160,7 @@ class UpBody(BaseModel):
     issue_id: str | None = Field(default=None, max_length=128)
     approved_destructive: str | None = Field(default=None, max_length=128)
     cost_cents: int | None = Field(default=None, ge=0)
+    requested_by: str | None = Field(default=None, max_length=128)  # R73: first up only
 
 
 class PublishBody(BaseModel):
@@ -241,12 +243,13 @@ async def swap_invite(token: str):
 @router.get("/", include_in_schema=False)
 async def list_apps(auth: Annotated[AuthContext, Depends(get_current_user)]):
     owner_id = resolve_owner_id(auth)
-    return {"apps": await _run(svc.list_apps(owner_id, auth.user_id))}
+    return {"apps": await _run(svc.list_apps(owner_id, auth))}
 
 
 class SettingsBody(BaseModel):
     open_to: Literal["room", "workspace", "invited", "public"] | None = None
     budget_usd: int | None = Field(default=None, ge=0, strict=True)
+    display_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)] | None = None
 
 
 class InvitesBody(BaseModel):
@@ -257,9 +260,39 @@ class RemoveBody(BaseModel):
     confirm_name: str = Field(max_length=63)
 
 
+class MemberPublishBody(BaseModel):
+    pass  # R69: {} — Canvas publishes what the ready preview shows
+
+
+async def _manager_gate(app_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]) -> str:
+    """R73: the rail's owner gate minus its admin rule (paid workspace, owner = the org), then this
+    app's creator or an org admin."""
+    owner_id = resolve_owner_id(auth)
+    await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
+    await _run(svc.require_manager(owner_id, app_id, auth))
+    return owner_id
+
+
+Manager = Annotated[str, Depends(_manager_gate)]
+
+
 @router.patch("/{app_id}")
-async def update_settings(app_id: str, body: SettingsBody, owner_id: Owner):
-    return await _run(svc.update_settings(owner_id, app_id, open_to=body.open_to, budget_usd=body.budget_usd))
+async def update_settings(app_id: str, body: SettingsBody, owner_id: Manager):
+    return await _run(
+        svc.update_settings(
+            owner_id, app_id, open_to=body.open_to, budget_usd=body.budget_usd, display_name=body.display_name
+        )
+    )
+
+
+@router.post("/{app_id}/publish")
+async def member_publish(
+    app_id: str,
+    body: MemberPublishBody,
+    owner_id: Manager,
+    auth: Annotated[AuthContext, Depends(get_current_user)],
+):
+    return await _run(svc.member_publish(owner_id, app_id, user_id=auth.user_id))
 
 
 @router.post("/{app_id}/open")
@@ -274,7 +307,7 @@ async def open_app(
 
 @router.post("/{app_id}/invites")
 async def invite(
-    app_id: str, body: InvitesBody, owner_id: Owner, auth: Annotated[AuthContext, Depends(get_current_user)]
+    app_id: str, body: InvitesBody, owner_id: Manager, auth: Annotated[AuthContext, Depends(get_current_user)]
 ):
     emails = list(dict.fromkeys(str(e).lower() for e in body.emails))
     return await _run(svc.invite(owner_id, app_id, emails=emails, user_id=auth.user_id))
@@ -282,6 +315,6 @@ async def invite(
 
 @router.delete("/{app_id}")
 async def remove(
-    app_id: str, body: RemoveBody, owner_id: Owner, auth: Annotated[AuthContext, Depends(get_current_user)]
+    app_id: str, body: RemoveBody, owner_id: Manager, auth: Annotated[AuthContext, Depends(get_current_user)]
 ):
     return await _run(svc.remove(owner_id, app_id, confirm_name=body.confirm_name, user_id=auth.user_id))

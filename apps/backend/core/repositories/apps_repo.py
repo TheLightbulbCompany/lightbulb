@@ -114,6 +114,7 @@ async def create(
     services: list[str],
     open_to: str,
     budget_usd: int,
+    display_name: str | None = None,
 ) -> dict:
     now = utc_now_iso()
     item = ddb_safe(
@@ -121,6 +122,7 @@ async def create(
             "app_id": "app_" + uuid.uuid4().hex,
             "owner_id": owner_id,
             "name": name,
+            "display_name": display_name,
             "room_id": room_id,
             "created_by": created_by,
             "actor_id": actor_id,

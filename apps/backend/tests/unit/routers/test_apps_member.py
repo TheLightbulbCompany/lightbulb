@@ -149,30 +149,37 @@ def test_list_survives_an_unavailable_roster(member, monkeypatch):
     assert r.status_code == 200 and r.json()["apps"][0]["agent_name"] is None
 
 
-def test_patch_requires_org_admin(admin, member, monkeypatch, paid):
+def test_patch_requires_creator_or_org_admin(admin, member, monkeypatch, paid):
     upd = AsyncMock(return_value={"app_id": "app_1", "open_to": "public"})
     monkeypatch.setattr(svc, "update_settings", upd)
-    assert member.patch(f"{BASE}/app_1", json={"open_to": "public"}).status_code == 403
+    monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(return_value=_record("app_1", "crew", "r", "room")))
+    r = member.patch(f"{BASE}/app_1", json={"open_to": "public"})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
     upd.assert_not_awaited()
 
     admin = _as("admin")
     r = admin.patch(f"{BASE}/app_1", json={"open_to": "public", "budget_usd": 50})
     assert r.status_code == 200 and r.json()["open_to"] == "public"
     assert upd.await_args.args == ("org_a", "app_1")
-    assert upd.await_args.kwargs == {"open_to": "public", "budget_usd": 50}
+    assert upd.await_args.kwargs == {"open_to": "public", "budget_usd": 50, "display_name": None}
     paid.assert_awaited_with("org_a", message=mod.PAID_MESSAGE)
 
-    for bad in ({"open_to": "everyone"}, {"budget_usd": -1}, {"budget_usd": "ten"}):
+    r = admin.patch(f"{BASE}/app_1", json={"display_name": "  Crew Rota  "})
+    assert r.status_code == 200 and upd.await_args.kwargs["display_name"] == "Crew Rota"
+    for bad in (
+        {"open_to": "everyone"}, {"budget_usd": -1}, {"budget_usd": "ten"},
+        {"display_name": ""}, {"display_name": "   "}, {"display_name": "x" * 61},
+    ):  # fmt: skip
         assert admin.patch(f"{BASE}/app_1", json=bad).status_code == 422, bad
 
 
 def test_delete_requires_typed_name_and_removes_resources(member, monkeypatch):
-    assert member.request("DELETE", f"{BASE}/app_1", json={"confirm_name": "crew"}).status_code == 403
-
-    admin = _as("admin")
     monkeypatch.setattr(
         svc.apps_repo, "get", AsyncMock(return_value={"app_id": "app_1", "owner_id": "org_a", "name": "crew"})
     )
+    assert member.request("DELETE", f"{BASE}/app_1", json={"confirm_name": "crew"}).status_code == 403
+
+    admin = _as("admin")
     rows = AsyncMock(return_value=[])
     monkeypatch.setattr(svc.wf_repo, "list_for_owner", rows)
     r = admin.request("DELETE", f"{BASE}/app_1", json={"confirm_name": "Crew"})
@@ -186,6 +193,74 @@ def test_delete_requires_typed_name_and_removes_resources(member, monkeypatch):
     assert r.status_code == 200 and r.json() == {"state": "destroyed"}
     assert rm.await_args.args == ("org_a", "app_1")
     assert rm.await_args.kwargs == {"confirm_name": "crew", "user_id": "user_admin"}
+
+
+def test_creator_or_admin_manages_and_no_one_else(monkeypatch):
+    """R73: PATCH, invites, publish and DELETE are the creator's or an org admin's."""
+    record = _record("app_1", "crew", "r", "room", created_by="user_member", actor_kind="person")
+    monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(side_effect=lambda a, **_: record if a == "app_1" else None))
+    calls = {n: AsyncMock(return_value={"ok": n}) for n in ("update_settings", "invite", "member_publish", "remove")}
+    for n, m in calls.items():
+        monkeypatch.setattr(svc, n, m)
+
+    def attempts(c):
+        return {
+            "update_settings": c.patch(f"{BASE}/app_1", json={"budget_usd": 5}),
+            "invite": c.post(f"{BASE}/app_1/invites", json={"emails": ["a@x.co"]}),
+            "member_publish": c.post(f"{BASE}/app_1/publish", json={}),
+            "remove": c.request("DELETE", f"{BASE}/app_1", json={"confirm_name": "crew"}),
+        }
+
+    for who in ("member", "admin"):  # the creator (a plain member), then an admin who did not create it
+        for n, r in attempts(_as(who)).items():
+            assert r.status_code == 200 and r.json() == {"ok": n}, (who, n, r.text)
+    assert calls["member_publish"].await_args.args == ("org_a", "app_1")
+    assert calls["member_publish"].await_args.kwargs == {"user_id": "user_admin"}
+
+    record["created_by"] = "user_someone"
+    for n, r in attempts(_as("member")).items():
+        assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed", n
+    assert all(m.await_count == 2 for m in calls.values())
+    assert _as("admin").post(f"{BASE}/app_zzz/publish", json={}).status_code == 404
+    app.dependency_overrides.clear()
+
+
+def test_member_publish_without_a_ready_preview_is_409(admin, monkeypatch):
+    record = _record("app_1", "crew", "r", "room")
+    monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(return_value=record))
+    monkeypatch.setattr(svc, "_progress", AsyncMock(side_effect=AssertionError("refused before any provider call")))
+    r = admin.post(f"{BASE}/app_1/publish", json={})
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "not_ready" and r.json()["detail"]["next"] == "wait for the preview"
+
+
+def test_list_rows_carry_can_publish_error_and_display_name(monkeypatch):
+    records = [
+        _record("app_1", "crew-rota", "r", "public", created_by="user_member", error={"code": "x", "message": "boom", "next": "n"}),
+        _record("app_2", "theirs", "r", "public", created_by="user_x", publish_error={"code": "b", "message": "pub", "next": "n"}, display_name="Sales Desk"),
+        _record("app_3", "quiet", "r", "public"),
+    ]  # fmt: skip
+    monkeypatch.setattr(svc.apps_repo, "list_for_owner", AsyncMock(return_value=records))
+    monkeypatch.setattr(svc.wf_repo, "list_for_owner", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc.messaging_repo, "get_room", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc.messaging, "human_display_name", AsyncMock(side_effect=lambda u: u))
+    monkeypatch.setattr(svc.messaging, "load_agent_roster", AsyncMock(return_value=[]))
+
+    rows = {a["name"]: a for a in _as("member").get(BASE).json()["apps"]}
+    assert {n: a["can_publish"] for n, a in rows.items()} == {"crew-rota": True, "theirs": False, "quiet": False}
+    assert {n: a["error"] for n, a in rows.items()} == {
+        "crew-rota": {"message": "boom"},
+        "theirs": {"message": "pub"},
+        "quiet": None,
+    }
+    assert {n: a["display_name"] for n, a in rows.items()} == {
+        "crew-rota": "Crew Rota",
+        "theirs": "Sales Desk",
+        "quiet": "Quiet",
+    }
+    rows = _as("admin").get(BASE).json()["apps"]
+    assert all(a["can_publish"] for a in rows)
+    app.dependency_overrides.clear()
 
 
 def test_issuer_is_public_and_returns_kid(monkeypatch):

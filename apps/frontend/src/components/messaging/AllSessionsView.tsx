@@ -25,9 +25,8 @@ export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRe
   const [query, setQuery] = useState("");
   const [showEnded, setShowEnded] = useState(false);
   const { live, ended, endedCount } = useMemo(() => {
-    const now = Date.now();
-    const matching = entries.filter((entry) => !sessionRowDropped(entry.row, now) && sessionRowMatches(entry.row, query));
-    const stopped = groupByDay(matching.filter((entry) => sessionRowGone(entry.row)), (entry) => sessionRowAt(entry.row), now);
+    const matching = entries.filter((entry) => !sessionRowDropped(entry.row) && sessionRowMatches(entry.row, query));
+    const stopped = groupByDay(matching.filter((entry) => sessionRowGone(entry.row)), (entry) => sessionRowAt(entry.row));
     return {
       live: matching.filter((entry) => !sessionRowGone(entry.row)).sort((a, b) => sessionRowAt(b.row) - sessionRowAt(a.row)),
       ended: stopped.map((group) => ({ ...group, rows: group.data })),

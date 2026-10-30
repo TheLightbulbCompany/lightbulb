@@ -444,6 +444,11 @@ class Settings(BaseSettings):
     # doesn't mean 'no real charges.'"
     STRIPE_PROJECTS_CATALOG: str = "prod"
 
+    # Apps: each app is served at {name}.{APPS_DOMAIN}; records live in this Route53 zone
+    # (the root thelightbulb.company zone). Empty zone id = DNS calls fail loudly.
+    APPS_DOMAIN: str = "apps.thelightbulb.company"
+    APPS_HOSTED_ZONE_ID: str = ""
+
     # Stripe Link Agent Wallet (agent purchases). Unconfigured (any of the three empty):
     # every route 404s and the UI hides. CLIENT_ID/SECRET come from Link's OAuth client
     # application; PUBLISHABLE_KEY is the Stripe pk that Link's /auth and /auth/token require.

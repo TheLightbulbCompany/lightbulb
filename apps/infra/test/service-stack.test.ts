@@ -103,6 +103,8 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     // for dev here so the untested env keeps exercising the "" default.
     vendorOrgId: environment === "prod" ? "org_3H3viGAfq2SXc9dIdcatmGXg8Td" : undefined,
     stripeProjectsCatalog: environment === "prod" ? "prod" : "testing",
+    appsDomain: environment === "prod" ? "apps.thelightbulb.company" : "apps.dev.thelightbulb.company",
+    appsHostedZoneId: "ZAPPS123",
   });
 
   return Template.fromStack(service);
@@ -465,6 +467,29 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
         }),
       ]),
     });
+  });
+
+  test("apps DNS: env vars and a zone-scoped Route53 managed policy", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "APPS_DOMAIN", Value: "apps.dev.thelightbulb.company" }),
+            Match.objectLike({ Name: "APPS_HOSTED_ZONE_ID", Value: "ZAPPS123" }),
+          ]),
+        }),
+      ]),
+    }));
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", Match.objectLike({
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: ["route53:ChangeResourceRecordSets", "route53:ListResourceRecordSets"],
+            Resource: "arn:aws:route53:::hostedzone/ZAPPS123",
+          }),
+        ]),
+      }),
+    }));
   });
 
   test("dev reads the testing catalog partition, prod reads prod", () => {

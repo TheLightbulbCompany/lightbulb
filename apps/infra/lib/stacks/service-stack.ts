@@ -227,6 +227,9 @@ export interface ServiceStackProps extends cdk.StackProps {
    * the owner never saw.
    */
   stripeProjectsCatalog?: string;
+  /** Apps: hostname suffix (`{name}.{appsDomain}`) and the Route53 zone holding it. */
+  appsDomain?: string;
+  appsHostedZoneId?: string;
   /** LiveKit server URL for huddles. Empty (default) keeps huddle routes 503 — ships dark. */
   livekitUrl?: string;
   /**
@@ -729,6 +732,22 @@ export class ServiceStack extends cdk.Stack {
         }),
       ],
     });
+
+    // Apps DNS (core/services/apps_dns.py). Standalone ManagedPolicy: the inline
+    // task-role policy is near its 10 KB ceiling. Scoped to the one hosted zone.
+    if (props.appsHostedZoneId) {
+      new iam.ManagedPolicy(this, "BackendAppsDns", {
+        managedPolicyName: `lightbulb-${env}-backend-apps-dns`,
+        roles: [this.taskRole],
+        statements: [
+          new iam.PolicyStatement({
+            sid: "AppsDnsRecords",
+            actions: ["route53:ChangeResourceRecordSets", "route53:ListResourceRecordSets"],
+            resources: [`arn:aws:route53:::hostedzone/${props.appsHostedZoneId}`],
+          }),
+        ],
+      });
+    }
 
     // Agent-email outbound send (SES). Standalone ManagedPolicy for the SAME
     // 10 KB inline-policy-ceiling reason as BackendOwnerBedrockManage above.
@@ -1850,6 +1869,8 @@ export class ServiceStack extends cdk.Stack {
       // caveat: "Selecting a DEV or TESTING catalog doesn't mean 'no real
       // charges.'"
       STRIPE_PROJECTS_CATALOG: props.stripeProjectsCatalog ?? "prod",
+      APPS_DOMAIN: props.appsDomain ?? "apps.thelightbulb.company",
+      APPS_HOSTED_ZONE_ID: props.appsHostedZoneId ?? "",
       LIVEKIT_URL: props.livekitUrl ?? "",
       // Accounts v2 API version pin for the company account/account-link
       // calls. Empty ⇒ the provisioning preview.

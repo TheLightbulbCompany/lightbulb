@@ -184,6 +184,7 @@ describe("AppView", () => {
       const { rerender } = render(<AppView app={ready()} onBack={vi.fn()} />);
       fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
       await screen.findByText("Publishing…");
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); // a read after the click makes "failed" trustworthy
       rerender(<AppView app={ready({ state: "failed", error: { message: "Deploy rejected" } })} onBack={vi.fn()} />);
       expect((await screen.findAllByRole("alert")).map((a) => a.textContent).join()).toContain("Deploy rejected");
       expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
@@ -209,6 +210,60 @@ describe("AppView", () => {
       const n = refresh.mock.calls.length;
       fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
       expect(refresh).toHaveBeenCalledTimes(n + 1);
+    });
+
+    it("retry after a failed row waits for a fresh read, then shows the live address", async () => {
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      const failedRow = ready({ state: "failed", error: { message: "Deploy rejected" } });
+      const { rerender } = render(<AppView app={failedRow} onBack={vi.fn()} />);
+      // failed rows are not publishable; start from a ready row, fail, then retry
+      rerender(<AppView app={ready()} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      await screen.findByText("Publishing…");
+      rerender(<AppView app={failedRow} onBack={vi.fn()} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+      expect(await screen.findByText("Publishing…")).toBeTruthy(); // stale failed row is not trusted
+      expect(publish).toHaveBeenCalledTimes(2);
+      refresh.mockClear();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(refresh).toHaveBeenCalledTimes(1);
+      rerender(<AppView app={ready({ live_version: 4 })} onBack={vi.fn()} />);
+      expect(await screen.findByText(/Live at/)).toBeTruthy();
+    });
+
+    it("a first publish is done when live_url appears", async () => {
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      const first = (o: Partial<AppRow> = {}) => ready({ live_version: null, live_url: null, ...o });
+      const { rerender } = render(<AppView app={first()} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      await screen.findByText("Publishing…");
+      rerender(<AppView app={first({ live_url: "https://inv.apps.test" })} onBack={vi.fn()} />);
+      expect(await screen.findByRole("link", { name: "https://inv.apps.test" })).toBeTruthy();
+    });
+
+    it("header and settings share one publish: one POST, both show progress", async () => {
+      admin = true;
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      render(<AppView app={ready()} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+      expect(screen.getAllByRole("button", { name: "Publish" })).toHaveLength(2);
+      fireEvent.click(screen.getAllByRole("button", { name: "Publish" })[0]);
+      await waitFor(() => expect(screen.getAllByText("Publishing…")).toHaveLength(2));
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(refresh).toHaveBeenCalledTimes(1); // one interval
+    });
+
+    it("offers Publish again after going live when a newer preview is ready", async () => {
+      publish.mockResolvedValue({ app_id: "a1", state: "building" });
+      const { rerender } = render(<AppView app={ready()} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      await screen.findByText("Publishing…");
+      rerender(<AppView app={ready({ live_version: 4 })} onBack={vi.fn()} />);
+      await screen.findByText(/Live at/);
+      fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+      expect(publish).toHaveBeenCalledTimes(2);
     });
   });
 });

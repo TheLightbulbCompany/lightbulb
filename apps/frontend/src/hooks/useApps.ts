@@ -49,8 +49,11 @@ export function useApps() {
   };
 
   /** Starts a publish and returns at once; the caller re-reads the list for progress. Errors propagate: the caller shows the backend's message. */
-  const publish = async (appId: string): Promise<{ state?: string; error?: { message: string } | null }> =>
-    api.post(`/apps/${encodeURIComponent(appId)}/publish`, {}) as Promise<{ state?: string; error?: { message: string } | null }>;
+  const publish = async (appId: string): Promise<{ state?: string; error?: { message: string } | null }> => {
+    const res = await api.post(`/apps/${encodeURIComponent(appId)}/publish`, {}) as { state?: string; error?: { message: string } | null };
+    await mutate(); // the list must show the new state before the caller trusts a "failed" row
+    return res;
+  };
 
   const update = async (appId: string, patch: { open_to?: AppRow["open_to"]; budget_usd?: number }): Promise<AppRow> => {
     try {

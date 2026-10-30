@@ -7,7 +7,7 @@ import { notifyError } from "@/lib/notify";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { useApps, type AppRow } from "@/hooks/useApps";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
-import { PublishButton } from "./PublishButton";
+import { PublishButton, type PublishCtl } from "./PublishButton";
 import "./canvas.css";
 
 const CHOICES: { value: AppRow["open_to"]; label: string }[] = [
@@ -31,7 +31,7 @@ function whoLosesAccess(from: OpenTo, to: OpenTo, room: string): string | null {
   return `${from === "room" ? `People in ${room}` : "Everyone in the workspace"} will lose access unless you invite them.`;
 }
 
-export function AppSettings({ app, onClose, onRemoved }: { app: AppRow; onClose(): void; onRemoved?(): void }) {
+export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppRow; onClose(): void; onRemoved?(): void; publishCtl?: PublishCtl }) {
   const { update, invite, remove, databaseLink } = useApps();
   const isAdmin = useIsWorkspaceAdmin();
   const [openTo, setOpenTo] = useState(app.open_to);
@@ -111,7 +111,7 @@ export function AppSettings({ app, onClose, onRemoved }: { app: AppRow; onClose(
       <button type="button" className="app-view__btn" disabled={!budgetOk} onClick={saveBudget}>Save budget</button>
     </div>
 
-    <div className="app-settings__group"><PublishButton key={app.app_id} app={app} /></div>
+    <div className="app-settings__group"><PublishButton app={app} ctl={publishCtl} /></div>
 
     <div className="app-settings__group">
       <button type="button" className="app-view__btn" disabled={!hasDb} onClick={openData}>Data and backups</button>

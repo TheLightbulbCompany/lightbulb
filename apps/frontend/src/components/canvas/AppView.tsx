@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useApps, type AppRow } from "@/hooks/useApps";
 import { AppSettings } from "./AppSettings";
-import { PublishButton } from "./PublishButton";
+import { PublishButton, usePublish } from "./PublishButton";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { notifyError } from "@/lib/notify";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
@@ -25,6 +25,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   // State is tagged with its app so a render right after a switch never shows the previous app's pass.
   const url = pass?.id === key ? pass.url : null;
   const refused = refusal?.id === key ? refusal.msg : null;
+  const publishCtl = usePublish(app);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
@@ -65,12 +66,12 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
       <span className="app-view__version">{app.live_version == null ? "preview" : `v${app.live_version}`}</span>
       {app.live_version != null && app.preview_url && <button type="button" className="app-view__btn" aria-pressed={t === "preview"}
         onClick={() => setTarget({ id: app.app_id, t: t === "preview" ? "live" : "preview" })}>{t === "preview" ? "Live" : "Preview"}</button>}
-      <PublishButton key={app.app_id} app={app} />
+      <PublishButton app={app} ctl={publishCtl} />
       <button type="button" className="app-view__btn" onClick={openInTab}>Open in its own tab</button>
       {isAdmin && <button type="button" className="app-view__btn" aria-expanded={settingsOpen}
         onClick={() => setSettingsOpen((v) => !v)}>Settings</button>}
     </header>
-    {settingsOpen && <AppSettings app={app} onClose={() => setSettingsOpen(false)} onRemoved={onBack} />}
+    {settingsOpen && <AppSettings app={app} publishCtl={publishCtl} onClose={() => setSettingsOpen(false)} onRemoved={onBack} />}
     {tabError && <p role="alert" className="canvas__notice">{tabError}</p>}
     {refused ? <p role="alert" className="canvas__notice">{refused}</p>
       : url ? <iframe key={key} title={app.name} src={url} className="canvas__frame"

@@ -182,6 +182,12 @@ def _migrations(files: dict[str, bytes]) -> tuple[list[tuple[str, str]], str]:
         ) from None
 
 
+def _migrations_key(files: dict[str, bytes]) -> str:
+    """R63: what the preview reset is keyed on — each migration's name and content hash."""
+    migrations, _ = _migrations(files)
+    return _fp([[name, hashlib.sha256(sql.encode()).hexdigest()] for name, sql in migrations])
+
+
 def _source(app: dict, source_id: str) -> dict:
     src = (app.get("sources") or {}).get(source_id)
     if not src:
@@ -523,7 +529,8 @@ async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | No
         await _check_preview(app, creds)
         await _check_publish(app, creds)
         want = app.get("preview_want")
-        if dev_db and want and app.get("preview_migrations") != _source(app, want).get("migrations"):
+        wanted = _source(app, want) if want else {}
+        if dev_db and want and app.get("preview_migrations") != wanted.get("migrations_key", wanted.get("migrations")):
             if app.get("error"):  # a failed reset/build waits for the next `up`, not every read
                 return None
             migrations, seed = _migrations(await _files(app["owner_id"], app["app_id"], want))
@@ -537,7 +544,7 @@ async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | No
                     app, {"error": {"code": e.code, "message": str(e), "next": "fix the migration and run up again"}}
                 )
                 return None
-            await _patch(app, {"preview_migrations": names})
+            await _patch(app, {"preview_migrations": wanted.get("migrations_key", names)})
         built = {"source_id": want, "sample": not dev_db}
         if want and app.get("preview_built") != built:
             dep_id = await _deploy(app, creds, want, production=False)
@@ -567,7 +574,7 @@ def _state(app: dict, rows: dict) -> tuple[str, AppError | None]:
             "message": f"{provider}/{service} ({'live' if env == 'prod' else 'preview'}) did not finish setting up.",
             "next": "open Inbox",
         }
-    if app.get("error"):
+    if app.get("error") and not app.get("live_version"):  # R63: a live app stays live; the error rides along
         return "failed", app["error"]
     if app.get("publish_error") and not app.get("live_version"):
         return "failed", app["publish_error"]
@@ -576,7 +583,7 @@ def _state(app: dict, rows: dict) -> tuple[str, AppError | None]:
         return ("awaiting_approval" if waiting else "provisioning"), None
     if app.get("preview_pending") or app.get("publish_pending") or not app.get("preview"):
         return "building", None
-    return "ready", app.get("publish_error")  # a failed release leaves the live version serving
+    return "ready", app.get("error") or app.get("publish_error")  # a failed build leaves the live version serving
 
 
 async def _record_state(app: dict, state: str) -> str:
@@ -646,7 +653,8 @@ async def put_source(
     source_id = await apps_source.put(owner_id, app["app_id"], commit=commit, data=archive)
     files = await asyncio.to_thread(lambda: dict(apps_source.iter_files(archive)))
     names = [n for n, _ in _migrations(files)[0]]
-    sources = {**(app.get("sources") or {}), source_id: {"commit": commit, "at": utc_now_iso(), "migrations": names}}
+    entry = {"commit": commit, "at": utc_now_iso(), "migrations": names, "migrations_key": _migrations_key(files)}
+    sources = {**(app.get("sources") or {}), source_id: entry}
     keep = {app.get("live_source_id"), app.get("preview_want"), (app.get("publish_pending") or {}).get("source_id")}
     recent = sorted(sources, key=lambda k: sources[k]["at"])[-10:]
     sources = {k: v for k, v in sources.items() if k in keep or k in recent}

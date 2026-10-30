@@ -982,3 +982,26 @@ async def test_destructive_check_scans_every_sql_file_but_seeds(world):
         {**SRC_V1, "db/seed.sql": "DELETE FROM shifts;", "drizzle/seed.sql": "TRUNCATE shifts;"}, "c3"
     )
     assert (await _up(seeds))["state"] == "awaiting_approval"
+
+
+async def test_preview_resets_when_a_migration_changes_under_the_same_name(world):
+    """R63: the reset is keyed on the migration files' content, not only their names."""
+    src, _, _ = await _ready_preview(world)
+    assert world.reset.await_count == 1
+    edited = await _source({**SRC_V1, "drizzle/0000_init.sql": "CREATE TABLE shifts (id int, who text);"}, "c2")
+    await _up(edited)
+    assert world.reset.await_count == 2
+    assert world.reset.await_args.kwargs["migrations"] == ["CREATE TABLE shifts (id int, who text);"]
+
+
+async def test_a_failed_preview_build_keeps_a_live_app_live(world):
+    """R63: the live version still serves; the preview's error rides along."""
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    await _up(await _source({**SRC_V1, "app/page.tsx": "broken"}, "c2"))
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}", "ERROR", "Type error")
+    st = await svc.status(OWNER, src["app_id"])
+    assert st["state"] == "live"
+    res = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)  # a no-op read
+    assert res["state"] == "ready" and res["version"] == 1 and res["error"]["code"] == "build_failed"
+    assert (await svc.apps_repo.get(src["app_id"]))["state"] == "live"

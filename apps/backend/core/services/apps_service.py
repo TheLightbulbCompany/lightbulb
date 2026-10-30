@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 _RESOURCES = (("vercel", "project", "prod"), ("neon", "postgres", "prod"), ("neon", "postgres", "dev"))
 _DEAD = frozenset({"rejected", "cancelled"})  # the owner said no: the next `up` asks again
 _BROKEN = frozenset({"failed", "requires_review"})
+_REPLACED_WATCH = timedelta(minutes=45)  # Vercel's build limit: a replaced build can't land later than this
 _PREVIEW_BUILD = "next build"  # previews never migrate
 _PROD_BUILD = "next build"  # publish() applies the live migrations itself, before the build
 _DESTRUCTIVE = re.compile(
@@ -414,19 +415,69 @@ async def _push_env(app: dict, creds: dict, dev_db: dict | None, live_db: dict |
         if fps.get(target) == fp:
             continue
         await vercel.upsert_env(creds, env, [target])
+        if target == "production":  # from here a new production build gets this door (see ``_built_door``)
+            await _patch(app, {"env_open_to": app["open_to"]})
         # R51: Vercel env reaches only NEW deployments; a running one keeps the old LIGHTBULB_OPEN_TO.
         fields: dict = {}
         if target in fps and target == "preview" and app.get("preview_built"):
             fields["preview_built"] = None  # this read's build step rebuilds it
-        if target in fps and target == "production":
-            await _redeploy_live(app, creds)  # before the fingerprint: a failed deploy retries next read
+        # Before the fingerprint: a failed deploy, or nothing to build, retries next read.
+        if target in fps and target == "production" and not await _redeploy_live(app, creds):
+            continue
         fps[target] = fp
         await _patch(app, {**fields, "env_fp": fps})
 
 
-async def _redeploy_live(app: dict, creds: dict, *, put_back: dict | None = None) -> None:
+def _built_door(app: dict) -> str:
+    """The ``open_to`` a production build started now gets: the env Vercel holds, which trails the record
+    while a push is on its way. A record from before ``env_open_to``: it was pushed before any change."""
+    return app.get("env_open_to") or app["open_to"]
+
+
+def _replaced_builds(app: dict) -> list[str]:
+    watch = app.get("replaced_builds") or {}
+    return watch["deployments"] if watch.get("until", "") > datetime.now(UTC).isoformat() else []
+
+
+async def _replace_pending(app: dict, creds: dict, fields: dict) -> None:
+    """Write ``fields``, which replace or drop ``publish_pending``, and stop the build they took the place
+    of. It would otherwise land later and take the domain, with whatever door it was built with."""
+    old = (app.get("publish_pending") or {}).get("deployment_id")
+    if not old:
+        await _patch(app, fields)
+        return
+    until = (datetime.now(UTC) + _REPLACED_WATCH).isoformat()
+    watch = {"deployments": [*_replaced_builds(app), old], "until": until}
+    await _patch(app, {**fields, "replaced_builds": watch})
+    try:
+        await vercel.cancel_deployment(creds, old)
+    except vercel.VercelError as e:
+        logger.warning("apps: %s cancel of a replaced build failed: %s", app["app_id"], e.code)
+
+
+async def _check_serving(app: dict, creds: dict) -> None:
+    """A cancel can lose the race, or fail. While a replaced build could still land, make sure it didn't
+    take the domain. Only ever undoes a build we replaced: the alias can trail a release for a moment."""
+    replaced = _replaced_builds(app)
+    live = next((v for v in app.get("versions") or [] if v.get("n") == app.get("live_version")), None)
+    domain = (app.get("domain") or {}).get("name")
+    if not replaced or not live or not domain or app.get("publish_pending"):  # a pending build takes it when it lands
+        return
+    try:
+        if await vercel.alias_deployment(creds, domain) in replaced:
+            logger.warning("apps: %s a replaced build took the domain; putting v%s back", app["app_id"], live["n"])
+            # Vercel's way back to a deployment that served before. It stops auto-assignment, which also
+            # keeps any other replaced build off the domain; `rolled_back` makes the next release promote.
+            await vercel.rollback(creds, live["deployment_id"])
+            await _patch(app, {"rolled_back": True})
+    except vercel.VercelError as e:  # this pass can't tell; the next one asks again
+        logger.warning("apps: %s production check failed: %s", app["app_id"], e.code)
+
+
+async def _redeploy_live(app: dict, creds: dict, *, put_back: dict | None = None) -> bool:
     """A production build of what is live (or about to be), through ``publish_pending``: it lands
-    as a new version of the same commit. ``put_back``: build this older version instead."""
+    as a new version of the same commit. ``put_back``: build this older version instead.
+    False: a live app has nothing to build, and the failure is on the record for the owner."""
     pending = app.get("publish_pending") or {}
     live = next((v for v in app.get("versions") or [] if v.get("n") == app.get("live_version")), {})
     source_id = (
@@ -436,18 +487,30 @@ async def _redeploy_live(app: dict, creds: dict, *, put_back: dict | None = None
         or live.get("source_id")
     )
     if not source_id or source_id not in (app.get("sources") or {}):
-        if app.get("live_version"):
-            logger.warning("apps: %s live source unknown; new settings reach it at the next publish", app["app_id"])
-        return
+        if not app.get("live_version"):
+            return True  # nothing is live: the first publish builds with the new env
+        logger.warning("apps: %s live source unknown; new settings reach it at the next publish", app["app_id"])
+        if (app.get("publish_error") or {}).get("code") != "sharing_not_applied":  # a read repeats this
+            err = {
+                "code": "sharing_not_applied",
+                "message": "The new sharing setting hasn't reached the live app, because the source of the "
+                "version it serves is no longer kept.",
+                "next": "publish a new version",
+            }
+            await _patch(app, {"publish_error": err})
+        return False
     src = _source(app, source_id)
+    open_to = _built_door(app)
     dep_id = await _deploy(app, creds, source_id, production=True)
-    await _patch(
+    await _replace_pending(
         app,
+        creds,
         {
             "publish_pending": {
                 "deployment_id": dep_id,
                 "source_id": source_id,
                 "commit": src["commit"],
+                "open_to": open_to,
                 "by": pending.get("by") or "lightbulb",
                 "reason": f"put back version {put_back['n']}" if put_back else "sharing changed",
                 "migrations": src.get("migrations") or [],
@@ -457,6 +520,7 @@ async def _redeploy_live(app: dict, creds: dict, *, put_back: dict | None = None
             }
         },
     )
+    return True
 
 
 async def _deploy(app: dict, creds: dict, source_id: str, *, production: bool) -> str:
@@ -509,6 +573,11 @@ async def _check_publish(app: dict, creds: dict) -> None:
     pending = app.get("publish_pending")
     if not pending:
         return
+    # The sharing changed since this build started (publish holds no lease over its upload), and _push_env
+    # just ran, so it will never be rebuilt otherwise. Replace it now, READY or not: it must not be recorded.
+    built_with = pending.get("open_to", app["open_to"])
+    if built_with != app["open_to"] and await _redeploy_live(app, creds):
+        return
     st = await vercel.deployment_state(creds, pending["deployment_id"])
     if st["readyState"] == "READY":
         if app.get("rolled_back"):
@@ -522,8 +591,7 @@ async def _check_publish(app: dict, creds: dict) -> None:
             "at": utc_now_iso(),
             "by": pending["by"],
             "live": True,
-            # _push_env ran first on this copy, so this is what the deployment's env says (see rollback).
-            "open_to": app["open_to"],
+            "open_to": built_with,  # what the deployment's env says (see rollback)
             "replaced": pending.get("replaced", app.get("live_version")),
         }
         fields = {
@@ -666,6 +734,7 @@ async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | No
         await _push_env(app, creds, dev_db, live_db)
         await _check_preview(app, creds)
         await _check_publish(app, creds)
+        await _check_serving(app, creds)
         want = app.get("preview_want")
         wanted = _source(app, want) if want else {}
         if dev_db and want and app.get("preview_migrations") != wanted.get("migrations_key", wanted.get("migrations")):
@@ -806,7 +875,14 @@ async def put_source(
     names = [n for n, _ in _migrations(files)[0]]
     entry = {"commit": commit, "at": utc_now_iso(), "migrations": names, "migrations_key": _migrations_key(files)}
     sources = {**(app.get("sources") or {}), source_id: entry}
-    keep = {app.get("live_source_id"), app.get("preview_want"), (app.get("publish_pending") or {}).get("source_id")}
+    # What serves stays: a sharing change rebuilds it, and an instant put-back leaves live_source_id empty.
+    serving = next((v for v in app.get("versions") or [] if v.get("n") == app.get("live_version")), {})
+    keep = {
+        app.get("live_source_id"),
+        serving.get("source_id"),
+        app.get("preview_want"),
+        (app.get("publish_pending") or {}).get("source_id"),
+    }
     recent = sorted(sources, key=lambda k: sources[k]["at"])[-10:]
     sources = {k: v for k, v in sources.items() if k in keep or k in recent}
     await apps_repo.patch(app["app_id"], {"sources": sources})
@@ -916,8 +992,10 @@ async def publish(
         "by": actor.actor_id,
         "reason": reason,
         "migrations": [n for n, _ in _migrations(files)[0]],
+        "open_to": _built_door(app),  # this copy is from before the upload
     }
-    await _patch(app, {"publish_pending": pending, "publish_error": None})
+    await _reload(app)  # a sharing change during the upload wrote its own build, which this one replaces
+    await _replace_pending(app, creds, {"publish_pending": pending, "publish_error": None})
     return await _result(app, rows, None, cost_cents)
 
 
@@ -959,7 +1037,7 @@ async def _put_back(app: dict, rows: dict, creds: dict, version: int | None) -> 
     target = next((v for v in app.get("versions") or [] if v["n"] == n), None)
     if target is None:
         raise AppsRefused("version_not_found", f"There is no version {n}.", "pick a version from status")
-    cancelled = " The publish in progress was cancelled." if app.get("publish_pending") else ""
+    replaced = " The publish in progress won't go live." if app.get("publish_pending") else ""
     # R51: a deployment keeps the LIGHTBULB_OPEN_TO it was built with, and `public` is the door off. Serving
     # one built under other sharing would open or close the live app while the record says otherwise. No
     # stamp (older records): unknown, so different.
@@ -977,8 +1055,9 @@ async def _put_back(app: dict, rows: dict, creds: dict, version: int | None) -> 
     else:
         await vercel.rollback(creds, target["deployment_id"])
         # The rollback wins over a publish in flight; `rolled_back` makes the next release promote itself.
-        await _patch(
+        await _replace_pending(
             app,
+            creds,
             {
                 "live_version": n,
                 "live_source_id": None,
@@ -991,7 +1070,7 @@ async def _put_back(app: dict, rows: dict, creds: dict, version: int | None) -> 
     res = await _result(app, rows, None)
     res["error"] = {
         "code": "code_only",
-        "message": said + cancelled,
+        "message": said + replaced,
         "next": "Data is unchanged. To restore data, use Neon's own restore on the company's account "
         "(Canvas links to it).",
     }

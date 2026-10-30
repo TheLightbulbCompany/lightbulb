@@ -236,12 +236,15 @@ async def list_for_owner(owner_id: str) -> list[dict]:
 
 
 async def list_pending(*, limit: int = 25) -> list[dict]:
-    """Apps with a preview or a publish in flight, for the sweeper. A filtered scan: the table is
-    small, and a cleared pending map is stored as NULL, which cannot key a sparse index."""
+    """Apps with a preview or a publish in flight, or a replaced build that could still land, for the
+    sweeper. A filtered scan: the table is small, and a cleared pending map is stored as NULL, which
+    cannot key a sparse index."""
     from boto3.dynamodb.conditions import Attr
 
     kwargs: dict = {
-        "FilterExpression": Attr("preview_pending").attribute_type("M") | Attr("publish_pending").attribute_type("M")
+        "FilterExpression": Attr("preview_pending").attribute_type("M")
+        | Attr("publish_pending").attribute_type("M")
+        | Attr("replaced_builds.until").gt(datetime.now(UTC).isoformat())
     }
     items: list[dict] = []
     while True:

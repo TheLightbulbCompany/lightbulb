@@ -319,3 +319,28 @@ async def test_promote_points_production_at_the_deployment(calls):
     r = seen[0]
     assert (r.method, r.url.path) == ("POST", "/v10/projects/prj_1/promote/dpl_9")
     assert r.url.params["teamId"] == "team_1"
+
+
+async def test_cancel_deployment_is_fine_with_a_finished_build(calls):
+    seen, routes = calls
+    await vc.cancel_deployment(CREDS, "dpl_1")
+    assert (seen[0].method, seen[0].url.path) == ("PATCH", "/v12/deployments/dpl_1/cancel")
+    assert seen[0].url.params["teamId"] == "team_1"
+    routes[("PATCH", "/v12/deployments/dpl_1/cancel")] = (400, {"error": {"code": "bad_request", "message": "done"}})
+    await vc.cancel_deployment(CREDS, "dpl_1")
+    routes[("PATCH", "/v12/deployments/dpl_1/cancel")] = (500, {})
+    with pytest.raises(vc.VercelError):
+        await vc.cancel_deployment(CREDS, "dpl_1")
+
+
+async def test_alias_deployment_names_what_the_domain_points_at(calls):
+    seen, routes = calls
+    path = "/v4/aliases/crew.apps.example.com"
+    routes[("GET", path)] = (200, {"deploymentId": "dpl_9"})
+    assert await vc.alias_deployment(CREDS, "crew.apps.example.com") == "dpl_9"
+    assert seen[0].url.params["projectId"] == "prj_1" and seen[0].url.params["teamId"] == "team_1"
+    routes[("GET", path)] = (404, {})
+    assert await vc.alias_deployment(CREDS, "crew.apps.example.com") is None
+    routes[("GET", path)] = (403, {})
+    with pytest.raises(vc.VercelError):
+        await vc.alias_deployment(CREDS, "crew.apps.example.com")

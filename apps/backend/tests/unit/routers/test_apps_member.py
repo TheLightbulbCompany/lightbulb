@@ -718,6 +718,25 @@ def test_ask_agent_scrubs_the_apps_own_secrets(admin, asking):
     assert "```\nsaw [redacted]\n```" in asking.posted[1][2].text
 
 
+def _quoted(request) -> str:
+    return request.text.split("```\n", 1)[1].rsplit("\n```", 1)[0]
+
+
+def test_ask_agent_cuts_the_error_at_2000_characters(admin, asking):
+    asking.record = {**asking.record, "publish_error": {"message": "x" * 5000}}
+    assert admin.post(f"{BASE}/app_1/ask-agent", json={}).status_code == 200
+    assert _quoted(asking.posted[0][2]) == "x" * 2000
+
+
+def test_ask_agent_scrubs_before_it_cuts_so_a_split_secret_cannot_survive(admin, asking):
+    secret = "vercel-token-123"
+    message = "x" * (2000 - len(secret) // 2) + secret + "after"  # the cut would land inside the secret
+    asking.record = {**asking.record, "publish_error": {"message": message}}
+    assert admin.post(f"{BASE}/app_1/ask-agent", json={}).status_code == 200
+    quoted = _quoted(asking.posted[0][2])
+    assert quoted == "x" * (2000 - len(secret) // 2) + "[redacte"  # the cut lands in the marker, not the secret
+
+
 def test_ask_agent_sends_the_failed_publish_over_an_older_preview_error(admin, asking):
     asking.record = {**asking.record, "error": {"message": "old preview"}, "publish_error": {"message": "new publish"}}
     assert admin.post(f"{BASE}/app_1/ask-agent", json={}).status_code == 200

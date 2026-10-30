@@ -2,7 +2,7 @@
 
 Until 30 Oct 2026 a deployment only advanced inside the builder's own ``up``/``status`` reads; with
 the agent down, Demo Lab's first publish sat in "building" for 21 minutes. This lifespan task steps
-every app with a pending deployment every ``PASS_S`` seconds. Admission (one instance per pass) is
+every app with a pending deployment, or a replaced build that could still land, every ``PASS_S`` seconds. Admission (one instance per pass) is
 ``container_repo.try_claim_pass``; per-app exclusion is the lease inside ``apps_service._progress``.
 Vercel webhooks are not an option: the per-workspace tokens are project-scoped and cannot register
 them, so this poll is the mechanism, and the live event ``_patch`` publishes carries the change to Canvas.
@@ -31,7 +31,7 @@ async def _step(app: dict) -> None:
 
 
 async def sweep_once() -> int:
-    """Step every app with a pending deployment once. Returns how many were stepped."""
+    """Step every app ``list_pending`` names once. Returns how many were stepped."""
     stepped = 0
     for raw in await apps_repo.list_pending(limit=MAX_APPS):
         app = plain(raw)

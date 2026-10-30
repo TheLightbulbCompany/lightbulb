@@ -541,20 +541,44 @@ async def start(
     return moved or row
 
 
-async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by: str) -> dict | None:
-    """The owner approved the consent card. Re-read the catalog before moving."""
-    row = await repo.get(workflow_id)
-    if not row or row.get("state") != "awaiting_approval":
-        return row
-    account_id = await account_id_for(row["owner_id"])
+async def _fresh_snapshot(account_id: str, row: dict) -> dict:
+    """The catalog entry as it reads NOW, shaped exactly like the approval
+    snapshot `start` built for this row, so the two can be compared."""
     service, provider = await _read_catalog(account_id, row["provider_name"], row["service_id"])
-    fresh = snapshot_of(
+    return snapshot_of(
         service,
         provider,
         row.get("configuration") or {},
         creates_project=await _creates_project(row["owner_id"], service, row.get("app_id")),
         **await _card_lines(row.get("app_id"), row.get("environment") or "prod"),
     )
+
+
+async def _apply_app_limit(account_id: str, row: dict, snapshot: dict) -> None:
+    """A paid app resource is capped at the app's budget (cents) on its provider.
+    A Stripe failure propagates, like the payment_profile read beside it."""
+    if not row.get("app_id") or snapshot.get("pricing_type") != "paid":
+        return
+    budget = (await apps_repo.get(row["app_id"]) or {}).get("budget_usd")
+    if budget is None:
+        logger.warning("provisioning: app %s has no budget_usd; no provider limit set", row["app_id"])
+        return
+    await api.update_limit(
+        account_id,
+        max_amount=round(budget * 100),
+        currency="usd",
+        recurring_interval="month",
+        provider=row["provider_id"],
+    )
+
+
+async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by: str) -> dict | None:
+    """The owner approved the consent card. Re-read the catalog before moving."""
+    row = await repo.get(workflow_id)
+    if not row or row.get("state") != "awaiting_approval":
+        return row
+    account_id = await account_id_for(row["owner_id"])
+    fresh = await _fresh_snapshot(account_id, row)
     if _drifted(row.get("approval") or {}, fresh):
         approval_id = await provisioning_approvals.request_provider_consent(
             owner_id=row["owner_id"],
@@ -606,17 +630,7 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
                 },
             )
 
-    if row.get("app_id") and fresh.get("pricing_type") == "paid":
-        # The app's budget caps this provider (cents). A Stripe failure here
-        # propagates, like the payment_profile read above.
-        budget = (await apps_repo.get(row["app_id"]) or {}).get("budget_usd") or 0
-        await api.update_limit(
-            account_id,
-            max_amount=int(budget * 100),
-            currency="usd",
-            recurring_interval="month",
-            provider=row["provider_id"],
-        )
+    await _apply_app_limit(account_id, row, fresh)
 
     approved = {"approval": fresh, "approved_by": approved_by, "approved_at": utc_now_iso()}
     if usage_limit:
@@ -1016,17 +1030,9 @@ async def _handle_connection_request(account_id: str, row: dict, ar: dict) -> di
 async def _create_resource(account_id: str, row: dict) -> dict:
     if row.get("resource_id"):
         return await _poll_resource(account_id, row)
-    # Last look before the billable write: the card was approved on this
-    # catalog entry. A vanished service raises WorkflowRefused, which the
-    # caller already parks for review.
-    service, provider = await _read_catalog(account_id, row["provider_name"], row["service_id"])
-    fresh = snapshot_of(
-        service,
-        provider,
-        row.get("configuration") or {},
-        creates_project=await _creates_project(row["owner_id"], service, row.get("app_id")),
-        **await _card_lines(row.get("app_id"), row.get("environment") or "prod"),
-    )
+    # Last look before the billable write. A vanished service raises
+    # WorkflowRefused, which the caller already parks for review.
+    fresh = await _fresh_snapshot(account_id, row)
     if _drifted(row.get("approval") or {}, fresh):
         return await _requires_review(row, "catalog_changed")
     project_id, refused = await _project_for(account_id, row)
@@ -1223,6 +1229,7 @@ async def _poll_awaited_leg(account_id: str, row: dict) -> dict:
             if is_transient(e):
                 return await _bump(row, e.retry_after)
             return await _fail(row, e.code, e.message)
+        await _apply_app_limit(account_id, row, row.get("approval") or {})
         moved = await repo.transition(
             row["workflow_id"],
             from_state=row["state"],

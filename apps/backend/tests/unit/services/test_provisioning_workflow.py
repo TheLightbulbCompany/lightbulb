@@ -2266,3 +2266,45 @@ async def test_free_app_resource_sets_no_limit():
     limit, move = await _approve_app_row(SERVICE)
     limit.assert_not_awaited()
     assert move.await_args.kwargs["to_state"] == "connecting_provider"
+
+
+@pytest.mark.asyncio
+async def test_app_without_a_budget_sets_no_limit_and_still_moves(caplog):
+    approval = mod.snapshot_of(_paid("$20/mo"), PROVIDER, CONFIG, environment="crew-schedule — live")
+    row = _row(state="awaiting_approval", approval=approval, app_id="app_1", environment="prod")
+    with (
+        patch.object(mod.repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "budget_usd": None})),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[_paid("$20/mo")])),
+        patch.object(mod.api, "payment_profile", AsyncMock(return_value={"id": "pp_1"})),
+        patch.object(mod.api, "update_limit", AsyncMock()) as limit,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="connecting_provider"))) as move,
+        caplog.at_level("WARNING"),
+    ):
+        await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_admin")
+    limit.assert_not_awaited()
+    assert "no budget_usd" in caplog.text
+    assert move.await_args.kwargs["to_state"] == "connecting_provider"
+
+
+@pytest.mark.asyncio
+async def test_payment_setup_resume_applies_the_app_limit():
+    approval = mod.snapshot_of(_paid("$20/mo"), PROVIDER, CONFIG, environment="crew-schedule — live")
+    row = _row(
+        state="awaiting_user_action",
+        awaiting="payment_setup",
+        approval=approval,
+        app_id="app_1",
+        environment="prod",
+    )
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "budget_usd": 10})),
+        patch.object(mod.api, "payment_profile", AsyncMock(return_value={"id": "pp_1"})),
+        patch.object(mod.api, "update_limit", AsyncMock(return_value={})) as limit,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="connecting_provider"))) as move,
+    ):
+        await mod._poll_awaited_leg("acct_1", row)
+    limit.assert_awaited_once_with(
+        "acct_1", max_amount=1000, currency="usd", recurring_interval="month", provider="prvdr_1"
+    )
+    assert move.await_args.kwargs["to_state"] == "connecting_provider"

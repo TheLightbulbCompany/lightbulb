@@ -78,12 +78,32 @@ describe("mergeSessionRows", () => {
     expect(one([], [engine()], { userId: null }).person.isViewer).toBe(false);
   });
 
-  it("keeps resume on the viewer's own ended row only", () => {
-    const ended = { status: "ended", resume: "claude --resume conv-1" } as const;
-    expect(one([], [engine({ ...ended, user_id: "me" })]).resume).toBe("claude --resume conv-1");
-    expect(one([], [engine({ ...ended, user_id: "other" })]).resume).toBeUndefined();
-    expect(one([backend({ humanUserId: "other", networkSessionId: NET })], [engine({ ...ended })]).resume).toBeUndefined();
-    expect(one([], [engine({ resume: "claude --resume conv-1", user_id: "me" })]).resume).toBeUndefined();
+  it("says canResume on the viewer's own ended row only", () => {
+    const ended = { status: "ended", can_resume: true } as const;
+    expect(one([], [engine({ ...ended, user_id: "me" })]).canResume).toBe(true);
+    expect(one([], [engine({ ...ended, user_id: "other" })]).canResume).toBeUndefined();
+    expect(one([backend({ humanUserId: "other", networkSessionId: NET })], [engine({ ...ended })]).canResume).toBeUndefined();
+    expect(one([], [engine({ can_resume: true, user_id: "me" })]).canResume).toBeUndefined();
+    expect(one([], [engine({ status: "ended", user_id: "me" })]).canResume).toBeUndefined();
+  });
+
+  it("takes a joined row's person from the backend when the two disagree", () => {
+    const joined = (humanUserId: string, user_id: string) => one([backend({ humanUserId, networkSessionId: NET })], [engine({ user_id })]).person.isViewer;
+    expect(joined("other", "me")).toBe(false);
+    expect(joined("me", "other")).toBe(true);
+  });
+
+  it("reads a joined idle row as done when the backend says so", () => {
+    expect(one([backend({ networkSessionId: NET, done: true })], [engine({ status: "idle" })]).state).toBe("done");
+    expect(one([backend({ networkSessionId: NET, done: true })], [engine({ status: "busy" })]).state).toBe("busy");
+  });
+
+  it("does not take 0 for a time", () => {
+    expect(one([], [engine({ online: false, seen_at: 0 })]).lastSeenAt).toBeUndefined();
+    expect(one([], [engine({ status: "ended", ended_at: 0 })]).endedAt).toBeUndefined();
+    const at = "2026-10-30T00:00:00Z";
+    expect(one([backend({ networkSessionId: NET, lastEventAt: at })], [engine({ online: false, seen_at: 0 })]).lastSeenAt).toBe(Date.parse(at));
+    expect(one([backend({ networkSessionId: NET, endedAt: at })], [engine({ status: "ended", ended_at: 0 })]).endedAt).toBe(Date.parse(at));
   });
 
   it("gives one row per conversation, the live one when one is", () => {

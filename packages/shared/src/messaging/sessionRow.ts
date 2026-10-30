@@ -1,7 +1,7 @@
 import { sessionLive, sessionState, sessionTitle } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
-/** One record of the network engine's `directory`, as `engine_ask` gives it to a page (no `cwd`, `pid`, `birth_micros`, `kind`, `entrypoint`). Times are seconds since the epoch. */
+/** One record of the network engine's `directory`, as `engine_ask` gives it to a page: named fields only. Times are seconds since the epoch. */
 export interface EngineRecord {
   session_id: string;
   person: string;
@@ -10,12 +10,12 @@ export interface EngineRecord {
   computer: string;
   agent: string;
   folder: string;
-  repo: string;
-  branch: string;
+  repo: string | null;
+  branch: string | null;
   status: "busy" | "waiting" | "idle" | "ended";
   waiting_for?: string;
   doing: string;
-  title: string;
+  title: string | null;
   tier: string;
   online: boolean;
   seen_at?: number;
@@ -23,7 +23,8 @@ export interface EngineRecord {
   user_id?: string;
   ended_at?: number;
   reason?: string;
-  resume?: string;
+  /** The engine holds a resume command; only native code reads it, since it names the folder's path. */
+  can_resume?: boolean;
   handle?: string;
   hidden?: boolean;
   job?: { id?: string; state?: string };
@@ -54,8 +55,8 @@ export interface SessionRow {
   lastSeenAt?: number;
   endedAt?: number;
   endedReason?: string;
-  /** The engine's resume command: the viewer's own ended rows only. */
-  resume?: string;
+  /** The engine can resume it: the viewer's own ended rows only. */
+  canResume?: boolean;
 }
 
 export interface SessionViewer {
@@ -90,8 +91,10 @@ function toRow(backend: LocalSession | undefined, engine: EngineRecord | undefin
   const humanUserId = backend?.humanUserId;
   const userId = humanUserId ?? engine?.user_id;
   // Never undefined === undefined: a signed-out viewer and a record with no account are not one person.
-  const isViewer = viewer.userId != null && (humanUserId === viewer.userId || engine?.user_id === viewer.userId);
-  const state = engine ? engineState(engine) : backendState(backend!);
+  const isViewer = viewer.userId != null && (backend ? backend.humanUserId === viewer.userId : engine?.user_id === viewer.userId);
+  const engineSays = engine && engineState(engine);
+  // `job` does not reach a page for a teammate's session; the backend row still knows it is done.
+  const state = engineSays === "idle" && backend?.done ? "done" : engineSays ?? backendState(backend!);
   return {
     id: engine?.session_id ?? backend?.networkSessionId ?? backend!.sessionId,
     backend,
@@ -112,11 +115,11 @@ function toRow(backend: LocalSession | undefined, engine: EngineRecord | undefin
     state,
     waitingFor: state === "waiting" ? engine?.waiting_for || backend?.waitingFor : undefined,
     lastSeenAt: state === "offline" || state === "parked"
-      ? (engine?.seen_at != null ? engine.seen_at * 1000 : millis(backend?.lastEventAt))
+      ? (engine?.seen_at ? engine.seen_at * 1000 : millis(backend?.lastEventAt))
       : undefined,
-    endedAt: state === "ended" ? (engine?.ended_at != null ? engine.ended_at * 1000 : millis(backend?.endedAt)) : undefined,
+    endedAt: state === "ended" ? (engine?.ended_at ? engine.ended_at * 1000 : millis(backend?.endedAt)) : undefined,
     endedReason: state === "ended" ? engine?.reason || backend?.endedReason || undefined : undefined,
-    resume: state === "ended" && isViewer ? engine?.resume : undefined,
+    canResume: state === "ended" && isViewer && engine?.can_resume ? true : undefined,
   };
 }
 

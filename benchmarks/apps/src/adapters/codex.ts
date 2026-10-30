@@ -1,4 +1,7 @@
 import { spawn as realSpawn } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { countCodexFixLoops, parseCodexUsage } from "../cost";
 import { loadRules } from "./claude-code";
 import type { BuilderAdapter, BuildResult } from "./types";
@@ -11,12 +14,39 @@ export const codexArgs = (prompt: string, workdir: string, model?: string, sandb
 ];
 
 type Spawn = typeof realSpawn;
-/** Run codex with stdin ignored in its own process group; abort kills the group. Never throws; resolves with output and exit code. */
+
+/**
+ * A throwaway HOME (and CODEX_HOME inside it) holding only a 0600 copy of the operator's auth.json.
+ * --ignore-user-config still loads ~/.codex/{skills,AGENTS.md,hooks.json} and ~/.agents/skills; the baseline is
+ * "workspace rules + the model", so none of the operator's own files may reach the run.
+ */
+export function isolatedHome(realCodexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex")) {
+  const home = mkdtempSync(join(tmpdir(), "codex-home-"));
+  const codexHome = join(home, ".codex");
+  mkdirSync(codexHome);
+  const real = join(realCodexHome, "auth.json"), copy = join(codexHome, "auth.json");
+  if (existsSync(real)) { copyFileSync(real, copy); chmodSync(copy, 0o600); }
+  const before = existsSync(copy) ? readFileSync(copy, "utf8") : "";
+  const env = { ...process.env, HOME: home, CODEX_HOME: codexHome, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1" };
+  const cleanup = () => {
+    try { // codex may rotate the refresh token mid-run: keep the new login, or the operator's copy goes stale
+      const after = existsSync(copy) ? readFileSync(copy, "utf8") : before;
+      if (after !== before) { JSON.parse(after); copyFileSync(copy, real); chmodSync(real, 0o600); }
+    } catch { /* unreadable or half-written: keep the operator's file */ }
+    rmSync(home, { recursive: true, force: true });
+  };
+  return { env, cleanup };
+}
+
+/** Run codex isolated (see isolatedHome) with stdin ignored in its own process group; abort kills the group. Never throws; resolves with output and exit code. */
 export function runCodex(args: string[], cwd: string, signal?: AbortSignal, spawn: Spawn = realSpawn): Promise<{ code: number; out: string }> {
-  return new Promise((done) => {
+  return new Promise((resolve) => {
     let out = "";
+    let iso: ReturnType<typeof isolatedHome> | undefined;
+    const done = (r: { code: number; out: string }) => { iso?.cleanup(); iso = undefined; resolve(r); };
     try {
-      const p = spawn("codex", args, { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+      iso = isolatedHome();
+      const p = spawn("codex", args, { cwd, env: iso.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
       const kill = () => { try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ } };
       signal?.addEventListener("abort", kill, { once: true });
       if (signal?.aborted) kill();

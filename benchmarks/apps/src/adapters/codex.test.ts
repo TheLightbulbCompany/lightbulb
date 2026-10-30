@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countCodexFixLoops, parseCodexUsage } from "../cost";
-import { codexArgs, makeCodexAdapter } from "./codex";
+import { codexArgs, isolatedHome, makeCodexAdapter } from "./codex";
 
 const sample = readFileSync(join(__dirname, "../__fixtures__/codex-sample.jsonl"), "utf8");
 const ev = (o: unknown) => JSON.stringify(o);
@@ -56,6 +56,27 @@ describe("codex adapter", () => {
     await makeCodexAdapter(fake((p) => { seen = p.spawned; p.emit("close", 1); })).build(task, dir);
     expect(seen.cmd).toBe("codex");
     expect(seen.o).toMatchObject({ detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  });
+  it("spawns in a throwaway HOME/CODEX_HOME holding only the login, deleted afterwards", async () => {
+    let seen: any, home = "";
+    await makeCodexAdapter(fake((p) => { seen = p.spawned; home = seen.o.env.HOME; p.emit("close", 0); })).build(task, dir);
+    expect(home).not.toBe(process.env.HOME);
+    expect(seen.o.env.CODEX_HOME).toBe(join(home, ".codex"));
+    expect(seen.o.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD).toBe("1");
+    expect(existsSync(home)).toBe(false);
+  });
+  it("isolatedHome copies auth.json 0600 and writes a rotated login back", () => {
+    const real = mkdtempSync(join(tmpdir(), "cxh-"));
+    writeFileSync(join(real, "auth.json"), '{"t":1}');
+    mkdirSync(join(real, "skills"));
+    const iso = isolatedHome(real);
+    const copy = join(iso.env.CODEX_HOME!, "auth.json");
+    expect(statSync(copy).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(iso.env.CODEX_HOME!, "skills"))).toBe(false);
+    writeFileSync(copy, '{"t":2}');
+    iso.cleanup();
+    expect(readFileSync(join(real, "auth.json"), "utf8")).toBe('{"t":2}');
+    expect(existsSync(iso.env.HOME!)).toBe(false);
   });
   it("a spawn error does not throw", async () => {
     const r = await makeCodexAdapter(fake((p) => p.emit("error", new Error("ENOENT")))).build(task, dir);

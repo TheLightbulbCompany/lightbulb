@@ -5,6 +5,7 @@ pub mod claude_export;
 #[cfg(test)]
 mod core_boundary;
 mod engine;
+mod engine_client;
 pub mod file_access;
 // Core's held sessions plus the app's panel terminal.
 #[cfg(unix)]
@@ -2039,6 +2040,7 @@ end tell"#,
             shell_integration::shell_integration_status,
             shell_integration::shell_integration_set,
             holder::panel::terminal_panel,
+            engine_client::engine_ask,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");

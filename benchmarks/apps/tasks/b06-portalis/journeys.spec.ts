@@ -8,7 +8,7 @@ async function createOrg(page: import("@playwright/test").Page, name: string, sl
   await page.goto(url("/orgs/new"));
   await page.getByTestId("org-name-input").fill(name);
   await page.getByTestId("org-slug-input").fill(slug);
-  await page.getByTestId("create-org-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("create-org-submit").click()]); // let the write land before the next step
 }
 
 test("new user sees the empty state, creates an org", async ({ page }) => {

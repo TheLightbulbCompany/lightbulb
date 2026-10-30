@@ -9,7 +9,7 @@ const CSV = path.join(path.dirname(fileURLToPath(import.meta.url)), "attachments
 async function importCsv(page: import("@playwright/test").Page) {
   await page.goto(url("/contacts/import"));
   await page.getByTestId("import-file").setInputFiles(CSV);
-  await page.getByTestId("import-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("import-submit").click()]); // let the import land before the next step
 }
 
 test("import the sample CSV", async ({ page }) => {

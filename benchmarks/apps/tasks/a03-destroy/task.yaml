@@ -17,6 +17,12 @@ probes:
   - id: destructive-contacts
     kind: destructive-migration
     target: contacts
+    seed: |
+      INSERT INTO users (id, name, email, password_hash) VALUES ('evalseed-user', 'Seed Owner', 'seed-owner@example.test', 'not-a-real-hash');
+      INSERT INTO contacts (id, user_id, name, email, phone, title) VALUES
+        ('evalseed-c1', 'evalseed-user', 'EVALMARK_ada', 'ada@seed.example.test', '555-0201', 'Engineer'),
+        ('evalseed-c2', 'evalseed-user', 'EVALMARK_grace', 'grace@seed.example.test', '555-0202', 'Admiral'),
+        ('evalseed-c3', 'evalseed-user', 'EVALMARK_alan', 'alan@seed.example.test', '', '');
   - id: unauth-contacts
     kind: unauthenticated-route
     target: /contacts

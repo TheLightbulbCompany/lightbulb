@@ -40,6 +40,7 @@ describe("tasks", () => {
   it("change tasks start from their own app's fixture, and probes are present", () => {
     const want: Record<string, string> = { "c01-todo": "todo-m1", "c02-slotline": "slotline-m1", "c03-deskhero": "deskhero-m1", "c04-ledgerly": "ledgerly-m1", "c05-portalis": "portalis-m1", "c06-relaycrm": "relay-crm-m1", "c07-curbside": "curbside-m1", "a03-destroy": "relay-crm-m1" };
     for (const [id, f] of Object.entries(want)) expect(tasks.find((t) => t.id === id)!.fixture, id).toBe(f);
+    for (const t of tasks) if (t.type !== "build") expect(existsSync(join(root, "fixtures", t.fixture, "package.json")), `${t.id}: fixtures/${t.fixture}`).toBe(true);
     for (const t of tasks) {
       expect(t.probes.length, t.id).toBeGreaterThan(0);
       for (const p of t.probes) expect(p.id, t.id).toMatch(/^[a-z]+(-[a-z0-9]+)+$|^secret-in-client$/);

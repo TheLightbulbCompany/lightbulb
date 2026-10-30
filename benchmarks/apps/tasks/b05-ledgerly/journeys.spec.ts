@@ -7,7 +7,7 @@ async function addAccount(page: Page, code: string, name: string, type: "debit" 
   await page.getByTestId("account-form-code").fill(code);
   await page.getByTestId("account-form-name").fill(name);
   await page.getByTestId("account-form-type").selectOption(type);
-  await page.getByTestId("account-form-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("account-form-submit").click()]); // let the write land before navigating on
 }
 
 async function fillEntry(page: Page, memo: string, lines: [string, string, string][]) {

@@ -16,7 +16,7 @@ def test_the_skill_routes_ideas_to_a_short_reference(tmp_path):
     # A Paperclip run never sees "Let's do it!": the Work task's own sections route here too.
     assert "Needs" in row and "Done means" in row
     ideas = (out / "lightbulb/references/ideas.md").read_text()
-    assert len(ideas.splitlines()) < 46
+    assert len(ideas.splitlines()) < 48
     assert "Do it like any request" in ideas
     # Pre-flight: needs against what is connected, one ask for everything missing.
     assert "Read the Work item's **Needs**" in ideas and "ask once, for all of it" in ideas

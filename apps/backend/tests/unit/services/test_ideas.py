@@ -850,8 +850,8 @@ async def test_lets_do_it_on_an_app_idea_starts_the_builder_in_its_room(papercli
     added = await ideas.suggest(OWNER, _suggestion("Build a refund tracker", kind="app", app_kind="dashboard"))
     started = await ideas.start(AUTH, added["id"])
     [line] = await _lines(started["roomId"])
-    assert "lightbulb app new" in line["text"] and "--kind dashboard" in line["text"]
-    assert f"suggested:{added['id']}" in line["text"] and "lightbulb app up" in line["text"]
+    assert "Build this as an app" in line["text"] and "kind dashboard" in line["text"]
+    assert f"suggested:{added['id']}" in line["text"] and "lightbulb app" not in line["text"]
     assert await repo.get_member(started["roomId"], "agent", STARTERS["growth"]) is not None
 
 

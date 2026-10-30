@@ -530,11 +530,9 @@ def start_text(job: Job, tracked: tuple[str, str] | None) -> str:
     text = f"> **{title}**\n> {_md_text(job.why)}\n\nLet's do it!"
     if tracked:
         text += f"\nTracked in Work: [{title}]({work_link(*tracked)})"
-    if job.app_kind:  # a suggested app: this DM is where the builder starts
-        text += (
-            f"\nBuild this as an app: run `lightbulb app new <name> --kind {job.app_kind}`, then "
-            f"`lightbulb app up`, with the idea above as the request and origin `suggested:{job.id}`."
-        )
+    if job.app_kind:  # no agent-only channel on this path: one plain sentence; the skill has the commands
+        text += f"\nBuild this as an app ({job.app_kind.replace('_', ' ')}), origin suggested:{job.id}"
+        text += f", kind {job.app_kind}."
     return text
 
 

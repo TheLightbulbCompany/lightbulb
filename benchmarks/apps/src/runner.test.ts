@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BuilderAdapter, BuildResult } from "./adapters/types";
-import { loadTask, runSuite, runTask, type Deps } from "./runner";
+import { journeyResults, loadTask, runSuite, runTask, type Deps } from "./runner";
 
 const res = (o: Partial<BuildResult> = {}): BuildResult => ({ dir: "", tokensIn: 1, tokensOut: 1, dollars: 0, minutes: 0, fixLoops: 0, status: "done", log: "", ...o });
 const adapter = (f: (dir: string, signal?: AbortSignal) => Promise<Partial<BuildResult>> | Partial<BuildResult>): BuilderAdapter => ({
@@ -63,5 +63,41 @@ describe("runner", () => {
     expect(recs.length).toBe(2);
     expect(JSON.parse(readFileSync(join(dir, recs[0]), "utf8")).dollars).toBe(200);
     expect(readdirSync(dir).some((f) => f.endsWith(".build.log"))).toBe(true);
+  });
+
+  it("timed-out run keeps the cost the builder reported", async () => {
+    const t = { ...task(), timeoutMin: 0.0005 };
+    const a: BuilderAdapter = { name: "fake", build: (_t, dir, signal) => new Promise((r) => signal!.addEventListener("abort", () => r(res({ dir, status: "timeout", dollars: 10, tokensIn: 5 })))) };
+    const r = await runTask(t, a, { run: 1, outDir: out() }, mk());
+    expect([r.status, r.dollars, r.tokensIn]).toEqual(["timeout", 10, 5]);
+    expect(r.costUnknown).toBeFalsy();
+  });
+
+  it("unknown cost counts the per-run cap toward the suite budget", async () => {
+    const a: BuilderAdapter = { name: "fake", build: async () => { throw new Error("boom"); } };
+    const dir = await runSuite(a, { tasks: ["b01-todo", "b02-slotline"], runs: 3, budgetUsd: 30, resultsRoot: out() }, mk());
+    const recs = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    expect(recs.length).toBe(2);
+    expect(JSON.parse(readFileSync(join(dir, recs[0]), "utf8")).costUnknown).toBe(true);
+  });
+
+  it("removes the workdir unless keepWorkdir, and records time to runnable", async () => {
+    const a = adapter(() => ({}));
+    const r = await runTask(task(), a, { run: 1, outDir: out() }, mk());
+    expect(existsSync(r.dir)).toBe(false);
+    expect(r.minutesToRunnable).not.toBeNull();
+    const k = await runTask(task(), a, { run: 1, outDir: out(), keepWorkdir: true }, mk());
+    expect(existsSync(k.dir)).toBe(true);
+    const f = await runTask(task(), a, { run: 1, outDir: out() }, { ...mk(), serve: async () => ({ url: "", databaseUrl: "", stop: async () => {}, buildLog: "", built: false }) });
+    expect(f.minutesToRunnable).toBeNull();
+  });
+
+  it("a skipped Playwright test is a failed journey", () => {
+    const rep = { suites: [{ specs: [
+      { title: "ok", tests: [{ status: "expected" }] },
+      { title: "skip", tests: [{ status: "skipped" }] },
+      { title: "bad", tests: [{ status: "unexpected" }] },
+    ] }] };
+    expect(journeyResults(rep)).toEqual([{ id: "ok", pass: true }, { id: "skip", pass: false }, { id: "bad", pass: false }]);
   });
 });

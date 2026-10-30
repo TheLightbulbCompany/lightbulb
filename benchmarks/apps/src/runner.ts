@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parse } from "yaml";
 import { RUN_CAP_USD } from "./adapters/claude-code";
-import type { BuilderAdapter, ProbeResult, ProbeSpec, RunRecord, Task } from "./adapters/types";
+import type { BuilderAdapter, BuildResult, ProbeResult, ProbeSpec, RunRecord, Task } from "./adapters/types";
 import { serve as realServe, type Served } from "./serve";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -33,69 +33,91 @@ export const loadTasks = (ids?: string[]): Task[] => {
 async function playwrightJourneys(task: Task, url: string): Promise<{ id: string; pass: boolean }[]> {
   let stdout = "";
   try {
-    ({ stdout } = await sh("pnpm", ["exec", "playwright", "test", join("tasks", task.id, task.journeys), "--reporter=json"], { cwd: root, env: { ...process.env, BASE_URL: url }, maxBuffer: 100_000_000 }));
+    ({ stdout } = await sh("pnpm", ["exec", "playwright", "test", join("tasks", task.id, task.journeys), "--reporter=json", "--global-timeout=600000"], { cwd: root, env: { ...process.env, BASE_URL: url }, maxBuffer: 100_000_000 }));
   } catch (e: any) { stdout = e.stdout ?? ""; } // exit 1 = some journeys failed; the report is still on stdout
+  try { return journeyResults(JSON.parse(stdout)); } catch { return []; } // no report = no journeys passed
+}
+
+/** A journey passes only if every test under that title ran and was expected; skipped is a failure. */
+export function journeyResults(report: any): { id: string; pass: boolean }[] {
   const found: { id: string; pass: boolean }[] = [];
-  const walk = (s: any) => { for (const sp of s.specs ?? []) found.push({ id: sp.title, pass: sp.ok === true }); for (const c of s.suites ?? []) walk(c); };
-  try { walk(JSON.parse(stdout)); } catch { /* no report = no journeys passed */ }
+  const walk = (s: any) => {
+    for (const sp of s.specs ?? []) found.push({ id: sp.title, pass: (sp.tests ?? []).length > 0 && sp.tests.every((t: any) => t.status === "expected" || t.status === "flaky") });
+    for (const c of s.suites ?? []) walk(c);
+  };
+  walk(report);
   return found;
 }
 
 const rate = (xs: { pass: boolean }[]) => (xs.length ? xs.filter((x) => x.pass).length / xs.length : 0);
 
-export async function runTask(task: Task, adapter: BuilderAdapter, opts: { run: number; outDir: string }, deps: Deps): Promise<RunRecord> {
+export const GRACE_MS = 15_000;
+const sleep = (ms: number) => new Promise<"grace">((r) => setTimeout(() => r("grace"), ms));
+
+export async function runTask(task: Task, adapter: BuilderAdapter, opts: { run: number; outDir: string; keepWorkdir?: boolean }, deps: Deps): Promise<RunRecord> {
   const model = process.env.EVAL_MODEL ?? "claude-sonnet-5";
   const workdir = mkdtempSync(join(tmpdir(), `apps-${task.id}-`));
-  cpSync(join(root, "fixtures", task.fixture), workdir, { recursive: true, filter: (s) => !/(^|\/)(node_modules|\.next)(\/|$)/.test(s) });
-  const contractSrc = join(tasksDir, task.id, "contract.json");
-  const contract = readFileSync(contractSrc);
-  writeFileSync(join(workdir, "contract.json"), contract);
-  if (existsSync(join(tasksDir, task.id, "attachments"))) cpSync(join(tasksDir, task.id, "attachments"), join(workdir, "attachments"), { recursive: true });
-  const git = (...a: string[]) => sh("git", ["-c", "user.name=eval", "-c", "user.email=eval@localhost", ...a], { cwd: workdir });
-  await git("init", "-q"); await git("add", "-A"); await git("commit", "-q", "-m", "fixture");
-
-  const ac = new AbortController();
-  let timer: NodeJS.Timeout | undefined;
-  const timedOut = new Promise<"timeout">((r) => { timer = setTimeout(() => { ac.abort(); r("timeout"); }, task.timeoutMin * 60_000); });
-  const base: Pick<RunRecord, "builder" | "model" | "taskId" | "run" | "journeys" | "probes" | "judge" | "score" | "passed" | "overRunCap"> = { builder: adapter.name, model, taskId: task.id, run: opts.run, journeys: [], probes: [], judge: 0, score: 0, passed: false, overRunCap: false };
-  let rec: RunRecord;
   let serveLog = "";
-  const t0 = Date.now();
+  let rec!: RunRecord;
   try {
-    const built = await Promise.race([adapter.build(task, workdir, ac.signal), timedOut]);
-    if (built === "timeout") {
-      rec = { ...base, dir: workdir, tokensIn: 0, tokensOut: 0, dollars: 0, minutes: (Date.now() - t0) / 60_000, fixLoops: 0, status: "timeout", log: "" };
-    } else {
-      rec = { ...base, ...built, overRunCap: built.dollars > RUN_CAP_USD };
-      const now = existsSync(join(workdir, "contract.json")) ? readFileSync(join(workdir, "contract.json")) : null;
-      if (built.status !== "done") rec.reason = `build ${built.status}`;
-      else if (!now || !now.equals(contract)) { rec.status = "contract_modified"; rec.reason = "contract.json was changed or deleted"; }
-      else {
-        const s = await (deps.serve ?? realServe)(workdir);
-        serveLog = s.buildLog;
-        try {
-          if (!s.built) { rec.status = "serve_failed"; rec.reason = "app did not build or start"; }
-          else {
-            rec.journeys = await (deps.journeys ?? playwrightJourneys)(task, s.url);
-            rec.probes = await deps.probes(s.url, workdir, task.probes, s.databaseUrl, task);
-            rec.judge = await deps.judge(s.url, workdir, task);
-            rec.score = 0.6 * rate(rec.journeys) + 0.25 * rate(rec.probes) + 0.15 * rec.judge;
-            rec.passed = rate(rec.journeys) === 1 && rate(rec.probes) === 1; // the judge never decides pass/fail
-          }
-        } finally { await s.stop(); }
-      }
-    }
-  } catch (e) {
-    rec = { ...base, dir: workdir, tokensIn: 0, tokensOut: 0, dollars: 0, minutes: (Date.now() - t0) / 60_000, fixLoops: 0, status: ac.signal.aborted ? "timeout" : "error", log: "", reason: String(e) };
-  } finally { clearTimeout(timer); }
+    cpSync(join(root, "fixtures", task.fixture), workdir, { recursive: true, filter: (s) => !/(^|\/)(node_modules|\.next)(\/|$)/.test(s) });
+    const contract = readFileSync(join(tasksDir, task.id, "contract.json"));
+    writeFileSync(join(workdir, "contract.json"), contract);
+    if (existsSync(join(tasksDir, task.id, "attachments"))) cpSync(join(tasksDir, task.id, "attachments"), join(workdir, "attachments"), { recursive: true });
+    const git = (...a: string[]) => sh("git", ["-c", "user.name=eval", "-c", "user.email=eval@localhost", ...a], { cwd: workdir });
+    await git("init", "-q"); await git("add", "-A"); await git("commit", "-q", "-m", "fixture");
 
-  mkdirSync(opts.outDir, { recursive: true });
-  const stem = join(opts.outDir, `${task.id}-run${opts.run}`);
-  const { log, ...meta } = rec;
-  writeFileSync(`${stem}.json`, JSON.stringify(meta, null, 2));
-  writeFileSync(`${stem}.build.log`, log);
-  writeFileSync(`${stem}.serve.log`, serveLog);
-  return rec;
+    const ac = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<"timeout">((r) => { timer = setTimeout(() => { ac.abort(); r("timeout"); }, task.timeoutMin * 60_000); });
+    const base: Pick<RunRecord, "builder" | "model" | "taskId" | "run" | "journeys" | "probes" | "judge" | "score" | "passed" | "overRunCap" | "minutesToRunnable"> = { builder: adapter.name, model, taskId: task.id, run: opts.run, journeys: [], probes: [], judge: 0, score: 0, passed: false, overRunCap: false, minutesToRunnable: null };
+    const zero = { dir: workdir, tokensIn: 0, tokensOut: 0, dollars: 0, fixLoops: 0, log: "" };
+    const t0 = Date.now();
+    const mins = () => (Date.now() - t0) / 60_000;
+    const buildP: Promise<BuildResult | { thrown: unknown }> = adapter.build(task, workdir, ac.signal).catch((thrown) => ({ thrown }));
+    try {
+      const first = await Promise.race([buildP, timedOut]);
+      let built: BuildResult | { thrown: unknown } | "grace" = first as any;
+      if (first === "timeout") built = await Promise.race([buildP, sleep(GRACE_MS)]); // the abort kills the builder, so it settles with its partial cost
+      if (built === "grace" || "thrown" in built) {
+        // no cost reported: unknown spend, the suite counts the per-run cap
+        rec = { ...base, ...zero, minutes: mins(), status: first === "timeout" ? "timeout" : "error", costUnknown: true, reason: built === "grace" ? "builder did not stop after abort" : String(built.thrown) };
+      } else {
+        rec = { ...base, ...built, overRunCap: built.dollars > RUN_CAP_USD };
+        if (first === "timeout") rec.status = "timeout";
+        const now = existsSync(join(workdir, "contract.json")) ? readFileSync(join(workdir, "contract.json")) : null;
+        if (rec.status !== "done") rec.reason = `build ${rec.status}`;
+        else if (!now || !now.equals(contract)) { rec.status = "contract_modified"; rec.reason = "contract.json was changed or deleted"; }
+        else {
+          const s = await (deps.serve ?? realServe)(workdir);
+          serveLog = s.buildLog;
+          try {
+            if (!s.built) { rec.status = "serve_failed"; rec.reason = "app did not build or start"; }
+            else {
+              rec.minutesToRunnable = mins();
+              rec.journeys = await (deps.journeys ?? playwrightJourneys)(task, s.url);
+              rec.probes = await deps.probes(s.url, workdir, task.probes, s.databaseUrl, task);
+              rec.judge = await deps.judge(s.url, workdir, task);
+              rec.score = 0.6 * rate(rec.journeys) + 0.25 * rate(rec.probes) + 0.15 * rec.judge;
+              rec.passed = rate(rec.journeys) === 1 && rate(rec.probes) === 1; // the judge never decides pass/fail
+            }
+          } finally { await s.stop(); }
+        }
+      }
+    } catch (e) {
+      rec = { ...base, ...zero, minutes: mins(), status: ac.signal.aborted ? "timeout" : "error", costUnknown: true, reason: String(e) };
+    } finally { clearTimeout(timer); }
+
+    mkdirSync(opts.outDir, { recursive: true });
+    const stem = join(opts.outDir, `${task.id}-run${opts.run}`);
+    const { log, ...meta } = rec;
+    writeFileSync(`${stem}.json`, JSON.stringify(meta, null, 2));
+    writeFileSync(`${stem}.build.log`, log);
+    writeFileSync(`${stem}.serve.log`, serveLog);
+    return rec;
+  } finally {
+    if (!opts.keepWorkdir) rmSync(workdir, { recursive: true, force: true });
+  }
 }
 
 export async function runSuite(adapter: BuilderAdapter, opts: { tasks?: string[]; runs?: number; budgetUsd?: number; resultsRoot?: string }, deps: Deps): Promise<string> {
@@ -105,7 +127,8 @@ export async function runSuite(adapter: BuilderAdapter, opts: { tasks?: string[]
   for (const task of loadTasks(opts.tasks))
     for (let run = 1; run <= (opts.runs ?? 3); run++) {
       if (spent >= budget) return outDir;
-      spent += (await runTask(task, adapter, { run, outDir }, deps)).dollars;
+      const r = await runTask(task, adapter, { run, outDir }, deps);
+      spent += r.costUnknown ? RUN_CAP_USD : r.dollars; // unknown cost counts the per-run cap so the suite cap stays conservative
     }
   return outDir;
 }

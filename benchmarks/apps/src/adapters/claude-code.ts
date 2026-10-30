@@ -30,30 +30,40 @@ export function loadRules(): Promise<{ text: string; source: string }> {
   })());
 }
 
+export const claudeArgs = (prompt: string, model: string) =>
+  ["--bare", "-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--model", model, "--max-budget-usd", String(RUN_CAP_USD)];
+
 export const claudeCodeAdapter: BuilderAdapter = {
   name: "claude-code",
   async build(task, workdir, signal) {
-    const rules = await loadRules();
     const model = process.env.EVAL_MODEL ?? "claude-sonnet-5";
     const start = Date.now();
-    const args = ["-p", `${rules.text}\n\n${task.prompt}`, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--model", model, "--max-budget-usd", String(RUN_CAP_USD)];
     let out = "";
-    const code = await new Promise<number>((done) => {
-      const p = spawn("claude", args, { cwd: workdir, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-      const kill = () => { try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ } };
-      signal?.addEventListener("abort", kill, { once: true });
-      p.stdout.on("data", (d) => (out += d));
-      p.stderr.on("data", (d) => (out += d));
-      p.on("error", (e) => { out += String(e); done(1); });
-      p.on("close", (c) => done(c ?? 1));
-    });
-    const r = parseResult(out);
-    const res: BuildResult = {
-      dir: workdir, tokensIn: r?.tokensIn ?? 0, tokensOut: r?.tokensOut ?? 0, dollars: r?.dollars ?? 0,
-      minutes: (Date.now() - start) / 60_000, fixLoops: countFixLoops(out),
-      status: signal?.aborted ? "timeout" : code === 0 && r ? "done" : "error",
-      log: `[rules source: ${rules.source}] [model: ${model}]\n${out}`,
+    let header = "";
+    const result = (status: BuildResult["status"], extra = ""): BuildResult => {
+      const r = parseResult(out);
+      return {
+        dir: workdir, tokensIn: r?.tokensIn ?? 0, tokensOut: r?.tokensOut ?? 0, dollars: r?.dollars ?? 0, costUnknown: !r && !!out,
+        minutes: (Date.now() - start) / 60_000, fixLoops: countFixLoops(out), status,
+        log: `${header}${extra}${out}`,
+      };
     };
-    return res;
+    if (!process.env.ANTHROPIC_API_KEY) return result("error", "[error] --bare only authenticates with ANTHROPIC_API_KEY, which is not set; nothing was spawned\n");
+    try {
+      const rules = await loadRules();
+      header = `[rules source: ${rules.source}] [model: ${model}]\n`;
+      const code = await new Promise<number>((done) => {
+        const p = spawn("claude", claudeArgs(`${rules.text}\n\n${task.prompt}`, model), { cwd: workdir, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+        const kill = () => { try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ } };
+        signal?.addEventListener("abort", kill, { once: true });
+        p.stdout.on("data", (d) => (out += d));
+        p.stderr.on("data", (d) => (out += d));
+        p.on("error", (e) => { out += String(e); done(1); });
+        p.on("close", (c) => done(c ?? 1));
+      });
+      return result(signal?.aborted ? "timeout" : code === 0 && parseResult(out) ? "done" : "error");
+    } catch (e) {
+      return result("error", `[error] ${String(e)}\n`); // never throws: the runner must still see partial cost
+    }
   },
 };

@@ -151,7 +151,10 @@ export async function judge(url: string, dir: string, task: Task, o: { shots?: B
     ];
     const call = () => (o.run ?? runCodex)(args, tmp, AbortSignal.timeout(5 * 60_000)); // a hung judge must not block the suite
     let r = await call();
-    if (r.code !== 0) r = await call(); // one retry on non-zero exit
+    if (r.code !== 0) { // one retry on non-zero exit; after a pause when the provider was at capacity
+      if (/Selected model is at capacity/.test(r.out)) await new Promise((f) => setTimeout(f, Number(process.env.LIGHTBULB_EVAL_RETRY_MS ?? 60_000)));
+      r = await call();
+    }
     if (r.code !== 0) throw new Error(`codex exited ${r.code}: ${r.out.slice(-200)}`);
     return parseJudge(lastMessage(r.out));
   } catch (e) {

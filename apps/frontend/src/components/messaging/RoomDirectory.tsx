@@ -15,7 +15,7 @@ import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { groupRooms, type RoomGroup, type SidebarRow, type SidebarSession, type SidebarSort } from "./roomSections";
-import { foldedEntries, ownWaitingCount, sessionRowDropped, sessionRowGone, sessionRowGroups, sessionRowKey, NEEDS_YOU_GROUP, SESSION_GROUP_FOLD, type SessionGroupBy, type SessionShow } from "./sessionGroups";
+import { foldedEntries, ownWaitingCount, sessionRowGone, sessionRowGroups, sessionRowKey, NEEDS_YOU_GROUP, SESSION_GROUP_FOLD, type SessionGroupBy, type SessionShow } from "./sessionGroups";
 import { SessionListRow } from "./SessionListRow";
 import { SessionSearch } from "./SessionSearch";
 import { StartSessionDialog } from "./StartSessionDialog";
@@ -401,7 +401,8 @@ function DirectoryContent({
     const query = sessionFilter.trim();
     // Ended sessions stay until archived (owner decision 2026-10-27), as on the phone and in both vendor apps.
     const { groups, archived, hidden, listed } = sessionRowGroups(sessionRows, { groupBy: prefs.sessionGroupBy, show: prefs.sessionShow, query, marks: sessionMarks });
-    const live = sessionRows.filter(({ row }) => !sessionRowDropped(row) && !sessionRowGone(row)).length;
+    // Live rows the viewer has not archived, whatever Show or the filter hides.
+    const live = sessionRowGroups(sessionRows, { groupBy: "person", show: "all", query: "", marks: sessionMarks }).groups.flatMap((group) => group.entries).filter(({ row }) => !sessionRowGone(row)).length;
     const waiting = ownWaitingCount(sessionRows.map((entry) => entry.row));
     const pinned = (key: string) => sessionMarks.pinned.includes(key);
     const row = (entry: SidebarRow, isArchived: boolean) => {
@@ -480,7 +481,7 @@ function DirectoryContent({
         {listed === 0
           ? <div className="room-directory-session-empty"><p className="text-caption text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
           : <>
-            {(listed > SESSION_GROUP_FOLD || query) && <input type="search" className="session-filter" aria-label="Filter sessions" placeholder="Filter sessions" value={sessionFilter}
+            {(listed > SESSION_GROUP_FOLD || sessionFilter) && <input type="search" className="session-filter" aria-label="Filter sessions" placeholder="Filter sessions" value={sessionFilter}
               onChange={(event) => setSessionFilter(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && sessionFilter) { event.stopPropagation(); setSessionFilter(""); } }} />}
             {groups.map(renderSessionGroup)}
             {query && groups.length === 0 && <p role="status" className="px-2 text-caption text-muted-foreground">No sessions match &quot;{query}&quot;. <button type="button" className="underline" onClick={() => setSessionFilter("")}>Clear</button></p>}

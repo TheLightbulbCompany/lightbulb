@@ -806,4 +806,6 @@ button.session-group-header:focus-visible, .session-group-more:focus-visible, .s
 .session-group-more { display: block; width: 100%; padding: 2px 8px 2px 36px; font-size: var(--text-caption); color: var(--muted-foreground); text-align: left; border-radius: 6px; }
 .session-group-more:hover { color: var(--foreground); }
 .session-filter { display: block; height: 28px; width: calc(100% - 16px); margin: 2px 8px 6px; padding: 0 10px; font-size: var(--text-ui); border: 1px solid var(--border); border-radius: 6px; background: transparent; }
+/* Dark text on brass in every theme: --midnight turns light in the dark chat theme, --on-link is its dark ink there. */
 .session-count--waiting { color: var(--midnight); background: var(--brass); }
+:root[data-chat-theme="dark"] .session-count--waiting { color: var(--on-link); }

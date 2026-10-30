@@ -277,7 +277,8 @@ def test_the_retired_provisioning_paths_are_gone():
 
 def test_teardown_cannot_reveal_credentials():
     """`remove` is the owner route's alone (test_wipe_never_deprovisions); the
-    credential reveal is the workflow's bind step's alone. Teardown reaches neither."""
+    credential reveal is the workflow's bind step's and an app's credential renewal's
+    alone. Teardown reaches neither."""
     import pathlib
 
     root = pathlib.Path(mod.__file__).resolve().parents[2]
@@ -289,7 +290,7 @@ def test_teardown_cannot_reveal_credentials():
         for p in (root / d).rglob("*.py")
         if "reveal_access_configuration(" in p.read_text() and p.name != "stripe_provisioning.py"
     )
-    assert users == ["core/services/provisioning_workflow.py"], users
+    assert users == ["core/services/apps_service.py", "core/services/provisioning_workflow.py"], users
 
 
 @pytest.mark.asyncio

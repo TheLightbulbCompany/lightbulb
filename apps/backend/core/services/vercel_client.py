@@ -150,6 +150,15 @@ async def deployment_state(creds: dict, deployment_id: str) -> dict:
     return {"readyState": d.get("readyState"), "url": d.get("url"), "errorMessage": d.get("errorMessage")}
 
 
+async def read_probe(creds: dict, deployment_id: str | None) -> None:
+    """Raises what Vercel says to a read this token needs: a deployment it polls, else the project's env list
+    (values stay encrypted and the body is dropped). Tells a refused token from one odd endpoint."""
+    if deployment_id:
+        await deployment_state(creds, deployment_id)
+    else:
+        await _call(creds, "GET", f"/v10/projects/{_pid(creds)}/env")
+
+
 async def deployment_events(creds: dict, deployment_id: str, *, limit: int = 50) -> list[dict]:
     """Build log lines, oldest -> newest (fetched newest-first so the cap keeps the tail)."""
     evs = await _call(

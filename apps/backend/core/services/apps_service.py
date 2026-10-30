@@ -128,6 +128,7 @@ class AppStatus(TypedDict):
     last_opened_at: str | None
     spend_month_cents: None
     preview: dict | None
+    error: NotRequired[AppError]
 
 
 # --- small helpers ------------------------------------------------------------------------------
@@ -614,57 +615,142 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
             app["progress_lease_until"] = None
 
 
-_REFUSED = frozenset({"vercel_forbidden", "vercel_unauthorized", "vercel_not_authorized"})
+_REFUSED = frozenset({"forbidden", "unauthorized", "not_authorized"})  # Vercel's JSON codes for a token it won't take
+_REFUSAL_CODE = "vercel_credential_refused"  # only ever written after a probe confirmed the refusal
+_RENEWAL_HOLDS = frozenset({"pending", "errored"})  # no automatic rotation until a person removes the field
 _RENEW_EVERY = timedelta(hours=1)
 
 
-def _refused(e: vercel.VercelError) -> bool:
-    return e.code in ("forbidden", "unauthorized", "not_authorized") or e.status in (401, 403)
+def _refused(e: vercel.VercelError | None) -> bool:
+    return e is not None and e.status in (401, 403) and e.code in _REFUSED
 
 
-async def _renew_vercel(app: dict, rows: dict) -> bool:
-    """Rotate the app's refused Vercel token through Stripe Projects and store the new one. At most one
-    attempt per app an hour, so a token refused for another reason can't loop rotations. Stripe's doc:
-    complete -> read the new access configuration; errored -> stop; pending -> don't resend."""
-    last = app.get("credential_renewed_at")
-    if last and datetime.now(UTC) - datetime.fromisoformat(last) < _RENEW_EVERY:
-        return False
-    await _patch(app, {"credential_renewed_at": utc_now_iso()})
+def _renewal_hold(app: dict) -> AppError | None:
+    if (app.get("credential_renewal") or {}).get("state") not in _RENEWAL_HOLDS:
+        return None
+    return {
+        "code": "credential_renewal_stuck",
+        "message": "Lightbulb tried to renew the app's hosting credential and the renewal didn't finish, "
+        "so it won't try again on its own.",
+        "next": "Lightbulb's team needs to look at this.",
+    }
+
+
+def _refusal(app: dict) -> AppError:
+    return {
+        "code": _REFUSAL_CODE,
+        "message": "Vercel no longer accepts the app's hosting credential.",
+        "next": "Lightbulb can't replace it on its own, so Lightbulb's team needs to look at this."
+        if _renewal_hold(app)
+        else "Lightbulb will try to replace it. Try again in a few minutes; "
+        "if this keeps happening, Lightbulb's team needs to look at it.",
+    }
+
+
+async def _probe(app: dict, creds: dict) -> vercel.VercelError | None:
+    """One read the token must be able to do. The failure, if any: only ``_refused`` of it means the token."""
+    known = app.get("publish_pending") or app.get("preview_pending") or app.get("preview") or {}
     try:
+        await vercel.read_probe(creds, known.get("deployment_id"))
+    except vercel.VercelError as e:
+        return e
+    return None
+
+
+async def _store_revealed(app: dict, account: str, resource: str, stored: dict) -> dict | None:
+    """Stripe's current token, stored, when it differs from ours. A reveal never rotates (Stripe's doc)."""
+    config = (await api.reveal_access_configuration(account, resource)).get("configuration")
+    config = {k: v for k, v in config.items() if isinstance(v, str) and v} if isinstance(config, dict) else {}
+    if not config.get("token") or config["token"] == stored.get("token"):
+        return None
+    fresh = {**stored, **config}
+    await integration_secret_store.put(app["owner_id"], f"apps/{app['app_id']}/vercel/prod", fresh)
+    logger.warning("apps: %s stored a new vercel credential from Stripe", app["app_id"])
+    return fresh
+
+
+async def _renew_vercel(app: dict, rows: dict, creds: dict) -> dict | None:
+    """After a confirmed refusal: the credentials to retry with, or None to report it.
+
+    Reveal first; rotate only when Stripe still holds the refused token. The claim on
+    ``credential_renewal`` (compare-and-set on ``at``) is written as ``pending`` before the POST, so a
+    crash, a timeout or a cancel leaves the outcome-unknown state. Stripe's doc: pending -> don't resend;
+    errored -> stop; complete -> read the new configuration, which ``needs_reveal`` keeps owed. pending and
+    errored hold until a person removes ``credential_renewal`` from the record; a reveal still picks up a
+    token that lands later, but never clears the hold. Rotations that work are spaced by ``_RENEW_EVERY``.
+    """
+    await _reload(app)
+    renewal = app.get("credential_renewal") or {}
+    state = renewal.get("state")
+    try:
+        key = f"apps/{app['app_id']}/vercel/prod"
+        stored = await integration_secret_store.get(app["owner_id"], key) or {}
+        if stored.get("token") and stored["token"] != creds["token"]:
+            return stored  # another reader replaced it after this one read its copy
         account = await provisioning_workflow.account_id_for(app["owner_id"])
         resource = rows[("vercel", "project", "prod")]["resource_id"]
+        fresh = await _store_revealed(app, account, resource, stored)
+    except Exception as e:  # noqa: BLE001 - nothing was rotated; the refusal is reported and the next attempt reveals
+        logger.warning("apps: %s vercel credential not read: %s", app["app_id"], type(e).__name__)
+        return None
+    if fresh:
+        if state == "needs_reveal":
+            await _patch(app, {"credential_renewal": {"state": "complete", "at": utc_now_iso()}})
+        return fresh
+    recent = state == "complete" and datetime.now(UTC) - datetime.fromisoformat(renewal["at"]) < _RENEW_EVERY
+    if state in _RENEWAL_HOLDS or state == "needs_reveal" or recent:
+        return None
+    claim = {"credential_renewal": {"state": "pending", "at": utc_now_iso()}}
+    if await _patch(app, claim, expect={"credential_renewal.at": renewal.get("at")}) is None:
+        return None  # another reader holds it; the next attempt finds what it stored
+    try:
         status = (await api.rotate_credentials(account, resource)).get("status")
-        if status == "complete":
-            config = (await api.reveal_access_configuration(account, resource)).get("configuration") or {}
-            if config.get("token"):
-                key = f"apps/{app['app_id']}/vercel/prod"
-                old = await integration_secret_store.get(app["owner_id"], key) or {}
-                await integration_secret_store.put(app["owner_id"], key, {**old, **config})
-                logger.warning("apps: %s vercel credential renewed through Stripe", app["app_id"])
-                return True
-            status = "complete_without_token"
-    except Exception as e:  # noqa: BLE001 - a failed renewal falls back to reporting the refusal
-        status = type(e).__name__
-    logger.warning("apps: %s vercel credential not renewed: %s", app["app_id"], status)
-    return False
+    except api.TransientProvisioningError:
+        status = "pending"  # may have been decided: never re-POST
+    except api.ProvisioningError:
+        status = "errored"
+    except Exception:  # noqa: BLE001 - unknown outcome
+        status = "pending"
+    logger.warning("apps: %s vercel credential rotation: %s", app["app_id"], status)
+    if status == "errored":
+        await _patch(app, {"credential_renewal": {"state": "errored", "at": utc_now_iso()}})
+    if status != "complete":
+        return None
+    await _patch(app, {"credential_renewal": {"state": "needs_reveal", "at": utc_now_iso()}})
+    try:
+        fresh = await _store_revealed(app, account, resource, stored)
+    except Exception as e:  # noqa: BLE001 - the state says what is owed
+        logger.warning("apps: %s rotated vercel credential not read: %s", app["app_id"], type(e).__name__)
+        return None
+    if not fresh:
+        return None
+    # A token refused straight after issue would otherwise rotate again every hour with nobody looking.
+    done = "errored" if _refused(await _probe(app, fresh)) else "complete"
+    await _patch(app, {"credential_renewal": {"state": done, "at": utc_now_iso()}})
+    return None if done == "errored" else fresh
 
 
-def _vercel_error(e: vercel.VercelError, next_default: str) -> AppError:
-    """A Vercel failure in the person's words. A refused token is named as such: on Demo Lab (30 Oct
-    2026) Vercel stopped accepting the app's token three hours after Stripe issued it."""
-    if _refused(e):
-        return {
-            "code": f"vercel_{e.code}",
-            "message": "Vercel no longer accepts the app's hosting credential.",
-            "next": "renew the hosting credential (rotate it through Stripe Projects), then try again",
-        }
-    return {"code": f"vercel_{e.code}", "message": str(e), "next": next_default}
+async def _on_vercel_error(
+    app: dict, rows: dict, creds: dict, e: vercel.VercelError, next_default: str, *, renew: bool
+) -> tuple[dict | None, AppError]:
+    """Every Vercel failure in a step or a deploy: the credentials to retry with, if any, and the error in the
+    person's words. A 401/403 says something about one call; only the probe says it about the token."""
+    if e.status in (401, 403) and _refused(await _probe(app, creds)):
+        return (await _renew_vercel(app, rows, creds) if renew else None), _refusal(app)
+    return None, {"code": f"vercel_{e.code}", "message": str(e), "next": next_default}
 
 
 async def _steps(
     app: dict, rows: dict, creds: dict, dev_db: dict | None, live_db: dict | None, *, renewed: bool = False
 ) -> AppError | None:
     try:
+        # A step may make no Vercel call at all, so a stored refusal is checked by asking.
+        refusal_stored = (app.get("publish_error") or {}).get("code") == _REFUSAL_CODE
+        if refusal_stored or (app.get("credential_renewal") or {}).get("state") == "needs_reveal":
+            if failure := await _probe(app, creds):
+                raise failure
+            if refusal_stored:
+                await _patch(app, {"publish_error": None}, expect={"publish_error.code": _REFUSAL_CODE})
         if not app.get("protection_off"):
             await vercel.disable_protection(creds)
             await _patch(app, {"protection_off": True})
@@ -703,11 +789,11 @@ async def _steps(
         await _verify(app, creds, "domain")
         await _preview_alias(app, creds)
     except vercel.VercelError as e:
-        if _refused(e) and not renewed and await _renew_vercel(app, rows):
-            creds = await _secret(app, rows, "vercel", "prod", "token") or creds
-            return await _steps(app, rows, creds, dev_db, live_db, renewed=True)
+        fresh, err = await _on_vercel_error(app, rows, creds, e, "run up again in a minute", renew=not renewed)
+        if fresh:
+            return await _steps(app, rows, fresh, dev_db, live_db, renewed=True)
         logger.warning("apps: %s vercel step failed: %s", app["app_id"], e.code)
-        return _vercel_error(e, "run up again in a minute")
+        return err
     except _WorkspaceUnknown:
         logger.warning("apps: %s workspace name unavailable", app["app_id"])
         return {
@@ -739,8 +825,9 @@ def _state(app: dict, rows: dict) -> tuple[str, AppError | None]:
         waiting = any(s in ("ask", "awaiting_approval") for s in states.values()) or len(rows) < len(_RESOURCES)
         return ("awaiting_approval" if waiting else "provisioning"), None
     if app.get("preview_pending") or app.get("publish_pending") or not app.get("preview"):
-        return "building", None
-    return "ready", app.get("error") or app.get("publish_error")  # a failed build leaves the live version serving
+        return "building", _renewal_hold(app)
+    # A failed build leaves the live version serving.
+    return "ready", app.get("error") or app.get("publish_error") or _renewal_hold(app)
 
 
 async def _record_state(app: dict, state: str) -> str:
@@ -879,8 +966,8 @@ async def publish(
     src = _source(app, source_id)
     rows, transient = await _progress(app)
     pending = app.get("publish_pending")
-    if transient and transient["code"] in _REFUSED:
-        await _patch(app, {"publish_error": transient})  # a refused credential is not a blip: keep it visible
+    if transient and transient["code"] == _REFUSAL_CODE and not pending:
+        await _patch(app, {"publish_error": transient})  # not a blip: keep it visible; clears when the token works
     if (
         transient
         or (pending and pending["source_id"] == source_id)
@@ -919,11 +1006,11 @@ async def publish(
             dep_id = await _deploy(app, creds, source_id, production=True)
             break
         except vercel.VercelError as e:
-            if attempt == 1 and _refused(e) and await _renew_vercel(app, rows):
-                creds = await _secret(app, rows, "vercel", "prod", "token") or creds
+            fresh, err = await _on_vercel_error(app, rows, creds, e, "publish again", renew=attempt == 1)
+            if fresh:
+                creds = fresh
                 continue
             logger.warning("apps: %s publish failed: %s", app_id, e.code)
-            err = _vercel_error(e, "publish again")
             await _patch(app, {"publish_error": err})  # Canvas shows the real reason, not an older build error
             return await _result(app, rows, err, cost_cents)
     pending = {
@@ -1069,8 +1156,11 @@ def _view(app: dict, rows: dict, state: str) -> AppStatus:
 async def status(owner_id: str, app_id: str) -> AppStatus:
     app = await _owned(owner_id, app_id)
     rows, _ = await _progress(app)
-    state, _ = _state(app, rows)
-    return _view(app, rows, await _record_state(app, state))
+    state, err = _state(app, rows)
+    view = _view(app, rows, await _record_state(app, state))
+    if err:
+        view["error"] = err
+    return view
 
 
 async def update_settings(
@@ -1135,7 +1225,9 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
             # R73: who may publish (and manage); whether there is a ready preview is the `preview` field.
             can_publish=can_manage(a, auth),
             # R71: the last persisted failure, message only.
-            error={"message": err.get("message", "")} if (err := a.get("error") or a.get("publish_error")) else None,
+            error={"message": err.get("message", "")}
+            if (err := a.get("error") or a.get("publish_error") or _renewal_hold(a))
+            else None,
         )
         out.append(row)
     return out

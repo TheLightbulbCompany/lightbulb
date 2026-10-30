@@ -111,6 +111,17 @@ def _until(value: str) -> datetime | None:
     return _when(value)
 
 
+def _said_when(valid_from: datetime | None, created: datetime | None, text: str) -> datetime | None:
+    """validFrom, unless the extraction model guessed its year: more than a year before the record
+    was written while the text names no year that early. Haiku has no calendar of its own and wrote
+    2024 for claims said in 2026 (prod, 30 Oct 2026); the record was written when it was said."""
+    if not (valid_from and created) or created - valid_from <= timedelta(days=365):
+        return valid_from
+    if any(int(y) <= valid_from.year for y in _YEAR_RE.findall(text)):
+        return valid_from  # dated history ("since 2024-05-01"): the text says so
+    return created
+
+
 def from_record(summary: dict, kind_default: str) -> Candidate:
     metadata = summary.get("metadata") or {}
     text = (summary.get("content") or {}).get("text", "")
@@ -131,16 +142,20 @@ def from_record(summary: dict, kind_default: str) -> Candidate:
     if valid_to and status == "current":
         status = "replaced"
     record_id = summary.get("memoryRecordId", "")
+    created = _when(summary.get("createdAt"))
+    valid_from = _when(_meta(metadata, "validFrom"))
+    if kind != "entry":  # a mirrored log entry's validFrom is the log's own when, not the model's
+        valid_from = _said_when(valid_from, created, text)
     return Candidate(
         id=record_id,
         kind=kind,
         content=text,
-        occurred_at=_when(summary.get("createdAt")) or datetime.fromtimestamp(0, UTC),
+        occurred_at=created or datetime.fromtimestamp(0, UTC),
         status=status,
         speaker=speaker,
         entity=_meta(metadata, "entity") or _meta(metadata, "subject"),
         attribute=_meta(metadata, "attribute"),
-        valid_from=_when(_meta(metadata, "validFrom")),
+        valid_from=valid_from,
         valid_to=valid_to,
         source_id=record_id,
     )

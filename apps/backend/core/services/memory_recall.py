@@ -214,8 +214,13 @@ async def recall(
                 # The window ("today", "in May") dates what was said, so it narrows turns and entries;
                 # a current claim's creation date says nothing about the time asked about.
                 dated = c.kind not in _CURRENT_KINDS
-                if c.status == "replaced" or (
-                    dated and ((start and c.occurred_at < start) or (end and c.occurred_at > end))
+                # The service filtered validFrom <= as_of on the stored value; from_record may have
+                # moved a guessed year to the day the claim was said, after as_of.
+                late = not dated and as_of and c.valid_from and c.valid_from > as_of
+                if (
+                    late
+                    or c.status == "replaced"
+                    or (dated and ((start and c.occurred_at < start) or (end and c.occurred_at > end)))
                 ):
                     continue
                 by_id.setdefault(c.id, c)

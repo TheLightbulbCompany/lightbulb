@@ -154,6 +154,40 @@ def test_from_record_mirrored_entry_takes_the_entry_branch_by_log_kind():
     assert old.kind == "entry"
 
 
+def _claim(text, said, valid_from, kind="claim"):
+    return from_record(
+        {
+            "memoryRecordId": "r",
+            "content": {"text": text},
+            "createdAt": said,
+            "metadata": {"kind": {"stringValue": kind}, "validFrom": {"numberValue": valid_from.timestamp()}},
+        },
+        "claim",
+    )
+
+
+def test_from_record_replaces_a_guessed_year_with_the_day_it_was_said():
+    # Prod, 30 Oct 2026: the extraction model wrote 2024 for claims said in 2026, naming no date.
+    said = datetime(2026, 10, 30, 14, tzinfo=UTC)
+    text = "Prasiddha: Prasiddha requested a live memory test of deploy window search."
+    assert _claim(text, said, datetime(2024, 10, 30, tzinfo=UTC)).valid_from == said
+    assert _claim(text, said, datetime(2025, 10, 30, tzinfo=UTC)).valid_from == said  # a year off
+
+
+def test_from_record_keeps_a_valid_from_the_text_dates_or_that_is_recent():
+    said = datetime(2026, 10, 30, tzinfo=UTC)
+    old = datetime(2024, 5, 1, tzinfo=UTC)
+    # The text names the old year: dated history, kept.
+    dated = "Ann: Acme renewal date: 2024-06-01 (since 2024-05-01; was Acme renewal date: 2024-03-01, Ann, until 2024-05-01)"
+    assert _claim(dated, said, old).valid_from == old
+    assert _claim("Ann: Acme founded: March 2023", said, datetime(2023, 3, 1, tzinfo=UTC)).valid_from.year == 2023
+    # Within the year: the model's date, kept (a change said last month).
+    recent = datetime(2026, 9, 2, tzinfo=UTC)
+    assert _claim("Ann: db version: 16", said, recent).valid_from == recent
+    # A mirrored log entry's validFrom is the log's own when, not the model's: never rewritten.
+    assert _claim("Redis: 3 nodes", said, old, kind="entry").valid_from == old
+
+
 def test_excerpt_is_the_matched_800_character_window():
     from core.services.memory_stages import excerpt
 

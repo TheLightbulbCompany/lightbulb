@@ -1,5 +1,6 @@
 "use client";
 
+import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 
 import { useApi } from "@/lib/api";
@@ -10,8 +11,8 @@ export type AppRow = {
   name: string;
   room_id: string;
   room_name?: string;
-  state: string;
-  open_to: "room" | "workspace" | "owner" | string;
+  state: "awaiting_approval" | "provisioning" | "building" | "ready" | "failed" | "destroyed";
+  open_to: "room" | "workspace" | "invited" | "public";
   budget_usd: number;
   preview_url: string | null;
   live_url: string | null;
@@ -29,9 +30,10 @@ type AppsResponse = { apps: AppRow[] };
 /** The workspace's apps (member routes). Refreshes every 15 s while any app is building. */
 export function useApps() {
   const api = useApi();
+  const { isLoaded, userId, orgId } = useAuth();
   const { data, error, isLoading, mutate } = useSWR<AppsResponse>(
-    "/apps",
-    (path: string) => api.get(path) as Promise<AppsResponse>,
+    isLoaded && userId ? ["/apps", `${userId}:${orgId ?? userId}`] : null,
+    ([path]: [string, string]) => api.get(path) as Promise<AppsResponse>,
     { refreshInterval: (latest) => (latest?.apps.some((a) => a.state === "building") ? 15_000 : 0) },
   );
 
@@ -53,6 +55,39 @@ export function useApps() {
     }
   };
 
+  const invite = async (appId: string, emails: string[]): Promise<void> => {
+    try {
+      await api.post(`/apps/${encodeURIComponent(appId)}/invites`, { emails });
+    } catch (err) {
+      notifyApiError(err, "The invites could not be sent. Try again.");
+      throw err;
+    }
+  };
+
+  const remove = async (appId: string, confirmName: string): Promise<void> => {
+    try {
+      await api.del(`/apps/${encodeURIComponent(appId)}`, undefined, { confirm_name: confirmName });
+      await mutate();
+    } catch (err) {
+      notifyApiError(err, "The app could not be removed. Try again.");
+      throw err;
+    }
+  };
+
+  /** Console link for the app's live database (prod Neon, else the first Neon resource); null when it has none. */
+  const databaseLink = async (app: AppRow): Promise<string | null> => {
+    const neon = (app.resources ?? []).filter((r) => r.provider === "neon" && r.resource_id);
+    const target = neon.find((r) => r.environment === "prod") ?? neon[0];
+    if (!target) return null;
+    try {
+      const res = await api.post(`/company/provisioning/resources/neon/${encodeURIComponent(target.resource_id!)}/dashboard-link`, {}) as { url?: string | null };
+      return res.url ?? null;
+    } catch (err) {
+      notifyApiError(err, "The database console could not be opened. Try again.");
+      throw err;
+    }
+  };
+
   return {
     apps: data?.apps ?? [],
     loading: isLoading,
@@ -60,5 +95,8 @@ export function useApps() {
     refresh: () => { void mutate(); },
     open,
     update,
+    invite,
+    remove,
+    databaseLink,
   };
 }

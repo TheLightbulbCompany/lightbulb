@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useApps, type AppRow } from "@/hooks/useApps";
+import { AppSettings } from "./AppSettings";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import "./canvas.css";
 
@@ -18,7 +19,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   // State is tagged with its app so a render right after a switch never shows the previous app's pass.
   const url = pass?.id === app.app_id ? pass.url : null;
   const refused = refusal?.id === app.app_id ? refusal.msg : null;
-  const [settingsOpen, setSettingsOpen] = useState(false); // Task 4b renders AppSettings from this
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,6 +58,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
       {isAdmin && <button type="button" className="app-view__btn" aria-expanded={settingsOpen}
         onClick={() => setSettingsOpen((v) => !v)}>Settings</button>}
     </header>
+    {settingsOpen && <AppSettings app={app} onClose={() => setSettingsOpen(false)} onRemoved={onBack} />}
     {tabError && <p role="alert" className="canvas__notice">{tabError}</p>}
     {refused ? <p role="alert" className="canvas__notice">{refused}</p>
       : url ? <iframe key={app.app_id} title={app.name} src={url} className="canvas__frame"

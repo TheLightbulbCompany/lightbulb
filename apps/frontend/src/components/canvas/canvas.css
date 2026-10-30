@@ -22,3 +22,11 @@ button.app-item__row:focus-visible { outline: 2px solid var(--fg); outline-offse
 .app-view__btn:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; border-radius: 4px; }
 .app-view__bar .app-view__btn:first-child { margin-right: auto; }
 .canvas__frame { flex: 1; width: 100%; min-height: 0; border: 0; background: var(--plane, transparent); }
+
+/* App settings: a plain stack above the frame. */
+.app-settings { display: flex; flex-direction: column; gap: 16px; padding: 16px; border-bottom: 1px solid var(--plane-edge); font-size: var(--text-ui); overflow-y: auto; max-height: 60%; }
+.app-settings__head { display: flex; justify-content: space-between; align-items: center; }
+.app-settings__group { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.app-settings__row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.app-settings input[type="number"], .app-settings input:not([type]), .app-settings textarea { max-width: 100%; padding: 4px 8px; border: 1px solid var(--plane-edge); background: transparent; color: var(--fg); }
+.app-settings button:disabled { opacity: 0.55; cursor: not-allowed; }

@@ -11,7 +11,7 @@ import re
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories.apps_repo import NameTaken
@@ -34,6 +34,8 @@ _RETRY = "try again; if it keeps failing, report it"
 _STATUS = {
     "app_not_found": 404,
     "app_destroyed": 404,
+    "invite_invalid": 404,
+    "not_a_member": 403,
     "room_not_found": 404,
     "source_not_found": 404,
     "version_not_found": 404,
@@ -223,6 +225,12 @@ async def issuer():
     return {"keys": [network_proof.public_key()]}
 
 
+@router.get("/invite/{token}")
+async def swap_invite(token: str):
+    """Public: an invite link's one-time token for a 15-minute pass to its app (R41: ``token``)."""
+    return {"token": await _run(svc.swap_invite(token))}
+
+
 @router.get("")
 @router.get("/", include_in_schema=False)
 async def list_apps(auth: Annotated[AuthContext, Depends(get_current_user)]):
@@ -235,6 +243,10 @@ class SettingsBody(BaseModel):
     budget_usd: int | None = Field(default=None, ge=0, strict=True)
 
 
+class InvitesBody(BaseModel):
+    emails: list[EmailStr] = Field(min_length=1, max_length=20)
+
+
 class RemoveBody(BaseModel):
     confirm_name: str = Field(max_length=63)
 
@@ -242,6 +254,24 @@ class RemoveBody(BaseModel):
 @router.patch("/{app_id}")
 async def update_settings(app_id: str, body: SettingsBody, owner_id: Owner):
     return await _run(svc.update_settings(owner_id, app_id, open_to=body.open_to, budget_usd=body.budget_usd))
+
+
+@router.post("/{app_id}/open")
+async def open_app(
+    app_id: str,
+    auth: Annotated[AuthContext, Depends(get_current_user)],
+    target: Literal["live", "preview"] = "live",
+):
+    owner_id = resolve_owner_id(auth)
+    return {"url": await _run(svc.open_app(owner_id, app_id, auth=auth, target=target))}
+
+
+@router.post("/{app_id}/invites")
+async def invite(
+    app_id: str, body: InvitesBody, owner_id: Owner, auth: Annotated[AuthContext, Depends(get_current_user)]
+):
+    emails = list(dict.fromkeys(str(e).lower() for e in body.emails))
+    return await _run(svc.invite(owner_id, app_id, emails=emails, user_id=auth.user_id))
 
 
 @router.delete("/{app_id}")

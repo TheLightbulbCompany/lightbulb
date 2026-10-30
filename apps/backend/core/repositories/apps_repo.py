@@ -240,3 +240,47 @@ async def delete(app_id: str) -> None:
             {"Delete": {"TableName": table.table_name, "Key": {"app_id": _guard_id(app["name"])}}},
         ],
     )
+
+
+# --- invites: one item per link, keyed by the token's sha256 (the token itself is never stored) ---
+# The owner sits under ``invite_owner_id`` and there is no ``name``, so neither GSI holds an invite.
+
+
+async def put_invite(
+    token_hash: str, *, target_app_id: str, invite_owner_id: str, email: str, expires_at: str, created_by: str
+) -> None:
+    await run_in_thread(
+        _table().put_item,
+        Item={
+            "app_id": f"INVITE#{token_hash}",
+            "kind": "invite",
+            "target_app_id": target_app_id,
+            "invite_owner_id": invite_owner_id,
+            "email": email,
+            "expires_at": expires_at,
+            "used_at": None,
+            "created_by": created_by,
+            "created_at": utc_now_iso(),
+        },
+    )
+
+
+async def claim_invite(token_hash: str, now: str) -> dict | None:
+    """Mark the invite used, in one conditional write: ``None`` when it was never issued, is used
+    (even by a concurrent claim) or expired at ``now`` (ISO, same format as ``expires_at``)."""
+    try:
+        resp = await run_in_thread(
+            _table().update_item,
+            Key={"app_id": f"INVITE#{token_hash}"},
+            UpdateExpression="SET used_at = :now",
+            ConditionExpression="#k = :invite AND expires_at > :now AND "
+            "(attribute_not_exists(used_at) OR attribute_type(used_at, :null_t))",
+            ExpressionAttributeNames={"#k": "kind"},
+            ExpressionAttributeValues={":now": now, ":invite": "invite", ":null_t": "NULL"},
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return None
+        raise
+    return resp["Attributes"]

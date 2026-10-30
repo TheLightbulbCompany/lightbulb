@@ -19,7 +19,8 @@ import logging
 import re
 import secrets as _random
 from dataclasses import dataclass
-from typing import Literal, NotRequired, TypedDict
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 import httpx
 
@@ -28,13 +29,16 @@ from core.dynamodb import plain, utc_now_iso
 from core.repositories import apps_repo, messaging_repo
 from core.repositories import provisioning_workflow_repo as wf_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import apps_db, apps_dns, apps_source, messaging, network_proof, provisioning_workflow
+from core.services import apps_db, apps_dns, apps_source, email_service, messaging, network_proof, provisioning_workflow
 from core.services import stripe_provisioning as api
 from core.services import vercel_client as vercel
 from core.services.credentials import integration_secret_store
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
+
+if TYPE_CHECKING:
+    from core.auth import AuthContext
 
 logger = logging.getLogger(__name__)
 
@@ -831,3 +835,95 @@ async def errors(owner_id: str, app_id: str) -> dict:
         ]
 
     return {"client": clean(client), "server": clean(server)}
+
+
+# --- opening an app (Task 14) -------------------------------------------------------------------
+
+INVITE_LIFE = timedelta(days=14)
+
+
+async def open_app(owner_id: str, app_id: str, *, auth: AuthContext, target: str = "live") -> str:
+    """The URL that opens the app for this member: with a fresh 15-minute pass, except a public app
+    (its door is off). Membership is checked now, at mint time, never cached."""
+    app = await _owned(owner_id, app_id)
+    url = app.get("live_url") if target == "live" else app.get("preview_url")
+    if not url:
+        if target == "live":
+            raise AppsRefused("not_live", "The app is not published yet.", "publish it first")
+        raise AppsRefused("not_ready", "The app has no preview yet.", "wait for the preview build")
+    url = url.rstrip("/")
+    if app["open_to"] in ("room", "invited"):  # R35: invited apps still open for their room
+        try:
+            await messaging.require_room_member(owner_id, auth.user_id, app["room_id"])
+        except messaging.ApiProblem:
+            # The room is not named: Canvas never names a room the caller is not in.
+            raise AppsRefused(
+                "not_a_member", "Only members of the app's room can open it.", "ask in the app's room"
+            ) from None
+    # "workspace": the route's get_current_user + resolve_owner_id already made the caller an org member.
+    await _patch(app, {"last_opened_at": utc_now_iso()})
+    if app["open_to"] == "public":
+        return url
+    name = await messaging.human_display_name(auth.user_id)
+    email = auth.email or ""
+    if name == auth.user_id and email:
+        name = email
+    token = network_proof.mint_app_pass(
+        auth.user_id, name=name, email=email, ws=owner_id, room=app["room_id"], app=app["name"]
+    )
+    return f"{url}/_lightbulb/session#token={token}"
+
+
+async def invite(owner_id: str, app_id: str, *, emails: list[str], user_id: str) -> dict:
+    """One single-use, 14-day link per email, to this app only. A room or workspace app becomes
+    "invited" (a public one stays public); ``update_settings`` re-pushes LIGHTBULB_OPEN_TO."""
+    app = await _owned(owner_id, app_id)
+    base = (app.get("live_url") or app.get("preview_url") or "").rstrip("/")
+    if not base:
+        raise AppsRefused("not_ready", "The app has no address yet.", "wait for the preview build")
+    if app["open_to"] in ("room", "workspace"):
+        await update_settings(owner_id, app_id, open_to="invited")
+        app["open_to"] = "invited"
+    expires_at = (datetime.now(UTC) + INVITE_LIFE).isoformat()
+    for email in emails:
+        token = _random.token_urlsafe(32)
+        await apps_repo.put_invite(
+            hashlib.sha256(token.encode()).hexdigest(),
+            target_app_id=app_id,
+            invite_owner_id=owner_id,
+            email=email,
+            expires_at=expires_at,
+            created_by=user_id,
+        )
+        link = f"{base}/_lightbulb/invite#t={token}"
+        # send_email never raises; a failed send still counts (the admin can invite again).
+        await email_service.send_email(
+            to=email,
+            subject=f"You're invited to {app['name']}",
+            html=f'<p>You\'re invited to open {app["name"]}.</p><p><a href="{link}">Open {app["name"]}</a></p>'
+            "<p>The link works once and expires in 14 days.</p>",
+            text=f"You're invited to open {app['name']}.\n\n{link}\n\nThe link works once and expires in 14 days.",
+            from_addr=settings.EMAIL_FROM_WELCOME,
+            kind="apps_invite",
+        )
+    return {"invited": len(emails), "open_to": app["open_to"]}
+
+
+async def swap_invite(token: str) -> str:
+    """An invite link's token, once, for a pass to its app. Every failure is the same refusal."""
+    refused = AppsRefused("invite_invalid", "That invite link is not valid.", "ask whoever invited you for a new link")
+    if not token or len(token) > 128:
+        raise refused
+    inv = await apps_repo.claim_invite(hashlib.sha256(token.encode()).hexdigest(), utc_now_iso())
+    app = await apps_repo.get(inv["target_app_id"], consistent_read=True) if inv else None
+    if (
+        not app
+        or app.get("owner_id") != inv["invite_owner_id"]
+        or app.get("state") == "destroyed"
+        or app.get("open_to") != "invited"
+    ):
+        raise refused
+    email = inv["email"]
+    return network_proof.mint_app_pass(
+        f"invite:{email}", name=email, email=email, ws=inv["invite_owner_id"], room="", app=app["name"]
+    )

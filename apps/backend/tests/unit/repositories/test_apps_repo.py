@@ -153,3 +153,28 @@ async def test_list_for_owner_only_mine_and_delete_frees_name(apps_table):
     assert await apps_repo.get(mine["app_id"]) is None
     assert apps_table.scan()["Count"] == 2  # other app + its guard only
     await _new(apps_repo, owner="org_b", name="crew-schedule")
+
+
+@pytest.mark.asyncio
+async def test_invite_is_claimed_once_expires_and_never_lists(apps_table):
+    import asyncio
+
+    from core.repositories import apps_repo
+
+    app = await _new(apps_repo)
+    fields = {"target_app_id": app["app_id"], "invite_owner_id": "org_a", "email": "a@x.co", "created_by": "user_1"}
+    await apps_repo.put_invite("h1", **fields, expires_at="2026-11-13T00:00:00+00:00")
+    await apps_repo.put_invite("h2", **fields, expires_at="2026-10-01T00:00:00+00:00")
+    # invites carry no owner_id/name, so neither GSI (owner-index, name-index) ever holds them
+    assert [a["app_id"] for a in await apps_repo.list_for_owner("org_a")] == [app["app_id"]]
+    item = apps_table.get_item(Key={"app_id": "INVITE#h1"})["Item"]
+    assert "owner_id" not in item and "name" not in item and item["kind"] == "invite"
+
+    now = "2026-10-30T00:00:00+00:00"
+    won = await asyncio.gather(apps_repo.claim_invite("h1", now), apps_repo.claim_invite("h1", now))
+    assert sorted(w is None for w in won) == [False, True]
+    assert next(w for w in won if w)["email"] == "a@x.co"
+    assert await apps_repo.claim_invite("h1", now) is None  # used
+    assert await apps_repo.claim_invite("h2", now) is None  # expired
+    assert await apps_repo.claim_invite("nope", now) is None  # never issued
+    assert "used_at" not in apps_table.get_item(Key={"app_id": "INVITE#nope"}).get("Item", {})

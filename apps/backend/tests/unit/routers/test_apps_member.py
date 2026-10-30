@@ -1,5 +1,6 @@
 """Member routes (/api/v1/apps): Canvas's list, the admin's settings and typed-name removal, the issuer key."""
 
+import json
 import os
 from unittest.mock import AsyncMock
 
@@ -191,3 +192,212 @@ def test_issuer_is_public_and_returns_kid(monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"keys": [network_proof.public_key()]}
     assert r.json()["keys"][0]["kid"]
+
+
+# --- open (Task 14) -----------------------------------------------------------------------------
+
+ROOM = "0b6f8d4e-1c2a-4f3b-9d5e-7a8b9c0d1e2f"
+
+
+def _claims(url: str) -> dict:
+
+    token = url.split("#token=", 1)[1]
+    return json.loads(network_proof._unb64(token.split(".")[1]))
+
+
+@pytest.fixture
+def opening(monkeypatch):
+    """One room app of org_a with both addresses, a real membership check over fake room rows."""
+    monkeypatch.setattr(settings, "NETWORK_PROOF_KEY", "proof-key")
+    record = _record(
+        "app_1", "crew", ROOM, "room", live_url="https://crew.apps.test", preview_url="https://crew-preview.apps.test"
+    )
+    members = {(ROOM, "user_member"): {"role": "member"}}
+    monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(side_effect=lambda a, **_: record if a == "app_1" else None))
+    patch = AsyncMock()
+    monkeypatch.setattr(svc.apps_repo, "patch", patch)
+    monkeypatch.setattr(
+        svc.messaging_repo, "get_room", AsyncMock(return_value={"roomId": ROOM, "ownerId": "org_a", "name": "Ops"})
+    )
+    monkeypatch.setattr(svc.messaging_repo, "get_member", AsyncMock(side_effect=lambda r, k, u: members.get((r, u))))
+    monkeypatch.setattr(svc.messaging, "human_display_name", AsyncMock(return_value="Mia"))
+    return record, members, patch
+
+
+def test_open_refuses_after_leaving_the_room(member, opening):
+    record, members, _ = opening
+    r = member.post(f"{BASE}/app_1/open")
+    assert r.status_code == 200
+    url = r.json()["url"]
+    assert url.startswith("https://crew.apps.test/_lightbulb/session#token=")
+    claims = _claims(url)
+    assert claims["exp"] - claims["iat"] == 900
+    assert {k: claims[k] for k in ("sub", "name", "email", "ws", "room", "app")} == {
+        "sub": "user_member",
+        "name": "Mia",
+        "email": "x@example.com",
+        "ws": "org_a",
+        "room": ROOM,
+        "app": "crew",  # R42: the NAME, which the door compares to LIGHTBULB_APP
+    }
+
+    del members[(ROOM, "user_member")]
+    r = member.post(f"{BASE}/app_1/open")
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_a_member"
+    record["open_to"] = "invited"  # R35: invited still means the room, plus outsiders by link
+    assert member.post(f"{BASE}/app_1/open").status_code == 403
+    record["open_to"] = "workspace"
+    assert member.post(f"{BASE}/app_1/open").status_code == 200
+
+
+def test_open_public_mode_returns_plain_url(member, opening, monkeypatch):
+    record, _, _ = opening
+    record["open_to"] = "public"
+    monkeypatch.setattr(svc.messaging_repo, "get_member", AsyncMock(side_effect=AssertionError("no check")))
+    r = member.post(f"{BASE}/app_1/open")
+    assert r.status_code == 200 and r.json() == {"url": "https://crew.apps.test"}
+
+
+def test_open_sets_last_opened_at(member, opening):
+    record, _, patch = opening
+    r = member.post(f"{BASE}/app_1/open?target=preview")
+    assert r.status_code == 200
+    assert r.json()["url"].startswith("https://crew-preview.apps.test/_lightbulb/session#token=")
+    assert patch.await_args.args[0] == "app_1" and set(patch.await_args.args[1]) == {"last_opened_at"}
+
+    record["live_url"] = None
+    r = member.post(f"{BASE}/app_1/open")
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "not_live"
+    assert member.post(f"{BASE}/app_1/open?target=other").status_code == 422
+    assert member.post(f"{BASE}/app_2/open").status_code == 404
+    record["owner_id"] = "org_b"
+    assert member.post(f"{BASE}/app_1/open?target=preview").status_code == 404
+
+
+# --- invites (Task 14) --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def invites(monkeypatch):
+    """A moto apps table holding two apps of org_a; mail is captured, provider reads stubbed."""
+    import boto3
+    from moto import mock_aws
+    from unittest.mock import patch as mpatch
+
+    monkeypatch.setattr(settings, "NETWORK_PROOF_KEY", "proof-key")
+    with mock_aws():
+        resource = boto3.resource("dynamodb", region_name="us-east-1")
+        table = resource.create_table(
+            TableName="test-apps",
+            KeySchema=[{"AttributeName": "app_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": n, "AttributeType": "S"} for n in ("app_id", "owner_id", "name")],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "owner-index",
+                    "KeySchema": [
+                        {"AttributeName": "owner_id", "KeyType": "HASH"},
+                        {"AttributeName": "name", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        for app_id, name in (("app_a", "alpha"), ("app_b", "beta")):
+            table.put_item(Item=_record(app_id, name, ROOM, "room", live_url=f"https://{name}.apps.test"))
+        sent = []
+
+        async def send(**kw):
+            sent.append(kw)
+            return "msg_1"
+
+        monkeypatch.setattr(svc.email_service, "send_email", send)
+        monkeypatch.setattr(svc, "status", AsyncMock(return_value={}))
+        with mpatch("core.dynamodb._table_prefix", "test-"), mpatch("core.dynamodb._dynamodb_resource", resource):
+            yield table, sent
+
+
+def _token(mail: dict) -> str:
+    return mail["text"].split("/_lightbulb/invite#t=", 1)[1].split()[0]
+
+
+def test_invites_require_admin_and_set_open_to_invited(member, invites):
+    table, sent = invites
+    assert member.post(f"{BASE}/app_a/invites", json={"emails": ["a@x.co"]}).status_code == 403
+
+    admin = _as("admin")
+    for bad in ({"emails": []}, {"emails": ["not-an-email"]}, {"emails": [f"u{i}@x.co" for i in range(21)]}, {}):
+        assert admin.post(f"{BASE}/app_a/invites", json=bad).status_code == 422, bad
+    r = admin.post(f"{BASE}/app_a/invites", json={"emails": ["Bo@X.co", "cy@x.co"]})
+    assert r.status_code == 200 and r.json() == {"invited": 2, "open_to": "invited"}
+    assert table.get_item(Key={"app_id": "app_a"})["Item"]["open_to"] == "invited"
+    assert [m["to"] for m in sent] == ["bo@x.co", "cy@x.co"]
+    assert all(m["kind"] == "apps_invite" and "https://alpha.apps.test/_lightbulb/invite#t=" in m["html"] for m in sent)
+    # only the token's hash is stored
+    stored = [i for i in table.scan()["Items"] if i["app_id"].startswith("INVITE#")]
+    assert len(stored) == 2 and all(_token(m) not in str(stored) for m in sent)
+    assert admin.post(f"{BASE}/app_zzz/invites", json={"emails": ["a@x.co"]}).status_code == 404
+
+    table.update_item(
+        Key={"app_id": "app_b"}, UpdateExpression="SET open_to = :p", ExpressionAttributeValues={":p": "public"}
+    )
+    r = admin.post(f"{BASE}/app_b/invites", json={"emails": ["a@x.co"]})
+    assert r.json() == {"invited": 1, "open_to": "public"}  # public is left alone
+
+
+def test_invite_token_works_once_and_expires(invites):
+    table, sent = invites
+    admin = _as("admin")
+    admin.post(f"{BASE}/app_a/invites", json={"emails": ["bo@x.co", "cy@x.co"]})
+    app.dependency_overrides.clear()
+    anyone = TestClient(app)
+    first, second = (_token(m) for m in sent)
+
+    r = anyone.get(f"{BASE}/invite/{first}")
+    assert r.status_code == 200
+    claims = json.loads(network_proof._unb64(r.json()["token"].split(".")[1]))
+    assert {k: claims[k] for k in ("sub", "name", "email", "ws", "room", "app")} == {
+        "sub": "invite:bo@x.co",
+        "name": "bo@x.co",
+        "email": "bo@x.co",
+        "ws": "org_a",
+        "room": "",
+        "app": "alpha",
+    }
+    assert claims["exp"] - claims["iat"] == 900
+    assert network_proof.verify(r.json()["token"], "invite:bo@x.co") is None
+
+    used = anyone.get(f"{BASE}/invite/{first}")
+    for item in table.scan()["Items"]:
+        if item["app_id"].startswith("INVITE#") and item["email"] == "cy@x.co":
+            table.update_item(
+                Key={"app_id": item["app_id"]},
+                UpdateExpression="SET expires_at = :e",
+                ExpressionAttributeValues={":e": "2020-01-01T00:00:00+00:00"},
+            )
+    expired = anyone.get(f"{BASE}/invite/{second}")
+    invalid = anyone.get(f"{BASE}/invite/{'x' * 43}")
+    assert used.status_code == expired.status_code == invalid.status_code == 404
+    assert used.json() == expired.json() == invalid.json()
+    assert used.json()["detail"]["code"] == "invite_invalid"
+
+
+def test_invite_pass_is_scoped_to_one_app(invites):
+    table, sent = invites
+    admin = _as("admin")
+    admin.post(f"{BASE}/app_a/invites", json={"emails": ["bo@x.co"]})
+    admin.post(f"{BASE}/app_b/invites", json={"emails": ["bo@x.co"]})
+    app.dependency_overrides.clear()
+    anyone = TestClient(app)
+    a, b = (anyone.get(f"{BASE}/invite/{_token(m)}").json()["token"] for m in sent)
+    assert json.loads(network_proof._unb64(a.split(".")[1]))["app"] == "alpha"
+    assert json.loads(network_proof._unb64(b.split(".")[1]))["app"] == "beta"
+
+    # an app taken off invites (or removed) stops honouring its links
+    admin = _as("admin")
+    admin.post(f"{BASE}/app_a/invites", json={"emails": ["dee@x.co"]})
+    table.update_item(
+        Key={"app_id": "app_a"}, UpdateExpression="SET open_to = :p", ExpressionAttributeValues={":p": "room"}
+    )
+    app.dependency_overrides.clear()
+    assert TestClient(app).get(f"{BASE}/invite/{_token(sent[-1])}").status_code == 404

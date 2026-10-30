@@ -414,6 +414,21 @@ async def test_preview_reseeds_after_a_schema_change(world):
     assert world.reset.await_count == 2 and len(world.vercel.created()) == 3
 
 
+async def test_publish_waits_for_the_live_database_secret(world):
+    """An active row whose secret has not landed: the production build would run its migrations
+    without DATABASE_URL and fail. Refuse with a reason instead; publish once it is there."""
+    src, _, _ = await _ready_preview(world)
+    key = (OWNER, f"apps/{src['app_id']}/neon/prod")
+    blob = world.secrets.pop(key)
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    assert (e.value.code, e.value.next) == ("not_ready", "try again in a minute")
+    assert not [d for d in world.vercel.created() if d.get("target") == "production"]
+    world.secrets[key] = blob
+    pub = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    assert pub["state"] == "building"
+
+
 async def test_publish_deploys_and_adds_domain_once(world):
     src, _, _ = await _ready_preview(world)
     pub = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)

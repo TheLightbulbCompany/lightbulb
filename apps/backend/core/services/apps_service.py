@@ -792,6 +792,11 @@ async def publish(
         return await _result(app, rows, transient, cost_cents)
     if any((rows.get(r) or {}).get("state") != "active" for r in _RESOURCES):
         raise AppsRefused("not_ready", "The app's services are not all set up yet.", "run up and wait for the owner")
+    # The production build runs the migrations, so it needs the live database's address in its env.
+    # A row can be active before its secret lands; publishing then builds without DATABASE_URL and
+    # fails with "connection url … required" (e2e, 30 Oct 2026). Wait for the secret instead.
+    if not await _secret(app, rows, "neon", "prod", "connection_string"):
+        raise AppsRefused("not_ready", "The live database is still being set up.", "try again in a minute")
     creds = await _secret(app, rows, "vercel", "prod", "token")
     files = await _files(owner_id, app_id, source_id)
     await _check_destructive(app, files, approved_destructive)

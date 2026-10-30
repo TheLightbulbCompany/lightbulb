@@ -334,3 +334,8 @@ def test_open_tasks_template_is_the_boards_real_open_count():
     filled = runner.fill_board_counts(step, rows)
     assert filled["expect"] == {"must_reference_any": ["2"], "judge": "states 2"}
     assert step["expect"]["judge"] == "states {open_tasks}"  # the scenario itself is not mutated
+
+
+def test_a_scenario_that_errors_is_a_row_in_the_summary_not_the_end_of_the_run():
+    table = runner.summarize([{"id": "G1-x", "error": "POST /teams/issues -> 422", "steps": []}])
+    assert "| G1-x | – | – | – | ERROR POST /teams/issues -> 422 | – |" in table

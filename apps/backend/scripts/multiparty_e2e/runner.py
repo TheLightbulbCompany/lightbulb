@@ -478,6 +478,8 @@ def split_at(replies: list[dict], seq: int) -> tuple[list[dict], list[dict]]:
 def summarize(results: list[dict]) -> str:
     out = ["| scenario | step | expected | got | checks | judge |", "|---|---|---|---|---|---|"]
     for res in results:
+        if res.get("error"):
+            out.append(f"| {res['id']} | – | – | – | ERROR {res['error']} | – |")
         for s in res["steps"]:
             if "checks" not in s:
                 continue
@@ -532,8 +534,11 @@ def main(argv=None):
     results = []
     for scn in scns:
         print(f"== {scn['id']}", file=sys.stderr)
-        res = play(scn, apis, ids, key, args.keep)
-        results.append(annotate(res, scn))
+        try:
+            res = annotate(play(scn, apis, ids, key, args.keep), scn)
+        except (RuntimeError, httpx.HTTPError) as exc:  # one broken case is a row, not the end of the run
+            res = {"id": scn["id"], "error": str(exc)[:200], "steps": []}
+        results.append(res)
     outdir = HERE / "results"
     outdir.mkdir(exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")

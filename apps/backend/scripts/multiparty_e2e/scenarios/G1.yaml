@@ -16,27 +16,27 @@
     - title: Open task 1
       status: todo
     - title: Open task 2
-      status: in_progress
+      status: todo
     - title: Open task 3
       status: todo
     - title: Open task 4
-      status: in_progress
+      status: todo
     - title: Open task 5
       status: todo
     - title: Open task 6
-      status: in_progress
+      status: todo
     - title: Open task 7
       status: todo
     - title: Open task 8
-      status: in_progress
+      status: todo
     - title: Open task 9
       status: todo
     - title: Open task 10
-      status: in_progress
+      status: todo
     - title: Open task 11
       status: todo
     - title: Open task 12
-      status: in_progress
+      status: todo
   steps:
   - as: maya
     say: '@{ceo} How many open tasks do we have right now?'

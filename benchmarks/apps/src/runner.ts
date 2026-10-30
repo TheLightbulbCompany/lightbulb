@@ -97,8 +97,9 @@ export async function runTask(task: Task, adapter: BuilderAdapter, opts: { run: 
             else {
               rec.minutesToRunnable = mins();
               rec.journeys = await (deps.journeys ?? playwrightJourneys)(task, s.url);
-              rec.probes = await deps.probes(s.url, workdir, task.probes, s.databaseUrl, task);
+              // judge before probes: the sql-injection probe may break a vulnerable app
               const j = await deps.judge(s.url, workdir, task);
+              rec.probes = await deps.probes(s.url, workdir, task.probes, s.databaseUrl, task);
               rec.judge = Number.isNaN(j) ? 0 : j; // no judge score counts as 0 and is flagged
               if (Number.isNaN(j)) rec.judgeFailed = true;
               rec.score = 0.6 * rate(rec.journeys) + 0.25 * rate(rec.probes) + 0.15 * rec.judge;

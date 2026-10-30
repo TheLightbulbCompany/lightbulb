@@ -59,6 +59,9 @@ class Vercel:
         self.alias_fails = False
         self.promote_fails = False
         self.refused = False  # Vercel no longer accepts the token: 403 on everything
+        self.branch_refused = False  # a project with no Git link might refuse gitBranch; the docs don't say
+        self.domains: dict[str, str | None] = {}  # project domain -> gitBranch
+        self.aliases: dict[str, str] = {}  # host -> deployment it serves
 
     def paths(self, method=None):
         return [(r.method, r.url.path) for r in self.calls if method in (None, r.method)]
@@ -71,6 +74,12 @@ class Vercel:
 
     def finish(self, dep_id, state="READY", error=None):
         self.deployments[dep_id].update(readyState=state, errorMessage=error)
+        if state == "READY" and self.deployments[dep_id].get("target") == "production":
+            self.serve_production(dep_id)  # happens on Vercel's side, before anyone reads
+
+    def serve_production(self, dep_id):
+        """What Vercel does for a production deployment: every project domain without a branch moves to it."""
+        self.aliases.update({host: dep_id for host, branch in self.domains.items() if branch is None})
 
     def handler(self, req: httpx.Request) -> httpx.Response:
         self.calls.append(req)
@@ -79,20 +88,54 @@ class Vercel:
             return httpx.Response(403, json=DEAD_403)
         if p == "/v13/deployments":
             dep_id = f"dpl_{len(self.deployments) + 1}"
-            self.deployments[dep_id] = {"readyState": "QUEUED", "url": f"{dep_id}.vercel.app"}
+            target = json.loads(req.content).get("target")
+            self.deployments[dep_id] = {"readyState": "QUEUED", "url": f"{dep_id}.vercel.app", "target": target}
             return httpx.Response(200, json={"id": dep_id, "url": f"{dep_id}.vercel.app", "readyState": "QUEUED"})
         if p.startswith("/v13/deployments/"):
             return httpx.Response(200, json=self.deployments[p.rsplit("/", 1)[1]])
         if p.endswith("/domains") and req.method == "POST":
-            return httpx.Response(200, json={"verified": False, "verification": [{"type": "TXT"}]})
+            body = json.loads(req.content)
+            if self.branch_refused and body.get("gitBranch"):
+                return httpx.Response(400, json={"error": {"code": "bad_request", "message": "gitBranch"}})
+            self.domains[body["name"]] = body.get("gitBranch")
+            return httpx.Response(
+                200, json={"verified": False, "verification": [{"type": "TXT"}], "gitBranch": body.get("gitBranch")}
+            )
+        if "/domains/" in p and p.startswith("/v9/projects/") and req.method == "GET":
+            name = p.rsplit("/", 1)[1]
+            if name not in self.domains:
+                return httpx.Response(404, json={"error": {"code": "not_found", "message": "n"}})
+            return httpx.Response(200, json={"verified": self.verified, "gitBranch": self.domains[name]})
+        if "/domains/" in p and p.startswith("/v9/projects/") and req.method == "PATCH":
+            if self.branch_refused:
+                return httpx.Response(400, json={"error": {"code": "bad_request", "message": "gitBranch"}})
+            branch = json.loads(req.content)["gitBranch"]
+            self.domains[p.rsplit("/", 1)[1]] = branch
+            return httpx.Response(200, json={"verified": True, "gitBranch": branch})
+        if p.startswith("/v4/aliases/"):
+            dep_id = self.aliases.get(p.rsplit("/", 1)[1])
+            if not dep_id:
+                return httpx.Response(404, json={"error": {"code": "not_found", "message": "n"}})
+            return httpx.Response(200, json={"deploymentId": dep_id})
         if p.startswith("/v6/domains/"):
             return httpx.Response(200, json={"recommendedCNAME": [{"value": "c.vercel-dns.com.", "rank": 1}]})
         if p.endswith("/verify"):
             return httpx.Response(200, json={"verified": self.verified})
         if "/promote/" in p:
+            if not self.promote_fails:
+                self.serve_production(p.rsplit("/", 1)[1])
             return httpx.Response(500 if self.promote_fails else 201, json={})
+        if "/rollback/" in p:
+            self.serve_production(p.rsplit("/", 1)[1])
+            return httpx.Response(201, json={})
         if p.endswith("/aliases"):
-            return httpx.Response(400 if self.alias_fails else 200, json={})
+            if self.alias_fails:
+                return httpx.Response(400, json={})
+            dep_id, host = p.split("/")[3], json.loads(req.content)["alias"]
+            if self.aliases.get(host) == dep_id:  # Vercel's documented answer for a repeat
+                return httpx.Response(409, json={"error": {"code": "alias_in_use", "message": "same deployment"}})
+            self.aliases[host] = dep_id
+            return httpx.Response(200, json={})
         if p.endswith("/files"):
             return httpx.Response(200, json={})
         if p.endswith("/events"):
@@ -1741,6 +1784,73 @@ def _dies_then_rotates(world, monkeypatch):
     world.vercel.refused = True
     world.vercel.calls.clear()
     return rot
+
+
+HOST = "crew-preview.apps.example.com"
+
+
+async def _preview_on_its_host(world):
+    world.vercel.verified = True
+    src, _, dep_id = await _ready_preview(world)
+    await svc.status(OWNER, src["app_id"])  # adds the domain and verifies it
+    await svc.status(OWNER, src["app_id"])  # aliases
+    return src, dep_id
+
+
+async def _release(world, src):
+    await _publish(src)
+    dep_id = f"dpl_{len(world.vercel.created())}"
+    world.vercel.finish(dep_id)
+    return dep_id
+
+
+async def test_a_publish_leaves_the_preview_host_on_the_preview(world):
+    src, preview = await _preview_on_its_host(world)
+    assert world.vercel.domains[HOST] == vercel_client.PREVIEW_BRANCH
+    assert world.vercel.aliases[HOST] == preview
+    await _release(world, src)
+    # Never held, not merely put back: this is before anything reads the record.
+    assert world.vercel.aliases[HOST] == preview
+    await svc.status(OWNER, src["app_id"])
+    assert world.vercel.aliases[HOST] == (await _rec(src))["preview"]["deployment_id"] == preview
+    assert (await _rec(src))["preview_alias_for"] == preview  # the repeat's 409 counted as done, no retry each read
+
+
+async def test_an_app_attached_before_the_branch_is_repaired_once_on_its_next_read(world):
+    src, preview = await _preview_on_its_host(world)
+    # workshop-signup in production: a plain project domain, taken by its first release.
+    world.vercel.domains[HOST] = None
+    rec = await _rec(src)
+    domain = {k: v for k, v in rec["preview_domain"].items() if k != "git_branch"}
+    await svc.apps_repo.patch(src["app_id"], {"preview_domain": domain})
+    world.vercel.aliases[HOST] = "dpl_live"
+
+    await svc.status(OWNER, src["app_id"])
+    assert world.vercel.domains[HOST] == vercel_client.PREVIEW_BRANCH
+    assert world.vercel.aliases[HOST] == preview
+
+    calls = len(world.vercel.calls)
+    await svc.status(OWNER, src["app_id"])
+    later = [(r.method, r.url.path) for r in world.vercel.calls[calls:]]
+    assert not [c for c in later if "/domains/" in c[1] or c[1].endswith("/aliases")]
+
+
+async def test_if_vercel_refuses_the_branch_the_host_is_put_back_after_each_release(world):
+    world.vercel.branch_refused = True
+    src, preview = await _preview_on_its_host(world)
+    assert world.vercel.domains[HOST] is None
+    assert (await _rec(src))["preview_domain"]["git_branch"] is None
+    assert world.vercel.aliases[HOST] == preview
+
+    live = await _release(world, src)
+    assert world.vercel.aliases[HOST] == live  # the window: until a read notices the release
+    await svc.status(OWNER, src["app_id"])
+    assert world.vercel.aliases[HOST] == preview
+
+    await svc.rollback(OWNER, src["app_id"], version=1)
+    assert world.vercel.aliases[HOST] == live  # the rollback's own window
+    await svc.status(OWNER, src["app_id"])
+    assert world.vercel.aliases[HOST] == preview
 
 
 async def _two_versions(world):

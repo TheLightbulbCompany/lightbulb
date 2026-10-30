@@ -538,6 +538,7 @@ async def _check_publish(app: dict, creds: dict) -> None:
             "state": "live",
             "rolled_back": False,
             "publish_error": None,
+            "preview_alias_for": None,  # _preview_alias, later in this same step, confirms the preview host
         }
         won = await apps_repo.record_release(
             app["app_id"],
@@ -604,9 +605,13 @@ def _build_failed(st: dict) -> dict:
 
 async def _add_domain(app: dict, creds: dict, *, preview: bool) -> dict:
     host = apps_dns.preview_hostname(app["name"]) if preview else apps_dns.hostname(app["name"])
-    r = await vercel.add_domain(creds, host)
+    r = await vercel.add_domain(creds, host, git_branch=vercel.PREVIEW_BRANCH if preview else None)
     await apps_dns.point(app["name"], cname_target=r["cname"], verification=r["verification"], preview=preview)
-    return {"name": host, "verified": bool(r["verified"])}
+    return {
+        "name": host,
+        "verified": bool(r["verified"]),
+        **({"git_branch": r["git_branch"]} if r["git_branch"] else {}),
+    }
 
 
 async def _verify(app: dict, creds: dict, field: str) -> None:
@@ -624,6 +629,14 @@ async def _preview_alias(app: dict, creds: dict) -> None:
         await _patch(app, {"preview_domain": await _add_domain(app, creds, preview=True)})
     else:
         await _verify(app, creds, "preview_domain")
+    domain = app["preview_domain"]
+    if "git_branch" not in domain:
+        # A project domain with no branch is a production domain: every production deployment takes it. Repairs an
+        # app attached that way, once, and points the host back. git_branch None: Vercel refused the branch, so the
+        # host is only put back after each release (the alias reset in _check_publish and _put_back).
+        took = await vercel.set_domain_branch(creds, domain["name"], vercel.PREVIEW_BRANCH)
+        scoped = {**domain, "git_branch": vercel.PREVIEW_BRANCH if took else None}
+        await _patch(app, {"preview_domain": scoped, "preview_alias_for": None})
     if app["preview_domain"]["verified"] and app.get("preview_alias_for") != ready["deployment_id"]:
         host = app["preview_domain"]["name"]
         try:
@@ -631,8 +644,10 @@ async def _preview_alias(app: dict, creds: dict) -> None:
         except vercel.VercelError as e:  # keep the *.vercel.app url; the next read tries again
             if _refused(e):
                 raise
-            logger.warning("apps: %s preview alias not assigned: %s", app["app_id"], e.code)
-            return
+            # 409 is also what Vercel says when the host is already on this deployment.
+            if e.status != 409 or await vercel.alias_deployment(creds, host) != ready["deployment_id"]:
+                logger.warning("apps: %s preview alias not assigned: %s", app["app_id"], e.code)
+                return
         await _patch(app, {"preview_alias_for": ready["deployment_id"], "preview_url": f"https://{host}"})
     if app.get("preview_alias_for") and not app.get("protection_scoped"):
         # R51: live and preview both answer on custom domains now; stale deployment urls close.
@@ -1211,6 +1226,7 @@ async def _put_back(app: dict, rows: dict, creds: dict, version: int | None) -> 
                 "rolled_back": True,
                 "publish_pending": None,
                 "publish_error": None,
+                "preview_alias_for": None,  # the next read confirms the preview host
             },
         )
         said = f"Version {n} is live again."

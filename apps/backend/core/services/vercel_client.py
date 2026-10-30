@@ -151,7 +151,7 @@ async def create_deployment(
 
 async def deployment_state(creds: dict, deployment_id: str) -> dict:
     d = await _call(creds, "GET", f"/v13/deployments/{_q(deployment_id)}")
-    return {"readyState": d.get("readyState"), "url": d.get("url"), "errorMessage": d.get("errorMessage")}
+    return {k: d.get(k) for k in ("readyState", "url", "errorMessage", "target")}
 
 
 async def read_probe(creds: dict, deployment_id: str | None) -> None:
@@ -243,6 +243,17 @@ async def promote(creds: dict, deployment_id: str) -> None:
 
 async def rollback(creds: dict, deployment_id: str) -> None:
     await _call(creds, "POST", f"/v1/projects/{_pid(creds)}/rollback/{_q(deployment_id)}", expect=None)
+
+
+async def alias_deployment(creds: dict, host: str) -> str | None:
+    """The deployment ``host`` points at right now; None when this project has no such alias."""
+    try:
+        d = await _call(creds, "GET", f"/v4/aliases/{_q(host)}", params={"projectId": _pid(creds)})
+    except VercelError as e:
+        if e.status == 404:
+            return None
+        raise
+    return d.get("deploymentId")
 
 
 async def disable_protection(creds: dict) -> None:

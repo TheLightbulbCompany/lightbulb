@@ -84,9 +84,19 @@ async def test_create_deployment_sends_files_and_nextjs_settings(calls):
 async def test_deployment_state_maps_ready_and_error(calls):
     seen, routes = calls
     routes[("GET", "/v13/deployments/dpl_1")] = (200, {"readyState": "ERROR", "url": "u", "errorMessage": "boom"})
-    assert await vc.deployment_state(CREDS, "dpl_1") == {"readyState": "ERROR", "url": "u", "errorMessage": "boom"}
-    routes[("GET", "/v13/deployments/dpl_1")] = (200, {"readyState": "READY", "url": "u"})
-    assert await vc.deployment_state(CREDS, "dpl_1") == {"readyState": "READY", "url": "u", "errorMessage": None}
+    assert await vc.deployment_state(CREDS, "dpl_1") == {
+        "readyState": "ERROR",
+        "url": "u",
+        "errorMessage": "boom",
+        "target": None,
+    }
+    routes[("GET", "/v13/deployments/dpl_1")] = (200, {"readyState": "READY", "url": "u", "target": "production"})
+    assert await vc.deployment_state(CREDS, "dpl_1") == {
+        "readyState": "READY",
+        "url": "u",
+        "errorMessage": None,
+        "target": "production",
+    }
     assert len(seen) == 2 and seen[0].url.params["teamId"] == "team_1"
 
 
@@ -164,6 +174,16 @@ async def test_add_domain_owned_elsewhere_still_raises(calls):
     with pytest.raises(vc.VercelError) as e:
         await vc.add_domain(CREDS, "a.example.com")
     assert e.value.code == "domain_already_in_use"
+
+
+async def test_alias_deployment_is_scoped_to_the_project(calls):
+    seen, routes = calls
+    path = "/v4/aliases/a.example.com"
+    routes[("GET", path)] = (200, {"deploymentId": "dpl_1"})
+    assert await vc.alias_deployment(CREDS, "a.example.com") == "dpl_1"
+    assert seen[0].url.params["projectId"] == "prj_1"
+    routes[("GET", path)] = (404, {"error": {"code": "not_found", "message": "n"}})
+    assert await vc.alias_deployment(CREDS, "a.example.com") is None
 
 
 async def test_upsert_env_partial_failure_raises_without_values(calls):

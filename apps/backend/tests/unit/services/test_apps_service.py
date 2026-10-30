@@ -59,6 +59,9 @@ class Vercel:
         self.alias_fails = False
         self.promote_fails = False
         self.refused = False  # Vercel no longer accepts the token: 403 on everything
+        self.first_is_production = False  # Vercel's docs: a project's first deployment, whatever was asked
+        self.domains: set[str] = set()  # project domains
+        self.aliases: dict[str, str] = {}  # host -> deployment it serves
 
     def paths(self, method=None):
         return [(r.method, r.url.path) for r in self.calls if method in (None, r.method)]
@@ -71,6 +74,12 @@ class Vercel:
 
     def finish(self, dep_id, state="READY", error=None):
         self.deployments[dep_id].update(readyState=state, errorMessage=error)
+        if state == "READY" and self.deployments[dep_id].get("target") == "production":
+            self.serve_production(dep_id)  # happens on Vercel's side, before anyone reads
+
+    def serve_production(self, dep_id):
+        """What Vercel does for a production deployment: every project domain moves to it."""
+        self.aliases.update(dict.fromkeys(self.domains, dep_id))
 
     def handler(self, req: httpx.Request) -> httpx.Response:
         self.calls.append(req)
@@ -79,20 +88,40 @@ class Vercel:
             return httpx.Response(403, json=DEAD_403)
         if p == "/v13/deployments":
             dep_id = f"dpl_{len(self.deployments) + 1}"
-            self.deployments[dep_id] = {"readyState": "QUEUED", "url": f"{dep_id}.vercel.app"}
+            target = json.loads(req.content).get("target")
+            if self.first_is_production and not self.deployments:
+                target = "production"
+            self.deployments[dep_id] = {"readyState": "QUEUED", "url": f"{dep_id}.vercel.app", "target": target}
             return httpx.Response(200, json={"id": dep_id, "url": f"{dep_id}.vercel.app", "readyState": "QUEUED"})
         if p.startswith("/v13/deployments/"):
             return httpx.Response(200, json=self.deployments[p.rsplit("/", 1)[1]])
         if p.endswith("/domains") and req.method == "POST":
+            self.domains.add(json.loads(req.content)["name"])
             return httpx.Response(200, json={"verified": False, "verification": [{"type": "TXT"}]})
+        if p.startswith("/v4/aliases/"):
+            dep_id = self.aliases.get(p.rsplit("/", 1)[1])
+            if not dep_id:
+                return httpx.Response(404, json={"error": {"code": "not_found", "message": "n"}})
+            return httpx.Response(200, json={"deploymentId": dep_id})
         if p.startswith("/v6/domains/"):
             return httpx.Response(200, json={"recommendedCNAME": [{"value": "c.vercel-dns.com.", "rank": 1}]})
         if p.endswith("/verify"):
             return httpx.Response(200, json={"verified": self.verified})
         if "/promote/" in p:
+            if not self.promote_fails:
+                self.serve_production(p.rsplit("/", 1)[1])
             return httpx.Response(500 if self.promote_fails else 201, json={})
+        if "/rollback/" in p:
+            self.serve_production(p.rsplit("/", 1)[1])
+            return httpx.Response(201, json={})
         if p.endswith("/aliases"):
-            return httpx.Response(400 if self.alias_fails else 200, json={})
+            if self.alias_fails:
+                return httpx.Response(400, json={})
+            dep_id, host = p.split("/")[3], json.loads(req.content)["alias"]
+            if self.aliases.get(host) == dep_id:  # Vercel's documented answer for a repeat
+                return httpx.Response(409, json={"error": {"code": "alias_in_use", "message": "same deployment"}})
+            self.aliases[host] = dep_id
+            return httpx.Response(200, json={})
         if p.endswith("/files"):
             return httpx.Response(200, json={})
         if p.endswith("/events"):
@@ -1244,6 +1273,15 @@ def test_display_default_splits_words_on_dash_and_underscore():
     assert svc._display({"name": "crm_v2"}) == "Crm V2"
 
 
+async def test_destroyed_apps_take_no_sweeper_slot(world):
+    """The scan caps at its limit before the sweeper skips destroyed apps, so they could fill every slot."""
+    src, _, _ = await _ready_preview(world)
+    await svc.apps_repo.patch(src["app_id"], {"preview_repoint": {"deployment_id": "dpl_1"}})
+    assert [a["app_id"] for a in await svc.apps_repo.list_pending()] == [src["app_id"]]
+    await svc.apps_repo.patch(src["app_id"], {"state": "destroyed"})
+    assert await svc.apps_repo.list_pending() == []
+
+
 async def test_sweeper_settles_a_pending_publish_without_the_builder(world):
     """Nothing but the builder's own reads stepped a publish; with the agent down, Demo Lab's first
     publish sat in "building" for 21 minutes. The sweeper steps pending deployments on its own."""
@@ -1741,6 +1779,226 @@ def _dies_then_rotates(world, monkeypatch):
     world.vercel.refused = True
     world.vercel.calls.clear()
     return rot
+
+
+HOST = "crew-preview.apps.example.com"
+
+
+async def _preview_on_its_host(world):
+    world.vercel.verified = True
+    src, _, dep_id = await _ready_preview(world)
+    await svc.status(OWNER, src["app_id"])  # adds the domain and verifies it
+    await svc.status(OWNER, src["app_id"])  # aliases
+    assert world.vercel.aliases[HOST] == dep_id
+    return src, dep_id
+
+
+async def _release(world, src):
+    await _publish(src)
+    dep_id = f"dpl_{len(world.vercel.created())}"
+    world.vercel.finish(dep_id)
+    return dep_id
+
+
+async def _settle(src, world):
+    """Past the settling time and any backoff, then one read."""
+    rec = await _rec(src)
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    watch = rec.get("preview_repoint")
+    if watch:
+        watch = {**watch, "settle_until": past, "next_at": past if watch["next_at"] else None}
+        await svc.apps_repo.patch(src["app_id"], {"preview_repoint": watch})
+    return await svc.status(OWNER, src["app_id"])
+
+
+async def test_a_publish_puts_the_preview_host_back_before_the_app_is_live(world, monkeypatch):
+    src, preview = await _preview_on_its_host(world)
+    live = await _release(world, src)
+    assert world.vercel.aliases[HOST] == live  # the known limit: production holds it until a step notices
+
+    seen = {}
+    record = svc.apps_repo.record_release
+
+    async def spy(*a, **k):
+        seen["host"] = world.vercel.aliases[HOST]
+        return await record(*a, **k)
+
+    monkeypatch.setattr(svc.apps_repo, "record_release", spy)
+    res = await svc.status(OWNER, src["app_id"])
+    assert res["state"] == "live" and seen["host"] == preview
+    assert world.vercel.aliases[HOST] == (await _rec(src))["preview"]["deployment_id"]
+
+
+async def test_production_taking_the_host_after_ready_is_caught_and_the_watch_ends(world):
+    src, preview = await _preview_on_its_host(world)
+    live = await _release(world, src)
+    await svc.status(OWNER, src["app_id"])
+    assert (await _rec(src))["preview_repoint"]["attempts"] == 0
+    assert [a["app_id"] for a in await svc.apps_repo.list_pending()] == [src["app_id"]]  # the sweeper keeps coming
+
+    world.vercel.serve_production(live)  # Vercel assigned its domains late
+    await svc.status(OWNER, src["app_id"])
+    assert world.vercel.aliases[HOST] == preview
+
+    await _settle(src, world)
+    assert (await _rec(src))["preview_repoint"] is None
+    assert await svc.apps_repo.list_pending() == []
+    calls = len(world.vercel.calls)
+    await svc.status(OWNER, src["app_id"])
+    assert not [r for r in world.vercel.calls[calls:] if "/aliases" in r.url.path]
+
+
+async def test_put_back_repoints_in_the_same_request(world):
+    src = await _two_versions_on_host(world)
+    preview = (await _rec(src))["preview"]["deployment_id"]
+    await svc.rollback(OWNER, src["app_id"], version=1)
+    assert world.vercel.aliases[HOST] == preview
+    assert (await _rec(src))["live_version"] == 1
+
+
+async def test_a_dead_token_at_put_back_does_not_go_back_a_second_version(world, monkeypatch):
+    src = await _two_versions_on_host(world)
+    preview = (await _rec(src))["preview"]["deployment_id"]
+
+    def dead_on_alias(req):
+        return httpx.Response(403, json=DEAD_403) if req.url.path.startswith("/v4/aliases/") else None
+
+    _vercel_answers(world, monkeypatch, dead_on_alias)
+    await svc.rollback(OWNER, src["app_id"], version=None)
+    rec = await _rec(src)
+    assert rec["live_version"] == 1 and rec["preview_repoint"]["deployment_id"] == preview
+    assert len([p for _, p in world.vercel.paths("POST") if "/rollback/" in p]) == 1
+
+
+async def test_a_stored_error_does_not_skip_the_repoint(world):
+    src, preview = await _preview_on_its_host(world)
+    live = await _release(world, src)
+    await svc.status(OWNER, src["app_id"])
+    # A later preview's migration failed: the step stops early on this stored error, every read.
+    await svc.apps_repo.patch(
+        src["app_id"],
+        {"error": {"code": "x", "message": "m", "next": "n"}, "preview_migrations": ["something else"]},
+    )
+    world.vercel.serve_production(live)  # Vercel assigned its domains late
+    await svc.status(OWNER, src["app_id"])
+    assert world.vercel.aliases[HOST] == preview
+
+
+async def test_an_app_published_before_this_is_repaired_once_on_its_next_read(world):
+    src, preview = await _preview_on_its_host(world)
+    # workshop-signup: live, the record says the alias is fine, the host is really on production.
+    await _release(world, src)
+    await svc.status(OWNER, src["app_id"])
+    await svc.apps_repo.patch(src["app_id"], {"preview_alias_for": preview, "preview_host_error": None})
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table("test-apps")
+    table.update_item(Key={"app_id": src["app_id"]}, UpdateExpression="REMOVE preview_repoint")
+    world.vercel.aliases[HOST] = "dpl_live"
+
+    await svc.status(OWNER, src["app_id"])
+    assert world.vercel.aliases[HOST] == preview
+    assert (await _rec(src))["preview_repoint"] is None
+
+    calls = len(world.vercel.calls)
+    await svc.status(OWNER, src["app_id"])
+    assert not [r for r in world.vercel.calls[calls:] if "/aliases" in r.url.path or r.method == "PATCH"]
+
+
+async def test_a_failed_repoint_never_blocks_is_shown_and_stops_after_its_tries(world, caplog):
+    src, preview = await _preview_on_its_host(world)
+    world.vercel.alias_fails = True
+    live = await _release(world, src)
+    res = await svc.status(OWNER, src["app_id"])
+    assert res["state"] == "live" and res["error"]["code"] == "preview_host_off"
+    assert "not re-pointed" in caplog.text
+
+    # Backing off: another read doesn't call Vercel for the alias.
+    calls = len(world.vercel.calls)
+    await svc.status(OWNER, src["app_id"])
+    assert not [r for r in world.vercel.calls[calls:] if "/aliases" in r.url.path]
+
+    for _ in range(10):
+        await _settle(src, world)
+    posts = [r for r in world.vercel.calls if r.method == "POST" and r.url.path.endswith("/aliases")]
+    assert len(posts) == 1 + svc._REPOINT_TRIES  # the first alias, then the bound
+    rec = await _rec(src)
+    assert rec["preview_repoint"] is None and await svc.apps_repo.list_pending() == []
+    assert world.vercel.aliases[HOST] == live
+
+    # `up` tries again.
+    world.vercel.alias_fails = False
+    await svc.up(
+        OWNER,
+        name="crew",
+        room_id="room_1",
+        services=[],
+        open_to="room",
+        budget_usd=5,
+        source_id=src["source_id"],
+        actor=PERSON,
+        origin={},
+    )
+    res = await svc.status(OWNER, src["app_id"])
+    assert world.vercel.aliases[HOST] == preview and "error" not in res
+
+
+async def test_a_failing_repoint_does_not_stop_the_next_publish(world):
+    src, _ = await _preview_on_its_host(world)
+    world.vercel.alias_fails = True
+    await _release(world, src)
+    await svc.status(OWNER, src["app_id"])
+    src2 = await _source(SRC_V2, "c2")
+    pub = await svc.publish(OWNER, src["app_id"], source_id=src2["source_id"], actor=PERSON)
+    assert pub["state"] == "building" and world.vercel.created()[-1]["target"] == "production"
+
+
+async def test_a_refused_token_at_the_repoint_goes_to_renewal(world, monkeypatch):
+    src, preview = await _preview_on_its_host(world)
+    live = await _release(world, src)
+    rot = _dies_then_rotates(world, monkeypatch)
+    await svc.status(OWNER, src["app_id"])
+    rot.assert_awaited_once()
+    assert world.vercel.aliases[HOST] == preview != live
+
+
+async def test_a_production_first_deployment_is_rebuilt_not_recorded_as_the_preview(world):
+    world.vercel.first_is_production = True
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])  # deploys dpl_1, which Vercel makes production
+    world.vercel.finish("dpl_1")
+    res = await svc.status(OWNER, src["app_id"])
+    rec = await _rec(src)
+    assert res["state"] == "building" and not rec.get("preview")
+    assert rec["preview_pending"]["deployment_id"] == "dpl_2"
+    assert "target" not in world.vercel.created()[1]
+    world.vercel.finish("dpl_2")
+    await svc.status(OWNER, src["app_id"])
+    assert (await _rec(src))["preview"]["deployment_id"] == "dpl_2"
+
+
+async def test_production_preview_rebuilds_are_bounded(world):
+    world.vercel.first_is_production = True
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])
+    await svc.apps_repo.patch(src["app_id"], {"preview_rebuilds": svc._PREVIEW_REBUILDS})
+    world.vercel.finish("dpl_1")
+    res = await svc.status(OWNER, src["app_id"])
+    assert res["error"]["code"] == "preview_is_production" and len(world.vercel.created()) == 1
+
+
+async def _two_versions_on_host(world):
+    src, _ = await _preview_on_its_host(world)
+    await _publish(src)
+    world.vercel.finish("dpl_2")
+    await svc.status(OWNER, src["app_id"])
+    src2 = await _source(SRC_V2, "c2")
+    await svc.publish(OWNER, src["app_id"], source_id=src2["source_id"], actor=PERSON)
+    world.vercel.finish("dpl_3")
+    await svc.status(OWNER, src["app_id"])
+    return src
 
 
 async def _two_versions(world):

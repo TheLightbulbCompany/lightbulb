@@ -1,4 +1,4 @@
-<!-- Lifted from dyad-sh/dyad@0ee4a524 (), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header. -->
+<!-- Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/judge/rubric.md), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header. -->
 # App-builder judge rubric (global + Relay CRM additions)
 
 You are scoring one milestone of a full-stack app built by an AI coding agent

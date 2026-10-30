@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/ledgerly/fixtures.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
 // Shared Ledgerly suite helpers (design/app-4-ledgerly.md, "Test fixtures &
 // conventions"). Imported by all three checkpoint suites.
 //

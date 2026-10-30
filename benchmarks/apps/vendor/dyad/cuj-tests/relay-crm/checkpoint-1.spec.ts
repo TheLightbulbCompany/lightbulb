@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/relay-crm/checkpoint-1.spec.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
 // Relay CRM — checkpoint 1 CUJ suite (design/app-1-relay-crm.md, "CUJ suite
 // (checkpoint 1)" + "Security probes (checkpoint 1)").
 //

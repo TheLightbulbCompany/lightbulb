@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/curbside/checkpoint-1.spec.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
 // Curbside — checkpoint 1 CUJ suite (design/app-6-curbside.md, M1 CUJ table +
 // M1 security probes). 10 CUJs + 3 probes.
 //

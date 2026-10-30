@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/ledgerly/checkpoint-1.spec.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
 // Ledgerly — checkpoint 1 CUJ suite (design/app-4-ledgerly.md, M1 CUJ table +
 // M1 security probes). 9 CUJs + 3 probes.
 //

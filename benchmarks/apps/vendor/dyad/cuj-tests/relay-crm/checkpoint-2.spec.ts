@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/relay-crm/checkpoint-2.spec.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
 // Relay CRM — checkpoint 2 CUJ suite (design/app-1-relay-crm.md, "CUJ suite
 // (checkpoint 2)" + "Security probes (checkpoint 2)").
 // 12 CUJs (4 regression + 8 new) + 6 probes. Same conventions as checkpoint 1:

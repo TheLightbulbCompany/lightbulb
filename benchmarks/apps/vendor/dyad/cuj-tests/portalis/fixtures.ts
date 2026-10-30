@@ -1,4 +1,4 @@
-// Lifted from dyad-sh/dyad@0ee4a524 (), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
+// Lifted from dyad-sh/dyad@0ee4a524 (benchmarks/app-builder/cuj-tests/portalis/fixtures.ts), Apache-2.0. Copyright Dyad contributors. Unmodified except for this header.
 import { openOptions } from "../interactions";
 // Portalis — shared suite helpers (design/app-3-portalis.md).
 //

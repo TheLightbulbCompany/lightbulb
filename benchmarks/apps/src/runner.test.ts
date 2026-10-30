@@ -59,7 +59,7 @@ describe("runner", () => {
   it("suite_stops_at_budget", async () => {
     const root = out();
     const dir = await runSuite(adapter(() => ({ dollars: 200 })), { tasks: ["b01-todo", "b02-slotline"], runs: 3, budgetUsd: 400, resultsRoot: root }, mk());
-    const recs = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    const recs = readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "suite.json");
     expect(recs.length).toBe(2);
     expect(JSON.parse(readFileSync(join(dir, recs[0]), "utf8")).dollars).toBe(200);
     expect(readdirSync(dir).some((f) => f.endsWith(".build.log"))).toBe(true);
@@ -76,7 +76,7 @@ describe("runner", () => {
   it("unknown cost counts the per-run cap toward the suite budget", async () => {
     const a: BuilderAdapter = { name: "fake", build: async () => { throw new Error("boom"); } };
     const dir = await runSuite(a, { tasks: ["b01-todo", "b02-slotline"], runs: 3, budgetUsd: 30, resultsRoot: out() }, mk());
-    const recs = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    const recs = readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "suite.json");
     expect(recs.length).toBe(2);
     expect(JSON.parse(readFileSync(join(dir, recs[0]), "utf8")).costUnknown).toBe(true);
   });
@@ -101,6 +101,20 @@ describe("runner", () => {
     await runTask({ ...a03, fixture: "blank" }, adapter(() => ({})), { run: 1, outDir: out() }, d());
     expect(seen[0]).toBeUndefined();
     expect(seen[1]).toEqual({ before: { fixtureDir: expect.stringMatching(/fixtures\/blank$/), seedSql: "insert into contacts(name) values ('EVALMARK_x')" } });
+  });
+
+  it("a judge failure (NaN) scores 0 and marks the record", async () => {
+    const r = await runTask(task(), adapter(() => ({})), { run: 1, outDir: out() }, mk(journeys(10), true, NaN));
+    expect(r.judge).toBe(0);
+    expect(r.judgeFailed).toBe(true);
+    expect(r.score).toBeCloseTo(0.85, 6);
+    const ok = await runTask(task(), adapter(() => ({})), { run: 1, outDir: out() }, mk());
+    expect(ok.judgeFailed).toBeUndefined();
+  });
+
+  it("runSuite writes the planned tasks and runs to suite.json", async () => {
+    const dir = await runSuite(adapter(() => ({ dollars: 200 })), { tasks: ["b01-todo", "b02-slotline"], runs: 3, budgetUsd: 400, resultsRoot: out() }, mk());
+    expect(JSON.parse(readFileSync(join(dir, "suite.json"), "utf8"))).toEqual({ tasks: ["b01-todo", "b02-slotline"], runs: 3 });
   });
 
   it("a skipped Playwright test is a failed journey", () => {

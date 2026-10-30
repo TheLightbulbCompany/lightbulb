@@ -8,8 +8,9 @@ const rec = (taskId: string, run: number, o: Record<string, unknown> = {}) => ({
   builder: "claude-code", model: "m", taskId, run, status: "done", score: 0.9, passed: true, minutes: 10, minutesToRunnable: 8,
   dollars: 2, fixLoops: 1, journeys: [], probes: [], judge: 0.5, overRunCap: false, dir: "", tokensIn: 0, tokensOut: 0, ...o,
 });
-function results(recs: ReturnType<typeof rec>[], controls?: Controls) {
+function results(recs: ReturnType<typeof rec>[], controls?: Partial<Controls>, suite?: { tasks: string[]; runs: number }) {
   const d = mkdtempSync(join(tmpdir(), "report-"));
+  if (suite) writeFileSync(join(d, "suite.json"), JSON.stringify(suite));
   for (const r of recs) writeFileSync(join(d, `${r.taskId}-run${r.run}.json`), JSON.stringify(r));
   if (controls) writeFileSync(join(d, "controls.json"), JSON.stringify(controls));
   return d;
@@ -28,7 +29,7 @@ describe("report", () => {
     expect(readFileSync(join(d, "report.md"), "utf8")).toBe(md);
     expect(row(md, "b01-todo")).toMatch(/\| yes \|/);
     expect(row(md, "b02-slotline")).toMatch(/\| no \|/);
-    expect(row(md, "b03-curbside")).toMatch(/\| no \|/); // only two runs
+    expect(row(md, "b03-curbside")).toMatch(/\| incomplete \(2\/3\) \|/); // only two runs, both passed
     expect(row(md, "b02-slotline")).toContain("0.70"); // mean of 0.9, 0.3, 0.9
     expect(md).toMatch(/pass\^3: 1 of 3 tasks/);
     expect(md).not.toMatch(/🔴|RED/);
@@ -58,7 +59,30 @@ describe("report", () => {
     expect(md).toMatch(/Spend: \$4\.00/);
   });
 
-  it("says controls were not recorded when controls.json is missing", () => {
-    expect(writeReport(results([rec("b01-todo", 1)]))).toMatch(/controls\.json missing/);
+  it("withholds scores when controls.json is missing, and flags a missing judge-on-reference score", () => {
+    const md = writeReport(results([rec("b01-todo", 1)]));
+    expect(md).toMatch(/controls\.json missing/);
+    expect(md).toMatch(/withheld/);
+    expect(row(md, "b01-todo")).toBeUndefined();
+    const noJudge = writeReport(results([rec("b01-todo", 1)], { referencePassed: true, brokenFailedAllProbes: true }));
+    expect(noJudge).toMatch(/RED: .*judge.*reference/);
+  });
+
+  it("uses the planned suite as the denominator: incomplete tasks and tasks that never ran", () => {
+    const md = writeReport(results([
+      rec("b01-todo", 1), rec("b01-todo", 2), rec("b01-todo", 3),
+      rec("b02-slotline", 1), rec("b02-slotline", 2),
+      rec("b03-curbside", 1, { passed: false }),
+    ], good, { tasks: ["b01-todo", "b02-slotline", "b03-curbside", "b04-deskhero"], runs: 3 }));
+    expect(row(md, "b01-todo")).toMatch(/\| yes \|/);
+    expect(row(md, "b02-slotline")).toMatch(/\| incomplete \(2\/3\) \|/);
+    expect(row(md, "b03-curbside")).toMatch(/\| no \|/);
+    expect(md).toMatch(/pass\^3: 1 of 4 tasks/);
+    expect(md).toMatch(/Never ran: b04-deskhero/);
+  });
+
+  it("notes runs that had no judge score", () => {
+    const md = writeReport(results([rec("b01-todo", 1, { judgeFailed: true, judge: 0 }), rec("b01-todo", 2)], good));
+    expect(md).toMatch(/1 run had no judge score \(counted as 0\)/);
   });
 });

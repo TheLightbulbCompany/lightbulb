@@ -22,16 +22,21 @@ export function writeReport(resultsDir: string): string {
   const cf = join(resultsDir, "controls.json");
   const controls: Controls | null = existsSync(cf) ? JSON.parse(readFileSync(cf, "utf8")) : null;
 
+  const sf = join(resultsDir, "suite.json");
+  const suite: { tasks: string[]; runs: number } = existsSync(sf) ? JSON.parse(readFileSync(sf, "utf8")) : { tasks: [...new Set(recs.map((r) => r.taskId))], runs: 3 };
+
   const lines = ["# Apps eval report", "", `Builder: ${recs[0]?.builder ?? "?"} · model: ${recs[0]?.model ?? "?"} · ${recs.length} runs`, ""];
-  if (!controls) lines.push("controls.json missing: the sanity controls were not recorded for this suite, so these scores are unverified.", "");
-  else {
-    if (!controls.referencePassed) lines.push("**RED: the reference app did not score 100% on its task.**", "");
-    if (!controls.brokenFailedAllProbes) lines.push("**RED: the broken twin passed at least one security probe.**", "");
-    if (controls.judgeOnReference < 0.9) lines.push(`**RED: the judge scored the reference app ${controls.judgeOnReference.toFixed(2)} (below 0.90); judge scores are suspect.**`, "");
-    if (!controls.referencePassed || !controls.brokenFailedAllProbes) {
-      lines.push("Scores withheld: a sanity control failed, so the suite cannot be trusted to measure builders.");
-      return save(resultsDir, lines);
-    }
+  if (!controls) {
+    lines.push("**RED: controls.json missing: the sanity controls were not recorded for this suite.**", "", "Scores withheld: without passing controls the suite cannot be trusted to measure builders.");
+    return save(resultsDir, lines);
+  }
+  if (!controls.referencePassed) lines.push("**RED: the reference app did not score 100% on its task.**", "");
+  if (!controls.brokenFailedAllProbes) lines.push("**RED: the broken twin passed at least one security probe.**", "");
+  if (typeof controls.judgeOnReference !== "number" || !(controls.judgeOnReference >= 0.9))
+    lines.push(`**RED: the judge scored the reference app ${typeof controls.judgeOnReference === "number" ? controls.judgeOnReference.toFixed(2) : "(no score recorded)"} (below 0.90); judge scores are suspect.**`, "");
+  if (!controls.referencePassed || !controls.brokenFailedAllProbes) {
+    lines.push("Scores withheld: a sanity control failed, so the suite cannot be trusted to measure builders.");
+    return save(resultsDir, lines);
   }
 
   const byTask = new Map<string, RunRecord[]>();
@@ -39,20 +44,25 @@ export function writeReport(resultsDir: string): string {
   lines.push("| task | pass^3 | mean score | median minutes | median dollars | fix loops |", "|---|---|---|---|---|---|");
   let cubed = 0;
   for (const [id, rs] of [...byTask].sort(([a], [b]) => a.localeCompare(b))) {
-    const p3 = rs.length >= 3 && rs.every((r) => r.passed); // pass^3: all three runs passed
-    if (p3) cubed++;
+    // pass^3: every planned run ran and passed; fewer runs (budget stop) is "incomplete", not "no"
+    const p3 = rs.some((r) => !r.passed) ? "no" : rs.length >= suite.runs ? "yes" : `incomplete (${rs.length}/${suite.runs})`;
+    if (p3 === "yes") cubed++;
     const mean = rs.reduce((a, r) => a + r.score, 0) / rs.length;
-    lines.push(`| ${id} | ${p3 ? "yes" : "no"} | ${mean.toFixed(2)} | ${median(rs.map((r) => r.minutes)).toFixed(1)} | ${usd(median(rs.filter((r) => !r.costUnknown).map((r) => r.dollars)))} | ${rs.reduce((a, r) => a + r.fixLoops, 0)} |`);
+    lines.push(`| ${id} | ${p3} | ${mean.toFixed(2)} | ${median(rs.map((r) => r.minutes)).toFixed(1)} | ${usd(median(rs.filter((r) => !r.costUnknown).map((r) => r.dollars)))} | ${rs.reduce((a, r) => a + r.fixLoops, 0)} |`);
   }
   const unknown = recs.filter((r) => r.costUnknown).length;
   const spend = recs.filter((r) => !r.costUnknown).reduce((a, r) => a + r.dollars, 0);
+  const noJudge = recs.filter((r) => r.judgeFailed).length;
+  const never = suite.tasks.filter((t) => !byTask.has(t));
   const meanAll = recs.length ? recs.reduce((a, r) => a + r.score, 0) / recs.length : 0;
   lines.push("", "## Totals", "",
-    `- pass^3: ${cubed} of ${byTask.size} tasks`,
+    `- pass^3: ${cubed} of ${suite.tasks.length} tasks`,
+    ...(never.length ? [`- Never ran: ${never.join(", ")}`] : []),
     `- Mean score: ${meanAll.toFixed(2)} over ${recs.length} runs`,
     `- Median minutes per run: ${median(recs.map((r) => r.minutes)).toFixed(1)}`,
     `- Spend: ${usd(spend)}${unknown ? ` (plus ${unknown} run${unknown > 1 ? "s" : ""} with unknown cost, not included)` : ""}`,
-    `- Fix loops: ${recs.reduce((a, r) => a + r.fixLoops, 0)}`);
+    `- Fix loops: ${recs.reduce((a, r) => a + r.fixLoops, 0)}`,
+    ...(noJudge ? [`- ${noJudge} run${noJudge > 1 ? "s" : ""} had no judge score (counted as 0)`] : []));
   return save(resultsDir, lines);
 }
 

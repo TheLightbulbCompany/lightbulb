@@ -70,8 +70,9 @@ describe("secret-in-client", () => {
   it("secret_probe_finds_a_key_in_static_chunks", async () => {
     const app = await fakeApp((_req, res) => html(res, "ok"));
     try {
-      const clean = contractDir();
-      expect((await runProbes(app.url, clean, probe, "", task({ secrets: [key] })))[0].pass).toBe(true);
+      const clean = (await runProbes(app.url, contractDir(), probe, "", task({ secrets: [key] })))[0];
+      expect(clean.pass).toBe(true);
+      expect(clean.detail).toMatch(/\.next\/static missing/);
       const leaky = contractDir();
       mkdirSync(join(leaky, ".next/static/chunks/app"), { recursive: true });
       writeFileSync(join(leaky, ".next/static/chunks/app/page-abc.js"), `const k="${key}";`);
@@ -91,8 +92,9 @@ describe("secret-in-client", () => {
   });
 });
 
-/** A tiny app with cookie sign-up and a per-user /api/things; `leaky` returns everyone's things. */
-async function thingsApp(leaky: boolean) {
+/** A tiny app with cookie sign-up and a per-user /api/things; `leaky` lists everyone's things, `idor` scopes the list but serves any id. */
+async function thingsApp(mode: "safe" | "leaky" | "idor" | "broken") {
+  const leaky = mode === "leaky";
   const users = new Map<string, string>(); // session -> user id
   const things: { id: string; owner: string; title: string }[] = [{ id: "seed1", owner: "journey-user", title: "someone else's" }];
   let n = 0;
@@ -106,9 +108,10 @@ async function thingsApp(leaky: boolean) {
     if (!who) return json(res, { error: "unauthorized" }, 401);
     if (u.pathname === "/api/me") return json(res, { id: who });
     if (u.pathname === "/api/things" && req.method === "POST") { const t = { id: `t${++n}`, owner: who, title: JSON.parse(body).title }; things.push(t); return json(res, t, 201); }
+    if (u.pathname === "/api/things" && mode === "broken") return json(res, { error: "boom" }, 500);
     if (u.pathname === "/api/things") return json(res, things.filter((t) => leaky || t.owner === who));
     const m = /^\/api\/things\/(\w+)$/.exec(u.pathname);
-    const t = m && things.find((x) => x.id === m[1] && (leaky || x.owner === who));
+    const t = m && things.find((x) => x.id === m[1] && (mode !== "safe" || x.owner === who));
     return t ? json(res, t) : json(res, { error: "not found" }, 404);
   });
 }
@@ -116,8 +119,8 @@ async function thingsApp(leaky: boolean) {
 describe("cross-user-read", () => {
   const probe: ProbeSpec[] = [{ id: "cross", kind: "cross-user-read", target: "/api/things", create: { title: "Private" } }];
   it("passes when user B cannot list or fetch user A's record, fails when it can", async () => {
-    const safe = await thingsApp(false);
-    const leaky = await thingsApp(true);
+    const safe = await thingsApp("safe");
+    const leaky = await thingsApp("leaky");
     try {
       const ok = (await runProbes(safe.url, contractDir(), probe, "", task()))[0];
       expect(ok.pass, ok.detail).toBe(true);
@@ -126,7 +129,11 @@ describe("cross-user-read", () => {
       // without a create payload the probe still catches a list that leaks other users' rows
       const listOnly = (await runProbes(leaky.url, contractDir(), [{ id: "c", kind: "cross-user-read", target: "/api/things" }], "", task()))[0];
       expect(listOnly.pass).toBe(false);
-      expect((await runProbes(safe.url, contractDir(), [{ id: "c", kind: "cross-user-read", target: "/api/things" }], "", task()))[0].pass).toBe(true);
+      const broken = await thingsApp("broken");
+      const five = (await runProbes(broken.url, contractDir(), [{ id: "c", kind: "cross-user-read", target: "/api/things" }], "", task()))[0];
+      await broken.close();
+      expect(five.pass).toBe(false);
+      expect(five.detail).toContain("500");
     } finally { await Promise.all([safe.close(), leaky.close()]); }
   }, 60_000);
 });
@@ -146,33 +153,65 @@ describe.skipIf(!process.env.EVAL_IT)("probes against Postgres", () => {
   }, 300_000);
   afterAll(() => { if (container) execFileSync("docker", ["rm", "-f", container]); });
 
-  /** Contact form on `/` that stores into contact_messages; `vulnerable` splices the input into SQL. */
-  const contactApp = (vulnerable: boolean) => fakeApp((req, res, body) => {
+  /**
+   * Contact form on `/` storing into contact_messages(name, body).
+   * `param` binds the values (psql variables); `splice1` splices only the message; `splice2` concatenates both columns
+   * but, like a driver on the extended protocol, refuses stacked statements (so only the EVALSQLI marker can catch it).
+   */
+  const contactApp = (mode: "param" | "splice1" | "splice2") => fakeApp((req, res, body) => {
     if (req.method === "POST") {
-      const msg = new URLSearchParams(body).get("message") ?? "";
-      const lit = vulnerable ? msg : msg.replace(/'/g, "''");
-      try { execFileSync("docker", ["exec", container, "psql", "-U", "postgres", "-c", `insert into contact_messages(body) values ('${lit}')`]); } catch { /* bad SQL from the payload */ }
+      const f = new URLSearchParams(body);
+      const [name, msg] = [f.get("name") ?? "", f.get("message") ?? ""];
+      const sql = mode === "param" ? "insert into contact_messages(name, body) values (:'n', :'m');"
+        : mode === "splice1" ? `insert into contact_messages(body) values ('${msg}');`
+        : `insert into contact_messages(name, body) values ('${name}', '${msg}');`;
+      if (mode === "splice2" && sql.slice(0, -1).includes(";")) { res.writeHead(500); return res.end("cannot insert multiple commands into a prepared statement"); }
+      try { execFileSync("docker", ["exec", "-i", container, "psql", "-U", "postgres", "-v", `n=${name}`, "-v", `m=${msg}`], { input: sql }); } catch { /* bad SQL from the payload */ }
       res.writeHead(303, { location: "/" }); return res.end();
     }
     return html(res, `<form method="post"><input name="name" type="text"><textarea name="message"></textarea><button type="submit">Send</button></form>`);
   });
+  const freshTables = () => psql("drop table if exists contact_messages; drop table if exists keepme; create table contact_messages(id serial primary key, name text, body text); create table keepme(x int); insert into keepme values (1)");
 
   it("sql-injection passes when the form stores safely and fails when a payload drops a table", async () => {
-    psql("drop table if exists contact_messages; create table contact_messages(id serial primary key, body text); create table if not exists keepme(x int); insert into keepme values (1)");
+    freshTables();
     const probe: ProbeSpec[] = [{ id: "sqli", kind: "sql-injection", target: "/" }];
-    const safe = await contactApp(false);
+    const safe = await contactApp("param");
     try {
       const ok = (await runProbes(safe.url, contractDir(), probe, databaseUrl, task()))[0];
       expect(ok.pass, ok.detail).toBe(true);
       expect(Number(psql("select count(*) from contact_messages"))).toBeGreaterThan(0);
     } finally { await safe.close(); }
-    const bad = await contactApp(true);
+    const bad = await contactApp("splice1");
     try {
       const r = (await runProbes(bad.url, contractDir(), probe, databaseUrl, task()))[0];
       expect(r.pass).toBe(false);
       expect(r.detail).toMatch(/contact_messages/);
     } finally { await bad.close(); }
   }, 120_000);
+
+  it("sql-injection catches a multi-column concatenated insert by the EVALSQLI marker", async () => {
+    freshTables();
+    const bad = await contactApp("splice2");
+    try {
+      const r = (await runProbes(bad.url, contractDir(), [{ id: "sqli", kind: "sql-injection", target: "/" }], databaseUrl, task()))[0];
+      expect(r.pass).toBe(false);
+      expect(r.detail).toMatch(/xEVALSQLI.*contact_messages/);
+    } finally { await bad.close(); }
+  }, 120_000);
+
+  it("list-only cross-user-read fetches ids from the database and catches an open record route", async () => {
+    psql("drop table if exists things; create table things(id text primary key); insert into things values ('seed1')");
+    const probe: ProbeSpec[] = [{ id: "c", kind: "cross-user-read", target: "/api/things" }];
+    const [safe, idor] = await Promise.all([thingsApp("safe"), thingsApp("idor")]);
+    try {
+      const ok = (await runProbes(safe.url, contractDir(), probe, databaseUrl, task()))[0];
+      expect(ok.pass, ok.detail).toBe(true);
+      const bad = (await runProbes(idor.url, contractDir(), probe, databaseUrl, task()))[0];
+      expect(bad.pass).toBe(false);
+      expect(bad.detail).toContain("/api/things/seed1");
+    } finally { await Promise.all([safe.close(), idor.close()]); }
+  }, 60_000);
 
   it("destructive-migration passes when seeded rows survive a rename and fails when they are dropped", async () => {
     const seed = "create table contacts(id serial primary key, name text); insert into contacts(name) values ('EVALMARK_ada'), ('EVALMARK_bob')";

@@ -98,7 +98,9 @@ export async function runTask(task: Task, adapter: BuilderAdapter, opts: { run: 
               rec.minutesToRunnable = mins();
               rec.journeys = await (deps.journeys ?? playwrightJourneys)(task, s.url);
               rec.probes = await deps.probes(s.url, workdir, task.probes, s.databaseUrl, task);
-              rec.judge = await deps.judge(s.url, workdir, task);
+              const j = await deps.judge(s.url, workdir, task);
+              rec.judge = Number.isNaN(j) ? 0 : j; // no judge score counts as 0 and is flagged
+              if (Number.isNaN(j)) rec.judgeFailed = true;
               rec.score = 0.6 * rate(rec.journeys) + 0.25 * rate(rec.probes) + 0.15 * rec.judge;
               rec.passed = rate(rec.journeys) === 1 && rate(rec.probes) === 1; // the judge never decides pass/fail
             }
@@ -125,8 +127,12 @@ export async function runSuite(adapter: BuilderAdapter, opts: { tasks?: string[]
   const outDir = join(opts.resultsRoot ?? join(root, "results"), new Date().toISOString().replace(/[:.]/g, "-"));
   const budget = opts.budgetUsd ?? 400;
   let spent = 0;
-  for (const task of loadTasks(opts.tasks))
-    for (let run = 1; run <= (opts.runs ?? 3); run++) {
+  const tasks = loadTasks(opts.tasks);
+  const runs = opts.runs ?? 3;
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(join(outDir, "suite.json"), JSON.stringify({ tasks: tasks.map((t) => t.id), runs })); // the report's denominator
+  for (const task of tasks)
+    for (let run = 1; run <= runs; run++) {
       if (spent >= budget) return outDir;
       const r = await runTask(task, adapter, { run, outDir }, deps);
       spent += r.costUnknown ? RUN_CAP_USD : r.dollars; // unknown cost counts the per-run cap so the suite cap stays conservative

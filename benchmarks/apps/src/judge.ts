@@ -3,31 +3,30 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import type { Task } from "./adapters/types";
+import { signUpOn } from "./probes";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const JUDGE_MODEL = "claude-opus-5-5";
 const MAX_IMAGES = 6;
 const MAX_TEXT_CHARS = 80_000; // ~20k tokens at ~4 chars/token
-const DIMS = ["bugs", "security", "code_quality", "schema_quality"];
+const DIMS = ["fit", "design", "clarity", "completeness"];
 
-/** Score 0..1 from the rubric's JSON: `score` if given, else the mean of the 0-10 dimensions / 10. Unparseable → 0. */
+/** Score 0..1 from judge/rubric-screens.md's JSON: `score` if given, else the mean of the dimensions. Unparseable → NaN (no score). */
 export function parseJudgeScore(text: string): number {
   const clamp = (x: number) => Math.min(1, Math.max(0, x));
   try {
     const o = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
     if (typeof o.score === "number") return clamp(o.score);
     const xs = DIMS.map((d) => o[d]).filter((x): x is number => typeof x === "number");
-    if (xs.length) return clamp(xs.reduce((a, b) => a + b, 0) / xs.length / 10);
+    if (xs.length) return clamp(xs.reduce((a, b) => a + b, 0) / xs.length);
   } catch { /* fall through */ }
-  console.error(`[judge] unparseable reply, scoring 0: ${text.slice(0, 200)}`);
-  return 0;
+  console.error(`[judge] unparseable reply, no score: ${text.slice(0, 200)}`);
+  return NaN;
 }
 
 export function judgeRequest(task: Task, rubric: string, shots: Buffer[]) {
   const text = [
     rubric,
-    "## This run",
-    "You see the task prompt and up to six screenshots of the running app (no diff, source or test results). Score every dimension from that evidence; where a dimension cannot be seen, score what the screens imply.",
     "## Task prompt",
     task.prompt,
   ].join("\n\n").slice(0, MAX_TEXT_CHARS);
@@ -56,13 +55,9 @@ async function screenshots(url: string, dir: string, task: Task): Promise<Buffer
     const page = await ctx.newPage();
     const shots: Buffer[] = [];
     await page.goto("/auth/sign-up").catch(() => {});
-    if (await page.getByTestId("signup-name").count()) {
+    if (await page.getByTestId("signup-name").count()) { // the task has accounts: judge the signed-in app
       shots.push(await page.screenshot());
-      await page.getByTestId("signup-name").fill("Judge");
-      await page.getByTestId("signup-email").fill(`judge-${Date.now().toString(36)}@example.test`);
-      await page.getByTestId("signup-password").fill("Passw0rd!eval1");
-      await page.getByTestId("signup-submit").click();
-      await page.waitForURL((u) => !u.pathname.startsWith("/auth/"), { timeout: 20_000 }).catch(() => {});
+      await signUpOn(page, "Judge");
     }
     for (const r of pages.filter((p) => !p.startsWith("/auth/"))) {
       if (shots.length >= MAX_IMAGES) break;
@@ -73,22 +68,31 @@ async function screenshots(url: string, dir: string, task: Task): Promise<Buffer
   } finally { await browser.close(); }
 }
 
-/** LLM judge: screenshots + rubric + prompt → Claude → 0..1. Never throws; any failure scores 0 and is logged. */
-export async function judge(url: string, dir: string, task: Task, o: { fetch?: typeof fetch; shots?: Buffer[]; apiKey?: string } = {}): Promise<number> {
+/**
+ * LLM judge: screenshots + screens rubric + prompt → Claude → 0..1.
+ * Never throws: any failure (no key, screenshots, API, unparseable reply) returns NaN and is logged; the runner records it.
+ */
+export async function judge(url: string, dir: string, task: Task, o: { fetch?: typeof fetch; shots?: Buffer[]; apiKey?: string; retryMs?: number } = {}): Promise<number> {
   const key = o.apiKey ?? process.env.ANTHROPIC_API_KEY ?? "";
   try {
     if (!key) throw new Error("ANTHROPIC_API_KEY is not set");
     const shots = o.shots ?? (await screenshots(url, dir, task));
-    const r = await (o.fetch ?? fetch)("https://api.anthropic.com/v1/messages", {
+    const body = JSON.stringify(judgeRequest(task, readFileSync(join(root, "judge/rubric-screens.md"), "utf8"), shots));
+    const call = () => (o.fetch ?? fetch)("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body: JSON.stringify(judgeRequest(task, readFileSync(join(root, "judge/rubric.md"), "utf8"), shots)),
+      body,
     });
+    let r = await call();
+    if (r.status === 429 || r.status >= 500) { // one retry on rate limit or overload
+      await new Promise((ok) => setTimeout(ok, o.retryMs ?? 10_000));
+      r = await call();
+    }
     if (!r.ok) throw new Error(`Messages API ${r.status}: ${(await r.text()).slice(0, 200)}`);
-    const body = (await r.json()) as { content?: { type: string; text?: string }[] };
-    return parseJudgeScore((body.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join(""));
+    const reply = (await r.json()) as { content?: { type: string; text?: string }[] };
+    return parseJudgeScore((reply.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join(""));
   } catch (e) {
-    console.error(`[judge] ${task.id}: ${e instanceof Error ? e.message : e}; scoring 0`);
-    return 0;
+    console.error(`[judge] ${task.id}: ${e instanceof Error ? e.message : e}; no score`);
+    return NaN;
   }
 }

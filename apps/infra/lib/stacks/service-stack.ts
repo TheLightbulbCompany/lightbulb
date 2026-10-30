@@ -1018,6 +1018,8 @@ export class ServiceStack extends cdk.Stack {
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/network/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/marketplace-installs/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/browser-state/*`,
+          // App source archives (core/services/apps_source.py): apps/<owner>/<app>/src/*.tar.gz.
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/apps/*`,
         ],
       }),
     );

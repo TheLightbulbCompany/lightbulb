@@ -125,9 +125,13 @@ async def upload_file(creds: dict, data: bytes) -> str:
 
 
 async def create_deployment(
-    creds: dict, *, name: str, files: list[dict], target: str | None, build_command: str
+    creds: dict, *, name: str, files: list[dict], target: str | None, build_command: str, commit: str
 ) -> dict:
+    # R76: file deploys have no VERCEL_GIT_COMMIT_SHA; the app reads LIGHTBULB_COMMIT (runtime + build).
+    env = {"LIGHTBULB_COMMIT": commit}
     body = {
+        "env": env,
+        "build": {"env": env},
         "name": name,
         "project": _pid(creds),
         "files": files,

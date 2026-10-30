@@ -554,27 +554,6 @@ async def _fresh_snapshot(account_id: str, row: dict) -> dict:
     )
 
 
-async def _apply_app_limit(account_id: str, row: dict, snapshot: dict) -> None:
-    """A paid app resource is capped at the app's budget (cents) on its provider.
-    A Stripe failure propagates, like the payment_profile read beside it."""
-    if not row.get("app_id") or snapshot.get("pricing_type") != "paid":
-        return
-    budget = (await apps_repo.get(row["app_id"]) or {}).get("budget_usd")
-    if budget is None:
-        logger.warning("provisioning: app %s has no budget_usd; no provider limit set", row["app_id"])
-        return
-    if budget == 0:  # R58: a $0 cap would stop the company's own use of this provider too
-        logger.info("provisioning: app %s budget_usd is 0; no provider limit set", row["app_id"])
-        return
-    await api.update_limit(
-        account_id,
-        max_amount=round(budget * 100),
-        currency="usd",
-        recurring_interval="month",
-        provider=row["provider_id"],
-    )
-
-
 async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by: str) -> dict | None:
     """The owner approved the consent card. Re-read the catalog before moving."""
     row = await repo.get(workflow_id)
@@ -635,8 +614,6 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
                     },
                 ),
             )
-
-    await _apply_app_limit(account_id, row, fresh)
 
     approved = {"approval": fresh, "approved_by": approved_by, "approved_at": utc_now_iso()}
     if usage_limit:
@@ -1248,7 +1225,6 @@ async def _poll_awaited_leg(account_id: str, row: dict) -> dict:
             if is_transient(e):
                 return await _bump(row, e.retry_after)
             return await _fail(row, e.code, e.message)
-        await _apply_app_limit(account_id, row, row.get("approval") or {})
         moved = await repo.transition(
             row["workflow_id"],
             from_state=row["state"],

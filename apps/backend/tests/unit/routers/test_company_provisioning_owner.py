@@ -1060,7 +1060,6 @@ def room(monkeypatch):
     monkeypatch.setattr(wf.repo, "transition", transition)
     monkeypatch.setattr(wf, "account_id_for", AsyncMock(return_value="acct_1"))
     monkeypatch.setattr(wf, "_fresh_snapshot", AsyncMock(side_effect=lambda a, row: row["approval"]))
-    monkeypatch.setattr(wf, "_apply_app_limit", AsyncMock())
     return store, sent
 
 

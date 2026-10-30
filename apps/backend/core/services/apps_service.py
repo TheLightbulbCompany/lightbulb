@@ -402,6 +402,7 @@ async def _deploy(app: dict, creds: dict, source_id: str, *, production: bool) -
         files=listing,
         target="production" if production else None,
         build_command=_PROD_BUILD if production else _PREVIEW_BUILD,
+        commit=_source(app, source_id)["commit"],
     )
     return dep["id"]
 
@@ -893,7 +894,14 @@ def _view(app: dict, rows: dict, state: str) -> AppStatus:
         ],
         "last_opened_at": app.get("last_opened_at"),
         "spend_month_cents": None,  # R9: no data source yet
-        "preview": {k: preview[k] for k in ("deployment_id", "commit", "ready_at")} if preview else None,
+        "preview": (
+            {
+                **{k: preview[k] for k in ("deployment_id", "commit", "ready_at")},
+                "url": app.get("preview_url"),  # R75: the alias host once assigned, else the deployment url
+            }
+            if preview
+            else None
+        ),
     }
 
 
@@ -966,7 +974,7 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
             # R73: who may publish (and manage); whether there is a ready preview is the `preview` field.
             can_publish=can_manage(a, auth),
             # R71: the last persisted failure, message only.
-            error={"message": err["message"]} if (err := a.get("error") or a.get("publish_error")) else None,
+            error={"message": err.get("message", "")} if (err := a.get("error") or a.get("publish_error")) else None,
         )
         out.append(row)
     return out

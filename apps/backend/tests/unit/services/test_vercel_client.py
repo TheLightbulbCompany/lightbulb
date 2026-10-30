@@ -63,7 +63,9 @@ async def test_create_deployment_sends_files_and_nextjs_settings(calls):
         {"id": "dpl_1", "url": "x.vercel.app", "readyState": "QUEUED", "extra": 1},
     )
     files = [{"file": "a.txt", "sha": "abc", "size": 1}]
-    out = await vc.create_deployment(CREDS, name="app", files=files, target="production", build_command="npm run build")
+    out = await vc.create_deployment(
+        CREDS, name="app", files=files, target="production", build_command="npm run build", commit="c9"
+    )
     r = seen[0]
     assert r.url.params["forceNew"] == "1" and r.url.params["skipAutoDetectionConfirmation"] == "1"
     assert r.url.params["teamId"] == "team_1"
@@ -73,6 +75,8 @@ async def test_create_deployment_sends_files_and_nextjs_settings(calls):
         "files": files,
         "target": "production",
         "projectSettings": {"framework": "nextjs", "buildCommand": "npm run build"},
+        "env": {"LIGHTBULB_COMMIT": "c9"},
+        "build": {"env": {"LIGHTBULB_COMMIT": "c9"}},
     }
     assert out == {"id": "dpl_1", "url": "x.vercel.app", "readyState": "QUEUED"}
 
@@ -176,7 +180,7 @@ async def test_upsert_env_partial_failure_raises_without_values(calls):
 async def test_create_deployment_omits_null_target(calls):
     seen, routes = calls
     routes[("POST", "/v13/deployments")] = (200, {"id": "d"})
-    await vc.create_deployment(CREDS, name="app", files=[], target=None, build_command="b")
+    await vc.create_deployment(CREDS, name="app", files=[], target=None, build_command="b", commit="c")
     assert "target" not in body(seen[0])
 
 

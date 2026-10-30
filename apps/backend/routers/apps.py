@@ -14,6 +14,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field, StringConstraints
 
+from core.config import settings
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories.apps_repo import NameTaken
 from core.services import apps_service as svc
@@ -28,6 +29,40 @@ from routers.company_provisioning import PAID_MESSAGE, _refusal, _stripe_failure
 from routers.teams._guards import require_always_on_entitlement
 
 router = APIRouter()
+
+_INVITE_PATH = "/api/v1/apps/invite/"
+
+
+class InviteCors:
+    """R78/R83: the invite swap answers CORS (incl. preflight) for https://<label>.{APPS_DOMAIN} only, with no
+    credentials. Pure ASGI and outermost, so the global credentialed CORSMiddleware never sees these origins."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith(_INVITE_PATH):
+            return await self.app(scope, receive, send)
+        origin = dict(scope["headers"]).get(b"origin", b"").decode("latin-1")
+        if not re.fullmatch(rf"https://[a-z0-9]([a-z0-9-]*[a-z0-9])?\.{re.escape(settings.APPS_DOMAIN)}", origin):
+            return await self.app(scope, receive, send)
+        cors = [(b"access-control-allow-origin", origin.encode()), (b"vary", b"Origin")]
+        if scope["method"] == "OPTIONS":
+            cors += [(b"access-control-allow-methods", b"GET, OPTIONS"), (b"access-control-max-age", b"600")]
+            await send({"type": "http.response.start", "status": 200, "headers": [*cors, (b"content-length", b"0")]})
+            return await send({"type": "http.response.body", "body": b""})
+
+        async def with_cors(message):
+            if message["type"] == "http.response.start":
+                # the inner credentialed CORSMiddleware stamps allow-credentials on every response: drop it
+                kept = [
+                    (k, v) for k, v in message.get("headers", []) if k.lower() != b"access-control-allow-credentials"
+                ]
+                message = {**message, "headers": [*kept, *cors]}
+            await send(message)
+
+        await self.app(scope, receive, with_cors)
+
 
 MAX_UPLOAD = MAX_BYTES + 512 * 1024  # the archive plus the form's other fields, under API Gateway's 10 MB
 _AGENT_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")

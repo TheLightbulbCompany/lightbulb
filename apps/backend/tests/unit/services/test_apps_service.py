@@ -313,7 +313,10 @@ async def test_up_deploys_preview_when_all_active(world):
     world.vercel.finish("dpl_1")
     res = await svc.status(OWNER, src["app_id"])
     assert res["state"] == "ready"
-    assert res["preview"] == {"deployment_id": "dpl_1", "commit": "c1", "ready_at": res["preview"]["ready_at"]}
+    assert res["preview"] == {
+        "deployment_id": "dpl_1", "commit": "c1", "ready_at": res["preview"]["ready_at"], "url": "https://dpl_1.vercel.app",
+    }  # fmt: skip
+    assert dep["env"] == {"LIGHTBULB_COMMIT": "c1"} and dep["build"] == {"env": {"LIGHTBULB_COMMIT": "c1"}}  # R76
     assert (await svc.apps_repo.get(src["app_id"]))["preview_url"] == "https://dpl_1.vercel.app"
     # a third read pushes no env again (fingerprint) and deploys nothing
     n_env, n_dep = len(world.vercel.env_posts()), len(world.vercel.created())
@@ -400,6 +403,7 @@ async def test_publish_deploys_and_adds_domain_once(world):
     assert pub["state"] == "building"
     dep = world.vercel.created()[-1]
     assert dep["target"] == "production"
+    assert dep["env"] == {"LIGHTBULB_COMMIT": "c1"} and dep["build"] == {"env": {"LIGHTBULB_COMMIT": "c1"}}  # R76
     assert dep["projectSettings"]["buildCommand"] == "npx drizzle-kit migrate && next build"
     domains = [r for r in world.vercel.calls if r.url.path.endswith("/domains") and r.method == "POST"]
     hosts = [json.loads(r.content)["name"] for r in domains]
@@ -545,6 +549,7 @@ async def test_preview_alias_is_added_once_and_assigned_on_ready(world):
     aliases = [r for r in world.vercel.calls if r.url.path.endswith("/aliases")]
     assert json.loads(aliases[-1].content) == {"alias": "crew-preview.apps.example.com"}
     assert res["preview_url"] == "https://crew-preview.apps.example.com"
+    assert res["preview"]["url"] == "https://crew-preview.apps.example.com"  # R75: the alias host once assigned
     n_alias = len(aliases)
     await svc.status(OWNER, src["app_id"])
     assert len([r for r in world.vercel.calls if r.url.path.endswith("/aliases")]) == n_alias
@@ -580,6 +585,9 @@ async def test_remove_cleans_everything_and_is_retryable(world):
     # retry: nothing removed twice
     await svc.remove(OWNER, app_id, confirm_name="crew", user_id="user_1")
     assert svc.api.remove_resource.await_count == 3
+    # R82: the name stays claimed after removal
+    assert await svc.apps_repo.get_by_name(OWNER, "crew") is not None
+    assert await svc.apps_repo.get(svc.apps_repo._guard_id("crew")) is not None
 
 
 async def test_status_shape(world):
@@ -1076,3 +1084,27 @@ async def test_display_name_defaults_from_the_slug_and_is_settable(world):
     assert st["display_name"] == "Rota"
     await svc.apps_repo.patch(src["app_id"], {"display_name": None})  # a record from before R74
     assert (await svc.status(OWNER, src["app_id"]))["display_name"] == "Crew Schedule"
+
+
+async def test_up_on_a_live_app_says_ready_never_live(world):
+    """R77: UpResult.state is in the contract enum; the record (and AppStatus) may say live."""
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    res = await _up(src)
+    assert res["state"] == "ready" and res["version"] == 1
+    assert (await svc.status(OWNER, src["app_id"]))["state"] == "live"
+
+
+async def test_services_content_files_only_the_three_workflows(world):
+    """R79: app.yaml services are stored, never provisioned by name."""
+    src = await _source()
+    await svc.up(
+        OWNER, name="crew", room_id="room_1", services=["database", "content"], open_to="room", budget_usd=20,
+        source_id=src["source_id"], actor=PERSON, origin={"kind": "idea", "ref": "i1"},
+    )  # fmt: skip
+    filed = [
+        (c.kwargs["provider_name"], c.kwargs["service_id"], c.kwargs["environment"])
+        for c in world.start.await_args_list
+    ]
+    assert filed == [("vercel", "project", "prod"), ("neon", "postgres", "prod"), ("neon", "postgres", "dev")]
+    assert not any("content" in str(c.kwargs) for c in world.start.await_args_list)

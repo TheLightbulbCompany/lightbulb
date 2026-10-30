@@ -801,6 +801,11 @@ app.add_middleware(
     expose_headers=["X-Request-ID", "Mcp-Session-Id", "WWW-Authenticate"],
 )
 
+# R78/R83: app origins may call the invite swap only (no credentials); added after CORSMiddleware so it runs first.
+from routers.apps import InviteCors  # noqa: E402
+
+app.add_middleware(InviteCors)
+
 # E2E correlation middleware — binds X-E2E-Run-Id header to log context so
 # every log line emitted while handling an e2e harness request carries the
 # same e2e_run_id field. No-op for traffic that doesn't send the header.

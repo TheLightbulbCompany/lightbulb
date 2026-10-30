@@ -2234,7 +2234,7 @@ async def test_unchanged_catalog_before_app_resource_post_still_creates():
     create.assert_awaited_once()
 
 
-# --- per-provider limit from the app budget ---------------------------------
+# --- R80: the app budget is not a provider limit ---------------------------------
 
 
 async def _approve_app_row(service):
@@ -2253,12 +2253,10 @@ async def _approve_app_row(service):
 
 
 @pytest.mark.asyncio
-async def test_paid_app_resource_sets_provider_limit_from_budget():
+async def test_paid_app_resource_sets_no_provider_limit_from_budget():
+    """R80: the provider limit is account-wide; the app's budget_usd never becomes one."""
     limit, move = await _approve_app_row(_paid("$20/mo"))
-    # cents; the client stringifies it ("1000") on the wire
-    limit.assert_awaited_once_with(
-        "acct_1", max_amount=1000, currency="usd", recurring_interval="month", provider="prvdr_1"
-    )
+    limit.assert_not_awaited()
     assert move.await_args.kwargs["to_state"] == "connecting_provider"
 
 
@@ -2266,48 +2264,6 @@ async def test_paid_app_resource_sets_provider_limit_from_budget():
 async def test_free_app_resource_sets_no_limit():
     limit, move = await _approve_app_row(SERVICE)
     limit.assert_not_awaited()
-    assert move.await_args.kwargs["to_state"] == "connecting_provider"
-
-
-@pytest.mark.asyncio
-async def test_app_without_a_budget_sets_no_limit_and_still_moves(caplog):
-    approval = mod.snapshot_of(_paid("$20/mo"), PROVIDER, CONFIG, environment="crew-schedule — live")
-    row = _row(state="awaiting_approval", approval=approval, app_id="app_1", environment="prod")
-    with (
-        patch.object(mod.repo, "get", AsyncMock(return_value=row)),
-        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "budget_usd": None})),
-        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[_paid("$20/mo")])),
-        patch.object(mod.api, "payment_profile", AsyncMock(return_value={"id": "pp_1"})),
-        patch.object(mod.api, "update_limit", AsyncMock()) as limit,
-        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="connecting_provider"))) as move,
-        caplog.at_level("WARNING"),
-    ):
-        await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_admin")
-    limit.assert_not_awaited()
-    assert "no budget_usd" in caplog.text
-    assert move.await_args.kwargs["to_state"] == "connecting_provider"
-
-
-@pytest.mark.asyncio
-async def test_payment_setup_resume_applies_the_app_limit():
-    approval = mod.snapshot_of(_paid("$20/mo"), PROVIDER, CONFIG, environment="crew-schedule — live")
-    row = _row(
-        state="awaiting_user_action",
-        awaiting="payment_setup",
-        approval=approval,
-        app_id="app_1",
-        environment="prod",
-    )
-    with (
-        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "budget_usd": 10})),
-        patch.object(mod.api, "payment_profile", AsyncMock(return_value={"id": "pp_1"})),
-        patch.object(mod.api, "update_limit", AsyncMock(return_value={})) as limit,
-        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="connecting_provider"))) as move,
-    ):
-        await mod._poll_awaited_leg("acct_1", row)
-    limit.assert_awaited_once_with(
-        "acct_1", max_amount=1000, currency="usd", recurring_interval="month", provider="prvdr_1"
-    )
     assert move.await_args.kwargs["to_state"] == "connecting_provider"
 
 
@@ -2333,7 +2289,6 @@ async def test_reconcile_approval_posts_line_with_paperclip_user():
         patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
         patch.object(mod.repo, "get", AsyncMock(return_value=row)),
         patch.object(mod, "_fresh_snapshot", AsyncMock(return_value=row.get("approval") or {})),
-        patch.object(mod, "_apply_app_limit", AsyncMock()),
         patch.object(mod.repo, "transition", AsyncMock(return_value=moved)),
         patch.object(apps_room.apps_repo, "get", AsyncMock(return_value={**APP, "room_id": "room_1"})),
         patch.object(apps_room.messaging, "require_room_member", member),
@@ -2382,23 +2337,3 @@ async def test_no_resource_is_created_for_a_removed_app():
         await mod._create_resource("acct_1", _approved(state="connecting_provider", app_id="app_1", environment="prod"))
     create.assert_not_awaited()
     assert failed.await_args.args[1] == "app_not_found"
-
-
-@pytest.mark.asyncio
-async def test_a_zero_budget_sets_no_provider_limit(caplog):
-    """R58: budget 0 must not cap the provider (account-wide) at $0."""
-    approval = mod.snapshot_of(_paid("$20/mo"), PROVIDER, CONFIG, environment="crew-schedule — live")
-    row = _row(state="awaiting_approval", approval=approval, app_id="app_1", environment="prod")
-    with (
-        patch.object(mod.repo, "get", AsyncMock(return_value=row)),
-        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "budget_usd": 0})),
-        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[_paid("$20/mo")])),
-        patch.object(mod.api, "payment_profile", AsyncMock(return_value={"id": "pp_1"})),
-        patch.object(mod.api, "update_limit", AsyncMock()) as limit,
-        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="connecting_provider"))) as move,
-        caplog.at_level("INFO"),
-    ):
-        await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_admin")
-    limit.assert_not_awaited()
-    assert "budget_usd is 0" in caplog.text
-    assert move.await_args.kwargs["to_state"] == "connecting_provider"

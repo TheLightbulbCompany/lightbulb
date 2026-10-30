@@ -216,8 +216,10 @@ def board_snapshot() -> str:
         lines.append("In progress: " + "; ".join(_row(i) for i in doing))
     if done:
         lines.append(f"Done in the last {_BOARD_DONE_DAYS} days: " + "; ".join(_row(i, True) for i in done))
-    text = ("Task board right now (live; it wins over a remembered fact that says otherwise):\n"
-            + "\n".join(lines)) if lines else ""
+    # G1 #24: headed "Task board right now", this read as the whole board ("only 3 open cards", 55 open).
+    text = (f"Task board, partial: in progress and recently done only, up to {_BOARD_ROWS} each, not the whole "
+            "board; for any count or list of open tasks, read the board. Live: it wins over a remembered "
+            "fact that says otherwise.\n" + "\n".join(lines)) if lines else ""
     _BOARD[(base, company)] = (time.monotonic() + _BOARD_TTL_S, text)
     return text
 

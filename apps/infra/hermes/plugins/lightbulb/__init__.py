@@ -789,72 +789,6 @@ def _ask_person(args: dict, **_kw) -> str:
                        "link": f"{_app_url()}/{company.get('issuePrefix')}/issues/{ident}"})
 
 
-# ---- lightbulb_board: counts and lists from the board, never from memory -----------------------
-# G1 (30 Oct): an agent said "only 3 open cards" with 55 open. The fork's list route
-# (pc:server/src/routes/issues.ts:7884) returns a bare array, `limit` clamped to 1000
-# (services/issues.ts:216-217), `offset`, comma-separated `status`, `assigneeAgentId`, free-text `q`.
-BOARD_STATUSES = ("backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled")
-BOARD_OPEN = tuple(s for s in BOARD_STATUSES if s not in ("done", "cancelled"))
-BOARD_PAGE = 1000
-BOARD_MAX_ROWS = 2000  # ponytail: a hard cap, flagged as truncated; count server-side if boards outgrow it
-BOARD_SHOWN = 50
-BOARD_SCHEMA = {
-    "name": "lightbulb_board",
-    "description": "Count or list the workspace's tasks from the board itself. Use it before stating any "
-                   "number of tasks or any task's status; never state one from memory. Defaults to every "
-                   "open status (not done or cancelled) for everyone.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "status": {"type": "array", "items": {"type": "string", "enum": list(BOARD_STATUSES)}},
-            "assignee": {"type": "string", "description": "\"me\", an agent's name, or omit for everyone."},
-            "query": {"type": "string", "description": "Words to match in task titles."},
-        },
-    },
-}
-BOARD_DOWN = "The board is unavailable right now. Do not state a number."
-
-
-def _board(args: dict, **_kw) -> str:
-    statuses = [str(s) for s in (args.get("status") or BOARD_OPEN)]
-    if bad := [s for s in statuses if s not in BOARD_STATUSES]:
-        return f"Unknown status: {', '.join(bad)}. Use {', '.join(BOARD_STATUSES)}."
-    base, key = _scope_secret("PAPERCLIP_API_URL").rstrip("/"), _scope_secret("PAPERCLIP_API_KEY")
-    if not base or not key:
-        return "lightbulb_board is unavailable: this turn has no Paperclip credentials."
-    try:
-        me = _paperclip_call("GET", f"{base}/api/agents/me", key)
-        company = me["companyId"]
-        agents = _paperclip_call("GET", f"{base}/api/companies/{company}/agents", key)
-        names = {a["id"]: a.get("name") or a["id"] for a in agents if isinstance(a, dict) and a.get("id")}
-        params = {"status": ",".join(statuses)}
-        who = str(args.get("assignee") or "").strip()
-        if who.lower() == "me":
-            params["assigneeAgentId"] = me["id"]
-        elif who:
-            match = [i for i, n in names.items() if str(n).lower() == who.lower()]
-            if not match:
-                return f"No agent named {who} on this board."
-            params["assigneeAgentId"] = match[0]
-        if str(args.get("query") or "").strip():
-            params["q"] = str(args["query"]).strip()
-        rows: list = []
-        while len(rows) < BOARD_MAX_ROWS:
-            page = _paperclip_call("GET", f"{base}/api/companies/{company}/issues?" + urllib.parse.urlencode(
-                {**params, "limit": BOARD_PAGE, "offset": len(rows)}), key)
-            if not page:  # only an empty page ends it: the server may clamp below what we asked
-                break
-            rows.extend(page)
-    except Exception:  # noqa: BLE001 -- no status, no URL, no detail reaches the agent
-        return BOARD_DOWN
-    truncated = len(rows) >= BOARD_MAX_ROWS
-    rows = rows[:BOARD_MAX_ROWS]
-    shown = [{"identifier": r.get("identifier") or r.get("id"), "title": r.get("title"), "status": r.get("status"),
-              "assignee": names.get(r.get("assigneeAgentId")) if r.get("assigneeAgentId") else None}
-             for r in rows[:BOARD_SHOWN]]
-    return json.dumps({"total": len(rows), "issues": shown, "truncated": truncated})
-
-
 def _log_memory_full(tool_name: str = "", result=None, **_kw) -> None:
     """Hermes refuses a built-in memory write over its char budget and tells only the model."""
     if tool_name == "memory" and isinstance(result, str) and "would exceed the limit" in result:
@@ -970,8 +904,6 @@ def register(ctx) -> None:
                       description=APPROVAL_SCHEMA["description"], emoji="✅")
     ctx.register_tool("ask_person", "lightbulb", ASK_PERSON_SCHEMA, _ask_person,
                       description=ASK_PERSON_SCHEMA["description"], emoji="❓")
-    ctx.register_tool("lightbulb_board", "lightbulb", BOARD_SCHEMA, _board,
-                      description=BOARD_SCHEMA["description"], emoji="📋")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,
                       description=SESSIONS_SCHEMA["description"], emoji="🖥️")
     ctx.register_tool("lightbulb_network", "lightbulb", NETWORK_SCHEMA, _network,

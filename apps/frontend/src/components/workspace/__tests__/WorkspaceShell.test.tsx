@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { WorkspaceShell } from "../WorkspaceShell";
-import { _resetControllerForTests, activateMessagesPanel, closePane, openPanel, useThreadPane } from "../workspaceController";
+import { _resetControllerForTests, activateMessagesPanel, getWorkspaceSnapshot, closePane, openPanel, useThreadPane } from "../workspaceController";
 import { PANE_DEFAULT_WIDTH, paneWidthKey } from "../RightPane";
 
 const state = vi.hoisted(() => ({
@@ -230,6 +230,14 @@ it("restores the room and the Browser beside it from ?panel=chat&room=…&pane=b
   renderReady();
   expect(screen.getByRole("region", { name: "Conversation" })).toHaveAttribute("data-room", "r-launch");
   expect(screen.getByRole("region", { name: "Browser" })).toBeInTheDocument();
+});
+
+it("opens Canvas on app_1 from ?panel=canvas&app=app_1", () => {
+  window.history.replaceState(null, "", "/chat?panel=canvas&app=app_1");
+  renderReady();
+  const { main } = getWorkspaceSnapshot();
+  expect(main).toMatchObject({ component: "canvas", params: { app: "app_1" } });
+  expect(screen.getByTestId("panel-canvas").closest(".workspace-view")).not.toHaveAttribute("hidden");
 });
 
 it("restores both the place and the pane from a two-slot URL on reload", () => {

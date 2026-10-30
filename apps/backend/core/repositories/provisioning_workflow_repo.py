@@ -73,6 +73,8 @@ async def create(
     configuration: dict,
     issue_id: str | None = None,
     reason: str = "",
+    app_id: str | None = None,
+    environment: str = "prod",
 ) -> dict:
     """Persist the intent BEFORE any Stripe write (guide: "Persist the intent
     to create or change a Resource before making the request")."""
@@ -92,6 +94,10 @@ async def create(
         # catalog drift still says why — the row is the memory, and the reason
         # is not recoverable from the catalog.
         "reason": reason or "",
+        # None = the company's own service; otherwise the app it belongs to.
+        # An app has a `prod` and a `dev` row for the same service.
+        "app_id": app_id,
+        "environment": environment,
         "attempts": 0,
         "created_at": now,
         "updated_at": now,

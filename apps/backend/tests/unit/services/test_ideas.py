@@ -828,3 +828,38 @@ async def test_a_closed_task_start_gets_no_comment_and_stays_unmarked(commenting
     assert await ideas.resume_after_connect(OWNER, "google") == 0
     commenting.add_issue_comment.assert_not_awaited()
     assert not (await ideas.messaging_repo.open_idea_starts(OWNER))[0].get("resumed")
+
+
+@pytest.mark.asyncio
+async def test_app_idea_round_trips_kind_and_origin(workspace):
+    added = await ideas.suggest(
+        OWNER,
+        _suggestion("Build a refund tracker", kind="app", app_kind="internal_tool", origin="Asked 5 times this month"),
+    )
+    card = next(c for c in (await ideas.list_ideas(AUTH))["ideas"] if c["id"] == added["id"])
+    assert (card["kind"], card["appKind"], card["origin"]) == ("app", "internal_tool", "Asked 5 times this month")
+    with pytest.raises(ValueError):
+        _suggestion(kind="app", app_kind="spaceship")
+    with pytest.raises(ValueError):
+        _suggestion(kind="app")  # an app idea needs its app kind
+
+
+@pytest.mark.asyncio
+async def test_lets_do_it_on_an_app_idea_starts_the_builder_in_its_room(paperclip):
+    # Suggestions carry no room: "its room" is the starter's DM with the suggesting agent, as for any idea.
+    added = await ideas.suggest(OWNER, _suggestion("Build a refund tracker", kind="app", app_kind="dashboard"))
+    started = await ideas.start(AUTH, added["id"])
+    [line] = await _lines(started["roomId"])
+    assert "Build this as an app" in line["text"] and "kind dashboard" in line["text"]
+    assert f"suggested:{added['id']}" in line["text"] and "lightbulb app" not in line["text"]
+    assert await repo.get_member(started["roomId"], "agent", STARTERS["growth"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_existing_ideas_unchanged(paperclip):
+    added = await ideas.suggest(OWNER, _suggestion())
+    card = (await ideas.list_ideas(AUTH))["ideas"][0]
+    assert card["kind"] == "everyday" and "appKind" not in card and "origin" not in card
+    started = await ideas.start(AUTH, added["id"])
+    [line] = await _lines(started["roomId"])
+    assert "lightbulb app" not in line["text"]

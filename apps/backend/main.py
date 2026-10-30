@@ -801,6 +801,11 @@ app.add_middleware(
     expose_headers=["X-Request-ID", "Mcp-Session-Id", "WWW-Authenticate"],
 )
 
+# R78/R83: app origins may call the invite swap only (no credentials); added after CORSMiddleware so it runs first.
+from routers.apps import InviteCors  # noqa: E402
+
+app.add_middleware(InviteCors)
+
 # E2E correlation middleware — binds X-E2E-Run-Id header to log context so
 # every log line emitted while handling an e2e harness request carries the
 # same e2e_run_id field. No-op for traffic that doesn't send the header.
@@ -1057,6 +1062,11 @@ app.include_router(company_stripe.router, prefix="/api/v1/company/stripe", tags=
 from routers import company_provisioning  # noqa: E402
 
 app.include_router(company_provisioning.router, prefix="/api/v1/company/provisioning", tags=["company-provisioning"])
+
+# Apps on the provisioning rail: builders under /build, Canvas and the admin on the rest.
+from routers import apps as apps_routes  # noqa: E402
+
+app.include_router(apps_routes.router, prefix="/api/v1/apps", tags=["apps"])
 
 # Capability policy + revoke-all (the P0d slice — row + surface only;
 # enforcement in the rails is P1).

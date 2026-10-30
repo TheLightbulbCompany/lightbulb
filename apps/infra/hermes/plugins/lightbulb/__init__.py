@@ -158,6 +158,12 @@ SUGGEST_IDEA_SCHEMA = {
             "size": {"type": "string", "enum": ["project", "task", "quick"],
                      "description": "project: many steps over days; task: one errand; quick: answered in one go."},
             "emoji": {"type": "string", "description": "One emoji that pictures the outcome, shown beside the title."},
+            "kind": {"type": "string", "enum": ["app"], "description": "Set to app when the idea is a small app."},
+            "app_kind": {"type": "string", "description": "With kind app: what sort of app.",
+                         "enum": ["landing_page", "content_site", "form", "internal_tool", "dashboard",
+                                  "customer_portal", "product_with_payments", "automation"]},
+            "origin": {"type": "string", "maxLength": 120,
+                       "description": "With kind app: one line on what keeps coming back."},
         },
         "required": ["title", "description", "deliverables", "size"],
     },
@@ -178,6 +184,9 @@ def _suggest_idea(args: dict, *, session_id: str = "", **_kw) -> str:
     }
     if str(args.get("emoji") or "").strip():
         body["emoji"] = str(args["emoji"]).strip()
+    for key, field in (("kind", "kind"), ("app_kind", "appKind"), ("origin", "origin")):
+        if str(args.get(key) or "").strip():
+            body[field] = str(args[key]).strip()
     url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/ideas/suggestions/{ctx['ownerId']}"
     try:
         result = _post(url, ctx["hookToken"], body)

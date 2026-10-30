@@ -34,7 +34,7 @@ describe("CanvasDockPanel deep link", () => {
   });
 
   it.each([
-    ["awaiting_approval", /Waiting for the owner to approve: the card is in #finance/],
+    ["awaiting_approval", /Waiting for an owner to approve: the cards are in Activity, under Needs you/],
     ["provisioning", /Setting up its hosting and data/],
     ["failed", /Something went wrong\. Ask the agent in #finance/],
   ] as const)("%s shows its status line in the open view", (state, re) => {

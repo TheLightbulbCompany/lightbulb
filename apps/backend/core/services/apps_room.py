@@ -48,14 +48,26 @@ async def post_approval_line(*, owner_id: str, user_id: str, workflow: dict) -> 
         if author is None:
             logger.warning("apps: no human member to post the approval line for %s", workflow_id)
             return
+        provider = str(workflow.get("provider_name") or "")
+        what = {"vercel": "hosting", "neon": "a database"}.get(
+            provider.lower(), f"{provider}/{workflow.get('service_ref')}"
+        )
+        env = "live" if workflow.get("environment") == "prod" else "preview"
+        display = app.get("display_name") or app.get("name")
+        # Address the builder agent so the line wakes it, not just the room.
+        mentions = (
+            [messaging.MemberRef(kind="agent", id=app["actor_id"])]
+            if app.get("actor_kind") == "agent" and app.get("actor_id")
+            else []
+        )
         await messaging.create_human_message(
             AuthContext(user_id=author, org_id=owner_id),
             room_id,
             messaging.CreateMessageRequest(
                 # A replay of the same approval is a no-op on the messaging side.
                 client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"apps-approval:{workflow_id}"),
-                text=f"approved: {workflow.get('provider_name')}/{workflow.get('service_ref')} "
-                f"for {app.get('name')}, setting up",
+                text=f"Approved {what} for {display} ({env}). Setting it up.",
+                mentions=mentions,
                 reply_to_message_id=None,
                 thread_root_message_id=None,
             ),

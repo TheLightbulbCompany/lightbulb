@@ -62,13 +62,15 @@ function factLine(payload: Record<string, unknown> | null | undefined): string {
   const categories = Array.isArray(payload?.categories)
     ? (payload!.categories as unknown[]).filter((c) => typeof c === "string").join(", ")
     : "";
+  const availability = payloadString(payload, "availability");
+  const action = payloadString(payload, "action");
   const facts = [
     categories,
-    payloadString(payload, "availability") && `Available: ${payloadString(payload, "availability")}`,
+    availability && availability !== "available" && `Available: ${availability}`, // "Available: available" says nothing
     payloadString(payload, "scope") && `Scope: ${payloadString(payload, "scope")}`,
     payloadString(payload, "environment"),
     payloadString(payload, "payment_owner") && `Paid with: ${payloadString(payload, "payment_owner")}`,
-    payloadString(payload, "action") && `This ${payloadString(payload, "action")}`,
+    action && (action === "creates new" ? "Sets up something new" : action === "links existing" ? "Links something you already have" : `This ${action}`),
   ].filter(Boolean);
   return facts.join(" · ");
 }

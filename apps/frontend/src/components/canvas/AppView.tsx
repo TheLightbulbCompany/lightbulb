@@ -16,7 +16,8 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const { open, refresh } = useApps();
   const isAdmin = useIsWorkspaceAdmin();
   const [target, setTarget] = useState<{ id: string; t: "live" | "preview" }>({ id: app.app_id, t: "live" });
-  const t = target.id === app.app_id && app.live_version != null && app.preview_url ? target.t : "live";
+  // Nothing live yet: the preview is the only thing to show. Both: the person's pick holds.
+  const t: "live" | "preview" = app.live_version == null ? (app.preview_url ? "preview" : "live") : target.id === app.app_id && app.preview_url ? target.t : "live";
   const key = `${app.app_id}:${t}`; // a pass is tagged by app + target, never reused across either
   const [pass, setPass] = useState<{ id: string; url: string } | null>(null);
   const [refusal, setRefusal] = useState<{ id: string; status?: number; raw: string } | null>(null);
@@ -83,8 +84,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
         onClick={() => setSettingsOpen((v) => !v)}>Settings</button>}
     </header>
     {pending && <p className="canvas__notice">{pending}</p>}
-    {app.live_version == null && app.state === "ready" && <p className="canvas__notice">Preview: not live yet.</p>}
-    {t === "preview" && <p className="canvas__notice">You&apos;re looking at the preview. Only you and {room} see it until it&apos;s published.</p>}
+    {t === "preview" && <p className="canvas__notice">You&apos;re looking at the preview. Only you and {room} see it until it&apos;s published{canManage ? ": press Publish, or say “ship it” in the room" : ""}.</p>}
     {!canManage && <p className="canvas__notice">{app.open_to === "room" ? `Open to ${room}` : `Open to ${whoName}`}. Only {app.created_by_name ?? "the person who asked for it"} or a workspace admin can change who can open it.</p>}
     {settingsOpen && <AppSettings app={app} publishCtl={publishCtl} onClose={() => setSettingsOpen(false)} onRemoved={onBack} />}
     {tabError && <div className="canvas__notice"><Problem raw={tabError.raw}>{dn} didn&apos;t open. Try again in a moment.</Problem></div>}

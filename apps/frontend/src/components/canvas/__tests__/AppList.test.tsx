@@ -73,11 +73,17 @@ describe("AppList", () => {
 
   it("awaiting row names who asked when requested_by is present", () => {
     render(<AppList {...props} apps={[app({ state: "awaiting_approval", requested_by: "Dana" })]} />);
-    expect(screen.getByText("Waiting for the owner to approve Dana's request: the card is in #finance.")).toBeTruthy();
+    expect(screen.getByText("Waiting for an owner to approve Dana's request: the cards are in Activity, under Needs you.")).toBeTruthy();
+  });
+
+  it("a row with no known asker says where it came from, never 'someone'", () => {
+    render(<AppList {...props} apps={[app({ created_by_name: null, requested_by: null })]} />);
+    expect(screen.getByText("from #finance")).toBeTruthy();
+    expect(screen.queryByText(/someone/)).toBeNull();
   });
 
   it.each([
-    ["awaiting_approval", "Waiting for the owner to approve: the card is in #finance."],
+    ["awaiting_approval", "Waiting for an owner to approve: the cards are in Activity, under Needs you."],
     ["provisioning", "Setting up its hosting and data, usually a few minutes."],
     ["failed", "Something went wrong. Ask the agent in #finance."],
   ] as const)("%s row shows its status line", (state, line) => {

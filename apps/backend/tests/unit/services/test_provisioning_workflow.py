@@ -2304,7 +2304,7 @@ async def test_reconcile_approval_posts_line_with_paperclip_user():
     post.assert_awaited_once()
     auth, room_id, request = post.await_args.args
     assert (auth.user_id, auth.org_id, room_id) == ("user_creator", "org_a", "room_1")
-    assert request.text == "approved: posthog/svc_analytics for crew-schedule, setting up"
+    assert request.text == "Approved posthog/svc_analytics for crew-schedule (live). Setting it up."
     assert post.await_args.kwargs == {"via": "apps", "wake": True}
 
 

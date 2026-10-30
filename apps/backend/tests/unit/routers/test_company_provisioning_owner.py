@@ -1077,7 +1077,7 @@ def test_approval_posts_once_per_workflow(client, room):
 
     asyncio.run(wf.on_approved("pwf_1", usage_limit=None, approved_by="paperclip"))
     assert list(sent.values()) == [
-        ("user_admin", "room_1", "approved: posthog/analytics for crew-schedule, setting up", "apps", True)
+        ("user_admin", "room_1", "Approved posthog/analytics for crew-schedule (live). Setting it up.", "apps", True)
     ]
 
 

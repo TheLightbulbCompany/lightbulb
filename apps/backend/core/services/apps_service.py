@@ -312,7 +312,8 @@ async def _ensure_workflows(app: dict, issue_id: str | None) -> None:
                 service_id=service,
                 configuration={"name": name},
                 issue_id=issue_id,
-                reason=f"App {app['name']} ({'live' if env == 'prod' else 'preview'})",
+                # The owner reads this on the card: say what it is for, in words.
+                reason=f"{app.get('display_name') or app['name']}: {'hosting' if provider == 'vercel' else 'a database'} ({'live' if env == 'prod' else 'preview'})",
                 app_id=app["app_id"],
                 environment=env,
             )

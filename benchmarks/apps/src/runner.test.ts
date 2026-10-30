@@ -1,0 +1,67 @@
+import { describe, expect, it } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { BuilderAdapter, BuildResult } from "./adapters/types";
+import { loadTask, runSuite, runTask, type Deps } from "./runner";
+
+const res = (o: Partial<BuildResult> = {}): BuildResult => ({ dir: "", tokensIn: 1, tokensOut: 1, dollars: 0, minutes: 0, fixLoops: 0, status: "done", log: "", ...o });
+const adapter = (f: (dir: string, signal?: AbortSignal) => Promise<Partial<BuildResult>> | Partial<BuildResult>): BuilderAdapter => ({
+  name: "fake", build: async (_t, dir, signal) => res({ dir, ...(await f(dir, signal)) }),
+});
+const journeys = (pass: number, total = 10) => async () => Array.from({ length: total }, (_, i) => ({ id: `j${i}`, pass: i < pass }));
+const mk = (j = journeys(10), probePass = true, judge = 0.5): Deps => ({
+  probes: async () => [{ id: "p1", pass: probePass, detail: "" }],
+  judge: async () => judge,
+  serve: async () => ({ url: "http://x", databaseUrl: "d", stop: async () => {}, buildLog: "serve-log", built: true }),
+  journeys: j,
+});
+const out = () => mkdtempSync(join(tmpdir(), "runner-"));
+const task = () => ({ ...loadTask("b01-todo"), timeoutMin: 45 });
+
+describe("runner", () => {
+  it("score_formula_matches_spec", async () => {
+    const a = adapter(() => ({}));
+    const ok = await runTask(task(), a, { run: 1, outDir: out() }, mk());
+    expect(ok.score).toBeCloseTo(0.925, 6);
+    expect(ok.passed).toBe(true);
+    expect(ok.builder).toBe("fake");
+    const bad = await runTask(task(), a, { run: 1, outDir: out() }, mk(journeys(9)));
+    expect(bad.passed).toBe(false);
+  });
+
+  it("run_times_out_and_suite_continues", async () => {
+    const t = { ...task(), timeoutMin: 0.0005 };
+    let n = 0;
+    const a = adapter((_d, signal) => (n++ === 0 ? new Promise((_r, rej) => signal!.addEventListener("abort", () => rej(new Error("aborted")))) : {}));
+    const dir = out();
+    const r1 = await runTask(t, a, { run: 1, outDir: dir }, mk());
+    expect(r1.status).toBe("timeout");
+    expect(r1.score).toBe(0);
+    const r2 = await runTask(t, a, { run: 2, outDir: dir }, mk());
+    expect(r2.status).toBe("done");
+  });
+
+  it("builder_cannot_touch_the_tests", async () => {
+    const a = adapter((dir) => { writeFileSync(join(dir, "contract.json"), "{}"); return {}; });
+    const r = await runTask(task(), a, { run: 1, outDir: out() }, { ...mk(), serve: async () => { throw new Error("must not serve"); } });
+    expect(r.status).toBe("contract_modified");
+    expect(r.score).toBe(0);
+    expect(r.passed).toBe(false);
+  });
+
+  it("contract and attachments are visible to the builder", async () => {
+    let saw = false;
+    await runTask(task(), adapter((dir) => { saw = existsSync(join(dir, "contract.json")); return {}; }), { run: 1, outDir: out() }, mk());
+    expect(saw).toBe(true);
+  });
+
+  it("suite_stops_at_budget", async () => {
+    const root = out();
+    const dir = await runSuite(adapter(() => ({ dollars: 200 })), { tasks: ["b01-todo", "b02-slotline"], runs: 3, budgetUsd: 400, resultsRoot: root }, mk());
+    const recs = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    expect(recs.length).toBe(2);
+    expect(JSON.parse(readFileSync(join(dir, recs[0]), "utf8")).dollars).toBe(200);
+    expect(readdirSync(dir).some((f) => f.endsWith(".build.log"))).toBe(true);
+  });
+});

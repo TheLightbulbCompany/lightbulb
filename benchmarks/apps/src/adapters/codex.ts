@@ -58,6 +58,8 @@ export function runCodex(args: string[], cwd: string, signal?: AbortSignal, spaw
   });
 }
 
+const AT_CAPACITY = /Selected model is at capacity/;
+
 export const makeCodexAdapter = (spawn: Spawn = realSpawn): BuilderAdapter => ({
   name: "codex", billing: "subscription", defaultModel: "codex-default",
   async build(task, workdir, signal) {
@@ -71,7 +73,13 @@ export const makeCodexAdapter = (spawn: Spawn = realSpawn): BuilderAdapter => ({
     try {
       const rules = await loadRules();
       header = `[rules source: ${rules.source}] [model: ${model ?? "codex-default"}]\n`;
-      const r = await runCodex(codexArgs(`${rules.text}\n\n${task.prompt}`, workdir, model), workdir, signal, spawn);
+      const args = codexArgs(`${rules.text}\n\n${task.prompt}`, workdir, model);
+      let r = await runCodex(args, workdir, signal, spawn);
+      if (!signal?.aborted && AT_CAPACITY.test(r.out)) { // provider capacity, not the builder: one retry after a pause
+        header += "[retry] model at capacity\n";
+        await new Promise((f) => setTimeout(f, Number(process.env.LIGHTBULB_EVAL_RETRY_MS ?? 60_000)));
+        r = await runCodex(args, workdir, signal, spawn);
+      }
       out = r.out;
       return result(signal?.aborted ? "timeout" : r.code === 0 && parseCodexUsage(out) ? "done" : "error");
     } catch (e) {

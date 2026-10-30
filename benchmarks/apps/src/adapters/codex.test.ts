@@ -45,6 +45,16 @@ describe("codex adapter", () => {
   const task = { id: "x", prompt: "do it" } as any;
   const dir = mkdtempSync(join(tmpdir(), "cx-"));
 
+  it("retries once when the model is at capacity", async () => {
+    process.env.LIGHTBULB_EVAL_RETRY_MS = "1";
+    let n = 0;
+    const a = makeCodexAdapter(fake((p) => { n++; p.stdout.emit("data", n === 1 ? '{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}\n' : sample); p.emit("close", n === 1 ? 1 : 0); }));
+    const r = await a.build(task, dir);
+    expect(n).toBe(2);
+    expect(r.status).toBe("done");
+    expect(r.log).toContain("[retry] model at capacity");
+  });
+
   it("parses a run: subscription, zero dollars, not unknown cost", async () => {
     const a = makeCodexAdapter(fake((p) => { p.stdout.emit("data", sample); p.emit("close", 0); }));
     const r = await a.build(task, dir);

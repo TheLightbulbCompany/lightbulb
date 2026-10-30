@@ -1,0 +1,1 @@
+{ "name": "trivial-app", "private": true, "scripts": { "build": "echo built", "start": "node server.js" } }

@@ -51,7 +51,7 @@ async function screenshots(url: string, dir: string, task: Task): Promise<Buffer
   const routes: string[] = (JSON.parse(readFileSync(f, "utf8")).routes ?? []).filter((r: string) => !r.includes("[") && !r.startsWith("/api/"));
   const pages = [...routes.filter((r) => !r.startsWith("/auth/")), ...routes.filter((r) => r.startsWith("/auth/"))];
   if (!pages.includes("/")) pages.unshift("/");
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ channel: "chrome" });
   try {
     const ctx = await browser.newContext({ baseURL: url, viewport: { width: 1280, height: 800 } });
     const page = await ctx.newPage();

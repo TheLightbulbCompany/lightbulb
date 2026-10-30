@@ -11,7 +11,7 @@ type Ctx = { url: string; dir: string; databaseUrl: string; task: Task; browser:
 /** Run every probe; a probe that throws is a failed probe with the error as its detail. */
 export async function runProbes(url: string, dir: string, probes: ProbeSpec[], databaseUrl: string, task: Task): Promise<ProbeResult[]> {
   let b: Promise<Browser> | undefined;
-  const ctx: Ctx = { url, dir, databaseUrl, task, browser: () => (b ??= chromium.launch()) };
+  const ctx: Ctx = { url, dir, databaseUrl, task, browser: () => (b ??= chromium.launch({ channel: "chrome" })) };
   const out: ProbeResult[] = [];
   try {
     for (const p of probes) {

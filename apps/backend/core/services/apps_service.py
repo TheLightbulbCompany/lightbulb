@@ -144,7 +144,7 @@ def _check_name(name: str) -> str:
 
 def _display(app: dict) -> str:
     """R74: the stored display name, else the slug title-cased ("crew-schedule" -> "Crew Schedule")."""
-    return app.get("display_name") or " ".join(w.capitalize() for w in app["name"].split("-"))
+    return app.get("display_name") or " ".join(w.capitalize() for w in re.split(r"[-_]", app["name"]) if w)
 
 
 def can_manage(app: dict, auth: AuthContext) -> bool:

@@ -240,10 +240,14 @@ async def list_pending(*, limit: int = 25) -> list[dict]:
     scan: the table is small, and a cleared pending map is stored as NULL, which cannot key a sparse index."""
     from boto3.dynamodb.conditions import Attr
 
+    # Destroyed apps are filtered here, not by the caller: the limit below would let them fill every slot.
     kwargs: dict = {
-        "FilterExpression": Attr("preview_pending").attribute_type("M")
-        | Attr("publish_pending").attribute_type("M")
-        | Attr("preview_repoint").attribute_type("M")
+        "FilterExpression": (
+            Attr("preview_pending").attribute_type("M")
+            | Attr("publish_pending").attribute_type("M")
+            | Attr("preview_repoint").attribute_type("M")
+        )
+        & Attr("state").ne("destroyed")
     }
     items: list[dict] = []
     while True:

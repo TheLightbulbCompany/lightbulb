@@ -1273,6 +1273,15 @@ def test_display_default_splits_words_on_dash_and_underscore():
     assert svc._display({"name": "crm_v2"}) == "Crm V2"
 
 
+async def test_destroyed_apps_take_no_sweeper_slot(world):
+    """The scan caps at its limit before the sweeper skips destroyed apps, so they could fill every slot."""
+    src, _, _ = await _ready_preview(world)
+    await svc.apps_repo.patch(src["app_id"], {"preview_repoint": {"deployment_id": "dpl_1"}})
+    assert [a["app_id"] for a in await svc.apps_repo.list_pending()] == [src["app_id"]]
+    await svc.apps_repo.patch(src["app_id"], {"state": "destroyed"})
+    assert await svc.apps_repo.list_pending() == []
+
+
 async def test_sweeper_settles_a_pending_publish_without_the_builder(world):
     """Nothing but the builder's own reads stepped a publish; with the agent down, Demo Lab's first
     publish sat in "building" for 21 minutes. The sweeper steps pending deployments on its own."""

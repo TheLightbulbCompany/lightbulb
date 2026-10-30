@@ -49,6 +49,7 @@ export function AppSettings({ app, onClose, onRemoved }: { app: AppRow; onClose(
   const room = `#${app.room_name ?? "this room"}`;
   const warning = pending && whoLosesAccess(openTo, pending, room);
   const pick = (value: OpenTo) => {
+    if (value === openTo) { setPending(null); return; }
     if (whoLosesAccess(openTo, value, room)) setPending(value); else { setPending(null); choose(value); }
   };
   const choose = async (value: OpenTo) => {

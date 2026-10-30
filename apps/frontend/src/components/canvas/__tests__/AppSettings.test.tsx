@@ -76,6 +76,30 @@ describe("AppSettings", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it("picking the current audience while confirming sends nothing", () => {
+    render(<AppSettings app={app()} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("People I invite"));
+    fireEvent.click(screen.getByLabelText("This room"));
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect((screen.getByLabelText("This room") as HTMLInputElement).checked).toBe(true);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  const labels = { room: "This room", workspace: "Everyone in the workspace", invited: "People I invite", public: "Anyone with the link" } as const;
+  const widening = ["room>workspace", "room>public", "workspace>public", "invited>public"];
+  const modes = Object.keys(labels) as (keyof typeof labels)[];
+  const pairs = modes.flatMap((f) => modes.filter((t) => t !== f).map((t) => [f, t] as const));
+  it.each(pairs)("%s to %s", async (from, to) => {
+    render(<AppSettings app={app({ open_to: from })} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText(labels[to]));
+    if (widening.includes(`${from}>${to}`)) {
+      await waitFor(() => expect(update).toHaveBeenCalledWith("a1", { open_to: to }));
+    } else {
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+      expect(update).not.toHaveBeenCalled();
+    }
+  });
+
   it("data and backups opens the provider console link", async () => {
     databaseLink.mockResolvedValue("https://console.neon.tech/x");
     const tab = { location: { href: "" }, close: vi.fn(), opener: {} };

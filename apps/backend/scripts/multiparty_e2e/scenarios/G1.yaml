@@ -150,7 +150,7 @@
     say: '@{ceo} Quick yes or no: is the weekly digest routine still on?'
     expect:
       responder: ceo
-      judge: 'Good: Leads with yes, no, or ''I can''t tell'' and one line of why. Bad: Answers a different question,
+      judge: 'Good: Leads with yes, no, or ''I can''t tell'' then a short why (a few sentences is fine). Bad: Answers a different question,
         or writes a long report instead of yes or no. Pass only if it matches good and not bad.'
       max_chars: 600
 - id: G1-no-calendar-connected

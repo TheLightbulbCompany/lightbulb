@@ -14,7 +14,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const { open, refresh } = useApps();
   const isAdmin = useIsWorkspaceAdmin();
   const [target, setTarget] = useState<{ id: string; t: "live" | "preview" }>({ id: app.app_id, t: "live" });
-  const t = target.id === app.app_id ? target.t : "live";
+  const t = target.id === app.app_id && app.live_version != null && app.preview_url ? target.t : "live";
   const key = `${app.app_id}:${t}`; // a pass is tagged by app + target, never reused across either
   const [pass, setPass] = useState<{ id: string; url: string } | null>(null);
   const [refusal, setRefusal] = useState<{ id: string; msg: string } | null>(null);

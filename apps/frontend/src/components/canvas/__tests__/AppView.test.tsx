@@ -116,6 +116,16 @@ describe("AppView", () => {
     await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.live.test/"));
   });
 
+  it("falls back to live when the preview goes away", async () => {
+    open.mockImplementation(async (id: string, t = "live") => `https://${id}.${t}.test/`);
+    const { rerender } = render(<AppView app={app({ preview_url: "https://p" })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.preview.test/"));
+    rerender(<AppView app={app({ preview_url: null })} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.live.test/"));
+  });
+
   it("open-in-tab failure keeps the frame, shows an alert and refreshes", async () => {
     open.mockResolvedValueOnce("https://x/one").mockRejectedValueOnce(new Error("No longer allowed"));
     const tab = { location: { href: "" }, close: vi.fn(), opener: {} };

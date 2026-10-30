@@ -25,11 +25,11 @@ async function fillEntry(page: Page, memo: string, lines: [string, string, strin
 
 test("accounts are sorted by code and duplicate codes are refused", async ({ page }) => {
   await signUp(page);
-  await expect(page.getByTestId("accounts-empty").or(page.getByTestId("accounts-list"))).toBeVisible();
+  await expect(page.getByTestId("accounts-empty").or(page.getByTestId("accounts-list")).first()).toBeVisible(); // an app may render both (empty note inside the list)
   await addAccount(page, "4000", "Sales", "credit");
   await addAccount(page, "1000", "Cash", "debit");
   await addAccount(page, "1000", "Cash again", "debit");
-  await expect(page.getByTestId("account-form-error").or(page.getByTestId("account-row"))).toBeVisible();
+  await expect(page.getByTestId("account-form-error").or(page.getByTestId("account-row")).first()).toBeVisible();
   const accounts = (await api(page, "GET", "/api/accounts")).body;
   expect(accounts.map((a: any) => a.code)).toEqual(["1000", "4000"]);
   await page.goto(url("/accounts"));

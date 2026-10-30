@@ -7,7 +7,7 @@ async function writePost(page: Page, title: string, slug: string, published: boo
   await page.getByTestId("post-form-slug").fill(slug);
   await page.getByTestId("post-form-body").fill("Body of " + title);
   if (published) await page.getByTestId("post-form-published").check();
-  await page.getByTestId("post-form-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("post-form-submit").click()]); // let the write land before navigating on
 }
 
 test("editor publishes a post and the public can read it, drafts stay hidden", async ({ page, browser }) => {

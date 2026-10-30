@@ -22,9 +22,10 @@ test("the job refuses callers without the secret", async ({ request }) => {
 test("dry run reports and changes nothing; a real run sends once", async ({ page, request }) => {
   const c = await signUp(page);
   await page.goto(url("/items"));
-  for (const t of ["one", "two"]) {
-    await page.getByTestId("item-title").fill(t + uniq());
+  for (const t of [uniq("one "), uniq("two ")]) {
+    await page.getByTestId("item-title").fill(t);
     await page.getByTestId("item-add").click();
+    await expect(page.getByTestId("item-row").filter({ hasText: t })).toHaveCount(1); // let the add land before the next one
   }
   await expect(page.getByTestId("item-row")).toHaveCount(2);
   const dry = await request.get(url("/api/cron/digest?dryRun=1"), { headers: AUTH });

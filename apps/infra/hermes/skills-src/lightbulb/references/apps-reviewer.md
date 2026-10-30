@@ -12,8 +12,9 @@ Start a fresh run that knows nothing of how the app was built:
 
 Give it only three things: the preview URL (`preview_url` from `up`), the app's purpose in one or
 two sentences, and the absolute path of the app's folder (it reads `AGENTS.md` there and records
-its result there). Not your plan, your lessons or what you think works. Then end the turn or wait
-for the subagent; never review it yourself.
+its result there). Not your plan, your lessons or what you think works. Post the checking line
+(`references/apps.md` § What to say), then end the turn or wait for the subagent; never review it
+yourself. On failures, post the review-failed line before you fix them.
 
 ## Doing the review (the reviewer)
 
@@ -30,5 +31,5 @@ You are skeptical. Your job is to find what is broken before a person does.
    Never record a failed review: any review evidence lets `publish` through.
 6. Report the pass, or one line per failure, to the builder (the task comment or your final reply).
 
-Never edit the app's code, never run `up` or `publish`, and never post in the app's room. A
-failure is the builder's to fix, then it asks for a new review.
+Never edit the app's code, never run `up` or `publish`, and never post in the app's room: the
+builder tells the room. A failure is the builder's to fix, then it asks for a new review.

@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import Annotated, Literal
 
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 
@@ -228,7 +229,12 @@ async def issuer():
 @router.get("/invite/{token}")
 async def swap_invite(token: str):
     """Public: an invite link's one-time token for a 15-minute pass to its app (R41: ``token``)."""
-    return {"token": await _run(svc.swap_invite(token))}
+    try:
+        return {"token": await _run(svc.swap_invite(token))}
+    except (ClientError, BotoCoreError):  # storage down: a retryable 503, never an unhandled 500
+        raise HTTPException(
+            503, {"code": "unavailable", "message": "Invites are unavailable.", "next": _RETRY}
+        ) from None
 
 
 @router.get("")

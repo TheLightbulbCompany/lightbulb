@@ -82,8 +82,12 @@ def test_no_teardown_module_can_reach_a_provider():
 def test_the_only_caller_of_remove_resource_is_the_owner_route():
     """Behavioural half of the guard above, from the other end: grep the whole
     backend for callers of the deprovision call and assert the set is exactly
-    one — the owner's typed-confirmation route. No agent route, no teardown
+    the owner's typed-confirmation routes (R68): company_provisioning, and
+    apps_service.remove, reachable only from the org-admin route
+    DELETE /api/v1/apps/{app_id} and refusing unless confirm_name matches (see
+    test_apps_service.py, confirm_name_mismatch). No agent route, no teardown
     path, no sweep."""
+    import ast
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parents[3]
@@ -93,7 +97,19 @@ def test_the_only_caller_of_remove_resource_is_the_owner_route():
         for p in (root / d).rglob("*.py")
         if "api.remove_resource(" in p.read_text()
     )
-    assert callers == ["routers/company_provisioning.py"], callers
+    assert callers == ["core/services/apps_service.py", "routers/company_provisioning.py"], callers
+
+    tree = ast.parse((root / "core/services/apps_service.py").read_text())
+    holders = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and ast.unparse(n.func) == "api.remove_resource"
+    }
+    assert holders == {"remove"}, holders
+    remove = next(f for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) and f.name == "remove")
+    assert "confirm_name != app[" in ast.unparse(remove), "remove must refuse unless confirm_name matches"
 
 
 def test_wipe_still_deletes_our_own_copies():

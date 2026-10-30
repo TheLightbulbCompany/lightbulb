@@ -1014,10 +1014,13 @@ async def invite(owner_id: str, app_id: str, *, emails: list[str], user_id: str)
     return {"invited": len(emails), "open_to": app["open_to"]}
 
 
+_INVITE_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
+
+
 async def swap_invite(token: str) -> str:
     """An invite link's token, once, for a pass to its app. Every failure is the same refusal."""
     refused = AppsRefused("invite_invalid", "That invite link is not valid.", "ask whoever invited you for a new link")
-    if not token or len(token) > 128:
+    if not _INVITE_TOKEN_RE.fullmatch(token):  # token_urlsafe(32); anything else never reaches DynamoDB
         raise refused
     inv = await apps_repo.claim_invite(hashlib.sha256(token.encode()).hexdigest(), utc_now_iso())
     app = await apps_repo.get(inv["target_app_id"], consistent_read=True) if inv else None

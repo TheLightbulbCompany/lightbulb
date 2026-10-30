@@ -70,4 +70,10 @@ describe("tasks", () => {
     expect(t.secrets?.[0]).toMatch(/^sk_test_/);
     expect(t.prompt).toContain(t.secrets![0]);
   });
+  it("a journey that calls me() (GET /api/me) only exists where the prompt asks for /api/me", () => {
+    for (const t of tasks) {
+      const spec = readFileSync(join(tasksDir, t.id, t.journeys), "utf8");
+      if (/\bme\(/.test(spec)) expect(t.prompt, t.id).toContain("/api/me");
+    }
+  });
 });

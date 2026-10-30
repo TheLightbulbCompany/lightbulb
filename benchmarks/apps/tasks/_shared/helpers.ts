@@ -40,10 +40,13 @@ export async function api(page: Page, method: string, path: string, data?: unkno
 
 export const me = async (page: Page) => (await api(page, "GET", "/api/me")).body;
 
-/** A fresh signed-in user in their own browser context. */
+/**
+ * A fresh signed-in user in their own browser context. `id` comes from `/api/me`, which only some prompts ask for;
+ * where the app has none it is undefined (only journeys of tasks whose prompt names `/api/me` read it).
+ */
 export async function newUser(browser: Browser, o: Partial<Creds> = {}) {
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
   const creds = await signUp(page, o);
-  return { page, ctx, creds, id: (await me(page)).id as string };
+  return { page, ctx, creds, id: (await me(page))?.id as string };
 }

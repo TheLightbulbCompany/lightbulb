@@ -1,0 +1,25 @@
+import { describe, expect, it } from "vitest";
+import { runControls } from "./controls";
+
+// Serves both control apps (Docker + pnpm + Chrome); run with EVAL_IT=1. The judge is faked.
+describe.skipIf(!process.env.EVAL_IT)("controls (b01-todo)", () => {
+  let result: Awaited<ReturnType<typeof runControls>>;
+  const run = async () => (result ??= await runControls({ judge: async () => 1 }));
+
+  it("reference app scores 100 on its journeys and probes", async () => {
+    const r = await run();
+    expect(r.detail).toContain("reference");
+    expect(r.referencePassed, r.detail).toBe(true);
+    expect(r.judgeOnReference).toBe(1);
+  }, 25 * 60_000);
+
+  it("broken twin fails every probe", async () => {
+    const r = await run();
+    expect(r.brokenFailedAllProbes, r.detail).toBe(true);
+  }, 25 * 60_000);
+
+  it("unauthenticated_route_probe_fails_on_the_broken_twin", async () => {
+    const r = await run();
+    expect(r.detail).toMatch(/broken.*unauth-tasks: FAIL/s);
+  }, 25 * 60_000);
+});

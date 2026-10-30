@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { serve } from "./serve.js";
@@ -48,6 +48,24 @@ describe.skipIf(!process.env.EVAL_IT)("serve", () => {
     const bad = await serve(fx("trivial-app"), { before: { fixtureDir, seedSql: "insert into nope values (1)" } }); open.push(bad);
     expect(bad.built).toBe(false);
     expect(bad.buildLog).toMatch(/seed failed/);
+  }, T);
+
+  it("an app depending on drizzle-kit installs and migrates, and the build allowlist is written", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "drizzle-app-"));
+    cpSync(resolve(import.meta.dirname, "..", "controls", "b01-todo-reference"), dir, { recursive: true, filter: (f) => !/(^|\/)(node_modules|\.next)(\/|$)/.test(f) });
+    const root = resolve(import.meta.dirname, "..", "..", "..");
+    const lock = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : "");
+    const before = lock(join(root, "pnpm-lock.yaml"));
+    try {
+      const s = await serve(dir); open.push(s);
+      expect(s.buildLog).not.toContain("ERR_PNPM_IGNORED_BUILDS");
+      expect(s.built).toBe(true);
+      expect(psql(containerOn(s.databaseUrl), "select count(*) from information_schema.tables where table_name in ('users','sessions','tasks')")).toBe("3");
+      const y = readFileSync(join(dir, "pnpm-workspace.yaml"), "utf8");
+      expect(y).toMatch(/allowBuilds:[\s\S]*esbuild: true/);
+      expect(y).toMatch(/onlyBuiltDependencies:[\s\S]*- esbuild/);
+      expect(lock(join(root, "pnpm-lock.yaml"))).toBe(before);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   }, T);
 
   it("stop removes the container", async () => {

@@ -30,7 +30,7 @@ export const loadTasks = (ids?: string[]): Task[] => {
 };
 
 /** Run the task's journeys with Playwright's JSON reporter; journey id = test title. */
-async function playwrightJourneys(task: Task, url: string): Promise<{ id: string; pass: boolean }[]> {
+export async function playwrightJourneys(task: Task, url: string): Promise<{ id: string; pass: boolean }[]> {
   let stdout = "";
   try {
     ({ stdout } = await sh("pnpm", ["exec", "playwright", "test", join("tasks", task.id, task.journeys), "--reporter=json", "--global-timeout=600000"], { cwd: root, env: { ...process.env, BASE_URL: url }, maxBuffer: 100_000_000 }));
@@ -125,13 +125,14 @@ export async function runTask(task: Task, adapter: BuilderAdapter, opts: { run: 
   }
 }
 
-export async function runSuite(adapter: BuilderAdapter, opts: { tasks?: string[]; runs?: number; budgetUsd?: number; resultsRoot?: string }, deps: Deps): Promise<string> {
+export async function runSuite(adapter: BuilderAdapter, opts: { tasks?: string[]; runs?: number; budgetUsd?: number; resultsRoot?: string; onStart?: (outDir: string) => Promise<void> | void }, deps: Deps): Promise<string> {
   const outDir = join(opts.resultsRoot ?? join(root, "results"), new Date().toISOString().replace(/[:.]/g, "-"));
   const budget = opts.budgetUsd ?? 400;
   let spent = 0;
   const tasks = loadTasks(opts.tasks);
   const runs = opts.runs ?? 3;
   mkdirSync(outDir, { recursive: true });
+  await opts.onStart?.(outDir);
   writeFileSync(join(outDir, "suite.json"), JSON.stringify({ tasks: tasks.map((t) => t.id), runs })); // the report's denominator
   for (const task of tasks)
     for (let run = 1; run <= runs; run++) {

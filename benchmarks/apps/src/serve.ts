@@ -1,5 +1,5 @@
 import { spawn, execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -32,6 +32,24 @@ function run(cmd: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): 
     p.on("error", (e) => { clearTimeout(t); done({ code: 1, out: out + String(e) }); });
     p.on("close", (code) => { clearTimeout(t); done({ code: code ?? 1, out }); });
   });
+}
+
+const BUILD_ALLOW = ["esbuild", "sharp", "@tailwindcss/oxide", "unrs-resolver"];
+/**
+ * Make `dir` its own pnpm workspace root with a narrow build-script allowlist (pnpm 12 `allowBuilds`, older `onlyBuiltDependencies`).
+ * pnpm 12 fails installs that leave dependency build scripts unapproved; a yaml here also stops the monorepo workspace from adopting the dir.
+ * The builder's own entries are kept.
+ */
+export function writeBuildAllowlist(dir: string) {
+  const f = join(dir, "pnpm-workspace.yaml");
+  let y = existsSync(f) ? readFileSync(f, "utf8").replace(/\s*$/, "\n") : "";
+  const has = (key: string, name: string) => new RegExp(`^\\s*(-\\s*)?['"]?${name.replace(/[/@]/g, "\\$&")}['"]?\\s*(:|$)`, "m").test(y.split(new RegExp(`^${key}:`, "m"))[1]?.split(/^\S/m)[0] ?? "");
+  const q = (n: string) => (n.startsWith("@") ? `"${n}"` : n);
+  if (!/^allowBuilds:/m.test(y)) y += "allowBuilds:\n" + BUILD_ALLOW.map((n) => `  ${q(n)}: true\n`).join("");
+  else for (const n of BUILD_ALLOW) if (!has("allowBuilds", n)) y = y.replace(/^allowBuilds:\s*\n/m, (m) => `${m}  ${q(n)}: true\n`);
+  if (!/^onlyBuiltDependencies:/m.test(y)) y += "onlyBuiltDependencies:\n" + BUILD_ALLOW.map((n) => `  - ${q(n)}\n`).join("");
+  else for (const n of BUILD_ALLOW) if (!has("onlyBuiltDependencies", n)) y = y.replace(/^onlyBuiltDependencies:\s*\n/m, (m) => `${m}  - ${q(n)}\n`);
+  writeFileSync(f, y);
 }
 
 export interface ServeOpts { before?: { fixtureDir: string; seedSql: string } }
@@ -83,12 +101,13 @@ export async function serve(dir: string, opts: ServeOpts = {}): Promise<Served> 
     if (opts.before) {
       const { fixtureDir, seedSql } = opts.before;
       if (existsSync(join(fixtureDir, "drizzle.config.ts")) &&
-          !((await step("fixture: pnpm install --ignore-workspace", "pnpm", ["install", "--ignore-workspace"], buildEnv, fixtureDir)) &&
+          !((writeBuildAllowlist(fixtureDir), await step("fixture: pnpm install", "pnpm", ["install"], buildEnv, fixtureDir)) &&
             (await step("fixture: pnpm drizzle-kit migrate", "pnpm", ["drizzle-kit", "migrate"], env, fixtureDir)))) return fail("fixture migrate failed");
       if (!(await step("fixture: seed", "docker", ["exec", container, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c", seedSql], env))) return fail("fixture seed failed");
     }
-    if (!(await step("pnpm install --frozen-lockfile --ignore-workspace", "pnpm", ["install", "--frozen-lockfile", "--ignore-workspace"], buildEnv)) &&
-        !(await step("pnpm install --ignore-workspace", "pnpm", ["install", "--ignore-workspace"], buildEnv))) return fail("install failed");
+    writeBuildAllowlist(dir); // the yaml makes dir its own workspace root, so no --ignore-workspace (which would also ignore the yaml)
+    if (!(await step("pnpm install --frozen-lockfile", "pnpm", ["install", "--frozen-lockfile"], buildEnv)) &&
+        !(await step("pnpm install", "pnpm", ["install"], buildEnv))) return fail("install failed");
     if (existsSync(join(dir, "drizzle.config.ts")) &&
         !(await step("pnpm drizzle-kit migrate", "pnpm", ["drizzle-kit", "migrate"], env))) return fail("migrate failed");
     if (!(await step("pnpm build", "pnpm", ["build"], env))) return fail("build failed");

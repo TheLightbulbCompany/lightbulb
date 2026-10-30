@@ -264,3 +264,13 @@ async def test_floats_in_catalog_values_are_written_not_refused(workflows_table)
     assert moved is not None and moved["state"] == "awaiting_approval"
     patched = await repo.patch(row["workflow_id"], {"usage_limit": {"max_amount": 12.5}})
     assert str(patched["usage_limit"]["max_amount"]) == "12.5"
+
+
+@pytest.mark.asyncio
+async def test_create_records_the_app_and_environment(workflows_table):
+    """An app's rows say which app and which environment; a company row is
+    `app_id=None`, `prod` — the shape every existing row reads as."""
+    company = await _new()
+    assert company["app_id"] is None and company["environment"] == "prod"
+    app_row = await _new(app_id="app_1", environment="dev")
+    assert app_row["app_id"] == "app_1" and app_row["environment"] == "dev"

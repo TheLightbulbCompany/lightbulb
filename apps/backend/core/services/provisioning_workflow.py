@@ -37,7 +37,7 @@ import jsonschema
 
 from core.config import settings
 from core.dynamodb import utc_now_iso
-from core.repositories import billing_repo
+from core.repositories import apps_repo, billing_repo
 from core.repositories import provisioning_workflow_repo as repo
 from core.services import owner_facts, provisioning_approvals, stripe_provisioning as api, work_products
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
@@ -173,7 +173,14 @@ def is_transient(e: ProvisioningError) -> bool:
     return isinstance(e, api.TransientProvisioningError)
 
 
-def snapshot_of(service: dict, provider: dict, configuration: dict, *, creates_project: bool = False) -> dict:
+def snapshot_of(
+    service: dict,
+    provider: dict,
+    configuration: dict,
+    *,
+    creates_project: bool = False,
+    environment: str = "Company — production",
+) -> dict:
     """What the owner approved. Compared field-for-field before every write.
 
     Deliberately NOT a structured cost: "Don't derive a structured cost from
@@ -202,9 +209,9 @@ def snapshot_of(service: dict, provider: dict, configuration: dict, *, creates_p
         "categories": service.get("categories") or [],
         "constraints": service.get("constraints") or [],
         "description": service.get("description"),
-        # One company, one production Project (spec §3.2) — stated so the owner
-        # knows which deployment the credential lands in.
-        "environment": "Company — production",
+        # Which deployment the credential lands in: the company's one
+        # production Project (spec §3.2), or an app's (see `_environment_of`).
+        "environment": environment,
         # `resources/link` is not offered in P0b, so every approval is for NEW
         # infrastructure and the card must say so rather than leave it implied.
         # Creating a Project is a write the guide wants fresh approval for, so
@@ -253,10 +260,18 @@ async def account_id_for(owner_id: str) -> str:
     return account_id
 
 
-async def _creates_project(owner_id: str, service: dict) -> bool:
-    """This approval will create the company's one Project: the service is
-    project-scoped and the company has none yet."""
-    return service.get("scope") == "project" and not await _company_project_id(owner_id)
+async def _creates_project(owner_id: str, service: dict, app_id: str | None = None) -> bool:
+    """This approval will create a Project: the service is project-scoped and
+    the company (or, for an app row, the app) has none yet."""
+    return service.get("scope") == "project" and not await _stored_project_id(owner_id, app_id)
+
+
+async def _environment_of(app_id: str | None, environment: str) -> str:
+    """The consent card's environment line. Not a `_drifted` key."""
+    if not app_id:
+        return "Company — production"
+    name = (await apps_repo.get(app_id) or {}).get("name") or app_id
+    return f"{name} — {'live' if environment == 'prod' else 'preview'}"
 
 
 async def _read_catalog(account_id: str, provider_name: str, service_id: str) -> tuple[dict, dict]:
@@ -341,9 +356,19 @@ async def limit_is_editable(account_id: str) -> bool:
     return False
 
 
-def _for_pair(rows: list[dict], provider_id: str, service_id: str) -> list[dict]:
-    """This owner's workflows for one (provider, service), NEWEST FIRST."""
-    mine = [r for r in rows if r.get("provider_id") == provider_id and r.get("service_id") == service_id]
+def _for_pair(
+    rows: list[dict], provider_id: str, service_id: str, app_id: str | None = None, environment: str = "prod"
+) -> list[dict]:
+    """This owner's workflows for one (provider, service, app, environment),
+    NEWEST FIRST. A row from before apps has neither field: company, prod."""
+    mine = [
+        r
+        for r in rows
+        if r.get("provider_id") == provider_id
+        and r.get("service_id") == service_id
+        and r.get("app_id") == app_id
+        and (r.get("environment") or "prod") == environment
+    ]
     mine.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     return mine
 
@@ -406,10 +431,14 @@ async def start(
     configuration: dict,
     issue_id: str | None,
     reason: str = "",
+    app_id: str | None = None,
+    environment: str = "prod",
 ) -> dict:
     """Step 1 of spec §3.2. Refuses loudly rather than opening a workflow that
-    cannot finish."""
+    cannot finish. ``app_id`` scopes the row to one app's own Project."""
     account_id = await account_id_for(owner_id)
+    if app_id and not await apps_repo.get(app_id):
+        raise WorkflowRefused("app_not_found", "That app does not exist")
 
     from core.services import company_stripe
 
@@ -433,10 +462,12 @@ async def start(
     except jsonschema.ValidationError as e:
         raise WorkflowRefused("invalid_configuration", f"{schema_reason(e)} for this service") from e
 
-    # One open workflow per (provider, service). Two asks in the same turn —
+    # One open workflow per (provider, service, app, environment). Two asks in the same turn —
     # or Friday retrying after a timeout — must not open a second card or, once
     # approved, provision the resource twice.
-    for_pair = _for_pair(await repo.list_for_owner(owner_id), provider["id"], service["service_id"])
+    for_pair = _for_pair(
+        await repo.list_for_owner(owner_id), provider["id"], service["service_id"], app_id, environment
+    )
     existing = next((r for r in for_pair if r.get("state") not in repo.TERMINAL_STATES), None)
     if existing is not None:
         # In-memory marker, never written to the row: the caller must not tell
@@ -460,9 +491,15 @@ async def start(
         configuration=configuration or {},
         issue_id=issue_id,
         reason=reason,
+        app_id=app_id,
+        environment=environment,
     )
     snapshot = snapshot_of(
-        service, provider, configuration or {}, creates_project=await _creates_project(owner_id, service)
+        service,
+        provider,
+        configuration or {},
+        creates_project=await _creates_project(owner_id, service, app_id),
+        environment=await _environment_of(app_id, environment),
     )
     try:
         approval_id = await provisioning_approvals.request_provider_consent(
@@ -508,7 +545,8 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
         service,
         provider,
         row.get("configuration") or {},
-        creates_project=await _creates_project(row["owner_id"], service),
+        creates_project=await _creates_project(row["owner_id"], service, row.get("app_id")),
+        environment=await _environment_of(row.get("app_id"), row.get("environment") or "prod"),
     )
     if _drifted(row.get("approval") or {}, fresh):
         approval_id = await provisioning_approvals.request_provider_consent(
@@ -742,6 +780,44 @@ async def _company_project_id(owner_id: str) -> str | None:
     return (await billing_repo.get_by_owner_id(owner_id) or {}).get("company_stripe_project_id")
 
 
+async def _stored_project_id(owner_id: str, app_id: str | None) -> str | None:
+    """The app's own Project for an app row, else the company's."""
+    if app_id:
+        return (await apps_repo.get(app_id) or {}).get("stripe_project_id")
+    return await _company_project_id(owner_id)
+
+
+async def _mint_project(account_id: str, row: dict, name: str) -> tuple:
+    """``(project_id, refusal_row)`` for the one POST whose outcome we may not know."""
+    try:
+        project = await api.create_project(account_id, name=name, catalog=settings.STRIPE_PROJECTS_CATALOG)
+    except ProvisioningError as e:
+        if is_transient(e):
+            return None, await _requires_review(row, "uncertain_write")
+        return None, await _fail(row, e.code, e.message)
+    return project["id"], None
+
+
+async def _app_project_for(account_id: str, row: dict) -> tuple:
+    """One Project per APP, named after it, stored on the app row. Same
+    stored → create → store order and race rules as the company's below."""
+    app_id = row["app_id"]
+    app = await apps_repo.get(app_id)
+    if not app:
+        return None, await _fail(row, "app_not_found", "The app this was for no longer exists")
+    if app.get("stripe_project_id"):
+        return app["stripe_project_id"], None
+    project_id, refused = await _mint_project(account_id, row, app["name"])
+    if refused is not None:
+        return None, refused
+    if await apps_repo.set_stripe_project_id(app_id, project_id):
+        return project_id, None
+    winner = (await apps_repo.get(app_id, consistent_read=True) or {}).get("stripe_project_id")
+    if not winner:
+        return None, await _bump(row)
+    return winner, None
+
+
 async def _project_for(account_id: str, row: dict) -> tuple:
     """``(project_id, refusal_row)`` — one Project per COMPANY (spec §3.2).
 
@@ -759,6 +835,8 @@ async def _project_for(account_id: str, row: dict) -> tuple:
     """
     if (row.get("approval") or {}).get("scope") != "project":
         return None, None
+    if row.get("app_id"):
+        return await _app_project_for(account_id, row)
     stored = await _company_project_id(row["owner_id"])
     if stored:
         return stored, None
@@ -767,14 +845,9 @@ async def _project_for(account_id: str, row: dict) -> tuple:
     # The API has no project LIST (only create), so "adopt" is gone: the stored
     # id is the only memory. A crash between the create and the store leaves an
     # inert, resource-less Project that the next pass does not find.
-    name = await resolve_company_name(row["owner_id"])
-    try:
-        project = await api.create_project(account_id, name=name, catalog=settings.STRIPE_PROJECTS_CATALOG)
-    except ProvisioningError as e:
-        if is_transient(e):
-            return None, await _requires_review(row, "uncertain_write")
-        return None, await _fail(row, e.code, e.message)
-    project_id = project["id"]
+    project_id, refused = await _mint_project(account_id, row, await resolve_company_name(row["owner_id"]))
+    if refused is not None:
+        return None, refused
     if await billing_repo.set_company_stripe_project_id(row["owner_id"], project_id=project_id) is None:
         # Lost the conditional write: another worker stored first, so THEIRS is
         # the company's Project. Strongly consistent — this reads back a write
@@ -942,6 +1015,8 @@ async def _create_resource(account_id: str, row: dict) -> dict:
             # Never omitted: Stripe's default is LIVE.
             livemode=api.is_livemode(),
             catalog=settings.STRIPE_PROJECTS_CATALOG,
+            # Company rows never sent one; only an app row names its side.
+            environment=row.get("environment") if row.get("app_id") else None,
         )
     except ProvisioningError as e:
         if is_transient(e):
@@ -1024,7 +1099,7 @@ async def _bind(account_id: str, row: dict, resource: dict) -> dict:
     # An account-scoped resource has no Project (spec 4.4), and binding NEVER
     # mints one — by here the create already resolved it.
     scope = (row.get("approval") or {}).get("scope")
-    project_id = await _company_project_id(row["owner_id"]) if scope == "project" else None
+    project_id = await _stored_project_id(row["owner_id"], row.get("app_id")) if scope == "project" else None
     # The connection can expire between `complete` and the credential read.
     info, refused = await _read_or_park(row, api.reveal_access_configuration(account_id, row["resource_id"]))
     if refused is not None:

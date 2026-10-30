@@ -496,3 +496,12 @@ def test_inviting_to_a_workspace_app_keeps_workspace_and_links_work(invites):
     assert table.get_item(Key={"app_id": "app_b"})["Item"]["open_to"] == "workspace"
     app.dependency_overrides.clear()
     assert TestClient(app).get(f"{BASE}/invite/{_token(sent[-1])}").status_code == 200
+
+
+def test_invite_swap_storage_down_is_a_503_never_cached():
+    from botocore.exceptions import EndpointConnectionError
+
+    down = AsyncMock(side_effect=EndpointConnectionError(endpoint_url="https://dynamodb"))
+    with mpatch.object(mod.svc, "swap_invite", down):
+        r = TestClient(app).get(f"{BASE}/invite/{'x' * 43}")
+    assert r.status_code == 503 and r.headers["cache-control"] == "no-store"

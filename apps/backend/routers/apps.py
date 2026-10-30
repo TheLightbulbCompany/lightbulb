@@ -271,7 +271,9 @@ async def swap_invite(token: str, response: Response):
         return {"token": await _run(svc.swap_invite(token))}
     except (ClientError, BotoCoreError):  # storage down: a retryable 503, never an unhandled 500
         raise HTTPException(
-            503, {"code": "unavailable", "message": "Invites are unavailable.", "next": _RETRY}
+            503,
+            {"code": "unavailable", "message": "Invites are unavailable.", "next": _RETRY},
+            headers={"Cache-Control": "no-store"},
         ) from None
 
 

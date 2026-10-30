@@ -293,6 +293,18 @@ async def test_no_request_waits_on_vercel(world, monkeypatch):
     sleep.assert_not_awaited()
 
 
+async def test_workspace_name_unavailable_skips_the_read_instead_of_pushing_a_changing_env(world, monkeypatch):
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    monkeypatch.setattr(svc.clerk_admin, "get_organization", AsyncMock(return_value=None))
+    await _up(src)
+    assert world.vercel.env_posts() == [] and world.vercel.created() == []
+    monkeypatch.setattr(svc.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"}))
+    await _up(src)
+    assert {e["key"]: e["value"] for e in world.vercel.env_posts()[0]}["LIGHTBULB_WORKSPACE_NAME"] == "Acme"
+
+
 async def test_up_deploys_preview_when_all_active(world):
     src = await _source()
     await _up(src)

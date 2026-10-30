@@ -336,13 +336,20 @@ async def _cookie_secret(app: dict) -> str:
     return blob["cookie_secret"]
 
 
+class _WorkspaceUnknown(Exception):
+    """Clerk didn't answer for an org owner: skip this read rather than push an env that changes later."""
+
+
 async def _workspace_name(app: dict) -> str:
-    """Stored on the record once known: a Clerk blip must not change the env (each change redeploys)."""
-    if app.get("workspace_name"):
+    """Stored on the record once known (never refreshed on an org rename): each env change redeploys."""
+    if "workspace_name" in app:
         return app["workspace_name"]
-    name = " ".join(((await clerk_admin.get_organization(app["owner_id"])) or {}).get("name", "").split())
-    if name:
-        await _patch(app, {"workspace_name": name})
+    name = ""
+    if app["owner_id"].startswith("org_"):  # personal workspaces have no Clerk org
+        name = " ".join(((await clerk_admin.get_organization(app["owner_id"])) or {}).get("name", "").split())
+        if not name:
+            raise _WorkspaceUnknown
+    await _patch(app, {"workspace_name": name})
     return name
 
 
@@ -608,6 +615,13 @@ async def _steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict | No
     except vercel.VercelError as e:
         logger.warning("apps: %s vercel step failed: %s", app["app_id"], e.code)
         return {"code": f"vercel_{e.code}", "message": str(e), "next": "run up again in a minute"}
+    except _WorkspaceUnknown:
+        logger.warning("apps: %s workspace name unavailable", app["app_id"])
+        return {
+            "code": "workspace_unavailable",
+            "message": "Couldn't read the workspace.",
+            "next": "run up again in a minute",
+        }
     return None
 
 

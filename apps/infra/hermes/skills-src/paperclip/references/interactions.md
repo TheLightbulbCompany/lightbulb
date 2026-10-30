@@ -62,7 +62,10 @@ ask_person(question="Which Stripe account should the invoices come from?",
 - `blocked=true` when the work cannot go on until the answer; it also parks the
   task as blocked (`references/heartbeat.md`).
 - It shows in the person's Needs you, and their answer wakes you with it.
-  Asking the same question again does not make a second card.
+- One open question per task: a new `ask_person` on the same task replaces
+  your earlier unanswered one, so put everything you need in one question. A
+  comment from the person cancels the card; ask again if you still need the
+  answer.
 - In a room conversation, ask in your reply instead; the person is there.
 
 ## MCP Tool Approval Gates

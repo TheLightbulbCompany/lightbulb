@@ -35,7 +35,7 @@ def paperclip(tmp_path, monkeypatch):
     monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
     (tmp_path / "lightbulb-facts.json").write_text(json.dumps({"app_url": "https://dev.example/"}))
 
-    state = {"calls": [], "fail": {}, "scope": scope}
+    state = {"calls": [], "fail": {}, "scope": scope, "status": "pending"}
     issues = {"WAL-6": {"id": ISSUE, "identifier": "WAL-6", "companyId": COMPANY},
               ISSUE: {"id": ISSUE, "identifier": "WAL-6", "companyId": COMPANY}}
 
@@ -55,7 +55,7 @@ def paperclip(tmp_path, monkeypatch):
         if path == f"/api/companies/{COMPANY}":
             return {"id": COMPANY, "issuePrefix": "WAL"}
         if path == f"/api/issues/{ISSUE}/interactions":
-            return {"id": "ix-1", **body}
+            return {"id": "ix-1", "status": state["status"], **body}
         return {}
 
     monkeypatch.setattr(lightbulb, "_paperclip_call", call)
@@ -95,37 +95,66 @@ def test_details_ride_as_the_questions_help_text(paperclip):
     assert body["payload"]["questions"][0]["helpText"] == "The draft is in WAL-6."
 
 
-def test_same_question_twice_uses_the_same_idempotency_key(paperclip):
-    args = {"question": "Which Stripe account should I use?", "options": ["Live", "Test"]}
-    lightbulb._ask_person(args)
-    lightbulb._ask_person(args)
-    first, second = (c[2]["idempotencyKey"] for c in _writes(paperclip))
-    assert first == second
+def test_the_idempotency_key_is_per_run_and_per_exact_question(paperclip):
+    """The fork replays a key only for the same sourceRunId and an identical body; anything else
+    under the same key is a 409 (issue-thread-interactions.ts isEquivalentCreateRequest)."""
+    ask = {"question": "Which Stripe account should I use?", "options": ["Live", "Test"]}
+    lightbulb._ask_person(ask)
+    lightbulb._ask_person(ask)
+    lightbulb._ask_person({**ask, "options": ["Test", "Live"]})
+    paperclip["scope"]["PAPERCLIP_RUN_ID"] = "r0000000-0000-4000-8000-000000000002"
+    lightbulb._ask_person(ask)
+    first, again, reworded, next_run = (c[2]["idempotencyKey"] for c in _writes(paperclip))
+    assert first == again
+    assert len({first, reworded, next_run}) == 3
 
 
-def test_blocked_sets_the_task_blocked_self_owned_before_asking(paperclip):
+def test_a_replayed_card_that_is_no_longer_pending_is_not_reported_as_asked(paperclip):
+    paperclip["status"] = "expired"
+    out = lightbulb._ask_person({"question": "Which one?", "options": ["A", "B"]})
+    assert out.startswith("Question not created:")
+
+
+def test_blocked_asks_first_then_parks_the_task_blocked_self_owned(paperclip):
     out = json.loads(lightbulb._ask_person({
         "question": "I need Codex review credits. Can you add them?", "options": ["Added", "Skip review"],
         "blocked": True}))
-    patch, post = _writes(paperclip)
+    post, patch = _writes(paperclip)
+    assert post[:2] == ("POST", f"/api/issues/{ISSUE}/interactions")
     assert patch[:2] == ("PATCH", f"/api/issues/{ISSUE}")
     assert patch[2]["status"] == "blocked"
     assert patch[2]["unblockDescriptor"]["owner"] == {"agentId": ME}
-    assert post[:2] == ("POST", f"/api/issues/{ISSUE}/interactions")
     assert out["blocked"] is True
 
 
-def test_blocked_when_already_blocked_still_asks(paperclip):
-    paperclip["fail"][("PATCH", f"/api/issues/{ISSUE}")] = _http_error(422, {"error": "already blocked"})
+def test_a_failed_question_never_parks_the_task(paperclip):
+    paperclip["fail"][("POST", f"/api/issues/{ISSUE}/interactions")] = _http_error(409, {"error": "conflict"})
+    out = lightbulb._ask_person({"question": "Which one?", "options": ["A", "B"], "blocked": True})
+    assert out.startswith("Question not created: HTTP 409")
+    assert not any(c[0] == "PATCH" for c in paperclip["calls"])
+
+
+def test_a_refused_block_still_leaves_the_question_and_says_not_blocked(paperclip):
+    paperclip["fail"][("PATCH", f"/api/issues/{ISSUE}")] = _http_error(422, {"error": "bad descriptor"})
     out = json.loads(lightbulb._ask_person({"question": "Can you unlock it?", "options": ["Done", "No"],
                                             "blocked": True}))
-    assert any(c[:2] == ("POST", f"/api/issues/{ISSUE}/interactions") for c in paperclip["calls"])
-    assert out["blocked"] is True
+    assert out["interactionId"] == "ix-1"
+    assert out["blocked"] is False
 
 
 def test_room_turn_without_a_task_asks_in_the_reply_and_calls_nothing(paperclip):
     del paperclip["scope"]["PAPERCLIP_TASK_ID"]
     out = lightbulb._ask_person({"question": "Which one?", "options": ["A", "B"]})
+    assert paperclip["calls"] == []
+    assert "ask in your reply" in out
+
+
+def test_without_a_run_even_a_named_task_asks_in_the_reply(paperclip):
+    """The fork's interaction create requires the agent's run id (routes requireAgentRunId);
+    a room turn has none, so it would 401 every time."""
+    del paperclip["scope"]["PAPERCLIP_RUN_ID"]
+    out = lightbulb._ask_person({"question": "Which one?", "options": ["A", "B"], "task": "WAL-6",
+                                 "blocked": True})
     assert paperclip["calls"] == []
     assert "ask in your reply" in out
 

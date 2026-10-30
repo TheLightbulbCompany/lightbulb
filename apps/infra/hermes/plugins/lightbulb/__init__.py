@@ -711,8 +711,9 @@ ASK_PERSON_SCHEMA = {
     "description": "Ask a person a question on your task: it shows in their Needs you, and their answer "
                    "wakes you with it. Use it instead of guessing between options, and instead of a "
                    "comment when you are blocked (blocked: true also marks the task blocked). Give 2 to 4 "
-                   "likely answers, recommended first, or none for a typed answer. In a room conversation, "
-                   "ask in your reply instead.",
+                   "likely answers, recommended first, or none for a typed answer. One open question per "
+                   "task: a new one replaces your earlier unanswered one, so ask everything in one. In a "
+                   "room conversation, ask in your reply instead.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -738,12 +739,21 @@ def _ask_person(args: dict, **_kw) -> str:
     if options and not 2 <= len(options) <= 4:
         return "Give 2 to 4 options, or none for a typed answer."
     ref = str(args.get("task") or "").strip() or _scope_secret("PAPERCLIP_TASK_ID")
-    if not ref:
+    run_id = _scope_secret("PAPERCLIP_RUN_ID")
+    if not ref or not run_id:  # the fork's create requires the agent's run (routes requireAgentRunId)
         return ASK_IN_REPLY
     base, key = _scope_secret("PAPERCLIP_API_URL").rstrip("/"), _scope_secret("PAPERCLIP_API_KEY")
     if not base or not key:
         return "ask_person is unavailable: this turn has no Paperclip credentials."
-    run_id = _scope_secret("PAPERCLIP_RUN_ID") or None
+    choices = ([{"id": f"o{i}", "label": label[:1000]} for i, label in enumerate(options, 1)]
+               or [{"id": "answer", "label": "Type your answer", "freeText": True}])
+    prompt = {"id": "q1", "prompt": question[:4000], "selectionMode": "single", "required": True,
+              "options": choices}
+    if str(args.get("details") or "").strip():
+        prompt["helpText"] = str(args["details"]).strip()[:4000]
+    body = {"kind": "ask_user_questions", "resolverPolicy": "board_only",
+            "continuationPolicy": "wake_assignee", "title": question[:240],
+            "payload": {"version": 1, "supersedeOnUserComment": True, "questions": [prompt]}}
     try:
         try:
             issue = _paperclip_call("GET", f"{base}/api/issues/{urllib.parse.quote(ref)}", key)
@@ -753,28 +763,23 @@ def _ask_person(args: dict, **_kw) -> str:
             raise
         me = _paperclip_call("GET", f"{base}/api/agents/me", key)
         company = _paperclip_call("GET", f"{base}/api/companies/{me['companyId']}", key)
+        # The fork replays a key only for the same run and an identical body, and 409s anything else
+        # under it (issue-thread-interactions.ts isEquivalentCreateRequest), so both are in the key.
+        digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:24]
+        body["idempotencyKey"] = f"ask:{issue['id']}:{run_id}:{digest}"
+        made = _paperclip_call("POST", f"{base}/api/issues/{issue['id']}/interactions", key, body, run_id)
+        if made.get("status", "pending") != "pending":  # a replay of a card already answered or expired
+            return f"Question not created: this exact question is already {made.get('status')} on this task."
         blocked = False
-        if args.get("blocked"):
+        if args.get("blocked"):  # after the card exists: a failed ask never leaves the task parked
             change = {"status": "blocked", "unblockDescriptor": {
                 "owner": {"agentId": me["id"]},  # an agent may name only itself (heartbeat.md)
                 "action": f"Resume when the person answers: {question}"[:500]}}
             try:
                 _paperclip_call("PATCH", f"{base}/api/issues/{issue['id']}", key, change, run_id)
                 blocked = True
-            except urllib.error.HTTPError as exc:
-                blocked = exc.code == 422  # already blocked; the question still goes out
-        choices = ([{"id": f"o{i}", "label": label[:1000]} for i, label in enumerate(options, 1)]
-                   or [{"id": "answer", "label": "Type your answer", "freeText": True}])
-        prompt = {"id": "q1", "prompt": question[:4000], "selectionMode": "single", "required": True,
-                  "options": choices}
-        if str(args.get("details") or "").strip():
-            prompt["helpText"] = str(args["details"]).strip()[:4000]
-        digest = hashlib.sha256(question.encode()).hexdigest()[:16]
-        body = {"kind": "ask_user_questions", "resolverPolicy": "board_only",
-                "continuationPolicy": "wake_assignee", "idempotencyKey": f"ask:{issue['id']}:{digest}",
-                "title": question[:240],
-                "payload": {"version": 1, "supersedeOnUserComment": True, "questions": [prompt]}}
-        made = _paperclip_call("POST", f"{base}/api/issues/{issue['id']}/interactions", key, body, run_id)
+            except urllib.error.HTTPError:
+                pass  # the question is out; the result says the task is not blocked
     except urllib.error.HTTPError as exc:
         return f"Question not created: {_http_error_text(exc)}."
     except Exception as exc:  # noqa: BLE001

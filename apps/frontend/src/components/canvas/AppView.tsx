@@ -25,7 +25,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const dn = displayName(app);
   const room = roomOf(app);
   const canManage = app.can_publish === true || isAdmin;
-  const whoName = app.open_to === "room" ? room : app.open_to === "invited" ? "invited people" : "people in this workspace";
+  const whoName = app.open_to === "room" ? room : app.open_to === "invited" ? "invited people" : app.open_to === "public" ? "anyone with the link" : "people in this workspace";
   const current = useRef(app.app_id);
   current.current = app.app_id;
   // State is tagged with its app so a render right after a switch never shows the previous app's pass.
@@ -73,7 +73,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
     <header className="app-view__bar">
       <button type="button" className="app-view__btn" onClick={onBack}><ArrowLeft size={16} aria-hidden="true" />All apps</button>
       <h2 className="app-view__name">{dn}</h2>
-      {hasBoth && <span className="app-view__seg" role="group" aria-label="Version">
+      {hasBoth && <span className="app-view__seg" role="group" aria-label="View">
         {(["preview", "live"] as const).map((v) => <button key={v} type="button" className="app-view__btn" aria-pressed={t === v}
           onClick={() => setTarget({ id: app.app_id, t: v })}>{v === "live" ? "Live" : "Preview"}</button>)}
       </span>}
@@ -83,14 +83,14 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
         onClick={() => setSettingsOpen((v) => !v)}>Settings</button>}
     </header>
     {pending && <p className="canvas__notice">{pending}</p>}
-    {app.live_version == null && <p className="canvas__notice">Preview: not live yet.</p>}
+    {app.live_version == null && app.state === "ready" && <p className="canvas__notice">Preview: not live yet.</p>}
     {t === "preview" && <p className="canvas__notice">You&apos;re looking at the preview. Only you and {room} see it until it&apos;s published.</p>}
     {!canManage && <p className="canvas__notice">{app.open_to === "room" ? `Open to ${room}` : `Open to ${whoName}`}. Only {app.created_by_name ?? "the person who asked for it"} or a workspace admin can change who can open it.</p>}
     {settingsOpen && <AppSettings app={app} publishCtl={publishCtl} onClose={() => setSettingsOpen(false)} onRemoved={onBack} />}
-    {tabError && <p className="canvas__notice"><Problem raw={tabError.raw}>{dn} didn&apos;t open. Try again in a moment.</Problem></p>}
-    {refused ? <p className="canvas__notice">{refused.status === 403
+    {tabError && <div className="canvas__notice"><Problem raw={tabError.raw}>{dn} didn&apos;t open. Try again in a moment.</Problem></div>}
+    {refused ? <div className="canvas__notice">{refused.status === 403
       ? <Problem raw={refused.raw}>Only {whoName} can open {dn}. Ask in {room}.</Problem>
-      : <Problem raw={refused.raw} action={retry}>{dn} didn&apos;t open. Try again in a moment.</Problem>}</p>
+      : <Problem raw={refused.raw} action={retry}>{dn} didn&apos;t open. Try again in a moment.</Problem>}</div>
       : url ? <iframe key={key} title={dn} src={url} className="canvas__frame"
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups" />
       : <p className="canvas__notice">Opening…</p>}

@@ -95,8 +95,7 @@ export function useApps() {
       const res = await api.post(`/company/provisioning/resources/neon/${encodeURIComponent(target.resource_id!)}/dashboard-link`, {}) as { url?: string | null };
       return res.url ?? null;
     } catch (err) {
-      notifyApiError(err, "We couldn't open the data page. Try again.");
-      throw err;
+      throw err; // the caller shows it inline
     }
   };
 

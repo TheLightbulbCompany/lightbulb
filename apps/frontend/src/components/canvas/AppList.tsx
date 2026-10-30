@@ -40,9 +40,9 @@ export function AppList({ apps, loading, error, onOpen, onRetry, canManage = fal
   onOpen: (appId: string) => void; onRetry: () => void;
 }) {
   return <div className="canvas">
-    {error ? <p className="canvas__notice"><Problem raw={error.message}
+    {error ? <div className="canvas__notice"><Problem raw={error.message}
       action={<button type="button" className="underline" onClick={onRetry}>Try again</button>}>
-      We couldn&apos;t load the apps.</Problem></p> : null}
+      We couldn&apos;t load the apps.</Problem></div> : null}
     <section aria-labelledby="canvas-heading">
       <h2 id="canvas-heading" className="canvas__heading">Apps</h2>
       <ul className="app-list">{apps.map((app) => <Row key={app.app_id} app={app} onOpen={onOpen} canManage={canManage} />)}</ul>

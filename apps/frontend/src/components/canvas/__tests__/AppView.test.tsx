@@ -152,10 +152,18 @@ describe("AppView", () => {
     await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.live.test/"));
   });
 
+  it("a public app's muted line and 403 say 'anyone with the link', not the workspace", async () => {
+    open.mockRejectedValue(Object.assign(new Error("Forbidden"), { status: 403 }));
+    render(<AppView app={app({ open_to: "public" })} onBack={vi.fn()} />);
+    expect(screen.getByText(/^Open to anyone with the link\./)).toBeTruthy();
+    expect((await screen.findByRole("alert")).textContent).toContain("Only anyone with the link can open");
+  });
+
   it("a pending app shows its status line in the view", () => {
     open.mockResolvedValue("https://x/");
     render(<AppView app={app({ state: "provisioning", live_version: null })} onBack={vi.fn()} />);
     expect(screen.getByText("Setting up its hosting and data, usually a few minutes.")).toBeTruthy();
+    expect(screen.queryByText("Preview: not live yet.")).toBeNull();
   });
 
   it("falls back to live when the preview goes away", async () => {

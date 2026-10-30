@@ -1,7 +1,7 @@
 import { sessionLive, sessionState, sessionTitle } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
-/** One record of the network engine's `directory`. Times are seconds since the epoch. */
+/** One record of the network engine's `directory`, as `engine_ask` gives it to a page (no `cwd`, `pid`, `birth_micros`, `kind`, `entrypoint`). Times are seconds since the epoch. */
 export interface EngineRecord {
   session_id: string;
   person: string;
@@ -10,7 +10,6 @@ export interface EngineRecord {
   computer: string;
   agent: string;
   folder: string;
-  cwd: string;
   repo: string;
   branch: string;
   status: "busy" | "waiting" | "idle" | "ended";
@@ -27,10 +26,6 @@ export interface EngineRecord {
   resume?: string;
   handle?: string;
   hidden?: boolean;
-  pid?: number;
-  birth_micros?: number;
-  kind?: string;
-  entrypoint?: string;
   job?: { id?: string; state?: string };
 }
 
@@ -86,7 +81,6 @@ function backendState(backend: LocalSession): SessionState {
   return backend.status === "busy" ? "busy" : "idle";
 }
 
-const basename = (path: string | undefined) => path?.split("/").filter(Boolean).pop();
 const millis = (iso: string | null | undefined) => {
   const at = iso ? Date.parse(iso) : NaN;
   return Number.isNaN(at) ? undefined : at;
@@ -112,7 +106,7 @@ function toRow(backend: LocalSession | undefined, engine: EngineRecord | undefin
     agent: engine?.agent || backend!.provider,
     // An owner's rename lives on the backend row, so it wins over the harness's title.
     title: sessionTitle({ displayTitle: backend?.displayTitle, title: engine?.title || backend?.title }),
-    folder: engine?.folder || basename(engine?.cwd) || backend?.cwdName || undefined,
+    folder: engine?.folder || backend?.cwdName || undefined,
     repo: engine?.repo || undefined,
     branch: engine?.branch || undefined,
     state,

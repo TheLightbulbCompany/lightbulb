@@ -1,7 +1,7 @@
 //! The page's whole reach into this Mac is the `generate_handler!` list in `lib.rs`. A page is a
 //! remote origin, so no engine operation (approve, admit, policy, invite) is a command at all, and
 //! every command that widens what agents may do asks a native "Allow" before it writes. The one
-//! door to the engine is `engine_ask`, whose allowlist `engine_client`'s tests pin.
+//! door to the engine is `engine_ask`, read-only: `engine_client`'s tests pin its allowlist and what it cuts.
 
 const LIB: &str = include_str!("../src/lib.rs");
 
@@ -46,8 +46,8 @@ const COMMANDS: &[(&str, Option<&str>, &str)] = &[
     // goes on; shell_integration.rs belongs to an open PR (#4384), so the ask lands after it.
     ("shell_integration::shell_integration_set", None, "Q4 ask follows #4384"),
     ("holder::panel::terminal_panel", None, "shows a held terminal"),
-    // Spec 2026-10-30 §10.2, §4.5: team.join runs without a native ask; the engine only checks no agent is above the app.
-    (ENGINE_DOOR, None, "reads, and team.join/team.leave; never approve, admit, policy or invite"),
+    // Exempt by name from the guard below because it is read-only: directory, sessions, team.get. Joining is native code.
+    (ENGINE_DOOR, None, "read-only, filtered"),
 ];
 
 fn handler_list() -> Vec<String> {

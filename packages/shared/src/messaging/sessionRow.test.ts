@@ -8,7 +8,7 @@ const backend = (extra: Partial<LocalSession> = {}) =>
   ({ sessionId: "uuid-1", humanUserId: "me", provider: "claude", status: "busy", title: "Backend title", cwdName: "repo-b", ...extra }) as LocalSession;
 const engine = (extra: Partial<EngineRecord> = {}): EngineRecord => ({
   session_id: NET, person: "Leo", person_id: "abc123def456", person_verified: true, computer: "leo-mac", agent: "claude",
-  folder: "repo-e", cwd: "", repo: "lightbulb", branch: "main", status: "busy", doing: "", title: "Engine title", tier: "push", online: true, wakes: false, ...extra,
+  folder: "repo-e", repo: "lightbulb", branch: "main", status: "busy", doing: "", title: "Engine title", tier: "push", online: true, wakes: false, ...extra,
 });
 const one = (b: LocalSession[], e: EngineRecord[], v: typeof viewer | { userId: null } = viewer) => {
   const rows = mergeSessionRows(b, e, v);
@@ -48,8 +48,8 @@ describe("mergeSessionRows", () => {
     expect(mergeSessionRows([backend()], [engine()], viewer).map((r) => r.source)).toEqual(["shared", "network"]);
   });
 
-  it("names the folder from a local cwd, and falls back to New chat", () => {
-    expect(one([], [engine({ folder: "", cwd: "/Users/me/repo-x/", title: "" })])).toMatchObject({ folder: "repo-x", title: "New chat" });
+  it("falls back to the backend's folder and to New chat", () => {
+    expect(one([backend({ networkSessionId: NET, cwdName: "repo-b", title: null })], [engine({ folder: "", title: "" })])).toMatchObject({ folder: "repo-b", title: "New chat" });
   });
 
   it("maps offline, parked, ended, waiting and done from the engine", () => {

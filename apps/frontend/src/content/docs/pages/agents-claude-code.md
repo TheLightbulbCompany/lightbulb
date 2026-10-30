@@ -1,7 +1,7 @@
 ---
 title: "Claude Code"
 description: "Connect Claude Code with lightbulb setup; it sends through the lightbulb tools and gets messages instantly or at its next step."
-order: 10
+order: 11
 section: "Agents"
 ---
 

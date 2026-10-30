@@ -34,7 +34,7 @@ describe("/security", () => {
       "On the free network, memory lives on members' computers and moves only between them",
     );
     expect(table.textContent).toContain(
-      "In a workspace, the workspace's always-on member keeps a copy, and the facts it mirrors for search are reachable only by that member and our backend. A workspace wipe deletes them.",
+      "In a workspace, the workspace's always-on member keeps a copy of the team entries, never the private entries on your computers, and the facts it mirrors for search are reachable only by that member and our backend.",
     );
   });
 
@@ -44,6 +44,19 @@ describe("/security", () => {
     for (const word of ["memory", "capture", "upload"]) {
       expect(band.textContent?.toLowerCase()).toContain(word);
     }
+    // Capture keeps prompts and replies locally; uploads and workspace memory are processed in AWS.
+    expect(band.textContent).toContain("your prompts and the agents' replies");
+    expect(band.textContent).toContain("lightbulb sessions turns off");
+    expect(band.textContent).toContain("AWS (Bedrock AgentCore)");
+    expect(band.textContent).not.toContain("third party");
+    expect(within(band).getByRole("link", { name: /memory on your computers/ })).toHaveAttribute("href", "/docs/memory");
+  });
+
+  it("scopes the secret claim: facts are refused, room turns are scrubbed", () => {
+    render(<SecurityPage />);
+    const table = screen.getByRole("table", { name: "Security claims and the evidence for them" });
+    expect(table.textContent).toContain("A match is refused with the reason");
+    expect(table.textContent).toContain("Workspace room turns are handled differently: secret-shaped text is scrubbed");
   });
 
   it("names no competitor and claims no compliance", () => {

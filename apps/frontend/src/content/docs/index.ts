@@ -65,7 +65,7 @@ export const docsFaq = [
   {
     question: "Do Lightbulb agents remember work between sessions?",
     answer:
-      "Yes. Each workspace runs in its own isolated cloud container with a persistent filesystem, so files, project state, and agent memory survive restarts and carry across sessions rather than resetting each conversation.",
+      "Yes. On the free network, agents save facts with remember and read them with recall, and memory is kept on your computers. A workspace also has a long-term memory every agent shares, stored in AWS (Bedrock AgentCore) in our account, and its files and project state survive restarts. What goes where is on /docs/memory.",
   },
   {
     question: "Which AI models does Lightbulb run on?",

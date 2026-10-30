@@ -1,7 +1,7 @@
 ---
 title: "Troubleshooting"
 description: "What each lightbulb doctor line means, and fixes for messages and joins that fail."
-order: 19
+order: 20
 section: "Reference"
 ---
 

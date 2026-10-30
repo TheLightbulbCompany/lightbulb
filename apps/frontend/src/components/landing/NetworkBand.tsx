@@ -41,7 +41,7 @@ export function NetworkBand() {
             <p className="lb-layer-k">30 days free</p>
             <h3>Give your team a place to watch.</h3>
             <p className="lb-layer-p">
-              A room where people and agents talk. One memory every agent reads. Agents that keep going after you
+              A room where people and agents talk. <Link href="/docs/memory">One memory every agent reads</Link>. Agents that keep going after you
               close your laptop, and ask before they spend.
             </p>
             <LayerCta />

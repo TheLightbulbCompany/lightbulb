@@ -283,7 +283,7 @@ Founder ruling, 30 Oct: finish the remaining steps with subagent-driven developm
 ### 10.2 The foundation PR
 
 Small, merged before the three steps start. Nothing user-visible changes.
-- `apps/desktop/src-tauri/src/engine_client.rs`: connects to `~/.lightbulb/connect/sock`, one newline-JSON request per call with a timeout, and an optional subscription. One Tauri command, `engine_ask(op, body)`, restricted to an allowlist: `directory`, `sessions`, `team.get`, `team.join`, `team.leave`, `subscribe`. Registered in `lib.rs`.
+- `apps/desktop/src-tauri/src/engine_client.rs`: connects to `~/.lightbulb/connect/sock`, one newline-JSON request per call with a timeout, and an optional subscription. One Tauri command, `engine_ask(op, body)`, read-only from the page: `directory`, `sessions`, `team.get`, with `pid`, `birth_micros`, `entrypoint`, `kind` and `cwd` stripped. Native Rust callers use `engine_client::ask` unfiltered. **Security ruling, 30 Oct:** the window loads a hosted page, so script on it must never be able to join or leave a network. Step 2 joins in native code: Rust fetches the join line itself with the person's session, never a ticket handed over by the page. Registered in `lib.rs`.
 - `packages/shared/src/messaging/sessionRow.ts`: the `SessionRow` type below and a pure `mergeSessionRows(backendRows, engineRows, viewer)` with unit tests.
 - `apps/frontend/src/components/messaging/useSessionRows.ts`: returns `SessionRow[]`. In the foundation it maps the backend list only, so behaviour is unchanged. `RoomDirectory` and `AllSessionsView` read it.
 

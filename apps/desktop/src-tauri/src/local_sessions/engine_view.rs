@@ -1,6 +1,5 @@
 //! The engine's `sessions` answer as the desktop reads it, and the listing row `claude::capture`
 //! takes from it. Pure but for `read`.
-#![allow(dead_code)] // Task 3 (`Host`) consumes the ended side and the keys.
 
 use serde_json::{json, Value};
 

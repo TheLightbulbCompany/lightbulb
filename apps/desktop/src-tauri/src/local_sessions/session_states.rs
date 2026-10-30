@@ -31,6 +31,8 @@ static READS_IDLE_STOPPED: AtomicBool = AtomicBool::new(false);
 static READS_REMOTE_RESIZE: AtomicBool = AtomicBool::new(false);
 /// The relay lists `sessionAttention`: it reads `done`, `waitingFor` and `note`.
 static READS_ATTENTION: AtomicBool = AtomicBool::new(false);
+/// The relay lists `networkSessionId`: an older one's `extra="forbid"` rejects a frame carrying it.
+static READS_NETWORK_ID: AtomicBool = AtomicBool::new(false);
 /// `DeviceHeartbeat.screens`' cap on the relay.
 const SCREENS_MAX: usize = 24;
 /// How often holders no mirror names are looked for.
@@ -127,6 +129,7 @@ pub(super) fn read_features(listed: &Value) {
     READS_IDLE_STOPPED.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "endedIdleStopped")), SeqCst);
     READS_REMOTE_RESIZE.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "remoteResize")), SeqCst);
     READS_ATTENTION.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "sessionAttention")), SeqCst);
+    READS_NETWORK_ID.store(lists_network_id(listed), SeqCst);
     super::signals::read_features(listed);
 }
 
@@ -152,6 +155,21 @@ fn add_attention_if(reads: bool, entry: &mut Value, native: &NativeSession) {
     }
 }
 
+fn lists_network_id(listed: &Value) -> bool {
+    listed.as_array().is_some_and(|f| f.iter().any(|x| x == "networkSessionId"))
+}
+
+/// The engine's key for this session (`Mirror::network_id`), on a register or heartbeat entry.
+pub(super) fn add_network_id(entry: &mut Value, mirror: &Mirror) {
+    add_network_id_if(READS_NETWORK_ID.load(SeqCst), entry, mirror);
+}
+
+fn add_network_id_if(reads: bool, entry: &mut Value, mirror: &Mirror) {
+    if let Some(id) = mirror.network_id.as_ref().filter(|_| reads) {
+        entry["networkSessionId"] = json!(id);
+    }
+}
+
 /// The relay this Mac talks to now reads `remoteResize`.
 pub(super) fn reads_remote_resize() -> bool {
     READS_REMOTE_RESIZE.load(SeqCst)
@@ -160,6 +178,11 @@ pub(super) fn reads_remote_resize() -> bool {
 /// The relay this Mac talks to now reads an `idle-stopped` end.
 pub(super) fn reads_idle_stopped() -> bool {
     READS_IDLE_STOPPED.load(SeqCst)
+}
+
+#[cfg(test)]
+pub(super) fn set_reads_network_id(on: bool) {
+    READS_NETWORK_ID.store(on, SeqCst);
 }
 
 /// Only this flag: `read_features` would reset the others under parallel tests.
@@ -499,6 +522,21 @@ mod tests {
     }
     use super::super::transport::tests::test_mirror;
     use super::*;
+
+    #[test]
+    fn session_states_the_network_id_travels_only_to_a_relay_that_lists_it() {
+        assert!(lists_network_id(&json!(["x", "networkSessionId"])));
+        assert!(!lists_network_id(&json!(["x"])) && !lists_network_id(&Value::Null));
+        let mut mirror = test_mirror(SID, "g");
+        let mut entry = json!({});
+        add_network_id_if(true, &mut entry, &mirror);
+        assert_eq!(entry, json!({}), "none yet");
+        mirror.network_id = Some("abc/claude:u".into());
+        add_network_id_if(false, &mut entry, &mirror);
+        assert_eq!(entry, json!({}), "a relay that does not list it");
+        add_network_id_if(true, &mut entry, &mirror);
+        assert_eq!(entry, json!({"networkSessionId": "abc/claude:u"}));
+    }
 
     const SID: &str = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
     const GOLDEN: &str =

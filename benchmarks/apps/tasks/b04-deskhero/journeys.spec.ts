@@ -41,7 +41,7 @@ test("edit, close, reopen, delete", async ({ page }) => {
   await expect(page.getByTestId("ticket-detail-status")).toHaveText("closed");
   await page.getByTestId("ticket-reopen").click();
   await expect(page.getByTestId("ticket-detail-status")).toHaveText("open");
-  await page.getByTestId("ticket-delete").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() === "DELETE"), page.getByTestId("ticket-delete").click()]); // let the delete land before asking for the ticket
   expect((await api(page, "GET", "/api/tickets/" + t.id)).status).toBe(404);
 });
 

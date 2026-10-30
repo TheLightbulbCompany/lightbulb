@@ -1,6 +1,6 @@
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ProbeResult, ProbeSpec } from "./adapters/types";
 import { judge as realJudge } from "./judge";
@@ -8,10 +8,28 @@ import { runProbes } from "./probes";
 import { loadTask, playwrightJourneys, type Deps } from "./runner";
 import { serve as realServe } from "./serve";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+export const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** The planted key in the broken twin's client component. */
 export const PLANTED_SECRET = "sk_test_EVALBROKEN000000000000";
 const TASK = "b01-todo";
+
+/** Serve a copy of an app dir (never the dir itself) with a task's contract.json, and always stop and delete it. */
+export async function withAppDir<T>(src: string, taskId: string, serve: typeof realServe, fn: (url: string, dir: string, databaseUrl: string) => Promise<T>): Promise<T | { error: string }> {
+  const dir = mkdtempSync(join(tmpdir(), `controls-${basename(src)}-`));
+  let s: Awaited<ReturnType<typeof serve>> | undefined;
+  try {
+    cpSync(src, dir, { recursive: true, filter: (f) => !/(^|\/)(node_modules|\.next)(\/|$)/.test(f) });
+    writeFileSync(join(dir, "contract.json"), readFileSync(join(root, "tasks", taskId, "contract.json")));
+    s = await serve(dir);
+    if (!s.built) return { error: `did not build or start: ${s.buildLog.slice(-1500)}` };
+    return await fn(s.url, dir, s.databaseUrl);
+  } catch (e) {
+    return { error: `threw: ${e instanceof Error ? e.stack ?? e.message : e}` }; // a failing reference must not stop the twin from running
+  } finally {
+    await s?.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 /**
  * Sanity controls (Dyad): the hand-written reference must pass every b01 journey and probe; the broken twin must fail every probe.
@@ -28,23 +46,7 @@ export async function runControls(deps: Partial<Deps> = {}): Promise<{ reference
   // sql-injection last: its payloads may take the twin's app down
   const set = [...task.probes.filter((p) => p.kind !== "sql-injection"), secretProbe, ...task.probes.filter((p) => p.kind === "sql-injection")];
 
-  /** Serve a copy of a control app (never the checked-in dir) and always stop and delete it. */
-  async function withApp<T>(name: string, fn: (url: string, dir: string, databaseUrl: string) => Promise<T>): Promise<T | { error: string }> {
-    const dir = mkdtempSync(join(tmpdir(), `controls-${name}-`));
-    let s: Awaited<ReturnType<typeof serve>> | undefined;
-    try {
-      cpSync(join(root, "controls", name), dir, { recursive: true, filter: (f) => !/(^|\/)(node_modules|\.next)(\/|$)/.test(f) });
-      writeFileSync(join(dir, "contract.json"), readFileSync(join(root, "tasks", TASK, "contract.json")));
-      s = await serve(dir);
-      if (!s.built) return { error: `did not build or start: ${s.buildLog.slice(-1500)}` };
-      return await fn(s.url, dir, s.databaseUrl);
-    } catch (e) {
-      return { error: `threw: ${e instanceof Error ? e.stack ?? e.message : e}` }; // a failing reference must not stop the twin from running
-    } finally {
-      await s?.stop();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
+  const withApp = <T>(name: string, fn: (url: string, dir: string, databaseUrl: string) => Promise<T>) => withAppDir(join(root, "controls", name), TASK, serve, fn);
   const lines = (rs: ProbeResult[]) => rs.map((r) => `  ${r.id}: ${r.pass ? "PASS" : "FAIL"} ${r.detail}`);
 
   const detail: string[] = [];

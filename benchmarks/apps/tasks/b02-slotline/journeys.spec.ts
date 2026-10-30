@@ -11,7 +11,7 @@ async function seed(page: import("@playwright/test").Page) {
   await page.goto(url("/services/new"));
   await page.getByTestId("service-form-name").fill(sn);
   await page.getByTestId("service-form-duration").fill("30");
-  await page.getByTestId("service-form-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("service-form-submit").click()]); // let the write land before navigating
   return { pn, sn };
 }
 
@@ -65,7 +65,7 @@ test("bookings are private", async ({ page, browser }) => {
   await page.getByTestId("booking-form-practitioner").selectOption({ label: pn });
   await page.getByTestId("booking-form-service").selectOption({ label: sn });
   await page.getByTestId("booking-form-start").fill("2030-01-17T09:00");
-  await page.getByTestId("booking-form-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("booking-form-submit").click()]); // let the write land before listing
   const mine = (await api(page, "GET", "/api/bookings")).body;
   expect(mine.length).toBe(1);
   const other = await newUser(browser);

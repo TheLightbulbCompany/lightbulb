@@ -15,7 +15,7 @@ async function restaurantWithItem(page: import("@playwright/test").Page) {
   await page.getByTestId("menu-item-form-name").fill("Burger");
   await page.getByTestId("menu-item-form-description").fill("Beef");
   await page.getByTestId("menu-item-form-price-cents").fill("1250");
-  await page.getByTestId("menu-item-form-submit").click();
+  await Promise.all([page.waitForResponse((r) => r.request().method() !== "GET"), page.getByTestId("menu-item-form-submit").click()]); // let the write land before navigating
   return { id: id!, name };
 }
 

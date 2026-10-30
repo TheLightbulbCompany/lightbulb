@@ -276,9 +276,9 @@ async def _card_lines(app_id: str | None, environment: str) -> dict:
 
 
 async def _owned_app(owner_id: str, app_id: str) -> dict | None:
-    """The app, or ``None`` when it is missing or another owner's — the same answer either way."""
+    """The app, or ``None`` when it is missing, removed (R54) or another owner's — the same answer either way."""
     app = await apps_repo.get(app_id)
-    return app if app and app.get("owner_id") == owner_id else None
+    return app if app and app.get("owner_id") == owner_id and app.get("state") != "destroyed" else None
 
 
 async def _read_catalog(account_id: str, provider_name: str, service_id: str) -> tuple[dict, dict]:
@@ -1046,6 +1046,8 @@ async def _create_resource(account_id: str, row: dict) -> dict:
         return await _poll_resource(account_id, row)
     # Last look before the billable write. A vanished service raises
     # WorkflowRefused, which the caller already parks for review.
+    if row.get("app_id") and not await _owned_app(row["owner_id"], row["app_id"]):
+        return await _fail(row, "app_not_found", "The app this was for no longer exists")  # R54: removed mid-flight
     fresh = await _fresh_snapshot(account_id, row)
     if _drifted(row.get("approval") or {}, fresh):
         return await _requires_review(row, "catalog_changed")

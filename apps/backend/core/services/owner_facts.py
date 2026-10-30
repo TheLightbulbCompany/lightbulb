@@ -196,7 +196,7 @@ async def _lookup_provisioning(owner_id: str) -> list[dict]:
     for row in rows:
         provider = row.get("provider_name") or ""
         service = row.get("service_ref") or ""
-        if not provider or not service:
+        if not provider or not service or row.get("app_id"):  # R53: an app's rows are not company facts
             continue
         key = (provider, service)
         prior = newest.get(key)

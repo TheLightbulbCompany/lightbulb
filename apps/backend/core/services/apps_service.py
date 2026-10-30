@@ -738,17 +738,27 @@ async def remove(owner_id: str, app_id: str, *, confirm_name: str, user_id: str)
     if confirm_name != app["name"]:
         raise AppsRefused("confirm_name_mismatch", f'Type "{app["name"]}" to confirm.')
     rows = [r for r in await wf_repo.list_for_owner(owner_id) if r.get("app_id") == app_id]
+    busy = AppsRefused("busy", "A resource for this app is being set up right now.", "try again in a minute")
+    open_rows = [r for r in rows if r.get("state") not in wf_repo.TERMINAL_STATES]
+    # R54: a row mid-create can't be withdrawn; removing now would orphan what it creates next.
+    if any(
+        r.get("resource_id")
+        or r.get("provider_connection_request_id")
+        or r.get("state") not in wf_repo.CANCELLABLE_STATES
+        for r in open_rows
+    ):
+        raise busy
+    for r in open_rows:  # an unanswered card must not provision for a removed app
+        try:
+            await provisioning_workflow.cancel(r["workflow_id"])
+        except provisioning_workflow.WorkflowRefused:
+            raise busy from None
     for r in rows:
         if r.get("resource_id") and r.get("resource_status") != "removed":
             await api.remove_resource(await provisioning_workflow.account_id_for(owner_id), r["resource_id"])
             secret = f"apps/{app_id}/{r['provider_name'].lower()}/{r.get('environment') or 'prod'}"
             await integration_secret_store.delete(owner_id, secret)
             await wf_repo.patch(r["workflow_id"], {"resource_status": "removed", "removed_at": utc_now_iso()})
-        elif not r.get("resource_id") and r.get("state") in wf_repo.CANCELLABLE_STATES:
-            try:  # an unanswered card must not provision for a removed app
-                await provisioning_workflow.cancel(r["workflow_id"])
-            except provisioning_workflow.WorkflowRefused:
-                pass
     await apps_dns.remove(app["name"])
     await apps_source.delete_all(owner_id, app_id)
     await integration_secret_store.delete(owner_id, f"apps/{app_id}/lightbulb")

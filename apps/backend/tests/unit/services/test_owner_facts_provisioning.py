@@ -178,3 +178,21 @@ async def test_a_live_resource_keeps_its_names():
     assert entry["env_keys"] == ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"]
     assert entry["resource_name"] == "svc_analytics-abc123"
     assert "resource_status" not in entry
+
+
+async def test_app_rows_never_shadow_the_company_row():
+    """R53: an app's own Neon/Vercel rows are not company facts."""
+    company = {
+        "workflow_id": "pwf_1",
+        "provider_name": "neon",
+        "service_ref": "postgres",
+        "state": "active",
+        "created_at": "2026-08-01T00:00:00Z",
+    }
+    app_row = {**company, "workflow_id": "pwf_2", "state": "awaiting_approval", "app_id": "app_1",
+               "created_at": "2026-09-01T00:00:00Z"}  # fmt: skip
+    with patch(
+        "core.repositories.provisioning_workflow_repo.list_for_owner", AsyncMock(return_value=[company, app_row])
+    ):
+        entries = await mod._lookup_provisioning("org_a")
+    assert [e["workflow_id"] for e in entries] == ["pwf_1"]

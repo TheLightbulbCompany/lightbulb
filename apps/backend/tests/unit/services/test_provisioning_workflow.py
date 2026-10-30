@@ -2351,3 +2351,34 @@ async def test_reconcile_approval_posts_line_with_paperclip_user():
     assert (auth.user_id, auth.org_id, room_id) == ("user_creator", "org_a", "room_1")
     assert request.text == "approved: posthog/svc_analytics for crew-schedule, setting up"
     assert post.await_args.kwargs == {"via": "apps", "wake": True}
+
+
+# --- final review wave ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_removed_app_gets_no_new_workflow():
+    """R54: a destroyed app is missing."""
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "state": "destroyed"})),
+        patch.object(mod.api, "eligibility", AsyncMock(return_value=_READY)),
+        patch.object(mod.repo, "create", AsyncMock()) as create,
+    ):
+        with pytest.raises(mod.WorkflowRefused) as exc:
+            await _start_app(app_id="app_1")
+    assert exc.value.code == "app_not_found"
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_resource_is_created_for_a_removed_app():
+    """R54: a row still stepping after its app was removed fails before the billable create."""
+    gone = {**APP, "state": "destroyed", "stripe_project_id": "proj_app"}
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value=gone)),
+        patch.object(mod.api, "create_resource", AsyncMock(return_value={"id": "res_1"})) as create,
+        patch.object(mod, "_fail", AsyncMock(return_value={"state": "failed"})) as failed,
+    ):
+        await mod._create_resource("acct_1", _approved(state="connecting_provider", app_id="app_1", environment="prod"))
+    create.assert_not_awaited()
+    assert failed.await_args.args[1] == "app_not_found"

@@ -1088,3 +1088,23 @@ def test_company_row_approval_posts_nothing(client, room):
     resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/approve", json={})
     assert resp.status_code == 200 and resp.json()["state"] == "connecting_provider"
     assert sent == {}
+
+
+def test_workflows_list_names_the_app_a_row_belongs_to(client):
+    """R53: an app row says which app and environment it is for."""
+    app_row = {**WF, "workflow_id": "pwf_2", "app_id": "app_1", "environment": "dev"}
+    with (
+        patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=[WF, app_row])),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
+        patch.object(
+            mod.apps_repo, "get", AsyncMock(return_value={"app_id": "app_1", "owner_id": "org_a", "name": "crew"})
+        ),
+    ):
+        rows = client.get("/api/v1/company/provisioning/workflows").json()["workflows"]
+    by_id = {r["workflow_id"]: r for r in rows}
+    assert (by_id["pwf_2"]["app_id"], by_id["pwf_2"]["environment"], by_id["pwf_2"]["app_name"]) == (
+        "app_1",
+        "dev",
+        "crew",
+    )
+    assert (by_id["pwf_1"]["app_id"], by_id["pwf_1"]["app_name"]) == (None, None)

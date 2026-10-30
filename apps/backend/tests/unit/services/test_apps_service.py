@@ -873,3 +873,26 @@ async def test_up_keeps_the_owners_settings_once_workflows_exist(world):
     assert (app["open_to"], app["budget_usd"], app["room_id"], app["services"], app["origin"]) == (
         "room", 20, "room_1", ["database"], {"kind": "idea", "ref": "i1"},
     )  # fmt: skip
+
+
+async def test_remove_waits_for_a_row_mid_flight(world):
+    """R54: a row past the card with no resource yet can't be cancelled: remove says busy, touches nothing."""
+    src = await _source()
+    await _up(src)
+    world.rows["pwf_1"]["state"] = "provisioning"
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.remove(OWNER, src["app_id"], confirm_name="crew", user_id="user_1")
+    assert (e.value.code, e.value.next) == ("busy", "try again in a minute")
+    assert (await svc.apps_repo.get(src["app_id"]))["state"] != "destroyed"
+    svc.provisioning_workflow.cancel.assert_not_awaited()
+    world.remove.assert_not_awaited()
+
+
+async def test_remove_is_busy_when_a_card_cannot_be_cancelled(world):
+    src = await _source()
+    await _up(src)
+    svc.provisioning_workflow.cancel.side_effect = svc.provisioning_workflow.WorkflowRefused("not_cancellable", "x")
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.remove(OWNER, src["app_id"], confirm_name="crew", user_id="user_1")
+    assert e.value.code == "busy"
+    assert (await svc.apps_repo.get(src["app_id"]))["state"] != "destroyed"

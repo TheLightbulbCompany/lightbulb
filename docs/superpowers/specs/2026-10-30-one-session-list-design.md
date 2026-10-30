@@ -41,7 +41,7 @@ Non-goals
 - Teammates resuming or starting sessions on another computer (network workers).
 - Changing Friday's two tools (`lightbulb_local_sessions`, the network directory). After this work they agree; their shape stays.
 - Codex, Cursor, OpenCode and Grok parity with the Claude discovery below. §4.1 says what each gets now; full parity is a follow-up with its own verification (harness surfaces §3-4).
-- A new sidebar design. Rows, grouping and actions stay; only their source changes.
+- Deciding the sidebar's new layout here. The founder ruled on 30 Oct that the sidebar needs a redesign (a five-row cap is not good enough) with design research first; that is Step 4 (§5) with its own design document. This document fixes what a row means and where it comes from; Step 4 decides how rows are shown.
 - Uploaded sessions (the capture upload timeline) and the web inspector.
 
 Anti-goals (a failure even if it works)
@@ -133,14 +133,14 @@ The backend list stays, as the 22 Oct O1 ruling allowed, but it becomes a copy f
 Discovery and liveness
 - The app's Claude discovery (`claude agents --json` polling, `Holders`, `still_registered`, the liveness tick's `runs()` / `held()`, the fork-ends-origin rule) is deleted. In its place the app opens the engine's socket (`~/.lightbulb/connect/sock`, newline JSON), calls `directory`, and `subscribe`s for changes. This computer's Claude rows drive mirror creation, state and end. The app's existing per-session capture (version verification, transcript, generation, push socket, restrictions, uploads) runs for each live row the engine lists, as today.
 - A mirror's status is the engine's: `busy → busy`, `waiting → waiting-approval` with `waitingFor`, `idle → idle` (with `done` and `terminal: attach` when `job.state` is finished), `ended → ended` with `endedAt` and `endedReason` from the engine's `reason`. Nothing in the app freezes a status or forces `idle`; the "listing stopped showing it, keep it as idle" rule (`transport.rs:511-527`) goes, and so does every `Transition::Status` the app's hooks wrote (`lifecycle.rs:409-446`, `transport.rs:952-970`). The app's hooks stay installed only to relay permission decisions (§4.1).
-- The owner's own sessions that are not shared in Lightbulb registered nothing on the backend until now and were absent from the sidebar. They now appear as network-only rows under "You", dimmed, with one action: Share (the same switch the holder band offers). See T4.
+- The owner's own sessions that are not shared in Lightbulb registered nothing on the backend until now and were absent from the sidebar. They now appear as network-only rows under "You", dimmed, with one action: Share (the same switch the holder band offers). (Founder ruling 30 Oct: yes, T4.)
 - Codex, Cursor and Grok discovery in the app is unchanged in this step (non-goal). The Claude pipeline is the one that produced the 30 Oct mismatch.
 - If the engine's socket is unreachable the sidebar footer, where "Mac connected" lives, says "Lightbulb's background service is off" with a Fix button that runs the bundled `setup`; no Claude sessions are listed until it answers. The app already installs and runs the engine at every launch (`engine.rs`), so this is a fault state, not a mode.
 
 The join between the two lists
 - The desktop registers each mirror with a new public field `networkSessionId` (`<member12>/<provider>:<conversation>`), taken from the engine's own row. The backend stores it and returns it on `LocalSession`. The conversation id and profile fingerprint stay private (`_public` allowlist unchanged).
 - The sidebar (desktop only; the web app loads the same code, so this is gated to Tauri) merges: every backend row, joined by `networkSessionId` to its engine row when one exists; then every engine row with no backend match as a **network-only row**.
-- A network-only row shows person, agent, title, folder, state, and "on the network" as its second line when the folder is unknown. It has no Open, Join, Resume or End; it is information, the same as `who --all`. Rows of workspace agents (`Friday`, `Forge`, …) are network-only rows under the workspace's name. Hidden-folder sessions never arrive, so they never show.
+- A network-only row shows person, agent, title, folder, state, and "on the network" as its second line when the folder is unknown. It has no Open, Join, Resume or End; it is information, the same as `who --all`. Rows of workspace agents (`Friday`, `Forge`, …) are network-only rows under the workspace's name. Hidden-folder sessions never arrive, so they never show. (Founder ruling 30 Oct: yes to these rows, T3.) Until Step 4 lands they sit in today's layout under its cap and "+N more"; Step 4 replaces that layout.
 - Ended rows: the backend row stays the source of Recent / Stopped for shared sessions (resume through the holder, as today). Network-only ended rows show in Recent with "ended" and no action.
 - Retention: the backend keeps its 7-day ended rule; the client's 3-day offline rule goes, and offline follows the engine's seven days through `online: false` on the joined row.
 
@@ -196,10 +196,11 @@ Unchanged tools. After Step 3, `lightbulb_local_sessions` (the backend copy) and
 Each step ships on its own and is useful alone. The order limits risk and gets the founder's own confusion fixed first.
 
 1. **Step 1, engine** (CLI repo, one release): §4.1, §4.2, §4.6. Then: tag, Hermes pin flip, `roll_hermes_runtimes`, re-vendor the hosted tool spec. Acceptance A1-A4.
-2. **Step 3, desktop and backend** (monorepo): §4.4. Depends on the Step 1 release being installed by the app (bump the bundled engine). Acceptance A5-A7.
+2. **Step 3, desktop and backend** (monorepo): §4.4 in today's layout. Depends on the Step 1 release being installed by the app (bump the bundled engine). Acceptance A5-A7, A10.
 3. **Step 2, auto-join** (CLI + monorepo): §4.5. Depends on Step 1's instance invite. Acceptance A8-A9.
+4. **Step 4, the sidebar redesign** (monorepo): design research first (prior art for lists of many live agents and sessions, our own sidebar's history and the five-row cap), then a design document of its own through the interface-design skills, then the build. It consumes the rows §4.4 produces and changes nothing about their meaning. The research starts now, in parallel with Step 1.
 
-Step 2 is last because it is the only one with a product decision still open (§8) and the only one that touches admission.
+Step 2 is after Step 3 because it is the only step that touches admission.
 
 ---
 
@@ -214,6 +215,7 @@ Step 2 is last because it is the only one with a product decision still open (§
 - A7. The sidebar shows the Windows WSL computer's OpenCode session and Friday as network-only rows, dimmed, with no Open.
 - A8. Leonardo signs in to the desktop app and, with no invite from anyone, appears in the founder's `who --all` and `lightbulb team` as `Leonardo · <computer>`; his sessions appear on the network; a message from his Claude to Friday is answered (the engine is signed in).
 - A9. A Mac already in another multi-member network is asked, not moved; "Not now" is remembered across launches.
+- A10. With "Share every new session" off, a terminal the person starts appears in their own sidebar dimmed under "You" with Share as its only action, and in no teammate's sidebar until shared.
 
 ---
 
@@ -242,7 +244,7 @@ Follow-ups (not in this document)
 
 ## 8. Decisions for the founder
 
-Collected after the builder check (§9). Most important first.
+Collected after the builder check (§9). Most important first. **Ruled 30 Oct 2026:** T1 join then notify; T2 the cloud member anchors the workspace's network; T3 and T4 shared plus network rows, and the sidebar gets a redesign with design research first (Step 4), because a five-row cap is not good enough.
 
 - T1. **Auto-join silently with a notice, or offer a Join button first?** This document says: join silently when the computer is alone in its own network (a notice after), ask only when it is already on another network. The founder's words were "automatically" and "the option to connect automatically". The alternative, always ask, adds one click for every member and avoids any surprise.
 - T2. **The workspace's cloud member anchors the network.** For a fresh workspace the first sign-in makes the member's own network the workspace's; `invite --agents` is then a legacy path. For the founder's workspace nothing changes. The alternative is to keep "an admin's Mac founds, the workspace joins it", which cannot support auto-join without an admin online.

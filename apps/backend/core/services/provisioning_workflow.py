@@ -997,6 +997,19 @@ async def _handle_connection_request(account_id: str, row: dict, ar: dict) -> di
 async def _create_resource(account_id: str, row: dict) -> dict:
     if row.get("resource_id"):
         return await _poll_resource(account_id, row)
+    # Last look before the billable write: the card was approved on this
+    # catalog entry. A vanished service raises WorkflowRefused, which the
+    # caller already parks for review.
+    service, provider = await _read_catalog(account_id, row["provider_name"], row["service_id"])
+    fresh = snapshot_of(
+        service,
+        provider,
+        row.get("configuration") or {},
+        creates_project=await _creates_project(row["owner_id"], service, row.get("app_id")),
+        environment=await _environment_of(row.get("app_id"), row.get("environment") or "prod"),
+    )
+    if _drifted(row.get("approval") or {}, fresh):
+        return await _requires_review(row, "catalog_changed")
     project_id, refused = await _project_for(account_id, row)
     if refused is not None:
         return refused

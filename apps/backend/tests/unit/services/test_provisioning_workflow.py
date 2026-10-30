@@ -128,6 +128,13 @@ def no_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def catalog_unchanged(monkeypatch):
+    """The re-read before the resource write finds the approved entry unless a test says it moved."""
+    monkeypatch.setattr(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE]))
+    monkeypatch.setattr(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER]))
+
+
+@pytest.fixture(autouse=True)
 def projects_ready(monkeypatch):
     """The account's `projects` capability is active unless a test says not."""
     ready = AsyncMock(return_value=True)
@@ -2132,3 +2139,43 @@ async def test_start_refuses_an_unknown_app():
             await _start_app(app_id="app_nope")
     assert exc.value.code == "app_not_found"
     create.assert_not_awaited()
+
+
+# --- catalog re-read before the resource write ------------------------------
+
+
+def _paid(text):
+    return {**SERVICE, "pricing": {"type": "paid", "paid_pricing": [{"type": "freeform", "freeform": text}]}}
+
+
+@pytest.mark.asyncio
+async def test_catalog_drift_before_resource_post_parks_for_review():
+    row = _row(state="connecting_provider", approval=mod.snapshot_of(_paid("$20/mo"), PROVIDER, CONFIG))
+    with (
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[_paid("$200/mo")])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.api, "_raw", AsyncMock()) as raw,
+        patch.object(mod.api, "create_resource", AsyncMock()) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="requires_review"))) as move,
+    ):
+        out = await mod._create_resource("acct_1", row)
+    assert out["state"] == "requires_review"
+    assert move.await_args.kwargs["fields"]["error_code"] == "catalog_changed"
+    create.assert_not_awaited()
+    raw.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unchanged_catalog_before_app_resource_post_still_creates():
+    app = {**APP, "stripe_project_id": "proj_app"}
+    approval = mod.snapshot_of(SERVICE, PROVIDER, CONFIG, environment="crew-schedule — live")
+    row = _row(state="connecting_provider", approval=approval, app_id="app_1", environment="prod")
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value=app)),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.api, "create_resource", AsyncMock(return_value={"id": "res_1"})) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="provisioning"))),
+    ):
+        await mod._create_resource("acct_1", row)
+    create.assert_awaited_once()

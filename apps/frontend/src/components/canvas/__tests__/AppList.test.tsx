@@ -78,7 +78,7 @@ describe("AppList", () => {
   });
 
   it("a row with no known asker says where it came from, never 'someone'", () => {
-    render(<AppList {...props} apps={[app({ created_by_name: null, requested_by: null })]} />);
+    render(<AppList {...props} apps={[app({ created_by_name: undefined, requested_by: undefined })]} />);
     expect(screen.getByText("from #finance")).toBeTruthy();
     expect(screen.queryByText(/someone/)).toBeNull();
   });

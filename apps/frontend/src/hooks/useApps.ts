@@ -1,8 +1,10 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
+import { useEffect } from "react";
 import useSWR from "swr";
 
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useApi } from "@/lib/api";
 import { notifyApiError } from "@/lib/notify";
 
@@ -41,6 +43,15 @@ export function useApps() {
     isLoaded && userId ? ["/apps", `${userId}:${orgId ?? userId}`] : null,
     ([path]: [string, string]) => api.get(path) as Promise<AppsResponse>,
     { refreshInterval: (latest) => (latest?.apps.some((a) => PENDING.includes(a.state)) ? 15_000 : 0) },
+  );
+
+  // An app changed server-side: refetch now. The poll above stays as a backstop.
+  const live = useLiveEvents();
+  useEffect(
+    () => live.onEvent((event) => {
+      if (event.type === "runtime.resource.invalidated" && event.payload.resource === "apps") void mutate();
+    }),
+    [live, mutate],
   );
 
   /** Returns the URL to frame. Errors propagate: the caller shows the backend's refusal. */

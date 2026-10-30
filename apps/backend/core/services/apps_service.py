@@ -177,9 +177,30 @@ async def _check_room(owner_id: str, room_id: str) -> None:
         raise AppsRefused("room_not_found", "That room is not in this workspace.", "pick a room of this workspace")
 
 
+def _notify(app: dict) -> None:
+    """Tell the owner's open Canvas the app changed. Fire-and-forget; never breaks the write."""
+
+    async def _publish() -> None:
+        try:
+            from core.services.live_events import publish_owner_users
+            from core.services.messaging import make_live_event
+
+            event = make_live_event("runtime.resource.invalidated", {"resource": "apps", "resourceId": app["app_id"]})
+            await publish_owner_users(app["owner_id"], event)
+        except Exception:  # noqa: BLE001 — a live nudge never breaks its durable write
+            logger.warning("apps live event failed for %s", app.get("app_id"), exc_info=True)
+
+    try:
+        asyncio.get_running_loop().create_task(_publish())
+    except RuntimeError:
+        return
+
+
 async def _patch(app: dict, fields: dict) -> dict:
     app.update(fields)
     await apps_repo.patch(app["app_id"], fields)
+    if set(fields) != {"progress_lease_until"}:  # the lease moves on every step; nothing visible changed
+        _notify(app)
     return app
 
 
@@ -502,6 +523,7 @@ async def _check_publish(app: dict, creds: dict) -> None:
         fresh = won or await apps_repo.get(app["app_id"], consistent_read=True)
         app.clear()
         app.update(plain(fresh))
+        _notify(app)
     elif st["readyState"] in ("ERROR", "CANCELED"):
         err = {**_build_failed(st), "next": "fix the error and publish again"}
         await _patch(app, {"publish_pending": None, "publish_error": err})

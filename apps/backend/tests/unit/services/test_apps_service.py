@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+import asyncio  # noqa: E402
 import copy  # noqa: E402
 import io  # noqa: E402
 import json  # noqa: E402
@@ -87,6 +88,15 @@ class Vercel:
         if p.endswith("/files"):
             return httpx.Response(200, json={})
         return httpx.Response(200, json={})
+
+
+@pytest.fixture(autouse=True)
+def published(monkeypatch):
+    from core.services import live_events
+
+    m = AsyncMock()
+    monkeypatch.setattr(live_events, "publish_owner_users", m)
+    return m
 
 
 @pytest.fixture
@@ -770,6 +780,29 @@ async def test_sources_are_pruned_but_keep_live_and_wanted(world):
 
 
 # --- task 13: routes' service helpers -----------------------------------------------------------
+
+
+async def test_a_record_change_publishes_one_apps_event_and_a_failure_never_breaks_the_write(world, published, caplog):
+    src, _, _ = await _ready_preview(world)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    published.reset_mock()
+    await svc.update_settings(OWNER, src["app_id"], budget_usd=33)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert published.await_count == 1
+    owner, event = published.await_args.args
+    assert owner == OWNER
+    assert event["type"] == "runtime.resource.invalidated"
+    assert event["payload"] == {"resource": "apps", "resourceId": src["app_id"]}
+
+    published.side_effect = RuntimeError("appsync down")
+    with caplog.at_level(logging.WARNING):
+        await svc.update_settings(OWNER, src["app_id"], budget_usd=44)
+        for _ in range(3):
+            await asyncio.sleep(0)
+    assert (await svc.apps_repo.get(src["app_id"]))["budget_usd"] == 44
+    assert "apps live event failed" in caplog.text
 
 
 async def test_update_settings_stores_and_repushes_open_to(world):

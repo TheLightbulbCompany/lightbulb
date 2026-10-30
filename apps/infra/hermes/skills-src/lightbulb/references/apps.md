@@ -36,7 +36,8 @@ waits for the research.
 ## The loop
 
 `lightbulb app check` → fix → `lightbulb app up --json`. `up` commits, checks, sends the code and
-waits for the build (up to ten minutes). Read its `next` and do exactly that:
+waits for the build (up to ten minutes). Read its `next`. If it starts with fix, diagnose or undo,
+do that; otherwise do the step it names:
 
 - `fix`: fix the listed problems and run the loop again.
 - `diagnose`: stop patching. List what you tried, find the root cause, then fix that.
@@ -59,7 +60,7 @@ When `up` returns a `preview_url`, open it in the shared browser (`references/su
 Browser), walk the main flow, and record it:
 `lightbulb app evidence --kind browser --file <recording or screenshot> --note "<what you checked>"`.
 Then run `up` again. Post only when it says `"done": true`, one line: the `canvas_url` link, what
-the app does, what data it reads, and what it cost (`cost_cents`, in dollars). Attach the
+the app does, what data it reads, and, only if `cost_cents` is present, what it cost (in dollars). Attach the
 recording to that reply (`references/chat-vs-document.md`). If `sample_data` is true, say it runs
 on sample data and the real data arrives in a few minutes.
 
@@ -72,13 +73,14 @@ Outside a room turn (a Paperclip run), post the same line with `lightbulb-post.s
   without it. On a pass, run `lightbulb app publish --json`, then say in one line that it is live,
   with the `canvas_url`. On failures, fix them and ask again.
 - "Who can open it" and the budget are the owner's, in Canvas. Point them there.
+- Removing: point the owner to the app's Settings in Canvas, "Remove app…".
 
 ## Undo and data
 
 "undo" → `lightbulb app rollback --json` (or `lightbulb app rollback <n>` for an older version).
 Say which version is live now and that the data is unchanged: undo is code only. Restoring data
-happens in the provider's own console, linked from the app's Canvas entry; Lightbulb keeps no
-backups of it.
+is the owner's, from "Data and backups" in the app's Settings in Canvas (admins); Lightbulb keeps
+no backups of it.
 
 ## Words
 

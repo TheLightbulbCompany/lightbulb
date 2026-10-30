@@ -1,5 +1,7 @@
 # Software projects: from nothing to live
 
+A new app, site, tool or dashboard someone asks for: `references/apps.md`.
+
 Read this when asked to build something new and put it online (an app, a site,
 a service). For work on an existing repo, start at **Repository** and skip the
 step that creates it: every other rule from there on still applies.

@@ -799,3 +799,77 @@ async def test_room_must_belong_to_the_callers_workspace(world, monkeypatch):
         )  # fmt: skip
     assert e.value.code == "room_not_found"
     assert (await svc.apps_repo.get(src["app_id"]))["room_id"] == "room_1"
+
+
+# --- final review wave --------------------------------------------------------------------------
+
+
+async def test_sharing_change_rebuilds_the_preview(world):
+    """R51: Vercel env reaches only new deployments, so a new open_to rebuilds the preview."""
+    src, _, _ = await _ready_preview(world)
+    n = len(world.vercel.created())
+    await svc.update_settings(OWNER, src["app_id"], open_to="workspace")
+    assert len(world.vercel.created()) == n + 1 and "target" not in world.vercel.created()[-1]
+    await svc.status(OWNER, src["app_id"])
+    assert len(world.vercel.created()) == n + 1  # once
+
+
+async def test_sharing_change_redeploys_the_live_app(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    n = len(world.vercel.created())
+    await svc.update_settings(OWNER, src["app_id"], open_to="workspace")
+    prod = [d for d in world.vercel.created()[n:] if d.get("target") == "production"]
+    assert len(prod) == 1
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    world.vercel.finish(f"dpl_{len(world.vercel.created()) - 1}")
+    st = await svc.status(OWNER, src["app_id"])
+    assert st["state"] == "live" and [v["commit"] for v in st["versions"]] == ["c1", "c1"]
+
+
+async def test_sharing_change_after_rollback_redeploys_the_rolled_back_source(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    await _go_live(world, await _source(SRC_V2, "c2"))
+    await svc.rollback(OWNER, src["app_id"], version=1)
+    n = len(world.vercel.created())
+    await svc.update_settings(OWNER, src["app_id"], open_to="workspace")
+    prod = [d for d in world.vercel.created()[n:] if d.get("target") == "production"]
+    assert len(prod) == 1 and {f["file"] for f in prod[0]["files"]} == set(SRC_V1)
+
+
+async def test_protection_closes_vercel_urls_once_the_preview_alias_is_assigned(world):
+    src, _, _ = await _ready_preview(world)
+
+    def protection():
+        return [
+            json.loads(r.content)
+            for r in world.vercel.calls
+            if r.method == "PATCH" and json.loads(r.content).get("ssoProtection")
+        ]
+
+    assert protection() == []
+    world.vercel.verified = True
+    res = await svc.status(OWNER, src["app_id"])
+    assert res["preview_url"] == "https://crew-preview.apps.example.com"
+    assert protection() == [{"ssoProtection": {"deploymentType": "all_except_custom_domains"}}]
+    await svc.status(OWNER, src["app_id"])
+    assert len(protection()) == 1
+    # a later preview build keeps the custom address, never a (now closed) *.vercel.app one
+    await _up(await _source({**SRC_V1, "app/page.tsx": "v9"}, "c9"))
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    assert (await svc.status(OWNER, src["app_id"]))["preview_url"] == "https://crew-preview.apps.example.com"
+
+
+async def test_up_keeps_the_owners_settings_once_workflows_exist(world):
+    """R52: sharing, budget, room, services and origin are the owner's after the first up."""
+    src = await _source()
+    await _up(src)
+    await svc.up(
+        OWNER, name="crew", room_id="r", services=["database", "email"], open_to="public", budget_usd=999,
+        source_id=src["source_id"], actor=PERSON, origin={"kind": "chat"},
+    )  # fmt: skip
+    app = await svc.apps_repo.get(src["app_id"])
+    assert (app["open_to"], app["budget_usd"], app["room_id"], app["services"], app["origin"]) == (
+        "room", 20, "room_1", ["database"], {"kind": "idea", "ref": "i1"},
+    )  # fmt: skip

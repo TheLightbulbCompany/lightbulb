@@ -237,5 +237,16 @@ async def disable_protection(creds: dict) -> None:
     )
 
 
+async def protect_except_custom_domains(creds: dict) -> None:
+    """Vercel Authentication on every deployment url, never on the project's custom domains."""
+    await _call(
+        creds,
+        "PATCH",
+        f"/v9/projects/{_pid(creds)}",
+        json={"ssoProtection": {"deploymentType": "all_except_custom_domains"}},
+        expect=None,
+    )
+
+
 async def delete_project(creds: dict) -> None:
     await _call(creds, "DELETE", f"/v9/projects/{_pid(creds)}", expect=None)

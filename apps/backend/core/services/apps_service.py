@@ -299,10 +299,45 @@ async def _push_env(app: dict, creds: dict, dev_db: dict | None, live_db: dict |
     production = {**common, **({"DATABASE_URL": live_db["connection_string"]} if live_db else {})}
     fps = dict(app.get("env_fp") or {})
     for target, env in (("preview", preview), ("production", production)):
-        if fps.get(target) != _fp(env):
-            await vercel.upsert_env(creds, env, [target])
-            fps[target] = _fp(env)
-            await _patch(app, {"env_fp": fps})
+        fp = _fp(env)
+        if fps.get(target) == fp:
+            continue
+        await vercel.upsert_env(creds, env, [target])
+        # R51: Vercel env reaches only NEW deployments; a running one keeps the old LIGHTBULB_OPEN_TO.
+        fields: dict = {}
+        if target in fps and target == "preview" and app.get("preview_built"):
+            fields["preview_built"] = None  # this read's build step rebuilds it
+        if target in fps and target == "production":
+            await _redeploy_live(app, creds)  # before the fingerprint: a failed deploy retries next read
+        fps[target] = fp
+        await _patch(app, {**fields, "env_fp": fps})
+
+
+async def _redeploy_live(app: dict, creds: dict) -> None:
+    """A production build of what is live (or about to be), through ``publish_pending``: it lands
+    as a new version of the same commit."""
+    pending = app.get("publish_pending") or {}
+    live = next((v for v in app.get("versions") or [] if v.get("n") == app.get("live_version")), {})
+    source_id = pending.get("source_id") or app.get("live_source_id") or live.get("source_id")
+    if not source_id or source_id not in (app.get("sources") or {}):
+        if app.get("live_version"):
+            logger.warning("apps: %s live source unknown; new settings reach it at the next publish", app["app_id"])
+        return
+    src = _source(app, source_id)
+    dep_id = await _deploy(app, creds, source_id, production=True)
+    await _patch(
+        app,
+        {
+            "publish_pending": {
+                "deployment_id": dep_id,
+                "source_id": source_id,
+                "commit": src["commit"],
+                "by": pending.get("by") or "lightbulb",
+                "reason": "sharing changed",
+                "migrations": src.get("migrations") or [],
+            }
+        },
+    )
 
 
 async def _deploy(app: dict, creds: dict, source_id: str, *, production: bool) -> str:
@@ -335,7 +370,8 @@ async def _check_preview(app: dict, creds: dict) -> None:
                     "commit": pending["commit"],
                     "ready_at": utc_now_iso(),
                 },
-                "preview_url": f"https://{st['url']}",
+                # Once protection is scoped (R51) a *.vercel.app url is closed: keep the custom one.
+                **({} if app.get("protection_scoped") else {"preview_url": f"https://{st['url']}"}),
             },
         )
     elif st["readyState"] in ("ERROR", "CANCELED"):
@@ -355,6 +391,7 @@ async def _check_publish(app: dict, creds: dict) -> None:
         version = {
             "commit": pending["commit"],
             "deployment_id": pending["deployment_id"],
+            "source_id": pending["source_id"],
             "at": utc_now_iso(),
             "by": pending["by"],
             "live": True,
@@ -423,6 +460,10 @@ async def _preview_alias(app: dict, creds: dict) -> None:
             logger.warning("apps: %s preview alias not assigned: %s", app["app_id"], e.code)
             return
         await _patch(app, {"preview_alias_for": ready["deployment_id"], "preview_url": f"https://{host}"})
+    if app.get("preview_alias_for") and not app.get("protection_scoped"):
+        # R51: live and preview both answer on custom domains now; stale deployment urls close.
+        await vercel.protect_except_custom_domains(creds)
+        await _patch(app, {"protection_scoped": True})
 
 
 async def _progress(app: dict) -> tuple[dict, AppError | None]:
@@ -600,8 +641,9 @@ async def up(
     _source(app, source_id)
     if app.get("preview_want") != source_id or app.get("error"):
         await _check_destructive(app, await _files(owner_id, app["app_id"], source_id), approved_destructive)
-    fields = {"services": services, "open_to": open_to, "budget_usd": budget_usd, "origin": origin, "room_id": room_id}
-    fields["preview_want"] = source_id
+    fields: dict = {"preview_want": source_id}
+    if not await _rows(app):  # R52: only a new app takes these from up; afterwards the owner's PATCH does
+        fields.update(services=services, open_to=open_to, budget_usd=budget_usd, origin=origin, room_id=room_id)
     if app.get("error"):  # "run up again" after a failure retries the build
         fields.update(error=None, preview_built=None)
     await _patch(app, fields)

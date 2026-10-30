@@ -295,3 +295,12 @@ async def test_runtime_logs_error_status(calls):
     with pytest.raises(vc.VercelError) as e:
         await vc.runtime_logs(CREDS, "d")
     assert e.value.code == "forbidden"
+
+
+async def test_assign_alias_posts_alias_to_the_deployment(calls):
+    seen, _ = calls
+    await vc.assign_alias(CREDS, "dpl/1", "crew-preview.apps.example.com")
+    r = seen[0]
+    assert r.method == "POST" and r.url.raw_path.startswith(b"/v2/deployments/dpl%2F1/aliases")
+    assert r.url.params["teamId"] == "team_1"
+    assert body(r) == {"alias": "crew-preview.apps.example.com"}

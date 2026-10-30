@@ -213,6 +213,10 @@ async def verify_domain(creds: dict, name: str) -> bool:
     return bool(d.get("verified"))
 
 
+async def assign_alias(creds: dict, deployment_id: str, alias: str) -> None:
+    await _call(creds, "POST", f"/v2/deployments/{_q(deployment_id)}/aliases", json={"alias": alias}, expect=None)
+
+
 async def rollback(creds: dict, deployment_id: str) -> None:
     await _call(creds, "POST", f"/v1/projects/{_pid(creds)}/rollback/{_q(deployment_id)}", expect=None)
 

@@ -34,12 +34,24 @@ it("shows a session's unread chat on its row, and nothing when there is none", (
   expect(document.querySelector(".session-chat-unread")).toBeNull();
 });
 
+it("says Waiting, not Waiting on you, of a teammate's session", () => {
+  const { container } = render(<ul><SessionListRow entry={rowOf({ ...mate, status: "waiting-approval", waitingFor: "permission prompt" })} current={false} /></ul>);
+  expect(container.querySelector(".session-row-state")).toHaveTextContent(/^Waiting$/);
+  expect(screen.getByRole("button", { name: /^Open / }).getAttribute("aria-label")).not.toContain("on you");
+});
+
+it("All sessions spells the state out, with its time", () => {
+  const { container } = render(<ul><SessionListRow entry={rowOf({ ...mate, cwdName: "web", status: "busy", lastEventAt: new Date().toISOString() })} current={false} /></ul>);
+  expect(container).toHaveTextContent("Alice · web");
+  expect(container.querySelector(".session-row-state")).toHaveTextContent("Working");
+  expect(container.querySelector(".session-row-time")).toBeInTheDocument();
+});
+
 it("shows no status words: a shimmering title while working, an orange dot while waiting, the time otherwise, faded once gone", () => {
   const at = new Date().toISOString();
-  const row = (changes: Partial<LocalSession>) => render(<ul><SessionListRow entry={rowOf({ ...mate, cwdName: "web", lastEventAt: at, ...changes })} current={false} /></ul>);
+  const row = (changes: Partial<LocalSession>) => render(<ul><SessionListRow entry={rowOf({ ...mate, cwdName: "web", lastEventAt: at, ...changes })} current={false} oneLine /></ul>);
   const { container, unmount } = row({ status: "busy" });
   expect(container.querySelector(".session-title--working")).toHaveTextContent("Load test");
-  expect(container).toHaveTextContent("Alice · web");
   expect(container).not.toHaveTextContent(/Working|Idle|Online|unavailable/);
   expect(container.querySelector(".session-row-time")).toBeInTheDocument();
   unmount();
@@ -111,10 +123,10 @@ it("waiting: a brass dot and the reason on a second line", () => {
 it("idle shows the time and no second line; folder and PR are the second line of a live row with news", () => {
   const { container, unmount } = ui(rowOf({ ...own, status: "idle", cwdName: "web", lastEventAt: new Date().toISOString() }), { oneLine: true });
   expect(container.querySelector(".session-row-time")).toBeInTheDocument();
-  expect(container.querySelector(".min-w-0 > .text-caption")).toBeNull();
+  expect(container.querySelector(".session-row-main > .text-caption")).toBeNull();
   unmount();
   const news = ui(rowOf({ ...own, status: "idle", cwdName: "web", pr: { number: 4527, state: "open", checks: "passing", url: "https://example.com/pr/4527" } }), { oneLine: true });
-  expect(news.container.querySelector(".min-w-0 > .text-caption")).toHaveTextContent("web · PR #4527 · checks passing");
+  expect(news.container.querySelector(".session-row-main > .text-caption")).toHaveTextContent("web · PR #4527 · checks passing");
 });
 
 it("done says Done and a finished dot replaces it in the sidebar, not in All sessions", () => {
@@ -150,16 +162,16 @@ it("ended says Ended with its age and keeps the reason in the hover", () => {
   expect(container.querySelector(".session-row-state")).toHaveTextContent("Ended 3h");
   expect(container.querySelector(".session-row--gone")).not.toBeNull();
   expect(container.querySelector(".room-directory-entry")?.getAttribute("title")).toMatch(/stopped while idle/);
-  expect(container.querySelector(".min-w-0 > .text-caption")).toBeNull();
+  expect(container.querySelector(".session-row-main > .text-caption")).toBeNull();
 });
 
 it("failed says Failed in the alert colour class, with its reason on the second line", () => {
   const { container, unmount } = ui(networkRow({ state: "ended", endedAt: ago(2 * 3_600_000), endedReason: "login-session-ended" }), { oneLine: true });
   expect(container.querySelector(".session-row-state--failed")).toHaveTextContent("Failed 2h");
-  expect(container.querySelector(".min-w-0 > .text-caption")).toHaveTextContent("your Mac's login session restarted");
+  expect(container.querySelector(".session-row-main > .text-caption")).toHaveTextContent("your Mac's login session restarted");
   unmount();
   const job = ui({ ...networkRow({ state: "ended", endedAt: ago(60_000) }), row: { ...networkRow({ state: "ended", endedAt: ago(60_000) }).row, engine: { ...engineRec, status: "ended", job: { state: "failed" } } } }, { oneLine: true });
-  expect(job.container.querySelector(".min-w-0 > .text-caption")).toHaveTextContent("Job failed");
+  expect(job.container.querySelector(".session-row-main > .text-caption")).toHaveTextContent("Job failed");
 });
 
 it("a row with no backend is not a button: no Open, no Mark unread, still Pin and Archive", async () => {

@@ -10,7 +10,7 @@ import { SessionRenameButton } from "./SessionRenameButton";
 import { SessionRemoveButton } from "./SessionRemoveButton";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import type { SidebarRow } from "./roomSections";
-import { sessionRowAt, sessionRowFailed, sessionRowGone } from "./sessionGroups";
+import { sessionRowAt, sessionRowFailed, sessionRowGone, sessionRowNeedsYou } from "./sessionGroups";
 
 export interface SessionRowMarks {
   pinned: boolean;
@@ -95,40 +95,49 @@ export function SessionListRow({ entry: { row, owner, unread }, current, onSelec
     : state === "offline" ? `Offline${seen ? `, last seen ${seen} ago` : ""}`
       : state === "parked" ? "Parked, wakes when messaged"
         : failed ? "Failed" : STATE_LABELS[state as keyof typeof STATE_LABELS];
+  // "On you" is true of the viewer's own session only.
+  const stateSaid = waiting && !person.isViewer ? stateText.replace("Waiting on you", "Waiting") : stateText;
   const stateExtra = !row.engine && backend ? sessionWaitingLine(backend) : waiting ? row.waitingFor : null;
   // The word at the right edge, where no shape says the state.
   const word = failed ? `Failed${ended ? ` ${ended}` : ""}`
+    : !oneLine && state in STATE_LABELS ? (waiting && !person.isViewer ? "Waiting" : STATE_LABELS[state as keyof typeof STATE_LABELS])
     : state === "done" ? "Done"
       : state === "offline" ? `Offline${seen ? ` ${seen}` : ""}`
         : state === "parked" ? "Parked"
           : state === "ended" ? `Ended${ended ? ` ${ended}` : ""}` : "";
   const dot = waiting ? "waiting" : unread ?? null;
+  const at = sessionRowAt(row);
+  // What needs you is never dimmed: not because it ended, not because it is unshared.
+  const needsYou = sessionRowNeedsYou(row);
   const repo = row.repo ? `${row.repo}${row.branch ? ` (${row.branch})` : ""}` : null;
   const resumeHint = row.canResume && !backend ? "resume with lightbulb who" : null;
   const second = oneLine
     ? (waiting ? waitText : failed ? why ?? "Job failed" : !gone && signals ? [row.folder, signals].filter(Boolean).join(" · ") : "")
     : [person.isViewer ? null : person.name, row.computer, repo, row.folder, why ?? (waiting ? waitText : failed ? "Job failed" : null), signals, resumeHint].filter(Boolean).join(" · ");
   const hover = [person.name, sessionAgentName(row.agent), row.computer, repo, row.folder,
-    `${stateText}${why ? `: ${why}` : ""}`, row.canResume && !backend ? "Resume with lightbulb who" : null].filter(Boolean).join("\n");
-  const description = `${label}, ${who}${marks?.pinned ? ", pinned" : ""}${where ? `, ${where}` : ""}, ${stateText}${stateExtra && stateExtra !== stateText ? `, ${stateExtra}` : ""}${signals ? `, ${signals}` : ""}${news}${chat}`;
+    `${stateSaid}${why ? `: ${why}` : ""}`, row.canResume && !backend ? "Resume with lightbulb who" : null].filter(Boolean).join("\n");
+  const description = `${label}, ${who}${marks?.pinned ? ", pinned" : ""}${where ? `, ${where}` : ""}, ${stateSaid}${stateExtra && stateExtra !== stateText ? `, ${stateExtra}` : ""}${signals ? `, ${signals}` : ""}${news}${chat}`;
   const face = <span className="session-owner-face">
     <ParticipantAvatar participant={owner} size="sm" showPresence={false} />
     <span className="session-tool-badge session-tool-badge--corner" aria-hidden="true"><SessionToolIcon provider={row.agent} /></span>
   </span>;
+  const end = <span className="session-row-end">
+    {!!chatUnread && <span className="session-chat-unread" aria-hidden="true">{chatUnread > 99 ? "99+" : chatUnread}</span>}
+    {dot && <span className={`session-unread session-unread--${dot}`} aria-hidden="true" />}
+    {word && (!dot || !oneLine) && <span className={`session-row-state${failed ? " session-row-state--failed" : ""}`} aria-hidden="true">{word}</span>}
+    {(!oneLine || (!dot && !word)) && <SessionListTime at={at ? new Date(at).toISOString() : null} />}
+  </span>;
   const body = <>
     {face}
-    <span className="min-w-0 flex-1">
-      <span className={`block truncate${unread ? " font-semibold" : ""}${state === "busy" ? " session-title--working" : ""}`}>{row.title}</span>
+    <span className="session-row-main">
+      <span className="session-row-line">
+        <span className={`min-w-0 flex-1 truncate${unread ? " font-semibold" : ""}${state === "busy" ? " session-title--working" : ""}`}>{row.title}</span>
+        {end}
+      </span>
       {second && <span className="block truncate text-caption text-muted-foreground">{second}</span>}
     </span>
-    <span className="session-row-end">
-      {!!chatUnread && <span className="session-chat-unread" aria-hidden="true">{chatUnread > 99 ? "99+" : chatUnread}</span>}
-      {dot && <span className={`session-unread session-unread--${dot}`} aria-hidden="true" />}
-      {word && (!dot || !oneLine) && <span className={`session-row-state${failed ? " session-row-state--failed" : ""}`} aria-hidden="true">{word}</span>}
-      {!dot && !word && <SessionListTime at={sessionRowAt(row) ? new Date(sessionRowAt(row)).toISOString() : null} />}
-    </span>
   </>;
-  return <li className={`room-directory-row room-directory-row--roster session-row${gone ? " session-row--gone" : ""}${backend ? "" : " session-row--network"}`}
+  return <li className={`room-directory-row room-directory-row--roster session-row${gone && !needsYou ? " session-row--gone" : ""}${backend ? "" : " session-row--network"}${needsYou ? " session-row--needs" : ""}`}
     onContextMenu={marks ? (event) => { event.preventDefault(); setMenuOpen(true); } : undefined}>
     {backend
       ? <button type="button" className="room-directory-entry" title={hover} aria-current={current ? "page" : undefined}
@@ -152,8 +161,10 @@ export function SessionListRow({ entry: { row, owner, unread }, current, onSelec
           </>}
       </DropdownMenuContent>
     </DropdownMenu>}
-    {!oneLine && backend && person.isViewer && onRename && <SessionRenameButton session={backend} onRename={onRename} icon />}
-    {!oneLine && backend && person.isViewer && onRemove && (backend.status === "ended" || sessionEndable(backend))
-      && <SessionRemoveButton name={row.title} live={backend.status !== "ended"} onRemove={() => onRemove(backend.sessionId)} icon />}
+    {!oneLine && backend && person.isViewer && (onRename || onRemove) && <span className="session-row-tools">
+      {onRename && <SessionRenameButton session={backend} onRename={onRename} icon />}
+      {onRemove && (backend.status === "ended" || sessionEndable(backend))
+        && <SessionRemoveButton name={row.title} live={backend.status !== "ended"} onRemove={() => onRemove(backend.sessionId)} icon />}
+    </span>}
   </li>;
 }

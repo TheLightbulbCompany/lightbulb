@@ -11,7 +11,7 @@ The five-row cap goes. The list becomes groups that fold on their own, one group
 ```
 v Sessions                    [s] [=]     header: content search, view menu
   [ Filter sessions               ]       only with more than 5 rows, or a query
-  Needs you                         2     foreground label; no fold, no collapse
+  o Needs you                       2     foreground label, brass dot; no fold, no collapse
   (PR*) Fix the relay reconnect      o    o = waiting dot
         permission prompt                 second line: the reason
   (PR*) Release notes       Failed 2h
@@ -33,7 +33,7 @@ v Sessions                    [s] [=]     header: content search, view menu
   (o) All sessions 18
 ```
 
-The second line carries news only: a waiting reason, a failed row's reason, or folder plus running agents and PR. Computer, repo, branch and any other reason are in the hover and in All sessions.
+The state sits on the title's line; the second line runs the full width beneath it. What needs you is never faded or dimmed. The second line carries news only: a waiting reason, a failed row's reason, or folder plus running agents and PR. Computer, repo, branch and any other reason are in the hover and in All sessions.
 
 ## States on the row
 
@@ -86,7 +86,7 @@ v Sessions                         [s] [=]
 - **Actions read `row.backend`.** A row without one has Pin and Archive (per browser), plus Share if it is the viewer's and the host wires it. Never Open, Join, Resume or End.
 - **Retention:** a row joined to an engine record follows the engine; an unjoined backend row keeps today's offline rule until Step 3 retires it.
 - **Persisted per browser in `sidebarPrefs`:** group-by, Show, collapsed groups, expanded groups.
-- **All sessions** stays the whole list: every row with person, computer, repo, folder and state in words, including network rows, by day under Ended.
+- **All sessions** stays the whole list: every row with person, computer, repo and folder on its second line, and columns for state in words and time, including network rows, by day under Ended. A teammate's waiting row says Waiting, never Waiting on you.
 - **Web:** only backend rows arrive, so no On the network group and no Share. Everything else reads the same. Phone is out of scope.
 
 ## Not doing

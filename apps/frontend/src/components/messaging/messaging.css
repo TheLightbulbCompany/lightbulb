@@ -349,11 +349,15 @@
    loud dot; the title shimmers while it works; a session that is gone is faded; rename and
    remove wait for hover, as Happy keeps them behind a swipe. */
 .session-unread--waiting { width: 8px; height: 8px; background: var(--brass); }
+.session-row-main { flex: 1; min-width: 0; }
+.session-row-line { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 24px; }
+.session-row .room-directory-entry { align-items: flex-start; }
 .session-row-end { flex: none; display: flex; align-items: center; gap: 6px; }
 .session-row-time, .session-row-state { flex: none; max-width: 5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .session-row-state--failed { color: var(--err); }
 /* No backend row: the network knows it, this browser cannot open it. */
-.session-row--network .room-directory-entry { opacity: .75; cursor: default; }
+.session-row--network:not(.session-row--needs) .room-directory-entry { opacity: .75; }
+.session-row--network .room-directory-entry { cursor: default; }
 .session-row--network .room-directory-entry:hover { background: none; }
 .session-row--gone .room-directory-entry { opacity: .6; }
 .session-row--gone .session-tool-badge { filter: grayscale(1); }
@@ -361,6 +365,10 @@
 /* The menu (and Share) take the right edge on hover, over the state; touch keeps them in the row. */
 .session-row .room-directory-actions { position: absolute; right: 0; inset-block: 0; margin-block: auto; background: color-mix(in srgb, var(--midnight) 5%, var(--background)); }
 .session-row-share { position: absolute; right: 2.25rem; inset-block: 0; margin-block: auto; height: 1.5rem; padding-inline: 8px; font-size: var(--text-caption); opacity: 0; background: color-mix(in srgb, var(--midnight) 5%, var(--background)); }
+/* The title gives way to whatever the hover reveals, so nothing peeks out between the controls. */
+.session-row:has(.room-directory-actions):is(:hover, :focus-within) .session-row-line { padding-right: 1.75rem; }
+.session-row:has(.session-row-share):is(:hover, :focus-within) .session-row-line { padding-right: 5.25rem; }
+.session-row:has([aria-current="page"]) .room-directory-actions { background: color-mix(in srgb, var(--midnight) 9%, var(--background)); }
 .session-row:not(:has(.room-directory-actions)) .session-row-share { right: 4px; }
 .session-row:hover .session-row-share, .session-row-share:focus-visible, .session-row:focus-within .session-row-share { opacity: 1; }
 .session-row:has(.room-directory-actions, .session-row-share):is(:hover, :focus-within) .session-row-end,
@@ -368,12 +376,20 @@
 @media (hover: none) {
   .session-row .room-directory-actions, .session-row-share { position: static; margin-block: 0; background: none; }
   .session-row-share { opacity: 1; }
+  .session-row:has(.room-directory-actions, .session-row-share):is(:hover, :focus-within) .session-row-line { padding-right: 0; }
   .session-row:has(.room-directory-actions, .session-row-share):is(:hover, :focus-within) .session-row-end,
   .session-row:has(.room-directory-actions[data-state="open"]) .session-row-end { visibility: visible; }
 }
+/* All sessions: a column each for state and time; rename and remove take their place on hover. */
+
+.all-sessions .session-row::after { display: none; }
+.all-sessions .session-row-state { width: 6.5rem; max-width: 6.5rem; text-align: right; }
+.all-sessions .session-row-time { width: 4.5rem; max-width: 4.5rem; text-align: right; }
+.session-row-tools { position: absolute; right: 0; inset-block: 0; display: flex; align-items: center; opacity: 0; background: var(--background); }
+.session-row:hover .session-row-tools, .session-row:focus-within .session-row-tools { opacity: 1; }
 .session-row .session-rename-trigger { opacity: 0; }
 .session-row:hover .session-rename-trigger, .session-row .session-rename-trigger:focus-visible, .session-row:focus-within .session-rename-trigger { opacity: 1; }
-@media (hover: none) { .session-row .session-rename-trigger { opacity: 1; } }
+@media (hover: none) { .session-row .session-rename-trigger { opacity: 1; } .session-row-tools { position: static; opacity: 1; background: none; } }
 .session-title--working { color: transparent; background: linear-gradient(90deg, var(--muted-foreground) 35%, var(--foreground) 50%, var(--muted-foreground) 65%) 0 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; animation: session-title-shimmer 2s linear infinite; }
 @keyframes session-title-shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
 @media (prefers-reduced-motion: reduce) { .session-title--working { animation: none; color: inherit; background: none; } }
@@ -383,7 +399,7 @@
 .room-directory-session-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 2px 8px 6px; }
 .room-directory-subgroup { display: flex; align-items: center; gap: 4px; width: 100%; padding: 2px 8px; font-size: var(--text-caption); font-weight: 600; color: var(--muted-foreground); border-radius: 6px; }
 .room-directory-subgroup svg { width: 12px; height: 12px; }
-.all-sessions { overflow: auto; padding: 12px 16px 24px; display: grid; align-content: start; gap: 12px; max-width: 48rem; width: 100%; }
+.all-sessions { overflow: auto; padding: 12px 16px 24px; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 12px; max-width: 48rem; width: 100%; }
 .all-sessions-search { width: 100%; padding: 6px 10px; font-size: var(--text-ui); border: 1px solid var(--border); border-radius: 6px; background: transparent; }
 .all-sessions-day { padding: 0 8px 4px; font-size: var(--text-caption); font-weight: 600; color: var(--muted-foreground); }
 .room-count { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 999px; font-size: var(--text-2xs); font-weight: 600; line-height: 18px; text-align: center; color: var(--on-info); background: var(--info); font-variant-numeric: tabular-nums; }
@@ -800,7 +816,8 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 .session-group-header svg { width: 12px; height: 12px; flex-shrink: 0; }
 button.session-group-header:hover { background: color-mix(in srgb, var(--midnight) 5%, transparent); }
 button.session-group-header:focus-visible, .session-group-more:focus-visible, .session-filter:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
-.session-group-header--needs { padding-left: 8px; font-weight: 600; color: var(--foreground); }
+.session-group-header--needs { font-weight: 600; color: var(--foreground); }
+.session-group-header--needs::before { content: ""; flex: none; width: 8px; height: 8px; margin-inline: 2px; border-radius: 50%; background: var(--brass); }
 .session-group-count { margin-left: auto; font-variant-numeric: tabular-nums; }
 .session-group + .session-group { margin-top: 6px; }
 .session-group-more { display: block; width: 100%; padding: 2px 8px 2px 36px; font-size: var(--text-caption); color: var(--muted-foreground); text-align: left; border-radius: 6px; }

@@ -12,6 +12,49 @@ import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { Problem, displayName, roomOf, statusLine } from "./appText";
 import "./canvas.css";
 
+/** "Ask the agent to fix it": one message in the app's room, as the person. Remounts per failure, so a new one can ask again. */
+function AskAgent({ app, error }: { app: AppRow; error?: string }) {
+  const { askAgent } = useApps();
+  const [state, setState] = useState<"idle" | "asking" | "asked" | { status?: number; raw: string }>("idle");
+  const room = roomOf(app);
+  if (state === "asked") return <p role="status" className="canvas__notice">Asked the agent in {room}. It&apos;ll post there.</p>;
+  const ask = async () => {
+    setState("asking");
+    try { await askAgent(app.app_id, error); setState("asked"); }
+    catch (err) { setState({ status: (err as { status?: number })?.status, raw: (err as Error)?.message ?? "" }); }
+  };
+  return <div className="canvas__notice publish">
+    <button type="button" className="app-view__btn" disabled={state === "asking"} onClick={ask}>{state === "asking" ? "Asking…" : "Ask the agent to fix it"}</button>
+    {typeof state === "object" && <Problem raw={state.raw}>{state.status === 403
+      ? `You're not in ${room}, so this can't be posted as you. Join it, or ask someone in it.`
+      : `We couldn't ask in ${room}. Try again.`}</Problem>}
+  </div>;
+}
+
+/** "Put back the previous version", confirmed in place like Publish. */
+function PutBack({ app, previous, onDone }: { app: AppRow; previous: NonNullable<AppRow["previous_version"]>; onDone(line: string): void }) {
+  const { rollback } = useApps();
+  const [state, setState] = useState<"idle" | "confirm" | "working" | { raw: string }>("idle");
+  const dn = displayName(app);
+  const date = new Date(previous.at).toLocaleDateString(undefined, { dateStyle: "medium" });
+  const putBack = async () => {
+    setState("working");
+    // The line lives in the view: going back to the first version removes this button with the refreshed row.
+    try { await rollback(app.app_id, previous.n); setState("idle"); onDone(`${dn} is back to the version live on ${date}.`); }
+    catch (err) { setState({ raw: (err as Error)?.message ?? "" }); }
+  };
+  if (state === "working") return <span role="status" className="canvas__notice">Putting it back…</span>;
+  if (state === "confirm") return <span className="publish" role="group" aria-label="Confirm putting back">
+    <span className="canvas__notice">{dn} goes back to the version live on {date}. Its data stays as it is.</span>
+    <button type="button" className="app-view__btn app-view__btn--primary" onClick={putBack}>Put it back</button>
+    <button type="button" className="app-view__btn" onClick={() => setState("idle")}>Cancel</button>
+  </span>;
+  return <span className="publish">
+    {typeof state === "object" && <Problem raw={state.raw}>{dn} didn&apos;t change. Try again.</Problem>}
+    <button type="button" className="app-view__btn" onClick={() => setState("confirm")}>Put back the previous version</button>
+  </span>;
+}
+
 export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const { open, refresh } = useApps();
   const isAdmin = useIsWorkspaceAdmin();
@@ -34,6 +77,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const refused = refusal?.id === key ? refusal : null;
   const publishCtl = usePublish(app);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [putBackLine, setPutBackLine] = useState<{ id: string; text: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,6 +113,11 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const hasBoth = app.live_version != null && !!app.preview_url;
   const pending = statusLine(app);
   const retry = <button type="button" className="app-view__btn" onClick={() => setAttempt((n) => n + 1)}>Try again</button>;
+  const { phase } = publishCtl;
+  const publishing = (phase.k === "publishing" || phase.k === "slow") && !publishCtl.done && !publishCtl.failed;
+  // A live app keeps serving through a failed publish: the row says "ready", so it is named here.
+  const liveAppFailed = app.state !== "failed" && app.publish_failed === true && phase.k === "idle";
+  const askable = canManage && !publishing && (app.state === "failed" || app.publish_failed === true || phase.k === "failed");
 
   return <div className="app-view">
     <header className="app-view__bar">
@@ -79,6 +128,8 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
           onClick={() => setTarget({ id: app.app_id, t: v })}>{v === "live" ? "Live" : "Preview"}</button>)}
       </span>}
       <PublishButton app={app} ctl={publishCtl} />
+      {canManage && app.previous_version && !publishing && <PutBack key={app.app_id} app={app} previous={app.previous_version}
+        onDone={(text) => { publishCtl.reset(); setPutBackLine({ id: app.app_id, text }); setAttempt((n) => n + 1); }} />}
       <button type="button" className="app-view__btn" onClick={openInTab}>Open in its own tab</button>
       {canManage && <button type="button" className="app-view__btn" aria-expanded={settingsOpen}
         onClick={() => setSettingsOpen((v) => !v)}>Settings</button>}
@@ -86,6 +137,9 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
     {app.state === "failed"
       ? <div className="canvas__notice"><Problem raw={app.error?.message ?? null}>The last publish didn&apos;t land.{canManage ? " Press Publish to try again, or ask" : " Ask"} the agent in {room}.</Problem></div>
       : pending && <p className="canvas__notice">{pending}</p>}
+    {liveAppFailed && <div className="canvas__notice"><Problem raw={app.error?.message ?? null}>The last version didn&apos;t go live. People still see the version before it.</Problem></div>}
+    {putBackLine?.id === app.app_id && <p role="status" className="canvas__notice">{putBackLine.text}</p>}
+    {askable && <AskAgent key={app.app_id} app={app} error={phase.k === "failed" ? phase.msg : undefined} />}
     {t === "preview" && <p className="canvas__notice">You&apos;re looking at the preview. Only you and {room} see it until it&apos;s published{canManage ? ": press Publish, or say “ship it” in the room" : ""}.</p>}
     {!canManage && <p className="canvas__notice">{app.open_to === "room" ? `Open to ${room}` : `Open to ${whoName}`}. Only {app.created_by_name ?? "the person who asked for it"} or a workspace admin can change who can open it.</p>}
     {settingsOpen && <AppSettings app={app} publishCtl={publishCtl} onClose={() => setSettingsOpen(false)} onRemoved={onBack} />}
@@ -93,7 +147,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
     {refused ? <div className="canvas__notice">{refused.status === 403
       ? <Problem raw={refused.raw}>Only {whoName} can open {dn}. Ask in {room}.</Problem>
       : <Problem raw={refused.raw} action={retry}>{dn} didn&apos;t open. Try again in a moment.</Problem>}</div>
-      : url ? <iframe key={key} title={dn} src={url} className="canvas__frame"
+      : url ? <iframe key={`${key}:${attempt}`} title={dn} src={url} className="canvas__frame"
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups" />
       : <p className="canvas__notice">Opening…</p>}
   </div>;

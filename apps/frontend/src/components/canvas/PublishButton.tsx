@@ -20,7 +20,7 @@ export function usePublish(app: AppRow) {
   const [phase, setPhase] = useState<Phase>({ k: "idle" });
   const waiting = phase.k === "publishing" || phase.k === "slow";
   const done = waiting && ((app.live_version ?? 0) > phase.from || (phase.noLive && !!app.live_url));
-  const failed = waiting && phase.fresh && app.state === "failed";
+  const failed = waiting && phase.fresh && (app.state === "failed" || app.publish_failed === true);
 
   useEffect(() => {
     if (phase.k !== "publishing" || done || failed) return;
@@ -42,7 +42,9 @@ export function usePublish(app: AppRow) {
       setPhase({ k: "failed", msg: (err as Error)?.message || "Publishing failed." });
     }
   };
-  return { phase, done, failed, start, refresh };
+  // Done with this publish: a later put-back lowers live_version, which must not read as "still publishing".
+  const reset = () => setPhase({ k: "idle" });
+  return { phase, done, failed, start, refresh, reset };
 }
 
 export type PublishCtl = ReturnType<typeof usePublish>;

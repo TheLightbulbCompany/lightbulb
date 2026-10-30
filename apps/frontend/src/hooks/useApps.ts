@@ -28,6 +28,8 @@ export type AppRow = {
   can_open: boolean;
   can_publish?: boolean; // mock (R17): plan 1 computes it
   error?: { message: string } | null; // the last build/publish failure, when the backend reports one
+  publish_failed?: boolean; // a live app's state stays "ready" through a failed publish
+  previous_version?: { n: number; at: string } | null; // what "Put back the previous version" goes back to
   resources?: { provider: string; service: string; state: string; resource_id?: string; environment?: string }[];
 };
 
@@ -88,6 +90,32 @@ export function useApps() {
     }
   };
 
+  /** Who holds a live invite. Errors propagate: Settings offers Try again. */
+  const listInvites = async (appId: string): Promise<string[]> => {
+    const res = await api.get(`/apps/${encodeURIComponent(appId)}/invites`) as { emails: string[] };
+    return res.emails;
+  };
+
+  const revokeInvite = async (appId: string, email: string): Promise<void> => {
+    try {
+      await api.del(`/apps/${encodeURIComponent(appId)}/invites`, undefined, { email });
+    } catch (err) {
+      notifyApiError(err, "The invite could not be removed. Try again.");
+      throw err;
+    }
+  };
+
+  /** Posts the error in the app's room as the person. Errors propagate: the caller shows them inline. */
+  const askAgent = async (appId: string, error?: string): Promise<void> => {
+    await api.post(`/apps/${encodeURIComponent(appId)}/ask-agent`, error ? { error: error.slice(0, 2000) } : {});
+  };
+
+  /** Puts the named version live again. Errors propagate: the caller shows them inline. */
+  const rollback = async (appId: string, version: number): Promise<void> => {
+    await api.post(`/apps/${encodeURIComponent(appId)}/rollback`, { version });
+    await mutate();
+  };
+
   const remove = async (appId: string, confirmName: string): Promise<void> => {
     try {
       await api.del(`/apps/${encodeURIComponent(appId)}`, undefined, { confirm_name: confirmName });
@@ -120,6 +148,10 @@ export function useApps() {
     publish,
     update,
     invite,
+    listInvites,
+    revokeInvite,
+    askAgent,
+    rollback,
     remove,
     databaseLink,
   };

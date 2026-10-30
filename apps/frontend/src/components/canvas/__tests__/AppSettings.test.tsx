@@ -1,15 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { AppRow } from "@/hooks/useApps";
 
 const update = vi.fn();
 const invite = vi.fn();
 const remove = vi.fn();
+const listInvites = vi.fn();
+const revokeInvite = vi.fn();
 const databaseLink = vi.fn();
 const publish = vi.fn();
 const refresh = vi.fn();
 let admin = true;
-vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ update, invite, remove, databaseLink, publish, refresh }) }));
+vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ update, invite, listInvites, revokeInvite, remove, databaseLink, publish, refresh }) }));
 const notifySuccess = vi.fn();
 vi.mock("@/lib/notify", () => ({ notifySuccess: (m: string) => notifySuccess(m), notifyError: vi.fn() }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => admin }));
@@ -23,7 +25,8 @@ const app = (over: Partial<AppRow> = {}): AppRow => ({
 });
 
 beforeEach(() => {
-  [update, invite, remove, databaseLink].forEach((f) => f.mockReset());
+  [update, invite, remove, databaseLink, listInvites, revokeInvite].forEach((f) => f.mockReset());
+  listInvites.mockResolvedValue([]); revokeInvite.mockResolvedValue(undefined);
   update.mockResolvedValue({}); invite.mockResolvedValue(undefined); remove.mockResolvedValue(undefined);
   admin = true;
 });
@@ -194,7 +197,7 @@ describe("AppSettings", () => {
     expect(screen.getByText("What Invoices may spend each month on hosting and data. Spent so far: $4.10.")).toBeTruthy();
   });
 
-  it("remove needs the typed display name, sends the slug, and toasts", async () => {
+  it("remove needs the typed display name, sends it, and toasts", async () => {
     const onClose = vi.fn();
     render(<AppSettings app={app({ name: "workshop-signup" })} onClose={onClose} />);
     fireEvent.click(screen.getByRole("button", { name: "Remove app…" }));
@@ -207,7 +210,7 @@ describe("AppSettings", () => {
     fireEvent.change(box, { target: { value: "  workshop signup " } });
     expect(confirm.disabled).toBe(false);
     fireEvent.click(confirm);
-    await waitFor(() => expect(remove).toHaveBeenCalledWith("a1", "workshop-signup"));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("a1", "Workshop Signup"));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(notifySuccess).toHaveBeenCalledWith("Removed Workshop Signup.");
   });
@@ -242,5 +245,83 @@ describe("AppSettings", () => {
     expect(screen.getByText("Make this preview live for #finance? You can undo it from the room.")).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: "Publish" })[0]);
     await waitFor(() => expect(publish).toHaveBeenCalledWith("a1"));
+  });
+
+  describe("invited people", () => {
+    const rows = () => within(screen.getByRole("list", { name: "Invited people" })).getAllByRole("listitem").map((r) => r.textContent);
+
+    it("lists each person with a Remove, whichever way the app is open", async () => {
+      listInvites.mockResolvedValue(["a@x.com", "b@x.com"]);
+      render(<AppSettings app={app({ open_to: "workspace" })} onClose={vi.fn()} />);
+      await screen.findByText("a@x.com");
+      expect(listInvites).toHaveBeenCalledWith("a1");
+      expect(rows()).toEqual(["a@x.com · Remove", "b@x.com · Remove"]);
+    });
+
+    it("nobody invited shows no list", async () => {
+      render(<AppSettings app={app({ open_to: "invited" })} onClose={vi.fn()} />);
+      await waitFor(() => expect(listInvites).toHaveBeenCalled());
+      expect(screen.queryByRole("list", { name: "Invited people" })).toBeNull();
+    });
+
+    it("Remove takes the row away and says the link no longer works", async () => {
+      listInvites.mockResolvedValue(["a@x.com", "b@x.com"]);
+      render(<AppSettings app={app({ open_to: "invited" })} onClose={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Remove a@x.com" }));
+      expect((await screen.findByRole("status")).textContent).toBe("a@x.com's invite link no longer works.");
+      expect(revokeInvite).toHaveBeenCalledWith("a1", "a@x.com");
+      expect(rows()).toEqual(["b@x.com · Remove"]);
+    });
+
+    it("a failed Remove keeps the row", async () => {
+      listInvites.mockResolvedValue(["a@x.com"]);
+      revokeInvite.mockRejectedValue(new Error("nope"));
+      render(<AppSettings app={app({ open_to: "invited" })} onClose={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Remove a@x.com" }));
+      await waitFor(() => expect(revokeInvite).toHaveBeenCalled());
+      expect(rows()).toEqual(["a@x.com · Remove"]);
+      expect(screen.queryByRole("status")).toBeNull();
+    });
+
+    it("a failed load says so and can be tried again", async () => {
+      listInvites.mockRejectedValueOnce(new Error("down")).mockResolvedValueOnce(["a@x.com"]);
+      render(<AppSettings app={app()} onClose={vi.fn()} />);
+      expect((await screen.findByRole("alert")).textContent).toContain("We couldn't load who's invited.");
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      await screen.findByText("a@x.com");
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("sending invites refreshes the list", async () => {
+      render(<AppSettings app={app({ open_to: "invited" })} onClose={vi.fn()} />);
+      listInvites.mockResolvedValue(["new@x.com"]);
+      fireEvent.change(screen.getByLabelText(/Email addresses/), { target: { value: "new@x.com" } });
+      fireEvent.click(screen.getByRole("button", { name: "Invite" }));
+      await screen.findByText("new@x.com");
+    });
+
+    it("someone who can't manage the app never asks for the list", async () => {
+      admin = false;
+      const { container } = render(<AppSettings app={app({ can_publish: false })} onClose={vi.fn()} />);
+      expect(container.innerHTML).toBe("");
+      expect(listInvites).not.toHaveBeenCalled();
+    });
+  });
+
+  it("shows own domain as coming soon, right after Anyone with the link", async () => {
+    render(<AppSettings app={app()} onClose={vi.fn()} />);
+    await waitFor(() => expect(listInvites).toHaveBeenCalled());
+    const row = screen.getByRole("button", { name: "Use your own domain (coming soon)" }) as HTMLButtonElement;
+    expect(row.disabled).toBe(true);
+    const anyone = screen.getByLabelText("Anyone with the link").closest("label")!;
+    expect(anyone.nextElementSibling?.contains(row)).toBe(true);
+  });
+
+  it("never shows the short web-address name outside the address", async () => {
+    const { container } = render(<AppSettings app={app({ name: "workshop-signup", display_name: "Workshop Sign-up" })} onClose={vi.fn()} />);
+    await waitFor(() => expect(listInvites).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Remove app…" }));
+    expect(screen.getByLabelText("Type Workshop Sign-up to confirm")).toBeTruthy();
+    expect(container.textContent).not.toContain("workshop-signup");
   });
 });

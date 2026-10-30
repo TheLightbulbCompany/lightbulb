@@ -18,8 +18,10 @@ import json
 import logging
 import re
 import secrets as _random
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from html import escape
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 import httpx
@@ -933,8 +935,9 @@ async def remove(owner_id: str, app_id: str, *, confirm_name: str, user_id: str)
     app = await apps_repo.get(app_id, consistent_read=True)
     if not app or app.get("owner_id") != owner_id:
         raise AppsRefused("app_not_found", "That app does not exist.")
-    if confirm_name != app["name"]:
-        raise AppsRefused("confirm_name_mismatch", f'Type "{app["name"]}" to confirm.')
+    # Canvas types the display name; the CLI's contract, the slug, keeps working.
+    if confirm_name.strip().casefold() not in (app["name"].casefold(), _display(app).casefold()):
+        raise AppsRefused("confirm_name_mismatch", f'Type "{_display(app)}" to confirm.')
     rows = [r for r in await wf_repo.list_for_owner(owner_id) if r.get("app_id") == app_id]
     busy = AppsRefused("busy", "A resource for this app is being set up right now.", "try again in a minute")
     open_rows = [r for r in rows if r.get("state") not in wf_repo.TERMINAL_STATES]
@@ -1063,6 +1066,7 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
     for a in apps:
         row = _view(a, await _rows(a, all_rows), a.get("state") or "")
         del row["versions"]
+        before = (a.get("live_version") or 0) - 1
         uid = a.get("created_by")
         row.update(
             # R35: an invited app still opens for its room; invitees use their links.
@@ -1075,6 +1079,12 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
             can_publish=can_manage(a, auth),
             # R71: the last persisted failure, message only.
             error={"message": err.get("message", "")} if (err := a.get("error") or a.get("publish_error")) else None,
+            # A live app's state stays "ready" through a failed publish (R63), so Canvas needs this to see it.
+            publish_failed=bool(a.get("publish_error")),
+            # What "Put back the previous version" goes back to.
+            previous_version=next(
+                ({"n": v["n"], "at": v["at"]} for v in a.get("versions") or [] if v["n"] == before), None
+            ),
         )
         out.append(row)
     return out
@@ -1174,18 +1184,85 @@ async def invite(owner_id: str, app_id: str, *, emails: list[str], user_id: str)
         await update_settings(owner_id, app_id, open_to="invited")
         app["open_to"] = "invited"
     once = "" if public else " The link works once and expires in 14 days."
+    shown = _display(app)
     for email, link in links.items():
         # send_email never raises; a failed send still counts (the admin can invite again).
         await email_service.send_email(
             to=email,
-            subject=f"You're invited to {app['name']}",
-            html=f'<p>You\'re invited to open {app["name"]}.</p><p><a href="{link}">Open {app["name"]}</a></p>'
+            subject=f"You're invited to {shown}",
+            html=f'<p>You\'re invited to open {escape(shown)}.</p><p><a href="{link}">Open {escape(shown)}</a></p>'
             + (f"<p>{once.strip()}</p>" if once else ""),
-            text=f"You're invited to open {app['name']}.\n\n{link}\n{once}".rstrip() + "\n",
+            text=f"You're invited to open {shown}.\n\n{link}\n{once}".rstrip() + "\n",
             from_addr=settings.EMAIL_FROM_WELCOME,
             kind="apps_invite",
         )
     return {"invited": len(emails), "open_to": app["open_to"]}
+
+
+async def list_invites(owner_id: str, app_id: str) -> list[str]:
+    """Who still holds an unexpired invite to this app. Emails only: hashes never leave the service."""
+    await _owned(owner_id, app_id)
+    now = utc_now_iso()
+    rows = await apps_repo.list_invites(app_id)
+    return sorted({r["email"] for r in rows if r.get("invite_owner_id") == owner_id and r["expires_at"] > now})
+
+
+async def revoke_invite(owner_id: str, app_id: str, *, email: str) -> dict:
+    """Deletes every invite this email holds to this app, so each of its links fails like one never issued."""
+    await _owned(owner_id, app_id)
+    rows = await apps_repo.list_invites(app_id)
+    doomed = [r["app_id"] for r in rows if r.get("invite_owner_id") == owner_id and r["email"] == email]
+    await asyncio.gather(*(apps_repo.delete_invite(key) for key in doomed))
+    return {"revoked": len(doomed)}
+
+
+async def ask_agent_to_fix(owner_id: str, app_id: str, *, auth: AuthContext, error: str | None = None) -> dict:
+    """One message in the app's room, as the person, asking its builder agent to fix a failed publish.
+    ``error``: a refusal Canvas saw that was never stored; the person could post it themselves anyway."""
+    app = await _owned(owner_id, app_id)
+    stored = app.get("error") or app.get("publish_error") or {}
+    what = (error or stored.get("message") or "").strip()[:2000]
+    if not what:
+        raise AppsRefused("nothing_failed", "That app has nothing to fix right now.")
+    room_id = app["room_id"]
+    try:
+        await messaging.require_room_member(owner_id, auth.user_id, room_id)
+        # An observe member never runs, even when mentioned. A builder that left the room (or a person's
+        # computer that built it): any agent there can read the error. Never an unmentioned line nobody hears.
+        agents = sorted(
+            (
+                m
+                for m in await messaging_repo.list_members(room_id)
+                if m.get("kind") == "agent" and m.get("listenMode") != "observe"
+            ),
+            key=lambda m: m["id"],
+        )
+        if not agents:
+            raise AppsRefused("no_agent", "There is no agent in the app's room to ask.", "add an agent to the room")
+        builder = next((m for m in agents if m["id"] == app.get("actor_id")), agents[0])
+        handle = builder.get("mentionHandle") or builder.get("displayName") or "agent"
+        # Fenced, so an @name inside the error text is not read as a mention.
+        quoted = _DB_URL.sub("[redacted]", what).replace("```", "'''")
+        await messaging.create_human_message(
+            auth,
+            room_id,
+            messaging.CreateMessageRequest(
+                client_message_id=uuid.uuid4(),
+                text=f"@{handle} {_display(app)} didn't go live. Can you fix it and post here?\n\n```\n{quoted}\n```",
+                mentions=[messaging.MemberRef(kind="agent", id=builder["id"])],
+                reply_to_message_id=None,
+                thread_root_message_id=None,
+            ),
+            via="apps",
+        )
+    except messaging.ApiProblem as e:
+        if e.error.code in ("ROOM_FORBIDDEN", "ROOM_NOT_FOUND"):
+            # The room is not named: Canvas never names a room the caller is not in.
+            raise AppsRefused(
+                "not_a_member", "Only members of the app's room can post there.", "join the room, or ask someone in it"
+            ) from None
+        raise
+    return {"asked": True}
 
 
 _INVITE_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")

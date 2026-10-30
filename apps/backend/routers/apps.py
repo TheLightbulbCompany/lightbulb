@@ -298,6 +298,14 @@ class RemoveBody(BaseModel):
     confirm_name: str = Field(max_length=63)
 
 
+class RevokeInviteBody(BaseModel):
+    email: EmailStr
+
+
+class AskAgentBody(BaseModel):
+    error: str | None = Field(default=None, max_length=2000)  # a refusal Canvas saw that the record never kept
+
+
 class MemberPublishBody(BaseModel):
     pass  # R69: {} — Canvas publishes what the ready preview shows
 
@@ -333,6 +341,18 @@ async def member_publish(
     return await _run(svc.member_publish(owner_id, app_id, user_id=auth.user_id))
 
 
+@router.post("/{app_id}/rollback")
+async def member_rollback(app_id: str, body: RollbackBody, owner_id: Manager):
+    return await _run(svc.rollback(owner_id, app_id, version=body.version))
+
+
+@router.post("/{app_id}/ask-agent")
+async def ask_agent(
+    app_id: str, body: AskAgentBody, owner_id: Manager, auth: Annotated[AuthContext, Depends(get_current_user)]
+):
+    return await _run(svc.ask_agent_to_fix(owner_id, app_id, auth=auth, error=body.error))
+
+
 @router.post("/{app_id}/open")
 async def open_app(
     app_id: str,
@@ -349,6 +369,16 @@ async def invite(
 ):
     emails = list(dict.fromkeys(str(e).lower() for e in body.emails))
     return await _run(svc.invite(owner_id, app_id, emails=emails, user_id=auth.user_id))
+
+
+@router.get("/{app_id}/invites")
+async def list_invites(app_id: str, owner_id: Manager):
+    return {"emails": await _run(svc.list_invites(owner_id, app_id))}
+
+
+@router.delete("/{app_id}/invites")
+async def revoke_invite(app_id: str, body: RevokeInviteBody, owner_id: Manager):
+    return await _run(svc.revoke_invite(owner_id, app_id, email=str(body.email).lower()))
 
 
 @router.delete("/{app_id}")

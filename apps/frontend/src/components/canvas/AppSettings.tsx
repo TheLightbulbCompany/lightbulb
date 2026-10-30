@@ -2,7 +2,7 @@
 
 // Settings for the creator (can_publish) or a workspace admin for one app: who can open it, invites, monthly budget, database console, removal.
 // The backend re-enforces who may change these with 403; hiding this for others is only a courtesy.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { notifyError, notifySuccess } from "@/lib/notify";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { useApps, type AppRow } from "@/hooks/useApps";
@@ -33,7 +33,7 @@ function whoLosesAccess(from: OpenTo, to: OpenTo, room: string): string | null {
 }
 
 export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppRow; onClose(): void; onRemoved?(): void; publishCtl?: PublishCtl }) {
-  const { update, invite, remove, databaseLink } = useApps();
+  const { update, invite, listInvites, revokeInvite, remove, databaseLink } = useApps();
   const isAdmin = useIsWorkspaceAdmin();
   const [openTo, setOpenTo] = useState(app.open_to);
   const [pending, setPending] = useState<OpenTo | null>(null);
@@ -48,7 +48,14 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
   const hasDb = (app.resources ?? []).some((r) => r.provider === "neon" && r.resource_id);
   const budgetNum = Number(budget);
   const budgetOk = budget.trim() !== "" && Number.isInteger(budgetNum) && budgetNum >= 0;
-  if (!(app.can_publish === true || isAdmin)) return null;
+  const canManage = app.can_publish === true || isAdmin;
+  const [invited, setInvited] = useState<string[] | "failed">([]);
+  const loadInvited = () => listInvites(app.app_id).then(setInvited, () => setInvited("failed"));
+  useEffect(() => {
+    if (canManage) void loadInvited();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadInvited is a fresh closure each render; the app is the trigger
+  }, [app.app_id, canManage]);
+  if (!canManage) return null;
 
   // The hook already surfaces API errors; these handlers only keep the panel usable.
   const room = `#${app.room_name ?? "this room"}`;
@@ -67,7 +74,14 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
   const sendInvites = async () => {
     const list = emails.split(/[\s,;]+/).filter(Boolean);
     if (!list.length) return;
-    try { await invite(app.app_id, list); setEmails(""); setNote(`Sent ${list.length} ${list.length === 1 ? "invite" : "invites"}.`); } catch { /* shown by the hook */ }
+    try { await invite(app.app_id, list); setEmails(""); setNote(`Sent ${list.length} ${list.length === 1 ? "invite" : "invites"}.`); void loadInvited(); } catch { /* shown by the hook */ }
+  };
+  const revoke = async (email: string) => {
+    try {
+      await revokeInvite(app.app_id, email);
+      setInvited((now) => (now === "failed" ? now : now.filter((e) => e !== email)));
+      setNote(`${email}'s invite link no longer works.`);
+    } catch { /* shown by the hook */ }
   };
   const saveBudget = async () => {
     try { await update(app.app_id, { budget_usd: budgetNum }); setNote("Spending limit saved."); } catch { /* shown by the hook */ }
@@ -84,7 +98,7 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
     } catch (err) { closePendingTab(w); setDataErr((err as Error)?.message ?? ""); }
   };
   const doRemove = async () => {
-    try { await remove(app.app_id, app.name); notifySuccess(`Removed ${dn}.`); (onRemoved ?? onClose)(); } catch { /* shown by the hook */ }
+    try { await remove(app.app_id, dn); notifySuccess(`Removed ${dn}.`); (onRemoved ?? onClose)(); } catch { /* shown by the hook */ }
   };
 
   return <section className="app-settings" aria-label={`${dn} settings`}>
@@ -100,6 +114,7 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
         <input type="radio" name={`open-to-${app.app_id}`} checked={(pending ?? openTo) === c.value} onChange={() => pick(c.value)} />
         {c.value === "room" ? `${room} (this room)` : c.label}
       </label>)}
+      <div className="app-settings__row app-settings__row--sub"><button type="button" className="app-view__btn" disabled>Use your own domain (coming soon)</button></div>
       {pending && warning && <div role="alert" className="app-settings__row">
         <p className="canvas__notice">{warning}</p>
         <button type="button" className="app-view__btn" onClick={() => { const v = pending; setPending(null); choose(v); }}>{pending === "public" ? "Make it public" : "Change who can open it"}</button>
@@ -114,6 +129,13 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
         <textarea id={`emails-${app.app_id}`} value={emails} rows={3} onChange={(e) => setEmails(e.target.value)} />
         <button type="button" className="app-view__btn" disabled={!emails.trim()} onClick={sendInvites}>Invite</button>
       </div>}
+      {invited === "failed"
+        ? <Problem action={<button type="button" className="app-view__btn" onClick={() => void loadInvited()}>Try again</button>}>We couldn&apos;t load who&apos;s invited.</Problem>
+        : invited.length > 0 && <ul className="app-settings__invited" aria-label="Invited people">
+          {invited.map((email) => <li key={email} className="app-settings__row">
+            <span>{email}</span> · <button type="button" className="app-view__btn" aria-label={`Remove ${email}`} onClick={() => revoke(email)}>Remove</button>
+          </li>)}
+        </ul>}
     </fieldset>
 
     <div className="app-settings__group">

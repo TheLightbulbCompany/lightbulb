@@ -2,6 +2,7 @@
 
 import json
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import patch as mpatch
 
@@ -182,8 +183,9 @@ def test_delete_requires_typed_name_and_removes_resources(member, monkeypatch):
     admin = _as("admin")
     rows = AsyncMock(return_value=[])
     monkeypatch.setattr(svc.wf_repo, "list_for_owner", rows)
-    r = admin.request("DELETE", f"{BASE}/app_1", json={"confirm_name": "Crew"})
+    r = admin.request("DELETE", f"{BASE}/app_1", json={"confirm_name": "crews"})
     assert r.status_code == 409 and r.json()["detail"]["code"] == "confirm_name_mismatch"
+    assert r.json()["detail"]["message"] == 'Type "Crew" to confirm.'  # the display name, never the slug
     rows.assert_not_awaited()
     assert admin.request("DELETE", f"{BASE}/app_1", json={}).status_code == 422
 
@@ -505,3 +507,211 @@ def test_invite_swap_storage_down_is_a_503_never_cached():
     with mpatch.object(mod.svc, "swap_invite", down):
         r = TestClient(app).get(f"{BASE}/invite/{'x' * 43}")
     assert r.status_code == 503 and r.headers["cache-control"] == "no-store"
+
+
+def test_remove_accepts_the_display_name_or_the_slug(admin, monkeypatch):
+    record = {"app_id": "app_1", "owner_id": "org_a", "name": "crew-rota", "display_name": "Night Crew"}
+    monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(return_value=record))
+    monkeypatch.setattr(svc.wf_repo, "list_for_owner", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc.apps_dns, "remove", AsyncMock())
+    monkeypatch.setattr(svc.apps_source, "delete_all", AsyncMock())
+    monkeypatch.setattr(svc.integration_secret_store, "delete", AsyncMock())
+    patch = AsyncMock()
+    monkeypatch.setattr(svc.apps_repo, "patch", patch)
+    r = admin.request("DELETE", f"{BASE}/app_1", json={"confirm_name": "Crew Rota"})  # the old title, no longer it
+    assert r.status_code == 409
+    patch.assert_not_awaited()
+    for typed in ("crew-rota", " night crew "):
+        assert admin.request("DELETE", f"{BASE}/app_1", json={"confirm_name": typed}).status_code == 200
+    assert patch.await_count == 2
+
+
+# --- member routes refuse a non-manager and another workspace's app -------------------------------
+
+
+@pytest.mark.parametrize(
+    "method,path,body",
+    [
+        ("POST", "rollback", {"version": 1}),
+        ("POST", "ask-agent", {}),
+        ("GET", "invites", None),
+        ("DELETE", "invites", {"email": "a@x.co"}),
+    ],
+)
+def test_new_member_routes_are_manager_gated(monkeypatch, method, path, body):
+    records = {
+        "mine": _record("mine", "crew", ROOM, "room", created_by="user_founder"),
+        "foreign": {**_record("foreign", "other", ROOM, "room"), "owner_id": "org_b"},
+    }
+    monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(side_effect=lambda a, **_: records.get(a)))
+    for name in ("rollback", "ask_agent_to_fix", "list_invites", "revoke_invite"):
+        monkeypatch.setattr(svc, name, AsyncMock(side_effect=AssertionError("the gate comes first")))
+    try:
+        r = _as("member").request(method, f"{BASE}/mine/{path}", json=body)
+        assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
+        r = _as("admin").request(method, f"{BASE}/foreign/{path}", json=body)
+        assert r.status_code == 404 and r.json()["detail"]["code"] == "app_not_found"
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- put back the previous version ----------------------------------------------------------------
+
+
+def test_member_rollback_calls_rollback_for_the_creator(monkeypatch):
+    record = _record("app_1", "crew", ROOM, "room", created_by="user_member")
+    monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(return_value=record))
+    rollback = AsyncMock(return_value={"state": "live"})
+    monkeypatch.setattr(svc, "rollback", rollback)
+    r = _as("member").post(f"{BASE}/app_1/rollback", json={"version": 2})
+    app.dependency_overrides.clear()
+    assert r.status_code == 200
+    assert rollback.await_args.args == ("org_a", "app_1") and rollback.await_args.kwargs == {"version": 2}
+
+
+def test_list_rows_name_the_previous_version_and_a_failed_publish(admin, monkeypatch):
+    versions = [{"n": n, "commit": "c", "deployment_id": f"d{n}", "at": f"2026-10-0{n}T00:00:00+00:00", "by": "a"} for n in (1, 2, 3)]  # fmt: skip
+    records = [
+        _record("app_1", "three", "r", "public", versions=versions, live_version=3),
+        _record("app_2", "backed", "r", "public", versions=versions, live_version=2, publish_error={"message": "no"}),
+        _record("app_3", "first", "r", "public", versions=versions[:1], live_version=1),
+        _record("app_4", "preview", "r", "public", versions=[]),
+    ]
+    monkeypatch.setattr(svc.apps_repo, "list_for_owner", AsyncMock(return_value=records))
+    monkeypatch.setattr(svc.wf_repo, "list_for_owner", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc.messaging_repo, "get_room", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc.messaging, "human_display_name", AsyncMock(side_effect=lambda u: u))
+    monkeypatch.setattr(svc.messaging, "load_agent_roster", AsyncMock(return_value=[]))
+    rows = {a["name"]: a for a in admin.get(BASE).json()["apps"]}
+    assert rows["three"]["previous_version"] == {"n": 2, "at": "2026-10-02T00:00:00+00:00"}
+    assert rows["backed"]["previous_version"]["n"] == 1
+    assert rows["first"]["previous_version"] is None and rows["preview"]["previous_version"] is None
+    assert rows["backed"]["publish_failed"] is True and rows["three"]["publish_failed"] is False
+    assert "versions" not in rows["three"]  # deployment ids stay off Canvas
+
+
+# --- ask the agent to fix it ----------------------------------------------------------------------
+
+
+AGENT_A, AGENT_B = "00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b"
+
+
+@pytest.fixture
+def asking(monkeypatch):
+    """A failed app built by agent B, in a real room path: membership over fake rows, the message captured."""
+    record = _record(
+        "app_1", "crew-rota", ROOM, "room", actor_id=AGENT_B, publish_error={"message": "Build @everyone postgres://u:p@db/x"}
+    )  # fmt: skip
+    state = SimpleNamespace(
+        record=record,
+        humans={"user_admin"},
+        agents=[
+            {"kind": "agent", "id": AGENT_A, "mentionHandle": "ada", "listenMode": "active"},
+            {"kind": "agent", "id": AGENT_B, "mentionHandle": "bob", "listenMode": "active"},
+            {"kind": "human", "id": "user_admin", "role": "member"},
+        ],
+        posted=[],
+    )
+    monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(side_effect=lambda a, **_: state.record))
+    monkeypatch.setattr(
+        svc.messaging_repo, "get_room", AsyncMock(return_value={"roomId": ROOM, "ownerId": "org_a", "name": "Ops"})
+    )
+    monkeypatch.setattr(
+        svc.messaging_repo,
+        "get_member",
+        AsyncMock(side_effect=lambda r, k, u: {"role": "member"} if u in state.humans else None),
+    )
+    monkeypatch.setattr(svc.messaging_repo, "list_members", AsyncMock(side_effect=lambda r: state.agents))
+
+    async def create(auth, room_id, request, **kw):
+        state.posted.append((auth, room_id, request, kw))
+
+    monkeypatch.setattr(svc.messaging, "create_human_message", create)
+    return state
+
+
+def test_ask_agent_posts_once_as_the_person_mentioning_the_builder(admin, asking):
+    r = admin.post(f"{BASE}/app_1/ask-agent", json={})
+    assert r.status_code == 200 and r.json() == {"asked": True}
+    assert len(asking.posted) == 1
+    auth, room_id, request, kw = asking.posted[0]
+    assert auth.user_id == "user_admin" and room_id == ROOM
+    assert "author_override" not in kw and kw["via"] == "apps"  # the person's own message, not a system line
+    assert [(m.kind, m.id) for m in request.mentions] == [("agent", AGENT_B)]
+    assert request.text.startswith("@bob Crew Rota didn't go live.")
+    assert "```\nBuild @everyone [redacted]\n```" in request.text  # fenced and scrubbed
+
+
+def test_ask_agent_uses_the_refusal_canvas_saw_and_needs_some_failure(admin, asking):
+    assert admin.post(f"{BASE}/app_1/ask-agent", json={"error": "x" * 2001}).status_code == 422
+    assert admin.post(f"{BASE}/app_1/ask-agent", json={"error": "Refused ``` now"}).status_code == 200
+    assert "Refused ''' now" in asking.posted[0][2].text
+    asking.record = {**asking.record, "publish_error": None}
+    asking.posted.clear()
+    r = admin.post(f"{BASE}/app_1/ask-agent", json={})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "nothing_failed"
+    assert asking.posted == []
+
+
+def test_ask_agent_falls_back_when_the_builder_cannot_hear(admin, asking):
+    asking.agents = [a for a in asking.agents if a["id"] != AGENT_B]  # left the room
+    assert admin.post(f"{BASE}/app_1/ask-agent", json={}).status_code == 200
+    assert [m.id for m in asking.posted[0][2].mentions] == [AGENT_A]
+    asking.agents = [{"kind": "agent", "id": AGENT_A, "mentionHandle": "ada", "listenMode": "observe"}]
+    r = admin.post(f"{BASE}/app_1/ask-agent", json={})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "no_agent"
+    assert len(asking.posted) == 1
+
+
+def test_ask_agent_refuses_a_manager_outside_the_room(admin, asking):
+    asking.humans.clear()  # an org admin who is not in the room can't post as themselves there
+    r = admin.post(f"{BASE}/app_1/ask-agent", json={})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_a_member"
+    assert "Ops" not in r.text and asking.posted == []
+
+
+# --- the invited people list ----------------------------------------------------------------------
+
+
+def test_list_and_revoke_invites(invites):
+    table, sent = invites
+    admin = _as("admin")
+    assert admin.post(f"{BASE}/app_a/invites", json={"emails": ["bo@x.co", "cy@x.co"]}).status_code == 200
+    assert admin.post(f"{BASE}/app_a/invites", json={"emails": ["bo@x.co"]}).status_code == 200  # a second link
+    assert admin.post(f"{BASE}/app_b/invites", json={"emails": ["bo@x.co"]}).status_code == 200  # another app
+    table.put_item(
+        Item={"app_id": "INVITE#old", "kind": "invite", "target_app_id": "app_a", "invite_owner_id": "org_a",
+              "email": "old@x.co", "expires_at": "2020-01-01T00:00:00+00:00"}
+    )  # fmt: skip
+    r = admin.get(f"{BASE}/app_a/invites")
+    assert r.status_code == 200 and r.json() == {"emails": ["bo@x.co", "cy@x.co"]}  # no hashes, no expired
+    assert "INVITE#" not in r.text
+
+    r = admin.request("DELETE", f"{BASE}/app_a/invites", json={"email": "BO@x.co"})
+    assert r.status_code == 200 and r.json() == {"revoked": 2}
+    assert admin.get(f"{BASE}/app_a/invites").json() == {"emails": ["cy@x.co"]}
+    assert admin.get(f"{BASE}/app_b/invites").json() == {"emails": ["bo@x.co"]}  # this app's links only
+    assert admin.request("DELETE", f"{BASE}/app_a/invites", json={"email": "not-an-email"}).status_code == 422
+    assert admin.request("DELETE", f"{BASE}/app_a/invites", json={"email": "no@x.co"}).json() == {"revoked": 0}
+
+    bo_a, cy, bo_a2, bo_b = (_token(m) for m in sent)
+    app.dependency_overrides.clear()
+    anyone = TestClient(app)
+    assert anyone.get(f"{BASE}/invite/{bo_a}").status_code == 404  # revoked: refused like one never issued
+    assert anyone.get(f"{BASE}/invite/{bo_a2}").status_code == 404
+    assert anyone.get(f"{BASE}/invite/{cy}").status_code == 200
+    assert anyone.get(f"{BASE}/invite/{bo_b}").status_code == 200
+
+
+def test_invite_email_names_the_app_by_its_display_name_escaped(invites):
+    table, sent = invites
+    table.update_item(
+        Key={"app_id": "app_a"},
+        UpdateExpression="SET display_name = :d",
+        ExpressionAttributeValues={":d": "Sign-up <b>now</b>"},
+    )
+    _as("admin").post(f"{BASE}/app_a/invites", json={"emails": ["bo@x.co"]})
+    app.dependency_overrides.clear()
+    assert sent[0]["subject"] == "You're invited to Sign-up <b>now</b>"
+    assert "Sign-up &lt;b&gt;now&lt;/b&gt;" in sent[0]["html"] and "<b>" not in sent[0]["html"]
+    assert "alpha" not in sent[0]["text"].split("https://")[0]  # the slug stays in the address

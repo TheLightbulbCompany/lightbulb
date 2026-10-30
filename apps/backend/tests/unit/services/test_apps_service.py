@@ -336,6 +336,9 @@ async def test_up_deploys_preview_when_all_active(world):
     key = json.loads(preview["LIGHTBULB_ISSUER_KEY"])
     assert key["kty"] == "OKP" and key["crv"] == "Ed25519" and key["kid"] and key["x"]
     assert {e["key"]: e["value"] for e in envs[1]}["DATABASE_URL"] == LIVE_DB
+    # The preview-only pass: its claim is named to the preview's door and never to live's.
+    assert preview["LIGHTBULB_PREVIEW_APP"] == "crew:preview"
+    assert "LIGHTBULB_PREVIEW_APP" not in {e["key"] for e in envs[1]}
     dep = world.vercel.created()[0]
     assert "target" not in dep and dep["projectSettings"]["buildCommand"] == "next build"
     assert {f["file"] for f in dep["files"]} == set(SRC_V1)

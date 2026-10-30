@@ -1,6 +1,7 @@
 """Builder routes (/api/v1/apps/build): a workspace agent's hook token or a signed-in computer's proof."""
 
 import io
+import json
 import os
 import tarfile
 from unittest.mock import AsyncMock
@@ -13,7 +14,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.auth import AuthContext  # noqa: E402
 from core.services import apps_service as svc  # noqa: E402
-from core.services import vercel_client  # noqa: E402
+from core.services import network_proof, vercel_client  # noqa: E402
 from core.services.stripe_provisioning import ProvisioningError  # noqa: E402
 from main import app  # noqa: E402
 from routers import apps as mod  # noqa: E402
@@ -317,6 +318,82 @@ def test_builder_cannot_touch_another_owners_app(client, monkeypatch):
         kw = {"json": {}} if method == "post" else {}
         r = getattr(client, method)(f"{BASE}/app_1/{path}", headers=HOOK, **kw)
         assert r.status_code == 404, path
+
+
+@pytest.fixture
+def previewing(monkeypatch):
+    monkeypatch.setattr(svc.settings, "NETWORK_PROOF_KEY", "proof-key")
+    record = {
+        "app_id": "app_1",
+        "owner_id": "org_a",
+        "name": "crew",
+        "room_id": "room_1",
+        "open_to": "room",
+        "state": "live",
+        "preview_url": "https://crew-preview.apps.test/",
+        "live_url": "https://crew.apps.test",
+    }
+    monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(return_value=record))
+    patch = AsyncMock()
+    monkeypatch.setattr(svc.apps_repo, "patch", patch)
+    return record, patch
+
+
+def test_test_link_is_a_preview_only_builder_pass(client, previewing):
+    _, patch = previewing
+    r = client.post(f"{BASE}/app_1/test-link", headers=HOOK)
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    assert set(r.json()) == {"url"}
+    url = r.json()["url"]
+    assert url.startswith("https://crew-preview.apps.test/_lightbulb/session#token=")
+    assert "crew.apps.test" not in url
+    head, payload, _ = url.split("#token=", 1)[1].split(".")
+    assert json.loads(network_proof._unb64(head))["typ"] == network_proof.APP_PASS_TYP
+    claims = json.loads(network_proof._unb64(payload))
+    assert claims.pop("exp") - claims.pop("iat") == 300
+    # Exactly the door's fields; "crew:preview" is not the LIGHTBULB_APP that the live door compares to.
+    assert claims == {
+        "sub": "builder:agt_1",
+        "name": "Builder agent",
+        "email": "",
+        "ws": "org_a",
+        "room": "room_1",
+        "app": "crew:preview",
+    }
+    patch.assert_not_awaited()  # never last_opened_at
+
+
+def test_test_link_names_a_signed_in_builder_as_a_builder_too(client, previewing, proof):
+    r = client.post(f"{BASE}/app_1/test-link", headers=PROOF)
+    assert r.status_code == 200
+    payload = r.json()["url"].split("#token=", 1)[1].split(".")[1]
+    assert json.loads(network_proof._unb64(payload))["sub"] == "builder:user_1"
+
+
+def test_test_link_refused_without_credentials_or_for_another_workspace(client, previewing):
+    record, _ = previewing
+    assert client.post(f"{BASE}/app_1/test-link").status_code == 401
+    record["owner_id"] = "org_b"
+    r = client.post(f"{BASE}/app_1/test-link", headers=HOOK)
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "app_not_found"
+
+
+def test_test_link_without_a_preview_never_falls_back_to_live(client, previewing):
+    record, _ = previewing
+    record["preview_url"] = None
+    for open_to in ("room", "public"):
+        record["open_to"] = open_to
+        r = client.post(f"{BASE}/app_1/test-link", headers=HOOK)
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "not_ready"
+        assert "crew.apps.test" not in r.text
+
+
+def test_test_link_for_a_public_app_is_the_plain_preview_address(client, previewing):
+    record, patch = previewing
+    record["open_to"] = "public"
+    r = client.post(f"{BASE}/app_1/test-link", headers=HOOK)
+    assert r.status_code == 200 and r.json() == {"url": "https://crew-preview.apps.test"}
+    patch.assert_not_awaited()
 
 
 def _multipart(form: dict, archive: bytes) -> tuple[bytes, str]:

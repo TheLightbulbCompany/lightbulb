@@ -53,7 +53,9 @@ export async function runControls(deps: Partial<Deps> = {}): Promise<{ reference
   let judgeOnReference = 0;
   const ref = await withApp(`${TASK}-reference`, async (url, dir, databaseUrl) => {
     const j = await journeys(task, url);
-    judgeOnReference = await judge(url, dir, task); // before probes: sql-injection writes to the db
+    const v = await judge(url, dir, task); // before probes: sql-injection writes to the db
+    judgeOnReference = v.score;
+    detail.push(`reference judge: ${v.score} ${v.reason}`);
     const p = await probes(url, dir, set, databaseUrl, task);
     return { j, p };
   });

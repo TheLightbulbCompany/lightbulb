@@ -12,7 +12,7 @@ const adapter = (f: (dir: string, signal?: AbortSignal) => Promise<Partial<Build
 const journeys = (pass: number, total = 10) => async () => Array.from({ length: total }, (_, i) => ({ id: `j${i}`, pass: i < pass }));
 const mk = (j = journeys(10), probePass = true, judge = 0.5): Deps => ({
   probes: async () => [{ id: "p1", pass: probePass, detail: "" }],
-  judge: async () => judge,
+  judge: async () => ({ score: judge, reason: "r" }),
   serve: async () => ({ url: "http://x", databaseUrl: "d", stop: async () => {}, buildLog: "serve-log", built: true }),
   journeys: j,
 });

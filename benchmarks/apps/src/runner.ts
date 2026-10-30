@@ -15,7 +15,7 @@ const sh = promisify(execFile);
 
 export interface Deps {
   probes: (url: string, dir: string, probes: ProbeSpec[], databaseUrl: string, task: Task) => Promise<ProbeResult[]>;
-  judge: (url: string, dir: string, task: Task) => Promise<number>;
+  judge: (url: string, dir: string, task: Task) => Promise<{ score: number; reason: string }>;
   serve?: (dir: string, opts?: ServeOpts) => Promise<Served>;
   journeys?: (task: Task, url: string) => Promise<{ id: string; pass: boolean }[]>;
 }
@@ -99,7 +99,8 @@ export async function runTask(task: Task, adapter: BuilderAdapter, opts: { run: 
               rec.minutesToRunnable = mins();
               rec.journeys = await (deps.journeys ?? playwrightJourneys)(task, s.url);
               // judge before probes: the sql-injection probe may break a vulnerable app
-              const j = await deps.judge(s.url, workdir, task);
+              const { score: j, reason } = await deps.judge(s.url, workdir, task);
+              rec.judgeReason = reason;
               rec.probes = await deps.probes(s.url, workdir, task.probes, s.databaseUrl, task);
               rec.judge = Number.isNaN(j) ? 0 : j; // no judge score counts as 0 and is flagged
               if (Number.isNaN(j)) rec.judgeFailed = true;

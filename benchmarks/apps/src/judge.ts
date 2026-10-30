@@ -13,18 +13,23 @@ const MAX_IMAGES = 6;
 const MAX_TEXT_CHARS = 80_000; // ~20k tokens at ~4 chars/token
 const DIMS = ["fit", "design", "clarity", "completeness"];
 
+/** A judge score with the judge's own words for it (or why there is no score). */
+export type JudgeVerdict = { score: number; reason: string };
+
 /** Score 0..1 from judge/rubric-screens.md's JSON: `score` if given, else the mean of the dimensions. Unparseable → NaN (no score). */
-export function parseJudgeScore(text: string): number {
+export function parseJudge(text: string): JudgeVerdict {
   const clamp = (x: number) => Math.min(1, Math.max(0, x));
   try {
     const o = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
-    if (typeof o.score === "number") return clamp(o.score);
+    const reason = String(o.reason ?? o.rationale ?? "");
+    if (typeof o.score === "number") return { score: clamp(o.score), reason };
     const xs = DIMS.map((d) => o[d]).filter((x): x is number => typeof x === "number");
-    if (xs.length) return clamp(xs.reduce((a, b) => a + b, 0) / xs.length);
+    if (xs.length) return { score: clamp(xs.reduce((a, b) => a + b, 0) / xs.length), reason };
   } catch { /* fall through */ }
   console.error(`[judge] unparseable reply, no score: ${text.slice(0, 200)}`);
-  return NaN;
+  return { score: NaN, reason: `unparseable reply: ${text.slice(0, 200)}` };
 }
+export const parseJudgeScore = (text: string) => parseJudge(text).score;
 
 export function judgeRequest(task: Task, rubric: string, shots: Buffer[]) {
   const text = [
@@ -76,7 +81,7 @@ async function screenshots(url: string, dir: string, task: Task): Promise<Buffer
  * LLM judge: screenshots + screens rubric + prompt → Claude → 0..1.
  * Never throws: any failure (no key, screenshots, API, unparseable reply) returns NaN and is logged; the runner records it.
  */
-export async function judgeAnthropic(url: string, dir: string, task: Task, o: { fetch?: typeof fetch; shots?: Buffer[]; apiKey?: string; retryMs?: number } = {}): Promise<number> {
+export async function judgeAnthropic(url: string, dir: string, task: Task, o: { fetch?: typeof fetch; shots?: Buffer[]; apiKey?: string; retryMs?: number } = {}): Promise<JudgeVerdict> {
   const key = o.apiKey ?? process.env.ANTHROPIC_API_KEY ?? "";
   try {
     if (!key) throw new Error("ANTHROPIC_API_KEY is not set");
@@ -94,10 +99,10 @@ export async function judgeAnthropic(url: string, dir: string, task: Task, o: { 
     }
     if (!r.ok) throw new Error(`Messages API ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const reply = (await r.json()) as { content?: { type: string; text?: string }[] };
-    return parseJudgeScore((reply.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join(""));
+    return parseJudge((reply.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join(""));
   } catch (e) {
     console.error(`[judge] ${task.id}: ${e instanceof Error ? e.message : e}; no score`);
-    return NaN;
+    return { score: NaN, reason: `no score: ${e instanceof Error ? e.message : e}` };
   }
 }
 
@@ -114,7 +119,7 @@ const lastMessage = (stream: string): string => {
  * Default judge: Codex (ChatGPT subscription), read-only sandbox, screenshots via -i, JSON shaped by --output-schema.
  * Never throws: any failure returns NaN and is logged. EVAL_JUDGE=anthropic uses the Messages API instead.
  */
-export async function judge(url: string, dir: string, task: Task, o: { shots?: Buffer[]; run?: typeof runCodex; anthropic?: Parameters<typeof judgeAnthropic>[3] } = {}): Promise<number> {
+export async function judge(url: string, dir: string, task: Task, o: { shots?: Buffer[]; run?: typeof runCodex; anthropic?: Parameters<typeof judgeAnthropic>[3] } = {}): Promise<JudgeVerdict> {
   if (process.env.EVAL_JUDGE === "anthropic") return judgeAnthropic(url, dir, task, o.anthropic);
   const tmp = mkdtempSync(join(tmpdir(), "judge-"));
   try {
@@ -133,9 +138,9 @@ export async function judge(url: string, dir: string, task: Task, o: { shots?: B
     let r = await call();
     if (r.code !== 0) r = await call(); // one retry on non-zero exit
     if (r.code !== 0) throw new Error(`codex exited ${r.code}: ${r.out.slice(-200)}`);
-    return parseJudgeScore(lastMessage(r.out));
+    return parseJudge(lastMessage(r.out));
   } catch (e) {
     console.error(`[judge] ${task.id}: ${e instanceof Error ? e.message : e}; no score`);
-    return NaN;
+    return { score: NaN, reason: `no score: ${e instanceof Error ? e.message : e}` };
   } finally { rmSync(tmp, { recursive: true, force: true }); }
 }

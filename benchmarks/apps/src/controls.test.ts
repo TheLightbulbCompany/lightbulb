@@ -20,7 +20,7 @@ describe("writeControls", () => {
 // Serves both control apps (Docker + pnpm + Chrome); run with EVAL_IT=1. The judge is faked.
 describe.skipIf(!process.env.EVAL_IT)("controls (b01-todo)", () => {
   let result: Awaited<ReturnType<typeof runControls>>;
-  const run = async () => (result ??= await runControls({ judge: async () => 1 }));
+  const run = async () => (result ??= await runControls({ judge: async () => ({ score: 1, reason: "fake" }) }));
 
   it("reference app scores 100 on its journeys and probes", async () => {
     const r = await run();

@@ -563,6 +563,9 @@ async def _apply_app_limit(account_id: str, row: dict, snapshot: dict) -> None:
     if budget is None:
         logger.warning("provisioning: app %s has no budget_usd; no provider limit set", row["app_id"])
         return
+    if budget == 0:  # R58: a $0 cap would stop the company's own use of this provider too
+        logger.info("provisioning: app %s budget_usd is 0; no provider limit set", row["app_id"])
+        return
     await api.update_limit(
         account_id,
         max_amount=round(budget * 100),

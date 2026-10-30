@@ -2382,3 +2382,23 @@ async def test_no_resource_is_created_for_a_removed_app():
         await mod._create_resource("acct_1", _approved(state="connecting_provider", app_id="app_1", environment="prod"))
     create.assert_not_awaited()
     assert failed.await_args.args[1] == "app_not_found"
+
+
+@pytest.mark.asyncio
+async def test_a_zero_budget_sets_no_provider_limit(caplog):
+    """R58: budget 0 must not cap the provider (account-wide) at $0."""
+    approval = mod.snapshot_of(_paid("$20/mo"), PROVIDER, CONFIG, environment="crew-schedule — live")
+    row = _row(state="awaiting_approval", approval=approval, app_id="app_1", environment="prod")
+    with (
+        patch.object(mod.repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "budget_usd": 0})),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[_paid("$20/mo")])),
+        patch.object(mod.api, "payment_profile", AsyncMock(return_value={"id": "pp_1"})),
+        patch.object(mod.api, "update_limit", AsyncMock()) as limit,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="connecting_provider"))) as move,
+        caplog.at_level("INFO"),
+    ):
+        await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_admin")
+    limit.assert_not_awaited()
+    assert "budget_usd is 0" in caplog.text
+    assert move.await_args.kwargs["to_state"] == "connecting_provider"

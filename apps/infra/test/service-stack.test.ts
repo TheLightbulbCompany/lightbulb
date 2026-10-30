@@ -484,7 +484,20 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
-            Action: ["route53:ChangeResourceRecordSets", "route53:ListResourceRecordSets"],
+            Action: "route53:ChangeResourceRecordSets",
+            Resource: "arn:aws:route53:::hostedzone/ZAPPS123",
+            // R60: only this env's app names and Vercel's verification TXTs
+            Condition: {
+              "ForAllValues:StringLike": {
+                "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
+                  "*.apps.dev.thelightbulb.company",
+                  "_vercel.*",
+                ],
+              },
+            },
+          }),
+          Match.objectLike({
+            Action: "route53:ListResourceRecordSets",
             Resource: "arn:aws:route53:::hostedzone/ZAPPS123",
           }),
         ]),

@@ -192,7 +192,9 @@ def _source(app: dict, source_id: str) -> dict:
 # --- destructive migrations (R3) ----------------------------------------------------------------
 
 
-async def _approval_ok(owner_id: str, card_id: str) -> bool:
+async def _approval_ok(app: dict, card_id: str) -> bool:
+    """R57: an approved card of this workspace that names THIS app (payload app_id or app_name)."""
+    owner_id = app["owner_id"]
     try:
         company_id = await resolve_company_id_for_owner(
             owner_id=owner_id, repo=PaperclipRepo(table_name="paperclip-companies")
@@ -203,23 +205,28 @@ async def _approval_ok(owner_id: str, card_id: str) -> bool:
     except (PaperclipApiError, httpx.HTTPError) as e:
         logger.warning("apps: approval read failed: %s", type(e).__name__)
         return False
-    return (
-        bool(company_id)
-        and isinstance(card, dict)
-        and card.get("status") == "approved"
-        and (card.get("companyId") == company_id)
-    )
+    if not (company_id and isinstance(card, dict) and card.get("status") == "approved"):
+        return False
+    payload = card.get("payload") if isinstance(card.get("payload"), dict) else {}
+    names_app = payload.get("app_id") == app["app_id"] or payload.get("app_name") == app["name"]
+    return card.get("companyId") == company_id and names_app
 
 
 async def _check_destructive(app: dict, files: dict[str, bytes], approved: str | None) -> None:
+    """R57: every ``.sql`` in the archive (seeds excepted) not already published is scanned."""
     published = set(app.get("published_migrations") or [])
-    hits = [
-        f"{name}: {' '.join(stmt.split())[:200]}"
-        for name, sql in _migrations(files)[0]
-        if name not in published
+    sqls = [
+        (p.removeprefix("drizzle/"), data.decode(errors="replace"))
+        for p, data in sorted(files.items())
+        if p.endswith(".sql") and p.rsplit("/", 1)[-1] != "seed.sql" and p.removeprefix("drizzle/") not in published
+    ]
+    found = [
+        (name, f"{name}: {' '.join(stmt.split())[:200]}")
+        for name, sql in sqls
         for stmt in _COMMENTS.sub("", sql).split(";")
         if _DESTRUCTIVE.search(stmt)
     ]
+    hits = [h for _, h in found]
     if not hits:
         return
     if not approved:
@@ -228,10 +235,20 @@ async def _check_destructive(app: dict, files: dict[str, bytes], approved: str |
             "This source changes or removes existing data: " + "; ".join(hits),
             "rewrite add-only, or ask the owner and pass the approved card id",
         )
-    if not await _approval_ok(app["owner_id"], approved):
+    if not await _approval_ok(app, approved):
         raise AppsRefused(
-            "approval_invalid", "That card is not an approved card for this workspace.", "ask the owner to approve it"
+            "approval_invalid", "That card is not an approved card for this app.", "ask the owner to approve it"
         )
+    # Single use: a card covers the destructive files it was first used for (its up and its publish).
+    names = sorted({n for n, _ in found})
+    used = dict(app.get("used_approvals") or {})
+    if approved in used and not set(names) <= set(used[approved]):
+        raise AppsRefused(
+            "approval_invalid", "That card was already used for another change.", "ask the owner to approve this one"
+        )
+    if approved not in used:
+        # ponytail: read-modify-write of the map; two first uses of different cards at once can drop one record.
+        await _patch(app, {"used_approvals": {**used, approved: names}})
 
 
 # --- workflows ----------------------------------------------------------------------------------
@@ -947,8 +964,8 @@ async def open_app(owner_id: str, app_id: str, *, auth: AuthContext, target: str
 
 
 async def invite(owner_id: str, app_id: str, *, emails: list[str], user_id: str) -> dict:
-    """One single-use, 14-day link per email, to this app only; a room or workspace app then becomes
-    "invited" (``update_settings`` re-pushes LIGHTBULB_OPEN_TO). R48: a public app needs no pass, so
+    """One single-use, 14-day link per email, to this app only; a room app then becomes "invited"
+    (``update_settings`` re-pushes LIGHTBULB_OPEN_TO and redeploys). R48: a public app needs no pass, so
     its invitees get the plain address and nothing is stored."""
     app = await _owned(owner_id, app_id)
     base = (app.get("live_url") or app.get("preview_url") or "").rstrip("/")
@@ -971,7 +988,7 @@ async def invite(owner_id: str, app_id: str, *, emails: list[str], user_id: str)
             created_by=user_id,
         )
         links[email] = f"{base}/_lightbulb/invite#t={token}"
-    if app["open_to"] in ("room", "workspace"):  # only once the links exist
+    if app["open_to"] == "room":  # R59: additive; only once the links exist. A workspace app stays workspace.
         await update_settings(owner_id, app_id, open_to="invited")
         app["open_to"] = "invited"
     once = "" if public else " The link works once and expires in 14 days."
@@ -1000,7 +1017,7 @@ async def swap_invite(token: str) -> str:
         not app
         or app.get("owner_id") != inv["invite_owner_id"]
         or app.get("state") == "destroyed"
-        or app.get("open_to") != "invited"
+        or app.get("open_to") == "public"  # R59: any non-public app honours its links
     ):
         raise refused
     email = inv["email"]

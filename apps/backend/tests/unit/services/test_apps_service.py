@@ -501,7 +501,7 @@ async def test_destructive_migration_is_refused_without_an_approved_card(world, 
     assert e.value.code == "destructive_migration" and "DROP COLUMN" in e.value.message and e.value.next
 
     approvals = {
-        "card_ok": {"status": "approved", "companyId": "co_1"},
+        "card_ok": {"status": "approved", "companyId": "co_1", "payload": {"app_name": "crew"}},
         "card_other": {"status": "approved", "companyId": "co_2"},
     }
     admin = SimpleNamespace(
@@ -933,3 +933,52 @@ async def test_a_read_holding_the_lease_keeps_others_off_vercel(world):
     await svc.apps_repo.patch(src["app_id"], {"progress_lease_until": earlier})
     assert (await svc.status(OWNER, src["app_id"]))["state"] == "building"
     assert (await svc.apps_repo.get(src["app_id"]))["progress_lease_until"] is None
+
+
+def _approvals(monkeypatch, cards):
+    admin = SimpleNamespace(_http=None, get_approval=AsyncMock(side_effect=lambda **kw: cards.get(kw["approval_id"])))
+    monkeypatch.setattr(svc, "shared_admin_client", lambda: admin)
+    monkeypatch.setattr(svc, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
+    monkeypatch.setattr(svc, "resolve_company_id_for_owner", AsyncMock(return_value="co_1"))
+
+
+async def test_destructive_approval_is_bound_to_this_app_and_one_change(world, monkeypatch):
+    """R57: the card names this app, and covers one destructive change (up and publish of it), no other."""
+    src = await _source()
+    await _up(src)
+    app_id = src["app_id"]
+    _approvals(
+        monkeypatch,
+        {
+            "card_unbound": {"status": "approved", "companyId": "co_1", "payload": {}},
+            "card_other_app": {"status": "approved", "companyId": "co_1", "payload": {"app_id": "app_zzz"}},
+            "card_this": {"status": "approved", "companyId": "co_1", "payload": {"app_id": app_id}},
+        },
+    )
+    drop = await _source({**SRC_V1, "drizzle/0001_drop.sql": "ALTER TABLE shifts DROP COLUMN who;"}, "c2")
+    for card in ("card_unbound", "card_other_app"):
+        with pytest.raises(svc.AppsRefused) as e:
+            await _up(drop, approved_destructive=card)
+        assert e.value.code == "approval_invalid"
+    await _up(drop, approved_destructive="card_this")
+    await svc._check_destructive(
+        await svc._owned(OWNER, app_id), await svc._files(OWNER, app_id, drop["source_id"]), "card_this"
+    )
+    # the same card for a different destructive change is spent
+    trunc = await _source({**SRC_V1, "drizzle/0002_trunc.sql": "TRUNCATE shifts;"}, "c3")
+    with pytest.raises(svc.AppsRefused) as e:
+        await _up(trunc, approved_destructive="card_this")
+    assert e.value.code == "approval_invalid"
+
+
+async def test_destructive_check_scans_every_sql_file_but_seeds(world):
+    src = await _source()
+    await _up(src)
+    nested = await _source({**SRC_V1, "db/migrations/0003.sql": "DROP TABLE shifts;"}, "c2")
+    with pytest.raises(svc.AppsRefused) as e:
+        await _up(nested)
+    assert e.value.code == "destructive_migration" and "db/migrations/0003.sql" in e.value.message
+    seeds = await _source(
+        {**SRC_V1, "db/seed.sql": "DELETE FROM shifts;", "drizzle/seed.sql": "TRUNCATE shifts;"}, "c3"
+    )
+    assert (await _up(seeds))["state"] == "awaiting_approval"

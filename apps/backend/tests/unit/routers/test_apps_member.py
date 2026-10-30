@@ -399,11 +399,24 @@ def test_invite_pass_is_scoped_to_one_app(invites):
     assert json.loads(network_proof._unb64(a.split(".")[1]))["app"] == "alpha"
     assert json.loads(network_proof._unb64(b.split(".")[1]))["app"] == "beta"
 
-    # an app taken off invites (or removed) stops honouring its links
+    # R59: a room app switched back keeps its links until expiry; a public one (no pass) stops honouring them
     admin = _as("admin")
     admin.post(f"{BASE}/app_a/invites", json={"emails": ["dee@x.co"]})
     table.update_item(
-        Key={"app_id": "app_a"}, UpdateExpression="SET open_to = :p", ExpressionAttributeValues={":p": "room"}
+        Key={"app_id": "app_a"}, UpdateExpression="SET open_to = :p", ExpressionAttributeValues={":p": "public"}
     )
     app.dependency_overrides.clear()
     assert TestClient(app).get(f"{BASE}/invite/{_token(sent[-1])}").status_code == 404
+
+
+def test_inviting_to_a_workspace_app_keeps_workspace_and_links_work(invites):
+    """R59: invites are additive; only a room app becomes "invited"."""
+    table, sent = invites
+    table.update_item(
+        Key={"app_id": "app_b"}, UpdateExpression="SET open_to = :p", ExpressionAttributeValues={":p": "workspace"}
+    )
+    r = _as("admin").post(f"{BASE}/app_b/invites", json={"emails": ["a@x.co"]})
+    assert r.status_code == 200 and r.json() == {"invited": 1, "open_to": "workspace"}
+    assert table.get_item(Key={"app_id": "app_b"})["Item"]["open_to"] == "workspace"
+    app.dependency_overrides.clear()
+    assert TestClient(app).get(f"{BASE}/invite/{_token(sent[-1])}").status_code == 200

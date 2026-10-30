@@ -26,7 +26,11 @@ def _pass(now=1_000):
 def test_mint_app_pass_verifies_with_public_key_and_expires_in_900s():
     token = _pass()
     h, p, s = token.split(".")
-    assert json.loads(network_proof._unb64(h)) == {"alg": "EdDSA", "kid": network_proof.kid()}
+    assert json.loads(network_proof._unb64(h)) == {
+        "alg": "EdDSA",
+        "kid": network_proof.kid(),
+        "typ": "lightbulb-app-pass",
+    }
     assert json.loads(network_proof._unb64(p)) == {
         "iat": 1_000,
         "exp": 1_900,
@@ -46,3 +50,13 @@ def test_app_pass_is_never_a_computer_proof():
     token = _pass(now=None)
     for member_key in (None, "", "mk_1"):
         assert network_proof.verify(token, member_key) is None
+
+
+def test_verify_refuses_any_token_typed_as_an_app_pass():
+    """R61: even with a computer claim, an app-pass-typed token is never a sign-in proof."""
+    import time
+
+    now = int(time.time())
+    claims = {"iat": now, "exp": now + 60, "sub": "user_1", "computer": "mk_1", "auth_time": now}
+    assert network_proof.verify(network_proof._sign(claims), "mk_1") is not None
+    assert network_proof.verify(network_proof._sign(claims, typ="lightbulb-app-pass"), "mk_1") is None

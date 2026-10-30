@@ -734,16 +734,32 @@ export class ServiceStack extends cdk.Stack {
     });
 
     // Apps DNS (core/services/apps_dns.py). Standalone ManagedPolicy: the inline
-    // task-role policy is near its 10 KB ceiling. Scoped to the one hosted zone.
+    // task-role policy is near its 10 KB ceiling. Scoped to the one hosted zone,
+    // and changes to this env's app names plus Vercel's `_vercel.*` verification
+    // TXTs: dev and prod share the zone (R60). The names condition key only
+    // exists on ChangeResourceRecordSets, so the list stays unconditioned.
     if (props.appsHostedZoneId) {
+      const zone = `arn:aws:route53:::hostedzone/${props.appsHostedZoneId}`;
+      const appsDomain = (props.appsDomain ?? "apps.thelightbulb.company").toLowerCase();
       new iam.ManagedPolicy(this, "BackendAppsDns", {
         managedPolicyName: `lightbulb-${env}-backend-apps-dns`,
         roles: [this.taskRole],
         statements: [
           new iam.PolicyStatement({
             sid: "AppsDnsRecords",
-            actions: ["route53:ChangeResourceRecordSets", "route53:ListResourceRecordSets"],
-            resources: [`arn:aws:route53:::hostedzone/${props.appsHostedZoneId}`],
+            actions: ["route53:ChangeResourceRecordSets"],
+            resources: [zone],
+            conditions: {
+              "ForAllValues:StringLike": {
+                // Normalized names: lowercase, no trailing dot.
+                "route53:ChangeResourceRecordSetsNormalizedRecordNames": [`*.${appsDomain}`, "_vercel.*"],
+              },
+            },
+          }),
+          new iam.PolicyStatement({
+            sid: "AppsDnsList",
+            actions: ["route53:ListResourceRecordSets"],
+            resources: [zone],
           }),
         ],
       });

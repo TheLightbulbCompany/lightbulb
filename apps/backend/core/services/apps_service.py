@@ -1162,6 +1162,7 @@ async def test_link(owner_id: str, app_id: str, *, actor: BuilderCaller) -> str:
         raise AppsRefused("not_ready", "The app has no preview yet.", "wait for the preview build")
     if app["open_to"] == "public":
         return url
+    logger.info("apps: test link app=%s actor=%s kind=%s", app_id, actor.actor_id, actor.actor_kind)
     token = network_proof.mint_app_pass(
         f"builder:{actor.actor_id}",
         name="Builder agent",

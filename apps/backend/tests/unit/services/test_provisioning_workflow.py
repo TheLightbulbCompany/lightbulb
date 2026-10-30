@@ -2126,6 +2126,7 @@ async def test_an_app_row_in_a_new_app_says_it_creates_a_project_and_names_the_a
     # The company HAS a Project (proj_1); the app does not, so this one makes it.
     assert snapshot["creates_project"] is True
     assert snapshot["environment"] == "crew-schedule — live"
+    assert snapshot["action"] == "creates new, and a Project for crew-schedule"
 
 
 @pytest.mark.asyncio
@@ -2139,6 +2140,28 @@ async def test_start_refuses_an_unknown_app():
             await _start_app(app_id="app_nope")
     assert exc.value.code == "app_not_found"
     create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_another_owners_app_is_app_not_found():
+    theirs = AsyncMock(return_value={**APP, "owner_id": "org_b"})
+    with (
+        patch.object(mod.apps_repo, "get", theirs),
+        patch.object(mod.api, "eligibility", AsyncMock(return_value=_READY)),
+        patch.object(mod.repo, "create", AsyncMock()) as create,
+    ):
+        with pytest.raises(mod.WorkflowRefused) as exc:
+            await _start_app(app_id="app_1")
+    assert exc.value.code == "app_not_found"
+    create.assert_not_awaited()
+    with (
+        patch.object(mod.apps_repo, "get", theirs),
+        patch.object(mod, "_fail", AsyncMock(return_value={"state": "failed"})) as fail,
+        patch.object(mod.api, "create_project", AsyncMock()) as mint,
+    ):
+        assert await mod._app_project_for("acct_1", _approved(app_id="app_1")) == (None, {"state": "failed"})
+    assert fail.await_args.args[1] == "app_not_found"
+    mint.assert_not_awaited()
 
 
 # --- catalog re-read before the resource write ------------------------------

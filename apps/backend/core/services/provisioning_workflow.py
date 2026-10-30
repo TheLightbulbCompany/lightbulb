@@ -180,6 +180,7 @@ def snapshot_of(
     *,
     creates_project: bool = False,
     environment: str = "Company — production",
+    project_for: str = "your company",
 ) -> dict:
     """What the owner approved. Compared field-for-field before every write.
 
@@ -210,13 +211,13 @@ def snapshot_of(
         "constraints": service.get("constraints") or [],
         "description": service.get("description"),
         # Which deployment the credential lands in: the company's one
-        # production Project (spec §3.2), or an app's (see `_environment_of`).
+        # production Project (spec §3.2), or an app's (see `_card_lines`).
         "environment": environment,
         # `resources/link` is not offered in P0b, so every approval is for NEW
         # infrastructure and the card must say so rather than leave it implied.
         # Creating a Project is a write the guide wants fresh approval for, so
         # the card says so when this approval will be the one that makes it.
-        "action": "creates new, and a Project for your company" if creates_project else "creates new",
+        "action": f"creates new, and a Project for {project_for}" if creates_project else "creates new",
         "creates_project": creates_project,
         "snapshot_at": utc_now_iso(),
     }
@@ -266,12 +267,18 @@ async def _creates_project(owner_id: str, service: dict, app_id: str | None = No
     return service.get("scope") == "project" and not await _stored_project_id(owner_id, app_id)
 
 
-async def _environment_of(app_id: str | None, environment: str) -> str:
-    """The consent card's environment line. Not a `_drifted` key."""
+async def _card_lines(app_id: str | None, environment: str) -> dict:
+    """The consent card's environment and project-owner lines. Not `_drifted` keys."""
     if not app_id:
-        return "Company — production"
+        return {"environment": "Company — production", "project_for": "your company"}
     name = (await apps_repo.get(app_id) or {}).get("name") or app_id
-    return f"{name} — {'live' if environment == 'prod' else 'preview'}"
+    return {"environment": f"{name} — {'live' if environment == 'prod' else 'preview'}", "project_for": name}
+
+
+async def _owned_app(owner_id: str, app_id: str) -> dict | None:
+    """The app, or ``None`` when it is missing or another owner's — the same answer either way."""
+    app = await apps_repo.get(app_id)
+    return app if app and app.get("owner_id") == owner_id else None
 
 
 async def _read_catalog(account_id: str, provider_name: str, service_id: str) -> tuple[dict, dict]:
@@ -437,7 +444,7 @@ async def start(
     """Step 1 of spec §3.2. Refuses loudly rather than opening a workflow that
     cannot finish. ``app_id`` scopes the row to one app's own Project."""
     account_id = await account_id_for(owner_id)
-    if app_id and not await apps_repo.get(app_id):
+    if app_id and not await _owned_app(owner_id, app_id):
         raise WorkflowRefused("app_not_found", "That app does not exist")
 
     from core.services import company_stripe
@@ -499,7 +506,7 @@ async def start(
         provider,
         configuration or {},
         creates_project=await _creates_project(owner_id, service, app_id),
-        environment=await _environment_of(app_id, environment),
+        **await _card_lines(app_id, environment),
     )
     try:
         approval_id = await provisioning_approvals.request_provider_consent(
@@ -546,7 +553,7 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
         provider,
         row.get("configuration") or {},
         creates_project=await _creates_project(row["owner_id"], service, row.get("app_id")),
-        environment=await _environment_of(row.get("app_id"), row.get("environment") or "prod"),
+        **await _card_lines(row.get("app_id"), row.get("environment") or "prod"),
     )
     if _drifted(row.get("approval") or {}, fresh):
         approval_id = await provisioning_approvals.request_provider_consent(
@@ -814,7 +821,7 @@ async def _app_project_for(account_id: str, row: dict) -> tuple:
     """One Project per APP, named after it, stored on the app row. Same
     stored → create → store order and race rules as the company's below."""
     app_id = row["app_id"]
-    app = await apps_repo.get(app_id)
+    app = await _owned_app(row["owner_id"], app_id)
     if not app:
         return None, await _fail(row, "app_not_found", "The app this was for no longer exists")
     if app.get("stripe_project_id"):
@@ -1018,7 +1025,7 @@ async def _create_resource(account_id: str, row: dict) -> dict:
         provider,
         row.get("configuration") or {},
         creates_project=await _creates_project(row["owner_id"], service, row.get("app_id")),
-        environment=await _environment_of(row.get("app_id"), row.get("environment") or "prod"),
+        **await _card_lines(row.get("app_id"), row.get("environment") or "prod"),
     )
     if _drifted(row.get("approval") or {}, fresh):
         return await _requires_review(row, "catalog_changed")

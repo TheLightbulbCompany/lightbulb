@@ -56,8 +56,8 @@ async def set_stripe_project_id(app_id: str, project_id: str) -> bool:
             Key={"app_id": app_id},
             UpdateExpression="SET stripe_project_id = :p, updated_at = :now",
             ConditionExpression="attribute_exists(app_id) AND "
-            "(attribute_not_exists(stripe_project_id) OR stripe_project_id = :none)",
-            ExpressionAttributeValues={":p": project_id, ":now": utc_now_iso(), ":none": None},
+            "(attribute_not_exists(stripe_project_id) OR attribute_type(stripe_project_id, :null_t))",
+            ExpressionAttributeValues={":p": project_id, ":now": utc_now_iso(), ":null_t": "NULL"},
         )
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":

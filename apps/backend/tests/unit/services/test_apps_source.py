@@ -112,3 +112,56 @@ async def test_delete_all_removes_every_object_for_the_app_only(s3):
     s3.put_object(Bucket="test-replicas", Key="apps/o1/a10/src/k.tar.gz", Body=b"x")
     await apps_source.delete_all("o1", "a1")
     assert _keys(s3) == ["apps/o1/a10/src/k.tar.gz"]
+
+
+def _raw_gz(raw: bytes) -> bytes:
+    import gzip
+
+    return gzip.compress(raw)
+
+
+@pytest.mark.asyncio
+async def test_gnu_longname_bomb_is_refused_without_allocating(s3):
+    import tracemalloc
+
+    hdr = tarfile.TarInfo("././@LongLink")
+    hdr.type = tarfile.GNUTYPE_LONGNAME
+    hdr.size = 2_000_000_000
+    bomb = _raw_gz(hdr.tobuf(tarfile.GNU_FORMAT) + b"a" * 600_000)
+    tracemalloc.start()
+    with pytest.raises(apps_source.SourceRefused):
+        await apps_source.put("o1", "a1", commit="c", data=bomb)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert peak < 600 * 1024 * 1024
+    with patch.object(apps_source, "MAX_UNCOMPRESSED", 1000), pytest.raises(apps_source.SourceRefused):
+        await apps_source.put("o1", "a1", commit="c", data=bomb)
+
+
+@pytest.mark.asyncio
+async def test_hardlink_git_dir_duplicates_trailing_and_commit(s3):
+    hl = tarfile.TarInfo("h")
+    hl.type = tarfile.LNKTYPE
+    hl.linkname = "x"
+    gd = tarfile.TarInfo(".git/")
+    gd.type = tarfile.DIRTYPE
+    dup = io.BytesIO()
+    with tarfile.open(fileobj=dup, mode="w") as tf:
+        for _ in range(2):
+            i = tarfile.TarInfo("a")
+            i.size = 1
+            tf.addfile(i, io.BytesIO(b"1"))
+    import gzip
+
+    for data in (_tar({}, [hl]), _tar({}, [gd]), gzip.compress(dup.getvalue()), _tar({"a": b"1"}) + _tar({"b": b"2"})):
+        with pytest.raises(apps_source.SourceRefused):
+            await apps_source.put("o1", "a1", commit="c", data=data)
+    for bad in ("caf\u00e9", "x" * 201):
+        with pytest.raises(apps_source.SourceRefused):
+            await apps_source.put("o1", "a1", commit=bad, data=_tar({"a": b"1"}))
+
+
+@pytest.mark.asyncio
+async def test_get_missing_raises_source_not_found(s3):
+    with pytest.raises(apps_source.SourceNotFound):
+        await apps_source.get("o1", "a1", "deadbeef")

@@ -14,11 +14,17 @@ const listeners = new Set<() => void>();
 let timer: ReturnType<typeof setInterval> | undefined;
 let run = 0;
 let pending = false;
+let failures = 0;
 
 const set = (next: EngineDirectory) => {
   if (next.down === state.down && next.records.length === state.records.length && JSON.stringify(next.records) === JSON.stringify(state.records)) return;
   state = next;
   listeners.forEach((l) => l());
+};
+
+// A restarting engine misses one poll: the second failure in a row is the fault.
+const failed = () => {
+  if (++failures >= 2) set({ records: [], down: true });
 };
 
 async function poll(mine: number) {
@@ -28,12 +34,13 @@ async function poll(mine: number) {
   try {
     const answer = (await invoke!("engine_ask", { op: "directory" })) as { ok?: boolean; sessions?: EngineRecord[]; ended?: EngineRecord[] } | null;
     if (mine !== run) return;
-    if (!answer || answer.ok === false) return set({ records: [], down: true });
+    if (!answer || answer.ok === false) return failed();
+    failures = 0;
     const records = [...(answer.sessions ?? []), ...(answer.ended ?? [])];
     // A 0.7.x engine sends no `wakes`: absent, not down.
     set(records.some((r) => typeof r.wakes !== "boolean") ? ABSENT : { records, down: false });
   } catch {
-    if (mine === run) set({ records: [], down: true });
+    if (mine === run) failed();
   } finally {
     if (mine === run) pending = false;
   }
@@ -54,6 +61,7 @@ function subscribe(listener: () => void) {
     if (listeners.size) return;
     run++;
     pending = false;
+    failures = 0;
     clearInterval(timer);
     timer = undefined;
     state = ABSENT;

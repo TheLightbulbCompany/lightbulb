@@ -148,7 +148,10 @@ export function mergeSessionRows(
   }
   // ponytail: a Mac that has not updated sends no networkSessionId; delete once all have.
   const unjoined = [...backendById.values()].filter((b) => !b.networkSessionId);
-  const twins = (e: EngineRecord) => !!e.title && unjoined.some((b) => b.title === e.title && b.cwdName === e.folder && b.provider === e.agent);
+  // Never the viewer's own record: hiding a withheld row behind an old shared one would lose it. The
+  // backend keeps a title's first 120 characters (`claude.rs`), so compare at that cut.
+  const twins = (e: EngineRecord) => !e.own && !!e.title && unjoined.some((b) =>
+    sessionLive(b) === (e.status !== "ended") && b.provider === e.agent && b.cwdName === e.folder && b.title === [...e.title!].slice(0, 120).join(""));
   return [
     ...[...backendById].map(([id, backend]) => toRow(backend, engineById.get(id), viewer)),
     ...[...engineById]

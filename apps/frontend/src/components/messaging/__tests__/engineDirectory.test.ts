@@ -32,14 +32,15 @@ describe("useEngineDirectory", () => {
     unmount();
   });
 
-  it("reads records, goes down on a reject, recovers, polls every 5 s and stops on unmount", async () => {
+  it("reads records, keeps them through one reject, recovers, polls every 5 s and stops on unmount", async () => {
     let n = 0;
     install(() => (++n === 2 ? Promise.reject("socket") : Promise.resolve({ ok: true, sessions: [rec()], ended: [] })));
     const { result, unmount } = renderHook(() => useEngineDirectory());
     await tick(0);
     expect(result.current).toEqual({ records: [rec()], down: false });
     await tick(5000);
-    expect(result.current).toEqual({ records: [], down: true });
+    expect(n).toBe(2);
+    expect(result.current).toEqual({ records: [rec()], down: false });
     await tick(5000);
     expect(result.current.down).toBe(false);
     expect(result.current.records).toHaveLength(1);
@@ -47,6 +48,29 @@ describe("useEngineDirectory", () => {
     const before = calls();
     await tick(20000);
     expect(calls()).toBe(before);
+  });
+
+  it("goes down on the second failure in a row, of either kind, and recovers", async () => {
+    const answers: (() => Promise<unknown>)[] = [
+      () => Promise.resolve({ ok: true, sessions: [rec()], ended: [] }),
+      () => Promise.reject("socket"),
+      () => Promise.resolve({ ok: false }),
+      () => Promise.resolve({ ok: true, sessions: [rec()], ended: [] }),
+      () => Promise.resolve({ ok: false }),
+      () => Promise.resolve({ ok: true, sessions: [rec()], ended: [] }),
+    ];
+    install(() => answers.shift()!());
+    const { result, unmount } = renderHook(() => useEngineDirectory());
+    await tick(0);
+    await tick(5000);
+    expect(result.current).toEqual({ records: [rec()], down: false });
+    await tick(5000);
+    expect(result.current).toEqual({ records: [], down: true });
+    await tick(5000);
+    expect(result.current).toEqual({ records: [rec()], down: false });
+    await tick(5000);
+    expect(result.current).toEqual({ records: [rec()], down: false });
+    unmount();
   });
 
   it("treats records without wakes (a 0.7.x engine) as absent, not down", async () => {
@@ -57,10 +81,12 @@ describe("useEngineDirectory", () => {
     unmount();
   });
 
-  it("an {ok:false} answer is down", async () => {
+  it("an {ok:false} first answer is silent, the second is down", async () => {
     install(() => Promise.resolve({ ok: false }));
     const { result, unmount } = renderHook(() => useEngineDirectory());
     await tick(0);
+    expect(result.current).toEqual({ records: [], down: false });
+    await tick(5000);
     expect(result.current).toEqual({ records: [], down: true });
     unmount();
   });

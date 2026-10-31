@@ -64,7 +64,7 @@ pub(crate) async fn ask_at(path: &Path, op: &str, body: Option<Value>, limit: Du
 
 /// The engine's response line as it is (`{id, ok, ...}`: a refusal is `ok: false`). `Err` is that
 /// no answer came. Native callers only: no allowlist, nothing cut.
-#[allow(dead_code)] // Steps 2 and 3 call it.
+#[allow(dead_code)] // Step 3 calls it.
 pub async fn ask(op: &str, body: Option<Value>) -> Result<Value, String> {
     ask_at(&socket()?, op, body, LIMIT).await
 }

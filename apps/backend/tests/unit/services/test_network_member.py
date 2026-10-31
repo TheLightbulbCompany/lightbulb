@@ -346,3 +346,56 @@ async def test_a_members_signed_out_computer_is_in_revoked_keys(store):
     await network_login.revoke("user_9", "b" * 52)  # not a member: not this workspace's to refuse
     await network_member.write_sessions("org_a")
     assert _doc(store)["revoked_keys"] == [key]
+
+
+@pytest.mark.asyncio
+async def test_team_id_survives_write(store):
+    await network_member.write_sessions("org_a")
+    doc = _doc(store)
+    store[network_member.sessions_key("org_a")] = json.dumps({**doc, "teamId": "tm1"}).encode()
+    await network_member.publish_sessions("org_a")
+    assert _doc(store)["teamId"] == "tm1"
+    await network_member._write("org_a", [])  # a writer with no prior in hand
+    assert _doc(store)["teamId"] == "tm1"
+
+
+@pytest.mark.asyncio
+async def test_join_and_leave_clear_the_stored_team_id(store, monkeypatch):
+    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"state": "joining"}))
+    for move in (lambda: network_member.join_network("org_a", "T"), lambda: network_member.leave_network("org_a")):
+        await network_member.write_sessions("org_a")
+        store[network_member.sessions_key("org_a")] = json.dumps({**_doc(store), "teamId": "tm1"}).encode()
+        await move()
+        assert "teamId" not in _doc(store)
+
+
+@pytest.mark.asyncio
+async def test_mint_line_stores_team_id(store, monkeypatch):
+    await network_member.write_sessions("org_a")
+    call = AsyncMock(return_value={"ticket": "T", "team_id": "tm1", "expires_at": 5})
+    monkeypatch.setattr(network_member.container_rpc, "call", call)
+    assert await network_member.mint_line("org_a") == {"ticket": "T", "teamId": "tm1", "expiresAt": 5}
+    assert call.await_args.args[:3] == ("org_a", "network.invite", {}) and call.await_args.kwargs["timeout_s"] == 85
+    assert await network_member.stored_team_id("org_a") == "tm1"
+
+
+@pytest.mark.asyncio
+async def test_mint_line_unavailable_is_503(store, monkeypatch):
+    await network_member.write_sessions("org_a")
+    for error in (RuntimeError(json.dumps({"code": "UNAVAILABLE", "message": "x"})), TimeoutError()):
+        monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(side_effect=error))
+        with pytest.raises(ApiProblem) as raised:
+            await network_member.mint_line("org_a")
+        assert raised.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_already_joined_message(store, monkeypatch):
+    await network_member.write_sessions("org_a")
+    error = RuntimeError(json.dumps({"code": "already_in_team", "message": "x"}))
+    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(side_effect=error))
+    with pytest.raises(ApiProblem) as raised:
+        await network_member.join_network("org_a", "T")
+    assert raised.value.error.message == (
+        "Your workspace's agents are already on a network. Sign in with lightbulb login to join it."
+    )

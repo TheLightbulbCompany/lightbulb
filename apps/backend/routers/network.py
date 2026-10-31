@@ -8,11 +8,13 @@ logged or echoed beyond the one answer that hands them out.
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.auth import AuthContext, get_current_user
 from core.services import device_login, network_login, network_member
+from core.services.messaging import ApiProblem
 
 router = APIRouter()
 internal_router = APIRouter()
@@ -71,6 +73,83 @@ async def device_describe(body: DeviceCode, ctx: AuthContext = Depends(get_curre
 
 @router.post("/device/approve")
 async def device_approve(body: DeviceCode, ctx: AuthContext = Depends(get_current_user)):
+    return await network_login.approve(ctx, body.userCode)
+
+
+async def _paired_device(request: Request):
+    """A paired Mac (EdDSA device token). A Clerk token gets 403: the hosted page holds the
+    Clerk session and must never be able to fetch a join ticket."""
+    from core.services.machine_auth import verify_upgrade
+
+    authorization = request.headers.get("Authorization", "")
+    token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
+    device = await verify_upgrade(token, "openclaw-macos")
+    if device is None:
+        raise HTTPException(403, "Paired Mac required")
+    return device
+
+
+async def desktop_or_computer(request: Request) -> tuple[str, str]:
+    """``(user_id, owner_id)`` of a paired Mac, or of a signed-in computer (``X-Lightbulb-Proof``).
+    ``owner_id`` equals ``user_id`` for a person with no workspace."""
+    if request.headers.get("X-Lightbulb-Proof"):
+        ctx, _label = await network_login.computer_identity(request)
+        return ctx.user_id, ctx.org_id or ctx.user_id
+    device = await _paired_device(request)
+    return device.user_id, device.owner_id
+
+
+async def _workspace_person(user_id: str, owner_id: str) -> None:
+    """403 unless ``user_id`` is one of the workspace's people (the sidecar's own gate)."""
+    from core.services.website_logins import _humans_to_ask
+
+    if user_id not in await _humans_to_ask(owner_id, None):
+        raise HTTPException(403, "You are not in this workspace.")
+
+
+@router.get("/team")
+async def network_team(response: Response, who: tuple[str, str] = Depends(desktop_or_computer)):
+    """Which workspace network this person's computer should be on. Stored state only: no RPC,
+    so it never wakes the workspace."""
+    _no_store(response)
+    user_id, owner_id = who
+    if owner_id == user_id:
+        return {"workspace": None, "teamId": None, "userId": user_id, "name": None}
+    await _workspace_person(user_id, owner_id)
+    info = await network_member.team_info(owner_id)
+    return {**info, "userId": user_id, "name": await network_login._name(user_id)}
+
+
+@router.post("/join-line")
+async def network_join_line(response: Response, who: tuple[str, str] = Depends(desktop_or_computer)):
+    """A once link to the workspace's network for this person's computer. Never logged, never
+    cached; the hosted page cannot reach it (a Clerk token is refused above)."""
+    _no_store(response)
+    user_id, owner_id = who
+    if owner_id == user_id:
+        raise HTTPException(409, {"code": "NO_WORKSPACE", "message": "You are not in a workspace."})
+    await _workspace_person(user_id, owner_id)
+    if not await network_member.sessions_exist(owner_id):
+        raise HTTPException(409, {"code": "NO_SESSIONS", "message": "Your workspace has no agents on a network yet."})
+    try:
+        line = await network_member.mint_line(owner_id)
+    except ApiProblem as exc:
+        if exc.status_code != 503:
+            raise
+        return JSONResponse(exc.body(), status_code=503, headers={"Retry-After": "10", "Cache-Control": "no-store"})
+    info = await network_member.team_info(owner_id)
+    return {**line, "workspace": info["workspace"], "name": await network_login._name(user_id)}
+
+
+@router.post("/device/approve-desktop")
+async def device_approve_desktop(body: DeviceCode, response: Response, device=Depends(_paired_device)):
+    """The paired Mac confirms its own ``lightbulb login --app`` code, so the person is not sent
+    to a browser. Only a ``login`` code: an ``agents`` code would move the workspace."""
+    _no_store(response)
+    row = await device_login.live_row(body.userCode, network_login.KIND)
+    if row.get("purpose") != "login":
+        raise HTTPException(403, "This code is not a sign-in code.")
+    ctx = AuthContext(user_id=device.user_id, org_id=device.org_id or None)
     return await network_login.approve(ctx, body.userCode)
 
 

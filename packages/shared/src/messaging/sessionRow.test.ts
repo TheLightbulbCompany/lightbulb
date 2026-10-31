@@ -10,7 +10,7 @@ const engine = (extra: Partial<EngineRecord> = {}): EngineRecord => ({
   session_id: NET, person: "Leo", person_id: "abc123def456", person_verified: true, computer: "leo-mac", agent: "claude",
   folder: "repo-e", repo: "lightbulb", branch: "main", status: "busy", doing: "", title: "Engine title", tier: "push", online: true, wakes: false, ...extra,
 });
-const one = (b: LocalSession[], e: EngineRecord[], v: typeof viewer | { userId: null } = viewer) => {
+const one = (b: LocalSession[], e: EngineRecord[], v: Parameters<typeof mergeSessionRows>[2] = viewer) => {
   const rows = mergeSessionRows(b, e, v);
   expect(rows).toHaveLength(1);
   return rows[0];
@@ -39,6 +39,24 @@ describe("mergeSessionRows", () => {
 
   it("keeps a row with a networkSessionId but no engine record, under that id", () => {
     expect(one([backend({ networkSessionId: NET })], [])).toMatchObject({ id: NET, source: "shared", state: "busy" });
+  });
+
+  it("prefers the backend's title to the engine's slug; a rename still wins", () => {
+    expect(one([backend({ networkSessionId: NET })], [engine({ title: "lightbulb-e7" })]).title).toBe("Backend title");
+    expect(one([backend({ networkSessionId: NET, displayTitle: "Renamed" })], [engine()]).title).toBe("Renamed");
+  });
+
+  it("an untitled engine-only row shows its folder; an untitled backend row stays New chat", () => {
+    expect(one([], [engine({ title: null, folder: "acme-api" })]).title).toBe("acme-api");
+    expect(one([], [engine({ title: null, folder: "" })]).title).toBe("New chat");
+    expect(one([backend({ networkSessionId: NET, title: null })], [engine({ title: null })]).title).toBe("New chat");
+  });
+
+  it("a roster member gets the roster name and the member mark; anyone else keeps the engine's person", () => {
+    const v = { userId: "me", nameOf: () => "Aden Kim", isMember: (id: string) => id === "aden" };
+    expect(one([], [engine({ person: "adenkim", user_id: "aden" })], v).person).toEqual({ name: "Aden Kim", userId: "aden", isViewer: false, member: true });
+    expect(one([], [engine({ person: "stranger", user_id: "x" })], v).person).toEqual({ name: "stranger", userId: "x", isViewer: false });
+    expect(one([], [engine({ person: "Friday" })], v).person).toEqual({ name: "Friday", isViewer: false });
   });
 
   it("an engine-only row is network, in the order after the backend's", () => {

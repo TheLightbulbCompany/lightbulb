@@ -58,6 +58,11 @@ describe("sessionRowGroups", () => {
     expect(ids(groups[0].entries)).toEqual(["idle", "busy"]);
   });
 
+  it("puts a workspace member's network row under that person, not On the network", () => {
+    const { groups } = run([row({ id: "net", source: "network", person: { ...sam, member: true } })], { groupBy: "person" });
+    expect(groups.map((g) => g.label)).toEqual([sam.name]);
+  });
+
   it("puts network rows in their own last group in every axis; an own network row stays under You", () => {
     const net = row({ id: "net", source: "network", person: sam, repo: "r" });
     const mine = row({ id: "mine", source: "network", repo: "r" });

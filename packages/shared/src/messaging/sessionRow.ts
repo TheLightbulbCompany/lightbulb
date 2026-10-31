@@ -44,7 +44,8 @@ export interface SessionRow {
   engine?: EngineRecord;
   /** `network`: no backend row, so no Open, Join, Resume or End. */
   source: "shared" | "network";
-  person: { name: string; userId?: string; isViewer: boolean };
+  /** `member`: on this workspace's roster, so the row sits under the person, not "On the network". */
+  person: { name: string; userId?: string; isViewer: boolean; member?: boolean };
   computer?: string;
   agent: string;
   title: string;
@@ -65,6 +66,8 @@ export interface SessionViewer {
   userId: string | null | undefined;
   /** A backend row's person by user id; a backend row carries no name. */
   nameOf?: (userId: string) => string;
+  /** Whether a user id is on the workspace's roster; only then does `nameOf` beat the engine's person. */
+  isMember?: (userId: string) => boolean;
 }
 
 const JOB_FINISHED = new Set(["done", "failed", "stopped"]);
@@ -97,20 +100,25 @@ function toRow(backend: LocalSession | undefined, engine: EngineRecord | undefin
   const engineSays = engine && engineState(engine);
   // `job` does not reach a page for a teammate's session; the backend row still knows it is done.
   const state = engineSays === "idle" && backend?.done ? "done" : engineSays ?? backendState(backend!);
+  const member = !!userId && viewer.isMember?.(userId) === true;
   return {
     id: engine?.session_id ?? backend?.networkSessionId ?? backend!.sessionId,
     backend,
     engine,
     source: backend ? "shared" : "network",
     person: {
-      name: engine?.person ?? viewer.nameOf?.(humanUserId!) ?? "Workspace member",
+      // The engine's person is a computer's login ("adenkim"); the roster has the real name.
+      name: (member ? viewer.nameOf?.(userId) : undefined) ?? engine?.person ?? viewer.nameOf?.(humanUserId!) ?? "Workspace member",
       ...(userId ? { userId } : {}),
+      ...(member ? { member } : {}),
       isViewer,
     },
     computer: engine?.computer || undefined,
     agent: engine?.agent || backend!.provider,
-    // An owner's rename lives on the backend row, so it wins over the harness's title.
-    title: sessionTitle({ displayTitle: backend?.displayTitle, title: engine?.title || backend?.title }),
+    // An owner's rename lives on the backend row, so it wins. Then the backend's title: the engine's can
+    // be a slug ("lightbulb-e7"). A record with no title and no backend row shows its folder, as the CLI
+    // does: a machine's old sessions are otherwise a wall of "New chat".
+    title: sessionTitle({ displayTitle: backend?.displayTitle, title: backend?.title || engine?.title || (backend ? null : engine?.folder) }),
     folder: engine?.folder || backend?.cwdName || undefined,
     repo: engine?.repo || undefined,
     branch: engine?.branch || undefined,

@@ -71,7 +71,7 @@ export function sessionRowGroups(
     const needsYou = sessionRowNeedsYou(row);
     if (!needsYou && (show === "mine" ? !row.person.isViewer : show === "live" && sessionRowGone(row))) { hidden++; continue; }
     if (needsYou) needs.push(entry);
-    else if (row.source === "network" && !row.person.isViewer) network.push(entry);
+    else if (row.source === "network" && !row.person.isViewer && !row.person.member) network.push(entry);
     else {
       const [id, label] = groupBy === "state" ? [`state:${row.state}`, STATES.find(([state]) => state === row.state)![1]]
         : groupBy === "repo" ? [`repo:${row.repo ?? row.folder ?? ""}`, row.repo ?? row.folder ?? "No repo"]

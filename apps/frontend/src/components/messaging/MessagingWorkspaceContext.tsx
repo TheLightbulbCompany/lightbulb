@@ -443,7 +443,7 @@ export function MessagingWorkspaceProvider({
   const resolveSessionOwner = useCallback((humanUserId: string) =>
     ({ ownerName: humanUserId === userId ? "You" : humanName(humanUserId), own: humanUserId === userId }),
     [userId, humanName]);
-  const sessionRows = useSessionRows(workspaceSessions.sessions, userId, humanName);
+  const sessionRows = useSessionRows(workspaceSessions.sessions, userId, humanName, isOnRoster);
   const sidebarSessions: SidebarSession[] = useMemo(() =>
     workspaceSections(sessionRows.flatMap((row) => row.backend ?? []), userId, humanName).flatMap((section) =>
       section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId,

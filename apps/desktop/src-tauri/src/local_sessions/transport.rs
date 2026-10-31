@@ -7676,7 +7676,7 @@ pub(super) mod tests {
         let me = process(std::process::id()).unwrap();
         EngineRow {
             key: format!("abc/claude:{SID}"), provider: "claude".into(), conversation: SID.into(), pid: me.pid, birth_micros: me.birth_micros,
-            cwd: "/x".into(), status: engine_view::desktop_status(status).into(), waiting_for: None, kind: None, job: None,
+            cwd: "/x".into(), status: engine_view::desktop_status(status).into(), waiting_for: None, kind: None, title: None, job: None,
         }
     }
 

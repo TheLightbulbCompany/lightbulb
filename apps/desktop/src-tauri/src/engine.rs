@@ -11,11 +11,17 @@ use std::time::{Duration, Instant};
 
 /// A setup that has not finished by then is stopped: the launch goes on without it.
 const SETUP_LIMIT: Duration = Duration::from_secs(60);
+/// Fix's: `setup` may install a model first (up to 300 s); stopping it then leaves the service down.
+const FIX_LIMIT: Duration = Duration::from_secs(360);
 
 /// At launch: installs the bundled engine when needed. Logs; never fails the launch.
 pub fn ensure() {
-    let Some((home, bundled)) = here() else {
-        return crate::log("[engine] no engine is bundled beside this build");
+    let (home, bundled) = match here() {
+        Ok(found) => found,
+        Err(e) => return crate::log(&format!("[engine] {e}")),
+    };
+    let Some(_flight) = single_flight() else {
+        return crate::log("[engine] a setup is already running");
     };
     match ensure_at(&home, &bundled, SETUP_LIMIT) {
         Ok(true) => crate::log("[engine] installed the bundled engine"),
@@ -24,9 +30,53 @@ pub fn ensure() {
     }
 }
 
+/// Whether Fix may run `setup` now: never over a service that answers (setup restarts it), never
+/// from an older app over a newer or unreadable install (setup overwrites the installed binary).
+fn fix_allowed(engine_answers: bool, installed: Option<&str>, bundled: &str) -> Result<(), String> {
+    if engine_answers {
+        return Err("the background service is running".into());
+    }
+    let ours = core(bundled).ok_or("the bundled engine does not run")?;
+    match installed {
+        None => Ok(()),
+        Some(text) => match core(text) {
+            Some(v) if v <= ours => Ok(()),
+            _ => Err("a newer or unreadable engine is installed".into()),
+        },
+    }
+}
+
+/// One setup at a time: the launch's and Fix's share it. Dropping the guard frees it.
+static SETTING_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct Flight;
+
+fn single_flight() -> Option<Flight> {
+    use std::sync::atomic::Ordering;
+    (!SETTING_UP.swap(true, Ordering::SeqCst)).then_some(Flight)
+}
+
+impl Drop for Flight {
+    fn drop(&mut self) {
+        SETTING_UP.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// (HOME, the engine bundled with the running app).
-fn here() -> Option<(PathBuf, PathBuf)> {
-    Some((std::env::var_os("HOME").map(PathBuf::from)?, bundled(&std::env::current_exe().ok()?)?))
+fn here() -> Result<(PathBuf, PathBuf), &'static str> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("no HOME")?;
+    let exe = std::env::current_exe().map_err(|_| "this app's path is unknown")?;
+    Ok((home, bundled(&exe).ok_or("no engine is bundled beside this build")?))
+}
+
+fn installed(home: &Path) -> Option<String> {
+    let state = home.join(".lightbulb/connect");
+    std::fs::read_to_string(state.join("setup-version")).ok().filter(|_| state.join("bin/lightbulb").is_file())
+}
+
+fn version_of(home: &Path, bundled: &Path) -> Result<String, String> {
+    let out = Command::new(bundled).arg("version").env("HOME", home).output().map_err(|e| format!("version: {e}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Packaged: Contents/MacOS/<exe> -> Contents/Resources/bin/lightbulb. Dev: bin/ beside the exe.
@@ -47,8 +97,16 @@ fn core(text: &str) -> Option<Vec<u64>> {
 /// The sidebar's Fix: re-applies the bundled engine, whatever is installed.
 #[tauri::command]
 pub async fn engine_fix() -> Result<(), String> {
-    let (home, bundled) = here().ok_or("no engine is bundled beside this build")?;
-    tokio::task::spawn_blocking(move || fix_at(&home, &bundled, SETUP_LIMIT)).await.map_err(|e| e.to_string())?
+    let (home, bundled) = here()?;
+    let answers = crate::engine_client::ask("sessions", None).await.is_ok();
+    let flight = single_flight().ok_or("a setup is already running")?;
+    tokio::task::spawn_blocking(move || {
+        let _flight = flight;
+        fix_allowed(answers, installed(&home).as_deref(), &version_of(&home, &bundled)?)?;
+        fix_at(&home, &bundled, FIX_LIMIT)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Runs the bundled engine's `setup` whatever is installed: the same spawn, wait and limit as at launch.
@@ -79,11 +137,8 @@ pub(crate) fn fix_at(home: &Path, bundled: &Path, limit: Duration) -> Result<(),
 /// dir only when a setup succeeds, so a failed one is tried again at the next launch. A newer
 /// install, or one whose version this build cannot read, is left alone.
 pub(crate) fn ensure_at(home: &Path, bundled: &Path, limit: Duration) -> Result<bool, String> {
-    let out = Command::new(bundled).arg("version").env("HOME", home).output().map_err(|e| format!("version: {e}"))?;
-    let ours = core(&String::from_utf8_lossy(&out.stdout)).ok_or("the bundled engine does not run")?;
-    let state = home.join(".lightbulb/connect");
-    let installed = std::fs::read_to_string(state.join("setup-version")).ok().filter(|_| state.join("bin/lightbulb").is_file());
-    if let Some(text) = installed {
+    let ours = core(&version_of(home, bundled)?).ok_or("the bundled engine does not run")?;
+    if let Some(text) = installed(home) {
         match core(&text) {
             Some(v) if v < ours => {}
             _ => return Ok(false),
@@ -175,6 +230,25 @@ mod tests {
         assert_eq!(setups(home.path()), "setup 0.6.0\n");
         fake(&bundled, "0.6.0", "exit 1");
         assert!(fix_at(home.path(), &bundled, LONG).is_err());
+    }
+
+    #[test]
+    fn fix_leaves_a_healthy_or_newer_install_alone() {
+        assert!(fix_allowed(true, Some("0.6.0"), "lightbulb 0.6.0").is_err(), "a service that answers");
+        assert!(fix_allowed(false, Some("0.7.0"), "lightbulb 0.6.0").is_err(), "newer");
+        assert!(fix_allowed(false, Some("garbage"), "lightbulb 0.6.0").is_err(), "unreadable");
+        assert!(fix_allowed(false, Some("0.6.0"), "garbage").is_err(), "bundled does not run");
+        for installed in [None, Some("0.5.9"), Some("0.6.0")] {
+            assert_eq!(fix_allowed(false, installed, "lightbulb 0.6.0"), Ok(()), "{installed:?}");
+        }
+    }
+
+    #[test]
+    fn only_one_setup_is_in_flight() {
+        let first = single_flight().expect("free");
+        assert!(single_flight().is_none());
+        drop(first);
+        assert!(single_flight().is_some());
     }
 
     #[test]

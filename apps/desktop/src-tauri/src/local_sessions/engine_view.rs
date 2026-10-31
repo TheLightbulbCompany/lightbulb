@@ -14,6 +14,7 @@ pub(in crate::local_sessions) struct EngineRow {
     pub status: String,
     pub waiting_for: Option<String>,
     pub kind: Option<String>,
+    pub title: Option<String>,
     /// The background job: (id, state).
     pub job: Option<(String, String)>,
 }
@@ -69,6 +70,7 @@ pub(in crate::local_sessions) fn parse_sessions(answer: &Value) -> Result<Engine
                 status: desktop_status(r["status"].as_str().unwrap_or("")).to_owned(),
                 waiting_for: text(r, "waiting_for"),
                 kind: text(r, "kind"),
+                title: text(r, "title").filter(|t| !t.trim().is_empty()),
                 job: Some((text(&r["job"], "id")?, text(&r["job"], "state")?)).filter(|_| r["job"].is_object()),
             })
         })
@@ -108,8 +110,22 @@ pub(in crate::local_sessions) fn listing_row(row: &EngineRow) -> Value {
 
 /// The conversation of this Mac's own live Claude row whose engine key is `session_id`; nothing
 /// else (a teammate's id, an ended row, another provider, garbage) names one to share.
-pub(in crate::local_sessions) fn own_claude_conversation(view: &EngineView, session_id: &str) -> Option<String> {
-    view.live.iter().find(|r| r.provider == "claude" && r.key == session_id).map(|r| r.conversation.clone())
+pub(in crate::local_sessions) fn own_claude_row<'a>(view: &'a EngineView, session_id: &str) -> Option<&'a EngineRow> {
+    view.live.iter().find(|r| r.provider == "claude" && r.key == session_id)
+}
+
+/// The words of the native confirm for sharing `row`: what the engine says it is, never what the
+/// page says. Title first line only, 80 characters.
+pub(in crate::local_sessions) fn share_prompt(row: &EngineRow) -> String {
+    let title = row.title.as_deref().and_then(|t| t.lines().next()).map(|t| t.chars().take(80).collect::<String>());
+    let place = std::path::Path::new(&row.cwd).file_name().map(|n| n.to_string_lossy().into_owned());
+    let what = match (title, place) {
+        (Some(t), Some(p)) => format!("\"{t}\" in {p}. "),
+        (Some(t), None) => format!("\"{t}\". "),
+        (None, Some(p)) => format!("In {p}. "),
+        (None, None) => String::new(),
+    };
+    format!("{what}Teammates will be able to watch it. You can stop sharing at any time.")
 }
 
 pub(in crate::local_sessions) async fn read() -> Result<EngineView, String> {
@@ -152,7 +168,7 @@ mod tests {
     fn listing_row_reads_back_as_the_desktop_word() {
         let row = |status: &str, kind: Option<&str>, job: Option<(&str, &str)>| EngineRow {
             key: "k".into(), provider: "claude".into(), conversation: "U".into(), pid: 7, birth_micros: 0, cwd: "/x".into(),
-            status: desktop_status(status).into(), waiting_for: Some("permission prompt".into()), kind: kind.map(Into::into),
+            status: desktop_status(status).into(), waiting_for: Some("permission prompt".into()), kind: kind.map(Into::into), title: None,
             job: job.map(|(a, b)| (a.into(), b.into())),
         };
         let r = listing_row(&row("live", None, None));
@@ -196,15 +212,28 @@ mod tests {
     }
 
     #[test]
+    fn the_confirm_names_the_session_from_the_engine_row() {
+        let row = |title: Option<&str>, cwd: &str| EngineRow { title: title.map(Into::into), cwd: cwd.into(), ..parse_sessions(&json!({"ok":true,"sessions":[real()],"ended":[]})).unwrap().live.remove(0) };
+        let tail = "Teammates will be able to watch it. You can stop sharing at any time.";
+        assert_eq!(share_prompt(&row(Some("Fix login"), "/Users/a/repo")), format!("\"Fix login\" in repo. {tail}"));
+        assert_eq!(share_prompt(&row(None, "/Users/a/repo")), format!("In repo. {tail}"));
+        assert_eq!(share_prompt(&row(Some("T"), "")), format!("\"T\". {tail}"));
+        assert_eq!(share_prompt(&row(None, "")), tail);
+        let long = format!("first line\n{}", "x".repeat(200));
+        assert_eq!(share_prompt(&row(Some(&long), "/r")), format!("\"first line\" in r. {tail}"));
+        assert!(share_prompt(&row(Some(&"y".repeat(200)), "/r")).starts_with(&format!("\"{}\" in r.", "y".repeat(80))));
+    }
+
+    #[test]
     fn only_a_live_claude_row_of_this_mac_names_a_conversation() {
         let mut codex = real();
         codex["key"] = "abc/codex:C".into();
         codex["provider"] = "codex".into();
         let ended = json!([{"key":"gone/claude:E","provider":"claude","conversation":"E"}]);
         let view = parse_sessions(&json!({"ok":true,"sessions":[real(), codex],"ended":ended})).unwrap();
-        assert_eq!(own_claude_conversation(&view, "abc/claude:U").as_deref(), Some("U"));
+        assert_eq!(own_claude_row(&view, "abc/claude:U").map(|r| r.conversation.as_str()), Some("U"));
         for id in ["abc/codex:C", "gone/claude:E", "U", "teammate/claude:T", "", "../../etc"] {
-            assert_eq!(own_claude_conversation(&view, id), None, "{id}");
+            assert!(own_claude_row(&view, id).is_none(), "{id}");
         }
     }
 }

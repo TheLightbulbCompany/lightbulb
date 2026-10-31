@@ -48,7 +48,7 @@ const COMMANDS: &[(&str, Option<&str>, &str)] = &[
     ("holder::panel::terminal_panel", None, "shows a held terminal"),
     // Exempt by name from the guard below because it is read-only: directory, sessions, team.get. Joining is native code.
     (ENGINE_DOOR, None, "read-only, filtered"),
-    ("local_sessions::enrollment::share_engine_session", Some("ask_share("), "publishes a session; the row is read from the engine, not the page"),
+    ("local_sessions::enrollment::share_engine_session", Some("mod_socket::share("), "publishes a session; the row is read from the engine, not the page"),
     ("engine::engine_fix", None, "re-applies the bundled engine; takes nothing"),
 ];
 

@@ -93,7 +93,7 @@ function toRow(backend: LocalSession | undefined, engine: EngineRecord | undefin
   const humanUserId = backend?.humanUserId;
   const userId = humanUserId ?? engine?.user_id;
   // Never undefined === undefined: a signed-out viewer and a record with no account are not one person.
-  const isViewer = engine?.own === true || viewer.userId != null && (backend ? backend.humanUserId === viewer.userId : engine?.user_id === viewer.userId);
+  const isViewer = engine?.own === true || (viewer.userId != null && (backend ? backend.humanUserId === viewer.userId : engine?.user_id === viewer.userId));
   const engineSays = engine && engineState(engine);
   // `job` does not reach a page for a teammate's session; the backend row still knows it is done.
   const state = engineSays === "idle" && backend?.done ? "done" : engineSays ?? backendState(backend!);

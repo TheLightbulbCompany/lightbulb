@@ -64,4 +64,29 @@ describe("useEngineDirectory", () => {
     expect(result.current).toEqual({ records: [], down: true });
     unmount();
   });
+
+  it("skips a tick while a call is pending and resumes after it settles", async () => {
+    let release!: (v: unknown) => void;
+    let n = 0;
+    install(() => (++n === 1 ? new Promise((r) => { release = r; }) : Promise.resolve({ ok: true, sessions: [rec()], ended: [] })));
+    const { result, unmount } = renderHook(() => useEngineDirectory());
+    await tick(0);
+    await tick(10000);
+    expect(calls()).toBe(1);
+    release({ ok: true, sessions: [rec()], ended: [] });
+    await tick(5000);
+    expect(calls()).toBe(2);
+    expect(result.current.records).toHaveLength(1);
+    unmount();
+  });
+
+  it("an equal poll keeps the same records array", async () => {
+    install(() => Promise.resolve({ ok: true, sessions: [rec()], ended: [] }));
+    const { result, unmount } = renderHook(() => useEngineDirectory());
+    await tick(0);
+    const first = result.current.records;
+    await tick(5000);
+    expect(result.current.records).toBe(first);
+    unmount();
+  });
 });

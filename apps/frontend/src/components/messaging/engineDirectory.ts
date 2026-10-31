@@ -13,6 +13,7 @@ let state = ABSENT;
 const listeners = new Set<() => void>();
 let timer: ReturnType<typeof setInterval> | undefined;
 let run = 0;
+let pending = false;
 
 const set = (next: EngineDirectory) => {
   if (next.down === state.down && next.records.length === state.records.length && JSON.stringify(next.records) === JSON.stringify(state.records)) return;
@@ -21,6 +22,8 @@ const set = (next: EngineDirectory) => {
 };
 
 async function poll(mine: number) {
+  if (pending) return;
+  pending = true;
   const invoke = bridge();
   try {
     const answer = (await invoke!("engine_ask", { op: "directory" })) as { ok?: boolean; sessions?: EngineRecord[]; ended?: EngineRecord[] } | null;
@@ -31,6 +34,8 @@ async function poll(mine: number) {
     set(records.some((r) => typeof r.wakes !== "boolean") ? ABSENT : { records, down: false });
   } catch {
     if (mine === run) set({ records: [], down: true });
+  } finally {
+    if (mine === run) pending = false;
   }
 }
 
@@ -48,6 +53,7 @@ function subscribe(listener: () => void) {
     listeners.delete(listener);
     if (listeners.size) return;
     run++;
+    pending = false;
     clearInterval(timer);
     timer = undefined;
     state = ABSENT;

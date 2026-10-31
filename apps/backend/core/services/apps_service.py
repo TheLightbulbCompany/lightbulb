@@ -35,6 +35,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import (
     apps_db,
     apps_dns,
+    apps_room,
     apps_source,
     clerk_admin,
     email_service,
@@ -1118,6 +1119,9 @@ async def put_source(
     recent = sorted(sources, key=lambda k: sources[k]["at"])[-10:]
     sources = {k: v for k, v in sources.items() if k in keep or k in recent}
     await apps_repo.patch(app["app_id"], {"sources": sources})
+    from core.services import apps_run  # it imports this module
+
+    await apps_run.record_upload(app, actor.actor_id, actor.actor_kind, files=files)
     return {"app_id": app["app_id"], "source_id": source_id}
 
 
@@ -1685,19 +1689,11 @@ async def ask_agent_to_fix(owner_id: str, app_id: str, *, auth: AuthContext, err
     room_id = app["room_id"]
     try:
         await messaging.require_room_member(owner_id, auth.user_id, room_id)
-        # An observe member never runs, even when mentioned. A builder that left the room (or a person's
-        # computer that built it): any agent there can read the error. Never an unmentioned line nobody hears.
-        agents = sorted(
-            (
-                m
-                for m in await messaging_repo.list_members(room_id)
-                if m.get("kind") == "agent" and m.get("listenMode") != "observe"
-            ),
-            key=lambda m: m["id"],
-        )
-        if not agents:
+        # A builder that left the room (or a person's computer that built it): any agent there can read
+        # the error. Never an unmentioned line nobody hears.
+        builder = await apps_room._builder(app, room_id)
+        if not builder:
             raise AppsRefused("no_agent", "There is no agent in the app's room to ask.", "add an agent to the room")
-        builder = next((m for m in agents if m["id"] == app.get("actor_id")), agents[0])
         handle = builder.get("mentionHandle") or builder.get("displayName") or "agent"
         # Scrubbed before the cut, so a secret can't survive by being split. The fence is for reading only:
         # `address()` scans the whole text, fences included, so an @name in the error can still be a candidate.

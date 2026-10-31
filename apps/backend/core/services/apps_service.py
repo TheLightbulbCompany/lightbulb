@@ -35,6 +35,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import (
     apps_db,
     apps_dns,
+    apps_room,
     apps_source,
     clerk_admin,
     email_service,
@@ -100,6 +101,8 @@ class AppError(TypedDict):
     code: str
     message: str
     next: str
+    deployment_id: NotRequired[str]  # a failed build: the deployment errors() reads the log of
+    at: NotRequired[str]  # when it failed, to tell it from a newer preview
 
 
 class UpResult(TypedDict):
@@ -490,6 +493,18 @@ async def _check_preview(app: dict, creds: dict) -> None:
         return
     st = await vercel.deployment_state(creds, pending["deployment_id"])
     if st["readyState"] == "READY":
+        if st.get("target") == "production":
+            # Vercel's docs: a project's first deployment is production whatever was asked, on the live env. Never a
+            # preview. The next deployment is a real one; two tries, in case Vercel keeps answering production.
+            tries = int(app.get("preview_rebuilds") or 0)
+            refused = {"code": "preview_is_production", "message": "Vercel built the preview as production."}
+            fields = (
+                {"preview_built": None, "preview_rebuilds": tries + 1}
+                if tries < _PREVIEW_REBUILDS
+                else {"error": {**refused, "next": "run up again"}}
+            )
+            await _clear_pending(app, "preview_pending", fields)
+            return
         await _patch(
             app,
             {
@@ -505,7 +520,7 @@ async def _check_preview(app: dict, creds: dict) -> None:
             },
         )
     elif st["readyState"] in ("ERROR", "CANCELED"):
-        await _clear_pending(app, "preview_pending", {"error": _build_failed(st)})
+        await _clear_pending(app, "preview_pending", {"error": await _failure(app, creds, pending, st)})
 
 
 async def _check_publish(app: dict, creds: dict) -> None:
@@ -518,6 +533,7 @@ async def _check_publish(app: dict, creds: dict) -> None:
             # After an Instant Rollback Vercel stops auto-assigning production domains: promote first,
             # and record the version only once it is really the one serving.
             await vercel.promote(creds, pending["deployment_id"])
+        await _production_moved(app, creds)  # before anything reports this version live
         version = {
             "commit": pending["commit"],
             "deployment_id": pending["deployment_id"],
@@ -552,7 +568,7 @@ async def _check_publish(app: dict, creds: dict) -> None:
         app.update(plain(fresh))
         _notify(app)
     elif st["readyState"] in ("ERROR", "CANCELED"):
-        err = {**_build_failed(st), "next": "fix the error and publish again"}
+        err = {**await _failure(app, creds, pending, st), "next": "fix the error and publish again"}
         await _clear_pending(app, "publish_pending", {"publish_error": err})
 
 
@@ -602,6 +618,27 @@ def _build_failed(st: dict) -> dict:
     }
 
 
+_LOG_TAIL = 2000
+_LOG_WAIT_S = 5  # this runs on status reads, inside the 60 s lease: a hung Vercel must not hold them
+
+
+async def _failure(app: dict, creds: dict, pending: dict, st: dict) -> dict:
+    """``_build_failed`` plus the scrubbed tail of the build log. A log that cannot be fetched or scrubbed
+    leaves the original error as it was."""
+    err = {**_build_failed(st), "deployment_id": pending["deployment_id"], "at": utc_now_iso()}
+    try:
+        async with asyncio.timeout(_LOG_WAIT_S):
+            events = await vercel.deployment_events(creds, pending["deployment_id"], limit=50)
+            scrub = await _scrubber(app["owner_id"], app["app_id"])
+        tail = scrub("\n".join(e["message"] for e in events))[-_LOG_TAIL:].strip()
+    except Exception as e:
+        if isinstance(e, vercel.VercelError) and _refused(e):
+            raise  # a dead token: `_with_token` renews it and this step runs again
+        logger.warning("apps: %s build log unavailable", app["app_id"], exc_info=True)
+        return err
+    return {**err, "message": f"{err['message']}\n{tail}"} if tail else err
+
+
 async def _add_domain(app: dict, creds: dict, *, preview: bool) -> dict:
     host = apps_dns.preview_hostname(app["name"]) if preview else apps_dns.hostname(app["name"])
     r = await vercel.add_domain(creds, host)
@@ -615,6 +652,86 @@ async def _verify(app: dict, creds: dict, field: str) -> None:
         await _patch(app, {field: {**domain, "verified": True}})
 
 
+def _passed(at: str) -> bool:
+    return datetime.fromisoformat(at) <= datetime.now(UTC)
+
+
+def _host_watch(deployment_id: str, settle_until: str | None = None) -> dict:
+    return {
+        "deployment_id": deployment_id,
+        "attempts": 0,
+        "next_at": None,
+        "settle_until": settle_until or utc_now_iso(),
+    }
+
+
+def _host_warning(app: dict) -> AppError | None:
+    """Only once there is a live app: before that the preview host has nothing else it could be serving."""
+    return app.get("preview_host_error") if app.get("live_version") else None
+
+
+async def _production_moved(app: dict, creds: dict) -> None:
+    """Vercel gives the preview host to every production deployment, as it is a project domain. Point it back now, and
+    keep checking for a while: Vercel can assign production's domains after it reports the deployment READY."""
+    ready, domain = app.get("preview"), app.get("preview_domain")
+    if not ready or not (domain or {}).get("verified"):
+        return  # no alias yet; _preview_alias makes the first one
+    until = (datetime.now(UTC) + _REPOINT_SETTLE).isoformat()
+    await _patch(app, {"preview_repoint": _host_watch(ready["deployment_id"], until), "preview_host_error": None})
+    await _repoint(app, creds)
+
+
+async def _repoint(app: dict, creds: dict) -> None:
+    """One try at putting the preview host on the watched deployment. Failure is logged, shown, and retried a bounded
+    number of times with backoff; it never stops a publish, a read or the live app. A refused token raises for renewal."""
+    watch = app.get("preview_repoint")
+    if not watch or (watch["next_at"] and not _passed(watch["next_at"])):
+        return
+    host, target = app["preview_domain"]["name"], watch["deployment_id"]
+    try:
+        if await vercel.alias_deployment(creds, host) != target:
+            await vercel.assign_alias(creds, target, host)
+    except vercel.VercelError as e:
+        if _refused(e):
+            raise
+        attempts = int(watch["attempts"]) + 1
+        logger.warning("apps: %s preview host not re-pointed (try %s): %s", app["app_id"], attempts, e.code)
+        retry_at = datetime.now(UTC) + timedelta(minutes=2 ** (attempts - 1))
+        await _patch(
+            app,
+            {
+                "preview_alias_for": None,
+                "preview_repoint": None
+                if attempts >= _REPOINT_TRIES
+                else {**watch, "attempts": attempts, "next_at": retry_at.isoformat()},
+                "preview_host_error": {
+                    "deployment_id": target,
+                    "code": "preview_host_off",
+                    "message": "The preview address may be showing the live app and its data.",
+                    "next": "run up again; the live app is fine",
+                },
+            },
+        )
+        return
+    fields = {"preview_alias_for": target, "preview_url": f"https://{host}", "preview_host_error": None}
+    if _passed(watch["settle_until"]):
+        fields["preview_repoint"] = None
+    elif watch["attempts"]:
+        fields["preview_repoint"] = {**watch, "attempts": 0, "next_at": None}
+    if any(app.get(k) != v for k, v in fields.items()):
+        await _patch(app, fields)
+
+
+async def _preview_host(app: dict, creds: dict) -> None:
+    """Runs before anything that can stop a step, and never stops one itself, except a refused token."""
+    try:
+        await _preview_alias(app, creds)
+    except Exception as e:  # noqa: BLE001 - the preview's address must not block a build, a publish or a read
+        if isinstance(e, vercel.VercelError) and _refused(e):
+            raise
+        logger.warning("apps: %s preview host step failed: %s", app["app_id"], getattr(e, "code", type(e).__name__))
+
+
 async def _preview_alias(app: dict, creds: dict) -> None:
     """R27: the preview answers at {name}-preview.{APPS_DOMAIN} once Vercel has verified it."""
     ready = app.get("preview")
@@ -624,16 +741,21 @@ async def _preview_alias(app: dict, creds: dict) -> None:
         await _patch(app, {"preview_domain": await _add_domain(app, creds, preview=True)})
     else:
         await _verify(app, creds, "preview_domain")
-    if app["preview_domain"]["verified"] and app.get("preview_alias_for") != ready["deployment_id"]:
-        host = app["preview_domain"]["name"]
-        try:
-            await vercel.assign_alias(creds, ready["deployment_id"], host)
-        except vercel.VercelError as e:  # keep the *.vercel.app url; the next read tries again
-            if _refused(e):
-                raise
-            logger.warning("apps: %s preview alias not assigned: %s", app["app_id"], e.code)
-            return
-        await _patch(app, {"preview_alias_for": ready["deployment_id"], "preview_url": f"https://{host}"})
+    target, watch = ready["deployment_id"], app.get("preview_repoint")
+    if app["preview_domain"]["verified"]:
+        if watch and watch["deployment_id"] != target:  # a newer preview: fresh tries, same settling
+            await _patch(app, {"preview_repoint": _host_watch(target, watch["settle_until"])})
+        elif not watch and (
+            # New preview, unless every try for this one failed: that waits for `up` or the next release.
+            (
+                app.get("preview_alias_for") != target
+                and (app.get("preview_host_error") or {}).get("deployment_id") != target
+            )
+            # Published before releases re-pointed the host: look once, as it is probably on the live deployment.
+            or ("preview_repoint" not in app and app.get("live_version"))
+        ):
+            await _patch(app, {"preview_repoint": _host_watch(target)})
+        await _repoint(app, creds)
     if app.get("preview_alias_for") and not app.get("protection_scoped"):
         # R51: live and preview both answer on custom domains now; stale deployment urls close.
         await vercel.protect_except_custom_domains(creds)
@@ -663,6 +785,9 @@ async def _progress(app: dict) -> tuple[dict, AppError | None]:
             app["progress_lease_until"] = None
 
 
+_PREVIEW_REBUILDS = 2
+_REPOINT_TRIES = 5  # 1, 2, 4 and 8 minutes apart, then it waits for `up` or the next release
+_REPOINT_SETTLE = timedelta(minutes=3)  # how long after a release the host keeps being checked
 _REFUSAL_CODE = "vercel_credential_refused"
 _RENEWAL_HOLDS = frozenset({"pending", "errored"})  # no rotation until the token works or a person removes the field
 _UNSETTLED = _RENEWAL_HOLDS | {"needs_reveal"}
@@ -880,6 +1005,7 @@ async def _run_steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict 
     await _push_env(app, creds, dev_db, live_db)
     await _check_preview(app, creds)
     await _check_publish(app, creds)
+    await _preview_host(app, creds)
     want = app.get("preview_want")
     wanted = _source(app, want) if want else {}
     if dev_db and want and app.get("preview_migrations") != wanted.get("migrations_key", wanted.get("migrations")):
@@ -910,7 +1036,6 @@ async def _run_steps(app: dict, creds: dict, dev_db: dict | None, live_db: dict 
             },
         )
     await _verify(app, creds, "domain")
-    await _preview_alias(app, creds)
     return None
 
 
@@ -937,7 +1062,7 @@ def _state(app: dict, rows: dict) -> tuple[str, AppError | None]:
     if app.get("preview_pending") or app.get("publish_pending") or not app.get("preview"):
         return "building", _renewal_hold(app)
     # A failed build leaves the live version serving.
-    return "ready", app.get("error") or app.get("publish_error") or _renewal_hold(app)
+    return "ready", app.get("error") or app.get("publish_error") or _host_warning(app) or _renewal_hold(app)
 
 
 async def _record_state(app: dict, state: str) -> str:
@@ -1017,6 +1142,9 @@ async def put_source(
     recent = sorted(sources, key=lambda k: sources[k]["at"])[-10:]
     sources = {k: v for k, v in sources.items() if k in keep or k in recent}
     await apps_repo.patch(app["app_id"], {"sources": sources})
+    from core.services import apps_run  # it imports this module
+
+    await apps_run.record_upload(app, actor.actor_id, actor.actor_kind, files=files)
     return {"app_id": app["app_id"], "source_id": source_id}
 
 
@@ -1056,6 +1184,8 @@ async def up(
                 logger.info("apps: %s requested_by is not a member of its room; ignored", app["app_id"])
     if app.get("error"):  # "run up again" after a failure retries the build
         fields.update(error=None, preview_built=None)
+    if app.get("preview_host_error"):  # and the preview host, when every try has failed
+        fields["preview_host_error"] = None
     await _patch(app, fields)
     await _ensure_workflows(app, issue_id)
     rows, transient = await _progress(app)
@@ -1213,6 +1343,12 @@ async def _put_back(app: dict, rows: dict, creds: dict, version: int | None) -> 
                 "publish_error": None,
             },
         )
+        try:
+            await _production_moved(app, creds)
+        except vercel.VercelError as e:
+            # Not raised for renewal: a rerun of this function would go back one version further. The watch is stored,
+            # so the sweeper's next step retries through renewal.
+            logger.warning("apps: %s preview host not re-pointed after rollback: %s", app["app_id"], e.code)
         said = f"Version {n} is live again."
     res = await _result(app, rows, None)
     res["error"] = {
@@ -1387,7 +1523,7 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
             can_publish=can_manage(a, auth),
             # R71: the last persisted failure, message only.
             error={"message": err.get("message", "")}
-            if (err := a.get("publish_error") or a.get("error") or _renewal_hold(a))
+            if (err := a.get("publish_error") or a.get("error") or _host_warning(a) or _renewal_hold(a))
             else None,
             # A live app's state stays "live" through a failed publish (R63), so Canvas needs this to see it.
             publish_failed=bool(a.get("publish_error")),
@@ -1416,14 +1552,19 @@ async def _scrubber(owner_id: str, app_id: str) -> Callable[[str], str]:
 
 
 async def errors(owner_id: str, app_id: str) -> dict:
-    """R25: the last 50 browser (client) and server lines of the live deployment, else the latest
-    preview; build events when there are no runtime logs. Every app secret and any database URL is
+    """R25: the last 50 browser (client) and server lines of the newest failed build, else the live deployment,
+    else the latest preview; build events when there are no runtime logs. Every app secret and any database URL is
     replaced with ``[redacted]``."""
     app = await _owned(owner_id, app_id)
     rows = await _rows(app)
     creds = await _secret(app, rows, "vercel", "prod", "token")
     live = next((v for v in app.get("versions") or [] if v.get("n") == app.get("live_version")), None)
-    dep = (live or app.get("preview") or {}).get("deployment_id")
+    # A failed build is the newest attempt: `up` clears `error`, a good publish clears `publish_error`.
+    # The `ready_at` of a newer healthy preview retires an older failed publish.
+    pub = app.get("publish_error") or {}
+    stale = (app.get("preview") or {}).get("ready_at", "") > pub.get("at", "~")
+    failed = (app.get("error") or {}).get("deployment_id") or (None if stale else pub.get("deployment_id"))
+    dep = failed or (live or app.get("preview") or {}).get("deployment_id")
     if not creds or not dep:
         return {"client": [], "server": []}
 
@@ -1576,19 +1717,11 @@ async def ask_agent_to_fix(owner_id: str, app_id: str, *, auth: AuthContext, err
     room_id = app["room_id"]
     try:
         await messaging.require_room_member(owner_id, auth.user_id, room_id)
-        # An observe member never runs, even when mentioned. A builder that left the room (or a person's
-        # computer that built it): any agent there can read the error. Never an unmentioned line nobody hears.
-        agents = sorted(
-            (
-                m
-                for m in await messaging_repo.list_members(room_id)
-                if m.get("kind") == "agent" and m.get("listenMode") != "observe"
-            ),
-            key=lambda m: m["id"],
-        )
-        if not agents:
+        # A builder that left the room (or a person's computer that built it): any agent there can read
+        # the error. Never an unmentioned line nobody hears.
+        builder = await apps_room._builder(app, room_id)
+        if not builder:
             raise AppsRefused("no_agent", "There is no agent in the app's room to ask.", "add an agent to the room")
-        builder = next((m for m in agents if m["id"] == app.get("actor_id")), agents[0])
         handle = builder.get("mentionHandle") or builder.get("displayName") or "agent"
         # Scrubbed before the cut, so a secret can't survive by being split. The fence is for reading only:
         # `address()` scans the whole text, fences included, so an @name in the error can still be a candidate.

@@ -395,6 +395,8 @@ NETWORK_SCHEMA = {
             "request_id": {"type": "string", "description": "Omit on send (one is made for you); "
                                                             "required for receipt."},
             "query": {"type": "string", "maxLength": 200},
+            "include_ended": {"type": "boolean", "description": "directory: also list sessions "
+                                                                "that ended in the past week."},
         },
         "required": ["action"],
     },
@@ -424,7 +426,11 @@ def _network(args: dict, *, session_id: str = "", **_kw) -> str:
     action = args.get("action")
     try:
         if action == "directory":
-            return json.dumps(network.ask("directory", {"query": str(args.get("query") or "")}))
+            answer = network.ask("directory", {"query": str(args.get("query") or "")})
+            # Ended sessions stay listed a week; a turn gets them only when it asks.
+            if not args.get("include_ended") and isinstance(answer.get("sessions"), list):
+                answer["sessions"] = [s for s in answer["sessions"] if s.get("status") != "ended"]
+            return json.dumps(answer)
         if action == "receipt":
             request_id = str(args.get("request_id") or "")
             if not _OPAQUE_RE.match(request_id):

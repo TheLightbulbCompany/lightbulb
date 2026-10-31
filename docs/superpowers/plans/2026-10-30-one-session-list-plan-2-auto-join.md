@@ -32,8 +32,8 @@ Worktrees: engine `~/Desktop/lightbulb-network-wt/instance-invite` (branch `feat
 Bridge RPC (Task 2): `network.invite {}` → `{ticket, team_id, expires_at}`; `network.team {}` → `{team_id, member_count}`.
 
 Backend (Task 3), all under `/api/v1/network`, all `no_store`. Auth `desktop_or_computer`: a paired-device EdDSA token (`Authorization: Bearer`, via `machine_auth.verify_upgrade(token, "openclaw-macos")`, as `routers/messaging.py:101-109`) or, when `X-Lightbulb-Proof` is present, `network_login.computer_identity`. Yields `(user_id, owner_id)`; a Clerk JWT gets 403.
-- `GET /team` → `{workspace: str|null, teamId: str|null, userId: str, name: str|null}`. `workspace: null` is a person with no workspace (owner == user). No RPC, no wake. 403 if the user is not in the workspace's people (`website_logins._humans_to_ask`).
-- `POST /join-line` → `{ticket, teamId, workspace, name, expiresAt}`. 409 `NO_WORKSPACE` for a free person; 409 "no workspace agents yet" when `sessions_exist` is false; 503 + `Retry-After: 10` on `UNAVAILABLE`/`RUNTIME_UNAVAILABLE`.
+- `GET /team` → `{workspace: str|null, teamId: str|null, userId: str, name: str|null}`. `workspace: null` is a person with no workspace (owner == user), and only that. No RPC, no wake. 403 if the user is not in the workspace's people (`website_logins._humans_to_ask`).
+- `POST /join-line` → `{ticket, teamId, workspace, name, expiresAt}`. 409 `NO_WORKSPACE` for a free person; 409 "no workspace agents yet" when `sessions_exist` is false; 503 + `Retry-After: 15` on `UNAVAILABLE`/`RUNTIME_UNAVAILABLE` and while a cold member wakes (the route rings the doorbell and answers at once: API Gateway's limit is 30 s).
 - `POST /device/approve-desktop {userCode}` → `{status}`. Paired-device token only (no proof path). Purpose must be `login`, else 403. Calls `network_login.approve` with `AuthContext(user_id, org_id or None)`.
 `name` is the person's first name, as `network_login._name`.
 
@@ -118,7 +118,7 @@ State file `<app data>/network_connect.json` (0600): `{optOut: {owner: true}, jo
 Run (`kick`, single-flight, at most once per 10 min, 60 s after a failure, immediately when the pair's owner changed):
 1. `pair_state::load` none → hidden. `team.get` Err → off. `GET /team`: `workspace` null → hidden.
 2. Done/Join: if `login.json`'s proof is missing, expired, or `sub != userId`: spawn `<state>/bin/lightbulb login --app`, read `{"user_code"}` from stdout, `POST /device/approve-desktop`, wait ≤ 60 s. Failure is logged and does not stop the join.
-3. Join: state connecting; `POST /join-line` with a 100 s timeout, retry up to 3 on 503/5xx/timeout honouring `Retry-After`; `ask_for("team.join", {ticket, name}, 200 s)`; on `name_taken` the same ticket with `<Name> (<computer>)`; on `admitted` save `joined`, `notice`, post a native notification `Your computer joined <Workspace>'s network.` On anything else: failed, ticket dropped, next tick tries afresh.
+3. Join: state connecting; `POST /join-line` with a 40 s timeout, retried on 503/5xx/timeout, waiting `Retry-After` when given else 15 s, for up to 3 minutes (API Gateway cuts a request at 30 s, so a cold member answers 503 while it wakes); `ask_for("team.join", {ticket, name}, 200 s)`; on `name_taken` the same ticket with `<Name> (<computer>)`; on `admitted` save `joined`, `notice`, post a native notification `Your computer joined <Workspace>'s network.` On anything else: failed, ticket dropped, next tick tries afresh.
 4. Ask: native alert with the Ask text, once per run. Join → `team.leave`, then step 3. Not now → OptOut.
 
 Commands: `network_connect`: native alert `Connect this computer to <Workspace>'s network?`; on yes clear the opt-out and kick now. `network_leave`: native alert `Leave <Team>?`; on yes `team.leave`, OptOut, clear `notice`. `network_notice_seen`: clear `notice`. `network_status`: last known Status.

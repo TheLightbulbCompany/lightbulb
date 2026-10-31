@@ -97,6 +97,16 @@ def iter_files(data: bytes) -> Iterator[tuple[str, bytes]]:
             yield path, tf.extractfile(m).read()
 
 
+def content_hash(files: dict[str, bytes]) -> str:
+    """What a tree holds, from an already unpacked (so size-limited) archive. ``source_id`` hashes the
+    .tar.gz, and bsdtar writes the current time into the gzip header, so an unchanged tree gets a new id."""
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        name, body = path.encode(), files[path]
+        digest.update(b"%d:%d:" % (len(name), len(body)) + name + body)
+    return digest.hexdigest()[:16]
+
+
 def _s3():
     return boto3.client("s3")
 

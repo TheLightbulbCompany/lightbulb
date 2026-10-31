@@ -7,13 +7,14 @@ only write the sparse ``build`` map and set ``due_at``; only the sweeper (``adva
 is a system line in the room; later ones are Paperclip issues, because a room wake replays the same
 Hermes session and a refusal caused by its history would repeat.
 
-``build``: source_at (epoch s of the last real source change), builder (named at upload), due_at,
-armed_at, stopped, resume (armed by a spent allowance), attempts.wake (reset by a new source_id),
+``build``: source_at (epoch s of the last real source change), content (hash of that tree), builder (named at upload), due_at,
+armed_at, stopped, resume (armed by a spent allowance), attempts.wake (reset by a changed tree),
 day{date, wakes}, wake{n (never reset), via, at, sent, message_id|issue_id}.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import time
@@ -23,7 +24,7 @@ from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import plain
 from core.repositories import apps_repo, billing_repo, messaging_repo
-from core.services import apps_room, apps_service
+from core.services import apps_room, apps_service, apps_source
 from core.services.chat_gate import budget_block_reason
 from core.services.paperclip_admin_client import shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 WAKE_DELAYS_S = (60, 300, 1800)  # before wake 1, 2, 3
 _DELAY_WORDS = ("a minute", "5 minutes", "30 minutes")
 MAX_WAKES = len(WAKE_DELAYS_S)
-DAILY_WAKE_CEILING = 6  # per app and UTC day, whatever the plan: a changing source_id can reset the count
+DAILY_WAKE_CEILING = 6  # per app and UTC day, whatever the plan: a changing tree can reset the count
 BUILDING_S = 6 * 3600  # no real source change for this long: the app is not being built
 HOLD_S = 2 * 60  # a run is open or the server is deploying: look again
 LEASE_S = 90  # a sweeper that crashed mid-wake: the next one resends under the same key
@@ -56,7 +57,8 @@ def _after_midnight(now: int) -> int:
 
 
 def _phase(app: dict, rows: dict) -> str:
-    """Whose move it is: finished (or closed), server, owner, ready (a person looks at the preview) or open (the agent's)."""
+    """Whose move it is: finished (or closed), server, owner (approvals, or a first preview a person
+    looks at), ready (new source on a live app) or open (the agent's)."""
     if app.get("state") == "destroyed" or app.get("destroy_requested_by") or app.get("rolled_back"):
         return "finished"
     if app.get("preview_pending") or app.get("publish_pending"):
@@ -70,7 +72,7 @@ def _phase(app: dict, rows: dict) -> str:
         return "owner"
     if state == "ready":
         if not app.get("live_version"):
-            return "ready"
+            return "owner"
         # Finished unless a source came after the last release (a rebuilt put-back serves an older source).
         sources = app.get("sources") or {}
         newest = max(sources, key=lambda s: sources[s].get("at") or "", default=None)
@@ -116,13 +118,15 @@ async def _write(app: dict, **fields) -> dict | None:
     )
 
 
-async def record_upload(app: dict, actor_id: str, actor_kind: str, *, is_new: bool) -> None:
+async def record_upload(app: dict, actor_id: str, actor_kind: str, *, files: dict[str, bytes]) -> None:
     """A source upload: name the builder (a real agent header, else the only agent with an open run in
-    the room right now), and a new ``source_id`` restarts the count. Identical bytes restart nothing.
+    the room right now), and a changed tree restarts the count. The same tree restarts nothing, whatever
+    its archive's bytes.
     Compare-and-set, so it cannot overwrite a sweeper's claim. Never raises: the upload has landed."""
     if not settings.APPS_BUILD_WAKE or app.get("actor_kind") != "agent":
         return
     try:
+        content = await asyncio.to_thread(apps_source.content_hash, files)
         named = None
         if actor_kind == "agent":
             named = actor_id
@@ -134,11 +138,14 @@ async def record_upload(app: dict, actor_id: str, actor_kind: str, *, is_new: bo
             fresh = plain(await apps_repo.get(app["app_id"], consistent_read=True) or {})
             build = fresh.get("build") or {}
             builder = named or build.get("builder")
+            is_new = content != build.get("content")
             if not is_new and builder == build.get("builder"):
                 return
             new = {**build, "builder": builder}
             if is_new:
-                new.update(source_at=_now(), due_at=None, attempts={"wake": 0}, stopped=False, resume=False)
+                new.update(
+                    content=content, source_at=_now(), due_at=None, attempts={"wake": 0}, stopped=False, resume=False
+                )
                 if build.get("wake"):  # a claim in flight is over: the next wake takes the next key
                     new["wake"] = {**build["wake"], "sent": True}
             won = await apps_repo.patch(
@@ -179,11 +186,13 @@ async def on_turn_failed(owner_id: str, row: dict, *, budget_reason: str | None,
             return None
         if budget_reason in _DAILY:
             due = _after_midnight(now)
-            await _write(app, due_at=due, armed_at=due, resume=True)
+            if await _write(app, due_at=due, armed_at=due, resume=True) is None:
+                return None
             return f"{apps_service._display(app)} continues tomorrow; today's allowance is used."
         if budget_reason:
             return None
-        await _write(app, due_at=now + WAKE_DELAYS_S[attempts], armed_at=now)
+        if await _write(app, due_at=now + WAKE_DELAYS_S[attempts], armed_at=now) is None:
+            return None  # today's note: this schedule did not land
         return f"{agent_name} lost its place on {apps_service._display(app)}. Trying again in {_DELAY_WORDS[attempts]}."
     except Exception:  # noqa: BLE001 — the failure note must still post
         logger.warning("apps build: failed turn not scheduled owner=%s", owner_id, exc_info=True)
@@ -348,6 +357,9 @@ async def advance(app: dict) -> None:
         return
     reason = await budget_block_reason(app["owner_id"], await billing_repo.get_by_owner_id(app["owner_id"]))
     if reason in _DAILY:
+        if now - int(build.get("source_at") or 0) > BUILDING_S:  # not one line a day while the owner stays capped
+            await _write(app, due_at=None)
+            return
         await _post(
             app,
             f"apps-build-budget:{app['app_id']}:{_date(now)}",

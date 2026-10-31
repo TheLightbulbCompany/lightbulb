@@ -1,6 +1,7 @@
 """A builder agent's dead turn resumes with no person acting (core/services/apps_run.py)."""
 
 import asyncio
+import gzip
 import io
 import os
 import tarfile
@@ -143,18 +144,29 @@ async def _at_due(world, app: dict) -> None:
     await apps_sweeper.sweep_once()
 
 
-async def _upload(monkeypatch, source_id: str, *, agent: str = "agent") -> None:
+def _tgz(body: str, *, stamp: int = 0, file_mtime: int = 0) -> bytes:
+    """One file; ``stamp`` is the gzip header's time, as bsdtar writes it."""
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as tf:
+        info = tarfile.TarInfo("a.txt")
+        info.size, info.mtime = len(body), file_mtime
+        tf.addfile(info, io.BytesIO(body.encode()))
+    out = io.BytesIO()
+    with gzip.GzipFile(fileobj=out, mode="wb", mtime=stamp) as gz:
+        gz.write(raw.getvalue())
+    return out.getvalue()
+
+
+async def _upload(monkeypatch, tree: str, *, agent: str = "agent", stamp: int = 0) -> None:
+    """``tree`` names what the archive holds: the same name is the same tree."""
     monkeypatch.setattr(apps_service, "_check_room", AsyncMock())
-    monkeypatch.setattr(apps_service.apps_source, "put", AsyncMock(return_value=source_id))
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz"):
-        pass
+    monkeypatch.setattr(apps_service.apps_source, "put", AsyncMock(return_value=f"sid_{tree}_{stamp}"))
     await apps_service.put_source(
         OWNER,
         name="crew",
         room_id=ROOM,
         commit="c",
-        archive=buf.getvalue(),
+        archive=_tgz(tree, stamp=stamp),
         actor=apps_service.BuilderCaller(OWNER, agent, "agent"),
     )
 
@@ -362,7 +374,7 @@ async def test_the_upload_cannot_overwrite_a_claim_that_landed_since_its_read(wo
         return stale if len(reads) == 1 else await real(app_id, **kw)
 
     monkeypatch.setattr(apps_repo, "get", stale_first)
-    await apps_run.record_upload(app, AGENT, "agent", is_new=True)
+    await apps_run.record_upload(app, AGENT, "agent", files={"a.txt": b"new"})
     monkeypatch.setattr(apps_repo, "get", real)
     build = await _build(app)
     assert len(reads) == 2  # the stale write lost and it read again
@@ -513,6 +525,31 @@ async def test_a_turn_that_dies_during_a_deployment_resumes_after_it(world):
     await apps_repo.patch(app["app_id"], {"preview_pending": None})
     await _at_due(world, app)
     assert len(world.lines) == 1
+
+
+async def test_a_first_preview_waiting_for_a_person_gives_no_wake(world):
+    app = await _app(preview={"deployment_id": "d"})
+    world.rows = _active(app)
+    assert apps_service._state(app, await apps_service._rows(app))[0] == "ready"
+    assert await _fail() is None
+    assert (await _build(app)).get("due_at") is None
+
+
+async def test_a_wake_due_when_the_first_preview_lands_is_dropped(world):
+    app = await _app()
+    await _fail()
+    await apps_repo.patch(app["app_id"], {"preview": {"deployment_id": "d"}})
+    world.rows = _active(app)
+    await _at_due(world, app)
+    assert not world.lines and (await _build(app))["due_at"] is None
+
+
+@pytest.mark.parametrize("reason", [None, "included_daily_cap"])
+async def test_a_schedule_that_did_not_land_keeps_todays_note(world, monkeypatch, reason):
+    """The compare-and-set lost: saying "Trying again" would be a promise nothing holds."""
+    await _app()
+    monkeypatch.setattr(apps_repo, "patch", AsyncMock(return_value=None))
+    assert await apps_run.on_turn_failed(OWNER, _turn(), budget_reason=reason, agent_name="CEO") is None
 
 
 async def test_a_person_built_app_gives_no_wake(world):
@@ -803,6 +840,32 @@ async def test_a_dead_turn_after_every_identical_upload_reaches_the_cap(world, m
     assert sum("needs a person" in line["text"] for line in world.lines) == 1
 
 
+def test_two_gzips_of_the_same_tar_hash_the_same_and_a_changed_tree_does_not():
+    first, second = _tgz("x", stamp=1000), _tgz("x", stamp=2000)
+    assert first != second  # source_id hashes these bytes, so it differs
+    tree = lambda data: dict(apps_service.apps_source.iter_files(data))  # noqa: E731
+    content_hash = apps_service.apps_source.content_hash
+    assert content_hash(tree(first)) == content_hash(tree(second))
+    assert content_hash(tree(_tgz("x", file_mtime=5))) == content_hash(tree(first))  # a touch is no change
+    assert content_hash(tree(_tgz("y"))) != content_hash(tree(first))
+    assert content_hash({"ab": b"c"}) != content_hash({"a": b"bc"})
+
+
+async def test_an_up_that_repacks_the_same_tree_resets_nothing(world, monkeypatch):
+    """bsdtar on macOS: same tree, new gzip time, new source_id."""
+    app = await _app()
+    await _upload(monkeypatch, "tree", stamp=1000)
+    source_at = (await _build(app))["source_at"]
+    await _fail()
+    await _at_due(world, app)
+    assert (await _build(app))["attempts"]["wake"] == 1
+    world.now += 10
+    await _upload(monkeypatch, "tree", stamp=2000)
+    assert set((await apps_repo.get(app["app_id"]))["sources"]) >= {"sid_tree_1000", "sid_tree_2000"}
+    build = await _build(app)
+    assert build["attempts"]["wake"] == 1 and build["source_at"] == source_at
+
+
 async def test_a_new_source_resets_the_count_and_the_next_wake_gets_its_own_key(world, monkeypatch):
     app = await _app()
     await _fail()
@@ -902,6 +965,16 @@ async def test_a_cap_found_at_wake_time_posts_once_and_waits(world):
     assert "continues tomorrow" in world.lines[0]["text"]
     build = await _build(app)
     assert build["due_at"] > world.now and not build.get("attempts") and build["resume"] is True
+
+
+async def test_an_owner_who_stays_capped_gets_one_line_not_one_a_day(world):
+    app = await _app()
+    await _fail()
+    world.reason = "included_daily_cap"
+    await _at_due(world, app)
+    assert len(world.lines) == 1
+    await _at_due(world, app)  # next midnight, still capped, the source long stale
+    assert len(world.lines) == 1 and (await _build(app))["due_at"] is None
 
 
 async def test_an_allowance_that_does_not_come_back_gives_no_wake(world):

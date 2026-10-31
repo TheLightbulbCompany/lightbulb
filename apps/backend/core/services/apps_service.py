@@ -1017,11 +1017,10 @@ async def put_source(
     keep = {app.get("live_source_id"), app.get("preview_want"), (app.get("publish_pending") or {}).get("source_id")}
     recent = sorted(sources, key=lambda k: sources[k]["at"])[-10:]
     sources = {k: v for k, v in sources.items() if k in keep or k in recent}
-    is_new = source_id not in (app.get("sources") or {})
     await apps_repo.patch(app["app_id"], {"sources": sources})
     from core.services import apps_run  # it imports this module
 
-    await apps_run.record_upload(app, actor.actor_id, actor.actor_kind, is_new=is_new)
+    await apps_run.record_upload(app, actor.actor_id, actor.actor_kind, files=files)
     return {"app_id": app["app_id"], "source_id": source_id}
 
 

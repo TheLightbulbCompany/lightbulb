@@ -27,6 +27,8 @@ export interface EngineRecord {
   can_resume?: boolean;
   handle?: string;
   hidden?: boolean;
+  /** This computer's own session (the app adds it; the wire never carries it). */
+  own?: boolean;
   job?: { id?: string; state?: string };
 }
 
@@ -91,7 +93,7 @@ function toRow(backend: LocalSession | undefined, engine: EngineRecord | undefin
   const humanUserId = backend?.humanUserId;
   const userId = humanUserId ?? engine?.user_id;
   // Never undefined === undefined: a signed-out viewer and a record with no account are not one person.
-  const isViewer = viewer.userId != null && (backend ? backend.humanUserId === viewer.userId : engine?.user_id === viewer.userId);
+  const isViewer = engine?.own === true || viewer.userId != null && (backend ? backend.humanUserId === viewer.userId : engine?.user_id === viewer.userId);
   const engineSays = engine && engineState(engine);
   // `job` does not reach a page for a teammate's session; the backend row still knows it is done.
   const state = engineSays === "idle" && backend?.done ? "done" : engineSays ?? backendState(backend!);
@@ -144,8 +146,13 @@ export function mergeSessionRows(
     const kept = backendById.get(id);
     if (!kept || (!sessionLive(kept) && sessionLive(backend))) backendById.set(id, backend);
   }
+  // ponytail: a Mac that has not updated sends no networkSessionId; delete once all have.
+  const unjoined = [...backendById.values()].filter((b) => !b.networkSessionId);
+  const twins = (e: EngineRecord) => !!e.title && unjoined.some((b) => b.title === e.title && b.cwdName === e.folder && b.provider === e.agent);
   return [
     ...[...backendById].map(([id, backend]) => toRow(backend, engineById.get(id), viewer)),
-    ...[...engineById].filter(([id]) => !backendById.has(id)).map(([, engine]) => toRow(undefined, engine, viewer)),
+    ...[...engineById]
+      .filter(([id, e]) => !backendById.has(id) && e.reason !== "moved-on" && !twins(e))
+      .map(([, engine]) => toRow(undefined, engine, viewer)),
   ];
 }

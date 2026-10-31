@@ -120,4 +120,26 @@ describe("mergeSessionRows", () => {
     const rows = [backend({ sessionId: "b" }), backend({ sessionId: "a", status: "ended" }), backend({ sessionId: "c", humanUserId: "other" })];
     expect(mergeSessionRows(rows, [], viewer).map((row) => row.backend)).toEqual(rows);
   });
+  it("own makes isViewer true with no user_id", () => {
+    expect(one([], [engine({ own: true })], { userId: null }).person.isViewer).toBe(true);
+    expect(one([], [engine()], { userId: null }).person.isViewer).toBe(false);
+  });
+
+  it("drops a network-only moved-on row, keeps a joined one", () => {
+    const gone = engine({ status: "ended", reason: "moved-on" });
+    expect(mergeSessionRows([], [gone], viewer)).toHaveLength(0);
+    expect(one([backend({ networkSessionId: NET })], [gone]).state).toBe("ended");
+    expect(one([], [engine({ status: "ended", reason: "exited" })]).state).toBe("ended");
+  });
+
+  it("drops an engine record that twins a backend row with no networkSessionId", () => {
+    const b = backend({ title: "T", cwdName: "f" });
+    const e = engine({ title: "T", folder: "f", agent: "claude" });
+    expect(mergeSessionRows([b], [e], viewer).map((r) => r.source)).toEqual(["shared"]);
+    expect(mergeSessionRows([backend({ title: "T", cwdName: "f", networkSessionId: "other" })], [e], viewer)).toHaveLength(2);
+  });
+
+  it("a joined ended engine row over a live backend row reads ended", () => {
+    expect(one([backend({ networkSessionId: NET, status: "busy" })], [engine({ status: "ended" })]).state).toBe("ended");
+  });
 });

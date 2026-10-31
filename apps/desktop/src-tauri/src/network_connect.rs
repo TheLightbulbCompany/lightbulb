@@ -53,6 +53,11 @@ const LEAVE: &str = "leave";
 const ASK: &str = "ask";
 const OWNER_CHANGE: &str = "owner change";
 
+/// `leave_team`'s refusal when an agent process is above this app (the engine's `not_a_person`).
+const AGENT_SHELL: &str = "the app was opened from an agent's shell";
+/// A join landing later than this is not news; no notice.
+const LATE_NOTICE: u64 = 900;
+
 // --- The decision ---
 
 #[derive(Debug, PartialEq, Eq)]
@@ -132,7 +137,14 @@ struct Saved {
     /// Connect's yes after a removal: `removed` opts out no more, until the next join.
     removal_overridden: HashMap<String, bool>,
     /// A `team.join` for this owner may still land; the Done run that sees it tells the person.
-    attempted: Option<String>,
+    attempted: Option<Attempt>,
+}
+
+/// A `team.join` sent for `owner` at `at` (seconds).
+#[derive(Serialize, Deserialize)]
+struct Attempt {
+    owner: String,
+    at: u64,
 }
 
 /// Serializes read-modify-write: a dismissed notice must not lose an opt-out written beside it.
@@ -214,13 +226,15 @@ struct Memory {
     /// A once link not yet used, with its owner. A Link entry is permanent and replay is O(n²),
     /// so a retry spends this one rather than growing the roster.
     held: Option<(String, Line)>,
+    /// The engine said `not_a_person`: this process stays that way until relaunch.
+    agent_shell: bool,
 }
 
 static MEMORY: Mutex<Memory> = Mutex::new(Memory::new());
 
 impl Memory {
     const fn new() -> Self {
-        Memory { spent: Vec::new(), ask_yes: None, held: None }
+        Memory { spent: Vec::new(), ask_yes: None, held: None, agent_shell: false }
     }
 }
 
@@ -232,8 +246,30 @@ fn spent(memory: &Mutex<Memory>, owner: &str, kind: &str) -> bool {
     lock(memory).spent.iter().any(|(who, what)| who == owner && *what == kind)
 }
 
-fn spend(memory: &Mutex<Memory>, owner: &str, kind: &'static str) {
-    lock(memory).spent.push((owner.to_owned(), kind));
+/// Check and take in one step, before the alert: a second call during an alert raises nothing.
+fn claim(memory: &Mutex<Memory>, owner: &str, kind: &'static str) -> bool {
+    let mut memory = lock(memory);
+    if memory.spent.iter().any(|(who, what)| who == owner && *what == kind) {
+        return false;
+    }
+    memory.spent.push((owner.to_owned(), kind));
+    true
+}
+
+fn unclaim(memory: &Mutex<Memory>, owner: &str, kind: &str) {
+    lock(memory).spent.retain(|(who, what)| !(who == owner && *what == kind));
+}
+
+/// `raise` runs only with the alert still available; only a yes leaves it available.
+async fn alert_once(memory: &Mutex<Memory>, owner: &str, kind: &'static str, raise: impl Future<Output = bool>) -> bool {
+    if !claim(memory, owner, kind) {
+        return false;
+    }
+    let yes = raise.await;
+    if yes {
+        unclaim(memory, owner, kind);
+    }
+    yes
 }
 
 /// Connect's yes is a person acting: the Ask it may need can come back.
@@ -252,18 +288,27 @@ pub struct Status {
     state: &'static str,
     workspace: Option<String>,
     notice: Option<String>,
+    /// That alert is used up for this owner: the footer says to reopen rather than show a dead button.
+    connect_limited: bool,
+    leave_limited: bool,
 }
 
 /// With no workspace known there is nothing for the page to show.
-fn status(state: &'static str, workspace: Option<String>, notice: Option<String>) -> Status {
+fn status(state: &'static str, workspace: Option<String>, notice: Option<String>, limited: (bool, bool)) -> Status {
     if state == "hidden" || workspace.is_none() {
-        return Status { state: "hidden", workspace: None, notice: None };
+        return Status { state: "hidden", workspace: None, notice: None, connect_limited: false, leave_limited: false };
     }
-    Status { state, workspace, notice }
+    Status { state, workspace, notice, connect_limited: limited.0, leave_limited: limited.1 }
+}
+
+fn limited(memory: &Mutex<Memory>, owner: Option<&str>) -> (bool, bool) {
+    owner.map_or((false, false), |owner| (spent(memory, owner, CONNECT), spent(memory, owner, LEAVE)))
 }
 
 struct Live {
     state: &'static str,
+    /// The last state that was not `connecting`, for a run that cannot say anything newer.
+    settled: &'static str,
     workspace: Option<String>,
     /// Whose workspace that is: a Connect after a re-pair must not name the old one.
     workspace_owner: Option<String>,
@@ -278,6 +323,7 @@ struct Live {
 
 const STARTING: Live = Live {
     state: "hidden",
+    settled: "hidden",
     workspace: None,
     workspace_owner: None,
     running: false,
@@ -345,6 +391,8 @@ struct Ended {
     soon: bool,
     /// No retry until Connect: another try would say the same.
     stop: bool,
+    /// A /team blip: says nothing new, and is no failed run.
+    blip: bool,
     owner: Option<String>,
 }
 
@@ -354,20 +402,31 @@ fn ended(state: &'static str, workspace: Option<&str>) -> Ended {
         workspace: workspace.map(str::to_owned),
         soon: matches!(state, "failed" | "off" | "connecting"),
         stop: false,
+        blip: false,
         owner: None,
     }
+}
+
+/// Nothing newer is known: what was shown, with `connecting` back to what it settled on, and the
+/// workspace only if it is this pair's.
+fn kept(live: &Live, owner: &str) -> Ended {
+    if live.workspace_owner.as_deref() != Some(owner) {
+        return Ended { soon: true, blip: true, ..ended("hidden", None) };
+    }
+    let state = if live.state == "connecting" { live.settled } else { live.state };
+    Ended { soon: true, blip: true, ..ended(state, live.workspace.as_deref()) }
 }
 
 /// `true`: run again now, someone asked during that run.
 fn finish(live: &mut Live, end: Ended, now: Instant) -> bool {
     match end.state {
-        "failed" => live.failures += 1,
-        "connected" => live.failures = 0,
+        "failed" if !end.blip => live.failures += 1,
+        "connected" if !end.blip => live.failures = 0,
         _ => {}
     }
     live.wait = if end.stop {
         None
-    } else if end.state == "failed" {
+    } else if end.state == "failed" && !end.blip {
         Some(backoff(live.failures))
     } else if end.soon {
         Some(AFTER_FAILURE)
@@ -375,6 +434,9 @@ fn finish(live: &mut Live, end: Ended, now: Instant) -> bool {
         Some(EVERY)
     };
     live.state = end.state;
+    if end.state != "connecting" {
+        live.settled = end.state;
+    }
     live.workspace = end.workspace;
     live.workspace_owner = end.owner;
     live.running = live.again;
@@ -559,6 +621,9 @@ async fn read_engine(sock: &Path) -> Option<EngineTeam> {
 
 async fn leave_team(sock: &Path) -> Result<(), &'static str> {
     let answer = engine_client::ask_at(sock, "team.leave", None, LEAVE_LIMIT).await.map_err(|_| SERVICE_OFF)?;
+    if answer["reason"] == "not_a_person" {
+        return Err(AGENT_SHELL);
+    }
     if answer["ok"] == true { Ok(()) } else { Err(COULD_NOT_LEAVE) }
 }
 
@@ -573,6 +638,8 @@ enum Joined {
     Stop(&'static str),
     /// Try this same line again later.
     Retry(&'static str),
+    /// An agent process is above this app: no retry until relaunch, the line kept.
+    AgentShell,
 }
 
 async fn send_join(sock: &Path, ticket: &str, name: Option<&str>) -> Result<Value, Joined> {
@@ -599,7 +666,10 @@ fn read_join(answer: &Value) -> Joined {
         Some("waiting") => return Joined::InProgress,
         _ => {}
     }
-    // The engine's `d.joining` is held: a join of its own is running. `not_a_person` has a reason.
+    if reason == Some("not_a_person") {
+        return Joined::AgentShell;
+    }
+    // The engine's `d.joining` is held: a join of its own is running.
     if answer["ok"] == false && answer["error"] == "bad_request" && reason.is_none() {
         return Joined::InProgress;
     }
@@ -667,6 +737,18 @@ fn drop_line(ctx: &Ctx) {
     lock(ctx.memory).held = None;
 }
 
+/// On the network: the line is used, and a yes about another network says nothing about a later one.
+fn on_the_network(ctx: &Ctx) {
+    let mut memory = lock(ctx.memory);
+    memory.held = None;
+    memory.ask_yes = None;
+}
+
+fn agent_shell(memory: &Mutex<Memory>, workspace: &str) -> Ended {
+    lock(memory).agent_shell = true;
+    Ended { stop: true, ..ended("agentShell", Some(workspace)) }
+}
+
 fn opt_out(ctx: &Ctx, workspace: &str) -> Ended {
     update(&ctx.data, |saved| {
         saved.opt_out.insert(ctx.owner.clone(), true);
@@ -705,15 +787,14 @@ where
     A: Fn(&'static str, String) -> F,
     F: Future<Output = Option<bool>>,
 {
-    if spent(ctx.memory, &ctx.owner, kind) {
+    if !claim(ctx.memory, &ctx.owner, kind) {
         return Reply::Nothing;
     }
-    let answer = ask(kind, text).await;
-    if answer != Some(true) {
-        spend(ctx.memory, &ctx.owner, kind);
-    }
-    match answer {
-        Some(true) => Reply::Yes,
+    match ask(kind, text).await {
+        Some(true) => {
+            unclaim(ctx.memory, &ctx.owner, kind);
+            Reply::Yes
+        }
         Some(false) => Reply::No,
         None => Reply::Nothing,
     }
@@ -776,9 +857,13 @@ async fn join_workspace(
         update(&ctx.data, |saved| {
             saved.joined.remove(&ctx.owner);
         });
-        if leave_team(&sock).await.is_err() {
-            crate::log("[network] leaving the other network failed");
-            return ended("failed", Some(workspace));
+        match leave_team(&sock).await {
+            Ok(()) => {}
+            Err(AGENT_SHELL) => return agent_shell(ctx.memory, workspace),
+            Err(_) => {
+                crate::log("[network] leaving the other network failed");
+                return ended("failed", Some(workspace));
+            }
         }
         computer = read_engine(&sock).await.map_or(String::new(), |now| now.computer);
     }
@@ -786,7 +871,7 @@ async fn join_workspace(
     if opted_out_now(&ctx.data, &ctx.owner) {
         return ended("optedOut", Some(workspace));
     }
-    update(&ctx.data, |saved| saved.attempted = Some(ctx.owner.clone()));
+    update(&ctx.data, |saved| saved.attempted = Some(Attempt { owner: ctx.owner.clone(), at: now_secs() }));
     let end = join(&sock, &line, &computer).await;
     if end == Joined::InProgress {
         return ended("connecting", Some(workspace));
@@ -794,7 +879,7 @@ async fn join_workspace(
     update(&ctx.data, |saved| saved.attempted = None);
     match end {
         Joined::Admitted => {
-            drop_line(ctx);
+            on_the_network(ctx);
             update(&ctx.data, |saved| {
                 saved.joined.insert(ctx.owner.clone(), line.team_id.clone());
                 saved.notice = Some(workspace.to_owned());
@@ -816,6 +901,7 @@ async fn join_workspace(
             crate::log(&format!("[network] join: {why}"));
             ended("failed", Some(workspace))
         }
+        Joined::AgentShell => agent_shell(ctx.memory, workspace),
         Joined::InProgress => ended("connecting", Some(workspace)),
     }
 }
@@ -835,10 +921,7 @@ where
         Ok(Ok(team)) => team,
         Err(Refused { status: 403, .. }) => return ended("hidden", None),
         // Offline or a blip says nothing new: keep what is shown, look again soon.
-        _ => {
-            let live = live();
-            return Ended { state: live.state, soon: true, ..ended("off", live.workspace.as_deref()) };
-        }
+        _ => return kept(&live(), &ctx.owner),
     };
     let Some(workspace) = team.workspace.clone().filter(|workspace| !workspace.is_empty()) else {
         return ended("hidden", None);
@@ -847,6 +930,14 @@ where
         crate::log("[network] network_connect.json is unreadable; reads as opted out");
         return ended("optedOut", Some(&workspace));
     };
+    if lock(ctx.memory).agent_shell {
+        return agent_shell(ctx.memory, &workspace);
+    }
+    // Logged out by the person, after this app signed in: no join decision at all.
+    let login = std::fs::read(ctx.state.join("login.json")).ok();
+    if saved.signed_in.contains_key(&ctx.owner) && read_proof(login.as_deref(), &team.user_id, now_secs()) == Proof::Missing {
+        return ended("optedOut", Some(&workspace));
+    }
     let opted_out = saved.opt_out.get(&ctx.owner) == Some(&true);
     let mut ws_team = team.team_id.clone().filter(|id| !id.is_empty());
     if ws_team.is_none() && !opted_out {
@@ -871,13 +962,17 @@ where
     match action {
         Action::Done => {
             ensure_signed_in(ctx, &team.user_id).await;
-            drop_line(ctx);
-            let landed_late = saved.attempted.as_deref() == Some(ctx.owner.as_str());
+            on_the_network(ctx);
+            let attempted = saved.attempted.as_ref().filter(|attempt| attempt.owner == ctx.owner);
+            let landed_late = attempted.is_some_and(|attempt| now_secs().saturating_sub(attempt.at) <= LATE_NOTICE);
+            let clear = attempted.is_some();
             // Remembered even when the CLI did the joining, so a later `lightbulb leave` reads as one.
             update(&ctx.data, |saved| {
                 saved.joined.insert(ctx.owner.clone(), engine.id.clone());
-                if landed_late {
+                if clear {
                     saved.attempted = None;
+                }
+                if landed_late {
                     saved.notice = Some(workspace.clone());
                 }
             });
@@ -1009,7 +1104,8 @@ pub fn network_status(app: tauri::AppHandle) -> Status {
         (live.state, live.workspace.clone())
     };
     let notice = app.path().app_data_dir().ok().and_then(|data| load(&data)?.notice);
-    status(state, workspace, notice)
+    let owner = paired(&app).map(|(_, pair)| pair.owner_id);
+    status(state, workspace, notice, limited(&MEMORY, owner.as_deref()))
 }
 
 #[tauri::command]
@@ -1017,13 +1113,9 @@ pub async fn network_connect(app: tauri::AppHandle) -> Result<(), String> {
     let (data, pair) = paired(&app).ok_or(NOT_AVAILABLE)?;
     let owner = pair.owner_id.clone();
     let api = api_for(&pair).ok_or(NOT_AVAILABLE)?;
-    let workspace = workspace_name(&api, &owner, known_workspace()).await.ok_or(NOT_AVAILABLE)?;
-    if spent(&MEMORY, &owner, CONNECT) {
-        return Err(crate::DECLINED_ON_MAC.to_owned());
-    }
+    let workspace = workspace_name(&api, &owner, known_workspace()).await.ok_or(crate::DECLINED_ON_MAC)?;
     let text = format!("Connect this computer to {workspace}'s network?");
-    if !crate::confirm_native(&app, "Lightbulb", text).await {
-        spend(&MEMORY, &owner, CONNECT);
+    if !alert_once(&MEMORY, &owner, CONNECT, crate::confirm_native(&app, "Lightbulb", text)).await {
         return Err(crate::DECLINED_ON_MAC.to_owned());
     }
     rewrite(&data, |saved| consent_to_connect(saved, &owner));
@@ -1039,17 +1131,21 @@ pub async fn network_leave(app: tauri::AppHandle) -> Result<(), String> {
     let (data, pair) = paired(&app).ok_or(NOT_AVAILABLE)?;
     let owner = pair.owner_id.clone();
     let api = api_for(&pair).ok_or(NOT_AVAILABLE)?;
-    let workspace = workspace_name(&api, &owner, known_workspace()).await.ok_or(NOT_AVAILABLE)?;
+    let workspace = workspace_name(&api, &owner, known_workspace()).await.ok_or(crate::DECLINED_ON_MAC)?;
     let sock = engine_client::state_dir().map_err(|_| SERVICE_OFF)?.join("sock");
     let team = read_engine(&sock).await.ok_or(SERVICE_OFF)?.name.unwrap_or_else(|| "this network".to_owned());
-    if spent(&MEMORY, &owner, LEAVE) {
+    if !alert_once(&MEMORY, &owner, LEAVE, crate::confirm_native(&app, "Lightbulb", format!("Leave {team}?"))).await {
         return Err(crate::DECLINED_ON_MAC.to_owned());
     }
-    if !crate::confirm_native(&app, "Lightbulb", format!("Leave {team}?")).await {
-        spend(&MEMORY, &owner, LEAVE);
-        return Err(crate::DECLINED_ON_MAC.to_owned());
+    match leave_team(&sock).await {
+        Ok(()) => {}
+        Err(AGENT_SHELL) => {
+            agent_shell(&MEMORY, &workspace);
+            publish("agentShell", &workspace, &owner);
+            return Err(crate::DECLINED_ON_MAC.to_owned());
+        }
+        Err(why) => return Err(why.to_owned()),
     }
-    leave_team(&sock).await?;
     update(&data, |saved| {
         saved.opt_out.insert(owner.clone(), true);
         saved.notice = None;
@@ -1155,7 +1251,7 @@ mod tests {
             saved.joined.insert("o".into(), "t".into());
             saved.notice = Some("Acme".into());
             saved.signed_in.insert("o".into(), true);
-            saved.attempted = Some("o".into());
+            saved.attempted = Some(Attempt { owner: "o".into(), at: 1 });
         });
         let file = dir.path().join("network_connect.json");
         assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
@@ -1232,14 +1328,20 @@ mod tests {
 
     #[test]
     fn status_serializes_only_its_three_fields() {
-        let shown = status("failed", Some("Acme".into()), None);
-        assert_eq!(serde_json::to_value(shown).unwrap(), json!({"state": "failed", "workspace": "Acme", "notice": null}));
+        let shown = status("failed", Some("Acme".into()), None, (true, false));
+        assert_eq!(
+            serde_json::to_value(shown).unwrap(),
+            json!({"state": "failed", "workspace": "Acme", "notice": null, "connectLimited": true, "leaveLimited": false})
+        );
     }
 
     #[test]
     fn no_workspace_known_is_hidden() {
-        let shown = status("off", None, Some("Acme".into()));
-        assert_eq!(serde_json::to_value(shown).unwrap(), json!({"state": "hidden", "workspace": null, "notice": null}));
+        let shown = status("off", None, Some("Acme".into()), (true, true));
+        assert_eq!(
+            serde_json::to_value(shown).unwrap(),
+            json!({"state": "hidden", "workspace": null, "notice": null, "connectLimited": false, "leaveLimited": false})
+        );
     }
 
     #[test]
@@ -1262,7 +1364,7 @@ mod tests {
     #[test]
     fn the_engines_answers_read_as_they_mean() {
         assert_eq!(read_join(&json!({"ok": false, "error": "bad_request"})), Joined::InProgress);
-        assert!(matches!(read_join(&json!({"ok": false, "error": "bad_request", "reason": "not_a_person"})), Joined::Retry(_)));
+        assert_eq!(read_join(&json!({"ok": false, "error": "bad_request", "reason": "not_a_person"})), Joined::AgentShell);
         assert_eq!(read_join(&json!({"ok": true, "state": "waiting"})), Joined::InProgress);
         assert!(matches!(read_join(&json!({"ok": true, "state": "refused", "reason": "bad_ticket"})), Joined::Dead(_)));
         assert!(matches!(read_join(&json!({"ok": true, "state": "refused", "reason": "expired_ticket"})), Joined::Dead(_)));
@@ -1272,7 +1374,8 @@ mod tests {
     #[test]
     fn an_alert_is_limited_per_owner_and_per_kind_and_connect_releases_it() {
         let memory = Mutex::new(Memory::new());
-        spend(&memory, "o", ASK);
+        assert!(claim(&memory, "o", ASK));
+        assert!(!claim(&memory, "o", ASK));
         assert!(spent(&memory, "o", ASK));
         assert!(!spent(&memory, "o", LEAVE));
         assert!(!spent(&memory, "p", ASK));
@@ -1591,19 +1694,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_logout_is_not_undone() {
-        let (dir, server, ctx) = fixture(acme(Some("t"))).await;
+    async fn a_logged_out_person_does_not_join() {
+        let (dir, server, ctx) = fixture(acme(None)).await;
         let mark = engine_that_marks(dir.path());
         set(dir.path(), |saved| {
             saved.signed_in.insert("o".into(), true);
         });
-        let _seen = stub(dir.path(), vec![("team.get", alone_on("solo")), ("team.join", json!({"state": "admitted"}))]);
+        let seen = stub(dir.path(), vec![
+            ("team.get", alone_on("solo")),
+            ("team.get", alone_on("solo")),
+            ("team.join", json!({"state": "admitted"})),
+        ]);
         line_answers(&server).await;
-        assert_eq!(connect(&ctx, never_asked, |_| {}).await.state, "connected");
+        assert_eq!(connect(&ctx, never_asked, never_told).await.state, "optedOut");
         assert!(!mark.exists(), "no sign-in");
-        let mut saved = load(dir.path()).unwrap();
-        consent_to_connect(&mut saved, "o");
-        assert!(!saved.signed_in.contains_key("o"), "Connect's yes clears it");
+        assert_eq!(ops(&seen), ["team.get"], "no join");
+        assert!(server.received_requests().await.unwrap().iter().all(|request| request.url.path().ends_with("/team")), "no line");
+
+        rewrite(dir.path(), |saved| consent_to_connect(saved, "o"));
+        assert_eq!(connect(&ctx, never_asked, |_| {}).await.state, "connected", "Connect's yes signs in and joins");
+        assert!(mark.exists());
+        assert_eq!(ops(&seen), ["team.get", "team.get", "team.join"]);
     }
 
     #[tokio::test]
@@ -1730,7 +1841,7 @@ mod tests {
         let end = connect(&ctx, never_asked, never_told).await;
         assert_eq!(end.state, "connecting");
         assert!(lock(ctx.memory).held.is_some(), "the line is kept");
-        assert_eq!(load(dir.path()).unwrap().attempted.as_deref(), Some("o"));
+        assert_eq!(load(dir.path()).unwrap().attempted.map(|attempt| attempt.owner).as_deref(), Some("o"));
         let mut gate = STARTING;
         finish(&mut gate, end, Instant::now());
         assert_eq!((gate.failures, gate.wait), (0, Some(AFTER_FAILURE)), "burns no backoff");
@@ -1739,7 +1850,8 @@ mod tests {
         assert_eq!(connect(&ctx, never_asked, |text| told.lock().unwrap().push(text)).await.state, "connected");
         assert_eq!(told.into_inner().unwrap(), ["Your computer joined Acme's network."]);
         let saved = load(dir.path()).unwrap();
-        assert_eq!((saved.attempted, saved.notice.as_deref()), (None, Some("Acme")));
+        assert!(saved.attempted.is_none());
+        assert_eq!(saved.notice.as_deref(), Some("Acme"));
         assert_eq!(connect(&ctx, never_asked, never_told).await.state, "connected", "once");
         assert_eq!(ops(&seen), ["team.get", "team.join", "team.get", "team.get"]);
     }
@@ -1756,7 +1868,7 @@ mod tests {
         assert_eq!(end.state, "failed");
         assert!(end.soon);
         let notice = load(dir.path()).unwrap().notice;
-        let shown = serde_json::to_string(&status(end.state, end.workspace, notice)).unwrap();
+        let shown = serde_json::to_string(&status(end.state, end.workspace, notice, (false, false))).unwrap();
         assert!(!shown.contains("SECRET"), "{shown}");
         let refused = join(&dir.path().join("sock"), &line(None), "mac").await;
         assert!(!format!("{refused:?}").contains("SECRET"), "{refused:?}");
@@ -1776,7 +1888,7 @@ mod tests {
         let saved = load(dir.path()).unwrap();
         assert_eq!(saved.joined.get("o").map(String::as_str), Some("t"));
         assert_eq!(saved.notice.as_deref(), Some("Acme"));
-        assert_eq!(saved.attempted, None);
+        assert!(saved.attempted.is_none());
     }
 
     #[tokio::test]
@@ -1862,6 +1974,7 @@ mod tests {
         assert_eq!(end.state, "connected");
         assert_eq!(ops(&seen), ["team.get", "team.get", "team.leave", "team.get", "team.join", "team.join"]);
         assert_eq!(seen.lock().unwrap()[5]["name"], "Ada (mac)");
+        assert!(lock(ctx.memory).ask_yes.is_none(), "cleared on the join");
     }
 
     #[tokio::test]
@@ -2003,5 +2116,143 @@ mod tests {
         assert_eq!(end.state, "connected");
         assert_eq!(ops(&seen), ["team.get", "team.join"]);
         assert!(!load(dir.path()).unwrap().signed_in.contains_key("o"));
+    }
+
+    #[tokio::test]
+    async fn a_second_call_during_an_alert_raises_nothing() {
+        let memory = Mutex::new(Memory::new());
+        let raised = AtomicUsize::new(0);
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let first = alert_once(&memory, "o", CONNECT, async {
+            raised.fetch_add(1, Ordering::SeqCst);
+            answered.await.unwrap()
+        });
+        let second = async {
+            let got = alert_once(&memory, "o", CONNECT, async {
+                raised.fetch_add(1, Ordering::SeqCst);
+                true
+            })
+            .await;
+            answer.send(false).unwrap();
+            got
+        };
+        assert_eq!(tokio::join!(first, second), (false, false));
+        assert_eq!(raised.load(Ordering::SeqCst), 1);
+        assert!(spent(&memory, "o", CONNECT), "a no uses it up");
+        assert_eq!(limited(&memory, Some("o")), (true, false));
+        assert_eq!(limited(&memory, Some("p")), (false, false));
+        assert_eq!(limited(&memory, None), (false, false));
+    }
+
+    #[tokio::test]
+    async fn a_yes_leaves_the_alert_available() {
+        let memory = Mutex::new(Memory::new());
+        assert!(alert_once(&memory, "o", LEAVE, async { true }).await);
+        assert!(!spent(&memory, "o", LEAVE));
+    }
+
+    #[tokio::test]
+    async fn not_a_person_on_the_join_is_held_with_no_retry_and_the_line_kept() {
+        let (dir, server, ctx) = fixture(acme(Some("t"))).await;
+        let seen = stub(dir.path(), vec![
+            ("team.get", alone_on("solo")),
+            ("team.join", json!({"ok": false, "error": "bad_request", "reason": "not_a_person"})),
+            ("team.get", alone_on("solo")),
+        ]);
+        line_answers(&server).await;
+        let end = connect(&ctx, never_asked, never_told).await;
+        assert_eq!((end.state, end.stop, end.workspace.as_deref()), ("agentShell", true, Some("Acme")));
+        assert!(lock(ctx.memory).held.is_some(), "the line is kept");
+        let mut gate = STARTING;
+        let t0 = Instant::now();
+        assert!(admit(&mut gate, Some("o"), t0));
+        finish(&mut gate, end, t0);
+        assert_eq!((gate.failures, gate.wait), (0, None), "no backoff, no retry");
+
+        let end = connect(&ctx, never_asked, never_told).await;
+        assert_eq!(end.state, "agentShell", "until relaunch");
+        assert_eq!(ops(&seen), ["team.get", "team.join", "team.get"]);
+    }
+
+    #[tokio::test]
+    async fn not_a_person_on_the_leave_is_held_too() {
+        let (dir, server, ctx) = fixture(acme(Some("t"))).await;
+        let seen = stub(dir.path(), vec![
+            ("team.get", with_others("x")),
+            ("team.get", with_others("x")),
+            ("team.leave", json!({"ok": false, "error": "bad_request", "reason": "not_a_person"})),
+        ]);
+        line_answers(&server).await;
+        let end = connect(&ctx, |_, _| async { Some(true) }, never_told).await;
+        assert_eq!(end.state, "agentShell");
+        assert_eq!(ops(&seen), ["team.get", "team.get", "team.leave"]);
+    }
+
+    #[test]
+    fn a_blip_keeps_this_pairs_workspace_only() {
+        let mut live = STARTING;
+        live.state = "failed";
+        live.settled = "failed";
+        live.workspace = Some("Old Co".into());
+        live.workspace_owner = Some("old".into());
+        let end = kept(&live, "new");
+        assert_eq!((end.state, end.workspace), ("hidden", None));
+        live.workspace_owner = Some("new".into());
+        assert_eq!(kept(&live, "new").workspace.as_deref(), Some("Old Co"));
+    }
+
+    #[test]
+    fn a_blip_is_no_failed_run_and_connecting_goes_back_to_what_it_settled_on() {
+        let t0 = Instant::now();
+        let mut live = STARTING;
+        finish(&mut live, Ended { owner: Some("o".into()), ..ended("failed", Some("A")) }, t0);
+        assert_eq!(live.failures, 1);
+        let blip = kept(&live, "o");
+        finish(&mut live, Ended { owner: Some("o".into()), ..blip }, t0);
+        assert_eq!((live.failures, live.state, live.wait), (1, "failed", Some(AFTER_FAILURE)));
+        finish(&mut live, Ended { owner: Some("o".into()), ..ended("connecting", Some("A")) }, t0);
+        assert_eq!((live.state, live.settled), ("connecting", "failed"));
+        let end = kept(&live, "o");
+        assert_eq!(end.state, "failed");
+    }
+
+    #[tokio::test]
+    async fn a_failed_team_call_runs_nothing_and_counts_as_a_blip() {
+        let (dir, server, ctx) = fixture(acme(Some("t"))).await;
+        server.reset().await;
+        Mock::given(path("/api/v1/network/team")).respond_with(ResponseTemplate::new(500)).mount(&server).await;
+        let seen = stub(dir.path(), vec![("team.get", alone_on("solo"))]);
+        let end = connect(&ctx, never_asked, never_told).await;
+        assert!(end.blip);
+        assert_eq!(ops(&seen), ["team.get"]);
+    }
+
+    #[tokio::test]
+    async fn the_current_pairs_name_failing_gives_no_name_to_alert_with() {
+        let (_dir, server, ctx) = fixture(acme(Some("t"))).await;
+        server.reset().await;
+        Mock::given(path("/api/v1/network/team")).respond_with(ResponseTemplate::new(500)).mount(&server).await;
+        let stale = Some(("Old Co".to_owned(), "old".to_owned()));
+        assert_eq!(workspace_name(&ctx.api, "o", stale).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_done_run_clears_a_yes_about_another_network() {
+        let (dir, _server, ctx) = fixture(acme(Some("t"))).await;
+        let _seen = stub(dir.path(), vec![("team.get", alone_on("t"))]);
+        lock(ctx.memory).ask_yes = Some(("o".into(), "x".into()));
+        assert_eq!(connect(&ctx, never_asked, never_told).await.state, "connected");
+        assert!(lock(ctx.memory).ask_yes.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_join_landing_over_15_minutes_late_posts_no_notice() {
+        let (dir, _server, ctx) = fixture(acme(Some("t"))).await;
+        set(dir.path(), |saved| saved.attempted = Some(Attempt { owner: "o".into(), at: now_secs() - LATE_NOTICE - 60 }));
+        let _seen = stub(dir.path(), vec![("team.get", alone_on("t"))]);
+        assert_eq!(connect(&ctx, never_asked, never_told).await.state, "connected");
+        let saved = load(dir.path()).unwrap();
+        assert!(saved.attempted.is_none());
+        assert_eq!(saved.notice, None);
     }
 }

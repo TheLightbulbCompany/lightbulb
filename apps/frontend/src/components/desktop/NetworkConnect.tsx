@@ -4,8 +4,15 @@ import { useCallback, useEffect, useState } from "react";
 
 import { bridge } from "@/components/messaging/localTerminal";
 
-type Status = { state: "hidden" | "off" | "connected" | "connecting" | "optedOut" | "failed"; workspace: string | null; notice: string | null };
+type Status = {
+  state: "hidden" | "off" | "connected" | "connecting" | "optedOut" | "failed" | "agentShell";
+  workspace: string | null;
+  notice: string | null;
+  connectLimited?: boolean;
+  leaveLimited?: boolean;
+};
 
+const REOPEN = "Reopen Lightbulb to try again";
 const row = { padding: "4px 12px", fontSize: "12px", color: "var(--warn)", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" } as const;
 const dot = { width: "6px", height: "6px", borderRadius: "50%", backgroundColor: "currentColor", display: "inline-block" } as const;
 const link = { background: "none", border: 0, padding: 0, color: "inherit", textDecoration: "underline", cursor: "pointer", font: "inherit" } as const;
@@ -38,29 +45,38 @@ export function NetworkConnect() {
     return () => { live = false; clearTimeout(timer); };
   }, [tick, gone, poll]);
 
-  // A refusal, including Cancel on the native alert, only re-reads the state.
+  // A refusal, including Cancel on the native alert, only re-reads the state. After a Cancel the
+  // alert is used up until relaunch, and the state says so: that replaces the button.
   const act = (command: string) => { void bridge()?.(command).then(poll, poll); };
 
   if (gone || !status) return null;
+  // Ahead of the notice: Leave cannot work here either. The notice keeps until relaunch.
+  if (status.state === "agentShell") {
+    return <div style={row}>Lightbulb was opened from an agent&apos;s shell. Reopen it from the Dock to connect.</div>;
+  }
   if (status.notice) {
     return (
-      <div style={row}>
+      <div style={row} role="status">
         <span>
           Your computer joined {status.notice}&apos;s network. Teammates on it see the names, folders and status of your sessions, never your files or conversations. Hide a folder: <code>lightbulb folder &lt;path&gt; off</code>.
         </span>
-        <button type="button" style={link} onClick={() => act("network_leave")}>Leave</button>
+        {status.leaveLimited
+          ? <span>{REOPEN}</span>
+          : <button type="button" style={link} onClick={() => act("network_leave")}>Leave</button>}
         <button type="button" style={link} onClick={() => act("network_notice_seen")}>Got it</button>
       </div>
     );
   }
   if (status.state === "connecting") {
-    return <div style={row}><span style={dot} />Connecting your computer to {status.workspace}…</div>;
+    return <div style={row} role="status"><span style={dot} />Connecting your computer to {status.workspace}…</div>;
   }
   if (status.state === "optedOut" || status.state === "failed") {
     return (
       <div style={row}>
         {status.state === "failed" && <span>Couldn&apos;t connect.</span>}
-        <button type="button" style={link} onClick={() => act("network_connect")}>Connect</button>
+        {status.connectLimited
+          ? <span>{REOPEN}</span>
+          : <button type="button" style={link} onClick={() => act("network_connect")}>Connect</button>}
       </div>
     );
   }

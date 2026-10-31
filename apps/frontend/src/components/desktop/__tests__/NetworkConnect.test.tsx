@@ -11,7 +11,7 @@ const install = (invoke: (c: string, a?: unknown) => Promise<unknown>) => { (win
 const status = (state: string, extra = {}) => ({ state, workspace: "Acme", notice: null, ...extra });
 
 beforeEach(() => { delete (window as W).__TAURI__; });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("NetworkConnect", () => {
   it("renders nothing in a browser", () => {
@@ -27,7 +27,6 @@ describe("NetworkConnect", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(130_000); });
     expect(container.firstChild).toBeNull();
     expect(invoke).toHaveBeenCalledTimes(1);
-    vi.useRealTimers();
   });
 
   it.each(["hidden", "off", "connected"])("renders nothing for %s", async (state) => {
@@ -38,10 +37,36 @@ describe("NetworkConnect", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("shows Connecting", async () => {
+  it("shows Connecting, as a status", async () => {
     install(vi.fn().mockResolvedValue(status("connecting")));
     render(<NetworkConnect />);
     expect(await screen.findByText("Connecting your computer to Acme…")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("Connecting your computer to Acme…");
+  });
+
+  it.each(["optedOut", "failed"])("%s with Connect used up says to reopen, with no button", async (state) => {
+    install(vi.fn().mockResolvedValue(status(state, { connectLimited: true })));
+    render(<NetworkConnect />);
+    expect(await screen.findByText("Reopen Lightbulb to try again")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("notice with Leave used up says to reopen, and Got it stays", async () => {
+    const invoke = vi.fn((c: string) => Promise.resolve(c === "network_status" ? status("connected", { notice: "Acme", leaveLimited: true }) : undefined));
+    install(invoke);
+    render(<NetworkConnect />);
+    expect(await screen.findByText("Reopen Lightbulb to try again")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Leave" })).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("Your computer joined Acme's network.");
+    await userEvent.click(screen.getByRole("button", { name: "Got it" }));
+    expect(invoke).toHaveBeenCalledWith("network_notice_seen");
+  });
+
+  it.each([{}, { notice: "Acme" }])("agent shell: one calm line and no button (%j)", async (extra) => {
+    install(vi.fn().mockResolvedValue(status("agentShell", extra)));
+    render(<NetworkConnect />);
+    expect(await screen.findByText("Lightbulb was opened from an agent's shell. Reopen it from the Dock to connect.")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
   it.each(["optedOut", "failed"])("%s offers Connect with no args, and Cancel is calm", async (state) => {

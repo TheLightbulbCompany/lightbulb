@@ -35,6 +35,9 @@ from bridge import sync
 
 log = logging.getLogger("bridge")
 
+#: The requestIds this process's agents answered with a reply (newest kept, for an assignment's turn).
+_replied: deque[str] = deque(maxlen=256)
+
 LIGHTBULB = "/usr/local/bin/lightbulb"
 NET_HOME = Path("/opt/data/network")
 SNAPSHOT = Path("/opt/data/network-out/state.db")
@@ -285,6 +288,8 @@ def ask(op: str, body: dict | None = None, timeout_s: float = 10.0) -> dict:
     answer = call(op, body, timeout_s)
     if not answer.get("ok"):
         raise OpError(op, str(answer.get("error") or "internal"), answer.get("reason"))
+    if op == "send" and (body or {}).get("reply_to"):
+        _replied.append(body["reply_to"])
     return answer.get("result") or {}
 
 
@@ -428,6 +433,25 @@ def _ack(session: str, record: dict, stage: str) -> None:
     ask("inbox.ack", {"session": session, "record": record["id"], "stage": stage})
 
 
+def _send_assignment_result(session: str, record: dict, text: str) -> None:
+    """A model can end an assignment's turn in plain text, without the reply tool. The asker gets
+    that text as the result anyway, rather than waiting out the deadline: this is not left to the
+    model. A turn with no text at all reports ``failed``. Stays best-effort: the deadline still
+    closes the assignment if this send fails."""
+    request_id = record.get("request_id")
+    if not request_id or request_id in _replied:
+        return
+    body = {"from": session, "reply_to": request_id, "request_id": f"result-{record['id']}",
+            "text": text.strip() or "The agent finished without a result.",
+            "status": "done" if text.strip() else "failed"}
+    if not text.strip():
+        body["reason"] = "no_result"
+    try:
+        ask("send", body)
+    except Exception:  # noqa: BLE001 -- the class only, never the text
+        log.warning("network: result for %s not sent", record["id"], exc_info=True)
+
+
 def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
     """Holds one reserved turn. Acks ``delivered`` at start and ``read`` only when the turn
     completed: a failed turn (run_turn reports it, it does not raise) stays unread, so the engine
@@ -453,6 +477,8 @@ def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
         log.warning("network: turn for %s failed", record["id"], exc_info=True)
     finally:
         if outcome == "completed":
+            if record.get("kind") == "assign":
+                _send_assignment_result(session, record, body.get("finalReply") or "")
             try:
                 _ack(session, record, "read")
             except Exception:  # noqa: BLE001

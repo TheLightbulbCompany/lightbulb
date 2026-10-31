@@ -12,7 +12,7 @@ it("shows the title, person, folder and state, with nothing to open", () => {
   const { container } = show({});
   expect(container).toHaveTextContent("Fix the build");
   expect(container).toHaveTextContent("Dana · web");
-  expect(container.querySelector(".session-row--gone")).not.toBeNull();
+  expect(container.querySelector(".session-row--gone > div.room-directory-entry")).toHaveTextContent("Fix the build");
   expect(screen.queryByRole("button", { name: /open|join|resume|end/i })).toBeNull();
 });
 
@@ -38,4 +38,10 @@ it("offers Share on the viewer's own live Claude session only", () => {
   expect(screen.queryByRole("button")).toBeNull();
   rerender(<ul><NetworkSessionRow row={{ ...base, person: { name: "Me", isViewer: true }, agent: "codex" }} /></ul>);
   expect(screen.queryByRole("button")).toBeNull();
+});
+
+it("calls the viewer's own person You", () => {
+  const { container } = show({ person: { name: "Me", isViewer: true } });
+  expect(container).toHaveTextContent("You · web");
+  expect(container).not.toHaveTextContent("Me");
 });

@@ -69,3 +69,10 @@ it("offers Remove on the viewer's own ended sessions only, one by one or all at 
   await userEvent.click(within(screen.getByRole("dialog", { name: "Remove your ended sessions?" })).getByRole("button", { name: "Remove" }));
   expect(onRemoveEnded).toHaveBeenCalledTimes(1);
 });
+
+it("lists an offline row older than 3 days when it is kept", () => {
+  render(<AllSessionsView loading={false} onOpenSession={vi.fn()} onClose={vi.fn()} entries={[
+    { ...make("lost", "Kept offline", "offline", 24 * 20), kept: true }, make("lost2", "Dropped offline", "offline", 24 * 20)]} />);
+  expect(screen.getByRole("button", { name: "Ended 1" })).toBeInTheDocument();
+  expect(screen.queryByText("Dropped offline")).toBeNull();
+});

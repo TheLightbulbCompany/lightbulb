@@ -36,6 +36,7 @@ from core.services import (
     app_wake,
     clerk_admin,
     memory_api,
+    memory_stages,
     messaging,
     network_member,
     network_route,
@@ -177,8 +178,7 @@ class LightbulbVerifier(ClerkOAuthVerifier):
 
 _NEEDS_WORKSPACE = (
     "WORKSPACE_REQUIRED: this needs a Lightbulb workspace. The network tools (find_sessions, "
-    "find_workers, send_message to a session_id, assign, cancel_assignment, check_inbox, message_receipt, "
-    "wake_me) work without one."
+    "send_message to a session_id, check_inbox, message_receipt, wake_me) work without one."
 )
 
 
@@ -464,7 +464,11 @@ async def _memory(call):
 @_noted
 async def recall(question: str) -> dict:
     auth = _caller()
-    return await _memory(memory_api.recall_page(auth.org_id, auth.user_id, question))
+    page = await _memory(memory_api.recall_page(auth.org_id, auth.user_id, question))
+    # The one page an agent reads (8,000-9,000 tokens for English text), as the CLI's tool:
+    # the structured results stay for the Memory tab.
+    turns = sum(r["kind"] == "turn" for r in page["results"])
+    return {"page": memory_stages.page_text(page), "counts": {"facts": len(page["results"]) - turns, "turns": turns}}
 
 
 @mcp.tool(annotations=WRITE, description=SPEC["remember"]["description"])
@@ -1006,3 +1010,11 @@ async def running():
             yield
     finally:
         mount.app = None
+
+
+# Network workers are hidden, like the engine's `network_workers`: off, a hosted assistant is
+# offered none of the assignment tools.
+WORKER_TOOLS = ("find_workers", "assign", "cancel_assignment")
+if not settings.HOSTED_NETWORK_WORKERS:
+    for _name in WORKER_TOOLS:
+        mcp.remove_tool(_name)

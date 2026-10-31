@@ -333,3 +333,13 @@ def test_health_advertises_the_three_way_browser_state_merge(home):
     # The backend writes a paired Mac's sign-ins back only to a runtime that says this.
     _, obj = server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", AUTH, {"method": "health"})
     assert obj["payload"]["browserStateMerge"] == 1
+
+
+def test_board_says_it_is_partial_and_never_a_count(mod, board):
+    """G1 #24 (28 Oct): asked what was open, Friday said "only 3 open cards" with 55 open. This
+    hint shows only in-progress and recently done work, up to 10 rows each; it was headed "Task
+    board right now", which reads as the whole board."""
+    text = mod.board_snapshot()
+    head = text.splitlines()[0]
+    assert "not the whole board" in head and "read the board" in head
+    assert "Task board right now" not in text

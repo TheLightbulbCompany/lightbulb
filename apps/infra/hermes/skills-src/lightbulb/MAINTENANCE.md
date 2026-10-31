@@ -401,6 +401,15 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  the review routine = skills-src/paperclip/references/routines.md (an agent may create a
                                  routine assigned to itself; `schedule` trigger) + references/platform-primitives.md
                                  (Automations: a GitHub trigger added from the routine's own detail panel, owner-side).
+  - Apps ................... references/apps.md + references/apps-reviewer.md + SKILL.md routing rows
+                              <- the `lightbulb app` CLI (TheLightbulbCompany/cli src/apps/: commands new|up|publish|rollback|
+                                 status|destroy|check|evidence|report-broken-tool, `next` = fix|diagnose|undo fix caps, the done
+                                 gate `done`, `--approved` for the destructive-migration gate, `publish` needs review evidence)
+                                 + its starter (AGENTS.md, playbooks/<kind>.md, .lightbulb/{plan,lessons,known-fixes}.md);
+                                 backend routers/apps.py (/api/v1/apps/build/*: UpResult state|preview_url|canvas_url|sample_data|
+                                 cost_cents|error.next) + apps_room.py post_approval_line (the approval's wake line, why
+                                 apps.md says end the turn); Canvas apps/frontend/src/components/canvas/ + hooks/useApps.ts.
+                                 Room words (preview, live, publish, undo, Canvas) are spec 2026-10-28-apps-design.md §2.
   - Skills (dirs/scope) ..... references/skills.md
                               <- apps/backend/core/services/hermes_profiles.py (SKILLS_DIR_LIGHTBULB,
                                  SKILLS_DIR_HERMES_BUNDLED, SKILLS_EXTERNAL_DIRS, the `skills` config block);
@@ -522,3 +531,4 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  paperclip skill references/monitors.md;
                                  spec docs/superpowers/specs/2026-09-16-proactive-agents-design.md (delete when shipped).
 - Roster + connected integrations routing row ("Who is on the team?" / "What's connected?") — `references/boundaries.md` Quick answers; source: `core/services/owner_facts.py` (`teammates`, `connected_integrations`, #3851). Added 2026-10-08 after a dev check where the CEO answered a roster question from the room's member list.
+- Ask and count rules (SKILL.md, the two lines after "A person's decision is an approval in Needs you") — tool `ask_person` in `apps/infra/hermes/plugins/lightbulb/__init__.py`; the paperclip skill's `references/interactions.md` "When you need an answer, not a sign-off: ask_person". Added 2026-10-30 from G1's failures (comments nobody read; "3 open cards" with 55 open). The count rule points at the paperclip skill's list route; the `lightbulb_board` wrapper was removed 30 Oct (same route, same key). Test: `tests/test_ask_and_count_skill.py`.

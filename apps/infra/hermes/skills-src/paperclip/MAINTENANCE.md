@@ -224,12 +224,14 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       (seeded paused by `provision_org` via `agent_routine_provisioning
       .create_agent_routines(paused=True)`); rename a routine there and here
       together. Re-apply on re-vendor.
-  16. Chat deliverables as documents (references/artifacts.md "A deliverable
-      asked for in chat is a document too"). Points at the lightbulb skill's
-      references/chat-vs-document.md, which owns the rule, the webchat-safe
-      calls (create --status backlog, raw PUT /api/issues/:id/documents/:key,
-      disposition) and the chat wording; the `#document-<key>` link it writes
-      is what the web/iOS chat renders as a document card. Re-apply on re-vendor.
+  16. Chat deliverables (references/artifacts.md). A deliverable asked for in
+      chat goes back as a file attached to the reply; an issue document only
+      when the work already is a task (founder ruling 2026-10-28: no task just
+      to hold a chat deliverable). Points at the lightbulb skill's
+      references/chat-vs-document.md, which owns the rule; for task-backed work
+      the raw PUT /api/issues/:id/documents/:key and the `#document-<key>` link
+      (rendered as a document card in web/iOS chat) still apply. Do not restore
+      upstream's create-a-task-for-the-deliverable flow. Re-apply on re-vendor.
   17. Handoffs through issues (SKILL.md Critical Rules "Handoffs go through
       issues, not chat" + its full form in references/delegation.md): the
       room caps agent chains at two agent replies per human message
@@ -319,8 +321,8 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       reference grows one. The snapshot never replaces the fresh-check rule.
       Re-apply on re-vendor.
   24. Task work runs in the task's own session (SKILL.md webchat summary +
-      references/heartbeat.md's "Work bigger than a quick answer becomes a
-      task" bullet + lightbulb references/chat-vs-document.md "How" + the
+      references/heartbeat.md's "Answer and do quick work in the room turn
+      yourself; a task is only for ..." bullet + lightbulb references/chat-vs-document.md "How" + the
       helper's usage text). Owner ruling 2026-10-18 ("the task is the durable
       record ... the work shouldn't really be done in the room"), reversing
       2026-10-04's "one conversation per piece of work". That design (after
@@ -387,3 +389,18 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       bridge/turn.py CHAT_STYLE. Observed prod 2026-10-15: Pulse posted
       status-line, heading and table reports to GTM Strategy. Re-apply on
       re-vendor.
+  28. Blocked or unsure goes to ask_person; counts come from the board
+      (SKILL.md Critical Rules, the two lines after "A person's decision is an
+      approval"; references/interactions.md "When you need an answer, not a
+      sign-off: ask_person"; references/heartbeat.md "If the block needs a human
+      decision", which replaced "Say so in a comment ... the comment is what gets
+      a human's attention"). The tools are
+      apps/infra/hermes/plugins/lightbulb/__init__.py _ask_person (a Paperclip
+      ask_user_questions interaction, wake_assignee, optionally parking the
+      issue blocked self-owned). The count rule points at hot-routes.md's
+      list route; a lightbulb_board wrapper tool (#4495) was removed 30 Oct:
+      it called the same route with the same key. Observed
+      2026-10-07..28 (docs/research/2026-10-30-production-agents/G1): blocked
+      agents' comments reached nobody (ISOA-867 8 days, ISOA-752), and an agent
+      stated "only 3 open cards" with 55 open. Test:
+      tests/test_ask_and_count_skill.py. Re-apply on re-vendor.

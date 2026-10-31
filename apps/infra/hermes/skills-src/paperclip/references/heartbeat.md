@@ -5,10 +5,10 @@
 Not every session is a heartbeat. When your owner talks to you in the chat UI (webchat) or a room turn, there is **no `PAPERCLIP_RUN_ID` and no checkout** — that is normal, not broken. Writes are gated by Paperclip's cross-issue influence limiter (deployed fork v2026.916.1-isol8.3+, paperclip#26). What it means in practice:
 
 - **Comment/update on an issue assigned to you succeeds.** Creates, comments, and `update` field edits (`--title`, `--priority`, `--assignee`, `--status`, `--blocked-by`; description via `raw PATCH`) all work without a run id — *unless* a live heartbeat run currently holds that issue checked out, in which case the write is refused (`401`): wait for the run to release it, or tell the user.
-- **The same calls on an issue assigned to someone else are refused: `403 cross_issue_influence_run_context_required`.** There is no run id to attach from webchat, so there is no way to make this write pass. Comment instead (comments are not assignee-scoped and wake the assignee) or file a new issue assigned to whoever should act. An `@mention` alone wakes no one. Do not retry the PATCH, and do not tell the user "this session lacks attribution" — this is Paperclip's own cross-issue boundary, not a Lightbulb limitation.
+- **The same calls on an issue assigned to someone else are refused: `403 cross_issue_influence_run_context_required`.** There is no run id to attach from webchat, so there is no way to make this write pass. Comment instead (comments are not assignee-scoped and wake the assignee) or tell the person; if neither is possible, say what you could not change and why. Never file a new issue just to get a run id. An `@mention` alone wakes no one. Do not retry the PATCH, and do not tell the user "this session lacks attribution" — this is Paperclip's own cross-issue boundary, not a Lightbulb limitation.
 - **Filing a new issue is always allowed**, regardless of who it ends up assigned to. The helper omits the run-id header automatically on every call.
 - **You cannot `checkout` or `release`.** Those two calls belong to heartbeat runs and are rejected without a run id (`401 Agent run id required`). Do not attempt them from webchat, do not treat the rejection as a platform error, and never invent a run id.
-- **Work bigger than a quick answer becomes a task; the room turn does not do it.** File it assigned (`todo`, the helper's default with `--assignee`) with the full context on stdin: what was asked, by whom, what done means. From a room turn the helper appends a `## From` section itself (the room id, and a link to the message that asked). Say in one line who has it, with the task link, and stop. Paperclip runs the task in the task's own session, like any other wake: progress and the disposition go on the issue, and that run posts ONE message to the From room when the task is done (what now exists, with the link) or needs the person — `/app/skills/lightbulb/scripts/lightbulb-post.sh --room <roomId> <<'EOF'` (text, then `EOF`), or, when you are not in that room, to the asker's DM with `--user <userId>` from the From section — and nothing else. Assign a teammate's work to them the same way.
+- **Answer and do quick work in the room turn yourself; a task is only for goal or project work, or work that outlives the conversation** (hours, days, waiting on someone). File it under that goal or project (`--goal`/`--project`), assigned (`todo`, the helper's default with `--assignee`) with the full context on stdin: what was asked, by whom, what done means. From a room turn the helper appends a `## From` section itself (the room id, and a link to the message that asked). Say in one line who has it, with the task link, and stop. Paperclip runs the task in the task's own session, like any other wake: progress and the disposition go on the issue, and that run posts ONE message to the From room when the task is done (what now exists, with the link) or needs the person — `/app/skills/lightbulb/scripts/lightbulb-post.sh --room <roomId> <<'EOF'` (text, then `EOF`), or, when you are not in that room, to the asker's DM with `--user <userId>` from the From section — and nothing else. Assign a teammate's work to them the same way.
 - **Never surface run-id mechanics to the user.** "I need a paperclip run id" is not something a user can act on. If a call fails wanting a run id, or 403s as `cross_issue_influence_run_context_required`, switch to the paths above and tell the user what you *did*, not what the API wanted.
 
 ### Cross-issue writes inside a heartbeat run
@@ -91,7 +91,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - Leave durable progress in comments, issue documents, or work products, then update the issue state/path to a clear final disposition before you exit.
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
 - Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
-- If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
+- If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits; `ask_person` with `blocked=true` already parks it `blocked`, which is right when the work cannot go on. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
 - If blocked on ANOTHER AGENT, create the child, assign it, and block on it with `blockedByIssueIds`.
 - If blocked on an EXTERNAL THING that will resolve itself (a PR merging, CI finishing, a deploy landing, a vendor replying), schedule a **monitor** and exit — see `references/monitors.md`. Do not file a confirmation card asking a human to tell you it happened, and do not busy-poll it.
 - If blocked on a HUMAN (the board must merge, deploy, pay, sign, grant access, or decide), do NOT create a child issue for them and never leave any issue unassigned. The recovery pass reassigns every unassigned blocker back to its creator within about a minute, and the delegation-cycle guard (`409 delegation_cycle`) refuses to route it to the agent that delegated the work to you — so a "board/operator must do X" child comes straight back to you as duplicate work. Stay on THIS issue instead: raise an approval with the `request_approval` tool (`references/interactions.md`; or a `request_confirmation` with `continuationPolicy: wake_assignee`) naming the exact action and evidence, set this issue `blocked` (or `in_review`), and exit. When the wake arrives with the decision, do the action yourself. A board comment is never an approval, and any board comment cancels a pending confirmation card (`superseded_by_comment`) — re-file the card if you still need the decision.
@@ -215,10 +215,16 @@ jq -n --arg agentId "$PAPERCLIP_AGENT_ID" '{
 ```
 
 **If the block needs a human decision, you still cannot name the board or a
-user as the owner.** Say so in a comment — who needs to decide, and what —
-then park the issue with self-ownership as above. You are the one who
-resumes the work once the decision lands, not the board; the comment is what
-gets a human's attention, not the descriptor.
+user as the owner.** Call the `ask_person` tool instead of a comment:
+
+```
+ask_person(question="I need Codex review credits on this repo. Can you add them?",
+           options=["Added", "Skip the review"], blocked=true)
+```
+
+`blocked=true` parks the issue as blocked with you as the owner (the shape
+above), and the question lands in the person's Needs you; their answer wakes
+you with it. A comment alone reaches nobody: no one reads them.
 
 **If you cannot name an action you will actually take when you resume, the
 issue is not blocked — it is abandoned.** Close it, or reduce it to the part

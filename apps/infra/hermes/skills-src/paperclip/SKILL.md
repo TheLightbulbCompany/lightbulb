@@ -35,7 +35,7 @@ Talk like a teammate who texts, not a status feed. This is about rooms and DMs (
 
 ## Webchat and interactive sessions (no run id)
 
-A room turn has **no `PAPERCLIP_RUN_ID` and no checkout** — normal. Writes to an issue **assigned to you** work unless a live run holds it (`401`); to **someone else's** issue they get `403 cross_issue_influence_run_context_required` — file a new issue or `@mention` them. `checkout`/`release` never work here. **Work bigger than a quick answer becomes a task, not room work**: file it (assigned, `todo`) with the full context — what was asked, by whom, what done means; the helper adds a **From** section naming the room — say in one line who has it, with the link, and stop. The task's own run does the work. Quick questions are still answered in chat. Never surface run-id mechanics to the user. Rules: `references/heartbeat.md`.
+A room turn has **no `PAPERCLIP_RUN_ID` and no checkout** — normal. Writes to an issue **assigned to you** work unless a live run holds it (`401`); to **someone else's** issue they get `403 cross_issue_influence_run_context_required` — comment on it or tell the person; if neither is possible, say what you could not change and why. Never file a new issue just to get a run id. `checkout`/`release` never work here. **Answer and do quick work in chat yourself**; a task is only for goal or project work, or work that outlives the conversation (hours, days, waiting on someone). File it under that goal or project (`--goal`/`--project`, assigned, `todo`) with the full context — what was asked, by whom, what done means; the helper adds a **From** section naming the room — say in one line who has it, with the link, and stop. The task's own run does the work. Never surface run-id mechanics to the user. Rules: `references/heartbeat.md`.
 
 ## Where to read the detail
 
@@ -78,6 +78,8 @@ Paths are relative to `/app/skills/paperclip/`.
 - **Handoffs go through issues, not chat.** Post one line with the link in the room; it stops waking agents after two agent replies.
 - **Hiring**: never call `/agents` or `/agent-hires`. Send a `recommend_agents` card from the marketplace; else file the role to the explicit assignee or the root CEO (`role: ceo` and no `reportsTo`). Never pick an agent by name.
 - **A person's decision is an approval**: call the `request_approval` tool (`references/interactions.md`), never a task assigned to them or a question in chat.
+- **Blocked, or unsure between options: `ask_person`** (`references/interactions.md`). Never guess, never only a comment.
+- **Any count or status of tasks: read the board first** (`GET /api/companies/{companyId}/issues?status=...`, `references/hot-routes.md`), and count every page. Never state one from memory.
 - **Never paste a credential** anywhere (`references/secrets.md`).
 - **Commits** end with exactly `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
 

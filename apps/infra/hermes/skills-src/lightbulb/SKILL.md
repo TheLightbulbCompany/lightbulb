@@ -26,7 +26,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/platform-primitives.md` § Post outside a room turn | Posting into a room, a teammate's DM, or #general when you are **NOT** in a Lightbulb room turn (a Paperclip run, heartbeat, routine) → `scripts/lightbulb-post.sh`. Inside a room turn, keep using your reply / the room tools. |
 | `references/feed.md` | Posting to the workspace feed (Activity): when a post is worth it, one thing per post, `--feed --why`, the brief, and the CEO's scheduled feed posts. |
 | `references/ideas.md` | Someone sends you an **idea** (a quoted idea, "Let's do it!", maybe "Tracked in Work: …"); a Work task whose description has **Needs** and **Done means** sections, or you notice a concrete job worth adding with `suggest_idea`. On a linked project, break it into assigned tasks first. |
-| `references/chat-vs-document.md` | **Before you answer with research, a plan, a draft, a report, a spec or an analysis**, or anything past ~1,500 characters: when a reply should be a document on a task, the exact Paperclip calls, and what the short chat reply looks like. |
+| `references/chat-vs-document.md` | **Before you answer with research, a plan, a draft, a report, a spec or an analysis**, or anything past ~1,500 characters: when a reply should be a document (a file on your reply, or on the task), how to attach or write it, and what the short chat reply looks like. |
 | `references/documents.md` | **How to write a document** (a plan, research, a report, a spec): open with the answer, owners and dates, tasks in a table, cards and diagrams. |
 | `references/workspace.md` | Adding or removing a room member, changing listen mode, making, renaming or archiving a room, pinning, searching messages or sessions → `lightbulb_workspace`. |
 | `references/platform-primitives.md` § Other rooms | Someone asks about another channel, DM or group chat ("what did we decide in #launch?", "check our recent conversations") → `lightbulb_read_rooms`, with the asker's own access. |
@@ -42,7 +42,9 @@ directory (`/app/skills/lightbulb/`).
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
 | `references/skills.md` | Where your skills live and which of the three directories you can write to. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`. |
 | `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skills` toolset, and importing an existing Claude Code setup. |
-| `references/software-projects.md` | Any work in a git repository (clone, branch, fix, PR), and building a software project from nothing to live: connections to check, default stack, repo, keeping your workspace small, Vercel/AWS deploys, CI, PR review, and what to do when it needs a database or paid service. |
+| `references/software-projects.md` | Work in an existing git repository (clone, branch, fix, PR): connections to check, repo, keeping your workspace small, Vercel/AWS deploys, CI, PR review. A new app, site, tool or dashboard: `references/apps.md`. |
+| `references/apps.md` | Any request for software (a site, tool, form, dashboard, portal, product, automation), "Let's do it" on a suggested app idea, or an outside request that needs one: building it with `lightbulb app`, the preview, publish and undo, and the five words the room hears. |
+| `references/apps-reviewer.md` | Reviewing an app before it goes live: starting a separate reviewer, and what the reviewer checks and records. |
 | `references/voice.md` | Live voice requests, renames, how you talk: a call has its own conversation, its reply is spoken and never posted, and chat keeps one short record per answer; when to call `lightbulb_voice_profile` (only when asked; confirm renames, replacements and clears first). |
 | `references/ui.md` | **Asking the person to pick, or showing numbers, a comparison, a plan, a form**: the one `openui-lang` card a reply may carry, and the signatures. |
 | `references/boundaries.md` | **Before you tell anyone you cannot do something**, and what to say instead (integrations, deploy/publish, billing, account deletion, website passwords and codes, localhost links); quick answers to common owner questions. |
@@ -99,15 +101,19 @@ These hold whether or not you open a reference.
   cron: a job added there runs where no one can see it, outside the company's
   governance.
 - **A deliverable is a document, not a chat message.** Research, plans, drafts,
-  reports and anything long go in a Paperclip issue document on a task (the Library shows
-  documents, never a comment or chat); chat gets at most five lines and the document's
-  link — `references/chat-vs-document.md`.
+  reports and anything long go in a file attached to your chat reply, or in a Paperclip
+  issue document when the work already is a task (the Library shows documents, never a
+  comment or chat); chat gets at most five lines — `references/chat-vs-document.md`.
   The owner's first reply to the welcome in `#general` is the first run: its
   shape (one plan, one decision, one connect card, three offers) is in that
   file's "The first run", even before `BRIEF.md` lands.
 - **A person's decision is an approval in Needs you**: call the `request_approval` tool.
   Never a task assigned to them or a question in chat (the paperclip skill's
   `references/interactions.md`).
+- **Blocked, or unsure between options, on a task: `ask_person`.** Never guess, never only
+  a comment. In a room, ask in your reply.
+- **Any count or status of tasks: read the board first** with the paperclip skill's list route
+  (its `references/hot-routes.md`). Never state one from memory.
 - **Ask with a card, not a list.** To make the person pick, or to show numbers, a
   comparison or a plan, write the one `openui-lang` card from `references/ui.md`. A
   sign-off is an approval (`request_approval`), never a card.

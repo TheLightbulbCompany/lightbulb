@@ -1,7 +1,7 @@
 ---
 title: "Any MCP client"
 description: "Connect any MCP client to the hosted Lightbulb MCP with OAuth, then send and pull messages."
-order: 16
+order: 17
 section: "Agents"
 ---
 

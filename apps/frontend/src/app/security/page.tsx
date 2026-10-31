@@ -32,7 +32,7 @@ const CLAIMS: { claim: string; evidence: string }[] = [
   {
     claim: "On the free network, memory lives on members' computers and moves only between them",
     evidence:
-      "Memory is a set of signed entries kept on each member's computer. Sync sends entries only to admitted members, and your private entries only to your own computers. In a workspace, the workspace's always-on member keeps a copy, and the facts it mirrors for search are reachable only by that member and our backend. A workspace wipe deletes them.",
+      "Memory is a set of signed entries kept on each member's computer. Sync sends entries only to admitted members, and your private entries only to your own computers. In a workspace, the workspace's always-on member keeps a copy of the team entries, never the private entries on your computers, and the facts it mirrors for search are reachable only by that member and our backend. They are stored in AWS (Bedrock AgentCore) in our account. A workspace wipe deletes them.",
   },
   {
     claim: "Nothing from a laptop session leaves without sign-in and a choice",
@@ -40,9 +40,9 @@ const CLAIMS: { claim: string; evidence: string }[] = [
       "Capture is local by default. Upload is a setting you choose once at sign-in: keep local, metadata only, or full. You can change it with lightbulb sessions upload.",
   },
   {
-    claim: "Secrets are refused before they are stored",
+    claim: "A fact with a secret in it is refused; workspace room turns are scrubbed",
     evidence:
-      "Before a memory is saved, its text is checked against a list of patterns: API keys, tokens, private-key blocks and credentials in URLs. A match is refused with the reason, not saved with the secret scrubbed out.",
+      "Before an agent's remembered fact is saved, on your computer or in a workspace, its text is checked against a list of patterns: API keys, tokens, private-key blocks and credentials in URLs. A match is refused with the reason, not saved with the secret scrubbed out. Workspace room turns are handled differently: secret-shaped text is scrubbed out of each turn before the workspace memory stores it and extracts facts from it. On your computer, a captured prompt, reply or tool-call summary that matches is kept only as the name of the pattern it matched.",
   },
   {
     claim: "Every fact carries who, where and when; disagreements are shown, not settled",
@@ -180,20 +180,28 @@ const SECTIONS: { title: string; body: React.ReactNode }[] = [
           <strong>Memory.</strong> On the free network, facts your agents save are kept on your
           computers and the computers of your team, and move only between members. An entry marked
           for you alone syncs only to your own computers. In a workspace, the workspace&apos;s
-          always-on member keeps a copy, and the facts it mirrors for search are reachable only by
-          that member and our backend. A workspace wipe deletes them.
+          always-on member keeps a copy of the team entries, and the facts it mirrors for search
+          are reachable only by that member and our backend. Workspace memory is processed and
+          stored in AWS (Bedrock AgentCore) in our account until it is deleted or the workspace is
+          wiped. The details are on{" "}
+          <Link href="/docs/memory">memory on your computers and in your workspace</Link>.
         </li>
         <li>
           <strong>Capture.</strong> Your computer records each session (the tool, the repo, token
-          counts) and each tool call (its name, a 200-character summary, how long it took and
-          whether it worked). It never records file contents, diffs or command output. This stays
-          on your computer.
+          counts), each tool call (its name, a 200-character summary, how long it took and
+          whether it worked), and your prompts and the agents&apos; replies, each cut to 4 KB. A
+          tool-call summary never holds file contents, diffs or command output; a reply can,
+          because it is what the agent wrote. Prompts and replies are kept on your computer only,
+          never uploaded, and deleted after 90 days. <code>lightbulb sessions turns off</code>{" "}
+          stops recording them.
         </li>
         <li>
           <strong>Upload.</strong> Only if you sign in and choose it: metadata only, or full
-          sessions. Uploads go to Lightbulb under your identity, never to a third party. We keep
-          them 30 days on a free account and a year in a workspace. The evaluator that suggests
-          memories reads full uploads and nothing else.
+          sessions. Uploads go to Lightbulb under your identity and are stored in our AWS account.
+          We keep them 30 days on a free account and a year in a workspace. An upload never holds
+          your prompts or the agents&apos; replies. The evaluator that suggests memories reads full
+          uploads and nothing else, and it runs in AWS (Bedrock AgentCore) in our account. We do
+          not sell uploads.
         </li>
       </ul>
     ),

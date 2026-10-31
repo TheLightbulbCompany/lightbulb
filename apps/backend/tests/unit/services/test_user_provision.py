@@ -1134,7 +1134,7 @@ async def test_org_created_webhook_keys_the_trial_on_the_creator(
 _SPECIALISTS = {"engineering": "eng1", "finance": "fin1"}
 
 
-def _arm_provisioning(row):
+def _arm_provisioning(row, extra_agents=()):
     """A fake PaperclipProvisioning whose authoritative owner resolver returns
     ``row`` (``find_org_owner`` too, so a test can prove the arm never reads it)."""
     fake = MagicMock()
@@ -1143,6 +1143,10 @@ def _arm_provisioning(row):
     fake._repo.resolve_owner_row = AsyncMock(return_value=row)
     fake._admin = MagicMock()  # ._http is just an attribute access
     fake._admin.set_agent_heartbeat = AsyncMock(return_value={})
+    ids = row and (list((row.starter_agent_ids or {}).values()) or row.seeded_agent_ids) or []
+    fake._admin.list_agents = AsyncMock(
+        return_value={"agents": [{"id": i} for i in dict.fromkeys(ids) if i] + list(extra_agents)}
+    )
     fake._admin.list_routines = AsyncMock(return_value=[])
     fake._admin.create_routine = AsyncMock(side_effect=lambda **kw: {"id": f"r-{kw['idempotency_key'][-2:]}"})
     fake._admin.create_routine_trigger = AsyncMock(return_value={})
@@ -1242,6 +1246,41 @@ async def test_arm_legacy_roster_arms_the_first_seeded_agent():
 
 
 @pytest.mark.asyncio
+async def test_arm_legacy_roster_arms_its_other_seeded_agents_as_specialists():
+    from core.services.paperclip_provisioning import SPECIALIST_HEARTBEAT
+
+    row = _company_row()
+    row.seeded_agent_ids = ["friday1", "forge1", "scout1"]
+    provisioning = _arm_provisioning(row)
+    assert await _arm(provisioning, _paid_account()) == "armed"
+    assert _heartbeats(provisioning) == {
+        "friday1": _ceo_heartbeat(28800),
+        "forge1": SPECIALIST_HEARTBEAT,
+        "scout1": SPECIALIST_HEARTBEAT,
+    }
+
+
+@pytest.mark.asyncio
+async def test_arm_arms_hired_agents_and_skips_enabled_and_terminated():
+    from core.services.paperclip_provisioning import SPECIALIST_HEARTBEAT
+
+    extra = [
+        {"id": "hired1"},
+        {"id": "own1", "runtimeConfig": {"heartbeat": {"enabled": True, "intervalSec": 60}}},
+        {"id": "off1", "runtimeConfig": {"heartbeat": {"enabled": False}}},
+        {"id": "dead1", "status": "terminated"},
+    ]
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "starter-ceo", **_SPECIALISTS}), extra)
+    assert await _arm(provisioning, _paid_account()) == "armed"
+    assert _heartbeats(provisioning) == {
+        "starter-ceo": _ceo_heartbeat(28800),
+        "eng1": SPECIALIST_HEARTBEAT,
+        "fin1": SPECIALIST_HEARTBEAT,
+        "hired1": SPECIALIST_HEARTBEAT,
+        "off1": SPECIALIST_HEARTBEAT,
+    }
+
+
 async def test_arm_live_trial_wakes_every_12_hours():
     provisioning = _arm_provisioning(_company_row())
     trial = {"owner_id": "org_p", "subscription_status": "trial_local", "trial_end": _LIVE_TRIAL_END}
@@ -1547,7 +1586,7 @@ def _feed_triggers(provisioning):
 
 
 @pytest.mark.asyncio
-async def test_arm_creates_the_three_feed_routines_for_the_ceo():
+async def test_arm_creates_the_three_feed_routines_and_the_planning_routine_for_the_ceo():
     provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
     assert await _arm(provisioning, _paid_account()) == "armed"
     created = _feed_routines(provisioning)
@@ -1555,28 +1594,34 @@ async def test_arm_creates_the_three_feed_routines_for_the_ceo():
         "lightbulb-feed-routine:v1:org_p:08",
         "lightbulb-feed-routine:v1:org_p:13",
         "lightbulb-feed-routine:v1:org_p:18",
+        "lightbulb-planning-routine:v1:org_p:09",
     ]
     assert all(c["company_id"] == "co1" and c["body"]["assigneeAgentId"] == "ceo1" for c in created)
-    assert [c["body"]["title"] for c in created] == [user_provision.feed_routine_title(h) for h in (8, 13, 18)]
-    assert all("--feed" in c["body"]["description"] and "--why" in c["body"]["description"] for c in created)
+    assert [c["body"]["title"] for c in created] == [
+        *(user_provision.feed_routine_title(h) for h in (8, 13, 18)),
+        "Plan the company",
+    ]
+    feed, planning = created[:3], created[3]
+    assert all("--feed" in c["body"]["description"] and "--why" in c["body"]["description"] for c in feed)
+    assert planning["body"]["description"] == user_provision.PLANNING_ROUTINE_DESCRIPTION
     assert _feed_triggers(provisioning) == {
         f"r-{h}": {"kind": "schedule", "cronExpression": f"0 {int(h)} * * *", "timezone": "UTC", "enabled": True}
-        for h in ("08", "13", "18")
+        for h in ("08", "13", "18", "09")
     }
 
 
 @pytest.mark.asyncio
-async def test_a_reconcile_does_not_duplicate_the_feed_routines():
+async def test_a_reconcile_does_not_duplicate_the_ceo_routines():
     provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
     provisioning._admin.list_routines.return_value = [
         {
-            "id": f"r{h}",
-            "title": user_provision.feed_routine_title(h),
+            "id": f"r{hour}",
+            "title": title,
             "assigneeAgentId": "ceo1",
             "status": "active",
             "triggers": [{"kind": "schedule"}],
         }
-        for h in (8, 13, 18)
+        for _, title, _, hour in user_provision.CEO_ROUTINES
     ]
     assert await _arm(provisioning, _paid_account()) == "armed"
     provisioning._admin.create_routine.assert_not_awaited()
@@ -1592,8 +1637,8 @@ async def test_a_feed_routine_left_without_its_trigger_gets_one():
         ]
     }
     await _arm(provisioning, _paid_account())
-    assert [c["idempotency_key"][-2:] for c in _feed_routines(provisioning)] == ["13", "18"]
-    assert set(_feed_triggers(provisioning)) == {"r8", "r-13", "r-18"}
+    assert [c["idempotency_key"][-2:] for c in _feed_routines(provisioning)] == ["13", "18", "09"]
+    assert set(_feed_triggers(provisioning)) == {"r8", "r-13", "r-18", "r-09"}
 
 
 @pytest.mark.asyncio
@@ -1601,10 +1646,10 @@ async def test_a_replayed_feed_routine_the_owner_renamed_gets_no_second_trigger(
     provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1"}))
     provisioning._admin.list_routines.return_value = [
         {"id": f"r-{h:02d}", "title": "Renamed", "assigneeAgentId": "ceo1", "triggers": [{"kind": "schedule"}]}
-        for h in (8, 13, 18)
+        for h in (8, 13, 18, 9)
     ]
     await _arm(provisioning, _paid_account())
-    assert len(_feed_routines(provisioning)) == 3  # the key replays the same three
+    assert len(_feed_routines(provisioning)) == 4  # the key replays the same four
     provisioning._admin.create_routine_trigger.assert_not_awaited()
 
 
@@ -1618,9 +1663,10 @@ async def test_a_feed_routine_the_owner_deleted_stays_deleted_without_errors():
     gone = PaperclipApiError(
         "POST -> 409", status_code=409, body='{"code":"routine_create_idempotency_target_missing"}'
     )
-    provisioning._admin.create_routine.side_effect = [gone, {"id": "r-13"}, {"id": "r-18"}]
+    provisioning._admin.create_routine.side_effect = [gone, {"id": "r-13"}, {"id": "r-18"}, {"id": "r-09"}]
     provisioning._admin.create_routine_trigger.side_effect = [
         PaperclipApiError("POST -> 404", status_code=404, body="{}"),
+        {},
         {},
     ]
     with patch("core.services.user_provision.put_metric") as metric:
@@ -1628,6 +1674,7 @@ async def test_a_feed_routine_the_owner_deleted_stays_deleted_without_errors():
     assert [c.kwargs["routine_id"] for c in provisioning._admin.create_routine_trigger.await_args_list] == [
         "r-13",
         "r-18",
+        "r-09",
     ]
     assert all(c.args[0] != "feed.routines" for c in metric.call_args_list)
 
@@ -1664,8 +1711,8 @@ async def test_overlapping_reconciles_attach_each_feed_trigger_once(monkeypatch)
 
     triggers: dict[str, list] = {}
     routines = [
-        {"id": f"r{h}", "title": user_provision.feed_routine_title(h), "assigneeAgentId": "ceo1", "status": "active"}
-        for h in user_provision.FEED_ROUTINE_HOURS
+        {"id": f"r{hour}", "title": title, "assigneeAgentId": "ceo1", "status": "active"}
+        for _, title, _, hour in user_provision.CEO_ROUTINES
     ]
 
     async def add_trigger(*, routine_id, body, **_):
@@ -1697,4 +1744,4 @@ async def test_overlapping_reconciles_attach_each_feed_trigger_once(monkeypatch)
         user_provision._ensure_feed_routines(admin, "c", "org_p", row, "ceo1"),
         user_provision._ensure_feed_routines(admin, "c", "org_p", row, "ceo1"),
     )
-    assert {routine_id: len(added) for routine_id, added in triggers.items()} == {"r8": 1, "r13": 1, "r18": 1}
+    assert {routine_id: len(added) for routine_id, added in triggers.items()} == {"r8": 1, "r13": 1, "r18": 1, "r9": 1}

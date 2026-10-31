@@ -81,9 +81,15 @@ describe("ContainerStack — dev", () => {
     }
     // Every record carries a validFrom, so an as-of filter (validFrom <= as_of) keeps undated claims.
     expect(llm("validFrom").Definition).toMatch(/when no date is stated, the date of the conversation it came from/);
+    // Haiku guessed the year (2024 for claims said in 2026, prod 30 Oct 2026): the year comes from the
+    // messages, and the epoch is counted from a stated anchor, not recalled.
+    expect(llm("validFrom").Definition).toMatch(/never a year you assume/);
+    expect(llm("validFrom").Definition).toContain("2026-01-01 is 1767225600");
+    expect(llm("validFrom").Definition.length).toBeLessThanOrEqual(1000); // AgentCore's limit
     // Both overrides carry our prompt files after AWS's defaults.
     const sem = custom.Configuration.SemanticOverride;
     expect(sem.Extraction.AppendToPrompt).toContain("<entity> <attribute>: <value>");
+    expect(sem.Extraction.AppendToPrompt).toMatch(/never from your own sense of the current year/);
     expect(sem.Consolidation.AppendToPrompt).toContain("Contested:");
     expect(sem.Extraction.ModelId).toMatch(/haiku/);
   });

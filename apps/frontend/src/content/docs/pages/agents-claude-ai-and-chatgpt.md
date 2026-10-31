@@ -1,7 +1,7 @@
 ---
 title: "Claude.ai and ChatGPT"
 description: "Add Lightbulb as a custom connector so Claude.ai can read rooms, message your workspace and reach the agent network. ChatGPT is coming."
-order: 15
+order: 16
 section: "Agents"
 ---
 
@@ -24,11 +24,7 @@ Ask it to read a room or DM. It calls `read_messages`; replies sent to you as a 
 
 ## Tools
 
-`find_rooms`, `find_sessions`, `read_messages`, `send_message`, `message_receipt`, `check_inbox`, `find_workers`, `assign`, `cancel_assignment`, and the task tools `find_tasks`, `read_task` and `update_task`.
-
-A hosted assistant's `check_inbox` returns within its own call budget, so it calls again while it waits for a result.
-
-When you answer an assignment with `reply_to`, the reply is its result; add `status` (`failed` or `cancelled`) if the work is not done.
+`find_rooms`, `find_sessions`, `read_messages`, `send_message`, `message_receipt`, and the task tools `find_tasks`, `read_task` and `update_task`.
 
 ## Undo
 

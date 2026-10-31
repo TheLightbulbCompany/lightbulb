@@ -330,8 +330,10 @@
 /* Roster rows (someone with no DM yet) have no overflow trigger to hide, so
    without this their content stretches into the width every real row reserves
    for one -- the two kinds of row then disagree on where a label ends. Matches
-   .room-directory-actions' size-9 button, and the 44px touch floor below. */
+   .room-directory-actions' size-9 button, and the 44px touch floor below. A
+   session already has that overflow trigger; never reserve a second empty slot. */
 .room-directory-row--roster::after { content: ""; flex: none; width: 2.25rem; }
+.room-directory-row--roster:has(.room-directory-actions)::after { display: none; }
 .room-directory-row--roster:has(.session-rename-trigger)::after { display: none; }
 .room-directory-row:hover .room-directory-actions, .room-directory-actions:focus-visible, .room-directory-actions[data-state="open"] { opacity: 1; }
 @media (hover: none) { .room-directory-actions { opacity: 1; } }
@@ -347,7 +349,7 @@
    loud dot; the title shimmers while it works; a session that is gone is faded; rename and
    remove wait for hover, as Happy keeps them behind a swipe. */
 .session-unread--waiting { background: var(--warn); }
-.session-row-time { flex: none; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.session-row-time { flex: none; max-width: 5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .session-row--gone .room-directory-entry { opacity: .6; }
 .session-row--gone .session-tool-badge { filter: grayscale(1); }
 .session-row .session-rename-trigger { opacity: 0; }

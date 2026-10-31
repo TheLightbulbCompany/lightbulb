@@ -293,6 +293,9 @@ export class LightbulbStage extends cdk.Stage {
       // experiment can never create a real provider resource out of the prod
       // catalog. Prod reads and writes the real one.
       stripeProjectsCatalog: env === "prod" ? "prod" : "testing",
+      // App hostnames live in the root zone (dev and prod share it, so dev gets its own subdomain).
+      appsDomain: env === "prod" ? "apps.thelightbulb.company" : "apps.dev.thelightbulb.company",
+      appsHostedZoneId: dns.hostedZone.hostedZoneId,
       // Prod only; dev stays dark.
       livekitUrl: LIVEKIT_URL_BY_ENV[env],
     });

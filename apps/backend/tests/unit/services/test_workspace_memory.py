@@ -333,3 +333,16 @@ async def test_forget_on_behalf_of_pages_the_log_and_forgets_only_that_persons_e
     parked = AsyncMock(return_value=None)
     with patch.object(memory_api.network_member, "call_op", parked), pytest.raises(RuntimeError, match="parked"):
         await memory_api.forget_on_behalf_of("org_x", "user_a")
+
+
+def test_memory_tab_lists_a_validto_zero_claim_as_current():
+    """The extraction model writes validTo 0 for "empty"; the tab must not call that replaced."""
+    from datetime import UTC, datetime
+
+    rec = {
+        "memoryRecordId": "z",
+        "content": {"text": "Ann: city: Oslo"},
+        "createdAt": datetime(2026, 2, 1, tzinfo=UTC),
+        "metadata": {"kind": {"stringValue": "claim"}, "validTo": {"numberValue": 0}},
+    }
+    assert workspace_memory._view(rec)["status"] == "current"

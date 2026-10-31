@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { LocalSession } from "@lightbulb/shared";
 import { SessionListRow, sessionListTime } from "../SessionListRow";
 
@@ -65,4 +65,14 @@ it("shows the owner's face with the tool icon as a corner badge, and the label s
   expect(avatar).toHaveTextContent("AA");
   expect(avatar?.parentElement?.querySelector(".session-tool-badge--corner")).not.toBeNull();
   expect(screen.getByRole("button").getAttribute("aria-label")).toMatch(/Alice Able/);
+});
+
+it("keeps sidebar session actions in one compact overflow control", () => {
+  render(<ul><SessionListRow entry={{ session: { ...session, status: "ended" }, ownerName: "Alice", own: true, owner }}
+    current={false} oneLine onSelect={() => {}} onRename={vi.fn()} onRemove={vi.fn()}
+    marks={{ pinned: false, archived: false, onTogglePin: vi.fn(), onToggleArchive: vi.fn(), onMarkUnread: vi.fn() }} /></ul>);
+
+  expect(screen.getByRole("button", { name: "Session actions for Load test" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Rename Load test" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Remove Load test" })).toBeNull();
 });

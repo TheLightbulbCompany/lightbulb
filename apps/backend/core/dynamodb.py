@@ -76,5 +76,17 @@ def plain(value: Any) -> Any:
     return value
 
 
+def ddb_safe(value: Any) -> Any:
+    """Floats → ``Decimal`` so JSON from an API can be written to DynamoDB
+    (boto3 refuses ``float``). The inverse of ``plain``."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: ddb_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [ddb_safe(v) for v in value]
+    return value
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()

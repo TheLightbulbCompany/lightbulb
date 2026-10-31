@@ -27,6 +27,7 @@ import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
 import type { SessionFocusTarget } from "./SessionFocus";
 import type { SidebarSession } from "./roomSections";
+import { useSessionRows } from "./useSessionRows";
 import type { DirectoryRoom, DirectoryParticipant, RoomParticipant } from "./types";
 
 export interface MessagingWorkspaceValue {
@@ -436,11 +437,12 @@ export function MessagingWorkspaceProvider({
   const resolveSessionOwner = useCallback((humanUserId: string) =>
     ({ ownerName: humanUserId === userId ? "You" : humanName(humanUserId), own: humanUserId === userId }),
     [userId, humanName]);
+  const sessionRows = useSessionRows(workspaceSessions.sessions, userId, humanName);
   const sidebarSessions: SidebarSession[] = useMemo(() =>
-    workspaceSections(workspaceSessions.sessions, userId, humanName).flatMap((section) =>
+    workspaceSections(sessionRows.flatMap((row) => row.backend ?? []), userId, humanName).flatMap((section) =>
       section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId,
         owner: ownerFace(session.humanUserId, session.humanUserId === userId && !isOnRoster(session.humanUserId) ? myName : humanName(session.humanUserId)), unread: sessionUnread(session, seen) }))),
-    [workspaceSessions.sessions, userId, humanName, isOnRoster, myName, seen]);
+    [sessionRows, userId, humanName, isOnRoster, myName, seen]);
   const members: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
   // The feed seats only people; its agents are authors on the roster. They are added here so a
   // Discuss reply can @mention one (by name: an unseated agent has no handle in the room).

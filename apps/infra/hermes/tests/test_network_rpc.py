@@ -149,3 +149,18 @@ def test_memory_op_passes_the_backends_timeout_to_the_engine(net, monkeypatch):
     status, body = server._rpc({"method": "memory.import", "params": {"entries": []}, "timeoutMs": 60000})
     assert status == 200 and body["ok"] is True
     assert [t for op, t in seen if op == "memory.import"] == [60.0]  # not the engine's 10 s default
+
+
+def test_the_image_pins_an_engine_that_speaks_memory():
+    # The fake sidecar above answers memory.* whatever the image ships. The engine first knew
+    # memory.* in v0.7.0 (TheLightbulbCompany/cli #83); an older pin refuses every op, so no
+    # team entry ever reaches workspace memory.
+    import re
+    from pathlib import Path
+
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+    pins = re.findall(
+        r"cli/releases/download/v(\d+)\.(\d+)\.(\d+)/lightbulb-linux-arm64", dockerfile
+    )
+    assert len(pins) == 1
+    assert tuple(map(int, pins[0])) >= (0, 7, 0)

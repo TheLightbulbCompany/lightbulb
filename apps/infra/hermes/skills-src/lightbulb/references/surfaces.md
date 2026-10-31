@@ -192,9 +192,11 @@ recent; they cannot receive follow-ups.
 **End session** in Lightbulb, or the tool's own exit (`/exit` in Claude Code or
 Codex) —
 leaves every list at once: All sessions, the sidebar, the phone, your own
-session listing, and `find_sessions` (which returns running sessions only).
-A message that references it gives you no session line. Treat it as gone:
-never tell anyone it is still there or offer to message it. Only a person who
+and your own session listing. On the network, `find_sessions` and your network
+directory (with `include_ended`) list ended sessions for a week as `status: ended`,
+with `ended_at` and `reason`. An ended session reads nothing unless its owner
+resumes it, and a message to one waits a day. Never offer to message one as if it
+were running. A message that references it gives you no session line. Only a person who
 had it open when it ended still sees its last screen, until they close it. A
 session that ended any other way (the process died, the terminal was closed,
 the Mac shut down) stays listed as **Ended** so its owner can resume it.

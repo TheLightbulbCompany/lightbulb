@@ -400,6 +400,7 @@ async def lifespan(app: FastAPI):
     from core.services.session_pickup import run_pickup_sweeper
     from core.services.memory_api import run_memory_sweeper
     from core.services.voice_calls import voice_call_sweeper
+    from core.services.apps_sweeper import run_apps_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
     idle_sweeper_stop = asyncio.Event()
@@ -418,6 +419,8 @@ async def lifespan(app: FastAPI):
     digest_task = asyncio.create_task(run_digest_sweeper(digest_stop))
     away_stop = asyncio.Event()
     away_task = asyncio.create_task(run_needs_you_sweeper(away_stop))
+    apps_sweeper_stop = asyncio.Event()
+    apps_sweeper_task = asyncio.create_task(run_apps_sweeper(apps_sweeper_stop))
 
     # Teams event broker — projects approved Paperclip events onto each user's
     # private AppSync channel. REST remains available when it is unconfigured.
@@ -443,6 +446,7 @@ async def lifespan(app: FastAPI):
             "memory_sweeper": memory_sweeper_task,
             "daily_digest": digest_task,
             "needs_you_email": away_task,
+            "apps_sweeper": apps_sweeper_task,
             "running_gauges": gauge_task,
         }
     )
@@ -518,6 +522,7 @@ async def lifespan(app: FastAPI):
             memory_sweeper_task,
             digest_task,
             away_task,
+            apps_sweeper_task,
             gauge_task,
         ):
             task.cancel()
@@ -531,6 +536,7 @@ async def lifespan(app: FastAPI):
             memory_sweeper_task,
             digest_task,
             away_task,
+            apps_sweeper_task,
             gauge_task,
             return_exceptions=True,
         )
@@ -801,6 +807,11 @@ app.add_middleware(
     expose_headers=["X-Request-ID", "Mcp-Session-Id", "WWW-Authenticate"],
 )
 
+# R78/R83: app origins may call the invite swap only (no credentials); added after CORSMiddleware so it runs first.
+from routers.apps import InviteCors  # noqa: E402
+
+app.add_middleware(InviteCors)
+
 # E2E correlation middleware — binds X-E2E-Run-Id header to log context so
 # every log line emitted while handling an e2e harness request carries the
 # same e2e_run_id field. No-op for traffic that doesn't send the header.
@@ -855,6 +866,12 @@ app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhook
 # Paperclip isol8.notifications plugin events (approvals + run lifecycle →
 # push notifications). Bearer-secret auth; disabled when the secret is unset.
 app.include_router(paperclip_events.router, prefix="/api/v1/webhooks", tags=["webhooks"])
+
+# Machine-only customer lifecycle feed + idempotent send ledger. Uses the
+# Paperclip service bearer credential and never impersonates an admin user.
+from routers import lifecycle_operations  # noqa: E402
+
+app.include_router(lifecycle_operations.router, prefix="/api/v1/lifecycle", tags=["lifecycle"])
 
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")
@@ -1051,6 +1068,11 @@ app.include_router(company_stripe.router, prefix="/api/v1/company/stripe", tags=
 from routers import company_provisioning  # noqa: E402
 
 app.include_router(company_provisioning.router, prefix="/api/v1/company/provisioning", tags=["company-provisioning"])
+
+# Apps on the provisioning rail: builders under /build, Canvas and the admin on the rest.
+from routers import apps as apps_routes  # noqa: E402
+
+app.include_router(apps_routes.router, prefix="/api/v1/apps", tags=["apps"])
 
 # Capability policy + revoke-all (the P0d slice — row + surface only;
 # enforcement in the rails is P1).

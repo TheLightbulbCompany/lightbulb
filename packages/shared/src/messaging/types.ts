@@ -413,6 +413,8 @@ export interface LocalSession {
   /** Advisory bounded local evidence, not proof that a harness refreshed files. */
   workspace?: { revision: number; coverage: "bounded" | "unknown"; changed: boolean; overlap: boolean };
   sessionId: string;
+  /** Its row in the network engine's `directory` (`<member12>/<provider>:<conversation>`). Absent from a backend or a Mac that does not send it. */
+  networkSessionId?: string;
   deviceId: string;
   humanUserId: string;
   provider: LocalSessionProvider;

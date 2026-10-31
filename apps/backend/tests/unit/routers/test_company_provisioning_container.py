@@ -26,7 +26,8 @@ HDRS = {"Authorization": "Bearer hook-token"}
 
 SERVICE = {
     "id": "psvc_1",
-    "provider_id": "prvdr_1",
+    # Live 2026-09-30.preview shape (verified 2026-10-29): the provider id is `provider`.
+    "provider": "prvdr_1",
     "service_id": "svc_analytics",
     "provider_name": "posthog",
     "description": "Product analytics",
@@ -97,7 +98,7 @@ def _catalog(services=(SERVICE,), providers=(PROVIDER,), requirements=()):
 
 def test_catalog_returns_policy_filtered_rows_with_llm_context_as_data(client):
     hidden = {**SERVICE, "service_id": "svc_eu_only", "availability": "PROVIDER_SERVICE_AVAILABILITY_NOT_IN_COUNTRY"}
-    thin = {**SERVICE, "service_id": "svc_thin", "provider_id": "prvdr_9", "provider_name": "herenow"}
+    thin = {**SERVICE, "service_id": "svc_thin", "provider": "prvdr_9", "provider_name": "herenow"}
     thin_provider = {"id": "prvdr_9", "name": "herenow", "categories": [], "description": ""}
     elig, provs, svcs = _catalog(services=(SERVICE, hidden, thin), providers=(PROVIDER, thin_provider))
     with elig, provs, svcs:
@@ -115,7 +116,7 @@ def test_catalog_returns_policy_filtered_rows_with_llm_context_as_data(client):
 
 def test_catalog_drops_a_service_whose_provider_is_not_in_the_catalog(client):
     """`start` refuses these, so offering them would be a promise we break."""
-    orphan = {**SERVICE, "service_id": "svc_orphan", "provider_id": "prvdr_gone"}
+    orphan = {**SERVICE, "service_id": "svc_orphan", "provider": "prvdr_gone"}
     elig, provs, svcs = _catalog(services=(SERVICE, orphan))
     with elig, provs, svcs:
         resp = client.get(f"{BASE}/catalog", headers=HDRS)
@@ -419,6 +420,9 @@ def test_the_safe_shape_is_the_only_shape(client):
         "state",
         "provider",
         "service",
+        "app_id",
+        "environment",
+        "app_name",
         "awaiting",
         "information_target",
         "error_code",

@@ -42,6 +42,10 @@ CATALOG_DIR = Path(__file__).resolve().parents[2] / "ideas"
 Role = Literal["ceo", "engineering", "finance", "growth", "analytics", "customer_operations"]
 ROLES = get_args(Role)
 Size = Literal["project", "task", "quick"]
+AppKind = Literal[
+    "landing_page", "content_site", "form", "internal_tool",
+    "dashboard", "customer_portal", "product_with_payments", "automation",
+]  # fmt: skip
 #: A project in one of these is finished: its idea can be started again.
 CLOSED_PROJECT_STATUSES = frozenset({"completed", "cancelled"})
 #: A task in one of these is finished.
@@ -141,6 +145,7 @@ class Job:
     browser: list[str] = field(default_factory=list)
     person: list[str] = field(default_factory=list)
     done_means: str | None = None
+    app_kind: str | None = None  # set for a suggested app: "Let's do it" tells the agent to build it
 
 
 class Suggestion(BaseModel):
@@ -155,10 +160,21 @@ class Suggestion(BaseModel):
     deliverables: list[str] = Field(min_length=1, max_length=3)
     size: Size
     emoji: str = Field(default=DEFAULT_EMOJI, min_length=1, max_length=8)
+    kind: Literal["app"] | None = None  # an app idea; None is an ordinary idea
+    app_kind: AppKind | None = None
+    origin: str | None = Field(default=None, max_length=120)  # one line: what keeps coming back
 
-    @field_validator("title", "why")
+    @model_validator(mode="after")
+    def _app_needs_kind(self):
+        if (self.kind == "app") != (self.app_kind is not None):
+            raise ValueError("an app idea needs app_kind, and app_kind needs kind='app'")
+        return self
+
+    @field_validator("title", "why", "origin")
     @classmethod
-    def _one_line(cls, value: str) -> str:
+    def _one_line(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         line = " ".join(value.split())
         if len(line) < 3:  # "   " passes min_length, then normalises to ""
             raise ValueError("needs at least three visible characters")
@@ -211,6 +227,7 @@ def _card(idea: Idea, agent: dict) -> dict:
 
 
 def _suggestion_card(row: dict, names: dict[str, str]) -> dict:
+    app = {"appKind": row["appKind"], "origin": row.get("origin")} if row.get("appKind") else {}
     return {
         "id": row["ideaId"],
         "title": row["title"],
@@ -218,7 +235,8 @@ def _suggestion_card(row: dict, names: dict[str, str]) -> dict:
         "emoji": row.get("emoji") or DEFAULT_EMOJI,
         "deliverables": row["deliverables"],
         "size": row["size"],
-        "kind": "everyday",
+        "kind": "app" if app else "everyday",
+        **app,
         "businessTypes": ["any"],
         "suggested": True,  # "For you": this agent added it for this company
         "agentId": row["agentId"],
@@ -283,7 +301,10 @@ async def _job(owner_id: str, idea_id: str, agents: dict[str, dict], names: dict
         row = next((r for r in await _suggestions(owner_id, names) if r["ideaId"] == idea_id), None)
         if row is not None:
             agent = {"id": row["agentId"], "name": names[row["agentId"]]}
-            return Job(row["ideaId"], row["title"], row["why"], list(row["deliverables"]), row["size"], agent)
+            return Job(
+                row["ideaId"], row["title"], row["why"], list(row["deliverables"]), row["size"], agent,
+                app_kind=row.get("appKind"),
+            )  # fmt: skip
     raise HTTPException(status_code=404, detail="Idea not found")
 
 
@@ -436,6 +457,7 @@ async def suggest(owner_id: str, suggestion: Suggestion) -> dict:
             "size": suggestion.size,
             "emoji": suggestion.emoji,
             "createdAt": utc_now_iso(),
+            **({"appKind": suggestion.app_kind, "origin": suggestion.origin} if suggestion.app_kind else {}),
         },
     )
     return {"status": "added", "id": idea_id}
@@ -508,6 +530,9 @@ def start_text(job: Job, tracked: tuple[str, str] | None) -> str:
     text = f"> **{title}**\n> {_md_text(job.why)}\n\nLet's do it!"
     if tracked:
         text += f"\nTracked in Work: [{title}]({work_link(*tracked)})"
+    if job.app_kind:  # no agent-only channel on this path: one plain sentence; the skill has the commands
+        text += f"\nBuild this as an app ({job.app_kind.replace('_', ' ')}), origin suggested:{job.id}"
+        text += f", kind {job.app_kind}."
     return text
 
 

@@ -267,6 +267,7 @@ describe("hermes runtime wiring", () => {
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/network/*",
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/marketplace-installs/*",
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/browser-state/*",
+      "arn:aws:s3:::lightbulb-dev-openclaw-replicas/apps/*",
     ]);
   });
 

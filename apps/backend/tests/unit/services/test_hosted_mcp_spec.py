@@ -31,8 +31,9 @@ def _shape(schema: dict) -> dict:
 async def test_hosted_mcp_tools_match_network_tools_json():
     tools = {t.name: t for t in await hosted_mcp.mcp.list_tools()}
     # use_browser moves a coding session's browser: engine only.
-    assert set(tools) == {t["name"] for t in SPEC if t["name"] != "use_browser"} | {"wake_me"}
-    for spec in (t for t in SPEC if t["name"] != "use_browser"):
+    hidden = {"use_browser", *hosted_mcp.WORKER_TOOLS}
+    assert set(tools) == {t["name"] for t in SPEC if t["name"] not in hidden} | {"wake_me"}
+    for spec in (t for t in SPEC if t["name"] not in hidden):
         tool = tools[spec["name"]]
         assert tool.description == spec["description"], spec["name"]
         assert _shape(tool.input_schema) == _shape(spec["inputSchema"]), spec["name"]
@@ -86,7 +87,6 @@ async def test_every_tool_declares_openais_three_hints():
     }
     reads = {
         "find_sessions",
-        "find_workers",
         "message_receipt",
         "check_inbox",
         "find_rooms",
@@ -97,10 +97,35 @@ async def test_every_tool_declares_openais_three_hints():
     }
     assert hints == {
         **{name: (True, False, False) for name in reads},
-        "assign": (False, False, True),  # a brief another session acts on
-        "cancel_assignment": (False, False, True),
         "send_message": (False, False, True),  # deletes and overwrites nothing (owner, 10-27)
         "update_task": (False, False, False),
         "remember": (False, False, False),
         "wake_me": (False, False, True),
     }
+
+
+@pytest.mark.asyncio
+async def test_a_question_recall_is_one_page_of_text_and_counts(monkeypatch):
+    from datetime import UTC, datetime
+
+    from core.services import memory_api
+    from core.services.memory_stages import Candidate, compose
+
+    at = datetime(2026, 10, 29, tzinfo=UTC)
+    claims = [Candidate(f"c{i}", "claim", f"Ann: topic {i}: value {i}", at) for i in range(60)]
+    turns = [Candidate(f"t{i}", "turn", "Ann: " + "x" * 795, at) for i in range(60)]
+    full = compose(claims + turns, 8000, at)
+    asked = AsyncMock(return_value=full)
+    monkeypatch.setattr(hosted_mcp, "_caller", lambda *_: AuthContext(user_id="user_a", org_id="org_1"))
+    monkeypatch.setattr(memory_api, "recall_page", asked)
+    out = await hosted_mcp.recall.__wrapped__(question="what topics?")
+    assert set(out) == {"page", "counts"} and isinstance(out["page"], str)
+    assert out["counts"] == {"facts": 50, "turns": len(full["results"]) - 50}
+    assert "Ann: topic 0: value 0" in out["page"] and "Turns:" in out["page"]
+    assert 7000 < -(-len(json.dumps(out)) // 4) <= 9000  # a full page, about 8,000 tokens
+    assert asked.await_args.args == ("org_1", "user_a", "what topics?")
+
+
+async def test_worker_tools_are_hidden_while_the_flag_is_off():
+    names = {t.name for t in await hosted_mcp.mcp.list_tools()}
+    assert not names & set(hosted_mcp.WORKER_TOOLS)

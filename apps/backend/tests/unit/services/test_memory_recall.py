@@ -140,6 +140,11 @@ async def test_recall_as_of_filters_are_sent(monkeypatch):
         "operator": "GREATER_THAN",
         "right": {"metadataValue": {"numberValue": e}},
     }
+    zero = {
+        "left": {"metadataKey": "validTo"},
+        "operator": "EQUALS_TO",
+        "right": {"metadataValue": {"numberValue": 0.0}},
+    }
     sent = [kw["searchCriteria"]["metadataFilters"] for kw in c.where("retrieve", NS["facts"])]
     for status in ("current", "contested"):
         s = {
@@ -147,8 +152,8 @@ async def test_recall_as_of_filters_are_sent(monkeypatch):
             "operator": "EQUALS_TO",
             "right": {"metadataValue": {"stringValue": status}},
         }
-        assert [s, start, open_ended] in sent and [s, start, later] in sent
-    assert len(sent) == 4
+        assert [s, start, open_ended] in sent and [s, start, later] in sent and [s, start, zero] in sent
+    assert len(sent) == 6
 
 
 @pytest.mark.asyncio
@@ -164,6 +169,67 @@ async def test_recall_as_of_keeps_fact_replaced_after_it(monkeypatch):
             )
         ),
     )
+    assert _texts(await _run(as_of=AS_OF)) == ["Ann: city: Oslo"]
+
+
+def _filtered(rows):
+    """Facts rows the service would return for each request's metadata filters (all must hold)."""
+
+    def holds(row, f):
+        have = (row.get("metadata") or {}).get(f["left"]["metadataKey"])
+        if f["operator"] == "NOT_EXISTS":
+            return have is None
+        if have is None:
+            return False
+        a, b = next(iter(have.values())), next(iter(f["right"]["metadataValue"].values()))
+        return {"EQUALS_TO": a == b, "GREATER_THAN": a > b, "LESS_THAN_OR_EQUALS": a <= b}[f["operator"]]
+
+    def handler(op, kw):
+        if op != "retrieve" or kw["namespace"] != NS["facts"]:
+            return []
+        filters = kw["searchCriteria"].get("metadataFilters") or []
+        return [r for r in rows if all(holds(r, f) for f in filters)]
+
+    return handler
+
+
+# The extraction model writes validTo 0 for a current claim: "empty" in a NUMBER field.
+ZERO = _rec("z", "Ann: city: Oslo", kind="claim", status="current", validFrom=1.0, validTo=0)
+
+
+@pytest.mark.asyncio
+async def test_recall_as_of_drops_a_claim_said_after_it_whose_year_was_guessed(monkeypatch):
+    # validFrom 2024 passes the service's validFrom <= as_of, but the claim was said after as_of.
+    guessed = _rec(
+        "g",
+        "Ann: city: Rome",
+        ts="2026-04-02T00:00:00Z",
+        kind="claim",
+        status="current",
+        validFrom=datetime(2024, 4, 2, tzinfo=UTC).timestamp(),
+    )
+    _use(monkeypatch, FakeClient(_filtered([guessed, ZERO])))
+    assert _texts(await _run(as_of=AS_OF)) == ["Ann: city: Oslo"]
+    assert sorted(_texts(await _run())) == ["Ann: city: Oslo", "Ann: city: Rome"]
+
+
+@pytest.mark.asyncio
+async def test_recall_validto_zero_is_current_without_as_of(monkeypatch):
+    _use(monkeypatch, FakeClient(_filtered([ZERO])))
+    page = await _run()
+    assert _texts(page) == ["Ann: city: Oslo"] and page["results"][0]["status"] == "current"
+
+
+@pytest.mark.asyncio
+async def test_recall_validto_zero_is_current_as_of_after_its_start(monkeypatch):
+    _use(monkeypatch, FakeClient(_filtered([ZERO])))
+    assert _texts(await _run(as_of=AS_OF)) == ["Ann: city: Oslo"]
+
+
+@pytest.mark.asyncio
+async def test_recall_as_of_still_excludes_a_fact_that_ended_before_it(monkeypatch):
+    ended = _rec("e", "Ann: city: Rome", kind="claim", status="current", validFrom=1.0, validTo=2.0)
+    _use(monkeypatch, FakeClient(_filtered([ended, ZERO])))
     assert _texts(await _run(as_of=AS_OF)) == ["Ann: city: Oslo"]
 
 
@@ -379,3 +445,33 @@ async def test_as_of_filters_turns_and_entries_by_creation(monkeypatch):
 def test_as_of_is_sent_as_iso_utc_and_a_naive_time_is_utc():
     assert memory_recall._iso_utc(datetime(2026, 3, 1, 9, 30)) == "2026-03-01T09:30:00Z"
     assert memory_recall._iso_utc(datetime.fromisoformat("2026-03-01T10:30:00+01:00")) == "2026-03-01T09:30:00Z"
+
+
+@pytest.mark.asyncio
+async def test_a_question_page_holds_50_turn_excerpts_beside_claims(monkeypatch):
+    filler = "nothing of note here at all " * 40  # ~1,100 characters before the match
+    turns = [_rec(f"t{i}", f"Ann: {filler}the invoice number for job {i} was 7731 {filler}") for i in range(60)]
+    claims = [_rec(f"c{i}", f"Ann: topic {i}: value {i}", kind="claim") for i in range(60)]
+
+    def handler(op, kw):
+        if op != "retrieve":
+            return []
+        return {NS["turns"]: turns, NS["facts"]: claims}.get(kw["namespace"], [])
+
+    c = _use(monkeypatch, FakeClient(handler))
+    page = await memory_recall.recall(
+        memory_id=MEM, namespaces=NS, question="what was the invoice number?", as_of=AS_OF
+    )
+    kinds = [r["kind"] for r in page["results"]]
+    turn = next(r for r in page["results"] if r["kind"] == "turn")
+    assert turn["content"].startswith("Ann: …") and "invoice number" in turn["content"]
+    assert len(turn["content"]) <= len("Ann: ") + 800
+    # 50 claims, then turns of ~200 tokens until the next would pass 8,000 (the 50 cap: test_memory_stages)
+    assert kinds.count("claim") == 50 and kinds.count("turn") > 30
+    used = page["usedEvidenceTokens"]
+    assert used == sum(-(-len(r["content"]) // 4) for r in page["results"]) <= 8000 < used + len(turn["content"]) // 4
+    # the as-of filter still narrows the turn arm
+    (kw,) = c.where("retrieve", NS["turns"])
+    assert kw["searchCriteria"]["metadataFilters"][0]["operator"] == "BEFORE"
+    roomy = await memory_recall.recall(memory_id=MEM, namespaces=NS, question="invoice number?", budget_tokens=20_000)
+    assert [r["kind"] for r in roomy["results"]].count("turn") == 50

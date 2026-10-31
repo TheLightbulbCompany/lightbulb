@@ -1,0 +1,130 @@
+{
+  "dataset": "BEAM",
+  "split": "100k",
+  "datasetRevision": "3205395e897e7318c7b094ef4e6047b9b82dbb03",
+  "conversations": 20,
+  "questions": 400,
+  "failedQuestions": 0,
+  "failedVerdicts": 0,
+  "microAverage": 0.8158809523809524,
+  "macroAverage": 0.8158809523809524,
+  "categories": {
+    "abstention": {
+      "questions": 40,
+      "mean": 0.9625
+    },
+    "contradiction_resolution": {
+      "questions": 40,
+      "mean": 0.58125
+    },
+    "event_ordering": {
+      "questions": 40,
+      "mean": 0.9952380952380953
+    },
+    "information_extraction": {
+      "questions": 40,
+      "mean": 0.6541666666666667
+    },
+    "instruction_following": {
+      "questions": 40,
+      "mean": 0.88125
+    },
+    "knowledge_update": {
+      "questions": 40,
+      "mean": 0.60625
+    },
+    "multi_session_reasoning": {
+      "questions": 40,
+      "mean": 0.5614880952380952
+    },
+    "preference_following": {
+      "questions": 40,
+      "mean": 0.99375
+    },
+    "summarization": {
+      "questions": 40,
+      "mean": 0.9729166666666667
+    },
+    "temporal_reasoning": {
+      "questions": 40,
+      "mean": 0.95
+    }
+  },
+  "answerModel": "gpt-5.6-luna",
+  "judgeModel": "gpt-5.6-luna",
+  "reasoningEffort": "none",
+  "recall": {
+    "limit": 100,
+    "maxTokens": 8000
+  },
+  "prompts": {
+    "source": "https://fabric.so/p/beam-3VjBcqEVRofZyA5CeazeX",
+    "sha256": "584b672d957f3e6f75e96f881ec31da22e1039da1df5fbedb53dc6a9145cfc43"
+  },
+  "backend": "workspace",
+  "backendStats": {
+    "turns": 5732,
+    "events": 2866,
+    "ingestSeconds": 949.5572677499877,
+    "settleSeconds": {
+      "bench-01m632r838h9y4mzrmhzdkq454": 355.0,
+      "bench-01m632tgjqbfnpbgqkcyc32v6z": 254.2,
+      "bench-01m632r837bn25mgtvhqgwp4fy": 353.0,
+      "bench-01m632r838h9y4mzrmhzdkq453": 355.7,
+      "bench-01m632w81014zq7v25mcej356c": 212.5,
+      "bench-01m632s6970d6724ssbd9530yx": 311.4,
+      "bench-01m632r838h9y4mzrmhzdkq455": 348.4,
+      "bench-01m632s5hxrknxq2q4frtda6yf": 318.3,
+      "bench-01m632thdsbm2f3tg0x0jab60m": 243.1,
+      "bench-01m632s87t7qg583ps3bj509qt": 313.3,
+      "bench-01m632tarmnsg1004gcb05cs5a": 278.3,
+      "bench-01m632sdaqs3beefew0cyxtyp0": 306.2,
+      "bench-01m632tqggykfh4pn84qdjb06p": 242.1,
+      "bench-01m632vjt7p61vqmdqw6vj15gx": 232.6,
+      "bench-01m632x0h2tts21k879194rnaf": 219.3,
+      "bench-01m632wmnmvzqxraq4tyqrgwjc": 233.3,
+      "bench-01m632wpxc8b319vbcvsvj9g8m": 214.1,
+      "bench-01m632xhbk1msfh6kmf1pbvn7c": 209.9,
+      "bench-01m632yb52m97drn5sjfg387jy": 218.3,
+      "bench-01m632xxv7h0pqtnqc08e35hcb": 236.2
+    },
+    "facts": {
+      "bench-01m632r838h9y4mzrmhzdkq454": 171,
+      "bench-01m632tgjqbfnpbgqkcyc32v6z": 238,
+      "bench-01m632r837bn25mgtvhqgwp4fy": 141,
+      "bench-01m632r838h9y4mzrmhzdkq453": 179,
+      "bench-01m632w81014zq7v25mcej356c": 243,
+      "bench-01m632s6970d6724ssbd9530yx": 189,
+      "bench-01m632r838h9y4mzrmhzdkq455": 135,
+      "bench-01m632s5hxrknxq2q4frtda6yf": 166,
+      "bench-01m632thdsbm2f3tg0x0jab60m": 254,
+      "bench-01m632s87t7qg583ps3bj509qt": 211,
+      "bench-01m632tarmnsg1004gcb05cs5a": 238,
+      "bench-01m632sdaqs3beefew0cyxtyp0": 223,
+      "bench-01m632tqggykfh4pn84qdjb06p": 282,
+      "bench-01m632vjt7p61vqmdqw6vj15gx": 245,
+      "bench-01m632x0h2tts21k879194rnaf": 235,
+      "bench-01m632wmnmvzqxraq4tyqrgwjc": 258,
+      "bench-01m632wpxc8b319vbcvsvj9g8m": 267,
+      "bench-01m632xhbk1msfh6kmf1pbvn7c": 270,
+      "bench-01m632yb52m97drn5sjfg387jy": 313,
+      "bench-01m632xxv7h0pqtnqc08e35hcb": 254
+    },
+    "recalls": 400,
+    "recallSeconds": 1825.6162312952365,
+    "retries": 0,
+    "throttled": 0
+  },
+  "projectTag": "1029-054001",
+  "harnessVersion": "lb-1",
+  "modelPath": "codex-cli",
+  "usage": {
+    "calls": 1453,
+    "cacheHits": 0,
+    "input_tokens": 14766022,
+    "cached_input_tokens": 10050944,
+    "output_tokens": 93900,
+    "reasoning_output_tokens": 0
+  },
+  "finishedAt": "2026-10-29T06:25:46.973128Z"
+}

@@ -24,12 +24,12 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.dynamodb import utc_now_iso
-from core.repositories import billing_repo, integrations_repo
+from core.repositories import apps_repo, billing_repo, integrations_repo
 from core.repositories import provisioning_workflow_repo as workflow_repo
 from core.services import provisioning_approvals, provisioning_landing, provisioning_workflow
 from core.services import stripe_provisioning as api
 from core.services.owner_facts import write_owner_facts
-from core.services.provisioning_workflow import WorkflowRefused, is_offerable, is_transient
+from core.services.provisioning_workflow import WorkflowRefused, is_offerable, is_transient, provider_of
 from core.services.stripe_provisioning import ProvisioningError
 from core.services.container_auth import _require_hook_token
 from routers.company_board import file_card
@@ -273,7 +273,7 @@ def _safe_service(service: dict, provider: dict) -> dict:
     }
 
 
-def _safe_workflow(row: dict) -> dict:
+def _safe_workflow(row: dict, app_name: str | None = None) -> dict:
     """The ONE serializer for a workflow row, on every door — container or
     browser. Allowlisted, never a filtered copy of the row: the row carries the
     provider connection request id, the resource id, the project id and the approval
@@ -283,6 +283,10 @@ def _safe_workflow(row: dict) -> dict:
         "state": row.get("state"),
         "provider": row.get("provider_name"),
         "service": row.get("service_ref"),
+        # R53: an app's own row says which app and environment it serves.
+        "app_id": row.get("app_id"),
+        "environment": row.get("environment"),
+        "app_name": app_name,
         "awaiting": row.get("awaiting"),
         "information_target": row.get("information_target"),
         "error_code": row.get("error_code"),
@@ -302,6 +306,14 @@ def _safe_workflow(row: dict) -> dict:
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
+
+
+async def _safe_workflows(rows: list[dict]) -> list[dict]:
+    """A list's rows, app rows named after their app (one read per app)."""
+    names: dict[str, str | None] = {}
+    for app_id in {r["app_id"] for r in rows if r.get("app_id")}:
+        names[app_id] = (await apps_repo.get(app_id) or {}).get("name")
+    return [_safe_workflow(r, names.get(r.get("app_id") or "")) for r in rows]
 
 
 # Stripe's Provisioning API has no webhooks, so a READ is what moves a
@@ -408,11 +420,11 @@ async def container_catalog(owner_id: str, request: Request, q: str = Query(defa
         raise _stripe_failure(e) from e
 
     rows = [
-        _safe_service(s, providers[s["provider_id"]])
+        _safe_service(s, providers[provider_of(s)])
         for s in services
         # A service whose provider is not in the catalog is one `start` refuses
         # outright, so it is not an offer we can keep.
-        if s.get("provider_id") in providers and is_offerable(s, providers[s["provider_id"]])
+        if provider_of(s) in providers and is_offerable(s, providers[provider_of(s)])
     ]
     needle = q.strip().lower()
     if needle:
@@ -472,7 +484,7 @@ async def container_requests(owner_id: str, request: Request):
     await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
     rows = await workflow_repo.list_for_owner(owner_id)
     rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-    return {"requests": [_safe_workflow(r) for r in await _stepped(rows)]}
+    return {"requests": await _safe_workflows(await _stepped(rows))}
 
 
 @router.get("/u/{owner_id}/requests/{workflow_id}")
@@ -617,7 +629,7 @@ async def list_workflows(auth: Annotated[AuthContext, Depends(get_current_user)]
     owner_id = resolve_owner_id(auth)
     rows = await workflow_repo.list_for_owner(owner_id)
     rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-    return {"workflows": [_safe_workflow(r) for r in await _stepped(rows)]}
+    return {"workflows": await _safe_workflows(await _stepped(rows))}
 
 
 @router.post("/workflows/{workflow_id}/approve")

@@ -406,6 +406,25 @@ describe("DatabaseStack — provisioning-workflows table", () => {
   });
 });
 
+describe("DatabaseStack — apps table", () => {
+  test("apps keyed by app_id with owner-index and name-index", () => {
+    buildStack("dev").hasResourceProperties("AWS::DynamoDB::Table", Match.objectLike({
+      TableName: Match.stringLikeRegexp("apps$"),
+      KeySchema: [{ AttributeName: "app_id", KeyType: "HASH" }],
+      GlobalSecondaryIndexes: [
+        Match.objectLike({
+          IndexName: "owner-index",
+          KeySchema: [
+            { AttributeName: "owner_id", KeyType: "HASH" },
+            { AttributeName: "name", KeyType: "RANGE" },
+          ],
+        }),
+        Match.objectLike({ IndexName: "name-index", KeySchema: [{ AttributeName: "name", KeyType: "HASH" }] }),
+      ],
+    }));
+  });
+});
+
 describe("DatabaseStack — slack-installs table", () => {
   let template: Template;
   beforeAll(() => {

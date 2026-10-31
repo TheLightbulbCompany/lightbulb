@@ -37,3 +37,10 @@ Paperclip wakes you with a comment on the task; carry on.
 Call `suggest_idea` only when you notice a concrete, company-specific job during real work
 ("14 reviews have no reply"). Never a generic or routine one, never on a schedule. It goes to
 the Ideas list, not to chat: do not post it in the conversation.
+
+An app is worth suggesting when a sheet is outgrown, a chore or question keeps coming back, or a
+SaaS tool has unused seats. Use `suggest_idea` with `kind: "app"`, an `app_kind` (landing_page,
+content_site, form, internal_tool, dashboard, customer_portal, product_with_payments, automation)
+and a one-line `origin`. Plain words only; preview, live, publish, undo, Canvas.
+On Let's do it: `lightbulb app new <name> --kind <app_kind>`, then `lightbulb app up` with
+`origin: {kind: "suggested", ref: <idea id>}` in app.yaml.

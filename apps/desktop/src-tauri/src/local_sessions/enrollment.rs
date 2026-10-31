@@ -586,6 +586,42 @@ pub(crate) fn sharing_on(state_dir: &Path) -> bool {
     private_read::<Enrollment>(&state_dir.join("enrollment.json"))
         .is_ok_and(|e| e.enabled && !e.paused && !e.remote_disabled)
 }
+/// The sidebar's Share on an engine row. The page names a row; the session, and the words the
+/// person is asked about, come from the engine's own live rows, so a page cannot name a session
+/// that is not this Mac's own, nor show one row and share another.
+#[tauri::command]
+pub async fn share_engine_session(app: tauri::AppHandle, session_id: String) -> Result<()> {
+    let view = engine_view::read().await?;
+    let row = engine_view::own_claude_row(&view, &session_id).ok_or("that session is not running on this Mac")?;
+    let state = state_dir(&app)?;
+    if !sharing_on(&state) {
+        return Err("sharing is off on this Mac".into());
+    }
+    // Before the dialog: an ask for a session the relay does not hold yet would wait for it and
+    // apply later, with no new Allow.
+    let key = transport::claude_key(&home()?, &row.conversation);
+    let live = || -> Result<Mirror> {
+        if !sharing_on(&state) {
+            return Err("sharing is off on this Mac".into());
+        }
+        super::mod_socket::mirrors(&session_scope(&state)?)
+            .into_iter()
+            .find_map(|(k, m)| (k == key && m.ended_at.is_none()).then_some(m))
+            .ok_or("Lightbulb does not see this session yet. Wait a few seconds, then try again.".into())
+    };
+    live()?;
+    if !crate::confirm_native(&app, "Share this session with your workspace?", engine_view::share_prompt(row)).await {
+        return Err(crate::DECLINED_ON_MAC.into());
+    }
+    // The dialog can stay open for minutes: sharing may have gone off or the session ended.
+    let mirror = live()?;
+    let enrollment: Enrollment = private_read(&state.join("enrollment.json"))?;
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(8)).build().map_err(|_| "network unavailable")?;
+    super::mod_socket::share(&client, &enrollment, &load_mac_identity()?, &key, &mirror)
+        .await
+        .map_err(|e| e["message"].as_str().unwrap_or("could not share").to_owned())
+}
+
 /// The workspace this Mac's sessions are shared to, if enrolled.
 pub(crate) fn enrolled_owner(state_dir: &Path) -> Option<String> {
     private_read::<Enrollment>(&state_dir.join("enrollment.json")).ok().map(|e| e.owner_id)

@@ -1,6 +1,7 @@
 //! Opt-in native terminal sharing. Provider processes and credentials stay local.
 mod approval;
 mod claude;
+mod engine_view;
 pub(crate) mod codex;
 mod hooked;
 pub mod enrollment;
@@ -1856,6 +1857,9 @@ struct Mirror {
     // after an answer is news rather than a repeat.
     #[serde(default)]
     waiting: Option<WaitingPrompt>,
+    /// The engine's own key for this session (`Host::apply_engine`): `networkSessionId` on the wire.
+    #[serde(default)]
+    network_id: Option<String>,
     /// Model, permission mode and reported tokens, read off the same rows.
     #[serde(default)]
     stats: stats::Stats,
@@ -3154,6 +3158,7 @@ mod tests {
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
+            network_id: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         assert_eq!(first["events"][0]["text"], "hello");
@@ -3246,6 +3251,7 @@ mod tests {
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
+            network_id: None,
         };
         mirror.next_batch().unwrap();
         assert!(
@@ -3337,6 +3343,7 @@ mod tests {
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
+            network_id: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -3443,6 +3450,7 @@ mod tests {
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
+            network_id: None,
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -3514,6 +3522,7 @@ mod tests {
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
+            network_id: None,
         }
     }
 

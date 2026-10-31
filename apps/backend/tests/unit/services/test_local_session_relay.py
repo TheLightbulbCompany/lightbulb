@@ -1502,7 +1502,7 @@ async def test_unknown_stop_settles_only_after_its_turn_ends_then_unblocks_next_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["status", "active-turn", "control", "workspace", "expired"])
+@pytest.mark.parametrize("change", ["status", "active-turn", "control", "workspace", "network-id", "expired"])
 async def test_visible_heartbeat_change_or_recovery_notifies_resources(transport, change):
     with patch("time.time", return_value=10000):
         sid = await start(transport)
@@ -1512,6 +1512,7 @@ async def test_visible_heartbeat_change_or_recovery_notifies_resources(transport
         "active-turn": {"activeTurnId": "turn-2"},
         "control": {"controlUnavailableReason": "endpoint-unavailable"},
         "workspace": {"workspace": {"revision": 1, "coverage": "bounded", "changed": True, "overlap": False}},
+        "network-id": {"networkSessionId": NETWORK_SID},
     }
     transport[4].clear()
     with patch("time.time", return_value=row["onlineUntil"] + 1 if change == "expired" else 10010):
@@ -1617,6 +1618,38 @@ async def test_signals_register_update_on_heartbeat_clear_when_absent_and_hide_w
         importlib.import_module("core.services.local_session_relay").HeartbeatSession(
             sessionId=sid, generation="g", status="idle", pr={**pr, "url": "javascript:x"}
         )
+
+
+NETWORK_SID = "abc123def456/claude:11111111-1111-4111-8111-111111111111"
+
+
+@pytest.mark.asyncio
+async def test_network_session_id_registers_rides_heartbeats_survives_silence_and_is_validated(transport):
+    assert "networkSessionId" in importlib.import_module("core.services.local_session_relay").FEATURES
+    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport)
+    sid = (await relay(transport).handle_message("conn-1", registration()))["sessionId"]
+    assert "networkSessionId" not in await repo.get_session(OWNER, sid), "absent, never a stored null"
+    plain = (await service.list_resources(BOB, ROOM)).sessions[0].model_dump(by_alias=True)
+    assert "networkSessionId" not in plain
+    await relay(transport).handle_message("conn-1", heartbeat(sid, networkSessionId=NETWORK_SID))
+    assert (await repo.get_session(OWNER, sid))["networkSessionId"] == NETWORK_SID
+    await relay(transport).handle_message("conn-1", heartbeat(sid))
+    assert (await repo.get_session(OWNER, sid))["networkSessionId"] == NETWORK_SID, "silence keeps it"
+    await relay(transport).handle_message("conn-1", registration())
+    assert (await repo.get_session(OWNER, sid))["networkSessionId"] == NETWORK_SID, "a re-register keeps it"
+    other = NETWORK_SID.replace("1111", "2222")
+    await relay(transport).handle_message("conn-1", registration(networkSessionId=other))
+    listed = (await service.list_resources(BOB, ROOM)).sessions[0].model_dump(by_alias=True)
+    assert listed["networkSessionId"] == other
+    assert not {"nativeConversationId", "profileFingerprint"} & listed.keys()
+    for bad in ("nope", "a/b", NETWORK_SID + "!"):
+        with pytest.raises(ApiProblem):
+            await relay(transport).handle_message("conn-1", registration(networkSessionId=bad))
+        with pytest.raises(pydantic.ValidationError):
+            importlib.import_module("core.services.local_session_relay").HeartbeatSession(
+                sessionId=sid, generation="g", status="idle", networkSessionId=bad
+            )
 
 
 @pytest.mark.asyncio

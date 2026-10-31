@@ -74,6 +74,8 @@ class Descriptor(ContractModel):
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
     holder_id: HolderId | None = None
+    # The engine's id for this session, so a client can join the network list to this one.
+    network_session_id: sessions.NetworkSessionId | None = None
     # A Claude session moved to the background (<-) continues as a fork with a new conversation:
     # this names the session it continues, so a listing shows one session, not two.
     forked_from: sessions.OpaqueId | None = None
@@ -144,6 +146,8 @@ class HeartbeatSession(ContractModel):
     changes: sessions.SessionChanges | None = None
     agents: sessions.AgentCount | None = None
     pr: sessions.SessionPr | None = None
+    # The engine's id for this session, so a client can join the network list to this one.
+    network_session_id: sessions.NetworkSessionId | None = None
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
@@ -171,6 +175,8 @@ FEATURES = [
     "sessionAttention",
     # The Mac sends `changes`, `agents` and `pr` only once this is listed.
     "sessionSignals",
+    # The Mac sends `networkSessionId` only once this is listed.
+    "networkSessionId",
 ]
 
 
@@ -400,6 +406,7 @@ _PUBLIC_FIELDS = (
     "cwdName",
     "lastAssistantMessage",
     "controlUnavailableReason",
+    "networkSessionId",
     *ATTENTION_FIELDS,
     *SIGNAL_FIELDS,
 )
@@ -724,7 +731,8 @@ class LocalSessionRelay:
                     compatible = descriptor.control_unavailable_reason is None
                     row = _revised(
                         previous or {},
-                        **descriptor.model_dump(by_alias=True, exclude={"shared"}),
+                        **descriptor.model_dump(by_alias=True, exclude={"shared", "network_session_id"}),
+                        networkSessionId=descriptor.network_session_id or (previous or {}).get("networkSessionId"),
                         pk=repo.session_pk(owner, sid),
                         sk="META",
                         ownerId=owner,
@@ -774,7 +782,7 @@ class LocalSessionRelay:
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
                     # Absent, never a stored null.
-                    for key in ("holderId", "forkedFrom", *ATTENTION_FIELDS, *SIGNAL_FIELDS):
+                    for key in ("holderId", "forkedFrom", "networkSessionId", *ATTENTION_FIELDS, *SIGNAL_FIELDS):
                         if not row.get(key):
                             row.pop(key, None)
                     # The hidden `background` kind is gone (Phase 3); a row that still has it is listed now.
@@ -1027,6 +1035,7 @@ class LocalSessionRelay:
                             ("title", item.title),
                             ("cwdName", item.cwd_name),
                             ("lastAssistantMessage", item.last_assistant_message),
+                            ("networkSessionId", item.network_session_id),
                         )
                         if value is not None
                     }

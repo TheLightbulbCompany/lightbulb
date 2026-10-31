@@ -26,7 +26,7 @@ export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRe
   const { live, ended, endedCount } = useMemo(() => {
     const byId = new Map(entries.map((entry) => [entry.session.sessionId, entry]));
     const rows = (sessions: { sessionId: string }[]) => sessions.map((session) => byId.get(session.sessionId)!);
-    const matching = entries.filter((entry) => !sessionArchived(entry.session) && sessionMatches(entry.session, query, entry.ownerName))
+    const matching = entries.filter((entry) => (entry.kept || !sessionArchived(entry.session)) && sessionMatches(entry.session, query, entry.ownerName))
       .map((entry) => entry.session);
     const stopped = sessionHistory(matching.filter((session) => !sessionLive(session)));
     return {

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { act, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { RoomDirectory, type RoomDirectoryProps } from "../RoomDirectory";
 import type { DirectoryParticipant, DirectoryRoom } from "../types";
@@ -1000,4 +1000,32 @@ it("ends the list with an Invite someone row that opens the invite dialog, and n
   expect(openInviteDialog).toHaveBeenCalledTimes(1);
   // Closes the phone drawer, like the rail's Invite.
   expect(onNavigate).toHaveBeenCalledTimes(1);
+});
+
+describe("network-only session rows", () => {
+  const entry = (id: string, extra = {}) => ({ session: { sessionId: id, deviceId: "d", humanUserId: "alice", provider: "claude" as const, providerVersion: "2", generation: "g", status: "busy" as const, activeTurnId: null,
+    capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 1, title: `Shared ${id}`, lastEventAt: new Date().toISOString() },
+    ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 }, ...extra });
+  const net = (id: string) => ({ id, source: "network" as const, person: { name: "Dana", isViewer: false }, agent: "opencode", title: `Net ${id}`, state: "idle" as const });
+  const sessions = (props: object) => render(<RoomDirectory {...directory} onSelectSession={vi.fn()} {...props} />);
+
+  it("shows a network row alone, with no empty state", () => {
+    sessions({ networkSessions: [net("a")] });
+    expect(screen.getByText("Net a")).toBeInTheDocument();
+    expect(screen.queryByText("No one is sharing a session.")).toBeNull();
+  });
+
+  it("hides a network row behind the cap and counts it in +N more", () => {
+    sessions({ sessions: Array.from({ length: 5 }, (_, i) => entry(`s${i}`)), networkSessions: [net("a")] });
+    expect(screen.queryByText("Net a")).toBeNull();
+    expect(screen.getByRole("button", { name: "+1 more" })).toBeInTheDocument();
+  });
+
+  it("counts a kept old offline row in All sessions", () => {
+    const old = entry("old", { kept: true });
+    old.session.status = "offline" as never;
+    old.session.lastEventAt = new Date(Date.now() - 20 * 86400_000).toISOString();
+    sessions({ sessions: [old], onOpenAllSessions: vi.fn() });
+    expect(screen.getByRole("button", { name: /All sessions/ })).toHaveTextContent("1");
+  });
 });

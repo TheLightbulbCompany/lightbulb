@@ -21,6 +21,12 @@ describe("sidebarSessionList", () => {
     expect(ids(sidebarSessionList(entries, none, NOW).list)).toEqual(["live-old", "live-new", "ended-new", "ended-old"]);
   });
 
+  it("keeps an offline row older than 3 days when it is kept, else drops it", () => {
+    const old = s("old", "offline", "2026-10-20T11:59:00Z");
+    expect(ids(sidebarSessionList([{ session: old, kept: true }], none, NOW).list)).toEqual(["old"]);
+    expect(ids(sidebarSessionList([{ session: old }], none, NOW).list)).toEqual([]);
+  });
+
   it("lists a session ended on purpose like any ended one, and never one offline for days", () => {
     const { list, archived } = sidebarSessionList([
       ...entries,

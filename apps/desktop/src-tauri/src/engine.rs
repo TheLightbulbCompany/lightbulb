@@ -286,4 +286,11 @@ mod tests {
         assert_eq!(bundled(&app.path().join("Lightbulb.app/Contents/MacOS/lightbulb-desktop")), Some(packaged));
         assert_eq!(bundled(&app.path().join("elsewhere/lightbulb-desktop")), None);
     }
+
+    #[test]
+    fn the_vendored_engine_is_at_least_the_floor() {
+        let script = include_str!("../scripts/vendor-sidecars.sh");
+        let tag = script.lines().find_map(|line| line.strip_prefix("ENGINE_TAG=\"")?.strip_suffix('"')).unwrap();
+        assert!(core(tag.trim_start_matches('v')).unwrap() >= vec![0, 8, 0], "this app reads the engine from 0.8.0 on; the script vendors {tag}");
+    }
 }

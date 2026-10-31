@@ -618,6 +618,7 @@ def _build_failed(st: dict) -> dict:
 
 
 _LOG_TAIL = 2000
+_LOG_WAIT_S = 5  # this runs on status reads, inside the 60 s lease: a hung Vercel must not hold them
 
 
 async def _failure(app: dict, creds: dict, pending: dict, st: dict) -> dict:
@@ -625,10 +626,13 @@ async def _failure(app: dict, creds: dict, pending: dict, st: dict) -> dict:
     leaves the original error as it was."""
     err = {**_build_failed(st), "deployment_id": pending["deployment_id"], "at": utc_now_iso()}
     try:
-        events = await vercel.deployment_events(creds, pending["deployment_id"], limit=50)
-        scrub = await _scrubber(app["owner_id"], app["app_id"])
+        async with asyncio.timeout(_LOG_WAIT_S):
+            events = await vercel.deployment_events(creds, pending["deployment_id"], limit=50)
+            scrub = await _scrubber(app["owner_id"], app["app_id"])
         tail = scrub("\n".join(e["message"] for e in events))[-_LOG_TAIL:].strip()
-    except Exception:
+    except Exception as e:
+        if isinstance(e, vercel.VercelError) and _refused(e):
+            raise  # a dead token: `_with_token` renews it and this step runs again
         logger.warning("apps: %s build log unavailable", app["app_id"], exc_info=True)
         return err
     return {**err, "message": f"{err['message']}\n{tail}"} if tail else err

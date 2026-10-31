@@ -2652,6 +2652,31 @@ async def test_failed_preview_keeps_error_when_log_fetch_fails(world, monkeypatc
     assert res["error"]["message"] == "Build failed"
 
 
+async def test_a_hung_build_log_does_not_hold_the_read(world, monkeypatch):
+    async def hang(*_a, **_k):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(svc, "_LOG_WAIT_S", 0.01)
+    src, res = await _first_build_fails(world, monkeypatch, hang)
+    assert res["state"] == "failed" and res["error"]["message"] == "Build failed"
+
+
+async def test_a_build_log_never_stores_a_connection_string(world, monkeypatch):
+    events = AsyncMock(return_value=[{"message": f"cannot reach {DEV_DB} or postgresql://u:p@h/db"}])
+    src, res = await _first_build_fails(world, monkeypatch, events)
+    for secret in (DEV_DB, "DEVPW", "u:p@h"):
+        assert secret not in res["error"]["message"]
+    assert "[redacted]" in res["error"]["message"]
+
+
+async def test_a_refused_token_reading_the_build_log_is_not_swallowed(world, monkeypatch):
+    app = {"owner_id": OWNER, "app_id": "app_x"}
+    dead = svc.vercel.VercelError("forbidden", "no", 403, invalid_token=True)
+    monkeypatch.setattr(svc.vercel, "deployment_events", AsyncMock(side_effect=dead))
+    with pytest.raises(svc.vercel.VercelError):
+        await svc._failure(app, VERCEL, {"deployment_id": "dpl_x"}, {"errorMessage": "Build failed"})
+
+
 async def test_failed_publish_stores_log_tail(world, monkeypatch):
     src, _, _ = await _ready_preview(world)
     await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)

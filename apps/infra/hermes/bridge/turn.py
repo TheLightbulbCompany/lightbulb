@@ -2050,8 +2050,16 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None, spo
         from bridge import network  # the agent's name is its declared network session's title
         name = next((s.get("title") for s in network.sessions() if s.get("agentId") == agent_id), None) or "an agent"
         label = (body.get("message") or {}).get("label") or "someone on the network"
-        identity = (f"You are {name}, answering a network message from {label}. "
-                    f"Reply with lightbulb_network if a reply is needed. {_repo_rule(agent_id)}")
+        kind = (body.get("message") or {}).get("kind")
+        if kind == "assign":
+            task = (f"This is an assignment from {label}: do it, then reply with lightbulb_network action send, "
+                    "reply_to its requestId, and status failed or cancelled if you could not finish.")
+        elif kind == "cancel":
+            task = f"{label} cancelled an assignment: stop that work and reply with lightbulb_network action send, reply_to its requestId, and status cancelled."
+        else:
+            task = f"answering a network message from {label}. Reply with lightbulb_network if a reply is needed."
+        identity = (f"You are {name}, {task} {_repo_rule(agent_id)}" if kind not in ("assign", "cancel")
+                    else f"You are {name}. {task} {_repo_rule(agent_id)}")
     elif spoken:
         room = ctx["room"]
         identity = (

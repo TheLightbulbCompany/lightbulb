@@ -156,6 +156,18 @@ def _fetch_sessions() -> tuple[bytes, dict] | None:
     return raw, json.loads(raw)
 
 
+def _enable_workers() -> None:
+    """Assignments need ``network_workers = true`` in the member's flat config.toml. Only when the
+    runtime sets LIGHTBULB_NETWORK_WORKERS=1; otherwise the file is left untouched."""
+    if os.environ.get("LIGHTBULB_NETWORK_WORKERS") != "1":
+        return
+    path = NET_HOME / "config.toml"
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    cut = next((i for i, ln in enumerate(lines) if ln.strip().startswith("[")), len(lines))
+    top = [ln for ln in lines[:cut] if ln.split("=")[0].strip() != "network_workers"]
+    path.write_text("\n".join([*top, "network_workers = true", *lines[cut:]]) + "\n", encoding="utf-8")
+
+
 def _start() -> bool:
     global _proc, _token, _etag, _sha, _sessions, _stopping, _ready
     fetched = _fetch_sessions()
@@ -184,6 +196,7 @@ def _start() -> bool:
         fh.write(base64.b64decode(bridge.NETWORK_KEY))
     os.chmod(key_path, 0o600)
 
+    _enable_workers()
     SOCKET.unlink(missing_ok=True)
     _token = secrets.token_urlsafe(32)
     _stopping = False
@@ -427,10 +440,12 @@ def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
         turn.discard_run(key)
         turn.release_turn()
         return
+    message = {"text": record.get("framed") or "", "label": record.get("label")}
+    message.update({k: record[k] for k in ("kind", "reply_to", "status", "done_when", "deadline_at") if k in record})
     body = {"version": 1, "eventKind": "network_message", "eventId": record["id"],
             "targetAgentId": agent_id,
             "sessionKey": record.get("thread") or record.get("from") or record["id"],
-            "message": {"text": record.get("framed") or "", "label": record.get("label")}}
+            "message": message}
     outcome = None
     try:
         outcome = turn.run_turn(agent_id, body, None, True)  # releases the reserved turn itself

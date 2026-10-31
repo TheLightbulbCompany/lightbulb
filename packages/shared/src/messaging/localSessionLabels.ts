@@ -202,11 +202,11 @@ export const sessionArchivedByViewer = (s: Pick<LocalSession, "sessionId" | "lat
  * came in (`workspaceSections`: mine first). Never listed: one
  * offline for days. One ended on purpose is listed like any ended one until removed (2026-10-27). `archived` is what the viewer archived, for the "Archived" group.
  */
-export function sidebarSessionList<T extends { session: LocalSession }>(entries: readonly T[], marks: SessionMarks, now = Date.now()): { list: T[]; archived: T[] } {
+export function sidebarSessionList<T extends { session: LocalSession; kept?: boolean }>(entries: readonly T[], marks: SessionMarks, now = Date.now()): { list: T[]; archived: T[] } {
   const list: T[] = [];
   const archived: T[] = [];
   for (const entry of entries) {
-    if (sessionArchived(entry.session, now)) continue;
+    if (!entry.kept && sessionArchived(entry.session, now)) continue;
     (sessionArchivedByViewer(entry.session, marks.archived) ? archived : list).push(entry);
   }
   const rank = (s: LocalSession) => marks.pinned.includes(s.sessionId) ? 0 : sessionLive(s) ? 1 : 2;

@@ -438,11 +438,13 @@ export function MessagingWorkspaceProvider({
     ({ ownerName: humanUserId === userId ? "You" : humanName(humanUserId), own: humanUserId === userId }),
     [userId, humanName]);
   const sessionRows = useSessionRows(workspaceSessions.sessions, userId, humanName);
-  const sidebarSessions: SidebarSession[] = useMemo(() =>
-    workspaceSections(sessionRows.flatMap((row) => row.backend ?? []), userId, humanName).flatMap((section) =>
+  const networkSessions = useMemo(() => sessionRows.filter((row) => row.source === "network"), [sessionRows]);
+  const sidebarSessions: SidebarSession[] = useMemo(() => {
+    const kept = new Set(sessionRows.flatMap((row) => row.backend && row.engine ? [row.backend.sessionId] : []));
+    return workspaceSections(sessionRows.flatMap((row) => row.backend ?? []), userId, humanName).flatMap((section) =>
       section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId,
-        owner: ownerFace(session.humanUserId, session.humanUserId === userId && !isOnRoster(session.humanUserId) ? myName : humanName(session.humanUserId)), unread: sessionUnread(session, seen) }))),
-    [sessionRows, userId, humanName, isOnRoster, myName, seen]);
+        owner: ownerFace(session.humanUserId, session.humanUserId === userId && !isOnRoster(session.humanUserId) ? myName : humanName(session.humanUserId)), unread: sessionUnread(session, seen), kept: kept.has(session.sessionId) })));
+  }, [sessionRows, userId, humanName, isOnRoster, myName, seen]);
   const members: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
   // The feed seats only people; its agents are authors on the roster. They are added here so a
   // Discuss reply can @mention one (by name: an unseated agent has no handle in the room).
@@ -890,6 +892,7 @@ export function MessagingWorkspaceProvider({
     onRetry: () => void rooms.refreshRooms(),
     draftRoomIds,
     sessions: sidebarSessions,
+    networkSessions,
     onSelectSession: (sessionId: string) => void openSession(sessionId),
     onRenameSession: rooms.resourceSource.client.setLocalSessionDisplayTitle ? async (sessionId, title) => {
       await rooms.resourceSource.client.setLocalSessionDisplayTitle!(sessionId, title);

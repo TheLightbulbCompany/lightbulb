@@ -505,10 +505,9 @@ def _network_invite(params: dict, **_kwargs) -> dict:
     ``/network/join-line``). The ticket is a bearer credential: it is returned, never logged, and
     ``_net`` puts only the op's code in an error."""
     def run() -> dict:
+        team = network.ask("team.get", {})  # first: a failed read must not burn a link
         got = network.ask("team.invite", {"mode": "once", "code": False})
-        team = network.ask("team.get", {})
-        return {"ticket": got.get("ticket"), "team_id": team.get("team_id"),
-                "expires_at": got.get("expires_at") or got.get("expires")}
+        return {"ticket": got.get("ticket"), "team_id": team.get("team_id"), "expires_at": got.get("expires_at")}
 
     return _net("network.invite", "", run=run)
 

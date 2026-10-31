@@ -175,6 +175,12 @@ def test_network_invite_returns_ticket_and_team_id(net):
     assert _sent(net, "team.get")
 
 
+def test_network_invite_reads_the_team_before_minting(net):
+    net.answer(**{"team.get": {"ok": False, "error": "unsupported"}})
+    assert _rpc("network.invite")["ok"] is False
+    assert not _sent(net, "team.invite")
+
+
 def test_network_invite_refused_is_an_op_error(net):
     net.answer(**{"team.invite": {"ok": False, "error": "unsupported"}})
     answer = _rpc("network.invite")

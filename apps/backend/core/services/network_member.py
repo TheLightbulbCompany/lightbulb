@@ -238,29 +238,38 @@ async def stored_team_id(owner_id: str) -> str | None:
     return ((await _read_sessions(owner_id)) or {}).get("teamId") or None
 
 
-async def team_info(owner_id: str) -> dict:
-    """``{workspace, teamId}`` from what is stored: no RPC, so it never wakes the runtime."""
-    from core.services import network_login
+LINE_RETRY_S = 15
 
-    return {"workspace": await network_login._workspace(owner_id), "teamId": await stored_team_id(owner_id)}
+
+def _line_busy() -> ApiProblem:
+    return ApiProblem(
+        "RUNTIME_UNAVAILABLE",
+        "Your workspace is waking up. Try again shortly.",
+        retryable=True,
+        retry_after=LINE_RETRY_S,
+    )
 
 
 async def mint_line(owner_id: str) -> dict:
     """A once link to the network this workspace's member is on, for a person's computer:
     ``{ticket, teamId, expiresAt}``. Stores ``teamId``. The ticket is a bearer credential: it is
     only returned, never logged, and no error carries it."""
+    # API Gateway cuts a request at 30 s and a cold start takes longer: ring the queued doorbell and
+    # have the client retry. No doorbell (never on a network) falls through to the direct RPC.
+    if not await _session_is_warm(owner_id) and await wake(owner_id):
+        raise _line_busy()
     try:
-        got = await container_rpc.call(owner_id, "network.invite", {}, timeout_s=85)
+        got = await container_rpc.call(owner_id, "network.invite", {})
     except (RuntimeError, asyncio.TimeoutError) as exc:
         if isinstance(exc, asyncio.TimeoutError) or rpc_error(exc).get("code") in (
             "UNAVAILABLE",
             "RUNTIME_UNAVAILABLE",
         ):
-            raise container_rpc._unavailable() from None
+            raise _line_busy() from None
         raise ApiProblem("INVALID_REQUEST", "Your workspace could not make a join link.") from None
     got = got if isinstance(got, dict) else {}
     if not got.get("ticket"):
-        raise container_rpc._unavailable()
+        raise _line_busy()
     team_id = got.get("team_id") or None
     doc = await _read_sessions(owner_id)
     if doc is not None:

@@ -34,7 +34,6 @@ def _device(user="user_ada", owner="org_a"):
 def env(table, monkeypatch):
     from routers import network
 
-    monkeypatch.setattr(network_member, "_humans_to_ask", AsyncMock(), raising=False)
     monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=["user_ada"]))
     monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"}))
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ada"))
@@ -101,15 +100,17 @@ def test_join_line_free_409(env):
 def test_join_line_no_sessions_409(env, monkeypatch):
     client, _, mint, _ = env
     monkeypatch.setattr(network_member, "sessions_exist", AsyncMock(return_value=False))
-    assert client.post("/api/v1/network/join-line", headers=AUTH).status_code == 409
+    r = client.post("/api/v1/network/join-line", headers=AUTH)
+    assert r.status_code == 409 and r.json()["detail"]["message"] == "no workspace agents yet"
     mint.assert_not_awaited()
 
 
 def test_join_line_unavailable_is_503_with_retry_after(env):
     client, _, mint, _ = env
-    mint.side_effect = container_rpc._unavailable()
+    mint.side_effect = network_member._line_busy()
     r = client.post("/api/v1/network/join-line", headers=AUTH)
-    assert r.status_code == 503 and r.headers["retry-after"] == "10" and r.headers["cache-control"] == "no-store"
+    assert r.json()["retryAfter"] == 15
+    assert r.status_code == 503 and r.headers["retry-after"] == "15" and r.headers["cache-control"] == "no-store"
 
 
 def test_join_line_logs_no_ticket(env, caplog):
@@ -167,3 +168,35 @@ def test_approve_desktop_mints_the_login_proof(env, monkeypatch):
 def test_approve_desktop_needs_a_device_token(env):
     client, *_ = env
     assert client.post("/api/v1/network/device/approve-desktop", json={"userCode": "ABC"}).status_code == 403
+
+
+def test_join_line_first_name_and_clerk_failure(env, monkeypatch):
+    client, *_ = env
+    monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Ada Lovelace"))
+    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(side_effect=RuntimeError("clerk down")))
+    body = client.post("/api/v1/network/join-line", headers=AUTH).json()
+    assert body["name"] == "Ada" and body["workspace"] == "your workspace"
+    team = client.get("/api/v1/network/team", headers=AUTH).json()
+    assert team["name"] == "Ada" and team["workspace"] == "your workspace"
+
+
+def test_approve_desktop_needs_workspace_membership(env, monkeypatch):
+    client, *_ = env
+    monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=["someone"]))
+    monkeypatch.setattr("core.services.device_login.live_row", AsyncMock(return_value={"purpose": "login"}))
+    approve = AsyncMock()
+    monkeypatch.setattr(network_login, "approve", approve)
+    r = client.post("/api/v1/network/device/approve-desktop", json={"userCode": "ABC"}, headers=AUTH)
+    assert r.status_code == 403
+    approve.assert_not_awaited()
+
+
+def test_team_with_a_signed_in_computer_proof(env, monkeypatch):
+    from core.auth import AuthContext
+
+    client, *_ = env
+    identity = AsyncMock(return_value=(AuthContext(user_id="user_ada", org_id="org_a"), "label"))
+    monkeypatch.setattr(network_login, "computer_identity", identity)
+    r = client.get("/api/v1/network/team", headers={"X-Lightbulb-Proof": "p"})
+    assert r.status_code == 200 and r.json()["workspace"] == "Acme" and r.json()["userId"] == "user_ada"
+    identity.assert_awaited_once()

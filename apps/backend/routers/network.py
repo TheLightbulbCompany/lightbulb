@@ -99,6 +99,16 @@ async def desktop_or_computer(request: Request) -> tuple[str, str]:
     return device.user_id, device.owner_id
 
 
+async def _first_name(user_id: str) -> str | None:
+    words = (await network_login._name(user_id) or "").split()
+    return words[0] if words else None
+
+
+async def _workspace_label(owner_id: str) -> str:
+    """A Clerk failure must not read as a free account."""
+    return await network_login._workspace(owner_id) or "your workspace"
+
+
 async def _workspace_person(user_id: str, owner_id: str) -> None:
     """403 unless ``user_id`` is one of the workspace's people (the sidecar's own gate)."""
     from core.services.website_logins import _humans_to_ask
@@ -116,8 +126,12 @@ async def network_team(response: Response, who: tuple[str, str] = Depends(deskto
     if owner_id == user_id:
         return {"workspace": None, "teamId": None, "userId": user_id, "name": None}
     await _workspace_person(user_id, owner_id)
-    info = await network_member.team_info(owner_id)
-    return {**info, "userId": user_id, "name": await network_login._name(user_id)}
+    return {
+        "workspace": await _workspace_label(owner_id),
+        "teamId": await network_member.stored_team_id(owner_id),
+        "userId": user_id,
+        "name": await _first_name(user_id),
+    }
 
 
 @router.post("/join-line")
@@ -130,15 +144,18 @@ async def network_join_line(response: Response, who: tuple[str, str] = Depends(d
         raise HTTPException(409, {"code": "NO_WORKSPACE", "message": "You are not in a workspace."})
     await _workspace_person(user_id, owner_id)
     if not await network_member.sessions_exist(owner_id):
-        raise HTTPException(409, {"code": "NO_SESSIONS", "message": "Your workspace has no agents on a network yet."})
+        raise HTTPException(409, {"code": "NO_SESSIONS", "message": "no workspace agents yet"})
     try:
         line = await network_member.mint_line(owner_id)
     except ApiProblem as exc:
         if exc.status_code != 503:
             raise
-        return JSONResponse(exc.body(), status_code=503, headers={"Retry-After": "10", "Cache-Control": "no-store"})
-    info = await network_member.team_info(owner_id)
-    return {**line, "workspace": info["workspace"], "name": await network_login._name(user_id)}
+        return JSONResponse(
+            exc.body(),
+            status_code=503,
+            headers={"Retry-After": str(network_member.LINE_RETRY_S), "Cache-Control": "no-store"},
+        )
+    return {**line, "workspace": await _workspace_label(owner_id), "name": await _first_name(user_id)}
 
 
 @router.post("/device/approve-desktop")
@@ -149,6 +166,8 @@ async def device_approve_desktop(body: DeviceCode, response: Response, device=De
     row = await device_login.live_row(body.userCode, network_login.KIND)
     if row.get("purpose") != "login":
         raise HTTPException(403, "This code is not a sign-in code.")
+    if device.owner_id != device.user_id:
+        await _workspace_person(device.user_id, device.owner_id)
     ctx = AuthContext(user_id=device.user_id, org_id=device.org_id or None)
     return await network_login.approve(ctx, body.userCode)
 

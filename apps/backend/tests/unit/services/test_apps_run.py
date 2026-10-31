@@ -849,6 +849,7 @@ def test_two_gzips_of_the_same_tar_hash_the_same_and_a_changed_tree_does_not():
     assert content_hash(tree(_tgz("x", file_mtime=5))) == content_hash(tree(first))  # a touch is no change
     assert content_hash(tree(_tgz("y"))) != content_hash(tree(first))
     assert content_hash({"ab": b"c"}) != content_hash({"a": b"bc"})
+    assert content_hash({"a": b"x"}) != content_hash({"b": b"x"})  # a rename is a change
 
 
 async def test_an_up_that_repacks_the_same_tree_resets_nothing(world, monkeypatch):

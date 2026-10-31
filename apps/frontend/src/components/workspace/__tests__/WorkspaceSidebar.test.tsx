@@ -57,6 +57,7 @@ vi.mock("@/components/chat/HealthIndicator", () => ({
   ),
 }));
 vi.mock("@/components/desktop/NodeStatusPill", () => ({ NodeStatusPill: () => <span>Local tools available</span> }));
+vi.mock("@/components/desktop/EngineFault", () => ({ EngineFault: () => null }));
 vi.mock("@/components/desktop/DesktopUpdater", () => ({ DesktopUpdater: () => <span>Check for updates</span> }));
 vi.mock("@/components/Logo", () => ({ Logo: () => <span>Lightbulb</span> }));
 

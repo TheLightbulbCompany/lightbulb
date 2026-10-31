@@ -120,4 +120,57 @@ describe("mergeSessionRows", () => {
     const rows = [backend({ sessionId: "b" }), backend({ sessionId: "a", status: "ended" }), backend({ sessionId: "c", humanUserId: "other" })];
     expect(mergeSessionRows(rows, [], viewer).map((row) => row.backend)).toEqual(rows);
   });
+  it("own makes isViewer true with no user_id", () => {
+    expect(one([], [engine({ own: true })], { userId: null }).person.isViewer).toBe(true);
+    expect(one([], [engine()], { userId: null }).person.isViewer).toBe(false);
+  });
+
+  it("drops a network-only moved-on row, keeps a joined one", () => {
+    const gone = engine({ status: "ended", reason: "moved-on" });
+    expect(mergeSessionRows([], [gone], viewer)).toHaveLength(0);
+    expect(one([backend({ networkSessionId: NET })], [gone]).state).toBe("ended");
+    expect(one([], [engine({ status: "ended", reason: "exited" })]).state).toBe("ended");
+  });
+
+  it("drops an engine record that twins a backend row with no networkSessionId", () => {
+    const b = backend({ title: "T", cwdName: "f" });
+    const e = engine({ title: "T", folder: "f", agent: "claude" });
+    expect(mergeSessionRows([b], [e], viewer).map((r) => r.source)).toEqual(["shared"]);
+    expect(mergeSessionRows([backend({ title: "T", cwdName: "f", networkSessionId: "other" })], [e], viewer)).toHaveLength(2);
+  });
+
+  describe("a record twins an unjoined backend row only when everything agrees", () => {
+    const twin = { title: "T", folder: "f", agent: "claude", status: "busy" } as const;
+    const unjoined = backend({ title: "T", cwdName: "f", status: "busy" });
+    const count = (b: LocalSession, e: EngineRecord) => mergeSessionRows([b], [e], viewer).length;
+
+    it("hides on a full match", () => expect(count(unjoined, engine(twin))).toBe(1));
+    it("an old ended backend row does not hide a live withheld own row", () => {
+      const rows = mergeSessionRows([backend({ title: "T", cwdName: "f", status: "ended" })], [engine({ ...twin, own: true })], viewer);
+      expect(rows.map((r) => r.source)).toEqual(["shared", "network"]);
+    });
+    it("never hides the viewer's own record, however alike", () => expect(count(unjoined, engine({ ...twin, own: true }))).toBe(2));
+    it("ended and live do not match, either way", () => {
+      expect(count(backend({ title: "T", cwdName: "f", status: "ended" }), engine(twin))).toBe(2);
+      expect(count(unjoined, engine({ ...twin, status: "ended" }))).toBe(2);
+    });
+    it("two ended rows match", () => expect(count(backend({ title: "T", cwdName: "f", status: "ended" }), engine({ ...twin, status: "ended" }))).toBe(1));
+    it("a long title matches at the backend's cut, in characters", () => {
+      const long = "🙂".repeat(130);
+      expect(count(backend({ title: "🙂".repeat(120), cwdName: "f" }), engine({ ...twin, title: long }))).toBe(1);
+      expect(count(backend({ title: "🙂".repeat(119), cwdName: "f" }), engine({ ...twin, title: long }))).toBe(2);
+    });
+    it("an empty title does not match", () => {
+      expect(count(backend({ title: "", cwdName: "f" }), engine({ ...twin, title: "" }))).toBe(2);
+      expect(count(backend({ title: null, cwdName: "f" }), engine({ ...twin, title: null }))).toBe(2);
+    });
+    it("another folder or agent does not match", () => {
+      expect(count(unjoined, engine({ ...twin, folder: "g" }))).toBe(2);
+      expect(count(unjoined, engine({ ...twin, agent: "codex" }))).toBe(2);
+    });
+  });
+
+  it("a joined ended engine row over a live backend row reads ended", () => {
+    expect(one([backend({ networkSessionId: NET, status: "busy" })], [engine({ status: "ended" })]).state).toBe("ended");
+  });
 });

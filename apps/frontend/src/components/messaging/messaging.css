@@ -342,6 +342,8 @@
 .room-directory-entry:disabled { cursor: default; opacity: .6; }
 .room-directory-entry:hover { background: color-mix(in srgb, var(--midnight) 5%, transparent); }
 .room-directory-entry[aria-current="page"] { background: color-mix(in srgb, var(--midnight) 9%, transparent); }
+.room-directory-entry--inert { cursor: default; }
+.room-directory-entry--inert:hover { background: none; }
 .room-unread { display: inline-block; height: 6px; width: 6px; border-radius: 50%; background: var(--foreground); flex-shrink: 0; }
 .session-unread { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--info); }
 .session-unread--finished { background: var(--ok); }

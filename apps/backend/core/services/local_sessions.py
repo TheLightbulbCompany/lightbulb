@@ -57,6 +57,7 @@ WORKSPACE_SESSION_CAP = 100
 
 
 OpaqueId = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_.:-]+$")]
+NetworkSessionId = Annotated[str, Field(max_length=256, pattern=r"^[A-Za-z0-9._-]{1,64}/[a-z]+:[A-Za-z0-9._-]{1,128}$")]
 DeviceId = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 EnrollmentRevision = Annotated[
     str, Field(pattern=r"^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$")
@@ -144,6 +145,8 @@ class SessionRegistration(ContractModel):
     online_until: int = Field(default=0, ge=0)
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
+    # The engine's id for this session, so a client can join the network list to this one.
+    network_session_id: NetworkSessionId | None = None
     start_id: OpaqueId | None = None
 
 
@@ -333,6 +336,8 @@ class LocalSession(ContractModel):
     # Its person ended it on purpose (End, the provider's own exit): no list shows it, a read by id
     # still does, for a panel that was open on it. Absent otherwise.
     ended_on_purpose: bool | None = None
+    # The engine's id for this session, so a client can join the network list to this one.
+    network_session_id: NetworkSessionId | None = None
     # The session this one continues: a Claude session moved to the background (<-) is a fork.
     forked_from: OpaqueId | None = None
     # A live session only, from a Mac that reports them (`sessionAttention`): a background job whose
@@ -423,6 +428,7 @@ class LocalSession(ContractModel):
                 "was_held",
                 "ended_on_purpose",
                 "forked_from",
+                "network_session_id",
                 "done",
                 "waiting_for",
                 "note",
@@ -1107,6 +1113,10 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
             )
             or int(time.time()),
         }
+        if registration.network_session_id is None:
+            row.pop("networkSessionId", None)
+            if previous and previous.get("networkSessionId"):
+                row["networkSessionId"] = previous["networkSessionId"]
         if registration.start_id is None and previous and previous.get("generation") == registration.generation:
             row["startId"] = previous.get("startId")
         elif registration.start_id is None:

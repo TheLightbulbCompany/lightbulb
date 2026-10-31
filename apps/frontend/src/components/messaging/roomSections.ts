@@ -52,4 +52,4 @@ export function groupRooms(
 }
 
 /** `unread`: new output since this viewer last looked (`finished` once it stopped working). */
-export interface SidebarSession { session: LocalSession; ownerName: string; own: boolean; owner: RoomParticipant; unread?: "unread" | "finished" | null }
+export interface SidebarSession { session: LocalSession; ownerName: string; own: boolean; owner: RoomParticipant; unread?: "unread" | "finished" | null; kept?: boolean }

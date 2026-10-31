@@ -2053,6 +2053,8 @@ end tell"#,
             network_connect::network_connect,
             network_connect::network_leave,
             network_connect::network_notice_seen,
+            local_sessions::enrollment::share_engine_session,
+            engine::engine_fix,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");

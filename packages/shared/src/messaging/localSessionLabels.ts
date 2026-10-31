@@ -217,9 +217,8 @@ export function sidebarSessionList<T extends { session: LocalSession; kept?: boo
 
 export interface SessionDayGroup { key: "today" | "yesterday" | "week" | "earlier"; title: string; data: LocalSession[] }
 
-/** The "All sessions" list, shared by web and mobile: newest activity first, bucketed by the viewer's local day. */
-export function sessionHistory(sessions: readonly LocalSession[], now = Date.now()): SessionDayGroup[] {
-  const at = (s: LocalSession) => Date.parse(s.lastEventAt ?? s.endedAt ?? "") || 0;
+/** Items bucketed by the viewer's local day of `at` (ms), newest first; empty buckets dropped. */
+export function groupByDay<T>(items: readonly T[], at: (item: T) => number, now = Date.now()): { key: SessionDayGroup["key"]; title: string; data: T[] }[] {
   const day = new Date(now);
   day.setHours(0, 0, 0, 0);
   const today = day.getTime();
@@ -227,16 +226,20 @@ export function sessionHistory(sessions: readonly LocalSession[], now = Date.now
   const yesterday = day.getTime();
   day.setDate(day.getDate() - 5);
   const week = day.getTime();
-  const groups: SessionDayGroup[] = [
+  const groups: { key: SessionDayGroup["key"]; title: string; data: T[] }[] = [
     { key: "today", title: "Today", data: [] }, { key: "yesterday", title: "Yesterday", data: [] },
     { key: "week", title: "This week", data: [] }, { key: "earlier", title: "Earlier", data: [] },
   ];
-  for (const s of [...sessions].sort((a, b) => at(b) - at(a))) {
-    const t = at(s);
-    groups[t >= today ? 0 : t >= yesterday ? 1 : t >= week ? 2 : 3].data.push(s);
+  for (const item of [...items].sort((a, b) => at(b) - at(a))) {
+    const t = at(item);
+    groups[t >= today ? 0 : t >= yesterday ? 1 : t >= week ? 2 : 3].data.push(item);
   }
   return groups.filter((group) => group.data.length > 0);
 }
+
+/** The "All sessions" list, shared by web and mobile: newest activity first, bucketed by the viewer's local day. */
+export const sessionHistory = (sessions: readonly LocalSession[], now = Date.now()): SessionDayGroup[] =>
+  groupByDay(sessions, (s) => Date.parse(s.lastEventAt ?? s.endedAt ?? "") || 0, now);
 
 /** Per viewer, per session: the `latestEventSeq` last seen. Kept on the device (a convenience, not state). */
 export type SessionSeen = Readonly<Record<string, number>>;

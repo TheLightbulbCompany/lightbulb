@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionsNeedingYou, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -26,8 +26,11 @@ import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
 import type { SessionFocusTarget } from "./SessionFocus";
-import type { SidebarSession } from "./roomSections";
+import { bridge } from "./localTerminal";
+import type { SidebarRow, SidebarSession } from "./roomSections";
+import { ownWaitingCount } from "./sessionGroups";
 import { useSessionRows } from "./useSessionRows";
+import type { SessionRow } from "@lightbulb/shared";
 import type { DirectoryRoom, DirectoryParticipant, RoomParticipant } from "./types";
 
 export interface MessagingWorkspaceValue {
@@ -71,6 +74,9 @@ export const pickTokenUnchanged = (a: PickToken, b: PickToken) =>
   a.href === b.href && a.activePanelId === b.activePanelId;
 
 /** A session owner as a human participant, the shape ParticipantAvatar takes. */
+/** The native Share command; only a desktop page has engine rows, so only a desktop page reaches it. */
+const shareEngineSession = (row: SessionRow): Promise<unknown> => Promise.resolve(bridge()?.("share_engine_session", { sessionId: row.id }));
+
 function ownerFace(id: string, displayName: string): RoomParticipant {
   return { kind: "human", id, displayName, mentionHandle: null, role: "member", listenMode: null, joinedAt: "", joinedSeq: 0 };
 }
@@ -438,13 +444,16 @@ export function MessagingWorkspaceProvider({
     ({ ownerName: humanUserId === userId ? "You" : humanName(humanUserId), own: humanUserId === userId }),
     [userId, humanName]);
   const sessionRows = useSessionRows(workspaceSessions.sessions, userId, humanName);
-  const networkSessions = useMemo(() => sessionRows.filter((row) => row.source === "network"), [sessionRows]);
-  const sidebarSessions: SidebarSession[] = useMemo(() => {
-    const kept = new Set(sessionRows.flatMap((row) => row.backend && row.engine ? [row.backend.sessionId] : []));
-    return workspaceSections(sessionRows.flatMap((row) => row.backend ?? []), userId, humanName).flatMap((section) =>
+  const sidebarSessions: SidebarSession[] = useMemo(() =>
+    workspaceSections(sessionRows.flatMap((row) => row.backend ?? []), userId, humanName).flatMap((section) =>
       section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId,
-        owner: ownerFace(session.humanUserId, session.humanUserId === userId && !isOnRoster(session.humanUserId) ? myName : humanName(session.humanUserId)), unread: sessionUnread(session, seen), kept: kept.has(session.sessionId) })));
-  }, [sessionRows, userId, humanName, isOnRoster, myName, seen]);
+        owner: ownerFace(session.humanUserId, session.humanUserId === userId && !isOnRoster(session.humanUserId) ? myName : humanName(session.humanUserId)), unread: sessionUnread(session, seen) }))),
+    [sessionRows, userId, humanName, isOnRoster, myName, seen]);
+  const sidebarRows: SidebarRow[] = useMemo(() => sessionRows.map((row) => ({
+    row,
+    owner: ownerFace(row.person.userId ?? row.id, row.person.isViewer && !(row.person.userId && isOnRoster(row.person.userId)) ? myName : row.person.name),
+    unread: row.backend ? sessionUnread(row.backend, seen) : null,
+  })), [sessionRows, isOnRoster, myName, seen]);
   const members: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
   // The feed seats only people; its agents are authors on the roster. They are added here so a
   // Discuss reply can @mention one (by name: an unseated agent has no handle in the room).
@@ -892,7 +901,8 @@ export function MessagingWorkspaceProvider({
     onRetry: () => void rooms.refreshRooms(),
     draftRoomIds,
     sessions: sidebarSessions,
-    networkSessions,
+    sessionRows: sidebarRows,
+    onShareSession: shareEngineSession,
     onSelectSession: (sessionId: string) => void openSession(sessionId),
     onRenameSession: rooms.resourceSource.client.setLocalSessionDisplayTitle ? async (sessionId, title) => {
       await rooms.resourceSource.client.setLocalSessionDisplayTitle!(sessionId, title);
@@ -1057,7 +1067,7 @@ export function MessagingWorkspaceProvider({
   const unreadTotal = useMemo(() => rooms.rooms.reduce((sum, room) => sum + (room.muted ? 0 : room.unreadCount), 0), [rooms.rooms]);
   // The Dock and tab count also carry your own sessions waiting on you (gap 8).
   const { prefs: notifyPrefs } = useSessionNotificationPrefs();
-  const needingYou = useMemo(() => sessionsNeedingYou(workspaceSessions.sessions, userId, notifyPrefs), [workspaceSessions.sessions, userId, notifyPrefs]);
+  const needingYou = useMemo(() => (notifyPrefs.waiting === "off" ? 0 : ownWaitingCount(sessionRows)), [sessionRows, notifyPrefs]);
 
   return <MessagingWorkspaceContext.Provider value={{
     activeRoomId: rooms.activeRoomId,

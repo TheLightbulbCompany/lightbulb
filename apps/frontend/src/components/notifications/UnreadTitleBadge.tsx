@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 
 /**
  * Prefixes the browser tab title with the count while it's > 0: unread
- * conversations plus your own sessions needing you (`sessionsNeedingYou`).
+ * conversations plus your own waiting sessions (`ownWaitingCount`).
  * No UI — the badge is text in `document.title`.
  */
 export function UnreadTitleBadge({ unread }: { unread: number }): null {

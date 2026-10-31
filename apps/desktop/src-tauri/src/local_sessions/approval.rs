@@ -103,6 +103,9 @@ pub(crate) fn display_summary(tool: &str, input: &Value, cwd: Option<&str>, home
     if matches!(tool, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb__send_message" | "mcp__lightbulb__message_receipt") {
         return "Lightbulb message".into();
     }
+    if matches!(tool, "mcp__lightbulb__assign" | "mcp__lightbulb__cancel_assignment") {
+        return "Lightbulb assignment".into();
+    }
     claude::summary(tool, input, cwd, home)
 }
 
@@ -623,6 +626,9 @@ mod tests {
         let send = "mcp__lightbulb__send_message";
         let args = json!({"text":"secret","request_id":"x","room_id":"r1"});
         assert_eq!(display_summary(send, &args, None, None), "Lightbulb message");
+        for t in ["mcp__lightbulb__assign", "mcp__lightbulb__cancel_assignment"] {
+            assert_eq!(display_summary(t, &args, None, None), "Lightbulb assignment");
+        }
         assert!(!exact(send, &args));
         assert!(!exact("mcp__lightbulb__find_rooms", &json!({})));
         assert!(!exact("mcp__lightbulb_native_sessions__send", &json!({"destination":"room:demo","text":"check","requestId":"e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"})));

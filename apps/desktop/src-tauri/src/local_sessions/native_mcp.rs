@@ -303,6 +303,7 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
 /// `receipt`, which old transcripts still carry. One list for the Claude and Codex scrubbers.
 pub(super) const PRIVATE_TOOLS: &[&str] = &[
     "send", "receipt", "send_message", "message_receipt", "check_inbox", "read_messages", "find_tasks", "read_task", "update_task",
+    "assign", "cancel_assignment",
 ];
 
 pub(super) fn private_tool(name: &str) -> bool {
@@ -320,6 +321,13 @@ pub(super) fn private_call(tool: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_tool_covers_assignments_but_not_the_worker_listing() {
+        assert!(private_tool("assign"));
+        assert!(private_tool("cancel_assignment"));
+        assert!(!private_tool("find_workers"));
+    }
 
     #[test]
     fn mcp_edits_back_up_the_provider_config_once() {

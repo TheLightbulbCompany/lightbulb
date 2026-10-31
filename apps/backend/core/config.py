@@ -448,6 +448,8 @@ class Settings(BaseSettings):
     # (the root thelightbulb.company zone). Empty zone id = DNS calls fail loudly.
     APPS_DOMAIN: str = "apps.thelightbulb.company"
     APPS_HOSTED_ZONE_ID: str = ""
+    # Hosted assistants are offered network workers' assign tools (off: hidden, as in the engine).
+    HOSTED_NETWORK_WORKERS: bool = False
     # Resume a builder agent's dead turn without a person (core/services/apps_run.py). Off: today's note.
     # Stays off until it has had a dev run against a real room, dispatcher and Paperclip.
     APPS_BUILD_WAKE: bool = False

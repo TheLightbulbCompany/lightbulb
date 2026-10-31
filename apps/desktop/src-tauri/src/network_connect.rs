@@ -1033,12 +1033,7 @@ async fn run(app: &tauri::AppHandle) -> Ended {
     let ask = |kind: &'static str, text: String| {
         let app = app.clone();
         let yes = if kind == OWNER_CHANGE { "Connect" } else { "Join" };
-        async move {
-            if !typing_has_stopped().await {
-                return None;
-            }
-            crate::confirm_native_labelled(&app, "Lightbulb", text, yes, "Not now").await
-        }
+        async move { crate::confirm_native_labelled(&app, "Lightbulb", text, yes, "Not now").await }
     };
     let tell = |text: String| {
         tauri::async_runtime::spawn(crate::notify::show("Lightbulb".into(), Some(text), None, None, None));
@@ -1070,62 +1065,6 @@ pub fn kick(app: &tauri::AppHandle) {
             }
         }
     });
-}
-
-// --- Alerts wait for typing to stop; only these, not the app's permission alerts ---
-
-#[derive(Debug, PartialEq, Eq)]
-enum Typing {
-    Stopped,
-    Going,
-    GaveUp,
-}
-
-/// Return answers a native alert, and the page is a chat composer: an alert raised mid-sentence
-/// could be answered by the next Return. No key for 1.5 s is stopped; 30 s of typing is a refusal.
-fn typing(seconds_since_key: f64, waited: Duration) -> Typing {
-    if seconds_since_key >= 1.5 {
-        Typing::Stopped
-    } else if waited >= Duration::from_secs(30) {
-        Typing::GaveUp
-    } else {
-        Typing::Going
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn seconds_since_key_down() -> f64 {
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGEventSourceSecondsSinceLastEventType(state: i32, event: u32) -> f64;
-    }
-    const COMBINED_SESSION_STATE: i32 = 0;
-    const KEY_DOWN: u32 = 10;
-    // SAFETY: a plain read of two integers' worth of arguments, with no pointers.
-    unsafe { CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, KEY_DOWN) }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn seconds_since_key_down() -> f64 {
-    f64::INFINITY
-}
-
-// ponytail: someone pausing 2 s and then pressing Return still answers the alert. Moving the yes
-// off the first button would close that, and is not fail-closed with rfd (see `crate::confirm_native`).
-async fn typing_has_stopped() -> bool {
-    let start = Instant::now();
-    loop {
-        match typing(seconds_since_key_down(), start.elapsed()) {
-            Typing::Stopped => return true,
-            Typing::GaveUp => return false,
-            Typing::Going => tokio::time::sleep(Duration::from_millis(250)).await,
-        }
-    }
-}
-
-/// The Connect and Leave alerts, behind the same wait. A refusal reads as a no.
-async fn once_typing_stops(raise: impl Future<Output = bool>) -> bool {
-    typing_has_stopped().await && raise.await
 }
 
 // --- Commands: none takes an argument from the page ---
@@ -1176,7 +1115,7 @@ pub async fn network_connect(app: tauri::AppHandle) -> Result<(), String> {
     let api = api_for(&pair).ok_or(NOT_AVAILABLE)?;
     let workspace = workspace_name(&api, &owner, known_workspace()).await.ok_or(crate::DECLINED_ON_MAC)?;
     let text = format!("Connect this computer to {workspace}'s network?");
-    if !alert_once(&MEMORY, &owner, CONNECT, once_typing_stops(crate::confirm_native(&app, "Lightbulb", text))).await {
+    if !alert_once(&MEMORY, &owner, CONNECT, crate::confirm_native(&app, "Lightbulb", text)).await {
         return Err(crate::DECLINED_ON_MAC.to_owned());
     }
     rewrite(&data, |saved| consent_to_connect(saved, &owner));
@@ -1195,7 +1134,7 @@ pub async fn network_leave(app: tauri::AppHandle) -> Result<(), String> {
     let workspace = workspace_name(&api, &owner, known_workspace()).await.ok_or(crate::DECLINED_ON_MAC)?;
     let sock = engine_client::state_dir().map_err(|_| SERVICE_OFF)?.join("sock");
     let team = read_engine(&sock).await.ok_or(SERVICE_OFF)?.name.unwrap_or_else(|| "this network".to_owned());
-    if !alert_once(&MEMORY, &owner, LEAVE, once_typing_stops(crate::confirm_native(&app, "Lightbulb", format!("Leave {team}?")))).await {
+    if !alert_once(&MEMORY, &owner, LEAVE, crate::confirm_native(&app, "Lightbulb", format!("Leave {team}?"))).await {
         return Err(crate::DECLINED_ON_MAC.to_owned());
     }
     match leave_team(&sock).await {
@@ -2315,14 +2254,5 @@ mod tests {
         let saved = load(dir.path()).unwrap();
         assert!(saved.attempted.is_none());
         assert_eq!(saved.notice, None);
-    }
-
-    #[test]
-    fn an_alert_waits_for_typing_to_stop() {
-        assert_eq!(typing(1.5, Duration::ZERO), Typing::Stopped);
-        assert_eq!(typing(1.4, Duration::from_secs(29)), Typing::Going);
-        assert_eq!(typing(0.1, Duration::from_secs(30)), Typing::GaveUp);
-        assert_eq!(typing(9.0, Duration::from_secs(99)), Typing::Stopped);
-        assert!(!seconds_since_key_down().is_nan());
     }
 }

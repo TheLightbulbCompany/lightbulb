@@ -876,66 +876,6 @@ async fn local_mcp_set(app: tauri::AppHandle, servers: serde_json::Value) -> Res
 /// matches "declined on this Mac" to say so calmly instead of showing an error.
 pub(crate) const DECLINED_ON_MAC: &str = "Not changed: declined on this Mac.";
 
-#[derive(Debug, PartialEq, Eq)]
-enum Typing {
-    Stopped,
-    Going,
-    GaveUp,
-}
-
-/// Return answers a native alert, and the page is a chat composer: an alert raised mid-sentence
-/// could be answered by the next Return. No key for 1.5 s is stopped; 30 s of typing is a refusal.
-fn typing(seconds_since_key: f64, waited: std::time::Duration) -> Typing {
-    if seconds_since_key >= 1.5 {
-        Typing::Stopped
-    } else if waited >= std::time::Duration::from_secs(30) {
-        Typing::GaveUp
-    } else {
-        Typing::Going
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn seconds_since_key_down() -> f64 {
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGEventSourceSecondsSinceLastEventType(state: i32, event: u32) -> f64;
-    }
-    const COMBINED_SESSION_STATE: i32 = 0;
-    const KEY_DOWN: u32 = 10;
-    // SAFETY: a plain read of two integers' worth of arguments, with no pointers.
-    unsafe { CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, KEY_DOWN) }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn seconds_since_key_down() -> f64 {
-    f64::INFINITY
-}
-
-// ponytail: someone pausing 2 s and then pressing Return still answers the alert. Moving the yes
-// off the first button would close that, and is not fail-closed with rfd (see `confirm_native`).
-async fn typing_has_stopped() -> bool {
-    let start = std::time::Instant::now();
-    loop {
-        match typing(seconds_since_key_down(), start.elapsed()) {
-            Typing::Stopped => return true,
-            Typing::GaveUp => return false,
-            Typing::Going => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
-        }
-    }
-}
-
-#[cfg(test)]
-#[test]
-fn an_alert_waits_for_typing_to_stop() {
-    use std::time::Duration;
-    assert_eq!(typing(1.5, Duration::ZERO), Typing::Stopped);
-    assert_eq!(typing(1.4, Duration::from_secs(29)), Typing::Going);
-    assert_eq!(typing(0.1, Duration::from_secs(30)), Typing::GaveUp);
-    assert_eq!(typing(9.0, Duration::from_secs(99)), Typing::Stopped);
-    assert!(!seconds_since_key_down().is_nan());
-}
-
 /// A native macOS alert for a change the PAGE asks for that widens what runs on this Mac
 /// (a local MCP command, a permission switch turned on, a folder added). The page cannot
 /// draw, fake or click it. Fail-closed: only `Custom("Allow")` approves. Allow is the
@@ -952,9 +892,6 @@ pub(crate) async fn confirm_native(app: &tauri::AppHandle, title: &str, body: St
 /// `None`: the dialog never answered, which is not a person's no.
 pub(crate) async fn confirm_native_labelled(app: &tauri::AppHandle, title: &str, body: String, yes: &str, no: &str) -> Option<bool> {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
-    if !typing_has_stopped().await {
-        return None;
-    }
     let yes = yes.to_owned();
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()

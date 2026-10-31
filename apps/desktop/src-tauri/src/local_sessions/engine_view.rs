@@ -71,7 +71,7 @@ pub(in crate::local_sessions) fn parse_sessions(answer: &Value) -> Result<Engine
                 waiting_for: text(r, "waiting_for"),
                 kind: text(r, "kind"),
                 title: text(r, "title").filter(|t| !t.trim().is_empty()),
-                job: Some((text(&r["job"], "id")?, text(&r["job"], "state")?)).filter(|_| r["job"].is_object()),
+                job: r["job"].is_object().then(|| Some((text(&r["job"], "id")?, text(&r["job"], "state")?))).flatten(),
             })
         })
         .collect();
@@ -158,8 +158,13 @@ mod tests {
         let mut nopid = real();
         nopid.as_object_mut().unwrap().remove("pid");
         let ended = json!([{"key":"k","provider":"claude","conversation":null},{"key":"k2","provider":"claude","conversation":"C","reason":"moved-on"}]);
-        let view = parse_sessions(&json!({"ok":true,"sessions":[real(), nopid],"ended":ended})).unwrap();
-        assert_eq!(view.live.len(), 1);
+        let mut no_job = real();
+        no_job.as_object_mut().unwrap().remove("job");
+        let mut half_job = real();
+        half_job["job"] = json!({"id":"deadbeef"});
+        let view = parse_sessions(&json!({"ok":true,"sessions":[real(), nopid, no_job, half_job],"ended":ended})).unwrap();
+        assert_eq!(view.live.len(), 3);
+        assert!(view.live[1].job.is_none() && view.live[2].job.is_none(), "a row needs no job");
         let row = &view.live[0];
         assert_eq!((row.key.as_str(), row.pid, row.status.as_str(), row.job.clone()), ("abc/claude:U", 7, "busy", Some(("deadbeef".into(), "working".into()))));
         assert_eq!(view.ended.len(), 1);

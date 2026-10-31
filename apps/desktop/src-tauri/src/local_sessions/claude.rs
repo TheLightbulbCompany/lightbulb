@@ -21,6 +21,11 @@ pub fn send_supported_version(version: &str) -> bool {
     patch_level(version).is_some_and(|n| n >= 224)
 }
 
+/// The fingerprint of Claude's projects dir: the `profile` of every Claude session on this Mac.
+pub(super) fn profile(home: &Path) -> String {
+    fingerprint(&home.join(".claude/projects").to_string_lossy())
+}
+
 pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<NativeSession> {
     use std::os::unix::fs::FileTypeExt;
     let background = row["kind"] == "background";
@@ -52,7 +57,6 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         .map(str::to_owned);
     let attention = attention(home, row, job.as_deref());
     let execution = process(pid)?;
-    let root = home.join(".claude/projects");
     let transcript = find_transcript(home, conversation)?;
     // A signal, not the gate. The installed binary is the wrong witness for a session
     // launched from the install's app bundle, or for one still running the version the
@@ -180,7 +184,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
     Ok(NativeSession {
         provider: "claude".into(),
         conversation: conversation.into(),
-        profile: fingerprint(&root.to_string_lossy()),
+        profile: profile(home),
         process: execution,
         transcript,
         socket,

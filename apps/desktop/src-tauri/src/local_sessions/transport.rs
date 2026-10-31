@@ -2982,8 +2982,17 @@ fn receipt_wire(session: &str, request: &str, receipt: &Receipt) -> Value {
         "outcome":receipt.outcome,"providerMessageId":receipt.provider_message_id,"held":receipt.held,"settled":receipt.settled})
 }
 
+/// The mirror key of this Mac's Claude conversation, as `native_key` of its session.
+pub(super) fn claude_key(home: &Path, conversation: &str) -> String {
+    key("claude", &claude::profile(home), conversation)
+}
+
 fn native_key(native: &NativeSession) -> String {
-    fingerprint(&json!([native.provider, native.profile, native.conversation]).to_string())
+    key(&native.provider, &native.profile, &native.conversation)
+}
+
+fn key(provider: &str, profile: &str, conversation: &str) -> String {
+    fingerprint(&json!([provider, profile, conversation]).to_string())
 }
 
 fn epoch_secs() -> u64 {
@@ -3718,6 +3727,13 @@ pub(super) mod tests {
 
     const SID: &str = "aaaabbbb-cccc-4ddd-8eee-ffff00001111";
     const SID_B: &str = "bbbbcccc-dddd-4eee-8fff-000011112222";
+
+    #[test]
+    fn claude_key_is_the_key_of_a_captured_claude_session() {
+        let home = std::path::Path::new("/Users/a");
+        let native = NativeSession { provider: "claude".into(), profile: claude::profile(home), ..test_native(SID_B) };
+        assert_eq!(claude_key(home, SID_B), native_key(&native));
+    }
 
     fn test_native(conversation: &str) -> NativeSession {
         NativeSession {

@@ -586,6 +586,28 @@ pub(crate) fn sharing_on(state_dir: &Path) -> bool {
     private_read::<Enrollment>(&state_dir.join("enrollment.json"))
         .is_ok_and(|e| e.enabled && !e.paused && !e.remote_disabled)
 }
+/// The sidebar's Share on an engine row. The page names a row; the conversation is read from the
+/// engine's own live rows, so a page cannot name a session that is not this Mac's own.
+#[tauri::command]
+pub async fn share_engine_session(app: tauri::AppHandle, session_id: String) -> Result<()> {
+    let conversation = engine_view::own_claude_conversation(&engine_view::read().await?, &session_id)
+        .ok_or("that session is not running on this Mac")?;
+    if !sharing_on(&state_dir(&app)?) {
+        return Err("sharing is off on this Mac".into());
+    }
+    if !crate::confirm_native(
+        &app,
+        "Share this session with your workspace?",
+        "Teammates will be able to watch it. You can stop sharing at any time.".into(),
+    )
+    .await
+    {
+        return Err(crate::DECLINED_ON_MAC.into());
+    }
+    transport::ask_share(&transport::claude_key(&home()?, &conversation), true);
+    Ok(())
+}
+
 /// The workspace this Mac's sessions are shared to, if enrolled.
 pub(crate) fn enrolled_owner(state_dir: &Path) -> Option<String> {
     private_read::<Enrollment>(&state_dir.join("enrollment.json")).ok().map(|e| e.owner_id)

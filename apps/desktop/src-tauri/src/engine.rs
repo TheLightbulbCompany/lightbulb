@@ -2,7 +2,8 @@
 //! the one `lightbulb` MCP server. The app bundles one and runs its `setup` only when no setup
 //! has finished yet or the last one was an older version. That `setup` copies it to
 //! `~/.lightbulb/connect/bin/lightbulb`, wires the agents and loads its launchd job, stopping the
-//! daemon that ran before, so there is never a second one. Not a Tauri command.
+//! daemon that ran before, so there is never a second one. `engine_fix` is the one command: the
+//! sidebar's Fix, which re-runs that `setup` and takes nothing from the page.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -13,10 +14,7 @@ const SETUP_LIMIT: Duration = Duration::from_secs(60);
 
 /// At launch: installs the bundled engine when needed. Logs; never fails the launch.
 pub fn ensure() {
-    let (Some(home), Ok(exe)) = (std::env::var_os("HOME").map(PathBuf::from), std::env::current_exe()) else {
-        return;
-    };
-    let Some(bundled) = bundled(&exe) else {
+    let Some((home, bundled)) = here() else {
         return crate::log("[engine] no engine is bundled beside this build");
     };
     match ensure_at(&home, &bundled, SETUP_LIMIT) {
@@ -24,6 +22,11 @@ pub fn ensure() {
         Ok(false) => {}
         Err(e) => crate::log(&format!("[engine] {e}")),
     }
+}
+
+/// (HOME, the engine bundled with the running app).
+fn here() -> Option<(PathBuf, PathBuf)> {
+    Some((std::env::var_os("HOME").map(PathBuf::from)?, bundled(&std::env::current_exe().ok()?)?))
 }
 
 /// Packaged: Contents/MacOS/<exe> -> Contents/Resources/bin/lightbulb. Dev: bin/ beside the exe.
@@ -41,6 +44,37 @@ fn core(text: &str) -> Option<Vec<u64>> {
     word.split(['-', '+']).next()?.split('.').map(|n| n.parse().ok()).collect()
 }
 
+/// The sidebar's Fix: re-applies the bundled engine, whatever is installed.
+#[tauri::command]
+pub async fn engine_fix() -> Result<(), String> {
+    let (home, bundled) = here().ok_or("no engine is bundled beside this build")?;
+    tokio::task::spawn_blocking(move || fix_at(&home, &bundled, SETUP_LIMIT)).await.map_err(|e| e.to_string())?
+}
+
+/// Runs the bundled engine's `setup` whatever is installed: the same spawn, wait and limit as at launch.
+pub(crate) fn fix_at(home: &Path, bundled: &Path, limit: Duration) -> Result<(), String> {
+    let mut child = Command::new(bundled)
+        .arg("setup")
+        .env("HOME", home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("setup did not start: {e}"))?;
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            return if status.success() { Ok(()) } else { Err(format!("setup exited {status}")) };
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("setup did not finish in {} s; stopped", limit.as_secs()));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// True when it ran the bundled engine's `setup`. The engine writes `setup-version` in its state
 /// dir only when a setup succeeds, so a failed one is tried again at the next launch. A newer
 /// install, or one whose version this build cannot read, is left alone.
@@ -55,26 +89,8 @@ pub(crate) fn ensure_at(home: &Path, bundled: &Path, limit: Duration) -> Result<
             _ => return Ok(false),
         }
     }
-    let mut child = Command::new(bundled)
-        .arg("setup")
-        .env("HOME", home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("setup did not start: {e}"))?;
-    let deadline = Instant::now() + limit;
-    loop {
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            return if status.success() { Ok(true) } else { Err(format!("setup exited {status}")) };
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("setup did not finish in {} s; stopped", limit.as_secs()));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    fix_at(home, bundled, limit)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -146,6 +162,19 @@ mod tests {
         let started = Instant::now();
         assert!(ensure_at(home.path(), &bundled, Duration::from_secs(1)).unwrap_err().contains("stopped"));
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn fix_runs_setup_even_when_the_install_is_current() {
+        let home = tempfile::tempdir().unwrap();
+        let bundled = home.path().join("app/bin/lightbulb");
+        fake(&bundled, "0.6.0", "");
+        installed(home.path(), "0.6.0");
+        assert_eq!(ensure_at(home.path(), &bundled, LONG), Ok(false));
+        assert_eq!(fix_at(home.path(), &bundled, LONG), Ok(()));
+        assert_eq!(setups(home.path()), "setup 0.6.0\n");
+        fake(&bundled, "0.6.0", "exit 1");
+        assert!(fix_at(home.path(), &bundled, LONG).is_err());
     }
 
     #[test]

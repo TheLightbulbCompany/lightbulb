@@ -106,6 +106,12 @@ pub(in crate::local_sessions) fn listing_row(row: &EngineRow) -> Value {
     })
 }
 
+/// The conversation of this Mac's own live Claude row whose engine key is `session_id`; nothing
+/// else (a teammate's id, an ended row, another provider, garbage) names one to share.
+pub(in crate::local_sessions) fn own_claude_conversation(view: &EngineView, session_id: &str) -> Option<String> {
+    view.live.iter().find(|r| r.provider == "claude" && r.key == session_id).map(|r| r.conversation.clone())
+}
+
 pub(in crate::local_sessions) async fn read() -> Result<EngineView, String> {
     parse_sessions(&crate::engine_client::ask("sessions", None).await?)
 }
@@ -187,5 +193,18 @@ mod tests {
         assert_eq!((conversations.into_iter().collect::<Vec<_>>(), jobs.into_iter().collect::<Vec<_>>()), (vec!["U".to_owned()], vec!["deadbeef".to_owned()]));
         let home = tempfile::tempdir().unwrap();
         assert!(crate::local_sessions::claude::attention(home.path(), &rows[0], Some("deadbeef")).done);
+    }
+
+    #[test]
+    fn only_a_live_claude_row_of_this_mac_names_a_conversation() {
+        let mut codex = real();
+        codex["key"] = "abc/codex:C".into();
+        codex["provider"] = "codex".into();
+        let ended = json!([{"key":"gone/claude:E","provider":"claude","conversation":"E"}]);
+        let view = parse_sessions(&json!({"ok":true,"sessions":[real(), codex],"ended":ended})).unwrap();
+        assert_eq!(own_claude_conversation(&view, "abc/claude:U").as_deref(), Some("U"));
+        for id in ["abc/codex:C", "gone/claude:E", "U", "teammate/claude:T", "", "../../etc"] {
+            assert_eq!(own_claude_conversation(&view, id), None, "{id}");
+        }
     }
 }

@@ -411,7 +411,7 @@ pub(super) struct Attention {
     /// A background job's turn is over (`state: done`): it may linger at its shell.
     #[serde(default)]
     pub done: bool,
-    /// Why a prompt is open in its terminal (`waitingFor`: "permission prompt", "input needed").
+    /// Why a prompt is open in its terminal (`waitingFor`: "permission prompt").
     #[serde(default)]
     pub waiting_for: Option<String>,
     /// A background job's hand-off note (`state: blocked`, `needs`): a message for its person,
@@ -757,7 +757,7 @@ pub(super) fn sender_handle(own: bool, handle: Option<&str>) -> String {
 /// `state: blocked` is the job's own hand-off note (`needs: "update the app, then press
 /// Resume"`), written when its recap names a next step for its person; it is a message, not a
 /// dialog. Only `status: waiting` means a prompt is open in the terminal (`waitingFor:
-/// "permission prompt"` / `"input needed"`). A blocked job with no open prompt is idle, so the
+/// "permission prompt"`). A blocked job with no open prompt is idle, so the
 /// clients do not tell the person a prompt waits in a terminal that sits at its shell (seen
 /// 2026-10-26 on the owner's own session).
 pub(super) fn listing_status(row: &Value) -> &'static str {

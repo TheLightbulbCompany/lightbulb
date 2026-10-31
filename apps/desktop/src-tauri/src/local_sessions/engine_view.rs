@@ -31,6 +31,14 @@ pub(in crate::local_sessions) struct EngineView {
     pub ended: Vec<EngineEnded>,
 }
 
+impl EngineView {
+    /// A session's key on the network; its live row first.
+    pub(in crate::local_sessions) fn key(&self, provider: &str, conversation: &str) -> Option<&str> {
+        let live = self.live.iter().find(|r| r.provider == provider && r.conversation == conversation).map(|r| &r.key);
+        live.or_else(|| self.ended.iter().find(|r| r.provider == provider && r.conversation == conversation).map(|r| &r.key)).map(String::as_str)
+    }
+}
+
 pub(in crate::local_sessions) fn desktop_status(engine: &str) -> &'static str {
     match engine {
         "live" => "busy",

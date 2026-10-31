@@ -42,6 +42,29 @@ fn engine_answer(failures: &mut u32, read: Result<EngineView>) -> Option<Result<
     (read.is_ok() || *failures >= 3).then_some(read)
 }
 
+/// Polls the engine for as long as a `Host` watches. An aborted `run_once` drops its handle, which
+/// does not stop this task: the `Host` going away does.
+async fn poll_engine<F: std::future::Future<Output = Result<EngineView>>>(
+    engine_tx: tokio::sync::watch::Sender<Option<Arc<EngineAnswer>>>,
+    read: impl Fn() -> F,
+) {
+    let mut failures = 0;
+    loop {
+        if engine_tx.is_closed() {
+            return;
+        }
+        let read_at = Instant::now();
+        if let Some(answer) = engine_answer(&mut failures, read().await) {
+            let _ = engine_tx.send(Some(Arc::new((read_at, answer))));
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+fn epoch_ms() -> u64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
 /// The one request outstanding on the socket. Single-flight, so the reply's type
 /// plus this slot are what identify the frame being answered.
 enum Rpc {
@@ -131,7 +154,8 @@ fn memory_pressed() -> bool {
     false
 }
 
-type Discovered = (Vec<NativeSession>, Vec<crate::holder::manager::HolderInfo>, Vec<crate::holder::manager::HolderInfo>);
+/// One discovery pass, and when its read started (epoch ms).
+type Discovered = (Vec<NativeSession>, Vec<crate::holder::manager::HolderInfo>, Vec<crate::holder::manager::HolderInfo>, u64);
 
 /// One poll's answer and when its read started.
 type EngineAnswer = (Instant, Result<EngineView>);
@@ -157,6 +181,8 @@ pub(super) struct Host {
     engine: Option<tokio::sync::watch::Receiver<Option<Arc<EngineAnswer>>>>,
     /// When `observe` last ran: an answer read before it may not know the mirrors it made.
     observed_at: Option<Instant>,
+    /// When the pass being observed started its read (epoch ms); None in tests that call `observe`.
+    discovery_read_ms: Option<u64>,
     /// Claude mirrors the last applied answer had no live row for: a daemon respawn leaves a gap
     /// of one poll, so the second miss in a row is the end.
     engine_missed: BTreeSet<String>,
@@ -620,7 +646,10 @@ impl Host {
                     // someone meant: its process may outlive it for a moment.
                     let returned_claude = native.provider == "claude"
                         && listed_claude.contains(&native.conversation)
-                        && !super::session_states::end_was_meant(mirror);
+                        && !super::session_states::end_was_meant(mirror)
+                        // A pass that read before the end says nothing about it. A true false end
+                        // loses nothing: the returning row wakes a fresh pass (`apply_engine`).
+                        && self.discovery_read_ms.is_none_or(|read| mirror.ended_at_ms.is_none_or(|end| read >= end));
                     // A Codex thread that is idle again and not shared stays ended: reviving it
                     // only defers its end behind an upload and a register it never makes.
                     if native.provider == "codex" && native.status == "idle" && !mirror.shared {
@@ -735,6 +764,10 @@ impl Host {
                     return Err("local session capacity reached".into());
                 }
                 let shared = ours || self.share_every.unwrap_or_else(|| crate::shell_integration::is_on(&self.home));
+                // Known from its first frame: without it the row shows twice until a heartbeat joins it.
+                let network_id = self.engine.as_ref().and_then(|engine| engine.borrow().clone()).and_then(|answer| {
+                    answer.1.as_ref().ok()?.key(&native.provider, &native.conversation).map(str::to_owned)
+                });
                 self.mirrors.insert(
                     key.clone(),
                     Mirror {
@@ -761,7 +794,7 @@ impl Host {
                         waiting: None,
                         stats: Default::default(),
                         subagents: Default::default(),
-                        network_id: None,
+                        network_id,
                     },
                 );
             }
@@ -1151,17 +1184,15 @@ impl Host {
         {
             mirror.resume_generation = None;
             mirror.deferred_end_reason = Some(reason.to_owned());
-            mirror.native.status = "idle".into();
+            // Claude's process may be gone: only the engine may call it idle.
+            mirror.native.status = if mirror.native.provider == "claude" { "unknown" } else { "idle" }.into();
             persist_changed(&self.dir, key, mirror, &before)?;
             return Ok(());
         }
         // Nothing is left to promote: `advance` would put an ended mirror on another process.
         mirror.registration.successor = None;
         mirror.native.status = "ended".into();
-        let ended_at_ms = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_millis() as u64)
-            .unwrap_or_default();
+        let ended_at_ms = epoch_ms();
         mirror.ended_at = Some(ended_at_ms / 1000);
         mirror.ended_at_ms = Some(ended_at_ms);
         mirror.ended_reason = Some(reason.into());
@@ -1396,8 +1427,8 @@ impl Host {
                     let same = |provider: &str, conversation: &str| provider == m.native.provider && conversation == m.native.conversation;
                     let row = view.live.iter().find(|r| same(&r.provider, &r.conversation));
                     let ended = view.ended.iter().find(|r| same(&r.provider, &r.conversation));
-                    if let Some(id) = row.map(|r| &r.key).or(ended.map(|r| &r.key)) {
-                        m.network_id = Some(id.clone());
+                    if let Some(id) = view.key(&m.native.provider, &m.native.conversation) {
+                        m.network_id = Some(id.to_owned());
                     }
                     match row {
                         _ if !claude => {}
@@ -1548,7 +1579,8 @@ impl Host {
             tokio::select! {
                 result=&mut remote=>return result,
                 update=updates.recv()=>{
-                    let (update, stranded, unattached) = update.ok_or("discovery stopped")?;
+                    let (update, stranded, unattached, read_ms) = update.ok_or("discovery stopped")?;
+                    self.discovery_read_ms = Some(read_ms);
                     self.observe(update)?;
                     self.end_stranded(stranded)?;
                     self.stop_idle(unattached)?;
@@ -1619,6 +1651,7 @@ impl Host {
             relay_reads_ended_start: None,
             engine: None,
             observed_at: None,
+            discovery_read_ms: None,
             engine_missed: BTreeSet::new(),
             left_on_purpose: BTreeSet::new(),
             engine_woken: BTreeSet::new(),
@@ -1651,16 +1684,7 @@ impl Host {
         let (engine_tx, engine_rx) = tokio::sync::watch::channel(None);
         self.engine = Some(engine_rx);
         // Its own task, like discovery: an engine that takes its five seconds holds up nothing.
-        let engine_poll = tokio::spawn(async move {
-            let mut failures = 0;
-            loop {
-                let read_at = Instant::now();
-                if let Some(answer) = engine_answer(&mut failures, engine_view::read().await) {
-                    let _ = engine_tx.send(Some(Arc::new((read_at, answer))));
-                }
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-        });
+        let engine_poll = tokio::spawn(poll_engine(engine_tx, engine_view::read));
         let discovery = async move {
             // A 60s backstop, not the status source: the engine (Claude), hooks and the pid
             // check drive status now. A wake (a start hook, an enrollment change) runs it sooner,
@@ -1672,6 +1696,7 @@ impl Host {
                     tokio::time::sleep(remaining).await;
                 }
                 last = Instant::now();
+                let read_ms = epoch_ms();
                 let (claude, codex) = tokio::join!(claude::discover(&home), codex::discover(&home));
                 // Cursor and Grok CLI: whatever their hooks recorded (agent network phase 2).
                 let hooked: Result<Vec<NativeSession>> = Ok(super::hooked::discover(&super::hooked::dir()));
@@ -1717,7 +1742,7 @@ impl Host {
                 }
                 // Every provider failed: this pass proves nothing. Keep the state we
                 // have -- an empty listing would otherwise read as "all quiet".
-                if failures.len() < providers && tx.send((found, stranded, unattached)).await.is_err() {
+                if failures.len() < providers && tx.send((found, stranded, unattached, read_ms)).await.is_err() {
                     break;
                 }
                 last_failures = failures;
@@ -2156,7 +2181,8 @@ impl Host {
                 },
                 update = updates.recv() => {
                     arm = laps.woke("discovery update");
-                    let Some((update, stranded, unattached)) = update else {return Err("discovery stopped".into());};
+                    let Some((update, stranded, unattached, read_ms)) = update else {return Err("discovery stopped".into());};
+                    self.discovery_read_ms = Some(read_ms);
                     for key in self.observe(update)? {
                         registered.remove(&key);
                         recovering_ended.remove(&key);
@@ -3836,6 +3862,7 @@ pub(super) mod tests {
             relay_reads_ended_start: None,
             engine: None,
             observed_at: None,
+            discovery_read_ms: None,
             engine_missed: BTreeSet::new(),
             left_on_purpose: BTreeSet::new(),
             engine_woken: BTreeSet::new(),
@@ -6382,10 +6409,10 @@ pub(super) mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (recovered, offline) = tokio::sync::oneshot::channel();
         let producer = tokio::spawn(async move {
-            tx.send((vec![], vec![], vec![])).await.unwrap();
-            tx.send((vec![], vec![], vec![])).await.unwrap();
-            tx.send((vec![native], vec![], vec![])).await.unwrap();
-            tx.send((vec![], vec![], vec![])).await.unwrap();
+            tx.send((vec![], vec![], vec![], epoch_ms())).await.unwrap();
+            tx.send((vec![], vec![], vec![], epoch_ms())).await.unwrap();
+            tx.send((vec![native], vec![], vec![], epoch_ms())).await.unwrap();
+            tx.send((vec![], vec![], vec![], epoch_ms())).await.unwrap();
             // Wait until the exited-session pass is consumed, not just queued.
             let permit = tx.reserve().await.unwrap();
             drop(permit);
@@ -6619,6 +6646,7 @@ pub(super) mod tests {
             relay_reads_ended_start: None,
             engine: None,
             observed_at: None,
+            discovery_read_ms: None,
             engine_missed: BTreeSet::new(),
             left_on_purpose: BTreeSet::new(),
             engine_woken: BTreeSet::new(),
@@ -6832,6 +6860,7 @@ pub(super) mod tests {
             relay_reads_ended_start: None,
             engine: None,
             observed_at: None,
+            discovery_read_ms: None,
             engine_missed: BTreeSet::new(),
             left_on_purpose: BTreeSet::new(),
             engine_woken: BTreeSet::new(),
@@ -6882,7 +6911,7 @@ pub(super) mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         // The same session under a new process: discovery parks it as a
         // successor while registration is frozen.
-        tx.send((vec![native], vec![], vec![])).await.unwrap();
+        tx.send((vec![native], vec![], vec![], epoch_ms())).await.unwrap();
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
@@ -7539,6 +7568,7 @@ pub(super) mod tests {
             relay_reads_ended_start: None,
             engine: None,
             observed_at: None,
+            discovery_read_ms: None,
             engine_missed: BTreeSet::new(),
             left_on_purpose: BTreeSet::new(),
             engine_woken: BTreeSet::new(),
@@ -7739,7 +7769,8 @@ pub(super) mod tests {
     async fn real_engine_drives_mirrors() {
         let engine_home = std::env::var("LIGHTBULB_CONNECT_HOME").expect("set LIGHTBULB_CONNECT_HOME to an isolated engine");
         let home = PathBuf::from(std::env::var_os("HOME").unwrap());
-        assert_ne!(Path::new(&engine_home), home.join(".lightbulb/connect"), "never the person's own service");
+        let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
+        assert_ne!(real(Path::new(&engine_home)), real(&home.join(".lightbulb/connect")), "never the person's own service");
         let state = tempfile::tempdir().unwrap();
         let mut host = test_host(state.path(), vec![]);
         host.home = home.clone();
@@ -8150,6 +8181,60 @@ pub(super) mod tests {
                 host.observe(vec![native]).unwrap();
                 assert!(host.mirrors[&key].ended_at.is_none(), "{job:?} {reason}");
             }
+        }
+    }
+
+    #[test]
+    fn local_sessions_a_discovery_read_from_before_the_end_does_not_revive_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, native) = ended_claude(dir.path(), None, "process-exited");
+        host.mirrors.get_mut(&key).unwrap().ended_at_ms = Some(5000);
+        host.discovery_read_ms = Some(4999);
+        host.observe(vec![native.clone()]).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_some(), "read before the end: it says nothing about the end");
+        host.discovery_read_ms = Some(5001);
+        host.observe(vec![native]).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none(), "read after the end: the session runs");
+    }
+
+    #[tokio::test]
+    async fn local_sessions_the_engine_poller_stops_with_its_host() {
+        let (tx, mut rx) = tokio::sync::watch::channel(None);
+        let poller = tokio::spawn(poll_engine(tx, || async { engine_live(vec![]) }));
+        rx.changed().await.unwrap();
+        drop(rx);
+        tokio::time::timeout(Duration::from_secs(5), poller).await.expect("the poller outlived its Host").unwrap();
+    }
+
+    #[test]
+    fn local_sessions_a_new_mirror_takes_its_network_id_from_the_latest_engine_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![]);
+        let ended = EngineEnded { key: format!("abc/claude:{SID_B}"), conversation: SID_B.into(), ..engine_ended(None) };
+        let answer = Ok(EngineView { live: vec![engine_row("idle")], ended: vec![ended] });
+        let (_tx, rx) = tokio::sync::watch::channel(Some(Arc::new((Instant::now(), answer))));
+        host.engine = Some(rx);
+        let claude = |conversation: &str| NativeSession { provider: "claude".into(), ..test_native(conversation) };
+        let other = "5eed00f1-5e55-4000-8000-0000000000f1";
+        let keys = [SID, SID_B, other].map(|c| native_key(&claude(c)));
+        host.observe(vec![claude(SID), claude(SID_B), claude(other)]).unwrap();
+        assert_eq!(host.mirrors[&keys[0]].network_id, Some(format!("abc/claude:{SID}")));
+        assert_eq!(host.mirrors[&keys[1]].network_id, Some(format!("abc/claude:{SID_B}")));
+        assert_eq!(host.mirrors[&keys[2]].network_id, None);
+    }
+
+    #[test]
+    fn local_sessions_a_deferred_end_says_unknown_for_claude_and_idle_for_the_others() {
+        for (provider, word) in [("claude", "unknown"), ("codex", "idle")] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut mirror = test_mirror(SID, "g");
+            mirror.native.provider = provider.into();
+            mirror.native.status = "busy".into();
+            mirror.registration.pending = true;
+            let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+            host.end_session(SID, "process-exited").unwrap();
+            assert_eq!(host.mirrors[SID].deferred_end_reason.as_deref(), Some("process-exited"));
+            assert_eq!(host.mirrors[SID].native.status, word, "{provider}");
         }
     }
 
@@ -8635,7 +8720,7 @@ pub(super) mod tests {
             // is news the relay has not heard.
             let mut resumed = test_native(SID);
             resumed.process.pid = 2_147_483_000; // and this one is already gone
-            tx.send((vec![resumed], vec![], vec![])).await.unwrap();
+            tx.send((vec![resumed], vec![], vec![], epoch_ms())).await.unwrap();
             // It may register before the liveness tick finds that pid dead; either
             // order ends with the second end on the wire.
             let second = loop {
@@ -8981,7 +9066,7 @@ pub(super) mod tests {
             // Still unacknowledged: resume the session and let its new process die.
             let mut resumed = test_native(SID);
             resumed.process.pid = 2_147_483_000;
-            tx.send((vec![resumed], vec![], vec![])).await.unwrap();
+            tx.send((vec![resumed], vec![], vec![], epoch_ms())).await.unwrap();
             let mut tick = tokio::time::interval(Duration::from_millis(20));
             tokio::time::timeout(Duration::from_secs(3), async {
                 loop {

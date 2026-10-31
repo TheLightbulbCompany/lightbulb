@@ -576,18 +576,27 @@ async def test_an_ambient_completed_turn_settles_nothing(world):
 
 
 async def test_two_sweepers_give_one_message(world, monkeypatch):
+    """Both read the row before either wrote, in a fixed order: the compare-and-set admits one. Not
+    asyncio.gather: moto's conditional update is not atomic across threads, DynamoDB's is."""
+    real_get = apps_repo.get
     app = await _app()
     await _fail()
     world.now = int((await _build(app))["due_at"])
-    await asyncio.gather(apps_run.advance(app), apps_run.advance(app))
+    before = await apps_repo.get(app["app_id"], consistent_read=True)
+    monkeypatch.setattr(apps_repo, "get", AsyncMock(return_value=before))
+    await apps_run.advance(app)
+    await apps_run.advance(app)
     assert len(world.lines) == 1
-    # Two that both read the row before either wrote: the compare-and-set admits one.
+    monkeypatch.setattr(apps_repo, "get", real_get)
+    assert (await _build(app))["attempts"]["wake"] == 1  # the loser spent nothing
+
     world.status = "blocked"
     await _fail()
     world.now = int((await _build(app))["due_at"])
     before = await apps_repo.get(app["app_id"], consistent_read=True)
     monkeypatch.setattr(apps_repo, "get", AsyncMock(return_value=before))
-    await asyncio.gather(apps_run.advance(app), apps_run.advance(app))
+    await apps_run.advance(app)
+    await apps_run.advance(app)
     assert world.issue_calls == 1  # sent once, not merely absorbed by the idempotency key
 
 

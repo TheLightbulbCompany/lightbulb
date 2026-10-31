@@ -31,8 +31,9 @@ def _shape(schema: dict) -> dict:
 async def test_hosted_mcp_tools_match_network_tools_json():
     tools = {t.name: t for t in await hosted_mcp.mcp.list_tools()}
     # use_browser moves a coding session's browser: engine only.
-    assert set(tools) == {t["name"] for t in SPEC if t["name"] != "use_browser"} | {"wake_me"}
-    for spec in (t for t in SPEC if t["name"] != "use_browser"):
+    hidden = {"use_browser", *hosted_mcp.WORKER_TOOLS}
+    assert set(tools) == {t["name"] for t in SPEC if t["name"] not in hidden} | {"wake_me"}
+    for spec in (t for t in SPEC if t["name"] not in hidden):
         tool = tools[spec["name"]]
         assert tool.description == spec["description"], spec["name"]
         assert _shape(tool.input_schema) == _shape(spec["inputSchema"]), spec["name"]
@@ -123,3 +124,8 @@ async def test_a_question_recall_is_one_page_of_text_and_counts(monkeypatch):
     assert "Ann: topic 0: value 0" in out["page"] and "Turns:" in out["page"]
     assert 7000 < -(-len(json.dumps(out)) // 4) <= 9000  # a full page, about 8,000 tokens
     assert asked.await_args.args == ("org_1", "user_a", "what topics?")
+
+
+async def test_worker_tools_are_hidden_while_the_flag_is_off():
+    names = {t.name for t in await hosted_mcp.mcp.list_tools()}
+    assert not names & set(hosted_mcp.WORKER_TOOLS)

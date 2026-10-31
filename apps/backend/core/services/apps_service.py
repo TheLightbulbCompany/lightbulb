@@ -35,6 +35,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import (
     apps_db,
     apps_dns,
+    apps_room,
     apps_source,
     clerk_admin,
     email_service,
@@ -100,6 +101,8 @@ class AppError(TypedDict):
     code: str
     message: str
     next: str
+    deployment_id: NotRequired[str]  # a failed build: the deployment errors() reads the log of
+    at: NotRequired[str]  # when it failed, to tell it from a newer preview
 
 
 class UpResult(TypedDict):
@@ -517,7 +520,7 @@ async def _check_preview(app: dict, creds: dict) -> None:
             },
         )
     elif st["readyState"] in ("ERROR", "CANCELED"):
-        await _clear_pending(app, "preview_pending", {"error": _build_failed(st)})
+        await _clear_pending(app, "preview_pending", {"error": await _failure(app, creds, pending, st)})
 
 
 async def _check_publish(app: dict, creds: dict) -> None:
@@ -565,7 +568,7 @@ async def _check_publish(app: dict, creds: dict) -> None:
         app.update(plain(fresh))
         _notify(app)
     elif st["readyState"] in ("ERROR", "CANCELED"):
-        err = {**_build_failed(st), "next": "fix the error and publish again"}
+        err = {**await _failure(app, creds, pending, st), "next": "fix the error and publish again"}
         await _clear_pending(app, "publish_pending", {"publish_error": err})
 
 
@@ -613,6 +616,27 @@ def _build_failed(st: dict) -> dict:
         "message": st.get("errorMessage") or "The build failed.",
         "next": "fix the error and run up again",
     }
+
+
+_LOG_TAIL = 2000
+_LOG_WAIT_S = 5  # this runs on status reads, inside the 60 s lease: a hung Vercel must not hold them
+
+
+async def _failure(app: dict, creds: dict, pending: dict, st: dict) -> dict:
+    """``_build_failed`` plus the scrubbed tail of the build log. A log that cannot be fetched or scrubbed
+    leaves the original error as it was."""
+    err = {**_build_failed(st), "deployment_id": pending["deployment_id"], "at": utc_now_iso()}
+    try:
+        async with asyncio.timeout(_LOG_WAIT_S):
+            events = await vercel.deployment_events(creds, pending["deployment_id"], limit=50)
+            scrub = await _scrubber(app["owner_id"], app["app_id"])
+        tail = scrub("\n".join(e["message"] for e in events))[-_LOG_TAIL:].strip()
+    except Exception as e:
+        if isinstance(e, vercel.VercelError) and _refused(e):
+            raise  # a dead token: `_with_token` renews it and this step runs again
+        logger.warning("apps: %s build log unavailable", app["app_id"], exc_info=True)
+        return err
+    return {**err, "message": f"{err['message']}\n{tail}"} if tail else err
 
 
 async def _add_domain(app: dict, creds: dict, *, preview: bool) -> dict:
@@ -1118,6 +1142,9 @@ async def put_source(
     recent = sorted(sources, key=lambda k: sources[k]["at"])[-10:]
     sources = {k: v for k, v in sources.items() if k in keep or k in recent}
     await apps_repo.patch(app["app_id"], {"sources": sources})
+    from core.services import apps_run  # it imports this module
+
+    await apps_run.record_upload(app, actor.actor_id, actor.actor_kind, files=files)
     return {"app_id": app["app_id"], "source_id": source_id}
 
 
@@ -1525,14 +1552,19 @@ async def _scrubber(owner_id: str, app_id: str) -> Callable[[str], str]:
 
 
 async def errors(owner_id: str, app_id: str) -> dict:
-    """R25: the last 50 browser (client) and server lines of the live deployment, else the latest
-    preview; build events when there are no runtime logs. Every app secret and any database URL is
+    """R25: the last 50 browser (client) and server lines of the newest failed build, else the live deployment,
+    else the latest preview; build events when there are no runtime logs. Every app secret and any database URL is
     replaced with ``[redacted]``."""
     app = await _owned(owner_id, app_id)
     rows = await _rows(app)
     creds = await _secret(app, rows, "vercel", "prod", "token")
     live = next((v for v in app.get("versions") or [] if v.get("n") == app.get("live_version")), None)
-    dep = (live or app.get("preview") or {}).get("deployment_id")
+    # A failed build is the newest attempt: `up` clears `error`, a good publish clears `publish_error`.
+    # The `ready_at` of a newer healthy preview retires an older failed publish.
+    pub = app.get("publish_error") or {}
+    stale = (app.get("preview") or {}).get("ready_at", "") > pub.get("at", "~")
+    failed = (app.get("error") or {}).get("deployment_id") or (None if stale else pub.get("deployment_id"))
+    dep = failed or (live or app.get("preview") or {}).get("deployment_id")
     if not creds or not dep:
         return {"client": [], "server": []}
 
@@ -1685,19 +1717,11 @@ async def ask_agent_to_fix(owner_id: str, app_id: str, *, auth: AuthContext, err
     room_id = app["room_id"]
     try:
         await messaging.require_room_member(owner_id, auth.user_id, room_id)
-        # An observe member never runs, even when mentioned. A builder that left the room (or a person's
-        # computer that built it): any agent there can read the error. Never an unmentioned line nobody hears.
-        agents = sorted(
-            (
-                m
-                for m in await messaging_repo.list_members(room_id)
-                if m.get("kind") == "agent" and m.get("listenMode") != "observe"
-            ),
-            key=lambda m: m["id"],
-        )
-        if not agents:
+        # A builder that left the room (or a person's computer that built it): any agent there can read
+        # the error. Never an unmentioned line nobody hears.
+        builder = await apps_room._builder(app, room_id)
+        if not builder:
             raise AppsRefused("no_agent", "There is no agent in the app's room to ask.", "add an agent to the room")
-        builder = next((m for m in agents if m["id"] == app.get("actor_id")), agents[0])
         handle = builder.get("mentionHandle") or builder.get("displayName") or "agent"
         # Scrubbed before the cut, so a secret can't survive by being split. The fence is for reading only:
         # `address()` scans the whole text, fences included, so an @name in the error can still be a candidate.

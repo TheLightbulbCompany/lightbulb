@@ -32,6 +32,32 @@ async def _author(owner_id: str, user_id: str, room_id: str) -> str | None:
     return None
 
 
+async def _builder(app: dict, room_id: str, *, guess: bool = True) -> dict | None:
+    """The member who builds this app: the one recorded at the source upload, else ``actor_id``, when
+    they can run (a hook-token CLI with no agent header stores the placeholder "agent", which is nobody).
+    ``guess``: otherwise someone who can hear it, for a line that must reach somebody: the only agent, the
+    only one with an open run, the first. A wake never guesses."""
+    agents = sorted(
+        (
+            m
+            for m in await messaging_repo.list_members(room_id)
+            if m.get("kind") == "agent" and m.get("listenMode") != "observe"
+        ),
+        key=lambda m: m["id"],
+    )
+    for wanted in ((app.get("build") or {}).get("builder"), app.get("actor_id")):
+        named = next((m for m in agents if m["id"] == wanted), None)
+        if named:
+            return named
+    if not guess or not agents:
+        return None
+    if len(agents) == 1:
+        return agents[0]
+    running = {r.get("agentId") for r in await messaging_repo.list_open_runs_for_room(app["owner_id"], room_id)}
+    busy = [m for m in agents if m["id"] in running]
+    return busy[0] if len(busy) == 1 else agents[0]
+
+
 async def post_approval_line(*, owner_id: str, user_id: str, workflow: dict) -> None:
     """One wake line per approved app workflow. Never raises: the approval has
     already happened and must not fail on a chat line."""
@@ -55,11 +81,8 @@ async def post_approval_line(*, owner_id: str, user_id: str, workflow: dict) -> 
         env = "live" if workflow.get("environment") == "prod" else "preview"
         display = app.get("display_name") or app.get("name")
         # Address the builder agent so the line wakes it, not just the room.
-        mentions = (
-            [messaging.MemberRef(kind="agent", id=app["actor_id"])]
-            if app.get("actor_kind") == "agent" and app.get("actor_id")
-            else []
-        )
+        builder = await _builder(app, room_id) if app.get("actor_kind") == "agent" else None
+        mentions = [messaging.MemberRef(kind="agent", id=builder["id"])] if builder else []
         await messaging.create_human_message(
             AuthContext(user_id=author, org_id=owner_id),
             room_id,

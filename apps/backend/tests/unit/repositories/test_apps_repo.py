@@ -157,8 +157,6 @@ async def test_list_for_owner_only_mine_and_delete_frees_name(apps_table):
 
 @pytest.mark.asyncio
 async def test_invite_is_claimed_once_expires_and_never_lists(apps_table):
-    import asyncio
-
     from core.repositories import apps_repo
 
     app = await _new(apps_repo)
@@ -171,9 +169,9 @@ async def test_invite_is_claimed_once_expires_and_never_lists(apps_table):
     assert "owner_id" not in item and "name" not in item and item["kind"] == "invite"
 
     now = "2026-10-30T00:00:00+00:00"
-    won = await asyncio.gather(apps_repo.claim_invite("h1", now), apps_repo.claim_invite("h1", now))
-    assert sorted(w is None for w in won) == [False, True]
-    assert next(w for w in won if w)["email"] == "a@x.co"
+    # In order, not gathered: moto's conditional write isn't atomic across threads, so both could win there.
+    # DynamoDB's is; this pins the condition.
+    assert (await apps_repo.claim_invite("h1", now))["email"] == "a@x.co"
     assert await apps_repo.claim_invite("h1", now) is None  # used
     assert await apps_repo.claim_invite("h2", now) is None  # expired
     assert await apps_repo.claim_invite("nope", now) is None  # never issued

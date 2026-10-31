@@ -84,7 +84,11 @@ pub(in crate::local_sessions) fn parse_sessions(answer: &Value) -> Result<Engine
 
 /// The row `claude::capture` and `listing_status` read, in Claude's own words.
 pub(in crate::local_sessions) fn listing_row(row: &EngineRow) -> Value {
+    // The engine makes every blocked job `waiting` ("input needed"), but a job at its shell with a
+    // hand-off note waits on no prompt (#4414). Only a real prompt says `permission prompt`.
+    let at_shell = row.job.as_ref().is_some_and(|j| j.1 == "blocked") && row.waiting_for.as_deref() != Some("permission prompt");
     let status = match row.status.as_str() {
+        _ if at_shell => "idle",
         "busy" => "busy",
         "waiting-approval" => "waiting",
         "idle" => "idle",
@@ -98,7 +102,7 @@ pub(in crate::local_sessions) fn listing_row(row: &EngineRow) -> Value {
         "cwd": row.cwd,
         "state": row.job.as_ref().map(|j| &j.1),
         "status": status,
-        "waitingFor": row.waiting_for,
+        "waitingFor": row.waiting_for.as_deref().filter(|_| !at_shell),
     })
 }
 
@@ -161,6 +165,14 @@ mod tests {
         ] {
             assert_eq!(listing_status(&listing_row(&row(engine, kind, job))), want, "{engine} {job:?}");
         }
+        // The engine makes every blocked job `waiting`: only a real prompt says `permission prompt` (#4414).
+        let word = |word: Option<&str>| EngineRow { waiting_for: word.map(Into::into), ..row("waiting", Some("background"), Some(("deadbeef", "blocked"))) };
+        for said in [Some("input needed"), None] {
+            let r = listing_row(&word(said));
+            assert_eq!((listing_status(&r), r["status"].as_str(), r["waitingFor"].is_null()), ("idle", Some("idle"), true), "{said:?}");
+        }
+        let r = listing_row(&word(Some("permission prompt")));
+        assert_eq!((listing_status(&r), r["waitingFor"].as_str()), ("waiting-approval", Some("permission prompt")));
         let job = listing_row(&row("live", Some("background"), Some(("deadbeef", "working"))));
         assert_eq!((job["id"].as_str(), job["state"].as_str(), job["waitingFor"].as_str()), (Some("deadbeef"), Some("working"), Some("permission prompt")));
     }

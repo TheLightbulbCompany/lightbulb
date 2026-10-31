@@ -223,6 +223,25 @@ fn awaits_exit_if(mirror: &Mirror, end: &impl Fn(&str) -> Option<u64>, now_ms: u
         && mirror.ended_at_ms.is_some_and(|at| at + EXIT_WAIT_MS > now_ms)
 }
 
+/// End was asked of its holder or its session at or before this end.
+fn asked_before_end(mirror: &Mirror, asked: &impl Fn(&str) -> Option<u64>) -> bool {
+    [mirror.native.holder.as_deref(), mirror.session_id.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(asked)
+        .any(|at| mirror.ended_at.is_some_and(|ended| ended >= at))
+}
+
+/// A reason that says someone meant this end: its person, or the app ending a stranded or idle holder.
+pub(super) fn meant_reason(reason: &str) -> bool {
+    [super::lifecycle::ON_PURPOSE, super::lifecycle::IDLE_STOPPED, super::lifecycle::LOGIN_SESSION_ENDED].contains(&reason)
+}
+
+/// This ended mirror's end was meant, so a row still listed for a moment does not bring it back.
+pub(super) fn end_was_meant(mirror: &Mirror) -> bool {
+    mirror.ended_reason.as_deref().is_some_and(meant_reason) || asked_before_end(mirror, &manager::end_asked)
+}
+
 fn end_reason_if<'a>(reads: bool, mirror: &'a Mirror, asked: &impl Fn(&str) -> Option<u64>, left: &impl Fn(&str) -> Option<u64>) -> &'a str {
     let on_purpose = super::lifecycle::ON_PURPOSE;
     let stored = mirror.ended_reason.as_deref().unwrap_or("exited");
@@ -231,11 +250,7 @@ fn end_reason_if<'a>(reads: bool, mirror: &'a Mirror, asked: &impl Fn(&str) -> O
         return stored;
     }
     let holder = mirror.native.holder.as_deref();
-    let ended_as_asked = [holder, mirror.session_id.as_deref()]
-        .into_iter()
-        .flatten()
-        .filter_map(asked)
-        .any(|at| mirror.ended_at.is_some_and(|ended| ended >= at));
+    let ended_as_asked = asked_before_end(mirror, asked);
     // Codex names no reason for its end (`lifecycle::transition`). Its own quit (`/exit`, ctrl+c)
     // is its holder's provider leaving with status 0, and the session with it; a crash or a kill
     // is never 0, and `/new` or `/resume` leave the holder running.

@@ -482,8 +482,8 @@ def _pick(params: dict, *keys: str) -> dict:
 
 def _network_join(params: dict, **_kwargs) -> dict:
     """An admin ran ``lightbulb invite --agents``: join the network their computer's once ask link
-    is for. Answers at once (``{state: "joining"}``); the join itself waits for that admin's
-    Allow in the background. A workspace already on a network is ``already_in_team`` (the first
+    is for. Answers at once (``{state: "joining"}``); the join itself runs in the background (an
+    invite is the approval: nobody is asked). A workspace already on a network is ``already_in_team`` (the first
     network wins). The link is a credential: nothing here logs it."""
     ticket = params.get("ticket")
     if not isinstance(ticket, str) or not ticket:
@@ -498,6 +498,27 @@ def _network_join(params: dict, **_kwargs) -> dict:
         return {"state": "joining"}
 
     return _net("network.join", "", run=run)
+
+
+def _network_invite(params: dict, **_kwargs) -> dict:
+    """A once link to this workspace's network for a person's computer (the backend's
+    ``/network/join-line``). The ticket is a bearer credential: it is returned, never logged, and
+    ``_net`` puts only the op's code in an error."""
+    def run() -> dict:
+        team = network.ask("team.get", {})  # first: a failed read must not burn a link
+        got = network.ask("team.invite", {"mode": "once", "code": False})
+        return {"ticket": got.get("ticket"), "team_id": team.get("team_id"), "expires_at": got.get("expires_at")}
+
+    return _net("network.invite", "", run=run)
+
+
+def _network_team(params: dict, **_kwargs) -> dict:
+    """Which network the member is in and how many are on it (the backend's team-id backfill)."""
+    def run() -> dict:
+        team = network.ask("team.get", {})
+        return {"team_id": team.get("team_id"), "member_count": len(team.get("members") or [])}
+
+    return _net("network.team", "", run=run)
 
 
 def _network_hold(params: dict, **_kwargs) -> dict:
@@ -521,6 +542,7 @@ def _network_wake(params: dict, **_kwargs) -> dict:
 
 RPC_METHODS.update({"network.join": _network_join, "network.sessions": _network_sessions,
                     "network.hold": _network_hold,
+                    "network.invite": _network_invite, "network.team": _network_team,
                     "network.leave": _network_leave,
                     "network.wake": _network_wake})
 

@@ -22,13 +22,16 @@ const RECORD_FIELDS: [&str; 26] = [
 const RECORD_LISTS: [&str; 2] = ["sessions", "ended"];
 const LIMIT: Duration = Duration::from_secs(5);
 
-/// `$LIGHTBULB_CONNECT_HOME/sock`, else `~/.lightbulb/connect/sock`: the engine's `paths.rs`.
-fn socket() -> Result<PathBuf, String> {
+/// `$LIGHTBULB_CONNECT_HOME`, else `~/.lightbulb/connect`: the engine's `paths.rs`.
+pub(crate) fn state_dir() -> Result<PathBuf, String> {
     std::env::var_os("LIGHTBULB_CONNECT_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".lightbulb/connect")))
-        .map(|dir| dir.join("sock"))
         .ok_or_else(|| "no home directory".to_owned())
+}
+
+fn socket() -> Result<PathBuf, String> {
+    Ok(state_dir()?.join("sock"))
 }
 
 /// `{id, op, ...body}`. `op` goes in last: a body naming its own op must not change it.
@@ -54,7 +57,7 @@ async fn exchange(path: &Path, frame: &str) -> Result<Value, String> {
     serde_json::from_str(&line).map_err(|_| "engine answered something unreadable".to_owned())
 }
 
-async fn ask_at(path: &Path, op: &str, body: Option<Value>, limit: Duration) -> Result<Value, String> {
+pub(crate) async fn ask_at(path: &Path, op: &str, body: Option<Value>, limit: Duration) -> Result<Value, String> {
     let frame = frame(op, body)?;
     tokio::time::timeout(limit, exchange(path, &frame)).await.map_err(|_| "engine did not answer in time".to_owned())?
 }

@@ -7,8 +7,10 @@ this workspace answers on -- one per agent, plus any app entries the sidecar add
 ``members``, the workspace's people: the sidecar answers only a computer whose sign-in proof
 (``network_proof``, shown in its hello) names one of them.
 
-A workspace never invites: it joins one network when an admin runs ``lightbulb invite
---agents`` (``join_network``). The once link it joins with is a credential: never logged here.
+A workspace joins one network when an admin runs ``lightbulb invite --agents`` (``join_network``);
+otherwise it anchors its own, and ``mint_line`` hands a person's paired computer a once link to it.
+Links are credentials: never logged here. ``sessions.json`` also stores ``teamId`` (the network the
+member is on, set by ``mint_line``, cleared when the member moves networks).
 """
 
 from __future__ import annotations
@@ -116,6 +118,8 @@ async def _write(owner_id: str, apps: list[dict], prior: dict | None = None) -> 
     }
     if prior.get("joined"):
         doc["joined"] = True  # on a network an admin added it to (``join_network``)
+    if prior.get("teamId"):
+        doc["teamId"] = prior["teamId"]  # which network the member is on (``mint_line``)
     await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
     return doc
 
@@ -205,21 +209,72 @@ async def join_network(owner_id: str, ticket: str) -> dict:
             raise container_rpc._unavailable() from exc
         if error.get("code") == "already_in_team":
             raise ApiProblem(
-                "NETWORK_ALREADY_JOINED", "This workspace's agents are already on another network."
+                "NETWORK_ALREADY_JOINED",
+                "Your workspace's agents are already on a network. Sign in with lightbulb login to join it.",
             ) from exc
         raise
 
 
 async def _mark_joined(owner_id: str, joined: bool) -> None:
     """``sessions.json``'s ``joined``: the hosted MCP routes a member's apps through this
-    workspace only while it is on a network an admin added it to."""
+    workspace only while it is on a network an admin added it to. Either move changes the
+    network, so the stored ``teamId`` goes too."""
+    doc = await _read_sessions(owner_id)
+    if doc is None:
+        return
+    await _patch_sessions(owner_id, doc, joined=joined, teamId=None)
+
+
+async def _patch_sessions(owner_id: str, doc: dict, **fields) -> None:
+    """Set (or, for None, drop) top-level keys of ``sessions.json``; writes only on a change."""
     from core.services.hermes_profiles import put_owner_object
 
+    new = {k: v for k, v in doc.items() if k not in fields} | {k: v for k, v in fields.items() if v}
+    if new != doc:
+        await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(new).encode())
+
+
+async def stored_team_id(owner_id: str) -> str | None:
+    return ((await _read_sessions(owner_id)) or {}).get("teamId") or None
+
+
+LINE_RETRY_S = 15
+
+
+def _line_busy() -> ApiProblem:
+    return ApiProblem(
+        "RUNTIME_UNAVAILABLE",
+        "Your workspace is waking up. Try again shortly.",
+        retryable=True,
+        retry_after=LINE_RETRY_S,
+    )
+
+
+async def mint_line(owner_id: str) -> dict:
+    """A once link to the network this workspace's member is on, for a person's computer:
+    ``{ticket, teamId, expiresAt}``. Stores ``teamId``. The ticket is a bearer credential: it is
+    only returned, never logged, and no error carries it."""
+    # API Gateway cuts a request at 30 s and a cold start takes longer: ring the queued doorbell and
+    # have the client retry. No doorbell (never on a network) falls through to the direct RPC.
+    if not await _session_is_warm(owner_id) and await wake(owner_id):
+        raise _line_busy()
+    try:
+        got = await container_rpc.call(owner_id, "network.invite", {})
+    except (RuntimeError, asyncio.TimeoutError) as exc:
+        if isinstance(exc, asyncio.TimeoutError) or rpc_error(exc).get("code") in (
+            "UNAVAILABLE",
+            "RUNTIME_UNAVAILABLE",
+        ):
+            raise _line_busy() from None
+        raise ApiProblem("INVALID_REQUEST", "Your workspace could not make a join link.") from None
+    got = got if isinstance(got, dict) else {}
+    if not got.get("ticket"):
+        raise _line_busy()
+    team_id = got.get("team_id") or None
     doc = await _read_sessions(owner_id)
-    if doc is None or bool(doc.get("joined")) == joined:
-        return
-    doc = {k: v for k, v in doc.items() if k != "joined"} | ({"joined": True} if joined else {})
-    await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
+    if doc is not None:
+        await _patch_sessions(owner_id, doc, teamId=team_id)
+    return {"ticket": got["ticket"], "teamId": team_id, "expiresAt": got.get("expires_at")}
 
 
 async def leave_network(owner_id: str) -> dict:

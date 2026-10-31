@@ -2,6 +2,7 @@
 //! remote origin, so no engine operation (approve, admit, policy, invite) is a command at all, and
 //! every command that widens what agents may do asks a native "Allow" before it writes. The one
 //! door to the engine is `engine_ask`, read-only: `engine_client`'s tests pin its allowlist and what it cuts.
+//! `network_connect` and `network_leave` change a network only after a native alert, and take nothing from the page.
 
 const LIB: &str = include_str!("../src/lib.rs");
 
@@ -48,6 +49,10 @@ const COMMANDS: &[(&str, Option<&str>, &str)] = &[
     ("holder::panel::terminal_panel", None, "shows a held terminal"),
     // Exempt by name from the guard below because it is read-only: directory, sessions, team.get. Joining is native code.
     (ENGINE_DOOR, None, "read-only, filtered"),
+    ("network_connect::network_status", None, "read"),
+    ("network_connect::network_connect", Some("consent_to_connect("), "starts a join with no ticket from the page"),
+    ("network_connect::network_leave", Some("leave_team("), "leaves the network"),
+    ("network_connect::network_notice_seen", None, "clears a notice; the OS banner stays the tell"),
     ("local_sessions::enrollment::share_engine_session", Some("mod_socket::share("), "publishes a session; the row is read from the engine, not the page"),
     ("engine::engine_fix", None, "re-applies the bundled engine; takes nothing"),
 ];
@@ -74,10 +79,22 @@ fn body(command: &str) -> String {
 
 #[test]
 fn no_engine_op_is_a_tauri_command() {
-    for command in handler_list().into_iter().filter(|c| c != ENGINE_DOOR && !NAMED_FOR_THE_SIDEBAR.contains(&c.as_str())) {
+    for command in handler_list().into_iter().filter(|c| c != ENGINE_DOOR && !NAMED_FOR_THE_SIDEBAR.contains(&c.as_str()) && !c.starts_with("network_connect::")) {
         for op in ["approve", "admit", "policy", "invite", "engine", "network", "allow"] {
             assert!(!command.to_lowercase().contains(op), "{command} looks like an engine operation; the engine raises its own dialogs");
         }
+    }
+}
+
+#[test]
+fn network_commands_take_nothing_from_the_page() {
+    let commands = handler_list();
+    let network: Vec<&String> = commands.iter().filter(|c| c.contains("network")).collect();
+    assert_eq!(network.len(), 4, "{network:?}");
+    for command in network {
+        let body = body(command);
+        let arguments = &body[body.find('(').unwrap() + 1..body.find(')').unwrap()];
+        assert_eq!(arguments, "app: tauri::AppHandle", "{command} takes only the app handle");
     }
 }
 

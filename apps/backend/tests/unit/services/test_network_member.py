@@ -3,6 +3,7 @@
 # ruff: noqa: F811 -- `table` is the repo suite's moto fixture, imported and then requested by name.
 
 import json
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -346,3 +347,100 @@ async def test_a_members_signed_out_computer_is_in_revoked_keys(store):
     await network_login.revoke("user_9", "b" * 52)  # not a member: not this workspace's to refuse
     await network_member.write_sessions("org_a")
     assert _doc(store)["revoked_keys"] == [key]
+
+
+@pytest.mark.asyncio
+async def test_team_id_survives_write(store):
+    await network_member.write_sessions("org_a")
+    doc = _doc(store)
+    store[network_member.sessions_key("org_a")] = json.dumps({**doc, "teamId": "tm1"}).encode()
+    await network_member.publish_sessions("org_a")
+    assert _doc(store)["teamId"] == "tm1"
+    await network_member._write("org_a", [])  # a writer with no prior in hand
+    assert _doc(store)["teamId"] == "tm1"
+
+
+@pytest.mark.asyncio
+async def test_join_and_leave_clear_the_stored_team_id(store, monkeypatch):
+    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"state": "joining"}))
+    for move in (lambda: network_member.join_network("org_a", "T"), lambda: network_member.leave_network("org_a")):
+        await network_member.write_sessions("org_a")
+        store[network_member.sessions_key("org_a")] = json.dumps({**_doc(store), "teamId": "tm1"}).encode()
+        await move()
+        assert "teamId" not in _doc(store)
+
+
+def _line(monkeypatch, *, warm, doorbell, rpc=None):
+    call = rpc or AsyncMock(return_value={"ticket": "T", "team_id": "tm1", "expires_at": 5})
+    monkeypatch.setattr(network_member.container_rpc, "call", call)
+    monkeypatch.setattr(network_member, "_session_is_warm", AsyncMock(return_value=warm))
+    wake = AsyncMock(return_value=doorbell)
+    monkeypatch.setattr(network_member, "wake", wake)
+    return call, wake
+
+
+@pytest.mark.asyncio
+async def test_mint_line_warm_calls_rpc(store, monkeypatch):
+    await network_member.write_sessions("org_a")
+    call, wake = _line(monkeypatch, warm=True, doorbell=True)
+    assert await network_member.mint_line("org_a") == {"ticket": "T", "teamId": "tm1", "expiresAt": 5}
+    assert call.await_args.args[:3] == ("org_a", "network.invite", {}) and "timeout_s" not in call.await_args.kwargs
+    wake.assert_not_awaited()
+    assert await network_member.stored_team_id("org_a") == "tm1"
+
+
+@pytest.mark.asyncio
+async def test_mint_line_cold_rings_and_answers_503_without_rpc(store, monkeypatch):
+    call, wake = _line(monkeypatch, warm=False, doorbell=True)
+    with pytest.raises(ApiProblem) as raised:
+        await network_member.mint_line("org_a")
+    assert raised.value.status_code == 503 and raised.value.error.retry_after == 15
+    wake.assert_awaited_once_with("org_a")
+    call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mint_line_no_doorbell_calls_rpc(store, monkeypatch):
+    await network_member.write_sessions("org_a")
+    call, wake = _line(monkeypatch, warm=False, doorbell=False)
+    assert (await network_member.mint_line("org_a"))["ticket"] == "T"
+    wake.assert_awaited_once_with("org_a")
+    call.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mint_line_unavailable_is_503(store, monkeypatch):
+    await network_member.write_sessions("org_a")
+    for error in (RuntimeError(json.dumps({"code": "UNAVAILABLE", "message": "x"})), TimeoutError()):
+        _line(monkeypatch, warm=True, doorbell=False, rpc=AsyncMock(side_effect=error))
+        with pytest.raises(ApiProblem) as raised:
+            await network_member.mint_line("org_a")
+        assert raised.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_mint_line_leaks_the_ticket_nowhere(store, monkeypatch, caplog):
+    await network_member.write_sessions("org_a")
+    caplog.set_level(logging.DEBUG)
+    secret = "TICKET-secret-abc"
+    _line(monkeypatch, warm=True, doorbell=False, rpc=AsyncMock(return_value={"ticket": secret, "team_id": "tm1"}))
+    await network_member.mint_line("org_a")
+    # a refused call whose error text carries the ticket must not reach the raised error
+    failing = RuntimeError(json.dumps({"code": "boom", "message": secret}))
+    _line(monkeypatch, warm=True, doorbell=False, rpc=AsyncMock(side_effect=failing))
+    with pytest.raises(ApiProblem) as raised:
+        await network_member.mint_line("org_a")
+    assert secret not in caplog.text and secret not in str(raised.value) and secret not in repr(raised.value.body())
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__
+
+
+@pytest.mark.asyncio
+async def test_already_joined_message(store, monkeypatch):
+    await network_member.write_sessions("org_a")
+    error = RuntimeError(json.dumps({"code": "already_in_team", "message": "x"}))
+    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(side_effect=error))
+    with pytest.raises(ApiProblem) as raised:
+        await network_member.join_network("org_a", "T")
+    assert raised.value.error.message == (
+        "Your workspace's agents are already on a network. Sign in with lightbulb login to join it."
+    )

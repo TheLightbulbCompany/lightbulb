@@ -74,10 +74,10 @@ class Descriptor(ContractModel):
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
     holder_id: HolderId | None = None
-    # A Claude session moved to the background (<-) continues as a fork with a new conversation:
-    # this names the session it continues, so a listing shows one session, not two.
     # The engine's id for this session, so a client can join the network list to this one.
     network_session_id: sessions.NetworkSessionId | None = None
+    # A Claude session moved to the background (<-) continues as a fork with a new conversation:
+    # this names the session it continues, so a listing shows one session, not two.
     forked_from: sessions.OpaqueId | None = None
     start_id: sessions.OpaqueId | None = None
     # False: its person stopped sharing it on the Mac, which still registers it so the owner keeps
@@ -406,6 +406,7 @@ _PUBLIC_FIELDS = (
     "cwdName",
     "lastAssistantMessage",
     "controlUnavailableReason",
+    "networkSessionId",
     *ATTENTION_FIELDS,
     *SIGNAL_FIELDS,
 )

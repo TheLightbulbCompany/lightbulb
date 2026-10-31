@@ -1502,7 +1502,7 @@ async def test_unknown_stop_settles_only_after_its_turn_ends_then_unblocks_next_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["status", "active-turn", "control", "workspace", "expired"])
+@pytest.mark.parametrize("change", ["status", "active-turn", "control", "workspace", "network-id", "expired"])
 async def test_visible_heartbeat_change_or_recovery_notifies_resources(transport, change):
     with patch("time.time", return_value=10000):
         sid = await start(transport)
@@ -1512,6 +1512,7 @@ async def test_visible_heartbeat_change_or_recovery_notifies_resources(transport
         "active-turn": {"activeTurnId": "turn-2"},
         "control": {"controlUnavailableReason": "endpoint-unavailable"},
         "workspace": {"workspace": {"revision": 1, "coverage": "bounded", "changed": True, "overlap": False}},
+        "network-id": {"networkSessionId": NETWORK_SID},
     }
     transport[4].clear()
     with patch("time.time", return_value=row["onlineUntil"] + 1 if change == "expired" else 10010):

@@ -26,9 +26,11 @@ import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
 import type { SessionFocusTarget } from "./SessionFocus";
+import { bridge } from "./localTerminal";
 import type { SidebarRow, SidebarSession } from "./roomSections";
 import { ownWaitingCount } from "./sessionGroups";
 import { useSessionRows } from "./useSessionRows";
+import type { SessionRow } from "@lightbulb/shared";
 import type { DirectoryRoom, DirectoryParticipant, RoomParticipant } from "./types";
 
 export interface MessagingWorkspaceValue {
@@ -72,6 +74,9 @@ export const pickTokenUnchanged = (a: PickToken, b: PickToken) =>
   a.href === b.href && a.activePanelId === b.activePanelId;
 
 /** A session owner as a human participant, the shape ParticipantAvatar takes. */
+/** The native Share command; only a desktop page has engine rows, so only a desktop page reaches it. */
+const shareEngineSession = (row: SessionRow): Promise<unknown> => Promise.resolve(bridge()?.("share_engine_session", { sessionId: row.id }));
+
 function ownerFace(id: string, displayName: string): RoomParticipant {
   return { kind: "human", id, displayName, mentionHandle: null, role: "member", listenMode: null, joinedAt: "", joinedSeq: 0 };
 }
@@ -897,6 +902,7 @@ export function MessagingWorkspaceProvider({
     draftRoomIds,
     sessions: sidebarSessions,
     sessionRows: sidebarRows,
+    onShareSession: shareEngineSession,
     onSelectSession: (sessionId: string) => void openSession(sessionId),
     onRenameSession: rooms.resourceSource.client.setLocalSessionDisplayTitle ? async (sessionId, title) => {
       await rooms.resourceSource.client.setLocalSessionDisplayTitle!(sessionId, title);

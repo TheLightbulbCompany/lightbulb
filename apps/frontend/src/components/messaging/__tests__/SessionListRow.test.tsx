@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mergeSessionRows, type EngineRecord, type LocalSession, type SessionRow } from "@lightbulb/shared";
 import { SessionListRow, sessionAge, sessionListTime } from "../SessionListRow";
 import type { SidebarRow } from "../roomSections";
@@ -47,11 +47,11 @@ it("All sessions spells the state out, with its time", () => {
   expect(container.querySelector(".session-row-time")).toBeInTheDocument();
 });
 
-it("shows no status words: a shimmering title while working, an orange dot while waiting, the time otherwise, faded once gone", () => {
+it("shows no status words: a pulsing dot while working, an orange dot while waiting, the time otherwise, faded once gone", () => {
   const at = new Date().toISOString();
   const row = (changes: Partial<LocalSession>) => render(<ul><SessionListRow entry={rowOf({ ...mate, cwdName: "web", lastEventAt: at, ...changes })} current={false} oneLine /></ul>);
   const { container, unmount } = row({ status: "busy" });
-  expect(container.querySelector(".session-title--working")).toHaveTextContent("Load test");
+  expect(container.querySelector(".session-working")).not.toBeNull();
   expect(container).not.toHaveTextContent(/Working|Idle|Online|unavailable/);
   expect(container.querySelector(".session-row-time")).toBeInTheDocument();
   unmount();
@@ -60,7 +60,7 @@ it("shows no status words: a shimmering title while working, an orange dot while
   expect(waiting.container.querySelector(".session-row-time")).toBeNull();
   waiting.unmount();
   const unknown = row({ status: "unknown" });
-  expect(unknown.container.querySelector(".session-title--working")).toBeNull();
+  expect(unknown.container.querySelector(".session-working")).toBeNull();
   expect(screen.getByRole("button").getAttribute("aria-label")).toMatch(/, Online$/);
   unknown.unmount();
   const ended = row({ status: "ended" });
@@ -197,20 +197,34 @@ it("a row with no backend is not a button: no Open, no Mark unread, still Pin an
   expect(screen.queryByRole("menuitem", { name: /Mark unread/ })).toBeNull();
 });
 
-it("Share shows for the viewer's own unshared row when the host wires it, and calls it", async () => {
-  const onShare = vi.fn();
-  const { unmount } = ui(networkRow(), { onShare });
-  await userEvent.click(screen.getByRole("button", { name: "Share Friday inbox" }));
-  expect(onShare).toHaveBeenCalledOnce();
-  unmount();
-  const plain = ui(networkRow());
-  expect(screen.queryByRole("button", { name: /^Share/ })).toBeNull();
-  plain.unmount();
-  ui(networkRow({ person: { name: "Aden", isViewer: false } }), { onShare });
-  expect(screen.queryByRole("button", { name: /^Share/ })).toBeNull();
-});
-
 it("a network row that can resume says lightbulb who in its hover", () => {
   const { container } = ui(networkRow({ state: "ended", endedAt: ago(60_000), canResume: true }));
   expect(container.querySelector(".session-row-main")?.getAttribute("title")).toMatch(/lightbulb who/);
+});
+
+describe("Share on a network row", () => {
+  const mine = (changes: Partial<SessionRow> = {}) => networkRow({ engine: { own: true } as EngineRecord, ...changes });
+
+  it("offers Share on this Mac's own live Claude session only", async () => {
+    const onShare = vi.fn(() => Promise.resolve());
+    const { rerender } = ui(mine(), { onShare });
+    await userEvent.click(screen.getByRole("button", { name: /Share/ }));
+    expect(onShare).toHaveBeenCalledTimes(1);
+    for (const entry of [networkRow(), mine({ state: "ended" }), mine({ agent: "codex" }), networkRow({ engine: { own: false } as EngineRecord })]) {
+      rerender(<ul><SessionListRow entry={entry} current={false} onShare={onShare} /></ul>);
+      expect(screen.queryByRole("button", { name: /Share/ })).toBeNull();
+    }
+  });
+
+  it("shows a refusal in the row, and says nothing when the person pressed No", async () => {
+    const onShare = vi.fn<() => Promise<unknown>>().mockRejectedValueOnce("sharing is off on this Mac");
+    const { container } = ui(mine(), { onShare });
+    fireEvent.click(screen.getByRole("button", { name: /Share/ }));
+    expect(await screen.findByText("sharing is off on this Mac")).toBeInTheDocument();
+    onShare.mockRejectedValueOnce("Not changed: declined on this Mac.");
+    fireEvent.click(screen.getByRole("button", { name: /Share/ }));
+    await waitFor(() => expect(screen.queryByText("sharing is off on this Mac")).toBeNull());
+    await act(async () => {});
+    expect(container).not.toHaveTextContent("declined");
+  });
 });

@@ -10,7 +10,7 @@ import { SessionRenameButton } from "./SessionRenameButton";
 import { SessionRemoveButton } from "./SessionRemoveButton";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import type { SidebarRow } from "./roomSections";
-import { sessionRowAt, sessionRowFailed, sessionRowGone, sessionRowNeedsYou } from "./sessionGroups";
+import { sessionRowAt, sessionRowFailed, sessionRowGone, sessionRowNeedsYou, sessionRowShareable } from "./sessionGroups";
 
 export interface SessionRowMarks {
   pinned: boolean;
@@ -56,7 +56,7 @@ const STATE_LABELS = { busy: "Working", waiting: "Waiting on you", idle: "Idle",
 
 /**
  * One session row: the sidebar's list and the All sessions view share it (spec 2026-10-30
- * sessions-sidebar, "States on the row"). Words only where no shape says it: busy shimmers,
+ * sessions-sidebar, "States on the row"). Words only where no shape says it: busy is a pulsing dot,
  * waiting is a brass dot, unread a blue or green one; done, offline, parked, ended and failed say
  * so at the right edge. The second line is news only in the sidebar (`oneLine`); All sessions
  * carries the whole description. A row with no backend is not a button: the network knows it, this
@@ -68,12 +68,13 @@ export function SessionListRow({ entry: { row, owner, unread }, current, onSelec
   onRename?: (sessionId: string, title: string | null) => Promise<unknown>;
   /** The owner takes a session of their own off the list; a running one is ended first. */
   onRemove?: (sessionId: string) => Promise<unknown>;
-  /** Share an unshared terminal session of the viewer's own (rows with no backend). */
-  onShare?: () => void;
+  /** Share an unshared terminal session of this Mac's own (rows with no backend). A rejection shows in the row. */
+  onShare?: () => Promise<unknown>;
   /** The sidebar's per-viewer row actions (Pin, Mark unread/read, Archive), kept on this browser. */
   marks?: SessionRowMarks;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [refusal, setRefusal] = useState<string>();
   const { backend, state, person } = row;
   const label = `${sessionToolName(row.agent)} · ${row.title}`;
   const gone = sessionRowGone(row);
@@ -124,6 +125,7 @@ export function SessionListRow({ entry: { row, owner, unread }, current, onSelec
   </span>;
   const end = <span className="session-row-end">
     {!!chatUnread && <span className="session-chat-unread" aria-hidden="true">{chatUnread > 99 ? "99+" : chatUnread}</span>}
+    {oneLine && state === "busy" && <span className="session-working" aria-hidden="true" />}
     {dot && <span className={`session-unread session-unread--${dot}`} aria-hidden="true" />}
     {word && (dot !== "waiting" || !oneLine) && <span className={`session-row-state${failed ? " session-row-state--failed" : ""}`} aria-hidden="true">{word}</span>}
     {(!oneLine || (!dot && !word)) && <SessionListTime at={at ? new Date(at).toISOString() : null} />}
@@ -132,10 +134,11 @@ export function SessionListRow({ entry: { row, owner, unread }, current, onSelec
     {face}
     <span className="session-row-main" title={hover}>
       <span className="session-row-line">
-        <span className={`min-w-0 flex-1 truncate${unread ? " font-semibold" : ""}${state === "busy" ? " session-title--working" : ""}`}>{row.title}</span>
+        <span className={`min-w-0 flex-1 truncate${unread ? " font-semibold" : ""}`}>{row.title}</span>
         {end}
       </span>
       {second && <span className="block truncate text-caption text-muted-foreground">{second}</span>}
+      {refusal && <span role="alert" className="block text-caption text-destructive">{refusal}</span>}
     </span>
   </>;
   return <li className={`room-directory-row room-directory-row--roster session-row${gone && !needsYou ? " session-row--gone" : ""}${backend ? "" : " session-row--network"}${needsYou ? " session-row--needs" : ""}`}
@@ -146,7 +149,14 @@ export function SessionListRow({ entry: { row, owner, unread }, current, onSelec
       : <div className="room-directory-entry session-row-info" aria-current={current ? "page" : undefined}>
         <span className="sr-only">{description}</span><span className="contents" aria-hidden="true">{body}</span>
       </div>}
-    {onShare && !backend && person.isViewer && <Button variant="ghost" size="sm" className="session-row-share" aria-label={`Share ${row.title}`} onClick={onShare}>Share</Button>}
+    {onShare && sessionRowShareable(row) && <Button variant="ghost" size="sm" className="session-row-share" aria-label={`Share ${row.title}`} onClick={() => {
+      setRefusal(undefined);
+      void onShare().catch((error: unknown) => {
+        const text = String(error instanceof Error ? error.message : error);
+        // The person pressed No: nothing to say.
+        if (!/declined on this Mac/i.test(text)) setRefusal(text);
+      });
+    }}>Share</Button>}
     {marks && <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon-sm" className="room-directory-actions" aria-label={`Session actions for ${row.title}`}><MoreHorizontal aria-hidden="true" /></Button>

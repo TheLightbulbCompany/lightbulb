@@ -21,8 +21,12 @@ export const sessionRowGone = (row: SessionRow): boolean => row.state === "offli
 
 export function sessionRowAt(row: SessionRow): number {
   const iso = row.backend?.lastEventAt ?? row.backend?.endedAt;
-  return (iso ? Date.parse(iso) : NaN) || (row.endedAt ?? row.lastSeenAt ?? 0);
+  return (iso ? Date.parse(iso) : NaN) || (row.endedAt ?? row.lastSeenAt ?? (row.engine?.seen_at ?? 0) * 1000);
 }
+
+/** `own`, not `isViewer`: the viewer's other Mac is theirs too, and this Mac cannot share its sessions. */
+export const sessionRowShareable = (row: SessionRow): boolean =>
+  !row.backend && row.engine?.own === true && row.agent === "claude" && !["offline", "parked", "ended"].includes(row.state);
 
 const STATES: [SessionRow["state"], string, string][] = [
   ["waiting", "Waiting", "waiting"], ["busy", "Working", "working"], ["idle", "Idle", "idle"], ["done", "Done", "done"],

@@ -61,7 +61,6 @@ async fn ask_at(path: &Path, op: &str, body: Option<Value>, limit: Duration) -> 
 
 /// The engine's response line as it is (`{id, ok, ...}`: a refusal is `ok: false`). `Err` is that
 /// no answer came. Native callers only: no allowlist, nothing cut.
-#[allow(dead_code)] // Steps 2 and 3 call it.
 pub async fn ask(op: &str, body: Option<Value>) -> Result<Value, String> {
     ask_at(&socket()?, op, body, LIMIT).await
 }
@@ -71,7 +70,8 @@ fn pick(from: &Value, fields: &[&str]) -> Map<String, Value> {
     fields.iter().filter_map(|&field| Some((field.to_owned(), from.get(field)?.clone()))).collect()
 }
 
-/// A record with no `folder` gets its `cwd`'s last part. `can_resume` says a `resume` exists.
+/// A record with no `folder` gets its `cwd`'s last part. `can_resume` says a `resume` exists; `own`
+/// that the record is this computer's (only local records carry a `pid` or a `resume` key).
 fn page_record(record: &Value) -> Option<Value> {
     record.as_object()?;
     let mut kept = pick(record, &RECORD_FIELDS);
@@ -83,6 +83,10 @@ fn page_record(record: &Value) -> Option<Value> {
     }
     if record.get("resume").and_then(Value::as_str).is_some_and(|resume| !resume.is_empty()) {
         kept.insert("can_resume".to_owned(), true.into());
+    }
+    // The engine marks no record as own; only a local record (`Session`, `store::Session`) has a `pid` or `resume` key.
+    if record.get("pid").is_some() || record.get("resume").is_some() {
+        kept.insert("own".to_owned(), true.into());
     }
     Some(Value::Object(kept))
 }
@@ -182,12 +186,13 @@ mod engine_client_tests {
         let live = json!({"session_id": "a", "folder": "repo", "cwd": "/Users/me/repo", "pid": 1, "birth_micros": 2, "entrypoint": "cli", "kind": "interactive", "transcript": "/Users/me/t", "job": {"state": "done"}});
         let ended = json!({"key": "b", "cwd": "/Users/me/other/", "resume": resume});
         let no_resume = json!({"key": "c", "cwd": "/Users/me/third", "resume": null});
-        let path = stub(&dir, json!({"sessions": [live, 7], "ended": [ended, no_resume], "secret": "/Users/me"}));
+        let teammate = json!({"session_id": "t", "folder": "x", "cwd": "/c"});
+        let path = stub(&dir, json!({"sessions": [live, 7, teammate], "ended": [ended, no_resume], "secret": "/Users/me"}));
         for op in ["directory", "sessions"] {
             let answer = page_ask_at(&path, op, LIMIT).await.unwrap();
             assert_eq!(answer, json!({"id": 1, "ok": true,
-                "sessions": [{"session_id": "a", "folder": "repo", "job": {"state": "done"}}],
-                "ended": [{"key": "b", "folder": "other", "can_resume": true}, {"key": "c", "folder": "third"}],
+                "sessions": [{"session_id": "a", "folder": "repo", "job": {"state": "done"}, "own": true}, {"session_id": "t", "folder": "x"}],
+                "ended": [{"key": "b", "folder": "other", "can_resume": true, "own": true}, {"key": "c", "folder": "third", "own": true}],
             }));
             assert!(!answer.to_string().contains("/Users"));
         }

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { act, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { mergeSessionRows, type LocalSession } from "@lightbulb/shared";
 import { RoomDirectory, type RoomDirectoryProps } from "../RoomDirectory";
@@ -781,7 +781,7 @@ it("lists live sessions below Channels, hides the section without a session door
   expect(row).not.toHaveTextContent("Alice");
   expect(row).not.toHaveTextContent("web");
   expect(within(row).getByText("Fix login")).toBeInTheDocument();
-  expect(row.querySelector(".session-title--working")).toHaveTextContent("Fix login");
+  expect(row.querySelector(".session-working")).not.toBeNull();
   await userEvent.click(row);
   expect(onSelectSession).toHaveBeenCalledWith("s1");
   rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} sessionRows={[]} />);

@@ -219,6 +219,19 @@ async fn decide(client: &reqwest::Client, enrollment: &Enrollment, identity: &cr
     Ok(())
 }
 
+/// Shares mirror `key`. One the workspace has had is paused there: it is resumed there FIRST.
+/// The server drops what a paused session uploads, so nothing is released here until it has
+/// taken the resume; a refusal is the caller's answer and the session stays as it was.
+pub(super) async fn share(client: &reqwest::Client, enrollment: &Enrollment, identity: &crate::keychain::DeviceIdentity, key: &str, mirror: &Mirror) -> std::result::Result<(), Value> {
+    if let Some(sid) = &mirror.session_id {
+        let resume = json!({"sessionId": sid, "generation": known_generation(mirror), "decision": "unpause"});
+        decide(client, enrollment, identity, sid, &resume).await?;
+    }
+    // The whole session, from its start: nothing of it was read while it was not shared.
+    super::transport::ask_share(key, true);
+    Ok(())
+}
+
 async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, identity: crate::keychain::DeviceIdentity, client: reqwest::Client) {
     let pid = native_tools::peer_pid(&socket).ok();
     let band = pid.and_then(|pid| resolve(&scope, pid));
@@ -231,17 +244,9 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
         let Some((key, mirror)) = pid.and_then(|pid| to_share(&scope, pid, named)) else {
             return reply(&mut socket, "404 Not Found", &json!({"error":"unknown_session","message":"Lightbulb does not see this session yet. Wait a few seconds, then try again."})).await;
         };
-        // One the workspace has had is paused there: it is resumed there FIRST. The server
-        // drops what a paused session uploads, so nothing is released here until it has
-        // taken the resume; a refusal is the caller's answer and the session stays as it was.
-        if let Some(sid) = &mirror.session_id {
-            let resume = json!({"sessionId": sid, "generation": known_generation(&mirror), "decision": "unpause"});
-            if let Err(refusal) = decide(&client, &enrollment, &identity, sid, &resume).await {
-                return reply(&mut socket, "409 Conflict", &refusal).await;
-            }
+        if let Err(refusal) = share(&client, &enrollment, &identity, &key, &mirror).await {
+            return reply(&mut socket, "409 Conflict", &refusal).await;
         }
-        // The whole session, from its start: nothing of it was read while it was not shared.
-        super::transport::ask_share(&key, true);
         // `waiting` is always false now: a session with no live terminal is shared as its
         // conversation (owner ruling 2026-10-11). Kept for plugins that still read it.
         return reply(&mut socket, "200 OK", &json!({"shared": true, "waiting": false})).await;

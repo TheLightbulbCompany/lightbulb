@@ -2041,6 +2041,8 @@ end tell"#,
             shell_integration::shell_integration_set,
             holder::panel::terminal_panel,
             engine_client::engine_ask,
+            local_sessions::enrollment::share_engine_session,
+            engine::engine_fix,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");

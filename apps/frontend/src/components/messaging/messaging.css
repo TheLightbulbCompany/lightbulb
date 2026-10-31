@@ -346,7 +346,7 @@
 .session-unread { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--info); }
 .session-unread--finished { background: var(--ok); }
 /* Session rows, after Happy: the time sits where a dot would be; waiting on its person is the one
-   loud dot; the title shimmers while it works; a session that is gone is faded; rename and
+   loud dot; a neutral dot pulses while it works; a session that is gone is faded; rename and
    remove wait for hover, as Happy keeps them behind a swipe. */
 .session-unread--waiting { width: 8px; height: 8px; background: var(--brass); }
 .session-row-main { flex: 1; min-width: 0; }
@@ -395,9 +395,9 @@
 .session-row .session-rename-trigger { opacity: 0; }
 .session-row:hover .session-rename-trigger, .session-row .session-rename-trigger:focus-visible, .session-row:has(:focus-visible) .session-rename-trigger { opacity: 1; }
 @media (hover: none) { .session-row .session-rename-trigger { opacity: 1; } .session-row-tools { position: static; opacity: 1; background: none; } }
-.session-title--working { color: transparent; background: linear-gradient(90deg, var(--muted-foreground) 35%, var(--foreground) 50%, var(--muted-foreground) 65%) 0 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; animation: session-title-shimmer 2s linear infinite; }
-@keyframes session-title-shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
-@media (prefers-reduced-motion: reduce) { .session-title--working { animation: none; color: inherit; background: none; } }
+.session-working { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--muted-foreground); animation: session-working-pulse 1.6s ease-in-out infinite; }
+@keyframes session-working-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .session-working { animation: none; } }
 .all-sessions-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: var(--text-caption); font-weight: 600; color: var(--muted-foreground); border-radius: 6px; cursor: pointer; }
 .all-sessions-toggle:hover { color: var(--foreground); }
 .all-sessions-toggle svg { width: 12px; height: 12px; }

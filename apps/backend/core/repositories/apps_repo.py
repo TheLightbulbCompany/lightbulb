@@ -236,13 +236,33 @@ async def list_for_owner(owner_id: str) -> list[dict]:
 
 
 async def list_pending(*, limit: int = 25) -> list[dict]:
-    """Apps with a preview or a publish in flight, for the sweeper. A filtered scan: the table is
-    small, and a cleared pending map is stored as NULL, which cannot key a sparse index."""
+    """Apps with a preview or a publish in flight, or a preview host to re-point, for the sweeper. A filtered
+    scan: the table is small, and a cleared pending map is stored as NULL, which cannot key a sparse index."""
     from boto3.dynamodb.conditions import Attr
 
+    # Destroyed apps are filtered here, not by the caller: the limit below would let them fill every slot.
     kwargs: dict = {
-        "FilterExpression": Attr("preview_pending").attribute_type("M") | Attr("publish_pending").attribute_type("M")
+        "FilterExpression": (
+            Attr("preview_pending").attribute_type("M")
+            | Attr("publish_pending").attribute_type("M")
+            | Attr("preview_repoint").attribute_type("M")
+        )
+        & Attr("state").ne("destroyed")
     }
+    items: list[dict] = []
+    while True:
+        resp = await run_in_thread(_table().scan, **kwargs)
+        items.extend(resp.get("Items", []))
+        if len(items) >= limit or not resp.get("LastEvaluatedKey"):
+            return items[:limit]
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+
+async def list_due(now: int, *, limit: int = 25) -> list[dict]:
+    """Apps whose ``build.due_at`` has passed, for the sweeper. A filtered scan, as for ``list_pending``."""
+    from boto3.dynamodb.conditions import Attr
+
+    kwargs: dict = {"FilterExpression": Attr("build.due_at").lte(now)}
     items: list[dict] = []
     while True:
         resp = await run_in_thread(_table().scan, **kwargs)

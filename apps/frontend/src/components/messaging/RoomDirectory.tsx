@@ -57,7 +57,7 @@ export interface RoomDirectoryProps {
   /** Carried for the focus pane; the sidebar and All sessions read `sessionRows` instead. */
   sessions?: readonly SidebarSession[];
   /** Share one of the viewer's own unshared terminal sessions (rows with no backend). */
-  onShareSession?: (row: SessionRow) => void;
+  onShareSession?: (row: SessionRow) => Promise<unknown>;
   /** Present: the Sessions group always shows, with an empty state when nobody is sharing. */
   onSelectSession?: (sessionId: string) => void;
   onRenameSession?: (sessionId: string, title: string | null) => Promise<unknown>;

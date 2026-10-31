@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import { mergeSessionRows, type LocalSession } from "@lightbulb/shared";
+import { mergeSessionRows, type EngineRecord, type LocalSession } from "@lightbulb/shared";
 import type { SidebarRow } from "../roomSections";
 import { AllSessionsView } from "../AllSessionsView";
 
@@ -92,4 +92,13 @@ it("lists a network row with its computer and repo, inert; finds a PR by number 
   expect(within(view).queryByText("Fix relay")).toBeNull();
   await userEvent.type(within(view).getByRole("searchbox", { name: "Search sessions" }), "#4527");
   expect(within(view).getByRole("button", { name: /Fix relay/ })).toBeInTheDocument();
+});
+
+it("lists an offline row older than 3 days when the engine still knows it", () => {
+  const engine = { session_id: "lost", status: "idle", online: false, wakes: false } as EngineRecord;
+  const kept = make("lost", "Kept offline", "offline", 24 * 20, { networkSessionId: "lost" });
+  render(<AllSessionsView loading={false} onOpenSession={vi.fn()} onClose={vi.fn()} entries={[
+    { ...kept, row: { ...kept.row, engine } }, make("lost2", "Dropped offline", "offline", 24 * 20)]} />);
+  expect(screen.getByRole("button", { name: "Ended 1" })).toBeInTheDocument();
+  expect(screen.queryByText("Dropped offline")).toBeNull();
 });

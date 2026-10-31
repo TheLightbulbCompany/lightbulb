@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { LocalSession, SessionRow } from "@lightbulb/shared";
+import type { EngineRecord, LocalSession, SessionRow } from "@lightbulb/shared";
 import type { SidebarRow } from "../roomSections";
 import { foldedEntries, NEEDS_YOU_GROUP, NETWORK_GROUP, ownWaitingCount, sessionRowAt, sessionRowGroups, sessionRowKey, sessionRowMatches } from "../sessionGroups";
 
@@ -152,5 +152,7 @@ describe("helpers", () => {
     expect(sessionRowAt(row({ at: HOUR }).row)).toBe(Date.parse(ago(HOUR)));
     expect(sessionRowAt(row({ source: "network", endedAt: 7, lastSeenAt: 9 }).row)).toBe(7);
     expect(sessionRowAt(row({ source: "network" }).row)).toBe(0);
+    // A live engine-only row dates from when the network last saw it.
+    expect(sessionRowAt({ ...row({ source: "network" }).row, engine: { seen_at: 5 } as EngineRecord })).toBe(5000);
   });
 });

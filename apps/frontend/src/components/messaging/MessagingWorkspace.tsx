@@ -49,7 +49,7 @@ export function MessagingConversation() {
   if (sessionFocus?.all) {
     return <AllSessionsView key={scope} entries={directoryProps.sessionRows ?? []} loading={workspaceSessions.loading}
       onOpenSession={openSession} onClose={closeSession} onRename={directoryProps.onRenameSession}
-      onRemove={directoryProps.onRemoveSession} onRemoveEnded={directoryProps.onRemoveEndedSessions} />;
+      onRemove={directoryProps.onRemoveSession} onRemoveEnded={directoryProps.onRemoveEndedSessions} onShare={directoryProps.onShareSession} />;
   }
   if (sessionFocus?.sessionId === null) {
     return <NewSessionView key={scope} sessions={workspaceSessions.sessions} onEvent={sessionSource.onEvent}

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
-import { groupByDay } from "@lightbulb/shared";
+import { groupByDay, type SessionRow } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { SessionListRow } from "./SessionListRow";
 import { SessionRemoveButton } from "./SessionRemoveButton";
@@ -14,13 +14,14 @@ import { sessionRowAt, sessionRowDropped, sessionRowGone, sessionRowKey, session
  * first, newest activity first, with no headings; the ones that have stopped under one
  * collapsed "Ended", by day. A session offline for days is not listed at all (its Mac lost it). Network rows with no backend list too, inert.
  */
-export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRename, onRemove, onRemoveEnded }: {
+export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRename, onRemove, onRemoveEnded, onShare }: {
   entries: readonly SidebarRow[]; loading: boolean;
   onOpenSession: (sessionId: string) => void; onClose: () => void;
   onRename?: (sessionId: string, title: string | null) => Promise<unknown>;
   /** The viewer's own ended sessions can leave the list: one by one, or all at once. */
   onRemove?: (sessionId: string) => Promise<unknown>;
   onRemoveEnded?: () => Promise<unknown>;
+  onShare?: (row: SessionRow) => Promise<unknown>;
 }) {
   const [query, setQuery] = useState("");
   const [showEnded, setShowEnded] = useState(false);
@@ -35,7 +36,7 @@ export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRe
   }, [entries, query]);
   // A search looks everywhere: what it finds is shown, ended or not.
   const open = showEnded || !!query.trim();
-  const row = (entry: SidebarRow) => <SessionListRow key={sessionRowKey(entry.row)} entry={entry} current={false} onSelect={onOpenSession} onRename={onRename} onRemove={onRemove} />;
+  const row = (entry: SidebarRow) => <SessionListRow key={sessionRowKey(entry.row)} entry={entry} onShare={onShare && (() => onShare(entry.row))} current={false} onSelect={onOpenSession} onRename={onRename} onRemove={onRemove} />;
   return <section className="room-panel room-session-focus" aria-label="All sessions">
     <div className="room-session-main">
       <header className="room-context-header">

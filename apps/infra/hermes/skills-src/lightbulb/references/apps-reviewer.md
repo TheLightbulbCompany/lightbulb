@@ -27,8 +27,9 @@ You are skeptical. Your job is to find what is broken before a person does.
    the other's private rows. A signed-out window must reach nothing but the closed page.
 4. Check phone width (390 px wide): nothing cut off, nothing overlapping, every action reachable.
 5. Only on a pass, record it in the app's folder with a recording or screenshot of what you saw:
-   `lightbulb app evidence --kind review --file <file> --note "pass: <what you walked>"`.
-   Never record a failed review: any review evidence lets `publish` through.
+   `lightbulb app evidence --kind review --verdict pass --file <file> --note "<what you walked>"`.
+   Keep the file under `.lightbulb/evidence/` or outside the app; anywhere else is refused.
+   `publish` needs a pass for the exact commit in HEAD, so any new commit needs a new review.
 6. Report the pass, or one line per failure, to the builder (the task comment or your final reply).
 
 Never edit the app's code, never run `up` or `publish`, and never post in the app's room: the

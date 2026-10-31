@@ -100,6 +100,7 @@ class AppError(TypedDict):
     code: str
     message: str
     next: str
+    deployment_id: NotRequired[str]  # a failed build: the deployment errors() reads the log of
 
 
 class UpResult(TypedDict):
@@ -517,7 +518,7 @@ async def _check_preview(app: dict, creds: dict) -> None:
             },
         )
     elif st["readyState"] in ("ERROR", "CANCELED"):
-        await _clear_pending(app, "preview_pending", {"error": _build_failed(st)})
+        await _clear_pending(app, "preview_pending", {"error": await _failure(app, creds, pending, st)})
 
 
 async def _check_publish(app: dict, creds: dict) -> None:
@@ -565,7 +566,7 @@ async def _check_publish(app: dict, creds: dict) -> None:
         app.update(plain(fresh))
         _notify(app)
     elif st["readyState"] in ("ERROR", "CANCELED"):
-        err = {**_build_failed(st), "next": "fix the error and publish again"}
+        err = {**await _failure(app, creds, pending, st), "next": "fix the error and publish again"}
         await _clear_pending(app, "publish_pending", {"publish_error": err})
 
 
@@ -613,6 +614,23 @@ def _build_failed(st: dict) -> dict:
         "message": st.get("errorMessage") or "The build failed.",
         "next": "fix the error and run up again",
     }
+
+
+_LOG_TAIL = 2000
+
+
+async def _failure(app: dict, creds: dict, pending: dict, st: dict) -> dict:
+    """``_build_failed`` plus the scrubbed tail of the build log. A log that cannot be fetched or scrubbed
+    leaves the original error as it was."""
+    err = {**_build_failed(st), "deployment_id": pending["deployment_id"]}
+    try:
+        events = await vercel.deployment_events(creds, pending["deployment_id"], limit=50)
+        scrub = await _scrubber(app["owner_id"], app["app_id"])
+        tail = scrub("\n".join(e["message"] for e in events))[-_LOG_TAIL:].strip()
+    except Exception:
+        logger.warning("apps: %s build log unavailable", app["app_id"], exc_info=True)
+        return err
+    return {**err, "message": f"{err['message']}\n{tail}"} if tail else err
 
 
 async def _add_domain(app: dict, creds: dict, *, preview: bool) -> dict:
@@ -1525,14 +1543,16 @@ async def _scrubber(owner_id: str, app_id: str) -> Callable[[str], str]:
 
 
 async def errors(owner_id: str, app_id: str) -> dict:
-    """R25: the last 50 browser (client) and server lines of the live deployment, else the latest
-    preview; build events when there are no runtime logs. Every app secret and any database URL is
+    """R25: the last 50 browser (client) and server lines of the newest failed build, else the live deployment,
+    else the latest preview; build events when there are no runtime logs. Every app secret and any database URL is
     replaced with ``[redacted]``."""
     app = await _owned(owner_id, app_id)
     rows = await _rows(app)
     creds = await _secret(app, rows, "vercel", "prod", "token")
     live = next((v for v in app.get("versions") or [] if v.get("n") == app.get("live_version")), None)
-    dep = (live or app.get("preview") or {}).get("deployment_id")
+    # A failed build is the newest attempt: `up` clears `error`, a good publish clears `publish_error`.
+    failed = (app.get("error") or {}).get("deployment_id") or (app.get("publish_error") or {}).get("deployment_id")
+    dep = failed or (live or app.get("preview") or {}).get("deployment_id")
     if not creds or not dep:
         return {"client": [], "server": []}
 

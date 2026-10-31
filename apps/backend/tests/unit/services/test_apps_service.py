@@ -2618,3 +2618,69 @@ async def test_a_dead_token_that_cannot_be_renewed_leaves_the_live_schema_alone(
     assert res.get("error")
     world.apply.assert_not_awaited()
     assert not (await svc.apps_repo.get(src["app_id"])).get("published_migrations")
+
+
+# --- the failed build's log reaches the agent ---------------------------------------------------
+
+
+async def _first_build_fails(world, monkeypatch, events):
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])  # deploys
+    monkeypatch.setattr(svc.vercel, "deployment_events", events)
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}", "ERROR", "Build failed")
+    return src, await svc.status(OWNER, src["app_id"])
+
+
+async def test_failed_preview_stores_scrubbed_capped_log_tail(world, monkeypatch):
+    cookie = "COOKIE-SECRET-VALUE"
+    events = AsyncMock(
+        return_value=[{"message": "x" * 5000}, {"message": f"Type error: token={VERCEL['token']} {cookie}"}]
+    )
+    world.secrets[(OWNER, "apps/%s/lightbulb" % (await _source())["app_id"])] = {"cookie_secret": cookie}
+    src, res = await _first_build_fails(world, monkeypatch, events)
+    msg = res["error"]["message"]
+    assert msg.startswith("Build failed\n") and "Type error: token=[redacted]" in msg
+    assert VERCEL["token"] not in msg and cookie not in msg
+    assert len(msg) <= len("Build failed\n") + 2000
+
+
+async def test_failed_preview_keeps_error_when_log_fetch_fails(world, monkeypatch):
+    src, res = await _first_build_fails(world, monkeypatch, AsyncMock(side_effect=RuntimeError("boom")))
+    assert res["state"] == "failed" and res["error"]["code"] == "build_failed"
+    assert res["error"]["message"] == "Build failed"
+
+
+async def test_failed_publish_stores_log_tail(world, monkeypatch):
+    src, _, _ = await _ready_preview(world)
+    await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    monkeypatch.setattr(svc.vercel, "deployment_events", AsyncMock(return_value=[{"message": "Module not found"}]))
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}", "ERROR", "Build failed")
+    await svc.status(OWNER, src["app_id"])
+    app = await svc.apps_repo.get(src["app_id"])
+    assert app["publish_error"]["message"] == "Build failed\nModule not found"
+
+
+async def test_errors_reads_a_failed_first_build_with_no_preview(world, monkeypatch):
+    events = AsyncMock(return_value=[{"at": 7, "message": "Module not found"}])
+    src, _ = await _first_build_fails(world, monkeypatch, events)
+    monkeypatch.setattr(svc.vercel, "runtime_logs", AsyncMock(return_value=[]))
+    out = await svc.errors(OWNER, src["app_id"])
+    assert out["server"] and out["server"][-1]["message"] == "Module not found"
+
+
+async def test_errors_reads_the_failed_preview_not_the_live_version(world, monkeypatch):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    src2 = await _source(SRC_V2, "c2")
+    await _up(src2)
+    await svc.status(OWNER, src["app_id"])  # deploys the new preview
+    failed = f"dpl_{len(world.vercel.created())}"
+    monkeypatch.setattr(svc.vercel, "deployment_events", AsyncMock(return_value=[]))
+    world.vercel.finish(failed, "ERROR", "Type error")
+    await svc.status(OWNER, src["app_id"])
+    logs = AsyncMock(return_value=[])
+    monkeypatch.setattr(svc.vercel, "runtime_logs", logs)
+    await svc.errors(OWNER, src["app_id"])
+    assert logs.await_args.args[1] == failed

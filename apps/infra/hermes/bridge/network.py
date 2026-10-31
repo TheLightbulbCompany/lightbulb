@@ -420,6 +420,9 @@ def sweep() -> None:
             if not agent_id or not record.get("id"):
                 log.warning("network: a record for session %s has no agent or id; left unacked", session)
                 continue
+            if record.get("kind") == "cancel":
+                _spawn(_cancel_record, f"network-cancel-{record['id']}", session, record)
+                continue
             if not turn.reserve_turn():
                 return  # a recycle hold: the rest stay unacked, and the next sweep runs them
             key = f"event:{record['id']}"
@@ -433,13 +436,29 @@ def _ack(session: str, record: dict, stage: str) -> None:
     ask("inbox.ack", {"session": session, "record": record["id"], "stage": stage})
 
 
+def _cancel_record(session: str, record: dict) -> None:
+    """A cancel never takes a model turn: on the same thread it would queue behind the very turn it
+    has to stop. It interrupts that turn and answers for it. A turn already over has its result,
+    so nothing more is sent."""
+    from bridge import turn
+    target = record.get("reply_to")
+    try:
+        if target and turn.abort_run(f"event:{target}"):
+            ask("send", {"from": session, "reply_to": target, "request_id": f"cancelled-{record['id']}",
+                         "text": "Stopped: the assignment was cancelled.", "status": "cancelled"})
+        _ack(session, record, "delivered")
+        _ack(session, record, "read")
+    except Exception:  # noqa: BLE001 -- stays unacked, so the next sweep cancels again
+        log.warning("network: cancel %s failed", record["id"], exc_info=True)
+
+
 def _send_assignment_result(session: str, record: dict, text: str) -> None:
     """A model can end an assignment's turn in plain text, without the reply tool. The asker gets
     that text as the result anyway, rather than waiting out the deadline: this is not left to the
     model. A turn with no text at all reports ``failed``. Stays best-effort: the deadline still
     closes the assignment if this send fails."""
     request_id = record.get("request_id")
-    if not request_id or request_id in _replied:
+    if not request_id or request_id in _replied or record["id"] in _replied:
         return
     body = {"from": session, "reply_to": request_id, "request_id": f"result-{record['id']}",
             "text": text.strip() or "The agent finished without a result.",
@@ -469,6 +488,7 @@ def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
     body = {"version": 1, "eventKind": "network_message", "eventId": record["id"],
             "targetAgentId": agent_id,
             "sessionKey": record.get("thread") or record.get("from") or record["id"],
+            "abortKey": key,
             "message": message}
     outcome = None
     try:
@@ -476,8 +496,10 @@ def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
     except Exception:  # noqa: BLE001 -- stays unread; the class only, never the text
         log.warning("network: turn for %s failed", record["id"], exc_info=True)
     finally:
-        if outcome == "completed":
-            if record.get("kind") == "assign":
+        cancelled = turn.run_aborted(key)  # _cancel_record answered for it; it must not run again
+        turn.finish_run(key, outcome or "error")
+        if outcome == "completed" or cancelled:
+            if record.get("kind") == "assign" and not cancelled:
                 _send_assignment_result(session, record, body.get("finalReply") or "")
             try:
                 _ack(session, record, "read")

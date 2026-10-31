@@ -2054,11 +2054,9 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None, spo
         if kind == "assign":
             task = (f"This is an assignment from {label}: do it, then reply with lightbulb_network action send, "
                     "reply_to its requestId, and status failed or cancelled if you could not finish.")
-        elif kind == "cancel":
-            task = f"{label} cancelled an assignment: stop that work and reply with lightbulb_network action send, reply_to its requestId, and status cancelled."
         else:
             task = f"answering a network message from {label}. Reply with lightbulb_network if a reply is needed."
-        identity = (f"You are {name}, {task} {_repo_rule(agent_id)}" if kind not in ("assign", "cancel")
+        identity = (f"You are {name}, {task} {_repo_rule(agent_id)}" if kind != "assign"
                     else f"You are {name}. {task} {_repo_rule(agent_id)}")
     elif spoken:
         room = ctx["room"]
@@ -3843,6 +3841,8 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
             if not side:  # only under the room's own lock
                 _flush_call_records(agent, agent_id, session_key)  # calls answered while this room was busy
             queued_steers = attach_agent(run_id, agent)
+            if body.get("abortKey"):  # a network turn has no run; a cancel stops it by this key
+                attach_agent(body["abortKey"], agent)
             if progress := _progress_poster(agent_id, body):
                 # Set on the agent as Hermes's own gateway does (gateway/run_turn_runner.py).
                 agent.interim_assistant_callback = progress

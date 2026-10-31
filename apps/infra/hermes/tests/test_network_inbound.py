@@ -50,7 +50,8 @@ def test_a_sweep_starts_one_turn_per_record_acked_delivered_at_start_and_read_at
     agent, body = next(t for t in turns.ran if t[1]["eventId"] == "m1")
     assert agent == "a-friday"
     assert body == {"version": 1, "eventKind": "network_message", "eventId": "m1", "targetAgentId": "a-friday",
-                    "sessionKey": "t-1", "message": {"text": "[peer] hello", "label": "Prasiddha's Mac"}}
+                    "sessionKey": "t-1", "abortKey": "event:m1",
+                    "message": {"text": "[peer] hello", "label": "Prasiddha's Mac"}}
     for rid in ("m1", "m2"):
         stages = [s for i, s in _acks(net) if i == rid]
         assert stages == ["delivered", "read"]
@@ -166,7 +167,8 @@ def test_a_failed_real_turn_is_acked_delivered_but_not_read(net, monkeypatch):
 def test_the_identity_line_names_the_agent_from_its_session_title(net):
     assert network.ensure_started(background=False)
     body = {"version": 1, "eventKind": "network_message", "eventId": "m1", "targetAgentId": "a-friday",
-            "sessionKey": "t-1", "message": {"text": "[peer] hello", "label": "Prasiddha's Mac"}}
+            "sessionKey": "t-1", "abortKey": "event:m1",
+                    "message": {"text": "[peer] hello", "label": "Prasiddha's Mac"}}
     assert turn.system_prompt(body, "a-friday").startswith(
         "You are Friday, answering a network message from Prasiddha's Mac. "
         "Reply with lightbulb_network if a reply is needed.")
@@ -215,15 +217,52 @@ def test_an_assignment_the_agent_answered_is_not_answered_twice(net, turns, monk
     assert [c["text"] for c in sent] == ["by tool"]
 
 
-def test_the_identity_line_for_an_assignment_and_a_cancel(net):
+CANCEL = {**REC, "id": "c1", "kind": "cancel", "reply_to": "m1"}
+
+
+def test_a_cancel_stops_the_running_turn_without_a_model_turn(net, turns):
+    turn.discard_run("event:m1")
+    turn.register_run("event:m1")
+    net.answer(**_peek(CANCEL), send={})
+    assert network.ensure_started(background=False)
+    assert _until(lambda: ("c1", "read") in _acks(net))
+    assert turn.run_aborted("event:m1") and not turns.ran
+    assert [(c["reply_to"], c["status"]) for c in net.calls("send")] == [("m1", "cancelled")]
+    turn.discard_run("event:m1")
+
+
+def test_a_cancel_after_the_turn_ended_sends_nothing(net, turns):
+    turn.discard_run("event:m1")
+    turn.register_run("event:m1")
+    turn.finish_run("event:m1", "completed")
+    net.answer(**_peek(CANCEL), send={})
+    assert network.ensure_started(background=False)
+    assert _until(lambda: ("c1", "read") in _acks(net))
+    assert net.calls("send") == []
+    turn.discard_run("event:m1")
+
+
+def test_a_cancelled_assignment_is_read_and_sends_no_result(net, monkeypatch):
+    def stopped(agent_id, body, token, reserved):
+        turn.abort_run(body["abortKey"])
+        body["finalReply"] = "half done"
+        turn.release_turn()
+        return "aborted"
+
+    monkeypatch.setattr(turn, "run_turn", stopped)
+    net.answer(**_peek({**REC, "kind": "assign", "request_id": "r1"}), send={})
+    assert network.ensure_started(background=False)
+    assert _until(lambda: ("m1", "read") in _acks(net))
+    assert net.calls("send") == []
+
+
+def test_the_identity_line_for_an_assignment(net):
     assert network.ensure_started(background=False)
     body = {"version": 1, "eventKind": "network_message", "eventId": "m1", "targetAgentId": "a-friday",
             "sessionKey": "t-1", "message": {"text": "x", "label": "Mac", "kind": "assign"}}
     assert turn.system_prompt(body, "a-friday").startswith(
         "You are Friday. This is an assignment from Mac: do it, then reply with lightbulb_network action send, "
         "reply_to its requestId, and status failed or cancelled if you could not finish.")
-    body["message"]["kind"] = "cancel"
-    assert "Mac cancelled an assignment: stop that work and reply with lightbulb_network action send, reply_to its requestId, and status cancelled." in turn.system_prompt(body, "a-friday")
 
 
 def test_network_workers_is_written_only_when_the_runtime_asks(net, monkeypatch):

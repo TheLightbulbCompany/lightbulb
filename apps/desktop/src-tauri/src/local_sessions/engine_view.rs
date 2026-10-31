@@ -164,4 +164,16 @@ mod tests {
         let job = listing_row(&row("live", Some("background"), Some(("deadbeef", "working"))));
         assert_eq!((job["id"].as_str(), job["state"].as_str(), job["waitingFor"].as_str()), (Some("deadbeef"), Some("working"), Some("permission prompt")));
     }
+
+    #[test]
+    fn a_background_row_feeds_job_id_listed_and_attention() {
+        let mut v = real();
+        v["job"]["state"] = "done".into();
+        let view = parse_sessions(&json!({"ok":true,"sessions":[v],"ended":[]})).unwrap();
+        let rows = [listing_row(&view.live[0])];
+        let (conversations, jobs) = crate::local_sessions::claude::listed(&rows);
+        assert_eq!((conversations.into_iter().collect::<Vec<_>>(), jobs.into_iter().collect::<Vec<_>>()), (vec!["U".to_owned()], vec!["deadbeef".to_owned()]));
+        let home = tempfile::tempdir().unwrap();
+        assert!(crate::local_sessions::claude::attention(home.path(), &rows[0], Some("deadbeef")).done);
+    }
 }

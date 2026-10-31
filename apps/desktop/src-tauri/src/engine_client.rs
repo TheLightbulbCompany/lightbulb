@@ -84,6 +84,7 @@ fn page_record(record: &Value) -> Option<Value> {
     if record.get("resume").and_then(Value::as_str).is_some_and(|resume| !resume.is_empty()) {
         kept.insert("can_resume".to_owned(), true.into());
     }
+    // The engine marks no record as own; only a local record (`Session`, `store::Session`) has a `pid` or `resume` key.
     if record.get("pid").is_some() || record.get("resume").is_some() {
         kept.insert("own".to_owned(), true.into());
     }

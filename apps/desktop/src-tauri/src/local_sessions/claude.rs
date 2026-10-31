@@ -411,7 +411,7 @@ pub(super) struct Attention {
     #[serde(default)]
     pub waiting_for: Option<String>,
     /// A background job's hand-off note (`state: blocked`, `needs`): a message for its person,
-    /// never a prompt (#4414).
+    /// never a prompt (#4414). Kept beside `waiting_for` when a prompt is also open.
     #[serde(default)]
     pub note: Option<String>,
     /// Codex on the shared daemon only: how many of its child threads are working

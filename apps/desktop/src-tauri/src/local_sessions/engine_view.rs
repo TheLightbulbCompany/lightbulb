@@ -115,10 +115,12 @@ pub(in crate::local_sessions) fn own_claude_row<'a>(view: &'a EngineView, sessio
 }
 
 /// The words of the native confirm for sharing `row`: what the engine says it is, never what the
-/// page says. Title first line only, 80 characters.
+/// page says. Title: first line, 80 characters; folder 40; both without control or format characters.
 pub(in crate::local_sessions) fn share_prompt(row: &EngineRow) -> String {
-    let title = row.title.as_deref().and_then(|t| t.lines().next()).map(|t| t.chars().take(80).collect::<String>());
-    let place = std::path::Path::new(&row.cwd).file_name().map(|n| n.to_string_lossy().into_owned());
+    // Control and format characters (a bare \r, U+2028, bidi overrides) could redraw the text.
+    let plain = |s: &str, cap: usize| Some(s.chars().filter(|c| !c.is_control() && !"\u{61c}\u{200b}\u{200c}\u{200d}\u{200e}\u{200f}\u{2028}\u{2029}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2060}\u{2066}\u{2067}\u{2068}\u{2069}\u{feff}".contains(*c)).take(cap).collect::<String>()).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    let title = row.title.as_deref().and_then(|t| t.lines().next()).and_then(|t| plain(t, 80));
+    let place = std::path::Path::new(&row.cwd).file_name().and_then(|n| plain(&n.to_string_lossy(), 40));
     let what = match (title, place) {
         (Some(t), Some(p)) => format!("\"{t}\" in {p}. "),
         (Some(t), None) => format!("\"{t}\". "),
@@ -222,6 +224,16 @@ mod tests {
         let long = format!("first line\n{}", "x".repeat(200));
         assert_eq!(share_prompt(&row(Some(&long), "/r")), format!("\"first line\" in r. {tail}"));
         assert!(share_prompt(&row(Some(&"y".repeat(200)), "/r")).starts_with(&format!("\"{}\" in r.", "y".repeat(80))));
+    }
+
+    #[test]
+    fn the_confirm_drops_what_a_title_or_folder_could_use_to_disguise_itself() {
+        let row = |title: &str, cwd: &str| EngineRow { title: Some(title.into()), cwd: cwd.into(), ..parse_sessions(&json!({"ok":true,"sessions":[real()],"ended":[]})).unwrap().live.remove(0) };
+        let tail = "Teammates will be able to watch it. You can stop sharing at any time.";
+        assert_eq!(share_prompt(&row("ev\u{202e}il\r\u{2028}x\u{200b}", "/r/\u{202e}fo\u{200b}o\x07")), format!("\"evilx\" in foo. {tail}"));
+        assert_eq!(share_prompt(&row("\u{202e}\r ", "")), tail, "empty after cleaning");
+        let long = format!("/r/{}", "z".repeat(200));
+        assert!(share_prompt(&row("t", &long)).contains(&format!(" in {}. ", "z".repeat(40))));
     }
 
     #[test]

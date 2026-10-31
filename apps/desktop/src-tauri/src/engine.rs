@@ -69,9 +69,15 @@ fn here() -> Result<(PathBuf, PathBuf), &'static str> {
     Ok((home, bundled(&exe).ok_or("no engine is bundled beside this build")?))
 }
 
-fn installed(home: &Path) -> Option<String> {
+/// The finished setup's version; None when there is none. Only a missing file means none: a
+/// marker that cannot be read (permissions, not UTF-8, a directory) is an Err, never "absent".
+fn installed(home: &Path) -> Result<Option<String>, String> {
     let state = home.join(".lightbulb/connect");
-    std::fs::read_to_string(state.join("setup-version")).ok().filter(|_| state.join("bin/lightbulb").is_file())
+    match std::fs::read_to_string(state.join("setup-version")) {
+        Ok(text) => Ok(Some(text).filter(|_| state.join("bin/lightbulb").is_file())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("setup-version: {e}")),
+    }
 }
 
 fn version_of(home: &Path, bundled: &Path) -> Result<String, String> {
@@ -94,22 +100,24 @@ fn core(text: &str) -> Option<Vec<u64>> {
     word.split(['-', '+']).next()?.split('.').map(|n| n.parse().ok()).collect()
 }
 
-/// The sidebar's Fix: re-applies the bundled engine, whatever is installed.
+/// The sidebar's Fix: re-applies the bundled engine when `fix_allowed` says so.
 #[tauri::command]
 pub async fn engine_fix() -> Result<(), String> {
     let (home, bundled) = here()?;
-    let answers = crate::engine_client::ask("sessions", None).await.is_ok();
+    // The flag first, the ask inside it: no answer can go stale while another setup finishes.
     let flight = single_flight().ok_or("a setup is already running")?;
+    let answers = crate::engine_client::ask("sessions", None).await.is_ok();
     tokio::task::spawn_blocking(move || {
         let _flight = flight;
-        fix_allowed(answers, installed(&home).as_deref(), &version_of(&home, &bundled)?)?;
+        fix_allowed(answers, installed(&home)?.as_deref(), &version_of(&home, &bundled)?)?;
         fix_at(&home, &bundled, FIX_LIMIT)
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// Runs the bundled engine's `setup` whatever is installed: the same spawn, wait and limit as at launch.
+/// Runs the bundled engine's `setup`, without asking whether it should (`ensure_at` and
+/// `engine_fix` do): the same spawn, wait and limit for both.
 pub(crate) fn fix_at(home: &Path, bundled: &Path, limit: Duration) -> Result<(), String> {
     let mut child = Command::new(bundled)
         .arg("setup")
@@ -138,7 +146,7 @@ pub(crate) fn fix_at(home: &Path, bundled: &Path, limit: Duration) -> Result<(),
 /// install, or one whose version this build cannot read, is left alone.
 pub(crate) fn ensure_at(home: &Path, bundled: &Path, limit: Duration) -> Result<bool, String> {
     let ours = core(&version_of(home, bundled)?).ok_or("the bundled engine does not run")?;
-    if let Some(text) = installed(home) {
+    if let Some(text) = installed(home)? {
         match core(&text) {
             Some(v) if v < ours => {}
             _ => return Ok(false),
@@ -169,7 +177,7 @@ mod tests {
         std::fs::read_to_string(home.join("setup.log")).unwrap_or_default()
     }
 
-    fn installed(home: &Path, setup_version: &str) {
+    fn put_install(home: &Path, setup_version: &str) {
         fake(&home.join(".lightbulb/connect/bin/lightbulb"), "0.0.0", "");
         std::fs::write(home.join(".lightbulb/connect/setup-version"), setup_version).unwrap();
     }
@@ -181,7 +189,7 @@ mod tests {
         fake(&bundled, "0.6.0", "");
         // As new, newer (a pre-release counts by its numeric core), or unreadable: left alone.
         for version in ["0.6.0", "0.7.1", "0.7.0-rc1", "garbage"] {
-            installed(home.path(), version);
+            put_install(home.path(), version);
             assert_eq!(ensure_at(home.path(), &bundled, LONG), Ok(false), "{version}");
         }
         assert_eq!(setups(home.path()), "");
@@ -194,7 +202,7 @@ mod tests {
         fake(&bundled, "0.6.0", "");
         assert_eq!(ensure_at(home.path(), &bundled, LONG), Ok(true), "missing");
         assert_eq!(ensure_at(home.path(), &bundled, LONG), Ok(false), "its setup finished");
-        installed(home.path(), "0.5.9");
+        put_install(home.path(), "0.5.9");
         assert_eq!(ensure_at(home.path(), &bundled, LONG), Ok(true), "older");
         // A binary with no finished setup (the marker is written only on success): set up again.
         std::fs::remove_file(home.path().join(".lightbulb/connect/setup-version")).unwrap();
@@ -224,7 +232,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let bundled = home.path().join("app/bin/lightbulb");
         fake(&bundled, "0.6.0", "");
-        installed(home.path(), "0.6.0");
+        put_install(home.path(), "0.6.0");
         assert_eq!(ensure_at(home.path(), &bundled, LONG), Ok(false));
         assert_eq!(fix_at(home.path(), &bundled, LONG), Ok(()));
         assert_eq!(setups(home.path()), "setup 0.6.0\n");
@@ -241,6 +249,25 @@ mod tests {
         for installed in [None, Some("0.5.9"), Some("0.6.0")] {
             assert_eq!(fix_allowed(false, installed, "lightbulb 0.6.0"), Ok(()), "{installed:?}");
         }
+    }
+
+    #[test]
+    fn an_install_marker_that_cannot_be_read_is_not_an_absent_one() {
+        let home = tempfile::tempdir().unwrap();
+        let bundled = home.path().join("app/bin/lightbulb");
+        fake(&bundled, "0.6.0", "");
+        assert_eq!(installed(home.path()), Ok(None), "nothing installed");
+        put_install(home.path(), "0.6.0");
+        std::fs::remove_file(home.path().join(".lightbulb/connect/setup-version")).unwrap();
+        // A directory where the file belongs: not NotFound, so not "absent".
+        let marker = home.path().join(".lightbulb/connect/setup-version");
+        std::fs::create_dir(&marker).unwrap();
+        assert!(installed(home.path()).is_err());
+        assert!(ensure_at(home.path(), &bundled, LONG).is_err());
+        assert_eq!(setups(home.path()), "");
+        std::fs::remove_dir(&marker).unwrap();
+        std::fs::write(&marker, [0xff, 0xfe]).unwrap();
+        assert!(installed(home.path()).is_err(), "not UTF-8");
     }
 
     #[test]

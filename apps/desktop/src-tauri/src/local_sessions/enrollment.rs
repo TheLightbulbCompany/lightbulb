@@ -600,13 +600,21 @@ pub async fn share_engine_session(app: tauri::AppHandle, session_id: String) -> 
     // Before the dialog: an ask for a session the relay does not hold yet would wait for it and
     // apply later, with no new Allow.
     let key = transport::claude_key(&home()?, &row.conversation);
-    let mirror = super::mod_socket::mirrors(&session_scope(&state)?)
-        .into_iter()
-        .find_map(|(k, m)| (k == key && m.ended_at.is_none()).then_some(m))
-        .ok_or("Lightbulb does not see this session yet. Wait a few seconds, then try again.")?;
+    let live = || -> Result<Mirror> {
+        if !sharing_on(&state) {
+            return Err("sharing is off on this Mac".into());
+        }
+        super::mod_socket::mirrors(&session_scope(&state)?)
+            .into_iter()
+            .find_map(|(k, m)| (k == key && m.ended_at.is_none()).then_some(m))
+            .ok_or("Lightbulb does not see this session yet. Wait a few seconds, then try again.".into())
+    };
+    live()?;
     if !crate::confirm_native(&app, "Share this session with your workspace?", engine_view::share_prompt(row)).await {
         return Err(crate::DECLINED_ON_MAC.into());
     }
+    // The dialog can stay open for minutes: sharing may have gone off or the session ended.
+    let mirror = live()?;
     let enrollment: Enrollment = private_read(&state.join("enrollment.json"))?;
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(8)).build().map_err(|_| "network unavailable")?;
     super::mod_socket::share(&client, &enrollment, &load_mac_identity()?, &key, &mirror)

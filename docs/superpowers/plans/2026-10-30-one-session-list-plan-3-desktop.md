@@ -164,4 +164,27 @@ export function useEngineDirectory(): EngineDirectory; // useSyncExternalStore o
 
 ## Verification
 
-(Task 7 fills this in.)
+Run 30 Oct 2026 on this Mac against a real 0.8.0 engine, a debug build of CLI origin/main (cd365ad) with its own home and identity at `/tmp/lb3`, reading the real `~/.claude` read-only. The Linux container steps were replaced by this. Rerun, with the engine up per the task: `LIGHTBULB_CONNECT_HOME=/tmp/lb3 cargo test --lib real_engine_drives_mirrors -- --ignored --nocapture`. Output: `.superpowers/sdd/2026-10-30-one-session-list-plan-3-desktop/task-7-report.md`.
+
+**Bug found, open: the branch reads no interactive session from a real engine.** `parse_sessions` (`engine_view.rs:74`, since ee6460385) has `job: Some((text(&r["job"], "id")?, ...)).filter(...)`. The `?` returns from the row's closure, so a row with no `job` is dropped, and no real interactive row has one. On the branch at 5cffda6fc the test fails at the parse: the same answer has 5 rows and parses to 0. `discover` finds nothing. From the code, not run: `apply_engine` would see every Claude mirror missing and end it as `process-exited` after two polls, and Share finds no row. The test stays red on this branch until that line is fixed.
+
+Everything below "with the parse fixed" ran in a throwaway copy of 5cffda6fc with that one line changed. It is what the rest of the pipeline does once the bug is fixed, not what the branch does now. Rerun it after the fix.
+
+Verified, with the parse fixed:
+- `sessions` answered in 34 ms (limit 5 s). `discover` made 4 sessions from 4 live rows.
+- A5 at one moment, on 4 real sessions: mirror, engine and `claude agents --json` agreed (3 busy, 1 idle). The engine's listing read did not time out.
+- Every mirror's `network_id` is its engine row's `key`, and its `registration` frame carries it with the feature on.
+- The end path on real answers, with `sleep` processes registered through the socket as provider `claude`. A `waiting` row read `waiting-approval`; after the kill the real ended row said `process-exited`, the first miss ended nothing, the second ended the mirror as `process-exited`. An `idle` row Claude's listing does not name was ended by the engine as `moved-on` with its process alive (after its 15 s quiet); first miss nothing, second ended as `exited`. An idle row can only end by `moved-on` this way, so the kill had to be shown on a `waiting` row.
+- Page side, not affected by the bug: 13 real `directory` records through `for_page` lost `cwd` and `resume`; no value contains `/Users` or `cwd`, and "resume" appears only as the key `can_resume`. `mergeSessionRows` with no backend rows gave 12 rows, all `source: network`, `isViewer: true`, 4 live (3 `busy`, 1 `idle`) and 8 `ended`. The 13th is the `moved-on` row, which the merge leaves out by design.
+
+Verified on the installed Claude Code 2.1.314, `claude agents --json`: `kind`, `pid`, `sessionId`, `cwd`, `status`; `--all` adds `id` and `state`. These are the words `listing_row` uses. Seen values: `interactive`, `background`, `busy`, `idle`, `stopped`, `done`.
+
+Not verified:
+- Real rows with a `job`, or Claude's `waitingFor`: no live background job and no prompt existed on this Mac during the run. The `waiting` row above was registered by hand, so a real permission prompt reaching `waiting-approval` is not verified, nor are the `working` and `blocked` states.
+- The `real_engine_drives_mirrors` run on the branch itself past the parse.
+- A real hook's `register`, a real Claude session starting or ending: none was started, because the running Lightbulb.app could share it.
+- A debug `lightbulb-desktop`: not run. It would read and could set up the real service, and a real window would touch the real relay.
+- The native Share dialog, the live relay and backend, and the sidebar in a real window.
+- A5 as a standing guarantee (one moment only). When Claude's listing is absent, the test can only tell a timed-out read from the engine's log, which says so once per run of failures.
+- A6 (shared session actions), A7 (no Windows or Friday peer on this isolated engine), A10.
+- V3: open. It needs Aden's Mac and cannot be run from here.

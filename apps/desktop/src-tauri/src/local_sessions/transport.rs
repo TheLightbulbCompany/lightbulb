@@ -7694,6 +7694,156 @@ pub(super) mod tests {
         test_host(dir, vec![(SID, mirror)])
     }
 
+    /// `claude agents --json` as it answers now, and how long it took.
+    async fn claude_agents(program: &Path) -> (Vec<serde_json::Value>, Duration) {
+        let at = Instant::now();
+        let out = tokio::time::timeout(Duration::from_secs(20), tokio::process::Command::new(program).args(["agents", "--json"]).kill_on_drop(true).output())
+            .await
+            .expect("claude agents answers within 20 s")
+            .unwrap();
+        (serde_json::from_slice(&out.stdout).expect("claude agents says JSON"), at.elapsed())
+    }
+
+    /// Why this mirror's idle is not backed by Claude's own listing (A5), if it is not.
+    fn idle_unbacked(mirrors: &BTreeMap<String, Mirror>, agents: &[serde_json::Value]) -> Vec<(String, String)> {
+        let idle = mirrors.values().filter(|m| m.ended_at.is_none() && m.native.status == "idle");
+        idle.filter_map(|m| {
+            let conversation = &m.native.conversation;
+            match agents.iter().find(|a| a["sessionId"] == conversation.as_str()) {
+                None => Some((conversation.clone(), "absent".to_owned())),
+                Some(a) if a["status"] == "idle" => None,
+                Some(a) => Some((conversation.clone(), format!("status {}", a["status"]))),
+            }
+        })
+        .collect()
+    }
+
+    /// The next engine answer that satisfies `until`, within a minute: a `claude` read and an end
+    /// each land on the engine's own ticks.
+    async fn engine_until(what: &str, until: impl Fn(&EngineView) -> bool) -> EngineView {
+        for _ in 0..120 {
+            let view = engine_view::read().await.unwrap();
+            if until(&view) {
+                return view;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        panic!("the engine never said: {what}");
+    }
+
+    /// Run against an isolated 0.8.0 engine only (the plan's Verification says how); the session
+    /// rows it registers would otherwise land on the person's own service. `$HOME` is read only,
+    /// the Host's state is a tempdir, and no Host here has a relay.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs an isolated 0.8.0 engine at LIGHTBULB_CONNECT_HOME"]
+    async fn real_engine_drives_mirrors() {
+        let engine_home = std::env::var("LIGHTBULB_CONNECT_HOME").expect("set LIGHTBULB_CONNECT_HOME to an isolated engine");
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert_ne!(Path::new(&engine_home), home.join(".lightbulb/connect"), "never the person's own service");
+        let state = tempfile::tempdir().unwrap();
+        let mut host = test_host(state.path(), vec![]);
+        host.home = home.clone();
+        super::super::session_states::set_reads_network_id(true);
+
+        let at = Instant::now();
+        let view = engine_view::read().await.expect("the real answer parses");
+        println!("sessions: {} live, {} ended, in {:?} (the desktop gives it 5 s)", view.live.len(), view.ended.len(), at.elapsed());
+        // One answer read two ways: no row may fall out of the parse.
+        let raw = crate::engine_client::ask("sessions", None).await.unwrap();
+        let rows = raw["sessions"].as_array().unwrap();
+        assert_eq!(engine_view::parse_sessions(&raw).unwrap().live.len(), rows.len(), "rows the parse dropped, from: {rows:#?}");
+
+        let found = claude::discover(&home).await.unwrap();
+        println!("discover: {} sessions, {} jobs", found.sessions.len(), found.jobs.len());
+        host.observe(found.sessions).unwrap();
+        let view = engine_view::read().await.unwrap();
+        host.apply_engine(&Ok(view));
+        assert!(!host.mirrors.is_empty(), "this Mac has live Claude sessions; none became a mirror");
+
+        let program = crate::local_sessions::provider_program(&home, "claude").unwrap();
+        let (mut agents, took) = claude_agents(&program).await;
+        let mut unbacked = idle_unbacked(&host.mirrors, &agents);
+        if !unbacked.is_empty() {
+            // Machine load flips busy and idle mid-read.
+            println!("first read disagrees: {unbacked:?}; reading both again");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            host.apply_engine(&Ok(engine_view::read().await.unwrap()));
+            (agents, _) = claude_agents(&program).await;
+            unbacked = idle_unbacked(&host.mirrors, &agents);
+        }
+        let view = engine_view::read().await.unwrap();
+        println!("{:<38} {:<18} {:<18} claude agents ({took:?})", "conversation", "mirror", "engine");
+        for m in host.mirrors.values() {
+            let conversation = &m.native.conversation;
+            let engine = view.live.iter().find(|r| r.conversation == *conversation).map_or("no live row", |r| r.status.as_str());
+            let claude = agents.iter().find(|a| a["sessionId"] == conversation.as_str()).map_or("absent".to_owned(), |a| a["status"].to_string());
+            println!("{conversation:<38} {:<18} {engine:<18} {claude}", m.native.status);
+        }
+        // The engine logs a failed read once per run of them, in a log that outlasts its starts
+        // (each says `relay:`). Absent passes only on that word from this start.
+        let log = fs::read_to_string(Path::new(&engine_home).join("daemon.log")).unwrap_or_default();
+        let timed_out = log.rsplit("relay: ").next().is_some_and(|run| run.contains("claude agents: no answer"));
+        println!("A5: idle mirrors not backed by claude agents: {unbacked:?}; the engine's listing read timed out since it started: {timed_out}");
+        assert!(unbacked.iter().all(|(_, why)| timed_out && why == "absent"), "A5: {unbacked:?}");
+
+        for m in host.mirrors.values() {
+            let Some(row) = view.live.iter().find(|r| r.provider == m.native.provider && r.conversation == m.native.conversation) else {
+                println!("{} left the engine's live rows during this run", m.native.conversation);
+                continue;
+            };
+            assert_eq!(m.network_id.as_deref(), Some(row.key.as_str()));
+            let frame = registration(m);
+            assert_eq!(frame["session"]["networkSessionId"].as_str(), Some(row.key.as_str()));
+        }
+        println!("network_id: each mirror's is its engine row's key, and its registration frame carries it");
+
+        // The end path, on processes the engine lists without a Claude. An idle row that Claude's
+        // listing does not name goes after 15 s (`moved_on`), while a `waiting` one lives with its
+        // process, so each real reason gets its own row.
+        let cwd = tempfile::tempdir().unwrap();
+        let register = async |status: &str| {
+            let child = tokio::process::Command::new("/bin/sleep").arg("600").kill_on_drop(true).spawn().unwrap();
+            let me = process(child.id().unwrap()).unwrap();
+            let conversation = uuid::Uuid::new_v4().to_string();
+            let session = json!({"provider":"claude","conversation":conversation,"pid":me.pid,"birth_micros":me.birth_micros,
+                "cwd":cwd.path().to_str().unwrap(),"status":status,"waiting_for":"permission prompt"});
+            let answer = crate::engine_client::ask("register", Some(json!({ "session": session }))).await.unwrap();
+            println!("register {status}: {answer}");
+            assert_eq!(answer["ok"], true);
+            (child, conversation)
+        };
+        let (mut waiting, gone_id) = register("waiting").await;
+        let (idle, left_id) = register("idle").await;
+        let view = engine_until("both sleeps are live", |v| [&gone_id, &left_id].iter().all(|id| v.live.iter().any(|r| r.conversation == **id))).await;
+        for id in [&gone_id, &left_id] {
+            let row = view.live.iter().find(|r| r.conversation == *id).unwrap();
+            println!("live: {} status={} waiting_for={:?} kind={:?} pid={}", row.key, row.status, row.waiting_for, row.kind, row.pid);
+        }
+        let found = claude::discover(&home).await.unwrap();
+        host.observe(found.sessions).unwrap();
+        host.apply_engine(&Ok(engine_view::read().await.unwrap()));
+        let key_of = |host: &Host, id: &str| host.mirrors.iter().find(|(_, m)| m.native.conversation == id).map(|(k, _)| k.clone()).expect("the real discover made a mirror of this row");
+        let (gone_key, left_key) = (key_of(&host, &gone_id), key_of(&host, &left_id));
+        let m = &host.mirrors[&gone_key];
+        println!("mirror: status={} restriction={:?} network_id={:?}", m.native.status, m.native.restriction, m.network_id);
+        assert_eq!(m.native.status, "waiting-approval");
+
+        waiting.kill().await.unwrap();
+        let ends = async |host: &mut Host, id: &str, key: &str, want: &str| {
+            let view = engine_until("it ended", |v| v.ended.iter().any(|r| r.conversation == id) && v.live.iter().all(|r| r.conversation != id)).await;
+            let reason = view.ended.iter().find(|r| r.conversation == id).unwrap().reason.clone();
+            host.apply_engine(&Ok(view));
+            println!("real ended row: reason={reason:?}; first miss: ended_at={:?}", host.mirrors[key].ended_at);
+            assert!(host.mirrors[key].ended_at.is_none(), "one answer ends nothing");
+            host.apply_engine(&Ok(engine_view::read().await.unwrap()));
+            println!("second miss: ended_reason={:?}", host.mirrors[key].ended_reason);
+            assert_eq!(host.mirrors[key].ended_reason.as_deref(), Some(want));
+        };
+        ends(&mut host, &gone_id, &gone_key, "process-exited").await;
+        ends(&mut host, &left_id, &left_key, "exited").await;
+        drop(idle);
+    }
+
     fn held_prompt(reply: &str) -> WaitingPrompt {
         WaitingPrompt {
             id: None, tool: None, summary: String::new(),

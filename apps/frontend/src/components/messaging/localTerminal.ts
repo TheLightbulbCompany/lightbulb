@@ -13,7 +13,7 @@ export type LocalMacOptions = {
 };
 
 /** The desktop app's command bridge, absent in a browser. */
-function bridge(): Invoke | undefined {
+export function bridge(): Invoke | undefined {
   if (typeof window === "undefined") return undefined;
   return (window as Window & { __TAURI__?: { core?: { invoke?: Invoke } } }).__TAURI__?.core?.invoke;
 }

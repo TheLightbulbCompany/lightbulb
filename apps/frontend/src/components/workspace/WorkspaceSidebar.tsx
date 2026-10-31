@@ -24,6 +24,7 @@ import { TrialRecapCard } from "@/components/messaging/TrialRecapCard";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
+import { NetworkConnect } from "@/components/desktop/NetworkConnect";
 import { isDesktopApp } from "@/lib/desktopNotify";
 import { activateMessagesPanel } from "./workspaceController";
 
@@ -115,7 +116,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: Workspac
         {(isSubscribed || subscriptionStatus === "trial_local") && (
           <HealthIndicator onRecoveryReprovision={onRecoveryReprovision} />
         )}
-        {desktop && <><NodeStatusPill /><DesktopUpdater /></>}
+        {desktop && <><NodeStatusPill /><NetworkConnect /><DesktopUpdater /></>}
         <div className="user-row">
           <div className="user-avatar">{userInitials}</div>
           <div className="user-info">

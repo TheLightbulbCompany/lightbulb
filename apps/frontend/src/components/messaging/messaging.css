@@ -363,21 +363,25 @@
 .session-row--gone .session-tool-badge { filter: grayscale(1); }
 .session-row { position: relative; }
 /* The menu (and Share) take the right edge on hover, over the state; touch keeps them in the row. */
-.session-row .room-directory-actions { position: absolute; right: 0; inset-block: 0; margin-block: auto; background: color-mix(in srgb, var(--midnight) 5%, var(--background)); }
-.session-row-share { position: absolute; right: 2.25rem; inset-block: 0; margin-block: auto; height: 1.5rem; padding-inline: 8px; font-size: var(--text-caption); opacity: 0; background: color-mix(in srgb, var(--midnight) 5%, var(--background)); }
-/* The title gives way to whatever the hover reveals, so nothing peeks out between the controls. */
-.session-row:has(.room-directory-actions):is(:hover, :focus-within) .session-row-line { padding-right: 1.75rem; }
-.session-row:has(.session-row-share):is(:hover, :focus-within) .session-row-line { padding-right: 5.25rem; }
-.session-row:has([aria-current="page"]) .room-directory-actions { background: color-mix(in srgb, var(--midnight) 9%, var(--background)); }
+.session-row { --session-patch: var(--plane-sidebar); }
+.all-sessions .session-row { --session-patch: var(--background); }
+.session-row .room-directory-actions { position: absolute; right: 0; inset-block: 0; margin-block: auto; height: 28px; width: 28px; background: color-mix(in srgb, var(--midnight) 5%, var(--session-patch)); }
+.session-row-share { position: absolute; right: 2.25rem; inset-block: 0; margin-block: auto; height: 1.5rem; padding-inline: 8px; font-size: var(--text-caption); opacity: 0; background: color-mix(in srgb, var(--midnight) 5%, var(--session-patch)); }
+.session-row .room-directory-actions:hover, .session-row-share:hover { background: color-mix(in srgb, var(--midnight) 12%, var(--session-patch)); }
+/* Focus shows the controls only for keyboard focus (Radix hands focus back to the trigger after a menu closes). */
+.session-row:has(.room-directory-actions):is(:hover, :has(:focus-visible)) .session-row-line { padding-right: 1.75rem; }
+.session-row:has(.session-row-share):is(:hover, :has(:focus-visible)) .session-row-line { padding-right: 5.25rem; }
+.session-row:has([aria-current="page"]) .room-directory-actions { background: color-mix(in srgb, var(--midnight) 9%, var(--session-patch)); }
 .session-row:not(:has(.room-directory-actions)) .session-row-share { right: 4px; }
-.session-row:hover .session-row-share, .session-row-share:focus-visible, .session-row:focus-within .session-row-share { opacity: 1; }
-.session-row:has(.room-directory-actions, .session-row-share):is(:hover, :focus-within) .session-row-end,
+.session-row:hover .session-row-share, .session-row-share:focus-visible, .session-row:has(:focus-visible) .session-row-share { opacity: 1; }
+.session-row:has(:focus-visible) .room-directory-actions { opacity: 1; }
+.session-row:has(.room-directory-actions, .session-row-share):is(:hover, :has(:focus-visible)) .session-row-end,
 .session-row:has(.room-directory-actions[data-state="open"]) .session-row-end { visibility: hidden; }
 @media (hover: none) {
   .session-row .room-directory-actions, .session-row-share { position: static; margin-block: 0; background: none; }
   .session-row-share { opacity: 1; }
-  .session-row:has(.room-directory-actions, .session-row-share):is(:hover, :focus-within) .session-row-line { padding-right: 0; }
-  .session-row:has(.room-directory-actions, .session-row-share):is(:hover, :focus-within) .session-row-end,
+  .session-row:has(.room-directory-actions, .session-row-share):is(:hover, :has(:focus-visible)) .session-row-line { padding-right: 0; }
+  .session-row:has(.room-directory-actions, .session-row-share):is(:hover, :has(:focus-visible)) .session-row-end,
   .session-row:has(.room-directory-actions[data-state="open"]) .session-row-end { visibility: visible; }
 }
 /* All sessions: a column each for state and time; rename and remove take their place on hover. */
@@ -386,9 +390,9 @@
 .all-sessions .session-row-state { width: 6.5rem; max-width: 6.5rem; text-align: right; }
 .all-sessions .session-row-time { width: 4.5rem; max-width: 4.5rem; text-align: right; }
 .session-row-tools { position: absolute; right: 0; inset-block: 0; display: flex; align-items: center; opacity: 0; background: var(--background); }
-.session-row:hover .session-row-tools, .session-row:focus-within .session-row-tools { opacity: 1; }
+.session-row:hover .session-row-tools, .session-row:has(:focus-visible) .session-row-tools { opacity: 1; }
 .session-row .session-rename-trigger { opacity: 0; }
-.session-row:hover .session-rename-trigger, .session-row .session-rename-trigger:focus-visible, .session-row:focus-within .session-rename-trigger { opacity: 1; }
+.session-row:hover .session-rename-trigger, .session-row .session-rename-trigger:focus-visible, .session-row:has(:focus-visible) .session-rename-trigger { opacity: 1; }
 @media (hover: none) { .session-row .session-rename-trigger { opacity: 1; } .session-row-tools { position: static; opacity: 1; background: none; } }
 .session-title--working { color: transparent; background: linear-gradient(90deg, var(--muted-foreground) 35%, var(--foreground) 50%, var(--muted-foreground) 65%) 0 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; animation: session-title-shimmer 2s linear infinite; }
 @keyframes session-title-shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }

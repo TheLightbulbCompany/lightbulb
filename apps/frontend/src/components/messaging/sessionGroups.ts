@@ -34,7 +34,7 @@ export function sessionRowMatches(row: SessionRow, query: string): boolean {
   if (!needle) return true;
   const word = STATES.find(([state]) => state === row.state)?.[2];
   const pr = row.backend?.pr;
-  return [row.title, row.folder, row.repo, row.branch, sessionToolName(row.agent), row.agent, row.person.name, row.computer,
+  return [row.title, row.folder, row.repo, row.branch, sessionToolName(row.agent), row.agent, row.person.name, row.person.isViewer ? "you" : undefined, row.computer,
     word, sessionRowFailed(row) ? "failed" : undefined, row.waitingFor, pr ? `#${pr.number}` : undefined]
     .some((field) => field?.toLocaleLowerCase().includes(needle));
 }

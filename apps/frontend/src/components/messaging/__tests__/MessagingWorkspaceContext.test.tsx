@@ -9,7 +9,9 @@ import { draftKey } from "../drafts";
 import { requestFocusComposer, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import type { LiveRoomRun } from "@lightbulb/shared";
 
-const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn(), orgId: "org", capture: vi.fn() }));
+const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn(), orgId: "org", capture: vi.fn(), waitingPref: "banner" }));
+vi.mock("@/components/settings/SessionNotificationsCard", async (importOriginal) => ({ ...(await importOriginal<object>()),
+  useSessionNotificationPrefs: () => ({ prefs: { waiting: mocks.waitingPref, finished: "banner" }, loaded: true, mutate: vi.fn() }) }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "owner", orgId: mocks.orgId }), useUser: () => ({ user: { fullName: "Olive Owner" } }) }));
 vi.mock("@/lib/analytics", async (importOriginal) => ({ ...(await importOriginal<object>()), capture: mocks.capture }));
 vi.mock("@/hooks/useRooms", () => ({ useRooms: mocks.rooms }));
@@ -864,6 +866,21 @@ it("keeps a muted room's unread out of the browser-tab title", () => {
   state.rooms = [{ ...room, unreadCount: 3, muted: false }];
   compose();
   expect(document.title).toMatch(/^\(3\)/);
+});
+
+it("counts only the viewer's own waiting sessions in the tab title, and none when waiting is off", async () => {
+  const waiting = (sessionId: string, humanUserId: string) => ({ sessionId, humanUserId, status: "waiting-approval", provider: "claude", title: sessionId } as never);
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [waiting("mine", "owner"), waiting("theirs", "colleague")] });
+  mocks.waitingPref = "badge";
+  const view = compose();
+  await waitFor(() => expect(document.title).toMatch(/^\(1\)/));
+  view.unmount();
+
+  mocks.waitingPref = "off";
+  compose();
+  await act(async () => {});
+  expect(document.title).not.toMatch(/^\(\d+\)/);
+  mocks.waitingPref = "banner";
 });
 
 it("opens the shortcut sheet on Cmd+/", () => {

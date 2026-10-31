@@ -100,12 +100,13 @@ export function SessionListRow({ entry: { row, owner, unread }, current, onSelec
   const stateExtra = !row.engine && backend ? sessionWaitingLine(backend) : waiting ? row.waitingFor : null;
   // The word at the right edge, where no shape says the state.
   const word = failed ? `Failed${ended ? ` ${ended}` : ""}`
+    : !oneLine && state === "idle" && !row.engine && backend ? stateText
     : !oneLine && state in STATE_LABELS ? (waiting && !person.isViewer ? "Waiting" : STATE_LABELS[state as keyof typeof STATE_LABELS])
     : state === "done" ? "Done"
       : state === "offline" ? `Offline${seen ? ` ${seen}` : ""}`
         : state === "parked" ? "Parked"
           : state === "ended" ? `Ended${ended ? ` ${ended}` : ""}` : "";
-  const dot = waiting ? "waiting" : unread ?? null;
+  const dot = waiting ? "waiting" : failed ? null : unread ?? null;
   const at = sessionRowAt(row);
   // What needs you is never dimmed: not because it ended, not because it is unshared.
   const needsYou = sessionRowNeedsYou(row);
@@ -124,12 +125,12 @@ export function SessionListRow({ entry: { row, owner, unread }, current, onSelec
   const end = <span className="session-row-end">
     {!!chatUnread && <span className="session-chat-unread" aria-hidden="true">{chatUnread > 99 ? "99+" : chatUnread}</span>}
     {dot && <span className={`session-unread session-unread--${dot}`} aria-hidden="true" />}
-    {word && (!dot || !oneLine) && <span className={`session-row-state${failed ? " session-row-state--failed" : ""}`} aria-hidden="true">{word}</span>}
+    {word && (dot !== "waiting" || !oneLine) && <span className={`session-row-state${failed ? " session-row-state--failed" : ""}`} aria-hidden="true">{word}</span>}
     {(!oneLine || (!dot && !word)) && <SessionListTime at={at ? new Date(at).toISOString() : null} />}
   </span>;
   const body = <>
     {face}
-    <span className="session-row-main">
+    <span className="session-row-main" title={hover}>
       <span className="session-row-line">
         <span className={`min-w-0 flex-1 truncate${unread ? " font-semibold" : ""}${state === "busy" ? " session-title--working" : ""}`}>{row.title}</span>
         {end}
@@ -140,10 +141,10 @@ export function SessionListRow({ entry: { row, owner, unread }, current, onSelec
   return <li className={`room-directory-row room-directory-row--roster session-row${gone && !needsYou ? " session-row--gone" : ""}${backend ? "" : " session-row--network"}${needsYou ? " session-row--needs" : ""}`}
     onContextMenu={marks ? (event) => { event.preventDefault(); setMenuOpen(true); } : undefined}>
     {backend
-      ? <button type="button" className="room-directory-entry" title={hover} aria-current={current ? "page" : undefined}
+      ? <button type="button" className="room-directory-entry" aria-current={current ? "page" : undefined}
         aria-label={`Open ${description}`} onClick={() => onSelect?.(backend.sessionId)}>{body}</button>
-      : <div className="room-directory-entry session-row-info" title={hover} aria-current={current ? "page" : undefined}>
-        <span className="sr-only">{description}</span>{body}
+      : <div className="room-directory-entry session-row-info" aria-current={current ? "page" : undefined}>
+        <span className="sr-only">{description}</span><span className="contents" aria-hidden="true">{body}</span>
       </div>}
     {onShare && !backend && person.isViewer && <Button variant="ghost" size="sm" className="session-row-share" aria-label={`Share ${row.title}`} onClick={onShare}>Share</Button>}
     {marks && <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
@@ -157,7 +158,7 @@ export function SessionListRow({ entry: { row, owner, unread }, current, onSelec
             <DropdownMenuItem onSelect={marks.onTogglePin}>{marks.pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}{marks.pinned ? "Unpin" : "Pin"}</DropdownMenuItem>
             {/* The open session reads itself at once, so Mark unread is offered on the others only; a row with no backend has no read mark. */}
             {backend && (unread || !current) && <DropdownMenuItem onSelect={() => marks.onMarkUnread(!unread)}><MailOpen aria-hidden="true" />{unread ? "Mark read" : "Mark unread"}</DropdownMenuItem>}
-            <DropdownMenuItem onSelect={marks.onToggleArchive}><Archive aria-hidden="true" />Archive</DropdownMenuItem>
+            {!(waiting && person.isViewer) && <DropdownMenuItem onSelect={marks.onToggleArchive}><Archive aria-hidden="true" />Archive</DropdownMenuItem>}
           </>}
       </DropdownMenuContent>
     </DropdownMenu>}

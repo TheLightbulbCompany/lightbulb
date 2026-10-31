@@ -117,7 +117,19 @@ it("waiting: a brass dot and the reason on a second line", () => {
   expect(container.querySelector(".session-unread--unread")).toBeNull();
   expect(container.querySelector(".session-row-time")).toBeNull();
   expect(container).toHaveTextContent("Run npm test");
-  expect(screen.getByRole("button").getAttribute("aria-label")).toMatch(/Waiting on you|Waiting for input/);
+  expect(screen.getByRole("button").getAttribute("aria-label")).toMatch(/Waiting on you/);
+});
+
+it("a failed row never shows an unread dot", () => {
+  const { container } = ui(networkRow({ state: "ended", endedAt: ago(60_000), endedReason: "login-session-ended" }, "unread"), { oneLine: true });
+  expect(container.querySelector(".session-unread")).toBeNull();
+  expect(container.querySelector(".session-row-state--failed")).toHaveTextContent("Failed");
+});
+
+it("an unread dot sits beside the state word in the sidebar; only the waiting dot replaces it", () => {
+  const { container } = ui(networkRow({ state: "ended", endedAt: ago(60_000) }, "unread"), { oneLine: true });
+  expect(container.querySelector(".session-unread--unread")).not.toBeNull();
+  expect(container.querySelector(".session-row-state")).toHaveTextContent("Ended");
 });
 
 it("idle shows the time and no second line; folder and PR are the second line of a live row with news", () => {
@@ -129,13 +141,13 @@ it("idle shows the time and no second line; folder and PR are the second line of
   expect(news.container.querySelector(".session-row-main > .text-caption")).toHaveTextContent("web · PR #4527 · checks passing");
 });
 
-it("done says Done and a finished dot replaces it in the sidebar, not in All sessions", () => {
+it("done says Done, and a finished dot sits beside it", () => {
   const done = { ...own, status: "idle" as const, done: true };
   const { container, unmount } = ui(rowOf(done), { oneLine: true });
   expect(container.querySelector(".session-row-state")).toHaveTextContent("Done");
   unmount();
   const dotted = ui(rowOf(done, "finished"), { oneLine: true });
-  expect(dotted.container.querySelector(".session-row-state")).toBeNull();
+  expect(dotted.container.querySelector(".session-row-state")).toHaveTextContent("Done");
   expect(dotted.container.querySelector(".session-unread--finished")).not.toBeNull();
   dotted.unmount();
   const all = ui(rowOf(done, "finished"));
@@ -161,7 +173,7 @@ it("ended says Ended with its age and keeps the reason in the hover", () => {
   const { container } = ui(networkRow({ state: "ended", endedAt: ago(3 * 3_600_000), endedReason: "idle-stopped" }), { oneLine: true });
   expect(container.querySelector(".session-row-state")).toHaveTextContent("Ended 3h");
   expect(container.querySelector(".session-row--gone")).not.toBeNull();
-  expect(container.querySelector(".room-directory-entry")?.getAttribute("title")).toMatch(/stopped while idle/);
+  expect(container.querySelector(".session-row-main")?.getAttribute("title")).toMatch(/stopped while idle/);
   expect(container.querySelector(".session-row-main > .text-caption")).toBeNull();
 });
 
@@ -200,5 +212,5 @@ it("Share shows for the viewer's own unshared row when the host wires it, and ca
 
 it("a network row that can resume says lightbulb who in its hover", () => {
   const { container } = ui(networkRow({ state: "ended", endedAt: ago(60_000), canResume: true }));
-  expect(container.querySelector(".room-directory-entry")?.getAttribute("title")).toMatch(/lightbulb who/);
+  expect(container.querySelector(".session-row-main")?.getAttribute("title")).toMatch(/lightbulb who/);
 });

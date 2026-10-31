@@ -54,7 +54,7 @@ export interface RoomDirectoryProps {
   draftRoomIds?: readonly string[];
   /** Every row the sidebar groups (backend sessions joined to network ones); archived ones fold away, All sessions lists every one. */
   sessionRows?: readonly SidebarRow[];
-  /** Still carried for All sessions and the focus pane until they read rows; the sidebar does not read it. */
+  /** Carried for the focus pane; the sidebar and All sessions read `sessionRows` instead. */
   sessions?: readonly SidebarSession[];
   /** Share one of the viewer's own unshared terminal sessions (rows with no backend). */
   onShareSession?: (row: SessionRow) => void;
@@ -428,7 +428,7 @@ function DirectoryContent({
       const key = `sessions:${group.id}`;
       const groupCollapsed = headed && !needs && !query && prefs.collapsed.includes(key);
       const expanded = prefs.sessionsExpanded.includes(group.id);
-      const listKey = `${id}-sessions-${group.id}`;
+      const listKey = `${id}-sessions-${groups.indexOf(group)}`;
       const shown = needs ? group.entries : foldedEntries(group.entries, {
         limit: query ? Infinity : groupCollapsed ? 0 : expanded ? Infinity : SESSION_GROUP_FOLD,
         keep: ({ row: kept }) => kept.state === "waiting" || pinned(sessionRowKey(kept)) || sessionRowKey(kept) === currentSessionId,
@@ -478,7 +478,7 @@ function DirectoryContent({
         </>,
       })}
       {!collapsed && <div id={listId}>
-        {listed === 0
+        {groups.length === 0 && !hidden && !query
           ? <div className="room-directory-session-empty"><p className="text-caption text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
           : <>
             {(listed > SESSION_GROUP_FOLD || sessionFilter) && <input type="search" className="session-filter" aria-label="Filter sessions" placeholder="Filter sessions" value={sessionFilter}

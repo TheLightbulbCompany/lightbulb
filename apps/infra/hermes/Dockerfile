@@ -87,6 +87,8 @@ RUN set -eux; \
 
 # ---- network engine (the `lightbulb member` sidecar, bridge/network.py) ----------------------
 # The engine (TheLightbulbCompany/cli): its static musl release asset, pinned by tag and checksum.
+# TODO: the engine release containing network workers (cli PR #105) must replace this pin before
+# LIGHTBULB_NETWORK_WORKERS can be turned on.
 # v0.7.0 or later: the backend's memory sync (memory.list/import/remember/forget) are engine ops.
 # The checksum is v0.8.0's lightbulb-linux-arm64.tar.gz.sha256 asset; bump the tag and the checksum together.
 RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.8.0/lightbulb-linux-arm64.tar.gz \

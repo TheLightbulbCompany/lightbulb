@@ -9,7 +9,8 @@ export function useSessionRows(
   sessions: readonly LocalSession[],
   userId: string | null | undefined,
   nameOf: (userId: string) => string,
+  isMember?: (userId: string) => boolean,
 ): SessionRow[] {
   const { records } = useEngineDirectory();
-  return useMemo(() => mergeSessionRows(sessions, records, { userId, nameOf }), [sessions, records, userId, nameOf]);
+  return useMemo(() => mergeSessionRows(sessions, records, { userId, nameOf, isMember }), [sessions, records, userId, nameOf, isMember]);
 }

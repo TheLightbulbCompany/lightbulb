@@ -1,9 +1,9 @@
 import type { LocalSession } from "./types";
 
-const TOOL_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", cursor: "Cursor", grok: "Grok" };
+const TOOL_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", cursor: "Cursor", grok: "Grok", opencode: "OpenCode", chatgpt: "ChatGPT" };
 /** The coding tool's display name; an unknown future provider shows its raw id. */
 export const sessionToolName = (provider: string): string => TOOL_NAMES[provider] ?? provider;
-const AGENT_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", grok: "Grok CLI" };
+const AGENT_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", grok: "Grok CLI", opencode: "OpenCode", chatgpt: "ChatGPT" };
 /** The coding agent's product name ("Claude Code", "Grok CLI"); an unknown provider shows its raw id. */
 export const sessionAgentName = (provider: string): string => AGENT_NAMES[provider] ?? provider;
 /** Every agent a Mac with sharing on mirrors (owner ruling 2026-10-04: every session is tracked). */

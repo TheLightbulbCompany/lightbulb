@@ -326,7 +326,7 @@ State comes from `engine` when joined, else from `backend`. Actions come only fr
 The research is `docs/research/2026-10-30-sessions-sidebar-design-research.md`. Its six questions are answered so the work can proceed; each is a two-way door.
 1. **Grouping:** a "Needs you" group on top (only `waiting` rows and failed ended rows of the viewer's own), then per person, viewer first. This honours the 2026-10-13 ruling against ranking by status, since only `waiting` moves. A persisted switch offers person, state, and repo.
 2. **Counts:** the Dock badge counts the viewer's own `waiting` rows only, as today.
-3. **Network-only rows and workspace agents:** their own collapsible group, "On the network", below people. The viewer's own unshared rows stay under the viewer, dimmed, with Share.
+3. **Network-only rows and workspace agents:** their own collapsible group, "On the network", below people. A workspace member's network-only rows sit under that person instead (founder, 31 Oct). The viewer's own unshared rows stay under the viewer, dimmed, with Share.
 4. **Retention:** seven days everywhere, from the engine. Pins and archives stay per browser for now.
 5. **Row:** one line: avatar, harness mark, title, state. Second line only when it carries news: waiting reason, or folder and PR. Computer and repo in the hover and in All sessions.
 6. **Overflow:** no global cap. Each group folds with "… N more" and a count in its header, and keeps waiting and pinned rows visible. Search and filters in the sidebar. All sessions stays the full table.

@@ -2684,3 +2684,21 @@ async def test_errors_reads_the_failed_preview_not_the_live_version(world, monke
     monkeypatch.setattr(svc.vercel, "runtime_logs", logs)
     await svc.errors(OWNER, src["app_id"])
     assert logs.await_args.args[1] == failed
+
+
+async def test_errors_ignores_a_publish_failure_older_than_a_healthy_preview(world, monkeypatch):
+    src, _, preview_dep = await _ready_preview(world)
+    await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
+    monkeypatch.setattr(svc.vercel, "deployment_events", AsyncMock(return_value=[]))
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}", "ERROR", "Build failed")
+    await svc.status(OWNER, src["app_id"])
+    app = await svc.apps_repo.get(src["app_id"])
+    assert app["publish_error"]["deployment_id"]
+    # a newer preview comes up healthy
+    await svc.apps_repo.patch(
+        src["app_id"], {"preview": {**app["preview"], "deployment_id": "dpl_new", "ready_at": "2999-01-01T00:00:00Z"}}
+    )
+    logs = AsyncMock(return_value=[])
+    monkeypatch.setattr(svc.vercel, "runtime_logs", logs)
+    await svc.errors(OWNER, src["app_id"])
+    assert logs.await_args.args[1] == "dpl_new"

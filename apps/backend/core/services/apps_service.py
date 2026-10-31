@@ -101,6 +101,7 @@ class AppError(TypedDict):
     message: str
     next: str
     deployment_id: NotRequired[str]  # a failed build: the deployment errors() reads the log of
+    at: NotRequired[str]  # when it failed, to tell it from a newer preview
 
 
 class UpResult(TypedDict):
@@ -622,7 +623,7 @@ _LOG_TAIL = 2000
 async def _failure(app: dict, creds: dict, pending: dict, st: dict) -> dict:
     """``_build_failed`` plus the scrubbed tail of the build log. A log that cannot be fetched or scrubbed
     leaves the original error as it was."""
-    err = {**_build_failed(st), "deployment_id": pending["deployment_id"]}
+    err = {**_build_failed(st), "deployment_id": pending["deployment_id"], "at": utc_now_iso()}
     try:
         events = await vercel.deployment_events(creds, pending["deployment_id"], limit=50)
         scrub = await _scrubber(app["owner_id"], app["app_id"])
@@ -1551,7 +1552,10 @@ async def errors(owner_id: str, app_id: str) -> dict:
     creds = await _secret(app, rows, "vercel", "prod", "token")
     live = next((v for v in app.get("versions") or [] if v.get("n") == app.get("live_version")), None)
     # A failed build is the newest attempt: `up` clears `error`, a good publish clears `publish_error`.
-    failed = (app.get("error") or {}).get("deployment_id") or (app.get("publish_error") or {}).get("deployment_id")
+    # The `ready_at` of a newer healthy preview retires an older failed publish.
+    pub = app.get("publish_error") or {}
+    stale = (app.get("preview") or {}).get("ready_at", "") > pub.get("at", "~")
+    failed = (app.get("error") or {}).get("deployment_id") or (None if stale else pub.get("deployment_id"))
     dep = failed or (live or app.get("preview") or {}).get("deployment_id")
     if not creds or not dep:
         return {"client": [], "server": []}

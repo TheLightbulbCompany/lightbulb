@@ -179,11 +179,17 @@ Verified earlier in a throwaway copy of 5cffda6fc, and not rerun on the branch. 
 
 Verified on the installed Claude Code 2.1.314, `claude agents --json`: `kind`, `pid`, `sessionId`, `cwd`, `status`; `--all` adds `id` and `state`. These are the words `listing_row` uses. Seen values: `interactive`, `background`, `busy`, `idle`, `stopped`, `done`.
 
+Verified read-only against the person's real service, now 0.8.0 (`sessions`, `directory`, and `claude agents --json --all`; nothing else was sent, and no session was messaged). Titles and ids are not recorded here.
+- First read, with Claude's listing: 5 live rows equal the 5 live Claude rows with matching state (3 busy, 2 idle), including entrypoint `claude-desktop`. Nothing Claude lists with a pid was missing. 39 ended: `process-exited` 28, `job-done` 6, no reason 5. `directory` gave 53 records: Friday, Atlas, Forge and others under The Lightbulb Company (idle, online, `wakes` true), and WSL `opencode` and `chatgpt` rows, `user_id` on 46 of 53. No waiting row and no live job existed then.
+- After the final fix wave, a later `directory` through the Rust `for_page`, then `mergeSessionRows` with no backend rows (a one-off, not committed): 53 records, 53 rows. State: 4 busy, 10 idle, 39 ended. Source: all 53 `network`. The answer has no separate `ended` list here: ended records come in `sessions`, which the page reads either way. No record has `cwd` or `resume`; no value contains `/Users` or `cwd`. 39 rows `canResume`; 5 rows can Share (live, own, Claude).
+- `isViewer` with no signed-in viewer: 44 true (all `own`), 9 false (the 7 workspace agents, Friday among them, and the 2 WSL rows). Signed in as the owner: 46 true, 7 false. The 2 WSL rows carry the owner's `user_id`, so they read as the viewer, with `own` false and no Share. The workspace agents are never the viewer.
+- `real_engine_drives_mirrors` rerun on the isolated engine after the same wave: `1 passed`, 5 live rows, mirror, engine and Claude's listing agreed (3 busy, 2 idle).
+
 Not verified:
 - Real rows with a `job`, or Claude's `waitingFor`: no live background job and no prompt existed on this Mac during the run. The `waiting` row above was registered by hand, so a real permission prompt reaching `waiting-approval` is not verified, nor are the `working` and `blocked` states.
 - A real hook's `register`, a real Claude session starting or ending: none was started, because the running Lightbulb.app could share it.
 - A debug `lightbulb-desktop`: not run. It would read and could set up the real service, and a real window would touch the real relay.
 - The native Share dialog, the live relay and backend, and the sidebar in a real window.
 - A5 as a standing guarantee (one moment only). When Claude's listing is absent, the test can only tell a timed-out read from the engine's log, which says so once per run of failures.
-- A6 (shared session actions), A7 (no Windows or Friday peer on this isolated engine), A10.
+- A6 (shared session actions), A7 end to end (the real records above show Friday and a Windows peer in the list; no live sidebar, relay or message was exercised), A10.
 - V3: open. It needs Aden's Mac and cannot be run from here.

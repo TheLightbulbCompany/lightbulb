@@ -6,6 +6,7 @@ pub mod claude_export;
 mod core_boundary;
 mod engine;
 mod engine_client;
+mod network_connect;
 pub mod file_access;
 // Core's held sessions plus the app's panel terminal.
 #[cfg(unix)]
@@ -259,6 +260,7 @@ fn send_auth_token(
         *t = Some(token.clone());
     }
     log(&format!("[auth] Received JWT ({} chars) for user {} ({})", token.len(), display_name, user_id));
+    network_connect::kick(&app);
 
     // Update the shared JWT cell FIRST so the proxy's JwtProvider closure
     // picks up the fresh token on the next upstream-connect. We do this
@@ -883,16 +885,21 @@ pub(crate) const DECLINED_ON_MAC: &str = "Not changed: declined on this Mac.";
 /// to `Custom(<second label>)` (`desktop.rs`). With Cancel first, such an ending read as
 /// Allow. Return pressing Allow is standard macOS; a page cannot press keys in this alert.
 pub(crate) async fn confirm_native(app: &tauri::AppHandle, title: &str, body: String) -> bool {
+    confirm_native_labelled(app, title, body, "Allow", "Cancel").await
+}
+
+/// `confirm_native` with its own words; the yes stays the first button, for the reason above.
+pub(crate) async fn confirm_native_labelled(app: &tauri::AppHandle, title: &str, body: String, yes: &str, no: &str) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
-    const ALLOW: &str = "Allow";
+    let yes = yes.to_owned();
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .message(body)
         .title(title)
         .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom(ALLOW.into(), "Cancel".into()))
+        .buttons(MessageDialogButtons::OkCancelCustom(yes.clone(), no.into()))
         .show_with_result(move |res| {
-            let _ = tx.send(matches!(res, MessageDialogResult::Custom(ref s) if s == ALLOW));
+            let _ = tx.send(matches!(res, MessageDialogResult::Custom(ref s) if *s == yes));
         });
     rx.await.unwrap_or(false)
 }
@@ -2041,6 +2048,10 @@ end tell"#,
             shell_integration::shell_integration_set,
             holder::panel::terminal_panel,
             engine_client::engine_ask,
+            network_connect::network_status,
+            network_connect::network_connect,
+            network_connect::network_leave,
+            network_connect::network_notice_seen,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");
@@ -2153,6 +2164,7 @@ end tell"#,
                         update_node_status(&node_start_handle, "error");
                     }
                 }
+                network_connect::kick(&node_start_handle);
             });
 
             // Handle deep links (flickmeon:// protocol). This fires when the app

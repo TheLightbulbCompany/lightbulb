@@ -183,6 +183,38 @@ def test_an_assignment_record_carries_its_fields_into_the_turn(net, turns):
                    "deadline_at": "2026-10-30T00:00:00Z", "reply_to": "r0", "status": "done"}
 
 
+def _assign(net, turns, monkeypatch, reply, reply_tool=False):
+    real = turn.run_turn
+
+    def answering(agent_id, body, token, reserved):
+        body["finalReply"] = reply
+        if reply_tool:
+            network.ask("send", {"from": "friday", "reply_to": "r1", "text": "by tool"})
+        return real(agent_id, body, token, reserved)
+
+    monkeypatch.setattr(turn, "run_turn", answering)
+    network._replied.clear()
+    net.answer(**_peek({**REC, "kind": "assign", "request_id": "r1"}), send={})
+    assert network.ensure_started(background=False)
+    assert _until(lambda: ("m1", "read") in _acks(net))
+    return net.calls("send")
+
+
+def test_an_assignment_answered_only_in_text_still_returns_its_result(net, turns, monkeypatch):
+    sent = _assign(net, turns, monkeypatch, "391")
+    assert [(c["reply_to"], c["text"], c["status"], c["from"]) for c in sent] == [("r1", "391", "done", "friday")]
+
+
+def test_an_assignment_with_no_text_reports_failed(net, turns, monkeypatch):
+    sent = _assign(net, turns, monkeypatch, "  ")
+    assert [(c["status"], c["reason"]) for c in sent] == [("failed", "no_result")]
+
+
+def test_an_assignment_the_agent_answered_is_not_answered_twice(net, turns, monkeypatch):
+    sent = _assign(net, turns, monkeypatch, "391", reply_tool=True)
+    assert [c["text"] for c in sent] == ["by tool"]
+
+
 def test_the_identity_line_for_an_assignment_and_a_cancel(net):
     assert network.ensure_started(background=False)
     body = {"version": 1, "eventKind": "network_message", "eventId": "m1", "targetAgentId": "a-friday",

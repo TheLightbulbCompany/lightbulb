@@ -4229,6 +4229,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
     # throw, but "designed to" is not a guarantee worth betting liveness reporting on.
     try:
         took = time.time() - t0
+        body["finalReply"] = reply  # network._run_record: an assignment's result if the model sent none
         if reply and has_run:  # a mail turn's reply has no room to post into
             _post_reply(
                 agent_id,

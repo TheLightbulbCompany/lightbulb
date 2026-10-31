@@ -1,7 +1,7 @@
 ---
 title: "CLI reference"
 description: "Every lightbulb command: setup, doctor, invite, join, who, send, listen, receipt, held, approve, decline, team, remove, leave, login, logout, folder, relay, update, version and telemetry."
-order: 18
+order: 19
 section: "Reference"
 ---
 

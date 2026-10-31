@@ -359,6 +359,7 @@ async def create_resource(
     configuration: dict,
     livemode: bool,
     catalog: str | None = None,
+    environment: str | None = None,
 ) -> dict:
     """`livemode` is required and always sent: Stripe defaults an omitted one to
     TRUE, which creates live provider infrastructure and real charges."""
@@ -373,6 +374,8 @@ async def create_resource(
         body["project"] = project
     if catalog:
         body["catalog"] = catalog
+    if environment:
+        body["environment"] = environment
     return await request(account_id, "post", f"{BASE}/resources", body=body)
 
 
@@ -409,7 +412,8 @@ async def rotate_credentials(account_id: str, resource_id: str) -> dict:
 async def reveal_access_configuration(account_id: str, resource_id: str) -> dict:
     """The resource's current provider-issued credentials (`configuration`).
     A SECRET: no body, never logged (request logs carry no bodies), and only
-    reached from the workflow's bind step. Not a rotation."""
+    reached from the workflow's bind step and an app's credential renewal. Not a
+    rotation."""
     return await request(account_id, "post", f"{BASE}/resources/{resource_id}/reveal_access_configuration")
 
 
@@ -445,6 +449,15 @@ async def create_payment_method_request(
         f"{BASE}/payment_method_requests",
         body={"livemode": is_livemode(), "usage_limits": _usage_limits(max_amount, currency, recurring_interval)},
     )
+
+
+async def update_limit(
+    account_id: str, *, max_amount: int, currency: str, recurring_interval: str, provider: str | None = None
+) -> dict:
+    body: dict = {"livemode": is_livemode(), "usage_limits": _usage_limits(max_amount, currency, recurring_interval)}
+    if provider:
+        body["provider"] = provider
+    return await request(account_id, "post", f"{BASE}/payment_profile/update_limit", body=body)
 
 
 # --- 4.7 Mode -------------------------------------------------

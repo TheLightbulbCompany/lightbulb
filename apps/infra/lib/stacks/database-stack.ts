@@ -46,6 +46,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly oauthStateTable: dynamodb.Table;
   public readonly integrationsTable: dynamodb.Table;
   public readonly provisioningWorkflowsTable: dynamodb.Table;
+  public readonly appsTable: dynamodb.Table;
   public readonly paperclipCompaniesTable: dynamodb.Table;
   public readonly roomReadCursorsTable: dynamodb.Table;
   public readonly workspaceJoinLinksTable: dynamodb.Table;
@@ -346,6 +347,23 @@ export class DatabaseStack extends cdk.Stack {
       indexName: "owner-state-index",
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "state", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // One row per app, plus one NAME#<name> guard row per app that makes names
+    // globally unique (the guard has no owner_id or name, so neither index holds it).
+    this.appsTable = createTable("AppsTable", "apps", {
+      partitionKey: { name: "app_id", type: dynamodb.AttributeType.STRING },
+    });
+    this.appsTable.addGlobalSecondaryIndex({
+      indexName: "owner-index",
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "name", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    this.appsTable.addGlobalSecondaryIndex({
+      indexName: "name-index",
+      partitionKey: { name: "name", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
 

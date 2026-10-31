@@ -27,6 +27,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 # ``revoked_keys``) honours. Removing a person from the workspace is instant via members.
 LIFE_S = 30 * 86_400
 MAX_TOKEN = 4096
+APP_PASS_TYP = "lightbulb-app-pass"  # R61: the JWS header type of an app pass; never a sign-in proof
 
 
 def _b64(raw: bytes) -> str:
@@ -66,7 +67,6 @@ def mint(
     tools act in; a renewal carries it too. A proof without it (older, or a free account) is
     still good: the tools then need the person to be in exactly one workspace."""
     now = int(time.time()) if now is None else now
-    header = _b64(json.dumps({"alg": "EdDSA", "kid": kid()}, separators=(",", ":")).encode())
     claims = {
         "iat": now,
         "exp": now + LIFE_S,
@@ -76,9 +76,37 @@ def mint(
     }
     if org:
         claims["org"] = org
+    return _sign(claims)
+
+
+def _sign(claims: dict, typ: str | None = None) -> str:
+    head = {"alg": "EdDSA", "kid": kid(), **({"typ": typ} if typ else {})}
+    header = _b64(json.dumps(head, separators=(",", ":")).encode())
     payload = _b64(json.dumps(claims, separators=(",", ":")).encode())
     sig = _private().sign(f"{header}.{payload}".encode())
     return f"{header}.{payload}.{_b64(sig)}"
+
+
+def mint_app_pass(
+    user_id: str, *, name: str, email: str, ws: str, room: str, app: str, now: int | None = None, life_s: int = 900
+) -> str:
+    """A pass to open one app (``app`` = its name, which the door compares to ``LIGHTBULB_APP``) for
+    ``life_s``: a bearer credential the app's door verifies with ``public_key``. Its header ``typ`` is
+    ``APP_PASS_TYP`` and it has no ``computer`` claim, so ``verify`` never takes it for a sign-in proof."""
+    now = int(time.time()) if now is None else now
+    return _sign(
+        {
+            "iat": now,
+            "exp": now + life_s,
+            "sub": user_id,
+            "name": name,
+            "email": email,
+            "ws": ws,
+            "room": room,
+            "app": app,
+        },
+        typ=APP_PASS_TYP,
+    )
 
 
 def verify(token: str, member_key: str, now: int | None = None) -> dict | None:
@@ -89,7 +117,7 @@ def verify(token: str, member_key: str, now: int | None = None) -> dict | None:
             return None
         h, p, s = token.split(".")
         header = json.loads(_unb64(h))
-        if header.get("alg") != "EdDSA" or header.get("kid") != kid():
+        if header.get("alg") != "EdDSA" or header.get("kid") != kid() or header.get("typ") == APP_PASS_TYP:
             return None
         _private().public_key().verify(_unb64(s), f"{h}.{p}".encode())
         claims = json.loads(_unb64(p))
@@ -97,6 +125,8 @@ def verify(token: str, member_key: str, now: int | None = None) -> dict | None:
         return None
     if (
         not isinstance(claims, dict)
+        or not isinstance(claims.get("computer"), str)
+        or not claims["computer"]
         or claims.get("computer") != member_key
         or not isinstance(claims.get("sub"), str)
         or not str(claims["sub"]).startswith("user_")

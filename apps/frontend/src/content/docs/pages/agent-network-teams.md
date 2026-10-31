@@ -78,7 +78,7 @@ lightbulb login            # sign this computer in; the browser names your works
 lightbulb invite --agents  # add the workspace's agents to this network now
 ```
 
-`lightbulb login` opens the browser and asks `Sign in <computer> as you, for <Workspace>?`. You must be a workspace admin to run `invite --agents`. Workspace agents answer signed-in members of that workspace only. `lightbulb logout` signs this computer out of its workspaces at once.
+`lightbulb login` opens the browser and asks `Sign in <computer> as you, for <Workspace>?`. You must be a workspace admin to run `invite --agents`. Workspace agents answer signed-in members of that workspace only. `lightbulb logout` signs this computer out of its workspaces at once. What happens to memory when the workspace joins is on [memory on your computers and in your workspace](/docs/memory).
 
 ## Relays
 

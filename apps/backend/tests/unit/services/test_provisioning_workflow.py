@@ -116,6 +116,8 @@ def no_network(monkeypatch):
     resources). Tests that assert on any of them patch them."""
     monkeypatch.setattr("core.repositories.billing_repo.get_table", _no_network)
     monkeypatch.setattr("core.repositories.provisioning_workflow_repo.get_table", _no_network)
+    monkeypatch.setattr("core.repositories.apps_repo.get_table", _no_network)
+    monkeypatch.setattr("core.repositories.messaging_repo._table", _no_network)
     # `request`, not `_raw`: `request` turns a raw failure into a TRANSIENT
     # error, which a poll would happily swallow as backoff.
     monkeypatch.setattr(mod.api, "request", _no_network)
@@ -124,6 +126,13 @@ def no_network(monkeypatch):
     monkeypatch.setattr(mod.repo, "patch", AsyncMock(return_value=None))
     monkeypatch.setattr(mod.api, "payment_profile", AsyncMock(side_effect=ProvisioningError("not_found", "no profile")))
     monkeypatch.setattr(mod.work_products, "register", AsyncMock(return_value="wp_1"))
+
+
+@pytest.fixture(autouse=True)
+def catalog_unchanged(monkeypatch):
+    """The re-read before the resource write finds the approved entry unless a test says it moved."""
+    monkeypatch.setattr(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE]))
+    monkeypatch.setattr(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER]))
 
 
 @pytest.fixture(autouse=True)
@@ -1950,3 +1959,381 @@ async def test_account_id_for_refuses_with_no_binding(monkeypatch):
     with pytest.raises(mod.WorkflowRefused) as exc:
         await mod.account_id_for("org_a")
     assert exc.value.code == "no_company_stripe_account"
+
+
+# --- apps: one Stripe Project per app ---------------------------------------
+
+APP = {"app_id": "app_1", "owner_id": "org_a", "name": "crew-schedule", "stripe_project_id": None}
+_READY = {"is_eligible": True, "requirements": []}
+
+
+def _start_app(**kw):
+    return mod.start(
+        owner_id="org_a", provider_name="posthog", service_id="svc_analytics", configuration=CONFIG, issue_id=None, **kw
+    )
+
+
+@pytest.mark.asyncio
+async def test_app_row_gets_its_own_project_named_after_the_app(monkeypatch):
+    set_company = AsyncMock()
+    monkeypatch.setattr(mod.billing_repo, "set_company_stripe_project_id", set_company)
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value=APP)),
+        patch.object(mod.apps_repo, "set_stripe_project_id", AsyncMock(return_value=True)) as store,
+        patch.object(mod.api, "create_project", AsyncMock(return_value={"id": "proj_app"})) as created,
+    ):
+        assert await mod._project_for("acct_1", _approved(app_id="app_1", environment="prod")) == ("proj_app", None)
+    assert created.await_args.kwargs["name"] == "crew-schedule"
+    store.assert_awaited_once_with("app_1", "proj_app")
+    # The company's Project (proj_1 on the billing row) is neither used nor touched.
+    set_company.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_app_with_a_project_reuses_it():
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "stripe_project_id": "proj_app"})),
+        patch.object(mod.api, "create_project", AsyncMock()) as created,
+    ):
+        assert await mod._project_for("acct_1", _approved(app_id="app_1")) == ("proj_app", None)
+    created.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_losing_the_app_project_race_uses_the_winners():
+    reads = AsyncMock(side_effect=[APP, {**APP, "stripe_project_id": "proj_winner"}])
+    with (
+        patch.object(mod.apps_repo, "get", reads),
+        patch.object(mod.apps_repo, "set_stripe_project_id", AsyncMock(return_value=False)),
+        patch.object(mod.api, "create_project", AsyncMock(return_value={"id": "proj_mine"})),
+    ):
+        assert await mod._project_for("acct_1", _approved(app_id="app_1")) == ("proj_winner", None)
+    assert reads.await_args.kwargs == {"consistent_read": True}
+
+
+@pytest.mark.asyncio
+async def test_company_row_still_uses_company_project():
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock()) as app_read,
+        patch.object(mod.api, "create_project", AsyncMock()) as created,
+    ):
+        assert await mod._project_for("acct_1", _approved()) == ("proj_1", None)
+    app_read.assert_not_awaited()
+    created.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bind_records_the_apps_project_not_the_companys():
+    row = _approved(state="provisioning", resource_id="res_1", app_id="app_1", environment="prod")
+    env_info = {"resource": "res_1", "configuration": {"TOKEN": "t"}}
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "stripe_project_id": "proj_app"})),
+        patch.object(mod.api, "get_resource", AsyncMock(return_value={"id": "res_1", "status": "complete"})),
+        patch.object(mod.api, "reveal_access_configuration", AsyncMock(return_value=env_info)),
+        patch.object(mod, "land_credentials", AsyncMock()) as land,
+        patch.object(mod.repo, "transition", AsyncMock(side_effect=[_row(state="binding"), _row(state="active")])),
+    ):
+        await mod.advance(row)
+    assert land.await_args.kwargs["resource"]["project_id"] == "proj_app"
+
+
+@pytest.mark.asyncio
+async def test_bind_lands_an_app_credential_under_the_app_not_the_company():
+    row = _approved(state="provisioning", resource_id="res_1", app_id="app_1", environment="prod")
+    env_info = {"resource": "res_1", "configuration": {"project_id": "p", "token": "t"}}
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "stripe_project_id": "proj_app"})),
+        patch.object(mod.api, "get_resource", AsyncMock(return_value={"id": "res_1", "status": "complete"})),
+        patch.object(mod.api, "reveal_access_configuration", AsyncMock(return_value=env_info)),
+        patch.object(mod, "land_credentials", AsyncMock()) as land,
+        patch.object(mod.repo, "transition", AsyncMock(side_effect=[_row(state="binding"), _row(state="active")])),
+    ):
+        await mod.advance(row)
+    kw = land.await_args.kwargs
+    assert kw["land_in_profiles"] is False
+    # One key per RESOURCE: Neon and Vercel both reveal `project_id`.
+    assert kw["secret_provider"] == "apps/app_1/posthog/prod"
+    assert {k: kw["resource"][k] for k in ("level", "app_id", "environment")} == {
+        "level": "app",
+        "app_id": "app_1",
+        "environment": "prod",
+    }
+    assert mod.work_products.register.await_args.kwargs["metadata"] == {
+        "workflow_id": "pwf_1",
+        "level": "app",
+        "app_id": "app_1",
+        "environment": "prod",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_resource_threads_environment():
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "stripe_project_id": "proj_app"})),
+        patch.object(mod.api, "create_resource", AsyncMock(return_value={"id": "res_1"})) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="provisioning"))),
+    ):
+        await mod._create_resource("acct_1", _approved(state="connecting_provider", app_id="app_1", environment="prod"))
+    assert create.await_args.kwargs["environment"] == "prod"
+    assert create.await_args.kwargs["project"] == "proj_app"
+
+
+@pytest.mark.asyncio
+async def test_a_company_row_sends_no_environment_as_before():
+    with (
+        patch.object(mod.api, "create_resource", AsyncMock(return_value={"id": "res_1"})) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="provisioning"))),
+    ):
+        await mod._create_resource("acct_1", _approved(state="connecting_provider", environment="prod"))
+    assert create.await_args.kwargs.get("environment") is None
+
+
+@pytest.mark.asyncio
+async def test_two_apps_same_service_do_not_reuse_a_workflow():
+    open_a = _row(state="awaiting_approval", app_id="app_a", environment="prod")
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "app_id": "app_b"})),
+        patch.object(mod.api, "eligibility", AsyncMock(return_value=_READY)),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.repo, "list_for_owner", AsyncMock(return_value=[open_a])),
+        patch.object(mod.repo, "create", AsyncMock(return_value=_row(app_id="app_b"))) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="awaiting_approval"))),
+    ):
+        row = await _start_app(app_id="app_b")
+    assert "reused" not in row
+    assert create.await_args.kwargs["app_id"] == "app_b"
+    assert create.await_args.kwargs["environment"] == "prod"
+
+
+@pytest.mark.asyncio
+async def test_same_app_can_have_prod_and_dev_databases():
+    open_prod = _row(state="awaiting_approval", app_id="app_1", environment="prod")
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value=APP)),
+        patch.object(mod.api, "eligibility", AsyncMock(return_value=_READY)),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.repo, "list_for_owner", AsyncMock(return_value=[open_prod])),
+        patch.object(mod.repo, "create", AsyncMock(return_value=_row(app_id="app_1", environment="dev"))) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="awaiting_approval"))) as move,
+    ):
+        row = await _start_app(app_id="app_1", environment="dev")
+    assert "reused" not in row
+    assert create.await_args.kwargs["environment"] == "dev"
+    # The owner's card names the app and which side of it this is for.
+    assert move.await_args.kwargs["fields"]["approval"]["environment"] == "crew-schedule — preview"
+
+
+@pytest.mark.asyncio
+async def test_the_same_app_and_environment_still_reuses_the_open_workflow():
+    open_prod = _row(state="awaiting_approval", app_id="app_1", environment="prod")
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value=APP)),
+        patch.object(mod.api, "eligibility", AsyncMock(return_value=_READY)),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.repo, "list_for_owner", AsyncMock(return_value=[open_prod])),
+        patch.object(mod.repo, "create", AsyncMock()) as create,
+    ):
+        row = await _start_app(app_id="app_1")
+    assert row["reused"] is True
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_app_row_in_a_new_app_says_it_creates_a_project_and_names_the_app():
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value=APP)),
+        patch.object(mod.api, "eligibility", AsyncMock(return_value=_READY)),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.repo, "create", AsyncMock(return_value=_row(app_id="app_1"))),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="awaiting_approval"))) as move,
+    ):
+        await _start_app(app_id="app_1")
+    snapshot = move.await_args.kwargs["fields"]["approval"]
+    # The company HAS a Project (proj_1); the app does not, so this one makes it.
+    assert snapshot["creates_project"] is True
+    assert snapshot["environment"] == "crew-schedule — live"
+    assert snapshot["action"] == "creates new, and a Project for crew-schedule"
+
+
+@pytest.mark.asyncio
+async def test_start_refuses_an_unknown_app():
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value=None)),
+        patch.object(mod.api, "eligibility", AsyncMock(return_value=_READY)),
+        patch.object(mod.repo, "create", AsyncMock()) as create,
+    ):
+        with pytest.raises(mod.WorkflowRefused) as exc:
+            await _start_app(app_id="app_nope")
+    assert exc.value.code == "app_not_found"
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_another_owners_app_is_app_not_found():
+    theirs = AsyncMock(return_value={**APP, "owner_id": "org_b"})
+    with (
+        patch.object(mod.apps_repo, "get", theirs),
+        patch.object(mod.api, "eligibility", AsyncMock(return_value=_READY)),
+        patch.object(mod.repo, "create", AsyncMock()) as create,
+    ):
+        with pytest.raises(mod.WorkflowRefused) as exc:
+            await _start_app(app_id="app_1")
+    assert exc.value.code == "app_not_found"
+    create.assert_not_awaited()
+    with (
+        patch.object(mod.apps_repo, "get", theirs),
+        patch.object(mod, "_fail", AsyncMock(return_value={"state": "failed"})) as fail,
+        patch.object(mod.api, "create_project", AsyncMock()) as mint,
+    ):
+        assert await mod._app_project_for("acct_1", _approved(app_id="app_1")) == (None, {"state": "failed"})
+    assert fail.await_args.args[1] == "app_not_found"
+    mint.assert_not_awaited()
+
+
+# --- catalog re-read before the resource write ------------------------------
+
+
+def _paid(text):
+    return {**SERVICE, "pricing": {"type": "paid", "paid_pricing": [{"type": "freeform", "freeform": text}]}}
+
+
+@pytest.mark.asyncio
+async def test_catalog_drift_before_resource_post_parks_for_review():
+    row = _row(state="connecting_provider", approval=mod.snapshot_of(_paid("$20/mo"), PROVIDER, CONFIG))
+    with (
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[_paid("$200/mo")])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.api, "_raw", AsyncMock()) as raw,
+        patch.object(mod.api, "create_resource", AsyncMock()) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="requires_review"))) as move,
+    ):
+        out = await mod._create_resource("acct_1", row)
+    assert out["state"] == "requires_review"
+    assert move.await_args.kwargs["fields"]["error_code"] == "catalog_changed"
+    create.assert_not_awaited()
+    raw.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unchanged_catalog_before_app_resource_post_still_creates():
+    app = {**APP, "stripe_project_id": "proj_app"}
+    approval = mod.snapshot_of(SERVICE, PROVIDER, CONFIG, environment="crew-schedule — live")
+    row = _row(state="connecting_provider", approval=approval, app_id="app_1", environment="prod")
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value=app)),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+        patch.object(mod.api, "create_resource", AsyncMock(return_value={"id": "res_1"})) as create,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="provisioning"))),
+    ):
+        await mod._create_resource("acct_1", row)
+    create.assert_awaited_once()
+
+
+# --- R80: the app budget is not a provider limit ---------------------------------
+
+
+async def _approve_app_row(service):
+    approval = mod.snapshot_of(service, PROVIDER, CONFIG, environment="crew-schedule — live")
+    row = _row(state="awaiting_approval", approval=approval, app_id="app_1", environment="prod")
+    with (
+        patch.object(mod.repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "budget_usd": 10})),
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[service])),
+        patch.object(mod.api, "payment_profile", AsyncMock(return_value={"id": "pp_1"})),
+        patch.object(mod.api, "update_limit", AsyncMock(return_value={})) as limit,
+        patch.object(mod.repo, "transition", AsyncMock(return_value=_row(state="connecting_provider"))) as move,
+    ):
+        await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_admin")
+    return limit, move
+
+
+@pytest.mark.asyncio
+async def test_paid_app_resource_sets_no_provider_limit_from_budget():
+    """R80: the provider limit is account-wide; the app's budget_usd never becomes one."""
+    limit, move = await _approve_app_row(_paid("$20/mo"))
+    limit.assert_not_awaited()
+    assert move.await_args.kwargs["to_state"] == "connecting_provider"
+
+
+@pytest.mark.asyncio
+async def test_free_app_resource_sets_no_limit():
+    limit, move = await _approve_app_row(SERVICE)
+    limit.assert_not_awaited()
+    assert move.await_args.kwargs["to_state"] == "connecting_provider"
+
+
+# --- approval wakes the app's room -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_approval_posts_line_with_paperclip_user():
+    """Paperclip has no Clerk user: "paperclip" is no room member, so the line
+    is authored by the room's creator."""
+    from core.services import apps_room
+
+    row = _row(state="awaiting_approval", approval_id="apr_1", app_id="app_1", environment="prod")
+    moved = {**row, "state": "connecting_provider"}
+
+    async def member(owner_id, user_id, room_id):
+        if user_id != "user_creator":
+            raise apps_room.messaging.ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+        return {}, {}
+
+    with (
+        patch.object(mod, "shared_admin_client", return_value=_admin({"id": "apr_1", "status": "approved"})),
+        patch.object(mod, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
+        patch.object(mod.repo, "get", AsyncMock(return_value=row)),
+        patch.object(mod, "_fresh_snapshot", AsyncMock(return_value=row.get("approval") or {})),
+        patch.object(mod.repo, "transition", AsyncMock(return_value=moved)),
+        patch.object(apps_room.apps_repo, "get", AsyncMock(return_value={**APP, "room_id": "room_1"})),
+        patch.object(apps_room.messaging, "require_room_member", member),
+        patch.object(
+            apps_room.messaging_repo,
+            "list_members",
+            AsyncMock(return_value=[{"kind": "human", "id": "user_creator", "role": "owner"}]),
+        ),
+        patch.object(apps_room.messaging, "create_human_message", AsyncMock()) as post,
+    ):
+        out = await mod.advance(row)
+    assert out["state"] == "connecting_provider"
+    post.assert_awaited_once()
+    auth, room_id, request = post.await_args.args
+    assert (auth.user_id, auth.org_id, room_id) == ("user_creator", "org_a", "room_1")
+    assert request.text == "Approved posthog/svc_analytics for crew-schedule (live). Setting it up."
+    assert post.await_args.kwargs == {"via": "apps", "wake": True}
+
+
+# --- final review wave ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_removed_app_gets_no_new_workflow():
+    """R54: a destroyed app is missing."""
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value={**APP, "state": "destroyed"})),
+        patch.object(mod.api, "eligibility", AsyncMock(return_value=_READY)),
+        patch.object(mod.repo, "create", AsyncMock()) as create,
+    ):
+        with pytest.raises(mod.WorkflowRefused) as exc:
+            await _start_app(app_id="app_1")
+    assert exc.value.code == "app_not_found"
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_resource_is_created_for_a_removed_app():
+    """R54: a row still stepping after its app was removed fails before the billable create."""
+    gone = {**APP, "state": "destroyed", "stripe_project_id": "proj_app"}
+    with (
+        patch.object(mod.apps_repo, "get", AsyncMock(return_value=gone)),
+        patch.object(mod.api, "create_resource", AsyncMock(return_value={"id": "res_1"})) as create,
+        patch.object(mod, "_fail", AsyncMock(return_value={"state": "failed"})) as failed,
+    ):
+        await mod._create_resource("acct_1", _approved(state="connecting_provider", app_id="app_1", environment="prod"))
+    create.assert_not_awaited()
+    assert failed.await_args.args[1] == "app_not_found"

@@ -58,7 +58,7 @@ export interface ApiMethods {
   post: (endpoint: string, body: unknown, opts?: ApiCallOptions) => Promise<unknown>;
   put: (endpoint: string, body: unknown, opts?: ApiCallOptions) => Promise<unknown>;
   patch: (endpoint: string, body: unknown, opts?: ApiCallOptions) => Promise<unknown>;
-  del: (endpoint: string, opts?: ApiCallOptions) => Promise<unknown>;
+  del: (endpoint: string, opts?: ApiCallOptions, body?: unknown) => Promise<unknown>;
   patchConfig: (patch: Record<string, unknown>) => Promise<{ status: string; owner_id: string }>;
   /**
    * POST a `multipart/form-data` body. The caller builds the `FormData` (so it
@@ -298,8 +298,12 @@ export function createApiClient(config: ApiClientConfig): ApiMethods {
         body: JSON.stringify(body),
       }, opts);
     },
-    del(endpoint: string, opts?: ApiCallOptions): Promise<unknown> {
-      return authenticatedFetch(endpoint, { method: "DELETE" }, opts);
+    del(endpoint: string, opts?: ApiCallOptions, body?: unknown): Promise<unknown> {
+      return authenticatedFetch(
+        endpoint,
+        body === undefined ? { method: "DELETE" } : { method: "DELETE", body: JSON.stringify(body) },
+        opts,
+      );
     },
     patchConfig(patch: Record<string, unknown>): Promise<{ status: string; owner_id: string }> {
       return authenticatedFetch("/config", {

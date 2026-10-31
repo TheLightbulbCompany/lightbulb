@@ -67,6 +67,7 @@ from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import _get_resource, run_in_thread, utc_now_iso
+from core.dynamodb import ddb_safe as _ddb_safe
 from core.dynamodb import plain as _plain
 
 logger = logging.getLogger(__name__)
@@ -324,17 +325,6 @@ def request_hash(*parts: Any) -> str:
 
 def _expires_at() -> int:
     return int(time.time()) + OUTBOX_TTL_S
-
-
-def _ddb_safe(value: Any) -> Any:
-    """Convert JSON-compatible floats before passing values to DynamoDB."""
-    if isinstance(value, float):
-        return Decimal(str(value))
-    if isinstance(value, dict):
-        return {k: _ddb_safe(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_ddb_safe(v) for v in value]
-    return value
 
 
 # ---------------------------------------------------------------------------

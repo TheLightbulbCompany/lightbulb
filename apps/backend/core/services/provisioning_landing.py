@@ -80,12 +80,24 @@ def _patch_profile_env(owner_id: str, agent_id: str, env: dict[str, str]) -> Non
     patch_profile_env_and_config(owner_id, agent_id, env, {})
 
 
-async def land_credentials(*, owner_id: str, resource: dict, env: dict[str, str]) -> None:
+async def land_credentials(
+    *,
+    owner_id: str,
+    resource: dict,
+    env: dict[str, str],
+    land_in_profiles: bool = True,
+    secret_provider: str | None = None,
+) -> None:
     """Three writes, in the module docstring's order: the provider's blob in Secrets Manager
     (merged, so a second resource of the same provider keeps the first's keys), the pointer row,
     then the values into every roster profile's ``.env`` (spec 2026-10-15 §2.10), the same path a
     connector's secret takes. A profile write that fails raises AFTER the first two landed, so a
-    retry finds the credential and the pointer and only has to deliver again."""
+    retry finds the credential and the pointer and only has to deliver again.
+
+    ``land_in_profiles=False`` (an app's resource) writes ONLY the secret, under
+    ``secret_provider``: no company pointer and no profile, so the app's credential never
+    reaches Settings, ``build_provisioned_env``, ``revoke_credentials`` or any agent. The app
+    finds it again from its workflow rows."""
     for name in env:
         if name.startswith(RESERVED_ENV_PREFIXES) or name in RESERVED_ENV_NAMES:
             from core.services.provisioning_workflow import WorkflowRefused  # circular at module level
@@ -94,10 +106,12 @@ async def land_credentials(*, owner_id: str, resource: dict, env: dict[str, str]
     provider = resource["provider"]
     async with _lock_for(owner_id):
         if env:
-            secret_key = integrations_repo.projects_key(provider)
+            secret_key = secret_provider or integrations_repo.projects_key(provider)
             blob = dict(await integration_secret_store.get(owner_id, secret_key) or {})
             blob.update(env)
             await integration_secret_store.put(owner_id, secret_key, blob)
+        if not land_in_profiles:
+            return
         await integrations_repo.record_provider_resource(owner_id, provider, resource)
         if not env:
             return

@@ -1,7 +1,7 @@
 ---
 title: "Grok CLI"
 description: "Connect Grok CLI with lightbulb setup; it sends through the lightbulb tools and picks up messages at its next step."
-order: 13
+order: 14
 section: "Agents"
 ---
 

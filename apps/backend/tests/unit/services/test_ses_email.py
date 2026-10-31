@@ -261,3 +261,24 @@ async def test_calendar_reply_is_a_text_calendar_alternative(monkeypatch):
     part = next(p for p in parsed.walk() if p.get_content_type() == "text/calendar")
     assert part.get_param("method") == "REPLY" and part.get_content_charset() == "utf-8"
     assert "METHOD:REPLY" in part.get_content()
+
+
+@pytest.mark.asyncio
+async def test_an_app_invite_never_logs_the_full_address(monkeypatch, caplog):
+    """R49: an invitee is an outsider; the three log lines mask an apps_invite recipient."""
+    caplog.set_level("INFO", logger=ses_email.logger.name)
+    fake_client = MagicMock()
+    fake_client.send_email.return_value = {"MessageId": "ses-1"}
+    monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
+    for domain, side_effect in (("", None), ("isol8.co", None), ("isol8.co", RuntimeError("boom"))):
+        monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", domain)
+        fake_client.send_email.side_effect = side_effect
+        await ses_email.send_ses_email(
+            from_addr="hello@isol8.co", to="bo.secret@x.co", subject="s", body_text="t", kind="apps_invite"
+        )
+    assert len(caplog.records) == 3
+    assert "bo.secret" not in caplog.text and "b***@x.co" in caplog.text
+
+    caplog.clear()  # other kinds are unchanged
+    await ses_email.send_ses_email(from_addr="hello@isol8.co", to="al@x.co", subject="s", body_text="t")
+    assert "al@x.co" in caplog.text

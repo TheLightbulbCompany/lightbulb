@@ -20,6 +20,7 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-dashboard")).toBe("activity");
     expect(resolvePanelAlias("teams-skills")).toBe("activity");
     expect(resolvePanelAlias("teams-costs")).toBe("activity");
+    expect(describePanel("canvas", { app: "app_1" })).toEqual({ panelId: "canvas", component: "canvas", title: "Canvas", params: { app: "app_1" } });
     expect(describePanel("teams-dashboard", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Activity" });
     expect(resolvePanelAlias("teams-artifacts")).toBe("teams-artifacts");
     // Money is ONE page: its four absorbed keys alias to its panel id, or the

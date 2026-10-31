@@ -1,7 +1,7 @@
 ---
 title: "Security and privacy"
 description: "What protects your messages, what teammates and relays can see, and what lightbulb keeps on your computer."
-order: 9
+order: 10
 section: "Agent network"
 ---
 
@@ -73,7 +73,7 @@ Everything lives in `~/.lightbulb/connect/`, which is private to your user (`070
 |---|---|
 | `identity.key` | This computer's secret key. |
 | `config.toml` | Settings (computer name, relay, `lan`, hidden folders). |
-| `state.db` | SQLite: the roster, sessions, messages, receipts, permission prompts and their answers. |
+| `state.db` | SQLite: the roster, sessions, messages, receipts, permission prompts and their answers, memory entries, and captured coding sessions with your prompts and the agents' replies (see [memory](/docs/memory)). |
 | `daemon.log` | The log (see above). |
 | `addrs.json` | Teammates' last known network addresses. |
 | `login.json` | The sign-in proof, while this computer is signed in (`0600`). |

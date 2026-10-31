@@ -37,6 +37,15 @@ def test_posts_to_this_owners_suggestions_as_the_turns_agent(tmp_path, monkeypat
     assert calls[1][2]["emoji"] == "⭐"
 
 
+def test_an_app_idea_passes_kind_app_kind_and_origin_through(tmp_path, monkeypatch):
+    _ctx(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(lightbulb, "_post", lambda url, token, body: calls.append(body) or {"status": "added"})
+    lightbulb._suggest_idea({**ARGS, "kind": "app", "app_kind": "dashboard", "origin": " Asked weekly "},
+                            session_id=SESSION)
+    assert (calls[0]["kind"], calls[0]["appKind"], calls[0]["origin"]) == ("app", "dashboard", "Asked weekly")
+
+
 @pytest.mark.parametrize("status, words", [("duplicate", "Already in the Ideas list"), ("cap", "10 suggestions")])
 def test_says_when_nothing_was_added(tmp_path, monkeypatch, status, words):
     _ctx(tmp_path, monkeypatch)

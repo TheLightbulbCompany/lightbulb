@@ -18,6 +18,15 @@ function bridge(): Invoke | undefined {
   return (window as Window & { __TAURI__?: { core?: { invoke?: Invoke } } }).__TAURI__?.core?.invoke;
 }
 
+/** Whether this app has `engine_ask`; the hosted page also runs in older desktop builds. An empty
+ *  op is refused before the engine's socket, so the probe touches nothing; an older app says the
+ *  command is not found instead. */
+export async function hasEngineAsk(): Promise<boolean> {
+  const invoke = bridge();
+  if (!invoke) return false;
+  return invoke("engine_ask", { op: "" }).then(() => true, (e) => !/command\b.*\bnot found|unknown command/i.test(String(e)));
+}
+
 /** This Mac's tools and approved folders, when the page runs inside a desktop app that opens
  *  terminal sessions itself; null in a browser and in older desktop builds. */
 export function useLocalMac(): LocalMacOptions | null {

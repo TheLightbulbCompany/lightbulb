@@ -20,7 +20,7 @@ const hostFirst = (title: string | undefined): string | undefined => {
 // Never an id: VoiceOver reads it aloud as gibberish. Untitled is "New chat", as Happy does: the
 // folder is the row's second line, and a folder name as the title made "lightbulb.nosync" look
 // like a conversation.
-export const sessionTitle = (s: LocalSession): string =>
+export const sessionTitle = (s: Pick<LocalSession, "displayTitle" | "title">): string =>
   s.displayTitle?.trim() || hostFirst(s.title?.trim()) || "New chat";
 export const sessionLabel = (s: LocalSession) => `${sessionToolName(s.provider)} · ${sessionTitle(s)}`;
 

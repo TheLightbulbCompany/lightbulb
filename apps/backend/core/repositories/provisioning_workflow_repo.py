@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.dynamodb import ddb_safe, get_table, run_in_thread, utc_now_iso
 
 # Our states, not Stripe's (spec §3.2; the guide's example model is the same
 # shape). Stripe's own enums stay in code font wherever they appear.
@@ -73,6 +73,8 @@ async def create(
     configuration: dict,
     issue_id: str | None = None,
     reason: str = "",
+    app_id: str | None = None,
+    environment: str = "prod",
 ) -> dict:
     """Persist the intent BEFORE any Stripe write (guide: "Persist the intent
     to create or change a Resource before making the request")."""
@@ -92,11 +94,17 @@ async def create(
         # catalog drift still says why — the row is the memory, and the reason
         # is not recoverable from the catalog.
         "reason": reason or "",
+        # None = the company's own service; otherwise the app it belongs to.
+        # An app has a `prod` and a `dev` row for the same service.
+        "app_id": app_id,
+        "environment": environment,
         "attempts": 0,
         "created_at": now,
         "updated_at": now,
     }
-    await run_in_thread(_table().put_item, Item=item)
+    # Catalog-derived values (configuration, snapshots) arrive as JSON and may
+    # carry floats; boto3 refuses them (live 2026-10-29: Vercel's catalog row).
+    await run_in_thread(_table().put_item, Item=ddb_safe(item))
     return item
 
 
@@ -130,7 +138,7 @@ async def transition(workflow_id: str, *, from_state: str, to_state: str, fields
             raise ValueError(f"{key} cannot be set through transition fields")
         sets.append(f"#f{i} = :f{i}")
         names[f"#f{i}"] = key
-        values[f":f{i}"] = value
+        values[f":f{i}"] = ddb_safe(value)
     expr = "SET " + ", ".join(sets)
     if to_state in TERMINAL_STATES:
         # Drop the claim: nothing steps a terminal row, so a lingering one
@@ -167,7 +175,7 @@ async def patch(workflow_id: str, fields: dict) -> dict | None:
             raise ValueError(f"{key} cannot be set through patch")
         sets.append(f"#f{i} = :f{i}")
         names[f"#f{i}"] = key
-        values[f":f{i}"] = value
+        values[f":f{i}"] = ddb_safe(value)
     resp = await run_in_thread(
         _table().update_item,
         Key={"workflow_id": workflow_id},

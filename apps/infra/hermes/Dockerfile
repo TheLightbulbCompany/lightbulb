@@ -87,10 +87,12 @@ RUN set -eux; \
 
 # ---- network engine (the `lightbulb member` sidecar, bridge/network.py) ----------------------
 # The engine (TheLightbulbCompany/cli): its static musl release asset, pinned by tag and checksum.
-# TODO: the engine release containing cli PR #91 must replace this pin before LIGHTBULB_NETWORK_WORKERS can be turned on.
-# The checksum is v0.6.2's lightbulb-linux-arm64.tar.gz.sha256 asset; bump the tag and the checksum together.
-RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.6.2/lightbulb-linux-arm64.tar.gz \
- && echo "eb7aac168b6b6ba5791fc94c5bed1466446ad24c65a1e79368552c112ad94b0e  /tmp/lb.tgz" | sha256sum -c - \
+# TODO: the engine release containing network workers (cli PR #105) must replace this pin before
+# LIGHTBULB_NETWORK_WORKERS can be turned on.
+# v0.7.0 or later: the backend's memory sync (memory.list/import/remember/forget) are engine ops.
+# The checksum is v0.8.0's lightbulb-linux-arm64.tar.gz.sha256 asset; bump the tag and the checksum together.
+RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.8.0/lightbulb-linux-arm64.tar.gz \
+ && echo "d561529e65d763cce76be599159f9750f4d56baac8d48180a252a457238009b9  /tmp/lb.tgz" | sha256sum -c - \
  && tar -xzf /tmp/lb.tgz -C /usr/local/bin lightbulb && rm /tmp/lb.tgz && lightbulb version
 
 # ---- CLI connector binaries ------------------------------------------------------------------
@@ -140,6 +142,11 @@ RUN npm i -g --allow-scripts=agent-browser agent-browser@0.38.1 && agent-browser
 # Adapters go to ~/.opencli; the shell's HOME is <profile>/home (TERMINAL_HOME_MODE=profile), so
 # they live in the profile and are saved with it.
 RUN npm i -g @jackwener/opencli@2.0.0 && opencli --version
+
+# pnpm for `lightbulb app` (the starter and its checks run pnpm). Without it in the image, each
+# agent installed its own into the profile home, and on Demo Lab that copy rotted into
+# "Cannot find module '../dist/pnpm.cjs'" mid-build (e2e, 30 Oct 2026). Pinned like the rest.
+RUN npm i -g pnpm@10.34.9 && pnpm --version
 
 # Hermes advertises browser_* only when _chromium_installed() is true (browser_tool_install.py:227-242):
 # AGENT_BROWSER_EXECUTABLE_PATH is an existing file (a bare os.path.isfile), OR chrome/chromium is on

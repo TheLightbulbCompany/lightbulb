@@ -222,6 +222,16 @@ describe("createApiClient", () => {
     expect(fetchMock.mock.calls[2][1].method).toBe("DELETE");
   });
 
+  it("del sends a JSON body only when given one", async () => {
+    fetchMock.mockImplementation(async () => jsonResponse(200, {}));
+    const client = createApiClient(CONFIG);
+    await client.del("/apps/a1", undefined, { confirm_name: "Tracker" });
+    await client.del("/agents/a1");
+    expect(fetchMock.mock.calls[0][1].method).toBe("DELETE");
+    expect(fetchMock.mock.calls[0][1].body).toBe(JSON.stringify({ confirm_name: "Tracker" }));
+    expect(fetchMock.mock.calls[1][1].body).toBeUndefined();
+  });
+
   it("resolves a 204 no-content response as null instead of failing JSON parse", async () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
     const client = createApiClient(CONFIG);

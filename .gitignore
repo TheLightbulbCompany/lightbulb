@@ -93,3 +93,9 @@ tla/states/
 # Load-test fixtures: live Clerk client JWTs per test user (apps/backend/scripts/load/README.md)
 apps/backend/scripts/load/fixtures.json
 apps/backend/scripts/load/mac_sessions.json
+
+# BEAM runner
+benchmarks/beam/.venv
+benchmarks/beam/.cache
+__pycache__/
+.pytest_cache/

@@ -36,6 +36,13 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 60
     steps:
+      # Job-private Docker config: on the shared self-hosted runner another job's ECR login overwrote ours.
+      # (runner.temp is not available in job-level env, so it is exported here for all later steps.)
+      - name: Use a job-private Docker config
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker-config"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker-config" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v7
         with:

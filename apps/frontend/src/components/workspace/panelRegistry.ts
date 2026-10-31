@@ -5,7 +5,7 @@
 
 import { ARTIFACT_PARAM_KEYS, parseArtifactSource } from "./panels/artifactSource";
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "mail" | "ideas" | "artifact";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "canvas" | "mail" | "ideas" | "artifact";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -290,6 +290,13 @@ export function describePanel(
     return { panelId: "activity", component: "activity", title: "Activity", params: p };
   }
 
+  // Apps the agents built; `app` opens one inside the pane.
+  if (key === "canvas") {
+    const p: Record<string, string> = {};
+    if (params.app) p.app = params.app;
+    return { panelId: "canvas", component: "canvas", title: "Canvas", params: p };
+  }
+
   // The workspace's shared agent mailbox: mail in and out, meetings and their
   // transcripts. Singleton; `item` is the open row (`mail:<key>` or
   // `meeting:<id>:<start_at>`).
@@ -396,6 +403,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "control:agents") return ["panel", "agent"];
   if (panelId === WORK_PANEL_ID) return ["panel", "agent", "groupBy", "view", "day", "section"];
   if (panelId === "activity") return ["panel", "filter", "focus"];
+  if (panelId === "canvas") return ["panel", "app"];
   if (panelId === "mail") return ["panel", "item"];
   if (panelId === "ideas") return ["panel", "agent", "idea"];
   if (/^teams-(issue|routine|project|goal|case|run)-detail:/.test(panelId)) return ["panel", "detailId"];
@@ -415,6 +423,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId", "sessionId", "seq", "sessionIntent"];
   if (panelId === WORK_PANEL_ID) return ["agent", "groupBy", "view", "day", "section"];
   if (panelId === "activity") return ["filter", "focus"];
+  if (panelId === "canvas") return ["app"];
   if (panelId === "mail") return ["item"];
   if (panelId === "ideas") return ["agent", "idea"];
   if (panelId === "file-viewer") return ["path", "agent"];

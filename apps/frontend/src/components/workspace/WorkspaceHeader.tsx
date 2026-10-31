@@ -2,7 +2,7 @@
 
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
-import { Bell, HelpCircle, Images, ListTodo, MessageSquare, Search, Settings } from "lucide-react";
+import { Bell, HelpCircle, Images, LayoutGrid, ListTodo, MessageSquare, Search, Settings } from "lucide-react";
 import Link from "next/link";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useNeedsYouBadge } from "@/components/activity/useNeedsYouBadge";
@@ -13,7 +13,7 @@ import { HistoryButtons } from "./HistoryButtons";
 import { activateMessagesPanel, openPanel, useWorkspaceState, type Place } from "./workspaceController";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
 
-// The four places, and nothing else (spec 3.1). Browser, Files and Mail open in
+// The five places, and nothing else (spec 3.1). Browser, Files and Mail open in
 // the right pane (the conversation header, links, ⌘K); Settings is at the bottom.
 const DESTINATIONS: readonly { place: Place; panel: string; label: string; Icon: typeof Bell }[] = [
   { place: "chat", panel: "chat", label: "Chat", Icon: MessageSquare },
@@ -22,6 +22,8 @@ const DESTINATIONS: readonly { place: Place; panel: string; label: string; Icon:
   { place: "work", panel: "teams-issues", label: "Work", Icon: ListTodo },
   // Every document and deliverable (stock Paperclip's Artifacts).
   { place: "library", panel: "teams-artifacts", label: "Library", Icon: Images },
+  // Apps the agents built, opened inside the pane.
+  { place: "canvas", panel: "canvas", label: "Canvas", Icon: LayoutGrid },
 ];
 
 /** The global rail: the places, search, history and the account controls. */

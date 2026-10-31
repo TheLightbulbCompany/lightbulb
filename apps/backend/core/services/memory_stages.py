@@ -4,7 +4,6 @@ No AWS and no I/O; the recall function calls these.
 """
 
 import calendar
-import json
 import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -17,7 +16,15 @@ _SINCE = re.compile(r"^(?P<claim>.*?) \(since (?P<since>[^;()]*)(?P<tail>;.*)?\)
 _SIDE = re.compile(r"^(?P<name>[^:]+): (?P<claim>.*) \((?P<who>[^()]*?), (?P<date>[^()]*)\)$", re.S)
 _SPEAKER_KINDS = _CURRENT_KINDS | {"turn"}
 _LOG_KINDS = {"fact", "decision", "lesson", "preference"}  # the network log's kinds (memory_sync: logKind)
-_EXCERPT_CHARS = 280
+# A question's page, as the CLI's: up to 50 turns and 50 of the rest, each turn the 800-character
+# window that matches the question best.
+PAGE_TURNS = 50
+PAGE_OTHERS = 50
+TURN_WINDOW = 800
+_STOPWORDS = frozenset(  # the CLI's (lightbulb-network src/memory.rs STOPWORDS)
+    "how do does we i you the a an of to in on is are was were be it that this what when where which "
+    "who why before after with for and or not our my your".split()
+)
 
 
 @dataclass
@@ -38,7 +45,40 @@ class Candidate:
 
 def count_tokens(text: str) -> int:
     # ponytail: tiktoken is not a backend dependency; swap this one function if it becomes one.
-    return len(text) // 4
+    return -(-len(text) // 4)  # characters / 4 rounded up: the benchmark runner's evidence count
+
+
+def _clean(word: str) -> str:
+    return re.sub(r"^\W+|\W+$", "", word).casefold()
+
+
+def excerpt(text: str, question: str, width: int = TURN_WINDOW) -> str:
+    """The ``width``-character window of ``text`` holding the most distinct question terms (3+
+    characters, not stopwords, matched as a word prefix), the earliest on a tie, "…" when it starts
+    inside. Text that fits is whole; no match is the opening."""
+    if len(text) <= width:
+        return text
+    terms = tuple(dict.fromkeys(t for w in question.split() if len(t := _clean(w)) >= 3 and t not in _STOPWORDS))
+    spans = [(m.start(), m.end(), _clean(m[0])) for m in re.finditer(r"\S+", text)]
+    hits = [[t for t in terms if w.startswith(t)] if w.startswith(terms) else [] for _, _, w in spans]
+    room = width - 1  # one character for the lead
+    held: dict[str, int] = {}
+    best, best_score, end = 0, 0, 0
+    for i, (start, _, _) in enumerate(spans):  # two pointers: the window is spans[i:end]
+        end = max(end, i)
+        while end < len(spans) and spans[end][1] - start <= room:
+            for t in hits[end]:
+                held[t] = held.get(t, 0) + 1
+            end += 1
+        if len(held) > best_score:
+            best, best_score = i, len(held)
+        for t in hits[i] if end > i else ():
+            held[t] -= 1
+            if not held[t]:
+                del held[t]
+    if best == 0:
+        return text[:width]
+    return "…" + text[spans[best][0] :][:room]
 
 
 def _meta(metadata: dict, key: str) -> str:
@@ -61,6 +101,27 @@ def _when(value: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+def _until(value: str) -> datetime | None:
+    """validTo; 0 or below is no end: the extraction model writes 0 for "empty" (a NUMBER field)."""
+    try:
+        if float(value) <= 0:
+            return None
+    except ValueError:
+        pass
+    return _when(value)
+
+
+def _said_when(valid_from: datetime | None, created: datetime | None, text: str) -> datetime | None:
+    """validFrom, unless the extraction model guessed its year: more than a year before the record
+    was written while the text names no year that early. Haiku has no calendar of its own and wrote
+    2024 for claims said in 2026 (prod, 30 Oct 2026); the record was written when it was said."""
+    if not (valid_from and created) or created - valid_from <= timedelta(days=365):
+        return valid_from
+    if any(int(y) <= valid_from.year for y in _YEAR_RE.findall(text)):
+        return valid_from  # dated history ("since 2024-05-01"): the text says so
+    return created
+
+
 def from_record(summary: dict, kind_default: str) -> Candidate:
     metadata = summary.get("metadata") or {}
     text = (summary.get("content") or {}).get("text", "")
@@ -76,21 +137,25 @@ def from_record(summary: dict, kind_default: str) -> Candidate:
         speaker = m.group(1)
     elif kind == "entry":
         speaker = _meta(metadata, "author")
-    valid_to = _when(_meta(metadata, "validTo"))
+    valid_to = _until(_meta(metadata, "validTo"))
     status = "contested" if contested else _meta(metadata, "status") or "current"
     if valid_to and status == "current":
         status = "replaced"
     record_id = summary.get("memoryRecordId", "")
+    created = _when(summary.get("createdAt"))
+    valid_from = _when(_meta(metadata, "validFrom"))
+    if kind != "entry":  # a mirrored log entry's validFrom is the log's own when, not the model's
+        valid_from = _said_when(valid_from, created, text)
     return Candidate(
         id=record_id,
         kind=kind,
         content=text,
-        occurred_at=_when(summary.get("createdAt")) or datetime.fromtimestamp(0, UTC),
+        occurred_at=created or datetime.fromtimestamp(0, UTC),
         status=status,
         speaker=speaker,
         entity=_meta(metadata, "entity") or _meta(metadata, "subject"),
         attribute=_meta(metadata, "attribute"),
-        valid_from=_when(_meta(metadata, "validFrom")),
+        valid_from=valid_from,
         valid_to=valid_to,
         source_id=record_id,
     )
@@ -171,6 +236,7 @@ def _result(c: Candidate) -> dict:
         "kind": c.kind,
         "content": c.content,
         "occurredAt": c.occurred_at.isoformat(),
+        "validFrom": c.valid_from.isoformat() if c.valid_from else None,  # when it held; occurredAt is when stored
         "status": c.status,
         "history": history,
         "sources": [
@@ -178,18 +244,9 @@ def _result(c: Candidate) -> dict:
                 "sourceId": c.source_id,
                 "occurredAt": c.occurred_at.isoformat(),
                 "speaker": c.speaker,
-                "excerpt": c.content[:_EXCERPT_CHARS],
             }
         ],
     }
-
-
-def _stamp_tokens(page: dict) -> None:
-    for _ in range(4):  # the count includes its own digits; settles in a pass or two
-        n = count_tokens(json.dumps(page))
-        if page["usedEvidenceTokens"] == n:
-            return
-        page["usedEvidenceTokens"] = n
 
 
 def compose(candidates: list[Candidate], budget_tokens: int, as_of: datetime) -> dict:
@@ -202,14 +259,35 @@ def compose(candidates: list[Candidate], budget_tokens: int, as_of: datetime) ->
 
     marked.sort(key=lambda c: (group(c), -c.fused))  # stable: ties keep input order
     page: dict = {"asOf": as_of.isoformat(), "usedEvidenceTokens": 0, "results": []}
+    room = {True: PAGE_TURNS, False: PAGE_OTHERS}
     for c in marked:
-        page["results"].append({"rank": len(page["results"]) + 1, **_result(c)})
-        _stamp_tokens(page)
-        if page["usedEvidenceTokens"] > budget_tokens:
-            page["results"].pop()
+        turn = c.kind == "turn"
+        if not room[turn]:
+            continue
+        # Evidence is content, counted as the benchmark runner counts it; the first overflow ends the page.
+        cost = count_tokens(c.content)
+        if page["usedEvidenceTokens"] + cost > budget_tokens:
             break
-    _stamp_tokens(page)
+        room[turn] -= 1
+        page["usedEvidenceTokens"] += cost
+        page["results"].append({"rank": len(page["results"]) + 1, **_result(c)})
     return page
+
+
+def page_text(page: dict) -> str:
+    """The composed page as an agent reads it, as the CLI's: a heading per section, a line per
+    result with its day (validFrom when it has one, else occurredAt), in rank order; a line's own newlines are spaces, so no line fakes a heading.
+    apps/infra/hermes/plugins/memory/agentcore keeps a copy (_page_text): change both."""
+    sections: dict[str, list[str]] = {"Contested:": [], "Current:": [], "Log:": [], "Turns:": []}
+    for r in page["results"]:
+        day, text = (r.get("validFrom") or r["occurredAt"])[:10], " ".join(r["content"].split())
+        if r["kind"] == "turn":
+            sections["Turns:"].append(f"{day}, {text}")
+        elif r["status"] == "contested":
+            sections["Contested:"].append(f"{text.removeprefix('Contested: ')} ({day})")
+        else:
+            sections["Current:" if r["kind"] in _CURRENT_KINDS else "Log:"].append(f"{text} ({day})")
+    return "\n".join(f"{head}\n" + "\n".join(lines) for head, lines in sections.items() if lines) or "Nothing found."
 
 
 _MONTHS = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}

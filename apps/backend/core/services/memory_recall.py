@@ -17,13 +17,22 @@ from botocore.exceptions import BotoCoreError, ClientError, ParamValidationError
 
 from core.dynamodb import run_in_thread
 from core.services import memory_models, workspace_memory
-from core.services.memory_stages import _CURRENT_KINDS, Candidate, compose, from_record, rrf, time_window
+from core.services.memory_stages import (
+    _CURRENT_KINDS,
+    PAGE_OTHERS,
+    PAGE_TURNS,
+    Candidate,
+    compose,
+    excerpt,
+    from_record,
+    rrf,
+    time_window,
+)
 
 logger = logging.getLogger(__name__)
 
 MAX_PARTS = 5
 MAX_ENTITIES = 5
-RERANK_TOP = 100
 MIN_POSITIVE = 5
 ENTITY_TTL_S = 60.0
 MAX_PAGES = 10
@@ -52,7 +61,12 @@ def _as_of_variants(as_of: datetime | None) -> list[list[dict]]:
         return [[]]
     e = as_of.timestamp()
     start = _flt("validFrom", "LESS_THAN_OR_EQUALS", e)
-    return [[start, _flt("validTo", "NOT_EXISTS")], [start, _flt("validTo", "GREATER_THAN", e)]]
+    return [
+        [start, _flt("validTo", "NOT_EXISTS")],
+        [start, _flt("validTo", "GREATER_THAN", e)],
+        # 0 is how the extraction model writes "empty" (validTo is a NUMBER): still current.
+        [start, _flt("validTo", "EQUALS_TO", 0.0)],
+    ]
 
 
 async def _call(label: str, fn, **kwargs) -> list[dict] | None:
@@ -149,6 +163,14 @@ async def _search_part(client, memory_id, namespaces, part, limit, as_of, includ
     return [(kind, rows or []) for (kind, _), rows in zip(jobs, results, strict=True)]  # failed arms are None
 
 
+def _window(c: Candidate, question: str) -> str:
+    """A turn's part that answers ``question`` (its speaker kept in front); anything else whole."""
+    if c.kind != "turn":
+        return c.content
+    lead = f"{c.speaker}: " if c.speaker and c.content.startswith(f"{c.speaker}: ") else ""
+    return lead + excerpt(c.content[len(lead) :], question)
+
+
 def _as_current(c: Candidate, as_of: datetime | None) -> Candidate:
     # A fact replaced after ``as_of`` was still current at ``as_of``.
     if as_of and c.status == "replaced" and c.valid_to and c.valid_to > as_of:
@@ -192,16 +214,27 @@ async def recall(
                 # The window ("today", "in May") dates what was said, so it narrows turns and entries;
                 # a current claim's creation date says nothing about the time asked about.
                 dated = c.kind not in _CURRENT_KINDS
-                if c.status == "replaced" or (
-                    dated and ((start and c.occurred_at < start) or (end and c.occurred_at > end))
+                # The service filtered validFrom <= as_of on the stored value; from_record may have
+                # moved a guessed year to the day the claim was said, after as_of.
+                late = not dated and as_of and c.valid_from and c.valid_from > as_of
+                if (
+                    late
+                    or c.status == "replaced"
+                    or (dated and ((start and c.occurred_at < start) or (end and c.occurred_at > end)))
                 ):
                     continue
                 by_id.setdefault(c.id, c)
                 ranking.append(c.id)
             if ranking:
                 rankings.append(ranking)
-    fused = rrf(rankings)[:RERANK_TOP]
-    ordered = [replace(by_id[i], fused=score) for i, score in fused]
+    # Claims come from many arms and turns from one, so each keeps its own share of the rerank's 100.
+    room = {True: PAGE_TURNS, False: PAGE_OTHERS}
+    ordered = []
+    for i, score in rrf(rankings):
+        c = by_id[i]
+        if room[c.kind == "turn"]:
+            room[c.kind == "turn"] -= 1
+            ordered.append(replace(c, fused=score, content=_window(c, question)))
     t3 = time.monotonic()
 
     ranked = (

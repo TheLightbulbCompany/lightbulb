@@ -1011,3 +1011,99 @@ def test_a_list_read_steps_the_five_oldest_open_rows_and_starves_none(client):
     assert [c.args[0] for c in step.await_args_list] == ["pwf_0", "pwf_1", "pwf_2", "pwf_3", "pwf_4"]
     # Presentation order is untouched by which rows were stepped.
     assert [r["workflow_id"] for r in resp.json()["workflows"]] == [f"pwf_{i}" for i in range(6, -1, -1)]
+
+
+# --- approval wakes the app's room -----------------------------------------
+
+
+@pytest.fixture
+def room(monkeypatch):
+    """A fake messaging layer: one room, its creator, and a message table that
+    dedupes on (author, client_message_id) like the real idempotency row."""
+    from core.services import apps_room
+    from core.services import provisioning_workflow as wf
+
+    members = {"user_admin", "user_creator"}
+    sent: dict = {}
+
+    async def member(owner_id, user_id, room_id):
+        if user_id not in members:
+            raise apps_room.messaging.ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+        return {}, {}
+
+    async def create(auth, room_id, request, *, via=None, wake=True, **_):
+        sent.setdefault((auth.user_id, request.client_message_id), (auth.user_id, room_id, request.text, via, wake))
+
+    monkeypatch.setattr(apps_room.messaging, "require_room_member", member)
+    monkeypatch.setattr(apps_room.messaging, "create_human_message", create)
+    monkeypatch.setattr(
+        apps_room.messaging_repo,
+        "list_members",
+        AsyncMock(return_value=[{"kind": "human", "id": "user_creator", "role": "owner"}]),
+    )
+    monkeypatch.setattr(
+        apps_room.apps_repo,
+        "get",
+        AsyncMock(return_value={"app_id": "app_1", "name": "crew-schedule", "room_id": "room_1"}),
+    )
+    # The real on_approved, over a one-row store: the transition is the guard.
+    store: dict = {}
+
+    async def transition(workflow_id, *, from_state, to_state, fields=None):
+        row = store.get(workflow_id)
+        if not row or row["state"] != from_state:
+            return None
+        store[workflow_id] = {**row, **(fields or {}), "state": to_state}
+        return store[workflow_id]
+
+    monkeypatch.setattr(wf.repo, "get", AsyncMock(side_effect=lambda wid: store.get(wid)))
+    monkeypatch.setattr(wf.repo, "transition", transition)
+    monkeypatch.setattr(wf, "account_id_for", AsyncMock(return_value="acct_1"))
+    monkeypatch.setattr(wf, "_fresh_snapshot", AsyncMock(side_effect=lambda a, row: row["approval"]))
+    return store, sent
+
+
+def test_approval_posts_once_per_workflow(client, room):
+    store, sent = room
+    store["pwf_1"] = {**WF, "app_id": "app_1", "environment": "prod"}
+    from core.services import provisioning_workflow as wf
+
+    first = client.post("/api/v1/company/provisioning/workflows/pwf_1/approve", json={})
+    second = client.post("/api/v1/company/provisioning/workflows/pwf_1/approve", json={})
+    assert first.status_code == 200 and first.json()["state"] == "connecting_provider"
+    assert second.status_code == 409
+    # The phone approval of the same card, read after the click: no second line.
+    import asyncio
+
+    asyncio.run(wf.on_approved("pwf_1", usage_limit=None, approved_by="paperclip"))
+    assert list(sent.values()) == [
+        ("user_admin", "room_1", "Approved posthog/analytics for crew-schedule (live). Setting it up.", "apps", True)
+    ]
+
+
+def test_company_row_approval_posts_nothing(client, room):
+    store, sent = room
+    store["pwf_1"] = {**WF, "app_id": None}
+    resp = client.post("/api/v1/company/provisioning/workflows/pwf_1/approve", json={})
+    assert resp.status_code == 200 and resp.json()["state"] == "connecting_provider"
+    assert sent == {}
+
+
+def test_workflows_list_names_the_app_a_row_belongs_to(client):
+    """R53: an app row says which app and environment it is for."""
+    app_row = {**WF, "workflow_id": "pwf_2", "app_id": "app_1", "environment": "dev"}
+    with (
+        patch.object(mod.workflow_repo, "list_for_owner", AsyncMock(return_value=[WF, app_row])),
+        patch.object(mod.provisioning_workflow, "advance_on_read", AsyncMock(return_value=None)),
+        patch.object(
+            mod.apps_repo, "get", AsyncMock(return_value={"app_id": "app_1", "owner_id": "org_a", "name": "crew"})
+        ),
+    ):
+        rows = client.get("/api/v1/company/provisioning/workflows").json()["workflows"]
+    by_id = {r["workflow_id"]: r for r in rows}
+    assert (by_id["pwf_2"]["app_id"], by_id["pwf_2"]["environment"], by_id["pwf_2"]["app_name"]) == (
+        "app_1",
+        "dev",
+        "crew",
+    )
+    assert (by_id["pwf_1"]["app_id"], by_id["pwf_1"]["app_name"]) == (None, None)

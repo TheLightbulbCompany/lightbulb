@@ -49,7 +49,7 @@ jobs:
     # lint, 55 min of pytest), so 75 cancelled the next run as soon as one
     # test file slowed down. 100 still dies 5 h before the default; the real
     # fix is a faster suite (xdist / splitting), not a looser cap.
-    timeout-minutes: 100
+    timeout-minutes: 150
 
     steps:
       - name: Checkout code

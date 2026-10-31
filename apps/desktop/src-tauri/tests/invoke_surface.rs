@@ -50,7 +50,7 @@ const COMMANDS: &[(&str, Option<&str>, &str)] = &[
     // Exempt by name from the guard below because it is read-only: directory, sessions, team.get. Joining is native code.
     (ENGINE_DOOR, None, "read-only, filtered"),
     ("network_connect::network_status", None, "read"),
-    ("network_connect::network_connect", Some("clear_opt_out("), "starts a join with no ticket from the page"),
+    ("network_connect::network_connect", Some("consent_to_connect("), "starts a join with no ticket from the page"),
     ("network_connect::network_leave", Some("leave_team("), "leaves the network"),
     ("network_connect::network_notice_seen", None, "clears a notice; the OS banner stays the tell"),
 ];

@@ -885,11 +885,12 @@ pub(crate) const DECLINED_ON_MAC: &str = "Not changed: declined on this Mac.";
 /// to `Custom(<second label>)` (`desktop.rs`). With Cancel first, such an ending read as
 /// Allow. Return pressing Allow is standard macOS; a page cannot press keys in this alert.
 pub(crate) async fn confirm_native(app: &tauri::AppHandle, title: &str, body: String) -> bool {
-    confirm_native_labelled(app, title, body, "Allow", "Cancel").await
+    confirm_native_labelled(app, title, body, "Allow", "Cancel").await.unwrap_or(false)
 }
 
 /// `confirm_native` with its own words; the yes stays the first button, for the reason above.
-pub(crate) async fn confirm_native_labelled(app: &tauri::AppHandle, title: &str, body: String, yes: &str, no: &str) -> bool {
+/// `None`: the dialog never answered, which is not a person's no.
+pub(crate) async fn confirm_native_labelled(app: &tauri::AppHandle, title: &str, body: String, yes: &str, no: &str) -> Option<bool> {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
     let yes = yes.to_owned();
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -901,7 +902,7 @@ pub(crate) async fn confirm_native_labelled(app: &tauri::AppHandle, title: &str,
         .show_with_result(move |res| {
             let _ = tx.send(matches!(res, MessageDialogResult::Custom(ref s) if *s == yes));
         });
-    rx.await.unwrap_or(false)
+    rx.await.ok()
 }
 
 /// Remove one server. `false` (and no restart) if it wasn't there.
@@ -2152,6 +2153,7 @@ end tell"#,
             // brings up the full desktop-node surface without waiting for
             // the webview to resolve a Clerk session. First run (nothing
             // persisted) is a silent no-op; the webview pair path handles it.
+            network_connect::record_owner_at_launch(app.handle());
             let node_start_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 match start_node_host_from_persisted(&node_start_handle).await {

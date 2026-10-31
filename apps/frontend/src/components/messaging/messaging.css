@@ -365,7 +365,8 @@
 /* The menu (and Share) take the right edge on hover, over the state; touch keeps them in the row. */
 .session-row { --session-patch: var(--plane-sidebar); }
 .all-sessions .session-row { --session-patch: var(--background); }
-.session-row .room-directory-actions { position: absolute; right: 0; inset-block: 0; margin-block: auto; height: 28px; width: 28px; background: color-mix(in srgb, var(--midnight) 5%, var(--session-patch)); }
+.session-row .room-directory-actions { position: absolute; right: 0; inset-block: 0; margin-block: auto; background: color-mix(in srgb, var(--midnight) 5%, var(--session-patch)); }
+@media (hover: hover) { .session-row .room-directory-actions { height: 28px; width: 28px; } }
 .session-row-share { position: absolute; right: 2.25rem; inset-block: 0; margin-block: auto; height: 1.5rem; padding-inline: 8px; font-size: var(--text-caption); opacity: 0; background: color-mix(in srgb, var(--midnight) 5%, var(--session-patch)); }
 .session-row .room-directory-actions:hover, .session-row-share:hover { background: color-mix(in srgb, var(--midnight) 12%, var(--session-patch)); }
 /* Focus shows the controls only for keyboard focus (Radix hands focus back to the trigger after a menu closes). */

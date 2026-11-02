@@ -996,6 +996,14 @@ struct PrivateCodexCompactionPayload {
     _replacement_history: Vec<serde::de::IgnoredAny>,
 }
 
+/// Claude's request cache is private model input, never a public transcript event.
+/// Unknown fields are validated and discarded by serde without allocating their values.
+#[derive(Deserialize)]
+struct PrivateClaudeRequest {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
 impl Cursor {
     fn read(&mut self, path: &Path, provider: &str) -> Result<Vec<Value>> {
         let mut file = secure_file(path)?;
@@ -1016,12 +1024,12 @@ impl Cursor {
                 .read_until(b'\n', &mut bytes)
                 .map_err(|e| e.to_string())?;
             if n > MAX_JSONL_ROW {
-                if provider != "codex" {
+                if !matches!(provider, "codex" | "claude") {
                     return Err("history-gap".into());
                 }
-                // A Codex compaction replaces private model context and never has
-                // public output. Scan only to a bounded newline, then validate the
-                // complete JSON without allocating its replacement history.
+                // Private Codex compactions and Claude request-cache blobs have no
+                // public output. Scan to a bounded newline, then validate all JSON
+                // without allocating the private payload. Public oversized rows fail.
                 let mut length = n;
                 let mut complete = bytes.ends_with(b"\n");
                 drop(bytes);
@@ -1040,18 +1048,22 @@ impl Cursor {
                 }
                 reader.seek(SeekFrom::Start(self.offset)).map_err(|_| "history-gap")?;
                 let mut parser = serde_json::Deserializer::from_reader((&mut reader).take(length as u64));
-                let compacted = PrivateCodexCompaction::deserialize(&mut parser)
-                    .map_err(|_| "history-gap")?;
+                let kind = if provider == "codex" {
+                    let compacted = PrivateCodexCompaction::deserialize(&mut parser).map_err(|_| "history-gap")?;
+                    if compacted.kind != "compacted" { return Err("history-gap".into()); }
+                    "compacted"
+                } else {
+                    let request = PrivateClaudeRequest::deserialize(&mut parser).map_err(|_| "history-gap")?;
+                    if request.kind != "api-request-blob" { return Err("history-gap".into()); }
+                    "api-request-blob"
+                };
                 parser.end().map_err(|_| "history-gap")?;
-                if compacted.kind != "compacted" {
-                    return Err("history-gap".into());
-                }
                 let current = secure_file(path)?.metadata().map_err(|_| "history-gap")?;
                 if current.ino() != meta.ino() || current.len() < self.offset + length as u64 {
                     return Err("history-gap".into());
                 }
                 reader.seek(SeekFrom::Start(self.offset + length as u64)).map_err(|_| "history-gap")?;
-                rows.push(json!({"type":"compacted"}));
+                rows.push(json!({"type":kind}));
                 self.offset += length as u64;
                 consumed += length;
                 continue;
@@ -2829,6 +2841,31 @@ mod tests {
         assert_eq!(cursor.read(&path, "codex").unwrap()[0]["type"], "compacted");
         assert_eq!(cursor.read(&path, "codex").unwrap(), vec![json!({"type":"compacted"})]);
         assert_eq!(cursor.read(&path, "codex").unwrap(), vec![public]);
+    }
+
+    #[test]
+    fn local_sessions_cursor_skips_valid_private_claude_request_blob_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let blob = json!({"type":"api-request-blob", "sessionId":"private", "hash":"cache",
+            "message":{"role":"user","content":[{"type":"tool_result","content":"x".repeat(MAX_JSONL_ROW)}]}});
+        let public = json!({"type":"assistant","message":{"content":[{"type":"text","text":"Still here"}]}});
+        fs::write(&path, format!("{blob}\n{public}\n")).unwrap();
+        let mut cursor = Cursor::default();
+        let rows = cursor.read(&path, "claude").unwrap();
+        assert_eq!(rows, vec![json!({"type":"api-request-blob"})]);
+        assert!(normalize_public_message("claude", "test", &rows[0]).unwrap().is_empty());
+        assert_eq!(cursor.read(&path, "claude").unwrap(), vec![public]);
+        for row in [
+            format!("{{\"type\":\"assistant\",\"message\":\"{}\"}}\n", "x".repeat(MAX_JSONL_ROW)),
+            format!("{{\"type\":\"api-request-blob\",\"message\":\"{}\",}}\n", "x".repeat(MAX_JSONL_ROW)),
+            blob.to_string(),
+        ] {
+            fs::write(&path, row).unwrap();
+            let mut cursor = Cursor::default();
+            assert_eq!(cursor.read(&path, "claude").unwrap_err(), "history-gap");
+            assert_eq!(cursor.offset, 0);
+        }
     }
 
     #[test]

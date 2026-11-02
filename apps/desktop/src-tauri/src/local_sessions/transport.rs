@@ -707,7 +707,11 @@ impl Host {
                             .clone(),
                     );
                 }
-                if mirror.native.restriction.as_deref() == Some("history-gap") {
+                if mirror.native.restriction.as_deref() == Some("history-gap")
+                    && !(mirror.native.process == native.process
+                        && native.restriction.is_none()
+                        && readable_history(mirror))
+                {
                     native.restriction = Some("history-gap".into());
                 }
                 // A process's lineage never changes: one failed `ps` (or a spare-claimed job
@@ -1616,10 +1620,7 @@ impl Host {
                 false,
             );
             let readable = mirror.native.restriction.as_deref() == Some("history-gap")
-                && mirror.native.transcript.as_deref().is_some_and(|path| {
-                    let mut probe = mirror.cursor.clone();
-                    probe.read(path, &mirror.native.provider).is_ok_and(|rows| !rows.is_empty())
-                });
+                && readable_history(&mirror);
             if readable || mirror.native.restriction.as_deref() != Some("history-gap") {
                 // A successful bounded read permits retry; discovery must still
                 // reverify the native binary before control is available.
@@ -3134,6 +3135,20 @@ fn ended_recovery_keys(mirrors: &BTreeMap<String, Mirror>) -> BTreeSet<String> {
         .filter(|(_, mirror)| needs_ended_recovery(mirror))
         .map(|(key, _)| key.clone())
         .collect()
+}
+
+/// Retry the exact durable cursor; never reset it or skip an unread record. A
+/// partial final record is not ready. Verified EOF can recover without new output.
+fn readable_history(mirror: &Mirror) -> bool {
+    mirror.native.transcript.as_deref().is_some_and(|path| {
+        let mut probe = mirror.cursor.clone();
+        probe.read(path, &mirror.native.provider).is_ok_and(|rows| {
+            !rows.is_empty()
+                || secure_file(path)
+                    .and_then(|file| file.metadata().map_err(|e| e.to_string()))
+                    .is_ok_and(|meta| Some(meta.ino()) == probe.inode && meta.len() == probe.offset)
+        })
+    })
 }
 
 /// A read failure is a history problem only. A process that is gone is ended by `liveness_tick`,
@@ -5744,6 +5759,45 @@ pub(super) mod tests {
             None,
             "an ended mirror is never sent as a registration"
         );
+    }
+
+    #[test]
+    fn local_sessions_discovery_recovers_readable_history_without_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        fs::write(&path, "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n").unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.transcript = Some(path.clone());
+        mirror.native.restriction = Some("history-gap".into());
+        let key = native_key(&mirror.native);
+        let mut observed = mirror.native.clone();
+        observed.restriction = None;
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        assert_eq!(host.observe(vec![observed.clone()]).unwrap(), vec![key.clone()]);
+        assert!(host.mirrors[&key].native.restriction.is_none());
+        assert_eq!(host.mirrors[&key].cursor.offset, fs::metadata(&path).unwrap().len());
+        let at_end = host.mirrors[&key].cursor.clone();
+        host.mirrors.get_mut(&key).unwrap().native.restriction = Some("history-gap".into());
+        host.observe(vec![observed.clone()]).unwrap();
+        assert!(host.mirrors[&key].native.restriction.is_none(), "verified EOF needs no new output");
+        assert_eq!(host.mirrors[&key].cursor.offset, at_end.offset);
+        for contents in ["{bad}\n", "{\"type\":"] {
+            fs::write(&path, contents).unwrap();
+            let mirror = host.mirrors.get_mut(&key).unwrap();
+            mirror.cursor = Cursor::default();
+            mirror.native.restriction = Some("history-gap".into());
+            host.observe(vec![observed.clone()]).unwrap();
+            assert_eq!(host.mirrors[&key].native.restriction.as_deref(), Some("history-gap"));
+            assert_eq!(host.mirrors[&key].cursor.offset, 0);
+        }
+        fs::rename(&path, dir.path().join("previous.jsonl")).unwrap();
+        fs::write(&path, "{}\n").unwrap();
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.cursor = at_end.clone();
+        mirror.native.restriction = Some("history-gap".into());
+        host.observe(vec![observed]).unwrap();
+        assert_eq!(host.mirrors[&key].native.restriction.as_deref(), Some("history-gap"));
+        assert_eq!(host.mirrors[&key].cursor.offset, at_end.offset, "rotation never resets history");
     }
 
     #[test]

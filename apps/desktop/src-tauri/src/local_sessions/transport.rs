@@ -1112,7 +1112,7 @@ impl Host {
                 // An open episode is not itself a reason to swallow this: a
                 // question answered inside one turn can be followed by a real
                 // permission prompt before any other transition clears it.
-                if !mirror.waiting.as_ref().is_some_and(|open| open.is(&prompt)) {
+                if mirror.waiting.as_ref().is_none_or(|open| open.replace_with(&prompt)) {
                     if !withheld {
                         mirror.queue.push(approval_row(text.as_deref().unwrap_or(""), &prompt));
                     }
@@ -2604,7 +2604,7 @@ impl Host {
             dir: self.dir.join("receipts"),
         };
         private_dir(&journal.dir)?;
-        if cmd.kind == "approve" {
+        if matches!(cmd.kind.as_str(), "approve" | "answer") {
             return self.approve(&journal, cmd, anchor).await;
         }
         if journal
@@ -2842,7 +2842,9 @@ impl Host {
         let held = mirror
             .waiting
             .as_ref()
-            .and_then(|w| w.held.clone().filter(|held| answerable(held, w.shipped_full, cmd)));
+            .and_then(|w| w.held.clone().filter(|held| if cmd.kind == "answer" {
+                question_answerable(w, held, cmd)
+            } else { w.tool.as_deref() != Some("AskUserQuestion") && answerable(held, w.shipped_full, cmd) }));
         // A Codex hold is answered over its daemon (`codex::answer`), named by the request's item.
         let codex = held
             .as_ref()
@@ -2854,7 +2856,11 @@ impl Host {
             && !mirror.withheld()
             && !self.stop.load(Ordering::SeqCst)
             && cmd.authorized_at(now)
-            && self.verified(&mirror.native).await.is_ok()
+            && (if cmd.kind == "answer" {
+                question_runtime(&mirror.native, process(mirror.native.process.pid).ok().as_ref())
+            } else {
+                self.verified(&mirror.native).await.is_ok()
+            })
             && !self.stopped_now(&key);
         let mirror = &self.mirrors[&key];
         if !journal.admit(cmd, &mirror.generation, now)? {
@@ -2872,7 +2878,8 @@ impl Host {
         let answer = approval::Answer {
             approval_id: held.id.clone(),
             input_digest: held.input_digest.clone(),
-            decision: cmd.decision.clone().unwrap_or_default(),
+            decision: if cmd.kind == "answer" { "answer".into() } else { cmd.decision.clone().unwrap_or_default() },
+            answers: cmd.answers.clone(),
             mode: cmd.mode.clone(),
             message: (cmd.decision.as_deref() == Some("deny")).then(|| {
                 match cmd.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
@@ -2958,6 +2965,25 @@ fn daemon_held(held: &approval::Held) -> bool {
     held.reply == CODEX_DAEMON
 }
 
+/// A complete held question proves its own input capability. Reading older history or
+/// the engine's ordinary-send capability is unnecessary; the provider process incarnation
+/// and still-held private hook channel remain mandatory.
+fn question_runtime(native: &NativeSession, current: Option<&Process>) -> bool {
+    native.provider == "claude" && native.status != "ended"
+        && matches!(native.restriction.as_deref(), None | Some("history-gap" | "runtime-unverified"))
+        && current == Some(&native.process)
+}
+
+fn question_answerable(prompt: &WaitingPrompt, held: &approval::Held, cmd: &Command) -> bool {
+    prompt.tool.as_deref() == Some("AskUserQuestion") && prompt.shipped_full && held.full
+        && cmd.kind == "answer" && cmd.text.is_none() && cmd.mode.is_none() && cmd.decision.is_none()
+        && cmd.approval_id.is_none() && cmd.expected_turn_id.is_none()
+        && cmd.prompt_id.as_deref() == Some(held.id.as_str())
+        && cmd.input_digest.as_deref() == Some(held.input_digest.as_str())
+        && cmd.actor.is_none() && cmd.actor_user_id.as_deref().is_some_and(|u| !u.is_empty())
+        && prompt.input.as_ref().zip(cmd.answers.as_ref()).is_some_and(|(i,a)| approval::question_answers(i,a))
+}
+
 /// Does this command answer exactly this held prompt, with an option it offered?
 fn answerable(held: &approval::Held, shipped_full: bool, cmd: &Command) -> bool {
     // A person's decision only: an agent never answers a permission prompt.
@@ -2990,6 +3016,12 @@ fn approval_row(text: &str, prompt: &WaitingPrompt) -> Value {
             "modes": held.modes,
         },
     });
+    if prompt.tool.as_deref() == Some("AskUserQuestion") {
+        row["tool"]["input"]["question"] = json!(true);
+        row["tool"]["input"]["promptId"] = json!(held.id);
+        row["tool"]["input"]["exact"] = json!(false);
+        row["tool"]["input"]["modes"] = json!([]);
+    }
     if let Some(similar) = &held.similar {
         row["tool"]["input"]["similar"] = json!(similar);
     }
@@ -6184,6 +6216,41 @@ pub(super) mod tests {
         );
         assert!(entry(false, &mirrors).get("stats").is_none(), "an older relay rejects the field");
         assert_eq!(entry(true, &mirrors)["stats"]["permissionMode"], "plan");
+    }
+
+    #[test]
+    fn local_sessions_question_answers_bind_full_prompt_and_passive_hooks_cannot_revoke_it() {
+        let input = json!({"questions":[{"question":"Pick?","options":[{"label":"A"},{"label":"B"}],"multiSelect":false}]});
+        let held = approval::Held { id: "appr-0123456789abcdef0123456789abcdef".into(), input_digest: approval::digest(&input), reply: String::new(), exact:false, full:true, modes:vec![], similar:None };
+        let passive = WaitingPrompt { tool:Some("AskUserQuestion".into()), summary:"Pick?".into(), ..WaitingPrompt::default() };
+        let mut prompt = WaitingPrompt { held:Some(held.clone()), input:Some(input), shipped_full:true, ..passive.clone() };
+        assert!(passive.replace_with(&prompt), "held report upgrades passive PreToolUse");
+        assert!(!prompt.replace_with(&passive), "late passive PreToolUse keeps held PermissionRequest");
+        let next = WaitingPrompt { held:Some(approval::Held { id:"appr-11111111111111111111111111111111".into(), ..held.clone() }), ..prompt.clone() };
+        assert!(prompt.replace_with(&next), "same words with a new held id are a new question");
+        let cmd: Command = serde_json::from_value(json!({"requestId":"r1","expectedGeneration":"g1","kind":"answer","promptId":held.id,"inputDigest":held.input_digest,"answers":{"Pick?":"A"},"text":null,"expectedTurnId":null,"sessionId":"s1","roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null})).unwrap();
+        assert!(question_answerable(&prompt,&held,&cmd));
+        let mut wrong = cmd.clone(); wrong.prompt_id = Some("old".into());
+        assert!(!question_answerable(&prompt,&held,&wrong));
+        wrong = cmd.clone(); wrong.input_digest = Some("e".repeat(64));
+        assert!(!question_answerable(&prompt,&held,&wrong));
+        wrong = cmd.clone(); wrong.answers = Some(json!({"Other?":"A"}));
+        assert!(!question_answerable(&prompt,&held,&wrong));
+        wrong = cmd.clone(); wrong.mode = Some("acceptEdits".into());
+        assert!(!question_answerable(&prompt,&held,&wrong));
+        prompt.shipped_full = false;
+        assert!(!question_answerable(&prompt,&held,&cmd));
+        let mut native = test_mirror(SID,"gen-1").native;
+        native.provider = "claude".into(); native.restriction = Some("history-gap".into());
+        assert!(question_runtime(&native,Some(&native.process)), "current held question does not depend on older transcript history");
+        native.restriction = Some("runtime-unverified".into());
+        assert!(question_runtime(&native,Some(&native.process)), "hook and process identity prove this narrow capability");
+        assert!(!question_runtime(&native,None), "a dead or unreadable process cannot be answered");
+        let mut stale = native.process.clone(); stale.birth_micros += 1;
+        assert!(!question_runtime(&native,Some(&stale)), "PID reuse must not reach a successor");
+        native.restriction = Some("sharing-off".into());
+        assert!(!question_runtime(&native,Some(&native.process)), "other restrictions still block");
+
     }
 
     #[test]

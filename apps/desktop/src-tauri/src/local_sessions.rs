@@ -674,6 +674,10 @@ pub struct Command {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     approval_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    answers: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     decision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
@@ -821,6 +825,11 @@ impl Journal {
                 .text
                 .as_ref()
                 .is_some_and(|t| !t.trim().is_empty() && t.len() <= 8192),
+            "answer" => {
+                cmd.prompt_id.is_some() && cmd.input_digest.is_some() && cmd.answers.as_ref().is_some_and(Value::is_object)
+                    && cmd.text.is_none() && cmd.expected_turn_id.is_none() && cmd.approval_id.is_none()
+                    && cmd.decision.is_none() && cmd.mode.is_none()
+            }
             "approve" => {
                 cmd.approval_id.is_some()
                     && cmd.input_digest.is_some()
@@ -839,6 +848,7 @@ impl Journal {
             && cmd.deliver_by.saturating_sub(cmd.created_at) <= 30
             && cmd.state == "dispatched"
             && shaped
+            && (cmd.kind == "answer" || (cmd.prompt_id.is_none() && cmd.answers.is_none()))
             && cmd.command_seq > 0;
         // Order first: a crash between these writes must block the next send,
         // not leave an unknown native intent invisible to sequence fencing.
@@ -1807,11 +1817,20 @@ struct WaitingPrompt {
 }
 
 impl WaitingPrompt {
+    fn replace_with(&self, other: &Self) -> bool {
+        // A late observational hook cannot revoke the question channel that is still held.
+        if self.held.is_some() && other.held.is_none() && self.tool.as_deref() == Some("AskUserQuestion")
+            && self.tool == other.tool && self.summary == other.summary { return false; }
+        !self.is(other)
+    }
+
     /// The same prompt reported twice, or a second prompt that reads alike?
     /// Tool-use ids settle it when both sides carry one -- the same command
     /// denied and asked again is two prompts. Otherwise the tool and what it is
     /// asking about do, which is what pairs a question's two hooks.
     fn is(&self, other: &Self) -> bool {
+        // A held report upgrades a passive hook, even when both describe one question.
+        if self.held.is_none() && other.held.is_some() { return false; }
         if let (Some(mine), Some(theirs)) = (&self.held, &other.held) {
             return mine.id == theirs.id;
         }
@@ -2498,6 +2517,28 @@ mod tests {
         serde_json::from_value(json!({"requestId":"r1", "expectedGeneration":"g1", "kind":"send", "text":"hello",
             "expectedTurnId":null, "sessionId":"s1", "roomId":"room", "actorUserId":"alice", "commandSeq":1,
             "state":"dispatched", "createdAt":100, "deliverBy":130, "held":false, "providerMessageId":null})).unwrap()
+    }
+
+    #[test]
+    fn local_sessions_question_answer_journal_preserves_once_only_and_expiry() {
+        let mut cmd = command();
+        cmd.kind = "answer".into(); cmd.text = None;
+        cmd.prompt_id = Some("appr-0123456789abcdef0123456789abcdef".into());
+        cmd.input_digest = Some("d".repeat(64));
+        cmd.answers = Some(json!({"Pick?":"A"}));
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal { dir:dir.path().into() };
+        assert!(journal.admit(&cmd,"g1",110).unwrap());
+        assert!(!journal.admit(&cmd,"g1",110).unwrap(), "same request never writes an answer twice");
+        let mut changed = cmd.clone(); changed.answers = Some(json!({"Pick?":"B"}));
+        assert!(journal.admit(&changed,"g1",110).is_err(), "retry cannot change an already admitted answer");
+        for (generation,now) in [("g2",110),("g1",130)] {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(!Journal {dir:dir.path().into()}.admit(&cmd,generation,now).unwrap());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        cmd.decision = Some("allow".into());
+        assert!(!Journal {dir:dir.path().into()}.admit(&cmd,"g1",110).unwrap(), "question answer cannot carry permission authority");
     }
 
     #[test]

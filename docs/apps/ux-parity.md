@@ -6,20 +6,20 @@ Emergent was seen on 31 Oct 2026, on one `pilot-tracker` request.
 | # | User step | Emergent | Lightbulb | Status |
 |---|---|---|---|---|
 | 1 | Ask | One prompt box, starts at once | Message an agent in a room | MATCH |
-| 2 | Clarify | One card, four questions, defaults, Auto-answer | One card in the skill (#4555), not yet run | UNTESTED |
+| 2 | Clarify | One card, four questions, defaults, Auto-answer | One card with a default when something is unclear (run 1); none when the request is specific (runs 2, 3, 4). It waits for an answer; no auto-answer | MATCH |
 | 3 | Set up accounts | Nothing to do | Hosting checked before building (#4555), not yet run | UNTESTED |
-| 4 | Approve | Nothing to approve | One card per app (#4556), not yet seen live. Stripe's guide asks for fresh approval per project | UNTESTED |
+| 4 | Approve | Nothing to approve | One card per app with hosting and data, terms for both (runs 1–4). Stripe asks for fresh approval per project | GAP (Stripe-bound) |
 | 5 | Watch the build | Steps and live preview side by side | Progress notes in the room | GAP |
-| 6 | See it early | Preview visible about 4 min in | Preview only after approval and deploy | GAP |
-| 7 | Open the app | In the pane, or its own tab | Works in Canvas (`account-tracker`, 2 Nov) | MATCH |
-| 8 | Agent checks its work | Browser pass, about 1 min | 16 to 22 min; `lightbulb app verify` released, not yet run | UNTESTED |
-| 9 | Hand-off message | What it does, what was tested, samples labelled, Publish and Preview buttons | Skill and CLI wording changed; said "live" falsely twice before that | UNTESTED |
-| 10 | Sample data | Labelled "(sample)", offers to clear | In the skill (#4555), not yet run | UNTESTED |
+| 6 | See it early | Preview visible about 4 min in | Preview 7–9 min after the request (runs 2, 3, 4); 15 in run 1 | GAP |
+| 7 | Open the app | In the pane, or its own tab | Works in Canvas and its own tab (runs 1–4) | MATCH |
+| 8 | Agent checks its work | Browser pass, about 1 min | Verify plus a second-agent review: 7–25 min. Verify now sends forms (cli#135); run 1 crash was caught | GAP |
+| 9 | Hand-off message | What it does, what was tested, samples labelled, Publish and Preview buttons | Says what was tested; says "ready" or "live" truthfully since v0.9.4. Sometimes posted in a thread | UNTESTED |
+| 10 | Sample data | Labelled "(sample)", offers to clear | Not labelled (runs 2, 4); run 4 showed sample totals beside "Live data" | GAP |
 | 11 | Next steps | Suggests features | `FollowUps` in the skill (#4555), not yet run | UNTESTED |
-| 12 | Change it | Message the agent | Not retested | UNTESTED |
-| 13 | Publish | Publish button, health check | Button readable (#4554); agent publish fixed (#4546), not yet run | UNTESTED |
-| 14 | Undo | Rollback | Not retested | UNTESTED |
-| 15 | Share | Public link | Room, invite or public; not retested | UNTESTED |
+| 12 | Change it | Message the agent | Run 3: search box added and published in 17 min | MATCH |
+| 13 | Publish | Publish button, health check | Run 3: worked, 17 min with review. Run 1 published without being asked; refused from #4575 | UNTESTED |
+| 14 | Undo | Rollback | Run 3: Canvas put back v1 in seconds, data kept | MATCH |
+| 15 | Share | Public link | Run 3: public worked about a minute after confirming; back to room after | MATCH |
 | 16 | Stuck run | Pauses, refunds, says so | Sits at building or checking | GAP |
 | 17 | Edit by pointing at the page | Edit toolbar on the preview | None | GAP |
 
@@ -47,3 +47,14 @@ Same wording every run, sent to an agent in a room, with nobody stepping in exce
 - Minutes from request to a usable preview
 - Times a person had to act
 - Anything the agent said that wasn't true
+
+## Scored runs (Demo Lab, Codex)
+
+| Run | Request | To first preview | Main flow | Person acted | False claims |
+|---|---|---|---|---|---|
+| 3 | Internal tool | 7 min | Works | 1 card | None |
+| 1 | Marketing site | 15 min (31 to a working form) | Works after the agent fixed a crash | 1 answer, 1 card | Published unasked |
+| 2 | Sign-up form | 8.5 min | Works | 1 card | Promised an email it cannot send |
+| 4 | Dashboard | 9 min | Works | 1 card | Sample totals shown as "Live data" |
+
+Times exclude my own delay answering. 6 requests and the free-tier repeat remain.

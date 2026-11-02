@@ -221,16 +221,60 @@ async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict
     # ponytail: the task row lands after dispatch; a reply faster than this write stays unlinked
     row["record"] = await _record(org, row, decision, now=now, holder=d.holders if decision == "hold" else None)
     if failed:
-        row.update(state="failed", reason="dispatch_failed", record=await _record(org, row, "failed", now=now))
+        await _fail_dispatch(org, row, now)
     await a2a_repo.put_task(org, row)
     if row["state"] == "held":
         await _notify_holders(org, agent_id, row, claims)
     return to_a2a_task(row)
 
 
+def session_header(*, requester_display: str, for_whom: str, intent: str, record_url: str) -> str:
+    """The first line a laptop session sees: who asked, for whom, why, and where the signed record is."""
+    head = f"[A2A] {requester_display} for {for_whom}: {intent[:200]} — record: {record_url}\n"
+    if len(head.encode()) > 512:  # long names or URL: cut the intent further, never the message text
+        over = len(head.encode()) - 512
+        head = f"[A2A] {requester_display} for {for_whom}: {intent[: max(0, len(intent[:200]) - over)]} — record: {record_url}\n"
+    return head
+
+
+async def _fail_dispatch(org: str, row: dict, now: int) -> None:
+    row.update(
+        state="failed",
+        reason=row.pop("failReason", "dispatch_failed"),
+        record=await _record(org, row, "failed", now=now),
+    )
+
+
+async def _dispatch_session(org: str, agent_id: str, row: dict, text: str) -> bool:
+    claims = _claims(row["authority"])
+    origin = claims["chain"][0]["person"]
+    url = f"{settings.PUBLIC_API_BASE.rstrip('/')}/a2a/{org}/{agent_id}/tasks/{row['id']}/record"
+    header = session_header(
+        requester_display=row["requester"], for_whom=origin, intent=claims["intent"], record_url=url
+    )
+    try:
+        # ponytail: the send rides the origin person's computer link; the cloud member bridge replaces this in phase 2
+        await hosted_mcp._through_member(
+            AuthContext(user_id=origin, org_id=org),
+            "send",
+            sender=(agent_id, await agent_name(org, agent_id) or agent_id),
+            to=claims["operation"]["resource"].removeprefix("session:"),
+            text=header + text,
+            request_id=hosted_mcp._network_request_id(row["id"]),
+        )
+    except Exception:
+        logger.exception("a2a session dispatch failed", extra={"org": org, "task": row["id"]})
+        row["failReason"] = "undeliverable"
+        return False
+    row["dispatchRequestId"] = row["id"]
+    return True
+
+
 async def _dispatch(auth: AuthContext, org: str, agent_id: str, row: dict, text: str) -> bool:
     """Post the text to the agent in the requester's DM with it; sets roomId/dispatchMessageId on the row.
-    False when the post failed."""
+    A ``session:`` resource goes to that laptop session instead. False when the post failed."""
+    if _claims(row["authority"])["operation"]["resource"].startswith("session:"):
+        return await _dispatch_session(org, agent_id, row, text)
     try:
         # Per operation, never per pair (person_dm docstring): a pair key could replay a DM turned group.
         room = await hosted_mcp.person_dm(auth, agent_id, create_key=row["id"])
@@ -353,9 +397,9 @@ async def decide(
         org, op["resource"], op["skill"], op["operands_hash"], holder=auth.user_id, task_id=task_id, now=now
     )
     if await _dispatch(AuthContext(user_id=row["requester"], org_id=org), org, agent_id, row, row["text"]):
-        extra = {"roomId": row["roomId"], "dispatchMessageId": row["dispatchMessageId"]}
+        extra = {k: row[k] for k in ("roomId", "dispatchMessageId", "dispatchRequestId") if k in row}
     else:
-        row.update(state="failed", reason="dispatch_failed", record=await _record(org, row, "failed", now=now))
+        await _fail_dispatch(org, row, now)
         extra = {"reason": row["reason"], "record": row["record"]}
     # ponytail: a reply landing between dispatch and this write finds no room on the task and stays
     # unlinked, the same window send_message has

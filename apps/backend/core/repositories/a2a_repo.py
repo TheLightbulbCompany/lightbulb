@@ -134,3 +134,12 @@ async def list_held_tasks(org: str) -> list[dict]:
         Key("pk").eq(f"A2A#{org}") & Key("sk").begins_with("TASK#"), FilterExpression=Attr("state").eq("held")
     )
     return [_strip(i) for i in items]
+
+
+async def list_working_tasks(org: str, room_id: str, agent_id: str) -> list[dict]:
+    # ponytail: filtered scan of the org's tasks on every agent reply; add a room GSI when an org holds thousands
+    items = await _query_all(
+        Key("pk").eq(f"A2A#{org}") & Key("sk").begins_with("TASK#"),
+        FilterExpression=Attr("state").eq("working") & Attr("roomId").eq(room_id) & Attr("agentId").eq(agent_id),
+    )
+    return [_strip(i) for i in items]

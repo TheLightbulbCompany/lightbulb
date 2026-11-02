@@ -101,3 +101,8 @@ def test_rules_roundtrip_through_repo(repos):
     asyncio.run(a2a_repo.put_rules("org_1", R.model_dump(by_alias=True)))
     got = asyncio.run(a2a_repo.get_rules("org_1"))
     assert r.Rules.model_validate(got) == R
+
+
+def test_holder_whose_request_a_rule_allows_is_allowed_not_rejected_as_self():
+    d = r.decide(R, requester_person="user_admin", resource="agent:friday", skill="message", **K)
+    assert (d.effect, d.rule) == ("allow", "r1")

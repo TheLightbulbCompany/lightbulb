@@ -70,8 +70,6 @@ def decide(
     if requester_org != org:
         return Decision("deny", "outside_org", [])
     holders = _holders(rules, resource, session_person)
-    if requester_person in holders:
-        return Decision("reject", "self", holders)
 
     def requester_matches(r: str) -> bool:
         return (
@@ -89,6 +87,8 @@ def decide(
     if exception:
         return Decision("allow", f"exception:{exception['id']}", holders)
     first = hits[0] if hits else None
-    if first:
-        return Decision(first.effect, first.id, holders)
-    return Decision(rules.default, "default", holders)
+    effect, rule = (first.effect, first.id) if first else (rules.default, "default")
+    # A hold waits for a holder; the requester can never be their own approver.
+    if effect == "hold" and requester_person in holders:
+        return Decision("reject", "self", holders)
+    return Decision(effect, rule, holders)

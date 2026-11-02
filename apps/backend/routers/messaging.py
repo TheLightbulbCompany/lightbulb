@@ -1395,6 +1395,20 @@ async def post_agent_message(owner_id: str, body: AgentMessageRequest, request: 
         body.text,
         body.progress,
     )
+    if not body.progress:
+        # An A2A task waiting in this DM completes with this reply; never break the reply path.
+        from core.services import a2a_tasks
+
+        try:
+            await a2a_tasks.on_agent_reply(
+                owner_id,
+                room_id=str(body.room_id),
+                agent_id=str(body.agent_id),
+                message_id=str(receipt.message_id),
+                text=body.text,
+            )
+        except Exception:
+            logger.exception("a2a reply link failed", extra={"owner_id": owner_id, "room_id": str(body.room_id)})
     return receipt
 
 

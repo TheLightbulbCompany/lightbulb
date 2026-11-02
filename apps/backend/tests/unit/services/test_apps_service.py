@@ -195,6 +195,7 @@ def world(monkeypatch):
                 "configuration": kw["configuration"],
                 "state": "awaiting_approval",
                 "created_at": f"2026-10-29T00:00:{len(rows):02d}",
+                **({"bundled_with": kw["bundled_with"]} if kw.get("bundled_with") else {}),
             }
             return dict(rows[wid])
 
@@ -203,6 +204,7 @@ def world(monkeypatch):
         monkeypatch.setattr(wf, "advance_on_read", AsyncMock(side_effect=lambda wid: dict(rows[wid])))
         monkeypatch.setattr(wf, "account_id_for", AsyncMock(return_value="acct_1"))
         monkeypatch.setattr(wf, "cancel", AsyncMock())
+        monkeypatch.setattr(wf, "consent_line", AsyncMock(return_value={"what": "data", "provider": "Neon"}))
         monkeypatch.setattr(
             svc.wf_repo, "list_for_owner", AsyncMock(side_effect=lambda o: [dict(r) for r in rows.values()])
         )
@@ -308,11 +310,10 @@ async def test_up_files_one_workflow_per_service_and_returns_cards(world):
         c.kwargs["app_id"] == src["app_id"] and c.kwargs["issue_id"] == "iss_1" for c in world.start.await_args_list
     )
     assert world.start.await_args_list[0].kwargs["configuration"] == {"name": "crew"}
-    assert {(c["provider"], c["service"], c["state"]) for c in res["cards"]} == {
-        ("Vercel", "project", "awaiting_approval"),
-        ("Neon", "postgres", "awaiting_approval"),
-    }
-    assert len(res["cards"]) == 3
+    assert [(c["provider"], c["service"]) for c in res["cards"]] == [("Vercel", "project")]
+    card, *data = world.start.await_args_list
+    assert card.kwargs["also"] and "bundled_with" not in card.kwargs
+    assert [c.kwargs["bundled_with"] for c in data] == ["pwf_1", "pwf_1"]
     assert res["canvas_url"] == f"https://web.test/chat?panel=canvas&app={src['app_id']}"
     app = await svc.apps_repo.get(src["app_id"])
     assert (
@@ -1975,6 +1976,31 @@ async def test_a_production_first_deployment_is_rebuilt_not_recorded_as_the_prev
     world.vercel.finish("dpl_2")
     await svc.status(OWNER, src["app_id"])
     assert (await _rec(src))["preview"]["deployment_id"] == "dpl_2"
+
+
+async def test_a_first_deployment_that_fails_as_production_is_rebuilt_not_reported(world):
+    world.vercel.first_is_production = True
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])  # dpl_1: production, so it builds against the empty live database
+    world.vercel.finish("dpl_1", "ERROR", 'relation "accounts" does not exist')
+    res = await svc.status(OWNER, src["app_id"])
+    rec = await _rec(src)
+    assert res["state"] == "building" and not rec.get("error")
+    assert rec["preview_pending"]["deployment_id"] == "dpl_2"
+
+
+async def test_a_failed_production_first_deployment_stops_at_the_rebuild_limit(world):
+    world.vercel.first_is_production = True
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])
+    await svc.apps_repo.patch(src["app_id"], {"preview_rebuilds": svc._PREVIEW_REBUILDS})
+    world.vercel.finish("dpl_1", "ERROR", "Type error")
+    res = await svc.status(OWNER, src["app_id"])
+    assert res["error"]["code"] == "build_failed" and len(world.vercel.created()) == 1
 
 
 async def test_production_preview_rebuilds_are_bounded(world):

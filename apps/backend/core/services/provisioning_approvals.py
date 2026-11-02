@@ -43,7 +43,7 @@ def _text(value: object) -> str:
     return str(value or "")[:MAX_TEXT]
 
 
-def _price_display(snapshot: dict) -> str:
+def price_display(snapshot: dict) -> str:
     """The default paid entry's freeform text, verbatim.
 
     ``pricing.paid_pricing`` is canonical — "pricing.paid is legacy
@@ -74,6 +74,8 @@ async def request_provider_consent(
     snapshot: dict,
     limit_editable: bool = True,
     reason: str = "",
+    also: list[dict] | None = None,
+    title: str | None = None,
 ) -> str | None:
     """The guide's "Collect informed approval" list, in full.
 
@@ -94,7 +96,9 @@ async def request_provider_consent(
         marker=CONSENT_MARKER,
         build_payload=lambda company_name: {
             **_common(snapshot, workflow_id),
-            "title": f"Approve {snapshot.get('provider_name')} {snapshot.get('service_ref')} for {company_name}",
+            "also": [{k: _text(v) for k, v in line.items()} for line in (also or [])],
+            "title": _text(title)
+            or f"Approve {snapshot.get('provider_name')} {snapshot.get('service_ref')} for {company_name}",
             "privacy_policy_url": _text(snapshot.get("privacy_policy_url")),
             "categories": list(snapshot.get("categories") or [])[:10],
             "availability": snapshot.get("availability"),
@@ -108,7 +112,7 @@ async def request_provider_consent(
             # renders it as hers, not as ours.
             "reason": _text(reason),
             "pricing_type": snapshot.get("pricing_type"),
-            "price_display": _price_display(snapshot),
+            "price_display": price_display(snapshot),
             "environment": _text(snapshot.get("environment")) or "Company — production",
             # Hosted collection: the owner's own card, on their own Stripe
             # account. Lightbulb never holds it and takes no cut.
@@ -188,7 +192,7 @@ async def request_payment_setup(
         build_payload=lambda company_name: {
             **_common(snapshot, workflow_id),
             "title": f"Add a card for {snapshot.get('provider_name')} for {company_name}",
-            "price_display": _price_display(snapshot),
+            "price_display": price_display(snapshot),
             "payment_owner": "your card, on your Stripe account",
             "usage_limit": usage_limit,
         },

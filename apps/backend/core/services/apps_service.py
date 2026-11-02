@@ -341,11 +341,30 @@ async def _rows(app: dict, all_rows: list[dict] | None = None) -> dict[tuple, di
 
 async def _ensure_workflows(app: dict, issue_id: str | None) -> None:
     rows = await _rows(app)
+    display = app.get("display_name") or app["name"]
+    # One card per app: hosting's card also covers the data, and names it. An app that already has
+    # its cards keeps them.
+    card = rows.get(("vercel", "project", "prod"))
     for provider, service, env in _RESOURCES:
         row = rows.get((provider, service, env))
         if row is None or row.get("state") in _DEAD:
             name = app["name"] if env == "prod" else f"{app['name']}-preview"
-            await provisioning_workflow.start(
+            carded = provider == "vercel"
+            bundle: dict = (
+                {
+                    "also": [
+                        await provisioning_workflow.consent_line(
+                            app["owner_id"], "neon", "postgres", f"The data for {display}, live and preview"
+                        )
+                    ],
+                    "title": f"Set up hosting and data for {display}",
+                }
+                if carded
+                else {"bundled_with": card["workflow_id"]}
+                if card and card.get("state") not in _DEAD
+                else {}
+            )
+            started = await provisioning_workflow.start(
                 owner_id=app["owner_id"],
                 provider_name=provider,
                 service_id=service,
@@ -355,7 +374,10 @@ async def _ensure_workflows(app: dict, issue_id: str | None) -> None:
                 reason=f"{app.get('display_name') or app['name']}: {'hosting' if provider == 'vercel' else 'a database'} ({'live' if env == 'prod' else 'preview'})",
                 app_id=app["app_id"],
                 environment=env,
+                **bundle,
             )
+            if carded:
+                card = started
 
 
 async def _secret(app: dict, rows: dict, provider: str, env: str, key: str) -> dict | None:
@@ -492,19 +514,20 @@ async def _check_preview(app: dict, creds: dict) -> None:
     if not pending:
         return
     st = await vercel.deployment_state(creds, pending["deployment_id"])
-    if st["readyState"] == "READY":
-        if st.get("target") == "production":
-            # Vercel's docs: a project's first deployment is production whatever was asked, on the live env. Never a
-            # preview. The next deployment is a real one; two tries, in case Vercel keeps answering production.
-            tries = int(app.get("preview_rebuilds") or 0)
+    if st["readyState"] in ("READY", "ERROR") and st.get("target") == "production":
+        # Vercel's docs: a project's first deployment is production whatever was asked, on the live env. Never a
+        # preview. It can fail for that reason alone: a page that reads data at build time finds the live database
+        # empty. The next deployment is a real one; two tries, in case Vercel keeps answering production.
+        tries = int(app.get("preview_rebuilds") or 0)
+        if tries < _PREVIEW_REBUILDS:
+            await _clear_pending(app, "preview_pending", {"preview_built": None, "preview_rebuilds": tries + 1})
+        elif st["readyState"] == "READY":
             refused = {"code": "preview_is_production", "message": "Vercel built the preview as production."}
-            fields = (
-                {"preview_built": None, "preview_rebuilds": tries + 1}
-                if tries < _PREVIEW_REBUILDS
-                else {"error": {**refused, "next": "run up again"}}
-            )
-            await _clear_pending(app, "preview_pending", fields)
-            return
+            await _clear_pending(app, "preview_pending", {"error": {**refused, "next": "run up again"}})
+        else:
+            await _clear_pending(app, "preview_pending", {"error": await _failure(app, creds, pending, st)})
+        return
+    if st["readyState"] == "READY":
         await _patch(
             app,
             {
@@ -1088,7 +1111,7 @@ async def _result(app: dict, rows: dict, transient: AppError | None, cost_cents:
                 "state": r.get("state"),
             }
             for r in rows.values()
-            if r.get("state") != "active"
+            if r.get("state") != "active" and not (r.get("state") == "awaiting_approval" and r.get("bundled_with"))
         ],
         "canvas_url": _canvas_url(app["app_id"]),
         "sample_data": bool(built.get("sample", True)),

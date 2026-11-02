@@ -242,6 +242,19 @@ def test_a_cancel_after_the_turn_ended_sends_nothing(net, turns):
     turn.discard_run("event:m1")
 
 
+def test_an_assignment_whose_turn_fails_tells_the_asker_and_is_not_run_again(net, monkeypatch):
+    def failed(agent_id, body, token, reserved):
+        turn.release_turn()
+        return "error"
+
+    monkeypatch.setattr(turn, "run_turn", failed)
+    network._replied.clear()
+    net.answer(**_peek({**REC, "kind": "assign", "request_id": "r1"}), send={})
+    assert network.ensure_started(background=False)
+    assert _until(lambda: ("m1", "read") in _acks(net))
+    assert [(c["reply_to"], c["status"], c["reason"]) for c in net.calls("send")] == [("r1", "failed", "turn_failed")]
+
+
 def test_a_cancelled_assignment_is_read_and_sends_no_result(net, monkeypatch):
     def stopped(agent_id, body, token, reserved):
         turn.abort_run(body["abortKey"])

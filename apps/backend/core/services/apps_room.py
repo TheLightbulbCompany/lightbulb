@@ -89,7 +89,11 @@ async def post_approval_line(*, owner_id: str, user_id: str, workflow: dict) -> 
             messaging.CreateMessageRequest(
                 # A replay of the same approval is a no-op on the messaging side.
                 client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"apps-approval:{workflow_id}"),
-                text=f"Approved {what} for {display} ({env}). Setting it up.",
+                text=(
+                    f"Approved hosting and data for {display}. Setting it up."
+                    if workflow.get("bundle")
+                    else f"Approved {what} for {display} ({env}). Setting it up."
+                ),
                 mentions=mentions,
                 reply_to_message_id=None,
                 thread_root_message_id=None,

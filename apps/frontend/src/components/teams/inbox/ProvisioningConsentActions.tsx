@@ -106,6 +106,7 @@ export function ProvisioningConsentActions({
   const privacy = httpsUrl(payload, "privacy_policy_url");
   const website = httpsUrl(payload, "website_url");
   const inputId = `consent-limit-${approval.id}`;
+  const also = Array.isArray(payload?.also) ? (payload!.also as Record<string, unknown>[]) : [];
 
   /** The limit the owner is actually signing for: the typed dollars when the
    *  card says it is still editable, the card's own number otherwise. */
@@ -124,6 +125,18 @@ export function ProvisioningConsentActions({
       </span>
       {description && <p className="text-[var(--midnight-muted)]">{description}</p>}
       {reason && <p className="text-[var(--midnight-muted)]">Your CEO asked because: {reason}</p>}
+      {also.map((line, i) => {
+        const alsoTerms = httpsUrl(line, "terms_url");
+        const alsoPrivacy = httpsUrl(line, "privacy_policy_url");
+        return (
+          <p key={i} className="text-caption text-[var(--midnight-muted)]">
+            Also: {payloadString(line, "what")}, on {payloadString(line, "provider")} · {payloadString(line, "service")}
+            {payloadString(line, "price_display") ? ` · ${payloadString(line, "price_display")}` : ""}
+            {alsoTerms && <> · <a href={alsoTerms} target="_blank" rel="noreferrer" className="underline">Terms</a></>}
+            {alsoPrivacy && <> · <a href={alsoPrivacy} target="_blank" rel="noreferrer" className="underline">Privacy</a></>}
+          </p>
+        );
+      })}
       {facts && <p className="text-caption text-[var(--midnight-muted)]">{facts}</p>}
       {configuration.length > 0 && (
         <p className="text-caption text-[var(--midnight-muted)]">

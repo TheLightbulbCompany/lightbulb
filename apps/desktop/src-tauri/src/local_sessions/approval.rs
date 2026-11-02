@@ -113,6 +113,28 @@ pub(crate) fn question_input(input: &Value) -> bool {
                 && o.get("description").is_none_or(|d| d.as_str().is_some_and(|s| s.len() <= 2000 && (s.is_empty() || !s.trim().is_empty())))
         })
     }) && serde_json::to_vec(input).is_ok_and(|b| b.len() <= MAX_APPROVAL_INPUT)
+        && question_answer_budget(questions)
+}
+
+/// Admission must leave enough answer space for every predefined selection and
+/// at least a small custom answer. Question text is also serialized as map keys.
+fn question_answer_budget(questions: &[Value]) -> bool {
+    let mut worst = serde_json::Map::new();
+    for q in questions {
+        let labels: Vec<&str> = q["options"].as_array().unwrap().iter()
+            .map(|o| o["label"].as_str().unwrap()).collect();
+        let selectable = if q["multiSelect"] == true {
+            labels.join(", ")
+        } else {
+            labels.into_iter().max_by_key(|s| serde_json::to_vec(s).unwrap().len()).unwrap().to_owned()
+        };
+        let custom = "x".repeat(128);
+        let answer = if serde_json::to_vec(&selectable).unwrap().len() > serde_json::to_vec(&custom).unwrap().len() {
+            selectable
+        } else { custom };
+        worst.insert(q["question"].as_str().unwrap().to_owned(), json!(answer));
+    }
+    serde_json::to_vec(&worst).is_ok_and(|b| b.len() <= 2000)
 }
 
 /// A question has no deny-only mode: if privacy/size filtering changes its input,
@@ -614,6 +636,22 @@ mod tests {
         assert!(holdable("claude", &hook));
         let mut passive = hook; passive["hook_event_name"] = json!("PreToolUse");
         assert!(!holdable("claude", &passive), "passive discovery cannot block the interactive picker");
+    }
+
+    #[test]
+    fn local_sessions_question_admission_reserves_answer_keys_selections_and_custom_budget() {
+        assert!(question_relayable(&question()));
+        let long_keys = json!({"questions":(0..4).map(|n| json!({"question":format!("{n}{}","q".repeat(549)),"options":[{"label":"A"},{"label":"B"}]})).collect::<Vec<_>>()});
+        assert!(!question_input(&long_keys), "four 550-byte question keys cannot fit an answer");
+        let multi = json!({"questions":[{"question":"Pick?","multiSelect":true,"options":(0..9).map(|n| json!({"label":format!("{n}{}","a".repeat(259))})).collect::<Vec<_>>()}]});
+        assert!(!question_input(&multi), "all predefined multi-select labels must fit together");
+        let escaped = json!({"questions":(0..4).map(|n| json!({"question":format!("Pick {n}?"),"options":[{"label":"\\".repeat(300)}]})).collect::<Vec<_>>()});
+        assert!(!question_input(&escaped), "answer admission counts JSON escaping, not raw label bytes");
+        let tight_custom = json!({"questions":(0..4).map(|n| json!({"question":format!("{n}{}","q".repeat(399)),"options":[{"label":"A"}]})).collect::<Vec<_>>()});
+        assert!(!question_input(&tight_custom), "short predefined options must still leave custom-answer space");
+        for input in [long_keys,multi,escaped,tight_custom] {
+            assert!(!holdable("claude", &json!({"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","session_id":"s","tool_input":input})));
+        }
     }
 
     #[test]

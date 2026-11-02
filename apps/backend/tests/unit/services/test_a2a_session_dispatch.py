@@ -19,7 +19,7 @@ def test_header_is_capped_at_512_bytes_and_200_intent_chars():
     assert len(h.encode()) <= 512 and h.startswith("[A2A] user_r for user_origin: ") and h.endswith("\n")
     assert h.count("é") <= 200
     h = a2a_tasks.session_header(requester_display="u" * 600, for_whom="o", intent="i", record_url="u")
-    assert h.startswith("[A2A] ")  # intent is cut first, never raises
+    assert h.startswith("[A2A] ") and len(h.encode()) <= 512 and h.endswith("\n")
 
 
 @pytest.fixture
@@ -63,5 +63,6 @@ async def test_no_link_fails_undeliverable_with_record(setup, monkeypatch):
     assert not await a2a_tasks._dispatch(AuthContext(user_id="user_r", org_id=ORG), ORG, "friday", setup, "go")
     await a2a_tasks._fail_dispatch(ORG, setup, 1_001)
     assert setup["state"] == "failed" and setup["reason"] == "undeliverable"
+    assert json.loads(a2a_tasks._unb64(setup["record"].split(".")[1]))["rule"] == "undeliverable"
     await a2a_repo.put_task(ORG, setup)
     assert json.loads(json.dumps((await a2a_repo.get_task(ORG, setup["id"]))["reason"])) == "undeliverable"

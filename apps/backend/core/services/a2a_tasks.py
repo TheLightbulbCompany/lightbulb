@@ -231,18 +231,14 @@ async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict
 def session_header(*, requester_display: str, for_whom: str, intent: str, record_url: str) -> str:
     """The first line a laptop session sees: who asked, for whom, why, and where the signed record is."""
     head = f"[A2A] {requester_display} for {for_whom}: {intent[:200]} — record: {record_url}\n"
-    if len(head.encode()) > 512:  # long names or URL: cut the intent further, never the message text
-        over = len(head.encode()) - 512
-        head = f"[A2A] {requester_display} for {for_whom}: {intent[: max(0, len(intent[:200]) - over)]} — record: {record_url}\n"
+    if len(head.encode()) > 512:  # hard cap: cut the whole header on a character boundary, keep the newline
+        head = head.encode()[:511].decode(errors="ignore") + "\n"
     return head
 
 
 async def _fail_dispatch(org: str, row: dict, now: int) -> None:
-    row.update(
-        state="failed",
-        reason=row.pop("failReason", "dispatch_failed"),
-        record=await _record(org, row, "failed", now=now),
-    )
+    reason = row.pop("failReason", "dispatch_failed")
+    row.update(state="failed", reason=reason, record=await _record(org, row, "failed", now=now, rule=reason))
 
 
 async def _dispatch_session(org: str, agent_id: str, row: dict, text: str) -> bool:

@@ -1406,6 +1406,7 @@ async def post_agent_message(owner_id: str, body: AgentMessageRequest, request: 
                 agent_id=str(body.agent_id),
                 message_id=str(receipt.message_id),
                 text=body.text,
+                reply_to_message_id=str(body.reply_to_message_id) if body.reply_to_message_id else None,
             )
         except Exception:
             logger.exception("a2a reply link failed", extra={"owner_id": owner_id, "room_id": str(body.room_id)})

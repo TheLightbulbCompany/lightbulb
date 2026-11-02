@@ -31,3 +31,15 @@ def test_list_held_tasks_filters_by_state(repos):
         asyncio.run(a2a_repo.put_task("org_1", _task(tid, st)))
     asyncio.run(a2a_repo.put_task("org_2", _task("t4", "held")))
     assert [t["id"] for t in asyncio.run(a2a_repo.list_held_tasks("org_1"))] == ["t2"]
+
+
+def test_complete_task_moves_working_to_completed_once(repos):
+    asyncio.run(a2a_repo.put_task("org_1", _task("t1", state="working")))
+    art = {"artifactId": "m1", "parts": [{"text": "hi"}]}
+    assert asyncio.run(a2a_repo.complete_task("org_1", "t1", artifact=art, record="jws1")) is True
+    # A racing or retried reply finds the task no longer working.
+    assert (
+        asyncio.run(a2a_repo.complete_task("org_1", "t1", artifact={**art, "artifactId": "m2"}, record="jws2")) is False
+    )
+    got = asyncio.run(a2a_repo.get_task("org_1", "t1"))
+    assert (got["state"], got["artifact"]["artifactId"], got["record"]) == ("completed", "m1", "jws1")

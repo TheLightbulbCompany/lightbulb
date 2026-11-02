@@ -136,10 +136,35 @@ async def list_held_tasks(org: str) -> list[dict]:
     return [_strip(i) for i in items]
 
 
-async def list_working_tasks(org: str, room_id: str, agent_id: str) -> list[dict]:
+async def list_room_tasks(org: str, room_id: str, agent_id: str) -> list[dict]:
+    """Every task dispatched to this agent in this room, any state."""
     # ponytail: filtered scan of the org's tasks on every agent reply; add a room GSI when an org holds thousands
     items = await _query_all(
         Key("pk").eq(f"A2A#{org}") & Key("sk").begins_with("TASK#"),
-        FilterExpression=Attr("state").eq("working") & Attr("roomId").eq(room_id) & Attr("agentId").eq(agent_id),
+        FilterExpression=Attr("roomId").eq(room_id) & Attr("agentId").eq(agent_id),
     )
     return [_strip(i) for i in items]
+
+
+async def complete_task(org: str, task_id: str, *, artifact: dict, record: str) -> bool:
+    """working -> completed once; False when the task already left working (a retry or a racing reply)."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": f"A2A#{org}", "sk": f"TASK#{task_id}"},
+            UpdateExpression="SET #s = :done, artifact = :a, #r = :r, updatedAt = :t",
+            ConditionExpression="#s = :working",
+            ExpressionAttributeNames={"#s": "state", "#r": "record"},
+            ExpressionAttributeValues={
+                ":done": "completed",
+                ":working": "working",
+                ":a": artifact,
+                ":r": record,
+                ":t": int(time.time()),
+            },
+        )
+    except ClientError as exc:
+        if _is_conflict(exc):
+            return False
+        raise
+    return True

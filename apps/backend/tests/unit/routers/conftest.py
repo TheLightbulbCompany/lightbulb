@@ -19,7 +19,6 @@ from tests.unit.services.conftest import repos  # noqa: E402, F401
 @pytest.fixture
 def a2a_env(monkeypatch, repos):  # noqa: F811
     """Signing key, the roster lookup and the DM room for the A2A routes; yields the dispatch mock."""
-    import itertools
     import uuid
 
     monkeypatch.setattr("core.config.settings.NETWORK_PROOF_KEY", "test-seed")
@@ -29,7 +28,12 @@ def a2a_env(monkeypatch, repos):  # noqa: F811
     room = str(uuid.uuid4())
     dm = AsyncMock(return_value=room)
     monkeypatch.setattr("core.services.hosted_mcp.person_dm", dm)
-    seq = itertools.count(1)
-    send = AsyncMock(side_effect=lambda *a, **k: SimpleNamespace(message_id=uuid.uuid4(), message_seq=next(seq)))
+    sent: list[str] = []  # the dispatched message ids, in order
+
+    def _send(*a, **k):
+        sent.append(str(uuid.uuid4()))
+        return SimpleNamespace(message_id=sent[-1])
+
+    send = AsyncMock(side_effect=_send)
     monkeypatch.setattr("core.services.messaging.create_human_message", send)
-    yield SimpleNamespace(room=room, send=send, dm=dm)
+    yield SimpleNamespace(room=room, send=send, dm=dm, sent=sent)

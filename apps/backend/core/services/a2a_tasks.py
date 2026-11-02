@@ -99,8 +99,8 @@ def _claims(jws: str) -> dict:
     return json.loads(_unb64(jws.split(".")[1]))
 
 
-async def _record(org: str, row: dict, decision: str, *, now: int, rule: str | None = None) -> str:
-    """Sign and append the record of this state (spec §6 shape); returns its JWS."""
+def _record_jws(row: dict, decision: str, *, now: int, rule: str | None = None) -> str:
+    """The signed record of this state (spec §6 shape)."""
     claims = _claims(row["authority"])
     record = {
         "task": row["id"],
@@ -115,7 +115,12 @@ async def _record(org: str, row: dict, decision: str, *, now: int, rule: str | N
         "iat": now,
         "input": {k: claims[k] for k in ("requester", "chain", "operation", "intent")},
     }
-    jws = sign_record(record)
+    return sign_record(record)
+
+
+async def _record(org: str, row: dict, decision: str, *, now: int, rule: str | None = None) -> str:
+    """Sign and append the record of this state; returns its JWS."""
+    jws = _record_jws(row, decision, now=now, rule=rule)
     await a2a_repo.append_record(org, row["id"], {"jws": jws})
     return jws
 
@@ -123,13 +128,16 @@ async def _record(org: str, row: dict, decision: str, *, now: int, rule: str | N
 def _authority_request(message: dict, agent_id: str) -> tuple[AuthorityRequest, str]:
     if not isinstance(message, dict) or URI not in (message.get("extensions") or []):
         raise A2AError(-32008, f"Activate the required extension {URI}.")
-    raw = (message.get("metadata") or {}).get(URI)
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict) or URI not in metadata:
+        raise A2AError(-32008, f"Carry the authority request in Message.metadata[{URI}].")
+    raw = metadata[URI]
     try:
         req = AuthorityRequest.model_validate(raw)
     except ValidationError:
-        raise A2AError(-32008, f"Message.metadata[{URI}] must be an authority request.") from None
+        raise A2AError(-32602, "invalid authority: shape") from None
     if req.operation.resource != f"agent:{agent_id}":
-        raise A2AError(-32008, f"operation.resource must be agent:{agent_id}.")
+        raise A2AError(-32602, f"invalid authority: resource (must be agent:{agent_id})")
     text = "\n".join(p["text"] for p in message.get("parts") or [] if isinstance(p, dict) and "text" in p)
     if not text:
         raise A2AError(-32602, "The message has no text part.")
@@ -141,6 +149,9 @@ def _authority_request(message: dict, agent_id: str) -> tuple[AuthorityRequest, 
 
 async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict, *, now: int | None = None) -> dict:
     now = int(time.time()) if now is None else now
+    # Only a workspace agent: any other id (a person's user_...) would get a system post in a human DM.
+    if await agent_name(org, agent_id) is None:
+        raise A2AError(-32602, f"Unknown agent {agent_id} in this workspace.")
     req, text = _authority_request(message, agent_id)
     try:
         jws, claims = mint(
@@ -215,7 +226,7 @@ async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict
                     "displayName": f"A2A via {auth.user_id}",
                 },
             )
-            row.update(roomId=room, dispatchMessageId=str(sent.message_id), dispatchSeq=sent.message_seq)
+            row.update(roomId=room, dispatchMessageId=str(sent.message_id))
         except Exception:
             logger.exception("a2a dispatch failed", extra={"org": org, "task": row["id"]})
             failed = True
@@ -256,16 +267,26 @@ async def records(org: str, task_id: str, *, reader: AuthContext) -> list[dict]:
     return [{"record": _claims(r["jws"]), "jws": r["jws"]} for r in await a2a_repo.list_records(org, task_id)]
 
 
-async def on_agent_reply(owner_id: str, *, room_id: str, agent_id: str, message_id: str, text: str) -> None:
-    # ponytail: one open task per DM room completes in order
-    open_tasks = await a2a_repo.list_working_tasks(owner_id, room_id, agent_id)
-    if not open_tasks:
+async def on_agent_reply(
+    owner_id: str, *, room_id: str, agent_id: str, message_id: str, text: str, reply_to_message_id: str | None = None
+) -> None:
+    tasks = await a2a_repo.list_room_tasks(owner_id, room_id, agent_id)
+    if any((t.get("artifact") or {}).get("artifactId") == message_id for t in tasks):
+        return  # a retried post of a reply already linked
+    working = [t for t in tasks if t["state"] == "working"]
+    if reply_to_message_id is not None:
+        row = next((t for t in working if t.get("dispatchMessageId") == reply_to_message_id), None)
+    else:
+        # ponytail: an unaddressed reply links only when one task is open; Task 7 removes this if Hermes
+        # always sets replyToMessageId
+        row = working[0] if len(working) == 1 else None
+    if row is None:
         return
-    row = min(open_tasks, key=lambda t: int(t["dispatchSeq"]))
     now = int(time.time())
+    jws = _record_jws(row, "completed", now=now)
     artifact = {"artifactId": message_id, "parts": [{"text": text}]}
-    jws = await _record(owner_id, row, "completed", now=now)
-    await a2a_repo.update_task(owner_id, row["id"], state="completed", extra={"artifact": artifact, "record": jws})
+    if await a2a_repo.complete_task(owner_id, row["id"], artifact=artifact, record=jws):
+        await a2a_repo.append_record(owner_id, row["id"], {"jws": jws})
 
 
 def to_a2a_task(row: dict) -> dict:

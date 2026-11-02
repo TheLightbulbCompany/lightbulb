@@ -39,9 +39,16 @@ def get(c, task_id):
     return c.post("/a2a/org_test_456/friday", json=rpc("GetTask", {"id": task_id})).json()["result"]
 
 
-def reply(env, text, message_id="am1"):
+def reply(env, text, message_id="am1", reply_to=None):
     asyncio.run(
-        a2a_tasks.on_agent_reply("org_test_456", room_id=env.room, agent_id="friday", message_id=message_id, text=text)
+        a2a_tasks.on_agent_reply(
+            "org_test_456",
+            room_id=env.room,
+            agent_id="friday",
+            message_id=message_id,
+            text=text,
+            reply_to_message_id=reply_to,
+        )
     )
 
 
@@ -69,6 +76,29 @@ def test_send_with_wrong_metadata_key_is_32008(client_org_admin, a2a_env):
     assert send(client_org_admin, msg(AUTH, key="https://other/ext"))["error"]["code"] == -32008
 
 
+@pytest.mark.parametrize(
+    ("auth_req", "check"),
+    [
+        ({"intent": "no operation"}, "shape"),
+        ({**AUTH, "operation": {**AUTH["operation"], "resource": "agent:someone_else"}}, "resource"),
+    ],
+)
+def test_present_but_invalid_authority_is_32602_naming_the_check(client_org_admin, a2a_env, auth_req, check):
+    err = send(client_org_admin, msg(auth_req))["error"]
+    assert err["code"] == -32602 and check in err["message"]
+    a2a_env.send.assert_not_awaited()
+
+
+@pytest.mark.parametrize("agent", ["nobody", "user_bob"])
+def test_send_to_an_id_not_on_the_roster_is_32602(client_org_admin, a2a_env, agent):
+    auth_req = {**AUTH, "operation": {**AUTH["operation"], "resource": f"agent:{agent}"}}
+    r = client_org_admin.post(f"/a2a/org_test_456/{agent}", json=rpc("SendMessage", {"message": msg(auth_req)}))
+    err = r.json()["error"]
+    assert err["code"] == -32602 and "agent" in err["message"]
+    a2a_env.dm.assert_not_awaited()
+    a2a_env.send.assert_not_awaited()
+
+
 def test_operands_other_than_the_text_sent_are_32602(client_org_admin, a2a_env):
     bad = {**AUTH, "operation": {**AUTH["operation"], "operands": {"text": "something else"}}}
     assert send(client_org_admin, msg(bad))["error"]["code"] == -32602
@@ -81,18 +111,47 @@ def test_allowed_send_dispatches_and_is_working_then_completes_on_reply(client_o
     a2a_env.send.assert_awaited_once()
     assert a2a_env.dm.await_args.kwargs == {"create_key": task["id"]}
     assert a2a_env.send.await_args.args[2].text == "hello"
-    reply(a2a_env, "hi back")
+    reply(a2a_env, "hi back", reply_to=a2a_env.sent[0])
     t = get(client_org_admin, task["id"])
     assert t["status"]["state"] == "TASK_STATE_COMPLETED" and t["artifacts"][0]["parts"][0]["text"] == "hi back"
     assert URI in t["metadata"] and t["metadata"][URI]["rule"] == "r1"
 
 
-def test_two_working_tasks_complete_oldest_first(client_org_admin, a2a_env):
+def states(c, *ids):
+    return [get(c, i)["status"]["state"].removeprefix("TASK_STATE_") for i in ids]
+
+
+def test_reply_addressed_to_a_dispatch_completes_that_task_even_if_an_older_one_is_open(client_org_admin, a2a_env):
     first = send(client_org_admin)["result"]["task"]["id"]
     second = send(client_org_admin)["result"]["task"]["id"]
-    reply(a2a_env, "one")
-    assert get(client_org_admin, first)["status"]["state"] == "TASK_STATE_COMPLETED"
-    assert get(client_org_admin, second)["status"]["state"] == "TASK_STATE_WORKING"
+    reply(a2a_env, "two", reply_to=a2a_env.sent[1])
+    assert states(client_org_admin, first, second) == ["WORKING", "COMPLETED"]
+
+
+def test_reply_addressed_to_no_dispatch_completes_nothing(client_org_admin, a2a_env):
+    first = send(client_org_admin)["result"]["task"]["id"]
+    reply(a2a_env, "elsewhere", reply_to="00000000-0000-0000-0000-000000000000")
+    assert states(client_org_admin, first) == ["WORKING"]
+
+
+def test_unaddressed_reply_links_only_when_one_task_is_open(client_org_admin, a2a_env):
+    first = send(client_org_admin)["result"]["task"]["id"]
+    reply(a2a_env, "just one", message_id="am1")
+    assert states(client_org_admin, first) == ["COMPLETED"]
+    second = send(client_org_admin)["result"]["task"]["id"]
+    third = send(client_org_admin)["result"]["task"]["id"]
+    reply(a2a_env, "which one?", message_id="am2")
+    assert states(client_org_admin, second, third) == ["WORKING", "WORKING"]
+
+
+def test_a_retried_reply_completes_one_task_only(client_org_admin, a2a_env):
+    first = send(client_org_admin)["result"]["task"]["id"]
+    reply(a2a_env, "hi", message_id="am1")
+    second = send(client_org_admin)["result"]["task"]["id"]
+    reply(a2a_env, "hi", message_id="am1")  # the same post, retried
+    assert states(client_org_admin, first, second) == ["COMPLETED", "WORKING"]
+    records = client_org_admin.get(f"/a2a/org_test_456/friday/tasks/{first}/record").json()
+    assert [r["record"]["decision"] for r in records] == ["allow", "completed"]
 
 
 def test_wrong_org_is_403_and_cancel_is_32004_and_unknown_method_is_32601(client_org_admin, a2a_env):
@@ -108,7 +167,7 @@ def test_wrong_org_is_403_and_cancel_is_32004_and_unknown_method_is_32601(client
 
 def test_record_endpoint_returns_signed_records_oldest_first(client_org_admin, a2a_env):
     task_id = send(client_org_admin)["result"]["task"]["id"]
-    reply(a2a_env, "hi back")
+    reply(a2a_env, "hi back", reply_to=a2a_env.sent[0])
     records = client_org_admin.get(f"/a2a/org_test_456/friday/tasks/{task_id}/record").json()
     assert [r["record"]["decision"] for r in records] == ["allow", "completed"]
     first = a2a_authority.verify(records[0]["jws"], typ=a2a_authority.RECORD_TYP)
@@ -139,7 +198,12 @@ def test_agent_reply_route_links_only_final_replies_and_survives_a_hook_failure(
         hook.assert_not_awaited()
     else:
         hook.assert_awaited_once_with(
-            "org_test_456", room_id=str(room), agent_id=str(agent), message_id=str(mid), text="hi back"
+            "org_test_456",
+            room_id=str(room),
+            agent_id=str(agent),
+            message_id=str(mid),
+            text="hi back",
+            reply_to_message_id=None,
         )
 
 

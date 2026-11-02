@@ -71,10 +71,13 @@ then **end the turn**. The approval posts a line in this room that mentions you;
 
 ## Done means proven
 
-When `up` returns a `preview_url`, run `lightbulb app test-link --json` and open the `url` it prints
-in the shared browser (`references/surfaces.md` § Browser): the bare address stops at the door.
-Never install or download a browser. If the shared browser can't open the app, say what happened
-and post the preview line with "I couldn't check it in a browser". Walk the main flow and record it:
+When `up` returns a `preview_url`, run `lightbulb app verify --json`. It signs in past the door and
+opens every page, with no browser. Fix what it lists, then run `up` and `verify` again.
+Then try the main flow once: get a `url` from `lightbulb app test-link --json` and open it with the
+browser tool's navigate call, not by typing into the address bar. If that doesn't work first time,
+stop trying and add "I couldn't try it in a browser" to the preview line. Don't spend more than two
+minutes here. Never install a browser, and never build a local server or redirect to get past a
+browser problem. If you did try it, record it:
 `lightbulb app evidence --kind browser --file <recording or screenshot> --note "<what you checked>"`.
 Keep the file under `.lightbulb/evidence/` or outside the app; anywhere else is refused.
 Then run `lightbulb app status --json`, not `up`: a second `up` moves the preview past your record.

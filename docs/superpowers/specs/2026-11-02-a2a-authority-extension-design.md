@@ -1,6 +1,6 @@
 # A2A as the protocol, authority as a required extension: design
 
-**Status:** draft for the founder's approval. Nothing is built.
+**Status:** draft for the founder's approval. Nothing is built. Ponytail pass applied 2 Nov (§2a). Founder answers 2 Nov: the workspace admin holds authority over a hosted agent; the extension spec is published at launch and proposed to the A2A project later.
 **Decision this implements (2 Nov 2026):** governance is built incrementally, planned first, tested, coordinated with the Workers session, and the first increment is A2A. A2A (Linux Foundation, v1.0) becomes the network's protocol; our peer-to-peer transport becomes an A2A binding later; the authority object is a *required* A2A extension; the hosted workspace member speaks A2A over HTTP first.
 **Research it rests on:** `docs/research/2026-11-01-org-auto-mode-governance.md` and its strands 01-11 (PR #4551).
 
@@ -25,6 +25,24 @@ Goals (this increment):
 Non-goals (later increments): migrating the P2P network's frames to the A2A data model (phase 2); compiling company sentences into rules with an LLM; spend mandates; adapters for Slack, Notion, Copilot Studio; a classifier of any kind.
 
 Anti-goals (a failure even if it works): a dialog to the agent's owner for every request; an approvals inbox as the product; any path where the extension can be omitted and the request still runs; an unsigned record; a bespoke protocol that only Lightbulb speaks.
+
+## 2a. Phase 1 after the ponytail pass (supersedes anything fuller below)
+
+Cut from phase 1, with the trigger to add it back:
+- `a2a-sdk` server, task store and event queues: use the package for its generated types only; the four handlers are ours in the existing FastAPI router pattern. Add the SDK server when a second binding is needed.
+- REST binding and `SendStreamingMessage`: JSON-RPC only, card says `streaming: false`. Add when a client needs it.
+- `CancelTask`: return `UnsupportedOperationError` (`-32004`). Add when someone cancels.
+- Agent Card signatures: the card is served over our HTTPS; `signatures` omitted. Add when a design partner or the A2A project asks.
+- Second Clerk OAuth application, protected-resource metadata and the generalized verifier: phase 1 accepts Clerk session JWTs only (`core/auth.py:211 get_current_user`), so "any A2A client" in phase 1 means any client holding a Lightbulb sign-in for the org, including the conformance test client. Third-party OAuth clients are phase 1b, when the first external client exists.
+- `prev_sig` and the narrowing check: every phase-1 hop is minted by the backend in one signature over the whole chain. Add both when laptops sign their own hops (phase 2).
+- `when` clauses on rules (`operands_equal`, `intent_matches`): no acceptance test needs them. Rules are resource, skill, requesters, effect. Add when a workspace writes the first rule that needs one.
+- Re-deciding held tasks on a policy revision change: a revision change cancels held tasks (`CANCELED`, reason `policy_changed`). One line. Re-decide when a workspace asks.
+- Sweepers for hold expiry and undeliverable commands: both computed at read time from timestamps in `GetTask`. No cron.
+- A new Approve / Deny UI: reuse the existing approval card in the app (the Apps provisioning card from #4556 is the newest), restricted to the holder. The builder confirms the card module; if restriction to one person is not possible there, a DM with two signed links is the fallback.
+
+Reused from the codebase (rung 2): the proof issuer that signs sign-in proofs (one JWS helper signs the authority object and the record); `hosted_mcp.py` for the "which person and org" context; `messaging.create_human_message` and the DM-room-if-needed pattern for dispatch to Friday; `post_agent_message` with `request_id` idempotency (`_pin_destination`) for linking the reply; `native_session_tools.session_send` for laptop delivery; DynamoDB tables with TTL for records and replay ids; `_public_ingress` rate buckets for the card route.
+
+Shortest path to the §10 tests, in build order: (1) card route plus `SendMessage` and `GetTask` with an allow-all-in-org rule → test 1; (2) mint, verify, record, `keys.json` → tests 2 and 6; (3) the rule document with `holders`, `rules`, `default`, the hold state, the holder's answer through the existing card, no self-approval → tests 3 and 4; (4) the exception row → test 5; (5) the `ask_session` tool and internal route → test 3 end to end; (6) the replay script on the Codex subscription → test 7.
 
 ## 3. Constraints
 
@@ -72,7 +90,7 @@ Who mints and signs (my call, settles the reviewer's first question): in phase 1
 
 Narrowing check, run by every verifier: hop N's `operation.skill` equals hop N-1's; every key in hop N's `operands` exists in hop N-1's with an equal value, or hop N-1 declared that key as `"*"`; hop N may drop keys, never add them. A hop that fails the check is rejected as widened.
 
-Verification at the target, in order: signature by a known key; `exp`; `id` unseen (replay store, 24h); `chain[0].person == requester.person`; `operands_hash` matches the operands the target is about to act on; the Message's `extensions` array lists the URI. A missing or unactivated extension is rejected with A2A `ExtensionSupportRequiredError` (`-32008`, spec §5.4). A present but invalid object is rejected with `InvalidParamsError` (`-32602`) and a status message naming the check, never the secret.
+Verification at the target, in order: signature by a known key; `exp`; `id` unseen (a conditional put into the record table with a 24h TTL; no separate replay store); `chain[0].person == requester.person`; `operands_hash` matches the operands the target is about to act on; the Message's `extensions` array lists the URI. A missing or unactivated extension is rejected with A2A `ExtensionSupportRequiredError` (`-32008`, spec §5.4). A present but invalid object is rejected with `InvalidParamsError` (`-32602`) and a status message naming the check, never the secret.
 
 The spec's security rules apply: extension data is untrusted input, validated rigorously; the extension "MUST NOT provide a way to bypass the agent's primary security controls" (it is the control, applied after authentication, never instead of it). Delivery grants no authority: receiving a message, a room post, a task or a subscription never authorizes anything; only a verified object does, and the text of a message is an input to the decision, never a change to the rules.
 
@@ -122,9 +140,9 @@ Rules v1 are a JSON document per workspace, stored beside the company policy map
 }
 ```
 
-Evaluation is deterministic and has two steps. First, any matching rule with effect `deny` wins, wherever it sits (Cedar's forbid-overrides-permit). Second, among the rest, document order, first match wins. No match → `default`. A rule matches when its `resource` (exact or `*` suffix), `skill`, `requesters` (a person id, `org:<id>`, or `agent:<id>`) and `when` all match. `when` in v1 supports `operands_equal: {key: value}` and `intent_matches: "<string>"`, compared exactly after case-folding and collapsing whitespace; no model is consulted. `@session-person` resolves to the target session's person as `local_sessions` records it. Requesters outside the org → `deny` always. `on_behalf_of` ≠ requester → `deny` in v1.
+Evaluation is deterministic and has two steps. First, any matching rule with effect `deny` wins, wherever it sits (Cedar's forbid-overrides-permit). Second, among the rest, document order, first match wins. No match → `default`. A rule matches when its `resource` (exact or `*` suffix), `skill` and `requesters` (a person id, `org:<id>`, or `agent:<id>`) all match. No `when` clause in phase 1 (§2a); no model is consulted. The example's `r2` is therefore phase 1b. `@session-person` resolves to the target session's person as `local_sessions` records it. Requesters outside the org → `deny` always. `on_behalf_of` ≠ requester → `deny` in v1.
 
-A change of `revision` re-decides every held task (DeepSeek's rule, adopted). A held task's answer becomes a time-boxed exception row: `{rule: "exception", holder, task, operands_hash, expires}`; a later identical request within the window is allowed by that row and recorded as such. Exceptions never widen beyond the operands hash.
+A change of `revision` cancels every held task with reason `policy_changed` (the one-line form of DeepSeek's rule; re-deciding is phase 1b). A held task's answer becomes a time-boxed exception row: `{rule: "exception", holder, task, operands_hash, expires}`; a later identical request within the window is allowed by that row and recorded as such. Exceptions never widen beyond the operands hash.
 
 The record, one per decision, signed with the issuer key:
 
@@ -170,6 +188,6 @@ The SDK's exact FastAPI wiring, and the required-extension check in our own hand
 
 ## 12. Open questions for the founder
 
-1. External clients in v1: any A2A client in the workspace's org (recommended), or only Lightbulb's own apps until phase 2?
-2. The holder of a hosted agent like Friday: the workspace admin (recommended), or the person who created the agent?
-3. Publishing: do we publish the extension spec on thelightbulb.company at launch and propose it to the A2A project, or keep it private until a design partner uses it?
+1. External clients: after the ponytail pass, phase 1 accepts any client holding a Lightbulb sign-in for the org; third-party OAuth clients are phase 1b. Confirm that is acceptable, or ask for the OAuth application in phase 1.
+2. Answered 2 Nov: the workspace admin holds authority over a hosted agent.
+3. Answered 2 Nov: publish the extension spec at launch; propose it to the A2A project later if we want.

@@ -72,8 +72,6 @@ def decide(
     holders = _holders(rules, resource, session_person)
     if requester_person in holders:
         return Decision("reject", "self", holders)
-    if exception:
-        return Decision("allow", f"exception:{exception['id']}", holders)
 
     def requester_matches(r: str) -> bool:
         return (
@@ -86,7 +84,11 @@ def decide(
         if matches(r.resource, resource) and r.skill == skill and any(requester_matches(q) for q in r.requesters)
     ]
     deny = next((r for r in hits if r.effect == "deny"), None)
-    first = deny or (hits[0] if hits else None)
+    if deny:
+        return Decision("deny", deny.id, holders)
+    if exception:
+        return Decision("allow", f"exception:{exception['id']}", holders)
+    first = hits[0] if hits else None
     if first:
         return Decision(first.effect, first.id, holders)
     return Decision(rules.default, "default", holders)

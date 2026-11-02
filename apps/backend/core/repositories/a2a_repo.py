@@ -27,7 +27,8 @@ async def claim_authority_id(org: str, authority_id: str, now: int) -> bool:
 
 async def get_rules(org: str) -> dict | None:
     resp = await run_in_thread(_table().get_item, Key={"pk": f"A2A#{org}", "sk": "RULES"})
-    return resp.get("Item")
+    item = resp.get("Item")
+    return {k: v for k, v in item.items() if k not in ("pk", "sk", "expiresAt")} if item else None
 
 
 async def put_rules(org: str, rules: dict) -> None:

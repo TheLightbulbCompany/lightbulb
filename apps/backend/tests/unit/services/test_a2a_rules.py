@@ -72,3 +72,32 @@ def test_exception_repo_roundtrip_and_expiry(repos):
     )
     assert asyncio.run(a2a_repo.get_exception("org_1", "session:abc", "sha256:aa", 1_001))["id"] == eid
     assert asyncio.run(a2a_repo.get_exception("org_1", "session:abc", "sha256:aa", 1_000 + 86_401)) is None
+
+
+def test_matching_deny_beats_an_exception():
+    rules = R.model_copy(
+        update={
+            "rules": [
+                *R.rules,
+                r.Rule(id="d1", resource="session:*", skill="ask_session", requesters=["user_x"], effect="deny"),
+            ]
+        }
+    )
+    d = r.decide(
+        rules,
+        requester_person="user_x",
+        resource="session:abc",
+        skill="ask_session",
+        **{**K, "session_person": "user_owner", "exception": {"id": "exc-9"}},
+    )
+    assert (d.effect, d.rule) == ("deny", "d1")
+
+
+def test_rules_roundtrip_through_repo(repos):
+    import asyncio
+
+    from core.repositories import a2a_repo
+
+    asyncio.run(a2a_repo.put_rules("org_1", R.model_dump(by_alias=True)))
+    got = asyncio.run(a2a_repo.get_rules("org_1"))
+    assert r.Rules.model_validate(got) == R

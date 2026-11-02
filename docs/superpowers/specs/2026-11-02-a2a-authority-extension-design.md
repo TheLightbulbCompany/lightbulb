@@ -1,6 +1,6 @@
 # A2A as the protocol, authority as a required extension: design
 
-**Status:** draft for the founder's approval. Nothing is built. Ponytail pass applied 2 Nov (§2a). Founder answers 2 Nov: the workspace admin holds authority over a hosted agent; the extension spec is published at launch and proposed to the A2A project later.
+**Status:** APPROVED by the founder 2 Nov 2026 (phase 1 as cut in §2a; third-party OAuth clients are phase 1b). Nothing is built yet; the plan is docs/superpowers/plans/2026-11-02-a2a-authority-phase1.md. Ponytail pass applied 2 Nov (§2a). Founder answers 2 Nov: the workspace admin holds authority over a hosted agent; the extension spec is published at launch and proposed to the A2A project later.
 **Decision this implements (2 Nov 2026):** governance is built incrementally, planned first, tested, coordinated with the Workers session, and the first increment is A2A. A2A (Linux Foundation, v1.0) becomes the network's protocol; our peer-to-peer transport becomes an A2A binding later; the authority object is a *required* A2A extension; the hosted workspace member speaks A2A over HTTP first.
 **Research it rests on:** `docs/research/2026-11-01-org-auto-mode-governance.md` and its strands 01-11 (PR #4551).
 

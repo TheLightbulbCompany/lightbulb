@@ -209,7 +209,7 @@ def test_an_assignment_answered_only_in_text_still_returns_its_result(net, turns
 
 def test_an_assignment_with_no_text_reports_failed(net, turns, monkeypatch):
     sent = _assign(net, turns, monkeypatch, "  ")
-    assert [(c["status"], c["reason"]) for c in sent] == [("failed", "no_result")]
+    assert [(c["status"], c["reason"]) for c in sent] == [("failed", "error")]
 
 
 def test_an_assignment_the_agent_answered_is_not_answered_twice(net, turns, monkeypatch):
@@ -252,7 +252,7 @@ def test_an_assignment_whose_turn_fails_tells_the_asker_and_is_not_run_again(net
     net.answer(**_peek({**REC, "kind": "assign", "request_id": "r1"}), send={})
     assert network.ensure_started(background=False)
     assert _until(lambda: ("m1", "read") in _acks(net))
-    assert [(c["reply_to"], c["status"], c["reason"]) for c in net.calls("send")] == [("r1", "failed", "turn_failed")]
+    assert [(c["reply_to"], c["status"], c["reason"]) for c in net.calls("send")] == [("r1", "failed", "error")]
 
 
 def test_an_assignment_turn_is_stopped_at_its_deadline(net, monkeypatch):

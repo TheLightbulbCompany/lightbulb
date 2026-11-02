@@ -59,7 +59,7 @@ def test_verify_rejects_origin_and_operands_mismatch(monkeypatch):
     with pytest.raises(a.AuthorityError, match="on_behalf_of"):
         a.verify(jws, now=1_001)
     claims = {**_mint(monkeypatch)[1]}
-    claims["operation"] = {**claims["operation"], "operands_hash": "sha256:00"}
+    claims["operation"] = {**claims["operation"], "operands_hash": "sha256:00"}  # does not match operands
     with pytest.raises(a.AuthorityError, match="operands_hash"):
         a.verify(a._sign(claims, typ=a.OBJECT_TYP), now=1_001)
 
@@ -80,3 +80,17 @@ def test_claim_authority_id_is_org_scoped_and_once(repos):
     assert asyncio.run(a2a_repo.claim_authority_id("org_1", "id-1", 1_000)) is True
     assert asyncio.run(a2a_repo.claim_authority_id("org_1", "id-1", 1_000)) is False
     assert asyncio.run(a2a_repo.claim_authority_id("org_2", "id-1", 1_000)) is True
+
+
+def test_tampered_operands_break_signature(monkeypatch):
+    import base64
+    import json
+
+    jws, claims = _mint(monkeypatch)
+    assert claims["operation"]["operands"] == {"text": "hi"}
+    head, body, sig = jws.split(".")
+    payload = json.loads(a._unb64(body))
+    payload["operation"]["operands"] = {"text": "rm -rf"}
+    forged = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+    with pytest.raises(a.AuthorityError, match="signature"):
+        a.verify(f"{head}.{forged}.{sig}", now=1_001)

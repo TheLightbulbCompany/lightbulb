@@ -5,7 +5,6 @@ Minted and verified as a compact EdDSA JWS signed with the network-proof issuer 
 
 import hashlib
 import json
-import re
 import time
 import uuid
 
@@ -21,7 +20,6 @@ OBJECT_TYP = "lightbulb-a2a-authority"
 RECORD_TYP = "lightbulb-a2a-record"
 MAX_LIFE_S = 86_400
 MAX_INTENT = 2048
-_HASH_RE = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 class Operation(ContractModel):
@@ -73,6 +71,7 @@ def mint(
         "operation": {
             "skill": request.operation.skill,
             "resource": request.operation.resource,
+            "operands": request.operation.operands,
             "operands_hash": operands_hash(request.operation.operands),
         },
         "intent": request.intent,
@@ -143,7 +142,6 @@ def verify(jws: str, *, now: int | None = None, typ: str = OBJECT_TYP) -> dict:
         raise AuthorityError("on_behalf_of")
     if not claims["chain"] or claims["chain"][0].get("person") != person:
         raise AuthorityError("origin")
-    # The operands travel beside the object, not in it; a caller recomputes operands_hash(operands) and compares.
-    if not _HASH_RE.fullmatch(claims["operation"]["operands_hash"]):
+    if claims["operation"]["operands_hash"] != operands_hash(claims["operation"]["operands"]):
         raise AuthorityError("operands_hash")
     return claims

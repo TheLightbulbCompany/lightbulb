@@ -66,6 +66,7 @@ def decide(
     skill: str,
     session_person: str | None,
     exception: dict | None,
+    origin_is_person: bool = True,
 ) -> Decision:
     if requester_org != org:
         return Decision("deny", "outside_org", [])
@@ -88,7 +89,8 @@ def decide(
         return Decision("allow", f"exception:{exception['id']}", holders)
     first = hits[0] if hits else None
     effect, rule = (first.effect, first.id) if first else (rules.default, "default")
-    # A hold waits for a holder; the requester can never be their own approver.
-    if effect == "hold" and requester_person in holders:
+    # A hold waits for a holder; the requester can never be their own approver. An agent-originated
+    # ask (no person origin) has no self to approve: its stand-in requester may answer it.
+    if effect == "hold" and origin_is_person and requester_person in holders:
         return Decision("reject", "self", holders)
     return Decision(effect, rule, holders)

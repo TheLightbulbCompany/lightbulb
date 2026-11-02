@@ -17,6 +17,8 @@ AGENT = str(uuid.uuid4())
 OWNER = "user_owner"
 ROOM = str(uuid.uuid4())
 ORIGIN_MSG = str(uuid.uuid4())
+AGENT_MSG = str(uuid.uuid4())
+FOREIGN_MSG = str(uuid.uuid4())
 URL = f"/api/v1/internal/a2a/{ORG}/ask-session"
 H = {"Authorization": f"Bearer {TOKEN}"}
 RULES = {
@@ -44,7 +46,11 @@ def env(monkeypatch, a2a_env):
     monkeypatch.setattr(
         "core.repositories.local_sessions_repo.get_session", AsyncMock(side_effect=lambda o, s: dict(session))
     )
-    messages = {ORIGIN_MSG: {"messageId": ORIGIN_MSG, "author": {"kind": "human", "id": "user_x"}}}
+    messages = {
+        ORIGIN_MSG: {"messageId": ORIGIN_MSG, "author": {"kind": "human", "id": "user_x"}},
+        AGENT_MSG: {"messageId": AGENT_MSG, "author": {"kind": "agent", "id": AGENT}},
+        FOREIGN_MSG: {"messageId": FOREIGN_MSG, "author": {"kind": "human", "id": "user_foreign"}},
+    }
     monkeypatch.setattr(
         "core.repositories.messaging_repo.get_message_by_id", AsyncMock(side_effect=lambda r, m: messages.get(m))
     )
@@ -53,10 +59,18 @@ def env(monkeypatch, a2a_env):
     )
     monkeypatch.setattr(
         "core.repositories.messaging_repo.get_member",
-        AsyncMock(side_effect=lambda r, k, i: {"kind": k, "id": i} if k == "human" else None),
+        AsyncMock(
+            side_effect=lambda r, k, i: {
+                "kind": k,
+                "id": i,
+                **({"homeOwnerId": "org_other"} if i == "user_foreign" else {}),
+            }
+        ),
     )
+    put_task = AsyncMock(wraps=a2a_repo.put_task)
+    monkeypatch.setattr("core.repositories.a2a_repo.put_task", put_task)
     asyncio.run(a2a_repo.put_rules(ORG, RULES))
-    return SimpleNamespace(notify=notify, through=through, session=session)
+    return SimpleNamespace(notify=notify, through=through, session=session, put_task=put_task)
 
 
 def body(**kw):
@@ -107,3 +121,22 @@ def test_no_origin_requester_is_admin_holder_agent_runtime(client, env):
     [rec] = asyncio.run(a2a_repo.list_records(ORG, out["taskId"]))
     req = claims(rec["jws"])["input"]["requester"]
     assert req["person"] == OWNER and req["verified_by"] == "agent-runtime"
+
+
+def test_tokenless_malformed_request_is_401_not_422(client, env):
+    assert client.post(URL, json={"nonsense": 1}).status_code == 401
+
+
+@pytest.mark.parametrize("origin", [AGENT_MSG, FOREIGN_MSG, str(uuid.uuid4())])
+def test_named_origin_that_fails_a_check_is_403_and_stores_nothing(client, env, origin):
+    r = client.post(URL, json=body(originMessageId=origin), headers=H)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "bad_origin"
+    env.put_task.assert_not_awaited()
+    env.through.assert_not_awaited()
+
+
+def test_no_origin_admin_holder_is_session_person_is_held_not_self(client, env):
+    r = client.post(URL, json=body(), headers=H)  # session person is OWNER, the admin holder
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["state"] == "held" and out["holders"] == [OWNER]

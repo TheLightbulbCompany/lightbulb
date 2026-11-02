@@ -197,6 +197,7 @@ async def _decide_and_store(
     chain_agents: list[str],
     session_person: str | None,
     now: int,
+    origin_is_person: bool = True,
 ) -> dict:
     """Decide a minted authority, dispatch when allowed, sign its record, store the task and ask any
     holders; the stored row."""
@@ -213,6 +214,7 @@ async def _decide_and_store(
         skill=op["skill"],
         session_person=session_person,
         exception=exception,
+        origin_is_person=origin_is_person,
     )
     row = {
         "id": str(uuid.uuid4()),
@@ -278,6 +280,8 @@ async def ask_session(owner_id: str, body, *, now: int | None = None) -> dict:
     rules = Rules.model_validate(doc) if doc else default_rules(owner_id, [])
     person = await _origin_person(owner_id, body.room_id, body.origin_message_id)
     verified_by = "origin-message"
+    if body.origin_message_id and person is None:
+        raise A2AError(403, "bad_origin")  # a named origin that fails a check never falls back
     if person is None:
         # ponytail: the agent's first holder stands in as requester; holders are admins by convention,
         # not checked against Clerk here
@@ -310,6 +314,7 @@ async def ask_session(owner_id: str, body, *, now: int | None = None) -> dict:
         chain_agents=[body.agent_id],
         session_person=session.get("humanUserId"),
         now=now,
+        origin_is_person=verified_by == "origin-message",
     )
     return {"taskId": row["id"], "state": row["state"], "holders": row["holders"]}
 

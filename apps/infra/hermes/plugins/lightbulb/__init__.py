@@ -68,7 +68,6 @@ ASK_SESSION_SCHEMA = {
             "session_id": {"type": "string"},
             "text": {"type": "string"},
             "intent": {"type": "string"},
-            "origin_message_id": {"type": "string"},
         },
         "required": ["session_id", "text", "intent"],
     },
@@ -81,7 +80,8 @@ def _ask_session(args: dict, *, session_id: str = "", **_kw) -> str:
         return NO_TURN
     body = {
         "sessionId": args.get("session_id"), "text": args.get("text"), "intent": args.get("intent"),
-        "originMessageId": args.get("origin_message_id") or ctx.get("threadRootMessageId"),
+        # The origin is the turn's own trigger, never the agent's pick; the backend checks its author.
+        "originMessageId": (ctx.get("messageId") or ctx.get("threadRootMessageId")) if ctx.get("roomId") else None,
         "roomId": ctx.get("roomId"), "agentId": ctx["agentId"], "runId": ctx.get("runId"),
     }
     url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/a2a/{ctx['ownerId']}/ask-session"

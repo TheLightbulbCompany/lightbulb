@@ -111,3 +111,15 @@ def test_rules_roundtrip_through_repo(repos):
 def test_holder_whose_request_a_rule_allows_is_allowed_not_rejected_as_self():
     d = r.decide(R, requester_person="user_admin", resource="agent:friday", skill="message", **K)
     assert (d.effect, d.rule) == ("allow", "r1")
+
+
+def test_agent_originated_ask_is_held_for_its_stand_in_requester_not_self():
+    d = r.decide(
+        R,
+        requester_person="user_owner",
+        resource="session:abc",
+        skill="ask_session",
+        **{**K, "session_person": "user_owner"},
+        origin_is_person=False,
+    )
+    assert (d.effect, d.holders) == ("hold", ["user_owner"])

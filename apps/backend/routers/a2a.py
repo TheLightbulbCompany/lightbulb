@@ -102,6 +102,9 @@ async def jsonrpc(org: str, agent_id: str, body: dict = Body(...), ctx: AuthCont
 
 
 class AskSessionRequest(ContractModel):
+    """A hosted agent's ask. The backend verifies the origin message's author; the runtime, which holds
+    the hook token, asserts which message triggered the turn."""
+
     session_id: str
     text: str
     intent: str
@@ -112,8 +115,7 @@ class AskSessionRequest(ContractModel):
 
 
 @router.post("/api/v1/internal/a2a/{owner_id}/ask-session")
-async def ask_session(owner_id: str, body: AskSessionRequest, request: Request):
-    await _require_hook_token(owner_id, request)
+async def ask_session(owner_id: str, body: AskSessionRequest, _: dict = Depends(_require_hook_token)):
     try:
         return await a2a_tasks.ask_session(owner_id, body)
     except A2AError as exc:

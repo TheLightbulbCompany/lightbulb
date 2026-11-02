@@ -488,6 +488,32 @@ async def test_publish_waits_for_the_live_database_secret(world):
     assert pub["state"] == "building"
 
 
+@pytest.mark.parametrize(
+    ("author", "text", "allowed"),
+    [
+        ("human", "Looks great, ship it", True),
+        ("human", "please publish", True),
+        ("human", "Approved hosting and data for Crew. Setting it up.", False),
+        ("human", "does it use the live database?", False),
+        ("agent", "I'll publish it now", False),
+    ],
+)
+async def test_an_agent_publishes_only_when_a_person_asked(world, monkeypatch, author, text, allowed):
+    src, _, _ = await _ready_preview(world)
+    rec = await svc.apps_repo.get(src["app_id"])
+    msg = {"author": {"kind": author}, "text": text, "createdAt": "2999-01-01T00:00:00Z"}
+    monkeypatch.setattr(svc.messaging_repo, "list_messages_before", AsyncMock(return_value=[msg]))
+    agent = svc.BuilderCaller(owner_id=OWNER, actor_id="agent_7", actor_kind="agent")
+    assert rec.get("room_id")
+    if allowed:
+        pub = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=agent)
+        assert pub["state"] == "building"
+    else:
+        with pytest.raises(svc.AppsRefused) as e:
+            await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=agent)
+        assert e.value.code == "not_asked"
+
+
 async def test_publish_deploys_and_adds_domain_once(world):
     src, _, _ = await _ready_preview(world)
     pub = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)

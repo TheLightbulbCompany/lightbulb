@@ -492,19 +492,20 @@ async def _check_preview(app: dict, creds: dict) -> None:
     if not pending:
         return
     st = await vercel.deployment_state(creds, pending["deployment_id"])
-    if st["readyState"] == "READY":
-        if st.get("target") == "production":
-            # Vercel's docs: a project's first deployment is production whatever was asked, on the live env. Never a
-            # preview. The next deployment is a real one; two tries, in case Vercel keeps answering production.
-            tries = int(app.get("preview_rebuilds") or 0)
+    if st["readyState"] in ("READY", "ERROR") and st.get("target") == "production":
+        # Vercel's docs: a project's first deployment is production whatever was asked, on the live env. Never a
+        # preview. It can fail for that reason alone: a page that reads data at build time finds the live database
+        # empty. The next deployment is a real one; two tries, in case Vercel keeps answering production.
+        tries = int(app.get("preview_rebuilds") or 0)
+        if tries < _PREVIEW_REBUILDS:
+            await _clear_pending(app, "preview_pending", {"preview_built": None, "preview_rebuilds": tries + 1})
+        elif st["readyState"] == "READY":
             refused = {"code": "preview_is_production", "message": "Vercel built the preview as production."}
-            fields = (
-                {"preview_built": None, "preview_rebuilds": tries + 1}
-                if tries < _PREVIEW_REBUILDS
-                else {"error": {**refused, "next": "run up again"}}
-            )
-            await _clear_pending(app, "preview_pending", fields)
-            return
+            await _clear_pending(app, "preview_pending", {"error": {**refused, "next": "run up again"}})
+        else:
+            await _clear_pending(app, "preview_pending", {"error": await _failure(app, creds, pending, st)})
+        return
+    if st["readyState"] == "READY":
         await _patch(
             app,
             {

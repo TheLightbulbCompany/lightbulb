@@ -1,7 +1,9 @@
 """A2A state in the messaging table (``pk=A2A#{org}``)."""
 
+import time
 import uuid
 
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from core.dynamodb import run_in_thread
@@ -56,3 +58,79 @@ async def get_exception(org: str, resource: str, operands_hash: str, now: int) -
     resp = await run_in_thread(_table().get_item, Key={"pk": f"A2A#{org}", "sk": f"EXC#{resource}#{operands_hash}"})
     item = resp.get("Item")
     return item if item and int(item["expiresAt"]) > now else None
+
+
+def _is_conflict(exc: ClientError) -> bool:
+    return exc.response["Error"]["Code"] == "ConditionalCheckFailedException"
+
+
+def _strip(item: dict) -> dict:
+    return {k: v for k, v in item.items() if k not in ("pk", "sk")}
+
+
+async def put_task(org: str, task: dict) -> None:
+    await run_in_thread(
+        _table().put_item,
+        Item={**task, "pk": f"A2A#{org}", "sk": f"TASK#{task['id']}"},
+        ConditionExpression="attribute_not_exists(sk)",
+    )
+
+
+async def get_task(org: str, task_id: str) -> dict | None:
+    resp = await run_in_thread(_table().get_item, Key={"pk": f"A2A#{org}", "sk": f"TASK#{task_id}"})
+    item = resp.get("Item")
+    return _strip(item) if item else None
+
+
+async def update_task(org: str, task_id: str, *, state: str, extra: dict | None = None) -> None:
+    fields = {**(extra or {}), "state": state, "updatedAt": int(time.time())}
+    names = {f"#f{i}": k for i, k in enumerate(fields)}
+    values = {f":v{i}": v for i, v in enumerate(fields.values())}
+    await run_in_thread(
+        _table().update_item,
+        Key={"pk": f"A2A#{org}", "sk": f"TASK#{task_id}"},
+        UpdateExpression="SET " + ", ".join(f"#f{i} = :v{i}" for i in range(len(fields))),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+        ConditionExpression="attribute_exists(sk)",
+    )
+
+
+async def _query_all(key_cond, **kw) -> list[dict]:
+    items: list[dict] = []
+    while True:
+        resp = await run_in_thread(_table().query, KeyConditionExpression=key_cond, **kw)
+        items += resp.get("Items", [])
+        if "LastEvaluatedKey" not in resp:
+            return items
+        kw["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+
+async def list_records(org: str, task_id: str) -> list[dict]:
+    items = await _query_all(Key("pk").eq(f"A2A#{org}") & Key("sk").begins_with(f"RECORD#{task_id}#"))
+    return [{k: v for k, v in i.items() if k != "pk"} for i in items]
+
+
+async def append_record(org: str, task_id: str, record: dict) -> int:
+    """Append a record numbered after the existing ones; retries once if another writer took the number."""
+    for attempt in (1, 2):
+        n = len(await list_records(org, task_id)) + 1
+        try:
+            await run_in_thread(
+                _table().put_item,
+                Item={**record, "pk": f"A2A#{org}", "sk": f"RECORD#{task_id}#{n:06d}"},
+                ConditionExpression="attribute_not_exists(sk)",
+            )
+            return n
+        except ClientError as exc:
+            if not _is_conflict(exc) or attempt == 2:
+                raise
+    raise AssertionError("unreachable")
+
+
+async def list_held_tasks(org: str) -> list[dict]:
+    # ponytail: scan of the org's tasks; add a state GSI when an org holds thousands
+    items = await _query_all(
+        Key("pk").eq(f"A2A#{org}") & Key("sk").begins_with("TASK#"), FilterExpression=Attr("state").eq("held")
+    )
+    return [_strip(i) for i in items]

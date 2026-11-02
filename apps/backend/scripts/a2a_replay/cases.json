@@ -1,5 +1,5 @@
 {
- "_comment": "Twelve-plus deterministic cases for core.services.a2a_rules.decide (org org_1, admin user_admin). 'rules' replaces the rule list of default_rules; 'rule' is the expected rule id. The operand-substitution pair has the same resource and skill and differs only in 'exception': one exception covers one request, not its neighbour. Not covered: a policy revision cancelling a held task (held then canceled) is a task-state transition in a2a_tasks.put_rules, not a decide call; tests/unit/routers/test_a2a_hold.py covers it.",
+ "_comment": "Twelve-plus deterministic cases for core.services.a2a_rules.decide (org org_1, admin user_admin). 'rules' replaces the rule list of default_rules; 'rule' is the expected rule id. The operand-substitution pair has the same resource and skill and differs only in 'exception': the pair proves exception-present allows and exception-absent holds; matching an exception to its operands lives in the repository lookup (a2a_repo.get_exception), not in decide. Not covered: a policy revision cancelling a held task (held then canceled) is a task-state transition in a2a_tasks.put_rules, not a decide call; tests/unit/routers/test_a2a_hold.py covers it.",
  "cases": [
   {
    "name": "friday_asks_aden_session",

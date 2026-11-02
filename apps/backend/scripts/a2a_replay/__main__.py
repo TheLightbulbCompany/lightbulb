@@ -1,7 +1,8 @@
 # ponytail: deterministic cases; add LLM-generated variants on the Codex subscription when the compiled-rules increment lands
 """Replay named A2A authority cases through the real rule engine; exit 1 on any mismatch.
 
-Run from apps/backend: ``uv run python -m scripts.a2a_replay``. No model call.
+Run from apps/backend: ``CLERK_ISSUER=<issuer url> uv run python -m scripts.a2a_replay``
+(importing core.services loads Settings, which requires CLERK_ISSUER; the test suite sets it). No model call.
 """
 
 import json

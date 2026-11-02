@@ -65,9 +65,10 @@ Errors on `POST /a2a/{org}/{agent}` are JSON-RPC errors:
 | `-32602` | invalid params: `invalid authority: shape`, `resource`, `operands`, or a failed check above; also `replay`, an unknown agent, a message with no text part, or `params` not an object |
 | `-32004` | `CancelTask` (unsupported) |
 | `-32601` | unknown method |
+| `-32602` | `GetTask` with `params.id` missing or not a string |
 | `-32001` | `GetTask` for a task that does not exist or that the caller may not read |
 
-Authentication is a Lightbulb sign-in (Clerk session token); the caller must belong to `{org}` (403 `wrong_workspace` otherwise).
+Authentication is a Lightbulb sign-in (Lightbulb sign-in token); the caller must belong to `{org}` (403 `wrong_workspace` otherwise).
 
 ## The rule document and evaluation
 
@@ -92,11 +93,11 @@ Evaluation, in this order:
 5. No match: `default`.
 6. A `hold` whose requester is one of the holders, with a person at the origin: `reject`, rule `self`. Nobody approves their own request. An ask that starts from an agent run with no person behind it skips this check.
 
-With no stored document, the default is one rule: anyone in the workspace may `message` any agent; everything else holds, for the admins (agents, rooms) or the session's person (sessions).
+With no stored document, the default is one rule: anyone in the workspace may `message` any agent; everything else holds. There are no agent or room holders without a stored document: an admin's own request to a resource they would hold is rejected as `self`, a non-admin's is rejected as `no_holder`, and session holds still go to the session's person. A stored rules document is required for agent and room holders.
 
 A hold with no holder is refused with rule `no_holder`. An exception is created when a holder allows: one day, only for the same resource, skill and operands hash.
 
-Changing `revision` cancels every held task with reason `policy_changed`. Held tasks are not re-decided.
+Changing `revision` cancels every held task with reason `policy_changed`. Held tasks are not re-decided. A hold that had already expired cancels as `expired`.
 
 ## Task states and the record
 
@@ -116,7 +117,7 @@ Each state change appends a signed record (JWS, `typ` `lightbulb-a2a-record`, sa
   "input": { "requester", "chain", "operation", "intent" } }
 ```
 
-`decision` is one of `allow`, `deny`, `hold`, `allow_by_holder`, `deny_by_holder`, `completed`, `failed`, `canceled`. A rejection by rule, by `self` or by `no_holder` is recorded as `deny`. `rule` is a rule id, `default`, `exception:<id>`, `self`, `no_holder`, or a reason (`expired`, `policy_changed`, `dispatch_failed`, `undeliverable`). `input` is the snapshot the decision saw. A record is readable by the requester, the task's holders and workspace admins.
+`decision` is one of `allow`, `deny`, `hold`, `allow_by_holder`, `deny_by_holder`, `completed`, `failed`, `canceled`. A rejection by rule, by `self` or by `no_holder` is recorded as `deny`. `rule` is a rule id, `default`, `outside_org`, `exception:<id>`, `self`, `no_holder`, or a reason (`expired`, `policy_changed`, `dispatch_failed`, `undeliverable`). `input` is the snapshot the decision saw. A record is readable by the requester, the task's holders and workspace admins.
 
 ## Routes
 
@@ -125,7 +126,7 @@ Each state change appends a signed record (JWS, `typ` `lightbulb-a2a-record`, sa
 | `GET /a2a/keys.json` | public issuer keys |
 | `GET /a2a/{org}/{agent}/agent-card.json` | Agent Card (public, rate limited) |
 | `POST /a2a/{org}/{agent}` | JSON-RPC: `SendMessage` (returns the task under `task`, does not block), `GetTask` |
-| `GET /a2a/{org}/{agent}/tasks/{task}/record` | every signed record for the task, oldest first |
+| `GET /a2a/{org}/{agent}/tasks/{task}/record` | every signed record for the task, oldest first; 404 `task_not_found` when the task is missing or unreadable |
 | `POST /a2a/{org}/{agent}/tasks/{task}/decide` | a holder answers a held task: `{"verdict": "allow" or "deny", "reason": ""}` |
 | `GET`, `PUT /a2a/{org}/rules` | read or replace the rule document (workspace admins) |
 | `POST /api/v1/internal/a2a/{owner}/ask-session` | a hosted agent asks a laptop session; authenticated by the runtime's hook token, not by users |
@@ -146,3 +147,7 @@ An allowed `message` is posted to the agent in the requester's direct-message ro
 - Chain re-signing and narrowing checks across hops; the backend signs the whole chain once.
 - Autonomous asks (no person behind the turn) need a stored rules document, because the stand-in requester is the agent's first holder and none exists without one.
 - Replies from Hermes agents carry no reply id, so a reply links to its task only when exactly one task for that agent in that room is `working`.
+
+## How to run the replay
+
+From `apps/backend`: `CLERK_ISSUER=<any issuer url> uv run python -m scripts.a2a_replay`. Importing `core.services` loads Settings, which requires `CLERK_ISSUER`; the test suite sets it.

@@ -91,7 +91,7 @@ pub(crate) fn holdable(provider: &str, stdin: &Value) -> bool {
         && stdin["hook_event_name"] == "PermissionRequest"
         && stdin["tool_name"]
             .as_str()
-            .is_some_and(|t| !t.is_empty() && (t != "AskUserQuestion" || question_input(&stdin["tool_input"])))
+            .is_some_and(|t| !t.is_empty() && (t != "AskUserQuestion" || question_relayable(&stdin["tool_input"])))
         && stdin["session_id"].as_str().is_some_and(|s| !s.is_empty())
 }
 
@@ -102,14 +102,23 @@ pub(crate) fn question_input(input: &Value) -> bool {
     if questions.is_empty() || questions.len() > 4 || !visible(input) { return false; }
     let mut texts = std::collections::HashSet::new();
     questions.iter().all(|q| {
+        if !q.as_object().is_some_and(|o| o.keys().all(|k| matches!(k.as_str(), "question" | "header" | "options" | "multiSelect")))
+            || !q.get("header").is_none_or(|h| h.as_str().is_some_and(|s| !s.trim().is_empty() && s.len() <= 2000)) { return false; }
         let Some(text) = q["question"].as_str().filter(|s| !s.trim().is_empty() && s.len() <= 2000) else { return false };
         let Some(options) = q["options"].as_array().filter(|o| !o.is_empty() && o.len() <= 9) else { return false };
         let mut labels = std::collections::HashSet::new();
         texts.insert(text) && q.get("multiSelect").is_none_or(Value::is_boolean) && options.iter().all(|o| {
-            o["label"].as_str().is_some_and(|s| !s.trim().is_empty() && s.len() <= 500 && labels.insert(s))
-                && o.get("description").is_none_or(|d| d.as_str().is_some_and(|s| s.len() <= 2000))
+            o.as_object().is_some_and(|o| o.keys().all(|k| matches!(k.as_str(), "label" | "description")))
+                && o["label"].as_str().is_some_and(|s| !s.trim().is_empty() && s.len() <= 500 && labels.insert(s))
+                && o.get("description").is_none_or(|d| d.as_str().is_some_and(|s| s.len() <= 2000 && (s.is_empty() || !s.trim().is_empty())))
         })
     }) && serde_json::to_vec(input).is_ok_and(|b| b.len() <= MAX_APPROVAL_INPUT)
+}
+
+/// A question has no deny-only mode: if privacy/size filtering changes its input,
+/// leave the terminal prompt alone instead of holding a question the app cannot show.
+pub(crate) fn question_relayable(input: &Value) -> bool {
+    question_input(input) && shown_input("AskUserQuestion", input).1
 }
 
 /// Answers may contain custom text, but can never replace questions or other tool arguments.
@@ -456,6 +465,7 @@ pub(crate) fn hold(
         && private_write(&private_path, &private_payload).is_ok();
     let private_send = native_send && written;
     let _private_guard = Remove(private_path);
+    if tool == "AskUserQuestion" && (!full || !written || !question_input(&stdin["tool_input"])) { return; }
     let similar = similar(tool, &stdin["permission_suggestions"]);
     let mut modes = modes(tool, &stdin["permission_suggestions"]);
     if similar.is_some() {
@@ -604,6 +614,40 @@ mod tests {
         assert!(holdable("claude", &hook));
         let mut passive = hook; passive["hook_event_name"] = json!("PreToolUse");
         assert!(!holdable("claude", &passive), "passive discovery cannot block the interactive picker");
+    }
+
+    #[test]
+    fn local_sessions_question_unrepresentable_inputs_never_enter_the_hold() {
+        let mut secret = question();
+        secret["questions"][0]["question"] = json!("Which API_KEY should be used?");
+        assert!(question_input(&secret), "question schema alone is insufficient");
+        assert!(!shown_input("AskUserQuestion", &secret).1);
+        assert!(!question_relayable(&secret), "privacy filtering must leave the terminal in charge");
+        let mut unicode = question();
+        for option in unicode["questions"][0]["options"].as_array_mut().unwrap() {
+            option["description"] = json!("é".repeat(1000));
+        }
+        assert!(question_input(&unicode));
+        assert!(!shown_input("AskUserQuestion", &unicode).1, "ASCII wire expansion exceeds the relay bound");
+        for input in [secret,unicode] {
+            let hook = json!({"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","session_id":"s","tool_input":input});
+            assert!(!holdable("claude", &hook));
+        }
+        assert!(holdable("claude", &json!({"hook_event_name":"PermissionRequest","tool_name":"Bash","session_id":"s","tool_input":{"command":"echo API_KEY"}})), "ordinary permissions keep deny-only holds");
+        for header in [json!(42),json!("   "),json!(null)] {
+            let mut input = question(); input["questions"][0]["header"] = header;
+            assert!(!question_relayable(&input));
+        }
+        let mut extra = question(); extra["questions"][0]["unknown"] = json!(true);
+        assert!(!question_relayable(&extra));
+        let mut extra = question(); extra["questions"][0]["options"][0]["unknown"] = json!(true);
+        assert!(!question_relayable(&extra));
+        for description in [json!(42),json!("  "),json!(null)] {
+            let mut input = question(); input["questions"][0]["options"][0]["description"] = description;
+            assert!(!question_relayable(&input));
+        }
+        let mut empty = question(); empty["questions"][0]["options"][0]["description"] = json!("");
+        assert!(question_relayable(&empty));
     }
 
     #[test]

@@ -1057,7 +1057,6 @@ impl Host {
                             && enrollment::hook_path()
                                 .parent()
                                 .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
-                            && approval::acknowledge(&held.reply, &held.id)
                     })
                     .map(|mut held| {
                         let tool = event.tool_name.as_deref().unwrap_or("");
@@ -1087,6 +1086,13 @@ impl Host {
                             held.exact &= private_send.is_some();
                         }
                         (held, private_send, input)
+                    })
+                    .filter(|(held, _, input)| {
+                        // Do not hold a question whose complete, digest-checked input cannot
+                        // be displayed. Permissions retain their separate deny-only path.
+                        (event.tool_name.as_deref() != Some("AskUserQuestion")
+                            || (held.full && input.as_ref().is_some_and(approval::question_relayable)))
+                            && approval::acknowledge(&held.reply, &held.id)
                     });
                 // A Codex hold comes from its daemon, not a hook: a hook's report of the same prompt
                 // must not replace the answerable one.
@@ -3592,6 +3598,14 @@ fn attach_approval_input(mirror: &mut Mirror, mut batch: Value) -> Value {
     if over(&batch) {
         batch["events"].as_array_mut().unwrap().truncate(at + 1);
     }
+    if over(&batch) && at > 0 && waiting.tool.as_deref() == Some("AskUserQuestion") {
+        // Keep the complete question queued for its own frame; unlike a permission
+        // it has no useful deny-only form, and consuming a downgraded row strands it.
+        batch["events"].as_array_mut().unwrap().truncate(at);
+        if let Some(waiting) = mirror.waiting.as_mut() { waiting.shipped_full = false; }
+        mirror.pending = Some(batch.clone());
+        return batch;
+    }
     if over(&batch) {
         let row = batch["events"][at]["tool"]["input"].as_object_mut().unwrap();
         row.remove("input");
@@ -6006,6 +6020,26 @@ pub(super) mod tests {
         // Only an approval row's `full` marks a batch as needing the feature.
         assert!(!carries_approval_input(&batch(vec![json!({"kind":"tool","tool":{"input":{"full":true}}})])));
         assert!(ascii_wire_len(&wire_batch(wire)).unwrap() <= 16384);
+    }
+
+    #[test]
+    fn local_sessions_question_full_input_defers_instead_of_being_consumed_partial() {
+        let mut mirror = test_mirror(SID, "gen-1");
+        let input = json!({"questions":[{"question":"Pick?","options":[{"label":"A","description":"x".repeat(1500)},{"label":"B"}],"multiSelect":false}]});
+        assert!(approval::question_relayable(&input));
+        let held = approval::Held { id:format!("appr-{}",uuid::Uuid::new_v4().simple()), input_digest:approval::digest(&input), reply:String::new(), exact:false, modes:vec![], full:true, similar:None };
+        let prompt = WaitingPrompt {tool:Some("AskUserQuestion".into()),held:Some(held),input:Some(input.clone()),..WaitingPrompt::default()};
+        let row = approval_row("Pick?",&prompt);
+        mirror.waiting = Some(prompt);
+        let batch = |events:Vec<Value>| json!({"type":"local.session.events","sessionId":SID,"generation":"gen-1","batchId":"b","afterSeq":0,"events":events});
+        let earlier = json!({"kind":"text","role":"assistant","text":"x".repeat(15000)});
+        let deferred = attach_approval_input(&mut mirror,batch(vec![earlier.clone(),row.clone()]));
+        assert_eq!(deferred["events"],json!([earlier]),"question stays in the queue for its own frame");
+        assert!(!mirror.waiting.as_ref().unwrap().shipped_full);
+        let alone = attach_approval_input(&mut mirror,batch(vec![row]));
+        assert_eq!(alone["events"][0]["tool"]["input"]["input"],input);
+        assert!(mirror.waiting.as_ref().unwrap().shipped_full);
+        assert!(ascii_wire_len(&wire_batch(alone)).unwrap() <= 16384);
     }
 
     /// The hook's side file reaches the waiting prompt; the app re-checks `full` against the digest.

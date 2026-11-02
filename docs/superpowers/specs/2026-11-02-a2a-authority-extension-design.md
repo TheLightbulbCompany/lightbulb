@@ -10,6 +10,10 @@ An agent that acts for one person and asks another person's agent or computer to
 
 Why A2A: it is the interop protocol the deployed-agent vendors are converging on, it has a formal extension mechanism designed for things like message signing, and it explicitly leaves authorization to the implementation (spec §13.1: "Authorization boundaries are defined by each agent's authorization model, not prescribed by the protocol"). It has no delegation or on-behalf-of mechanism. That hole is this product.
 
+## 1a. Precedent (2 Nov 2026)
+
+DeepSeek's `dsh-superagent-prototype` (`docs/002-authorization.md`) ships host-enforced Mandates inside one host: "The host enforces allowed lists, rules and Mandates"; messages "are inputs to a decision; they cannot change those permissions"; explicit versus inferred admission; an `observe` mode that records "would accept" without accepting; context-only subscriptions whose delivery "grants no new authority"; revalidation before a ticket resumes; a policy version whose change "discards running Evals and queues their Triggers again". It does not address delegation across people, organizations or agent boundaries, and its decisions are recorded but not signed. So the honest claim is narrower than "nobody does mandates": no shipped system carries a signed, operand-bound authority object across people and vendors and escalates to the resource's holder. Three of its rules are adopted here: delivery grants no authority (§4), revalidation before resume (§5 step 4), and a policy revision change re-decides held tasks (§6).
+
 ## 2. Goals, non-goals, anti-goals
 
 Goals (this increment):
@@ -70,7 +74,7 @@ Narrowing check, run by every verifier: hop N's `operation.skill` equals hop N-1
 
 Verification at the target, in order: signature by a known key; `exp`; `id` unseen (replay store, 24h); `chain[0].person == requester.person`; `operands_hash` matches the operands the target is about to act on; the Message's `extensions` array lists the URI. A missing or unactivated extension is rejected with A2A `ExtensionSupportRequiredError` (`-32008`, spec §5.4). A present but invalid object is rejected with `InvalidParamsError` (`-32602`) and a status message naming the check, never the secret.
 
-The spec's security rules apply: extension data is untrusted input, validated rigorously; the extension "MUST NOT provide a way to bypass the agent's primary security controls" (it is the control, applied after authentication, never instead of it).
+The spec's security rules apply: extension data is untrusted input, validated rigorously; the extension "MUST NOT provide a way to bypass the agent's primary security controls" (it is the control, applied after authentication, never instead of it). Delivery grants no authority: receiving a message, a room post, a task or a subscription never authorizes anything; only a verified object does, and the text of a message is an input to the decision, never a change to the rules.
 
 ## 5. The endpoint (hosted, FastAPI)
 
@@ -88,7 +92,7 @@ Task lifecycle:
 1. Authenticate (Clerk bearer, org membership) or reject `401/403`.
 2. Require the extension (header or `Message.extensions`) or reject per §4.6.3.
 3. Mint or verify the object (§4): an authority request from an authenticated client is minted; a pre-signed object is verified. No authority request → `-32008`.
-4. Decide (§6): `allow` → the task returns `TASK_STATE_WORKING` at once (`SendMessage` does not block; `SendStreamingMessage` streams status), and the message is dispatched by today's path (`messaging.create_human_message` → `openclaw_work._dispatch_message` → Hermes `/plugins/lightbulb-channel/inbound/{agentId}`). `create_human_message` needs a room (`messaging.py:4022`): `contextId` maps to one DM room per (requester person, agent), created on first use, and the task id is passed as the message's `request_id`. Friday's reply arrives through `post_agent_message` (`messaging.py:1347`) with `reply_to` equal to that id; the backend links it, stores it as an Artifact and marks the task `COMPLETED`. `deny` → `TASK_STATE_REJECTED` with the rule named. `hold` → `TASK_STATE_AUTH_REQUIRED` with a status message "waiting for <holder display name>" and `Task.metadata[uri].state = "held"`; the holder is notified (§7); on allow the task continues, on deny it is `REJECTED`, on expiry (24h) it is `CANCELED`.
+4. Decide (§6): `allow` → the task returns `TASK_STATE_WORKING` at once (`SendMessage` does not block; `SendStreamingMessage` streams status), and the message is dispatched by today's path (`messaging.create_human_message` → `openclaw_work._dispatch_message` → Hermes `/plugins/lightbulb-channel/inbound/{agentId}`). `create_human_message` needs a room (`messaging.py:4022`): `contextId` maps to one DM room per (requester person, agent), created on first use, and the task id is passed as the message's `request_id`. Friday's reply arrives through `post_agent_message` (`messaging.py:1347`) with `reply_to` equal to that id; the backend links it, stores it as an Artifact and marks the task `COMPLETED`. `deny` → `TASK_STATE_REJECTED` with the rule named. `hold` → `TASK_STATE_AUTH_REQUIRED` with a status message "waiting for <holder display name>" and `Task.metadata[uri].state = "held"`; the holder is notified (§7); on allow the object is re-verified (`exp`, replay, and the policy revision it was decided under) before the task continues; if the workspace's policy revision changed while the task was held, it is decided again under the new revision and the holder's answer is kept only if the new decision is still `hold`; on deny it is `REJECTED`, on expiry (24h) it is `CANCELED`.
 5. Record (§6) at every state change: one record each for the decision, a holder's answer, completion, failure and expiry.
 6. Offline target (laptop session): the command queues for up to `OFFLINE_SEND_SECONDS` (24h, `local_sessions.py`); the task stays `WORKING` until delivered, then `FAILED` with reason `undeliverable`. The hold expiry is separate and starts only when the task is held.
 
@@ -120,7 +124,7 @@ Rules v1 are a JSON document per workspace, stored beside the company policy map
 
 Evaluation is deterministic and has two steps. First, any matching rule with effect `deny` wins, wherever it sits (Cedar's forbid-overrides-permit). Second, among the rest, document order, first match wins. No match → `default`. A rule matches when its `resource` (exact or `*` suffix), `skill`, `requesters` (a person id, `org:<id>`, or `agent:<id>`) and `when` all match. `when` in v1 supports `operands_equal: {key: value}` and `intent_matches: "<string>"`, compared exactly after case-folding and collapsing whitespace; no model is consulted. `@session-person` resolves to the target session's person as `local_sessions` records it. Requesters outside the org → `deny` always. `on_behalf_of` ≠ requester → `deny` in v1.
 
-A held task's answer becomes a time-boxed exception row: `{rule: "exception", holder, task, operands_hash, expires}`; a later identical request within the window is allowed by that row and recorded as such. Exceptions never widen beyond the operands hash.
+A change of `revision` re-decides every held task (DeepSeek's rule, adopted). A held task's answer becomes a time-boxed exception row: `{rule: "exception", holder, task, operands_hash, expires}`; a later identical request within the window is allowed by that row and recorded as such. Exceptions never widen beyond the operands hash.
 
 The record, one per decision, signed with the issuer key:
 

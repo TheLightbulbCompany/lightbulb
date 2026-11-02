@@ -30,6 +30,13 @@ const run = (entries: SidebarRow[], over: Partial<Parameters<typeof sessionRowGr
 const sam = { name: "Sam", userId: "sam", isViewer: false };
 
 describe("sessionRowGroups", () => {
+  it("keeps hosted assistant connections out of the viewer's coding sessions", () => {
+    const chatgpt = row({ id: "chatgpt", source: "network", agent: "chatgpt", title: "ChatGPT via Me" });
+    const coding = row({ id: "coding", agent: "codex" });
+    const { groups } = run([chatgpt, coding]);
+    expect(ids(groups.find(g => g.id === "person:me")!.entries)).toEqual(["coding"]);
+    expect(groups.find(g => g.id === "connections")).toMatchObject({ label: "Connected assistants", entries: [chatgpt] });
+  });
   it("Needs you holds own waiting and failed only; a teammate's waiting stays under the teammate", () => {
     const own = row({ id: "own", state: "waiting" });
     const failed = row({ id: "failed", state: "ended", endedReason: "login-session-ended" });

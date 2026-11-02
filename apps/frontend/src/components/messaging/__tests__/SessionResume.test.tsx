@@ -31,9 +31,15 @@ it("offers nothing to someone who could not send when it ended", () => {
   expect(container).toBeEmptyDOMElement();
 });
 
+it("offers Continue and a way to resolve a folder-access refusal", () => {
+  render(<Harness own userId="alice" s={ended({ resume: { state: "failed", byUserId: "alice", requestedAt: "2026-10-03T10:00:00Z", reason: "FOLDER_NOT_APPROVED" } })} c={client()} />);
+  expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+  expect(screen.getByRole("link", { name: "Review folder access" })).toHaveAttribute("href", "/settings?panel=desktop");
+});
+
 it("shows a waiting resume instead of a second button", () => {
   render(<Harness s={ended({ resume: { state: "pending", byUserId: "bob", requestedAt: "2026-10-03T10:00:00Z" } })} c={client()} />);
-  expect(screen.getByRole("status")).toHaveTextContent("You asked to resume this session. It starts on Alice’s Mac when that Mac is on, within 24 hours.");
+  expect(screen.getByRole("status")).toHaveTextContent("Opening this session on Alice’s Mac…");
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
 });
 

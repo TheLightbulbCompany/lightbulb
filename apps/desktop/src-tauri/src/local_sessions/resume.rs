@@ -203,6 +203,8 @@ fn argv(program: &Path, w: &Wanted, own: bool, daemon: bool, kept: Option<&str>)
             (if plan { "read-only" } else { "workspace-write" }).into(),
             "--ask-for-approval".into(),
             "on-request".into(),
+            "-c".into(),
+            "check_for_update_on_startup=false".into(),
             "resume".into(),
             w.conversation_id.clone(),
         ]
@@ -376,7 +378,7 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
     // that cannot prove the conversation is free does not start.
     free(running_conversations(home_dir(), w.provider.clone()).await, &w.conversation_id)?;
     let mut argv = argv;
-    let mut daemon = codex::on_daemon(&argv);
+    let daemon = codex::on_daemon(&argv);
     if daemon {
         let loaded = match codex::daemon_socket(&home_dir()) {
             Some(socket) => codex::resume_on_daemon(&socket, &w.conversation_id, &folder, !own || w.mode != "default").await,
@@ -388,7 +390,6 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
             Err(e) if e == codex::UNAVAILABLE => {
                 relay_log(&format!("{} resume: {e}, so it starts as a private --no-daemon writer", &w.session_id[..8]));
                 argv = self::argv(Path::new(&argv[0]), w, own, false, None);
-                daemon = false;
             }
             Err(e) => {
                 relay_log(&format!("{} resume on the Codex daemon refused: {e}", &w.session_id[..8]));
@@ -400,10 +401,7 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
         relay_log(&format!("{} resume launch failed: {e}", &w.session_id[..w.session_id.len().min(8)]));
         "LAUNCH_FAILED"
     })?;
-    if daemon {
-        // Its start hook runs in the daemon, not under this holder: the thread is known already.
-        crate::holder::manager::bind_thread(&held, &w.conversation_id);
-    }
+    bind_resumed_holder(&held, w);
     let who = if own { "You".to_owned() } else { w.by_name.clone() };
     let how = if own && w.mode == "default" {
         "End it from its panel in Lightbulb."
@@ -419,6 +417,14 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
     )
     .await;
     Ok(Some(true))
+}
+
+fn bind_resumed_holder(held: &crate::holder::manager::HolderInfo, w: &Wanted) {
+    if w.provider == "codex" {
+        // Resume already names its thread. Bind private writers too: waiting for
+        // their first prompt's hook leaves a running terminal invisible in the app.
+        crate::holder::manager::bind_thread(held, &w.conversation_id);
+    }
 }
 
 /// The conversation runs on in its provider's daemon: share its mirror again, and the relay loop
@@ -609,6 +615,30 @@ mod tests {
     }
 
     #[test]
+    fn every_codex_resume_opens_the_conversation_without_an_update_menu() {
+        for daemon in [false, true] {
+            let args = argv(Path::new("/bin/codex"), &wanted("codex", "default"), true, daemon, None);
+            assert!(args.windows(2).any(|a| a == ["-c", "check_for_update_on_startup=false"]), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_private_codex_resume_is_bound_before_its_first_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut held = crate::holder::manager::HolderInfo {
+            id: "ab12cd34".into(), socket: dir.path().join("ab12cd34.sock"),
+            pid: 1, provider_pid: 2, cwd: dir.path().into(), watch: true, type_input: true,
+            argv: argv(Path::new("/bin/codex"), &wanted("codex", "default"), true, false, None),
+        };
+        bind_resumed_holder(&held, &wanted("codex", "default"));
+        assert_eq!(crate::holder::manager::thread(&held).as_deref(), Some(CONV));
+        std::fs::remove_file(held.socket.with_extension("thread")).unwrap();
+        held.argv = argv(Path::new("/bin/claude"), &wanted("claude", "default"), true, false, None);
+        bind_resumed_holder(&held, &wanted("claude", "default"));
+        assert!(crate::holder::manager::thread(&held).is_none());
+    }
+
+    #[test]
     fn resume_offer_reads_the_relay_entry_and_sees_a_running_conversation() {
         let ack: Value = serde_json::from_str(ACK).unwrap();
         assert_eq!(tag(&ack["resume"], |_, c| (c.to_owned(), None)), vec![wanted("claude", "plan")]);
@@ -654,7 +684,7 @@ mod tests {
         let codex = Path::new("/bin/codex");
         assert_eq!(
             argv(codex, &wanted("codex", "default"), false, false, None),
-            ["/bin/codex", "--no-daemon", "--sandbox", "read-only", "--ask-for-approval", "on-request", "resume", CONV]
+            ["/bin/codex", "--no-daemon", "--sandbox", "read-only", "--ask-for-approval", "on-request", "-c", "check_for_update_on_startup=false", "resume", CONV]
         );
         assert_eq!(argv(codex, &wanted("codex", "default"), true, false, None)[3], "workspace-write");
         // A resumed Claude Code session runs in the classic renderer, as a new one does (owner ruling 2026-10-07).

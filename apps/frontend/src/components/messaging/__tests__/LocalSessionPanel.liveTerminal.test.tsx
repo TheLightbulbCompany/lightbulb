@@ -28,6 +28,17 @@ const session: LocalSession = { sessionId: "s", deviceId: "mac", humanUserId: "a
 const client = { listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(), listWorkspaceSessions: vi.fn(), setLocalSessionSharing: vi.fn(), watchLocalSession: vi.fn(async () => undefined), sendLocalSessionInput: vi.fn() };
 const below = (a: HTMLElement, b: HTMLElement) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
+it("keeps saved conversation readable after a terminal exits, without stale control warnings", async () => {
+  client.listLocalSessionEvents.mockResolvedValueOnce({ events: [
+    { seq: 1, kind: "text", truncated: false, role: "assistant", text: "Your orchestration notes are still here." },
+  ], nextAfterSeq: null } as never);
+  render(<LocalSessionPanel session={{ ...session, status: "ended", latestEventSeq: 1, controlUnavailableReason: "history-gap" }}
+    ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} />);
+  expect(await screen.findByText("Your orchestration notes are still here.")).toBeInTheDocument();
+  expect(screen.queryByText(/Control is unavailable/)).toBeNull();
+  expect(screen.queryByText(/screen is gone/)).toBeNull();
+});
+
 it("drops the message box and the history region when the viewer can type in the live terminal", async () => {
   render(<LocalSessionPanel session={session} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
   await screen.findByRole("region", { name: "Live terminal (view only)" });
@@ -257,7 +268,7 @@ it("says an empty ended session never started, and offers Resume only for one th
   expect(screen.queryByText("This session ended before anything was sent.")).toBeNull();
   unread.unmount();
   render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 4, resumable: true }} />);
-  expect(await screen.findByRole("button", { name: "Resume" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
 });
 
 it("pauses an admitted teammate's typing while the owner answers a join request", async () => {
@@ -296,7 +307,7 @@ it("says the login session restarted and offers Resume", async () => {
   const props = { ownerName: "Alice", own: true, client: { ...client, resumeLocalSession: vi.fn() } as never, revision: 0, onAccessLost: () => {} };
   render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 3, resumable: true, endedReason: "login-session-ended" }} />);
   expect(document.querySelector(".session-state-title, .session-ended-line")?.textContent).toBe("Ended · your Mac's login session restarted");
-  expect(await screen.findByRole("button", { name: /^Resume/ })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: /^Continue/ })).toBeTruthy();
 });
 
 const textEvent = (seq: number) => ({ seq, kind: "text", role: "user", text: `t${seq}` });
@@ -348,7 +359,7 @@ it("keeps an ended held session's final screen, read-only, under an Ended line w
   expect(typing.admitted).toBe(false);
   expect(document.querySelector(".session-ended-line")!.textContent).toMatch(/^Ended · /);
   expect(screen.queryByText("The screen is gone: this session's terminal closed.")).toBeNull();
-  expect(await screen.findByRole("button", { name: "Resume" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
 });
 
 it("says the screen is gone once the Mac no longer shows it", () => {

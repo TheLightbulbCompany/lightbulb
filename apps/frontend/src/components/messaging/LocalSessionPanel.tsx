@@ -169,8 +169,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // No live terminal here: the conversation, as on the phone (owner rulings 2026-10-11, 2026-10-27). Never
   // both: the transcript under a live terminal read as the session twice (prod 2026-10-27). Workspace
   // members only by construction: /s never mounts this panel and the events route 404s outside the workspace.
-  // An ended session shows its conversation when a search hit opened it.
-  const conversation = !convo && !watchRemote && (notStarted || session.status === "offline" || paused || hit);
+  // Keep saved messages readable after the terminal closes; a search hit can also open them.
+  const savedConversation = session.status === "ended" && !endedScreen && !screenDue && history.events.length > 0;
+  const conversation = !convo && !watchRemote && (notStarted || session.status === "offline" || paused || hit || savedConversation);
   const toBottom = useCallback(() => { const node = scroller.current; if (node) node.scrollTop = node.scrollHeight; }, []);
   useLayoutEffect(() => {
     const node = scroller.current;
@@ -367,9 +368,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {own && !!session.pendingPickups?.length && <JoinRequests waiting={session.pendingPickups} ids={session.pendingPickupIds}
       line={pickupRequestLine} decide={(who, d, id) => client.decideLocalSessionPickup!(session.sessionId, who, d, id)}
       enabled={!!client.decideLocalSessionPickup} personName={personName} />}
-    {(session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
+    {(session.shared === false || (running && session.controlUnavailableReason) || session.workspace?.changed) && <div className="session-notices">
       {paused && session.status === "ended" && <p role="status">Only you see this session. Sharing again shares the whole session.</p>}
-      {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
+      {running && session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
     </div>}
     {/* A prompt the Mac holds for a remote answer gets the approval card; any other waits in the terminal. Not over a
@@ -389,7 +390,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       : <>
       {convoEmpty ? endedPanel : convo ? <>{session.status === "ended" && endedLine}{session.status === "offline" && offlinePanel}<p className="session-ended-line" role="note">{notice.title} {notice.body}</p>
         {own && running && !CLI_ONLY.has(session.provider) && <OpenInTerminal sessionId={session.sessionId} onEvent={onEvent} />}</>
-        : session.status === "ended" ? (endedScreen && !hit || keptWatching ? endedLine : endedPanel) : session.status === "offline" || paused ? offlinePanel : null}
+        : session.status === "ended" ? (endedScreen && !hit || keptWatching || savedConversation ? endedLine : endedPanel) : session.status === "offline" || paused ? offlinePanel : null}
+      {savedConversation && session.controlUnavailableReason === "history-gap" && <p role="note" className="text-ui text-muted-foreground">Some earlier messages haven’t synced yet.</p>}
       {hit && running && !paused && hasTerminal && canWatch && <div className="local-session-actions">
         <Button type="button" variant="outline" size="sm" onClick={() => setLeftHit(focusSeq ?? null)}>Back to the live terminal</Button></div>}
       {conversation && !showBrowser && <>{hint}<div className="local-session-scroll">

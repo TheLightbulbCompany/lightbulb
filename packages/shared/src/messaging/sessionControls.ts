@@ -480,11 +480,12 @@ export function resumeStatus(session: LocalSession, own: boolean, ownerName: str
   const mac = own ? "your Mac" : `${ownerName}’s Mac`;
   if (resume.state === "failed") return `Not resumed: ${(RESUME_REFUSED[resume.reason ?? ""] ?? ((m: string) => `${m} could not start it`))(mac, session.cwdName || "its folder")}.`;
   const who = resume.byUserId === userId ? "You" : nameOf(resume.byUserId);
-  return `${who} asked to resume this session. It starts on ${mac} when that Mac is on, within 24 hours.`;
+  return who === "You" ? `Opening this session on ${mac}…` : `${who} asked to open this session on ${mac}.`;
 }
 
 export type SessionResumeFlow = {
   available: boolean; status: string | null; saving: boolean; error: string | null;
+  recovery?: "folder-access" | "sharing";
   resume: (message: string) => Promise<boolean>;
   /** Where the first message stands once the session runs again; null before, and once it landed. */
   chip: SessionReceiptChip | null;
@@ -594,6 +595,9 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
   return {
     available: !!client.resumeLocalSession && canResumeSession(session, own, userId),
     status: resumeStatus(session, own, ownerName, nameOf, userId),
+    recovery: own && session.resume?.state === "failed"
+      ? session.resume.reason === "FOLDER_NOT_APPROVED" ? "folder-access" : session.resume.reason === "SHARING_OFF" ? "sharing" : undefined
+      : undefined,
     saving, error, resume, chip: receiptChip(attempt),
   };
 }

@@ -64,13 +64,18 @@ export function sessionRowGroups(
   let hidden = 0;
   const needs: SidebarRow[] = [];
   const network: SidebarRow[] = [];
+  const connections: SidebarRow[] = [];
   const rest = new Map<string, SessionGroup>();
   for (const entry of shown) {
     const { row } = entry;
     if (!sessionRowMatches(row, query)) continue;
     const needsYou = sessionRowNeedsYou(row);
     if (!needsYou && (show === "mine" ? !row.person.isViewer : show === "live" && sessionRowGone(row))) { hidden++; continue; }
-    if (needsYou) needs.push(entry);
+    // Hosted MCP clients are messaging connections, not terminals to open. Claude
+    // shares its agent name with the CLI; its declared app record has no folder.
+    const assistant = row.agent === "chatgpt" || (row.agent === "claude" && row.engine?.tier === "pull" && row.engine.folder === "" && !row.engine.repo);
+    if (row.source === "network" && assistant) connections.push(entry);
+    else if (needsYou) needs.push(entry);
     else if (row.source === "network" && !row.person.isViewer && !row.person.member) network.push(entry);
     else {
       const [id, label] = groupBy === "state" ? [`state:${row.state}`, STATES.find(([state]) => state === row.state)![1]]
@@ -92,6 +97,7 @@ export function sessionRowGroups(
   });
   const groups = [
     { id: NEEDS_YOU_GROUP, label: "Needs you", entries: needs }, ...ordered, { id: NETWORK_GROUP, label: "On the network", entries: network },
+    { id: "connections", label: "Connected assistants", entries: connections },
   ].filter((group) => group.entries.length > 0);
   for (const group of groups) sort(group.entries);
   return { groups, archived, hidden, listed: kept.length };

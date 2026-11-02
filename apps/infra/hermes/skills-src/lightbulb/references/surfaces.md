@@ -170,8 +170,8 @@ opening one from that list opens the session in that room's right column.
 Opening a session from the sidebar Sessions section or from a session link
 instead fills the middle with the sharer's DM beside it. A running session
 shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input (the box returns only if the Mac refuses remote typing). A viewer who cannot type sees a "Watching · Only <owner> can type in this session." line instead. An ended session that Lightbulb hosted keeps its final screen, read-only, under "Ended · <time>"
-with Resume, for as long as the owner's Lightbulb app runs; once the app quits or restarts the
-panel says the screen is gone, still with Resume. Nothing of the screen is saved anywhere. A
+with Continue for its owner (Resume for teammates), for as long as the owner's Lightbulb app runs. Once the final screen is unavailable,
+the panel shows saved conversation messages when available; the terminal picture itself is not saved. A
 session whose Mac is offline shows "Mac offline" with Resume greyed out, the follow-up box, and
 **Pick up** for a teammate when its owner allows pick-up. The sidebar Sessions section lists live
 sessions; All sessions lists every session. Desktop sharing is opt-in; disabling it stops local sharing. Native
@@ -331,13 +331,16 @@ person's terminal. You read the session's structured record with
 `lightbulb_local_sessions` instead. A session started with `lightbulb claude` in
 a terminal shows in the owner's panel too, at that terminal's size; both can type.
 
-**Resume**: an ended session shows **Resume and send** to its owner and to the
+**Resume**: an ended session shows **Continue** to its owner and **Resume and send** to the
 people who could send to it when it ended (not to everyone team control let in).
 It starts again on the owner's Mac, in the same folder (which must still be an
 approved folder), with the same conversation, once that Mac is on (within 24
 hours). A teammate's resume runs in plan mode. The owner can take a teammate's
 resume permission back. If the Mac refuses, the session reads "Not resumed:
-<reason>". You cannot resume a session; tell the person to press Resume. A Claude Code
+<reason>". Folder-access refusals offer the owner **Review folder access**, linking to Desktop settings.
+A pending request says it is opening the session; this is not evidence that the Mac is off.
+Hosted MCP identities such as ChatGPT appear under **Connected assistants**, not among coding sessions.
+You cannot resume a session; tell the person to press Continue (or Resume on a teammate's session). A Claude Code
 session that ended before its first message has nothing to resume: it shows
 "This session ended before anything was sent." and is not listed. A Codex
 session that ended that way stays listed and can be resumed. A session that

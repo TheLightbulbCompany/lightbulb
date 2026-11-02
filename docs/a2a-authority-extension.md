@@ -93,7 +93,7 @@ Evaluation, in this order:
 5. No match: `default`.
 6. A `hold` whose requester is one of the holders, with a person at the origin: `reject`, rule `self`. Nobody approves their own request. An ask that starts from an agent run with no person behind it skips this check.
 
-With no stored document, the default is one rule: anyone in the workspace may `message` any agent; everything else holds. There are no agent or room holders without a stored document: an admin's own request to a resource they would hold is rejected as `self`, a non-admin's is rejected as `no_holder`, and session holds still go to the session's person. A stored rules document is required for agent and room holders.
+With no stored rules document, the engine uses defaults: in-org messages to an agent are allowed (r1); session resources are held for the session's person; for agent and room resources the only holder is the calling admin, so an admin's own held request is rejected as `self` and a non-admin's has no holder and is rejected as `no_holder`; an autonomous ask (no origin person) has no requester and gets 403 `no_requester`. Store a rules document to name holders for agents and rooms.
 
 A hold with no holder is refused with rule `no_holder`. An exception is created when a holder allows: one day, only for the same resource, skill and operands hash.
 

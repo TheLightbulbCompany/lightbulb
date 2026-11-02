@@ -13,7 +13,7 @@ Why A2A: it is the interop protocol the deployed-agent vendors are converging on
 ## 2. Goals, non-goals, anti-goals
 
 Goals (this increment):
-- Any A2A client can send a task to a hosted workspace agent (Friday) at a Lightbulb URL, and the request is refused unless it carries our authority extension.
+- Any A2A client that can authenticate to the workspace can send a task to a hosted workspace agent (Friday) at a Lightbulb URL, and the request is refused unless it activates our authority extension and states the operation and intent in it. The hosted door mints and signs the authority object from the verified identity plus that statement (§4).
 - A hosted agent's request to a person's laptop session carries the same object, is decided by the workspace's rules, and is held for the session's person when the rules do not decide.
 - Every decision is recorded, signed, and retrievable with the task.
 - An external party can verify the record with our published key.
@@ -36,7 +36,7 @@ Anti-goals (a failure even if it works): a dialog to the agent's owner for every
 
 **URI:** `https://thelightbulb.company/a2a/ext/authority/v1`
 **Declared** in every Lightbulb Agent Card under `capabilities.extensions` with `required: true`. Per spec, an agent "should reject the incoming request with an appropriate error" when a client does not activate a required extension. Activation is the `A2A-Extensions` header (JSON-RPC and REST bindings) and the `extensions` array on the Message.
-**Carried** in `Message.metadata` under the key equal to the URI. Spec: extensions put custom attributes in `metadata`, keyed by URI; they must not add fields to core structures.
+**Carried** in `Message.metadata` under the key equal to the URI, and the URI listed in the Message's `extensions` array. The extensions guide says extensions should put custom attributes in `metadata` keyed by URI rather than adding fields to core structures; the spec's own examples use that pattern.
 
 The object (JSON, signed as a compact JWS, EdDSA):
 
@@ -64,9 +64,11 @@ The object (JSON, signed as a compact JWS, EdDSA):
 }
 ```
 
-Who signs: the minter of the hop. At the hosted door the backend mints and signs after Clerk verification (the client's token proves the person and org). A laptop daemon will sign with its computer key in phase 2. Each later hop appends to `chain` and re-signs the whole object; the previous signature is kept as `prev_sig` so the chain is verifiable end to end. Authority can only narrow per hop: a hop may not add skills or widen operands.
+Who mints and signs (my call, settles the reviewer's first question): in phase 1 only the hosted door mints. A client activates the extension and sends, under the URI key, an unsigned *authority request*: `{ "operation", "intent", "on_behalf_of" }`. The backend verifies the caller (§5), fills `requester` and `chain[0]` from the verified identity, computes `operands_hash`, signs, and from then on the signed object is what travels and what the record references. A client that sends a pre-signed object from a registered key (a laptop daemon with its computer key, phase 2) is verified instead of re-minted. So "required extension" means: no authority request, no task. Each later hop appends to `chain` and re-signs the whole object; the previous signature is kept as `prev_sig` so the chain is verifiable end to end. In phase 1 every hop is the backend, so a chain has at most two entries (the origin person, then the hosted agent), both written by the backend in one mint; `prev_sig` is present but trivially the same signer.
 
-Verification at the target, in order: signature by a known key; `exp`; `id` unseen (replay store, 24h); `chain[0].person == requester.person`; `operands_hash` matches the operands the target is about to act on; the Message's `extensions` array lists the URI. Any failure rejects the task with A2A error `-32005` (unsupported or invalid extension) and a status message naming the check, never the secret.
+Narrowing check, run by every verifier: hop N's `operation.skill` equals hop N-1's; every key in hop N's `operands` exists in hop N-1's with an equal value, or hop N-1 declared that key as `"*"`; hop N may drop keys, never add them. A hop that fails the check is rejected as widened.
+
+Verification at the target, in order: signature by a known key; `exp`; `id` unseen (replay store, 24h); `chain[0].person == requester.person`; `operands_hash` matches the operands the target is about to act on; the Message's `extensions` array lists the URI. A missing or unactivated extension is rejected with A2A `ExtensionSupportRequiredError` (`-32008`, spec §5.4). A present but invalid object is rejected with `InvalidParamsError` (`-32602`) and a status message naming the check, never the secret.
 
 The spec's security rules apply: extension data is untrusted input, validated rigorously; the extension "MUST NOT provide a way to bypass the agent's primary security controls" (it is the control, applied after authentication, never instead of it).
 
@@ -75,18 +77,20 @@ The spec's security rules apply: extension data is untrusted input, validated ri
 New router `apps/backend/routers/a2a.py`, included in `main.py` before the MCP catch-all mount at `main.py:1123`. Python `a2a-sdk` with the FastAPI integration for the JSON-RPC and REST bindings; our code is the request handler, the extension check, the decision, and the record.
 
 Routes (my call; the builder may regroup):
-- `GET /a2a/{org}/{agent}/agent-card.json`: the signed Agent Card. `supportedInterfaces[0] = { url: ".../a2a/{org}/{agent}", protocolBinding: "JSONRPC", protocolVersion: "1.0", tenant: "{org}" }`. `securitySchemes`: OAuth2 bearer via Clerk (the hosted MCP's verifier, `hosted_mcp.py:37`, with audience `{PUBLIC_API_BASE}/a2a`). `capabilities.extensions = [ {uri, required: true, description} ]`. `skills`: `message` (send the agent a message and get its reply), `ask_session` (ask one of the workspace's laptop sessions; v1 exposes this only to workspace agents, not external clients). `signatures`: JWS per §8.4 with `kid` = the issuer key id, canonicalized per RFC 8785.
-- `POST /a2a/{org}/{agent}`: JSON-RPC `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`. REST equivalents from the SDK.
-- `GET /a2a/{org}/{agent}/tasks/{id}/record`: the signed decision record (also embedded in `Task.metadata` under the extension URI).
+- `GET /a2a/{org}/{agent}/agent-card.json`: the signed Agent Card. Discovery in v1 is direct configuration (spec's "direct configuration" mode): the workspace admin copies the card URL from the app and gives it to the client; the domain-wide `/.well-known/agent-card.json` is not served in v1 because one domain hosts many workspaces and the spec prescribes no registry API. `supportedInterfaces[0] = { url: ".../a2a/{org}/{agent}", protocolBinding: "JSONRPC", protocolVersion: "1.0", tenant: "{org}" }`. `securitySchemes`: OAuth2 bearer via Clerk. The hosted MCP's verifier (`hosted_mcp.py:37`) hard-codes audience `.../mcp` and scope `lightbulb:messages:read` (`hosted_mcp.py:34, 69, 72`) and rejects JWTs; the builder generalizes it to take audience and scopes as parameters, registers a second Clerk OAuth application and protected-resource metadata for `{PUBLIC_API_BASE}/a2a` with scopes `lightbulb:a2a:send` and `lightbulb:a2a:read`, and also accepts a Clerk session JWT (`core/auth.py:211 get_current_user`) so the Lightbulb app can call the same door. `capabilities.extensions = [ {uri, required: true, description} ]`. `skills`: `message` (send the agent a message and get its reply), `ask_session` (ask one of the workspace's laptop sessions; v1 exposes this only to workspace agents, not external clients). `signatures`: JWS per §8.4 with `kid` = the issuer key id, canonicalized per RFC 8785.
+- `POST /a2a/{org}/{agent}`: JSON-RPC v1.0 methods `SendMessage`, `SendStreamingMessage`, `GetTask`, `CancelTask` (spec §9.1; the `message/send` names are v0.3). REST equivalents from the SDK.
+- `POST /api/v1/internal/a2a/{ownerId}/ask-session` (hook-token route, `messaging.py:765` pattern): how a hosted agent starts a hop. Friday's Hermes plugin gets a tool `ask_session` beside `send_room_message` (`plugins/lightbulb/__init__.py:710`) that posts the origin message id, the target session, the operation and the intent here. The backend resolves the origin message's author to `requester.person`, appends Friday as `chain[1]`, mints, decides, and dispatches (§8). An autonomous or scheduled turn has no origin message; then `requester.person` is the agent's holder (§6) and `verified_by` is `agent-runtime`. Friday never speaks A2A over HTTP back into the backend in v1.
+- `GET /a2a/{org}/{agent}/tasks/{id}/record`: every signed decision record for the task, oldest first; `Task.metadata[uri].record` carries only the latest.
 - `POST /a2a/{org}/{agent}/tasks/{id}/decide`: the holder's answer to a held task (allow or deny, with a reason). Only the holder's verified identity may call it; the requester may never answer their own request.
 - `GET /a2a/keys.json`: the public keys (JWKS) that sign cards and records.
 
 Task lifecycle:
 1. Authenticate (Clerk bearer, org membership) or reject `401/403`.
 2. Require the extension (header or `Message.extensions`) or reject per §4.6.3.
-3. Verify the object (§4). The backend also mints and signs the object for clients that authenticated but sent none? **No.** A required extension is required; the client must send it. Lightbulb's own clients (the app, the CLI, Friday) always send one.
-4. Decide (§6): `allow` → task `TASK_STATE_WORKING`, dispatch to the agent by today's path (`messaging.create_human_message` → `openclaw_work._dispatch_message` → Hermes `/plugins/lightbulb-channel/inbound/{agentId}`), reply becomes an Artifact, task `COMPLETED`. `deny` → `TASK_STATE_REJECTED` with the rule named. `hold` → `TASK_STATE_AUTH_REQUIRED` with a status message "waiting for <holder display name>" and `Task.metadata[uri].state = "held"`; the holder is notified (§7); on allow the task continues, on deny it is `REJECTED`, on expiry (24h) it is `CANCELED`.
-5. Record (§6) at every state change.
+3. Mint or verify the object (§4): an authority request from an authenticated client is minted; a pre-signed object is verified. No authority request → `-32008`.
+4. Decide (§6): `allow` → the task returns `TASK_STATE_WORKING` at once (`SendMessage` does not block; `SendStreamingMessage` streams status), and the message is dispatched by today's path (`messaging.create_human_message` → `openclaw_work._dispatch_message` → Hermes `/plugins/lightbulb-channel/inbound/{agentId}`). `create_human_message` needs a room (`messaging.py:4022`): `contextId` maps to one DM room per (requester person, agent), created on first use, and the task id is passed as the message's `request_id`. Friday's reply arrives through `post_agent_message` (`messaging.py:1347`) with `reply_to` equal to that id; the backend links it, stores it as an Artifact and marks the task `COMPLETED`. `deny` → `TASK_STATE_REJECTED` with the rule named. `hold` → `TASK_STATE_AUTH_REQUIRED` with a status message "waiting for <holder display name>" and `Task.metadata[uri].state = "held"`; the holder is notified (§7); on allow the task continues, on deny it is `REJECTED`, on expiry (24h) it is `CANCELED`.
+5. Record (§6) at every state change: one record each for the decision, a holder's answer, completion, failure and expiry.
+6. Offline target (laptop session): the command queues for up to `OFFLINE_SEND_SECONDS` (24h, `local_sessions.py`); the task stays `WORKING` until delivered, then `FAILED` with reason `undeliverable`. The hold expiry is separate and starts only when the task is held.
 
 Spec note on the held state: §7.6 defines `TASK_STATE_AUTH_REQUIRED` for an agent that needs the client to supply authorization, and §7.6.4 says the transition is never itself an authorization. We use it for "a person who holds the resource must authorize", which is the same shape; the substate rides in metadata as a profile extension allows. My call; a reviewer may prefer `INPUT_REQUIRED`.
 
@@ -99,22 +103,22 @@ Rules v1 are a JSON document per workspace, stored beside the company policy map
   "revision": "<ulid>",
   "holders": {
     "agent:friday": ["user_<workspace admin>"],
-    "session:*": "its person",
+    "session:*": ["@session-person"],
     "room:*": ["user_<workspace admin>"]
   },
   "rules": [
     { "id": "r1", "resource": "agent:friday", "skill": "message",
       "requesters": ["org:org_..."], "effect": "allow" },
     { "id": "r2", "resource": "session:*", "skill": "ask_session",
-      "requesters": ["agent:friday"], "effect": "hold" },
+      "requesters": ["agent:friday"], "when": {"intent_matches": "status of my own session"}, "effect": "allow" },
     { "id": "r3", "resource": "session:*", "skill": "ask_session",
-      "requesters": ["agent:friday"], "when": {"intent_matches": "status of my own session"}, "effect": "allow" }
+      "requesters": ["agent:friday"], "effect": "hold" }
   ],
   "default": "hold"
 }
 ```
 
-Evaluation is deterministic: the first rule whose resource, skill, requester and `when` match wins; `deny` rules are evaluated before `allow` rules at the same specificity (Cedar's forbid-overrides-permit); no match → `default`. Requesters outside the org → `deny` always. `when` in v1 supports only exact operand equality and a literal `intent_matches` string; no model is consulted. `on_behalf_of` ≠ requester → `deny` in v1.
+Evaluation is deterministic and has two steps. First, any matching rule with effect `deny` wins, wherever it sits (Cedar's forbid-overrides-permit). Second, among the rest, document order, first match wins. No match → `default`. A rule matches when its `resource` (exact or `*` suffix), `skill`, `requesters` (a person id, `org:<id>`, or `agent:<id>`) and `when` all match. `when` in v1 supports `operands_equal: {key: value}` and `intent_matches: "<string>"`, compared exactly after case-folding and collapsing whitespace; no model is consulted. `@session-person` resolves to the target session's person as `local_sessions` records it. Requesters outside the org → `deny` always. `on_behalf_of` ≠ requester → `deny` in v1.
 
 A held task's answer becomes a time-boxed exception row: `{rule: "exception", holder, task, operands_hash, expires}`; a later identical request within the window is allowed by that row and recorded as such. Exceptions never widen beyond the operands hash.
 
@@ -136,7 +140,7 @@ The holder is looked up from `holders`. For `session:*` it is the session's pers
 
 ## 8. Dispatch to a laptop session
 
-v1 uses the path that exists: `native_session_tools.session_send` → `local_sessions.submit_command` → `local_session_relay.dispatch_session` → the Mac app (`native_session_tools.py:417`, `local_session_relay.py:1389`). The signed authority object travels in the command body and is rendered into the session's framed message as a short header (requester, for whom, intent) plus a link to the record. The session does not verify it in v1; the backend did. Phase 2 moves this to the P2P network with the daemon verifying.
+v1 uses the path that exists: `native_session_tools.session_send` → `local_sessions.submit_command` → `local_session_relay.dispatch_session` → the Mac app (`native_session_tools.py:417`, `local_session_relay.py:1389`). `session_send` expects a source session; the builder adds a source of kind `agent` for hosted agents. The command carries no new field: `LocalSessionCommand` has none for it and the Mac decodes with `deny_unknown_fields` (`local_sessions.py:525-538`), and `text` is capped at 8 KiB (`MAX_COMMAND_BYTES`, `local_sessions.py:60`). So the full object stays server-side, and `text` gets a rendered header of at most 512 bytes before the message: requester, for whom, the first 200 characters of the intent, and the record URL. No Mac app release is needed in v1. The session does not verify the object in v1; the backend did. Phase 2 moves this to the P2P network with the daemon verifying.
 
 ## 9. Phase 2 outline (not this increment, written so phase 1 does not paint us in)
 
@@ -148,7 +152,7 @@ v1 uses the path that exists: `native_session_tools.session_send` → `local_ses
 
 ## 10. Tests (phase 1 acceptance)
 
-1. Conformance: the official `a2a-sdk` Python client fetches the card, sends `message/send` with the extension, and gets a `COMPLETED` task with Friday's reply; the same without the extension gets the required-extension error.
+1. Conformance: the official `a2a-sdk` Python client fetches the card, sends `SendMessage` with the extension, and gets a `COMPLETED` task with Friday's reply; the same without the extension gets the required-extension error.
 2. Tampering: an object with a changed operand, an expired `exp`, a replayed `id`, a chain whose origin was edited, and a bad signature each produce a rejection naming the check.
 3. Hold: Friday asks a laptop session something not covered by a rule; the task goes `AUTH_REQUIRED`; the holder approves in the app; the task completes; the record shows `allow_by_holder` with the holder's id; the requester cannot call `/decide`.
 4. Self-approval: holder == requester → `REJECTED`, rule `self`.
@@ -158,7 +162,7 @@ v1 uses the path that exists: `native_session_tools.session_send` → `local_ses
 
 ## 11. Left to the builder
 
-The SDK's exact FastAPI wiring; storage tables (DynamoDB, matching `messaging_repo`); the replay store; key management for the issuer key's `kid` rotation; the exact app UI for the holder's Approve / Deny; error strings; rate limits on the public routes (reuse `_public_ingress` buckets for the card, Clerk for everything else).
+The SDK's exact FastAPI wiring, and the required-extension check in our own handler since `a2a-sdk` does not enforce `required` for us; the generalized Clerk verifier and the second OAuth application plus protected-resource metadata for `/a2a`; storage tables (DynamoDB, matching `messaging_repo`); the replay store; key management for the issuer key's `kid` rotation; the `ask_session` tool in the Hermes plugin; the exact app UI for the holder's Approve / Deny; error strings; rate limits on the public routes (reuse `_public_ingress` buckets for the card, Clerk for everything else).
 
 ## 12. Open questions for the founder
 

@@ -162,7 +162,7 @@ describe("AppView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
     await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.preview.test/"));
     expect([pressed("Preview"), pressed("Live")]).toEqual(["true", "false"]);
-    expect(screen.getByText("You're looking at the preview. Only you and #finance see it until it's published.")).toBeTruthy();
+    expect(screen.getByText("You're looking at the preview. Only you and #finance see it until it's published. The data here is examples; the live app starts empty.")).toBeTruthy();
     expect(open).toHaveBeenLastCalledWith("a1", "preview");
     fireEvent.click(screen.getByRole("button", { name: "Live" }));
     await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.live.test/"));

@@ -17,7 +17,7 @@ class Rule(ContractModel):
 
 
 class Rules(ContractModel):
-    revision: str
+    revision: str = ""  # assigned by the server on store (a2a_tasks.put_rules); a client's is ignored
     holders: dict[str, list[str]]
     rules: list[Rule]
     default: Effect = "hold"
@@ -25,7 +25,7 @@ class Rules(ContractModel):
 
 @dataclass
 class Decision:
-    effect: Literal["allow", "deny", "hold", "reject"]
+    effect: Literal["allow", "deny", "hold"]
     rule: str
     holders: list[str]
 
@@ -89,8 +89,8 @@ def decide(
         return Decision("allow", f"exception:{exception['id']}", holders)
     first = hits[0] if hits else None
     effect, rule = (first.effect, first.id) if first else (rules.default, "default")
-    # A hold waits for a holder; the requester can never be their own approver. An agent-originated
-    # ask (no person origin) has no self to approve: its stand-in requester may answer it.
+    # A verified person asking for a resource they hold already has its holder's OK (ruling 2 Nov 2026).
+    # An agent-originated ask (no person origin) stays held: its stand-in requester answers it.
     if effect == "hold" and origin_is_person and requester_person in holders:
-        return Decision("reject", "self", holders)
+        return Decision("allow", "holder", holders)
     return Decision(effect, rule, holders)

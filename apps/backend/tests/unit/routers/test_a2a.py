@@ -63,8 +63,10 @@ def test_card_lists_required_extension(client, a2a_env):
     assert client.get("/a2a/org_test_456/nobody/agent-card.json").status_code == 404
 
 
-def test_keys_lists_the_issuer_key(client, a2a_env):
-    assert client.get("/a2a/keys.json").json()["keys"][0]["kid"] == a2a_authority.network_proof.kid()
+def test_keys_is_a_jwks_of_the_issuer_key(client, a2a_env):
+    pub = a2a_authority.network_proof.public_key()
+    [k] = client.get("/a2a/keys.json").json()["keys"]
+    assert k == {"kty": "OKP", "crv": "Ed25519", "x": pub["key"], "alg": "EdDSA", "use": "sig", "kid": pub["kid"]}
 
 
 def test_send_without_extension_is_32008(client_org_admin, a2a_env):
@@ -81,6 +83,8 @@ def test_send_with_wrong_metadata_key_is_32008(client_org_admin, a2a_env):
     [
         ({"intent": "no operation"}, "shape"),
         ({**AUTH, "operation": {**AUTH["operation"], "resource": "agent:someone_else"}}, "resource"),
+        ({**AUTH, "operation": {**AUTH["operation"], "skill": "anything"}}, "skill"),
+        ({**AUTH, "operation": {**AUTH["operation"], "skill": "ask_session"}}, "skill"),
     ],
 )
 def test_present_but_invalid_authority_is_32602_naming_the_check(client_org_admin, a2a_env, auth_req, check):
@@ -134,21 +138,17 @@ def test_reply_addressed_to_no_dispatch_completes_nothing(client_org_admin, a2a_
     assert states(client_org_admin, first) == ["WORKING"]
 
 
-def test_unaddressed_reply_links_only_when_one_task_is_open(client_org_admin, a2a_env):
+def test_unaddressed_reply_completes_nothing_even_with_one_task_open(client_org_admin, a2a_env):
     first = send(client_org_admin)["result"]["task"]["id"]
     reply(a2a_env, "just one", message_id="am1")
-    assert states(client_org_admin, first) == ["COMPLETED"]
-    second = send(client_org_admin)["result"]["task"]["id"]
-    third = send(client_org_admin)["result"]["task"]["id"]
-    reply(a2a_env, "which one?", message_id="am2")
-    assert states(client_org_admin, second, third) == ["WORKING", "WORKING"]
+    assert states(client_org_admin, first) == ["WORKING"]
 
 
 def test_a_retried_reply_completes_one_task_only(client_org_admin, a2a_env):
     first = send(client_org_admin)["result"]["task"]["id"]
-    reply(a2a_env, "hi", message_id="am1")
+    reply(a2a_env, "hi", message_id="am1", reply_to=a2a_env.sent[0])
     second = send(client_org_admin)["result"]["task"]["id"]
-    reply(a2a_env, "hi", message_id="am1")  # the same post, retried
+    reply(a2a_env, "hi", message_id="am1", reply_to=a2a_env.sent[0])  # the same post, retried
     assert states(client_org_admin, first, second) == ["COMPLETED", "WORKING"]
     records = client_org_admin.get(f"/a2a/org_test_456/friday/tasks/{first}/record").json()
     assert [r["record"]["decision"] for r in records] == ["allow", "completed"]
@@ -232,3 +232,44 @@ def test_dispatch_failure_is_a_failed_task(client_org_admin, a2a_env):
     a2a_env.send.side_effect = RuntimeError("runtime down")
     task = send(client_org_admin)["result"]["task"]
     assert task["status"]["state"] == "TASK_STATE_FAILED" and task["metadata"][URI]["reason"] == "dispatch_failed"
+
+
+def test_session_skill_through_the_door_is_refused_before_any_task(client_org_admin, a2a_env):
+    bad = {**AUTH, "operation": {**AUTH["operation"], "skill": "anything"}}
+    err = send(client_org_admin, msg(bad))["error"]
+    assert (err["code"], err["message"]) == (-32602, "invalid authority: skill")
+
+
+def test_working_task_past_its_day_is_written_failed_and_a_late_reply_completes_nothing(
+    client_org_admin, a2a_env, monkeypatch
+):
+    import time
+    from types import SimpleNamespace
+
+    read = send(client_org_admin)["result"]["task"]["id"]
+    unread = send(client_org_admin)["result"]["task"]["id"]
+    later = int(time.time()) + 86_401
+    monkeypatch.setattr("core.services.a2a_tasks.time", SimpleNamespace(time=lambda: later))
+    t = get(client_org_admin, read)
+    assert t["status"]["state"] == "TASK_STATE_FAILED" and t["metadata"][URI]["reason"] == "undeliverable"
+    get(client_org_admin, read)  # a second read writes nothing more
+    reply(a2a_env, "late", message_id="am1", reply_to=a2a_env.sent[0])
+    reply(a2a_env, "late too", message_id="am2", reply_to=a2a_env.sent[1])  # never read before the reply
+    assert states(client_org_admin, read, unread) == ["FAILED", "FAILED"]
+    for task_id in (read, unread):
+        recs = client_org_admin.get(f"/a2a/org_test_456/friday/tasks/{task_id}/record").json()
+        assert [(r["record"]["decision"], r["record"]["rule"]) for r in recs] == [
+            ("allow", "r1"),
+            ("failed", "undeliverable"),
+        ]
+
+
+def test_a_member_who_is_not_requester_holder_or_admin_cannot_read(client_org_admin, app, a2a_env):
+    from tests.unit.routers.test_a2a_hold import as_user
+
+    task_id = send(client_org_admin)["result"]["task"]["id"]
+    with as_user(app, "user_stranger"):
+        err = client_org_admin.post("/a2a/org_test_456/friday", json=rpc("GetTask", {"id": task_id})).json()["error"]
+        assert err["code"] == -32001
+        r = client_org_admin.get(f"/a2a/org_test_456/friday/tasks/{task_id}/record")
+        assert r.status_code == 404 and r.json()["detail"]["code"] == "task_not_found"

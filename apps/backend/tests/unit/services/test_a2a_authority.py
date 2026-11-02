@@ -94,3 +94,17 @@ def test_tampered_operands_break_signature(monkeypatch):
     forged = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
     with pytest.raises(a.AuthorityError, match="signature"):
         a.verify(f"{head}.{forged}.{sig}", now=1_001)
+
+
+def test_unencodable_operands_fail_as_operands_in_mint_and_verify(monkeypatch):
+    lone = a.AuthorityRequest(
+        operation=a.Operation(skill="message", resource="agent:friday", operands={"text": "\ud800"}), intent="x"
+    )
+    with pytest.raises(a.AuthorityError, match="operands"):
+        _mint(monkeypatch, request=lone)
+    _, claims = _mint(monkeypatch)
+    claims["operation"]["operands"] = {"text": "\ud800"}  # _sign escapes it; json.loads brings it back
+    jws = a.network_proof._sign(claims, typ=a.OBJECT_TYP)
+    with pytest.raises(a.AuthorityError) as e:
+        a.verify(jws, now=1_001)
+    assert e.value.check == "operands"

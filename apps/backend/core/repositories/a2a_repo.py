@@ -38,15 +38,24 @@ async def put_rules(org: str, rules: dict) -> None:
 
 
 async def put_exception(
-    org: str, resource: str, skill: str, operands_hash: str, *, holder: str, task_id: str, now: int
+    org: str,
+    resource: str,
+    skill: str,
+    requester_person: str,
+    operands_hash: str,
+    *,
+    holder: str,
+    task_id: str,
+    now: int,
 ) -> str:
-    """Record a holder's one-day approval for this resource, skill and operands; returns the exception id."""
+    """Record a holder's one-day approval for this requester, resource, skill and operands; returns the
+    exception id."""
     exc_id = str(uuid.uuid4())
     await run_in_thread(
         _table().put_item,
         Item={
             "pk": f"A2A#{org}",
-            "sk": f"EXC#{resource}#{skill}#{operands_hash}",
+            "sk": f"EXC#{resource}#{skill}#{requester_person}#{operands_hash}",
             "id": exc_id,
             "holder": holder,
             "taskId": task_id,
@@ -56,8 +65,10 @@ async def put_exception(
     return exc_id
 
 
-async def get_exception(org: str, resource: str, skill: str, operands_hash: str, now: int) -> dict | None:
-    key = {"pk": f"A2A#{org}", "sk": f"EXC#{resource}#{skill}#{operands_hash}"}
+async def get_exception(
+    org: str, resource: str, skill: str, requester_person: str, operands_hash: str, now: int
+) -> dict | None:
+    key = {"pk": f"A2A#{org}", "sk": f"EXC#{resource}#{skill}#{requester_person}#{operands_hash}"}
     resp = await run_in_thread(_table().get_item, Key=key)
     item = resp.get("Item")
     return item if item and int(item["expiresAt"]) > now else None

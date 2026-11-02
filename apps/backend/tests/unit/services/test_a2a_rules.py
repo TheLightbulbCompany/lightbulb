@@ -27,7 +27,7 @@ def test_ask_session_falls_to_default_hold_with_session_person_as_holder():
     assert (d.effect, d.rule, d.holders) == ("hold", "default", ["user_owner"])
 
 
-def test_requester_who_is_the_holder_is_rejected_as_self():
+def test_requester_who_is_the_holder_is_allowed_by_rule_holder():
     d = r.decide(
         R,
         requester_person="user_owner",
@@ -35,7 +35,7 @@ def test_requester_who_is_the_holder_is_rejected_as_self():
         skill="ask_session",
         **{**K, "session_person": "user_owner"},
     )
-    assert (d.effect, d.rule) == ("reject", "self")
+    assert (d.effect, d.rule) == ("allow", "holder")
 
 
 def test_deny_rule_wins_over_an_earlier_allow():
@@ -69,14 +69,17 @@ def test_exception_repo_roundtrip_and_expiry(repos):
 
     eid = asyncio.run(
         a2a_repo.put_exception(
-            "org_1", "session:abc", "ask_session", "sha256:aa", holder="user_owner", task_id="t1", now=1_000
+            "org_1", "session:abc", "ask_session", "user_x", "sha256:aa", holder="user_owner", task_id="t1", now=1_000
         )
     )
-    assert asyncio.run(a2a_repo.get_exception("org_1", "session:abc", "ask_session", "sha256:aa", 1_001))["id"] == eid
-    assert asyncio.run(a2a_repo.get_exception("org_1", "session:abc", "message", "sha256:aa", 1_001)) is None
-    assert (
-        asyncio.run(a2a_repo.get_exception("org_1", "session:abc", "ask_session", "sha256:aa", 1_000 + 86_401)) is None
-    )
+
+    def get(skill="ask_session", requester="user_x", now=1_001):
+        return asyncio.run(a2a_repo.get_exception("org_1", "session:abc", skill, requester, "sha256:aa", now))
+
+    assert get()["id"] == eid
+    assert get(skill="message") is None
+    assert get(requester="user_bob") is None  # scoped to the requester the holder approved
+    assert get(now=1_000 + 86_401) is None
 
 
 def test_matching_deny_beats_an_exception():

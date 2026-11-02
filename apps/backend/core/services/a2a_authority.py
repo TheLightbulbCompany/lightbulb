@@ -36,7 +36,7 @@ class AuthorityRequest(ContractModel):
 
 class AuthorityError(ValueError):
     """``check`` names the first failing check: signature, typ, exp, iat, shape, intent_length,
-    on_behalf_of, origin or operands_hash."""
+    on_behalf_of, origin, operands (not encodable) or operands_hash."""
 
     def __init__(self, check: str):
         super().__init__(check)
@@ -45,8 +45,11 @@ class AuthorityError(ValueError):
 
 def operands_hash(operands: dict) -> str:
     # ponytail: JCS-equivalent for JSON without floats; swap in an RFC 8785 canonicalizer when floats appear
-    canon = json.dumps(operands, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return "sha256:" + hashlib.sha256(canon.encode()).hexdigest()
+    try:
+        canon = json.dumps(operands, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    except ValueError:  # a lone surrogate (UnicodeEncodeError) or a value JSON cannot hold
+        raise AuthorityError("operands") from None
+    return "sha256:" + hashlib.sha256(canon).hexdigest()
 
 
 def mint(

@@ -82,7 +82,7 @@ def records(c, task_id):
     return [r["record"] for r in c.get(f"{BASE}/tasks/{task_id}/record").json()]
 
 
-def test_ask_session_is_held_and_holder_is_notified(client, app, hold_env):
+def test_out_of_rule_message_is_held_and_holder_is_notified_with_operands_and_chain(client, app, hold_env):
     task = send(client)
     assert task["status"]["state"] == "TASK_STATE_AUTH_REQUIRED"
     assert task["metadata"][URI]["state"] == "held"
@@ -91,6 +91,7 @@ def test_ask_session_is_held_and_holder_is_notified(client, app, hold_env):
     owner_id, req = hold_env.notify.await_args.args
     assert owner_id == ORG and str(req.agent_id) == AGENT and req.event_id == f"a2a:{task['id']}:hold:{OWNER}"
     assert f"/a2a/{ORG}/{AGENT}/tasks/{task['id']}/decide" in req.text and REQUESTER in req.text
+    assert "Request: please do the thing" in req.text and f"(via {REQUESTER})" in req.text
     holder_auth = hold_env.dm.await_args.args[0]
     assert holder_auth.user_id == OWNER and hold_env.dm.await_args.kwargs == {"create_key": task["id"]}
     [hold] = records(client, task["id"])
@@ -122,7 +123,7 @@ def test_holder_allow_dispatches_writes_exception_and_record(client, app, hold_e
     assert [x["decision"] for x in recs] == ["hold", "allow_by_holder"]
     assert recs[1]["answered_by"] == OWNER and recs[1]["holder"] == OWNER
     h = operands_hash({"text": "please do the thing"})
-    row = asyncio.run(a2a_repo.get_exception(ORG, f"agent:{AGENT}", "message", h, int(time.time())))
+    row = asyncio.run(a2a_repo.get_exception(ORG, f"agent:{AGENT}", "message", REQUESTER, h, int(time.time())))
     assert row is not None and row["holder"] == OWNER and row["taskId"] == task_id
 
 
@@ -142,15 +143,20 @@ def test_second_identical_request_is_allowed_by_exception(client, app, hold_env)
     again = send(client)
     exc = asyncio.run(
         a2a_repo.get_exception(
-            ORG, f"agent:{AGENT}", "message", operands_hash({"text": "please do the thing"}), int(time.time())
+            ORG,
+            f"agent:{AGENT}",
+            "message",
+            REQUESTER,
+            operands_hash({"text": "please do the thing"}),
+            int(time.time()),
         )
     )
     assert again["status"]["state"] == "TASK_STATE_WORKING"
     assert again["metadata"][URI]["rule"] == f"exception:{exc['id']}"
     other = send(client, text="something different")
     assert other["status"]["state"] == "TASK_STATE_AUTH_REQUIRED"
-    other_skill = send(client, skill="ask_session")  # same operands, another skill: not covered
-    assert other_skill["status"]["state"] == "TASK_STATE_AUTH_REQUIRED"
+    with as_user(app, "user_bob"):  # the same request from someone else: the exception is not theirs
+        assert send(client)["status"]["state"] == "TASK_STATE_AUTH_REQUIRED"
 
 
 def test_every_holder_is_notified(client, app, hold_env):
@@ -177,21 +183,53 @@ def test_expired_hold_reads_as_canceled_and_rejects_decide(client, app, hold_env
     hold_env.send.assert_not_awaited()
 
 
-def test_rules_revision_change_cancels_held_tasks(client, app, hold_env):
-    assert client.get(f"/a2a/{ORG}/rules").json()["revision"] == "r-1"
-    task_id = send(client)["id"]
+def test_put_rules_assigns_the_revision_and_a_new_one_cancels_held_tasks(client, app, hold_env):
     with as_user(app, "user_test_789"):
-        assert client.put(f"/a2a/{ORG}/rules", json={**RULES, "revision": "r-x"}).status_code == 403
+        assert client.put(f"/a2a/{ORG}/rules", json=RULES).status_code == 403
         assert client.get(f"/a2a/{ORG}/rules").status_code == 403
+    rev = client.put(f"/a2a/{ORG}/rules", json=RULES).json()["revision"]
+    assert len(rev) == 64 and rev != "r-1"
+    assert client.put(f"/a2a/{ORG}/rules", json={**RULES, "revision": "mine"}).json()["revision"] == rev  # ignored
+    assert client.get(f"/a2a/{ORG}/rules").json()["revision"] == rev
+    task_id = send(client)["id"]
+    assert client.put(f"/a2a/{ORG}/rules", json=RULES).json()["revision"] == rev  # same document: nothing canceled
     assert get(client, task_id)["status"]["state"] == "TASK_STATE_AUTH_REQUIRED"
-    assert client.put(f"/a2a/{ORG}/rules", json=RULES).status_code == 200  # same revision: nothing canceled
-    assert get(client, task_id)["status"]["state"] == "TASK_STATE_AUTH_REQUIRED"
-    assert client.put(f"/a2a/{ORG}/rules", json={**RULES, "revision": "r-2"}).status_code == 200
+    changed = {**RULES, "holders": {"agent:*": [OWNER, "user_second"]}}
+    new = client.put(f"/a2a/{ORG}/rules", json=changed).json()["revision"]
+    assert new != rev and client.get(f"/a2a/{ORG}/rules").json()["revision"] == new
     t = get(client, task_id)
     assert t["status"]["state"] == "TASK_STATE_CANCELED" and t["metadata"][URI]["reason"] == "policy_changed"
     recs = records(client, task_id)
     assert [x["decision"] for x in recs] == ["hold", "canceled"] and recs[1]["rule"] == "policy_changed"
-    assert client.get(f"/a2a/{ORG}/rules").json()["revision"] == "r-2"
+
+
+def test_answer_under_a_newer_revision_is_409_policy_changed_and_cancels(client, app, hold_env):
+    task_id = send(client)["id"]
+    asyncio.run(a2a_repo.put_rules(ORG, {**RULES, "revision": "r-2"}))  # stored after the hold, not canceled yet
+    with as_user(app, OWNER):
+        r = decide(client, task_id)
+    assert r.status_code == 409 and r.json()["error"]["message"] == "policy_changed"
+    t = get(client, task_id)
+    assert t["status"]["state"] == "TASK_STATE_CANCELED" and t["metadata"][URI]["reason"] == "policy_changed"
+    assert [(x["decision"], x["rule"]) for x in records(client, task_id)] == [
+        ("hold", "default"),
+        ("canceled", "policy_changed"),
+    ]
+    hold_env.send.assert_not_awaited()
+
+
+def test_failed_dispatch_after_allow_is_a_failed_task(client, app, hold_env):
+    task_id = send(client)["id"]
+    hold_env.send.side_effect = RuntimeError("runtime down")
+    with as_user(app, OWNER):
+        r = decide(client, task_id)
+    assert r.status_code == 200 and r.json()["status"]["state"] == "TASK_STATE_FAILED"
+    assert get(client, task_id)["metadata"][URI]["reason"] == "dispatch_failed"
+    assert [(x["decision"], x["rule"]) for x in records(client, task_id)] == [
+        ("hold", "default"),
+        ("allow_by_holder", "default"),
+        ("failed", "dispatch_failed"),
+    ]
 
 
 def test_get_rules_without_a_document_returns_the_defaults(client, a2a_env):

@@ -22,7 +22,9 @@ router = APIRouter(tags=["a2a"])
 
 @router.get("/a2a/keys.json")
 async def keys():
-    return {"keys": [network_proof.public_key()]}
+    """A JWKS (RFC 7517, OKP per RFC 8037) of the issuer key."""
+    k = network_proof.public_key()
+    return {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": k["key"], "alg": "EdDSA", "use": "sig", "kid": k["kid"]}]}
 
 
 @router.get("/a2a/{org}/{agent_id}/agent-card.json")
@@ -74,8 +76,7 @@ async def get_rules(org: str, ctx: AuthContext = Depends(get_current_user)):
 async def put_rules(org: str, body: Rules, ctx: AuthContext = Depends(get_current_user)):
     _same_org(ctx, org)
     require_org_admin(ctx)
-    await a2a_tasks.put_rules(ctx, org, body)
-    return body.model_dump()
+    return await a2a_tasks.put_rules(ctx, org, body)
 
 
 @router.post("/a2a/{org}/{agent_id}")

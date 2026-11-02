@@ -40,8 +40,13 @@ def env(monkeypatch, a2a_env):
     )
     notify = AsyncMock()
     monkeypatch.setattr("core.services.messaging.create_agent_message", notify)
-    through = AsyncMock()
-    monkeypatch.setattr("core.services.hosted_mcp._through_member", through)
+    # The network layer under network_route.app_call: OWNER's computer link and the wire call.
+    link = {"key": "k1", "userId": OWNER, "generation": "g1", "connectedAt": 5, "taskAddress": "http://t"}
+    conns = SimpleNamespace(routes_for_user=AsyncMock(return_value=[link]), live_routes=AsyncMock(return_value=[link]))
+    monkeypatch.setattr("core.services.network_route._connections", lambda: conns)
+    monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Owner"))
+    through = AsyncMock(return_value={"ok": True})  # network_route.call
+    monkeypatch.setattr("core.services.network_route.call", through)
     session = {"humanUserId": OWNER}
     monkeypatch.setattr(
         "core.repositories.local_sessions_repo.get_session", AsyncMock(side_effect=lambda o, s: dict(session))
@@ -135,8 +140,34 @@ def test_named_origin_that_fails_a_check_is_403_and_stores_nothing(client, env, 
     env.through.assert_not_awaited()
 
 
-def test_no_origin_admin_holder_is_session_person_is_held_not_self(client, env):
+def test_no_origin_admin_holder_is_session_person_is_held_and_the_admin_answers_it(client, app, env):
+    from tests.unit.routers.test_a2a_hold import as_user
+
     r = client.post(URL, json=body(), headers=H)  # session person is OWNER, the admin holder
     assert r.status_code == 200, r.text
     out = r.json()
     assert out["state"] == "held" and out["holders"] == [OWNER]
+    with as_user(app, OWNER, role="org:admin"):  # the stand-in requester is the holder: not self
+        d = client.post(f"/a2a/{ORG}/{AGENT}/tasks/{out['taskId']}/decide", json={"verdict": "allow"})
+    assert d.status_code == 200, d.text
+    assert d.json()["status"]["state"] == "TASK_STATE_COMPLETED"
+    env.through.assert_awaited_once()
+    assert env.through.await_args.args[1] == "app.send"
+
+
+def test_allowed_ask_session_reaches_app_send_and_completes_delivered(client, env):
+    rule = {"id": "s1", "resource": "session:*", "skill": "ask_session", "requesters": [f"agent:{AGENT}"]}
+    rules = {**RULES, "rules": [{**rule, "effect": "allow"}]}
+    asyncio.run(a2a_repo.put_rules(ORG, rules))
+    r = client.post(URL, json=body(), headers=H)  # no origin: rides the stand-in requester OWNER's link
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["state"] == "completed"
+    (link, op, params, _), _ = env.through.await_args
+    assert link["key"] == "k1" and op == "app.send"
+    assert params["to"] == "abc" and params["request_id"] == out["taskId"] and params["app"] == AGENT
+    assert params["title"] == "Friday via Owner" and params["text"].endswith("\nstatus?")
+    row = asyncio.run(a2a_repo.get_task(ORG, out["taskId"]))
+    assert row["delivered"] is True and row["artifact"]["parts"] == [{"text": "delivered"}]
+    recs = [claims(x["jws"]) for x in asyncio.run(a2a_repo.list_records(ORG, out["taskId"]))]
+    assert [(x["decision"], x["rule"]) for x in recs] == [("allow", "s1"), ("completed", "s1")]

@@ -16,7 +16,7 @@
    "rule": "default"
   },
   {
-   "name": "session_own_person_is_self",
+   "name": "session_own_person_is_holder",
    "requester_person": "user_aden",
    "requester_org": "org_1",
    "chain_agents": [
@@ -26,8 +26,8 @@
    "skill": "ask_session",
    "session_person": "user_aden",
    "exception": null,
-   "expected": "reject",
-   "rule": "self"
+   "expected": "allow",
+   "rule": "holder"
   },
   {
    "name": "outside_org_requester",

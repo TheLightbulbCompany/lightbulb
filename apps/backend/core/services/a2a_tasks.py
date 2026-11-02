@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from core.auth import AuthContext
 from core.config import settings
 from core.repositories import a2a_repo, local_sessions_repo, messaging_repo
-from core.services import a2a_rules, hosted_mcp, messaging
+from core.services import a2a_rules, hosted_mcp, messaging, network_route
 from core.services.a2a_authority import URI, AuthorityError, AuthorityRequest, Operation, mint, sign_record, verify
 from core.services.a2a_rules import Rules, default_rules
 from core.services.network_proof import _unb64
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 HOLD_LIFE_S = 86_400
 WORK_LIFE_S = 86_400
+SESSION_SEND_TIMEOUT_S = 10.0
 
 STATES = {
     "working": "TASK_STATE_WORKING",
@@ -146,13 +147,15 @@ def _authority_request(message: dict, agent_id: str) -> tuple[AuthorityRequest, 
         req = AuthorityRequest.model_validate(raw)
     except ValidationError:
         raise A2AError(-32602, "invalid authority: shape") from None
+    if req.operation.skill != "message":  # the door's one skill; ask_session comes from a hosted agent
+        raise A2AError(-32602, "invalid authority: skill")
     if req.operation.resource != f"agent:{agent_id}":
         raise A2AError(-32602, f"invalid authority: resource (must be agent:{agent_id})")
     text = "\n".join(p["text"] for p in message.get("parts") or [] if isinstance(p, dict) and "text" in p)
     if not text:
         raise A2AError(-32602, "The message has no text part.")
     # The signed operands are exactly what the agent receives.
-    if req.operation.skill == "message" and req.operation.operands != {"text": text}:
+    if req.operation.operands != {"text": text}:
         raise A2AError(-32602, "invalid authority: operands")
     return req, text
 
@@ -203,7 +206,7 @@ async def _decide_and_store(
     holders; the stored row."""
     requester = claims["requester"]["person"]
     op = claims["operation"]
-    exception = await a2a_repo.get_exception(org, op["resource"], op["skill"], op["operands_hash"], now)
+    exception = await a2a_repo.get_exception(org, op["resource"], op["skill"], requester, op["operands_hash"], now)
     d = a2a_rules.decide(
         rules,
         org=org,
@@ -236,7 +239,7 @@ async def _decide_and_store(
     elif d.effect == "allow":
         row["state"] = "working"
         decision = "allow"
-    else:  # deny, or reject/self
+    else:
         row["state"] = "rejected"
         decision = "deny"
     failed = row["state"] == "working" and not await _dispatch(auth, org, agent_id, row, text)
@@ -244,6 +247,8 @@ async def _decide_and_store(
     row["record"] = await _record(org, row, decision, now=now, holder=d.holders if decision == "hold" else None)
     if failed:
         await _fail_dispatch(org, row, now)
+    elif row.get("delivered"):
+        await _complete_delivered(org, row, now)
     await a2a_repo.put_task(org, row)
     if row["state"] == "held":
         await _notify_holders(org, agent_id, row, claims)
@@ -336,28 +341,50 @@ async def _fail_dispatch(org: str, row: dict, now: int) -> None:
     row.update(state="failed", reason=reason, record=await _record(org, row, "failed", now=now, rule=reason))
 
 
+async def _complete_delivered(org: str, row: dict, now: int) -> None:
+    """A laptop session took the send: the task completes as delivered (its reply does not come back
+    to the task in phase 1)."""
+    row.update(
+        state="completed",
+        delivered=True,
+        artifact={"artifactId": row["dispatchRequestId"], "parts": [{"text": "delivered"}]},
+    )
+    row["record"] = await _record(org, row, "completed", now=now)
+
+
 async def _dispatch_session(org: str, agent_id: str, row: dict, text: str) -> bool:
+    """``app.send`` to the session through the origin person's most recent computer link, as
+    ``<agent name> via <person>``; sets ``delivered`` on success."""
     claims = _claims(row["authority"])
     origin = claims["chain"][0]["person"]
     url = f"{settings.PUBLIC_API_BASE.rstrip('/')}/a2a/{org}/{agent_id}/tasks/{row['id']}/record"
     header = session_header(
         requester_display=row["requester"], for_whom=origin, intent=claims["intent"], record_url=url
     )
+    request_id = hosted_mcp._network_request_id(row["id"])
     try:
         # ponytail: the send rides the origin person's computer link; the cloud member bridge replaces this in phase 2
-        await hosted_mcp._through_member(
-            AuthContext(user_id=origin, org_id=org),
+        link = await network_route.best_link(origin)
+        if link is None:
+            row["failReason"] = "undeliverable"
+            return False
+        route = {"kind": "computer", "key": link["key"], "name": link.get("name") or "Your computer"}
+        await network_route.app_call(
+            origin,
+            agent_id,
+            await agent_name(org, agent_id) or agent_id,
             "send",
-            sender=(agent_id, await agent_name(org, agent_id) or agent_id),
+            SESSION_SEND_TIMEOUT_S,
+            route=route,
             to=claims["operation"]["resource"].removeprefix("session:"),
             text=header + text,
-            request_id=hosted_mcp._network_request_id(row["id"]),
+            request_id=request_id,
         )
     except Exception:
         logger.exception("a2a session dispatch failed", extra={"org": org, "task": row["id"]})
         row["failReason"] = "undeliverable"
         return False
-    row["dispatchRequestId"] = row["id"]
+    row.update(dispatchRequestId=request_id, delivered=True)
     return True
 
 
@@ -398,9 +425,16 @@ async def _notify_holders(org: str, agent_id: str, row: dict, claims: dict) -> N
     """The agent asks each holder in their DM with it; a failed post is logged (the hold still expires)."""
     op = claims["operation"]
     base = settings.PUBLIC_API_BASE.rstrip("/")
+    operands = op["operands"]
+    shown = operands["text"] if isinstance(operands.get("text"), str) else json.dumps(operands, separators=(",", ":"))
+    chain = " → ".join(h.get("agent") or h["person"] for h in claims["chain"])
+    # ponytail: answered at the REST route with a Lightbulb sign-in token; the in-app button is phase 1b
     text = (
-        f"I need your OK to {op['skill']} on {op['resource']} for {row['requester']}: {claims['intent'][:200]}. "
-        f"Answer at {base}/a2a/{org}/{agent_id}/tasks/{row['id']}/decide"
+        f"I need your OK to {op['skill']} on {op['resource']} for {row['requester']} (via {chain}): "
+        f"{claims['intent'][:200]}\n"
+        f"Request: {shown[:500]}\n"
+        f"Answer with POST {base}/a2a/{org}/{agent_id}/tasks/{row['id']}/decide "
+        '{"verdict": "allow"} or {"verdict": "deny"}, signed in to Lightbulb.'
     )
     for holder in row["holders"]:
         try:
@@ -420,13 +454,15 @@ async def _notify_holders(org: str, agent_id: str, row: dict, claims: dict) -> N
             logger.exception("a2a holder notification failed", extra={"org": org, "task": row["id"]})
 
 
-async def _leave_held(org: str, row: dict, state: str, decision: str, *, now: int, extra: dict, **who) -> dict | None:
-    """held -> ``state`` once, with its signed record; the updated row, or None when the task already left
-    held (another holder, the expiry or a rules change got there first)."""
+async def _leave(
+    org: str, row: dict, state: str, decision: str, *, now: int, extra: dict, expect: str = "held", **who
+) -> dict | None:
+    """``expect`` -> ``state`` once, with its signed record; the updated row, or None when the task already
+    left ``expect`` (another holder, the expiry, a rules change or a reply got there first)."""
     done = {**row, **extra, "state": state}
     done["record"] = _record_jws(done, decision, now=now, rule=extra.get("reason"), **who)
     if not await a2a_repo.update_task(
-        org, row["id"], state=state, extra={**extra, "record": done["record"]}, expect="held"
+        org, row["id"], state=state, extra={**extra, "record": done["record"]}, expect=expect
     ):
         return None
     await a2a_repo.append_record(org, row["id"], {"jws": done["record"]})
@@ -434,10 +470,14 @@ async def _leave_held(org: str, row: dict, state: str, decision: str, *, now: in
 
 
 async def _current(org: str, row: dict, now: int) -> dict:
-    """The row as of now; a hold seen expired is written canceled once (with its record)."""
-    if _as_of(row, now)["state"] == "held" or row["state"] != "held":
-        return _as_of(row, now)
-    done = await _leave_held(org, row, "canceled", "canceled", now=now, extra={"reason": "expired"})
+    """The row as of now; a hold seen expired is written canceled, and a working task past its day
+    failed, once (with its record)."""
+    seen = _as_of(row, now)
+    if seen["state"] == row["state"]:
+        return seen
+    done = await _leave(
+        org, row, seen["state"], seen["state"], now=now, extra={"reason": seen["reason"]}, expect=row["state"]
+    )
     return done or await a2a_repo.get_task(org, row["id"])
 
 
@@ -457,7 +497,8 @@ async def decide(
     row = await a2a_repo.get_task(org, task_id)
     if row is None or row["agentId"] != agent_id:
         raise A2AError(404, "not_found")
-    if auth.user_id == row["requester"]:
+    # An agent-runtime ask's requester is a stand-in (the agent's first holder), not a person asking.
+    if auth.user_id == row["requester"] and _claims(row["authority"])["requester"]["verified_by"] != "agent-runtime":
         raise A2AError(403, "self")
     holders = row.get("holders") or []
     if auth.user_id not in holders:
@@ -468,8 +509,12 @@ async def decide(
     state, decision = ("working", "allow_by_holder") if verdict == "allow" else ("rejected", "deny_by_holder")
     if row["state"] != "held":
         raise A2AError(409, "not_held")
+    if row["policyRevision"] != ((await a2a_repo.get_rules(org)) or {}).get("revision", "default"):
+        # Never resumed under rules the hold was not decided by (a put_rules raced this hold).
+        await _leave(org, row, "canceled", "canceled", now=now, extra={"reason": "policy_changed"})
+        raise A2AError(409, "policy_changed")
     # Claim the answer first: a second holder, the expiry or a rules change can only lose the race.
-    row = await _leave_held(
+    row = await _leave(
         org,
         row,
         state,
@@ -485,10 +530,20 @@ async def decide(
         return to_a2a_task(row)
     op = _claims(row["authority"])["operation"]
     await a2a_repo.put_exception(
-        org, op["resource"], op["skill"], op["operands_hash"], holder=auth.user_id, task_id=task_id, now=now
+        org,
+        op["resource"],
+        op["skill"],
+        row["requester"],
+        op["operands_hash"],
+        holder=auth.user_id,
+        task_id=task_id,
+        now=now,
     )
     if await _dispatch(AuthContext(user_id=row["requester"], org_id=org), org, agent_id, row, row["text"]):
-        extra = {k: row[k] for k in ("roomId", "dispatchMessageId", "dispatchRequestId") if k in row}
+        if row.get("delivered"):
+            await _complete_delivered(org, row, now)
+        keys = ("roomId", "dispatchMessageId", "dispatchRequestId", "delivered", "artifact", "record")
+        extra = {k: row[k] for k in keys if k in row}
     else:
         await _fail_dispatch(org, row, now)
         extra = {"reason": row["reason"], "record": row["record"]}
@@ -498,21 +553,30 @@ async def decide(
     return to_a2a_task(row)
 
 
-async def put_rules(auth: AuthContext, org: str, rules: Rules, *, now: int | None = None) -> None:
-    """Store the rules; a new revision cancels every held task (reason policy_changed): a hold is never
-    re-decided under rules its holder did not see."""
+def revision(rules: Rules) -> str:
+    """The server's revision: sha256 hex of the document's canonical JSON without ``revision``."""
+    doc = rules.model_dump(exclude={"revision"})
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+async def put_rules(auth: AuthContext, org: str, rules: Rules, *, now: int | None = None) -> dict:
+    """Store the rules under a server-assigned revision; a new revision first cancels every held task
+    (reason policy_changed): a hold is never re-decided under rules its holder did not see. A hold
+    made between the cancel and the store is caught by ``decide``'s revision check. Returns the
+    stored document."""
     if not auth.is_org_admin:
         raise A2AError(403, "admin")
     now = int(time.time()) if now is None else now
+    doc = {**rules.model_dump(), "revision": revision(rules)}
     old = await a2a_repo.get_rules(org)
-    await a2a_repo.put_rules(org, rules.model_dump())
-    if (old or {}).get("revision", "default") == rules.revision:
-        return
-    for row in await a2a_repo.list_held_tasks(org):
-        if _as_of(row, now)["state"] != "held":
-            await _current(org, row, now)  # already expired: it cancels as expired, not policy_changed
-            continue
-        await _leave_held(org, row, "canceled", "canceled", now=now, extra={"reason": "policy_changed"})
+    if (old or {}).get("revision", "default") != doc["revision"]:
+        for row in await a2a_repo.list_held_tasks(org):
+            if _as_of(row, now)["state"] != "held":
+                await _current(org, row, now)  # already expired: it cancels as expired, not policy_changed
+                continue
+            await _leave(org, row, "canceled", "canceled", now=now, extra={"reason": "policy_changed"})
+    await a2a_repo.put_rules(org, doc)
+    return doc
 
 
 def _readable(auth: AuthContext, row: dict) -> bool:
@@ -547,19 +611,22 @@ async def records(org: str, task_id: str, *, reader: AuthContext) -> list[dict]:
 async def on_agent_reply(
     owner_id: str, *, room_id: str, agent_id: str, message_id: str, text: str, reply_to_message_id: str | None = None
 ) -> None:
+    """Link the agent's final reply to the task it answers: only a reply addressed to the dispatch
+    (the bridge sets ``replyToMessageId`` to the trigger message, ``turn.py``)."""
+    if reply_to_message_id is None:
+        return
     tasks = await a2a_repo.list_room_tasks(owner_id, room_id, agent_id)
     if any((t.get("artifact") or {}).get("artifactId") == message_id for t in tasks):
         return  # a retried post of a reply already linked
-    working = [t for t in tasks if t["state"] == "working"]
-    if reply_to_message_id is not None:
-        row = next((t for t in working if t.get("dispatchMessageId") == reply_to_message_id), None)
-    else:
-        # ponytail: an unaddressed reply links only when one task is open; Task 7 removes this if Hermes
-        # always sets replyToMessageId
-        row = working[0] if len(working) == 1 else None
+    row = next(
+        (t for t in tasks if t["state"] == "working" and t.get("dispatchMessageId") == reply_to_message_id), None
+    )
     if row is None:
         return
     now = int(time.time())
+    row = await _current(owner_id, row, now)
+    if row["state"] != "working":
+        return  # past its day: written failed, a late reply completes nothing
     jws = _record_jws(row, "completed", now=now)
     artifact = {"artifactId": message_id, "parts": [{"text": text}]}
     if await a2a_repo.complete_task(owner_id, row["id"], artifact=artifact, record=jws):
@@ -582,5 +649,7 @@ def to_a2a_task(row: dict) -> dict:
     meta = {"state": row["state"], "record": row["record"], "rule": row["rule"]}
     if row.get("reason"):
         meta["reason"] = row["reason"]
+    if row.get("delivered"):
+        meta["delivered"] = True
     task.metadata.update({URI: meta})
     return MessageToDict(task)

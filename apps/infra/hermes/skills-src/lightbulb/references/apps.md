@@ -97,10 +97,10 @@ Outside a room turn (a Paperclip run), post the same line with `lightbulb-post.s
 ## Changes and publishing
 
 - An edit: the same loop, then one line saying what changed.
-- "ship it" or "publish": ask the reviewer for a pass (`references/apps-reviewer.md`); `publish`
-  refuses without one for the exact commit in HEAD. Post the checking line, then end the turn. The reviewer never posts in the
-  room; you do. On failures, post the review-failed line, fix them and ask again. On a pass, run
-  `lightbulb app publish --json`, then post the live line.
+- "ship it" or "publish": run `lightbulb app verify --json` for the current version, fix anything
+  it lists, then run `lightbulb app publish --json` and post the live line. No second agent and no
+  checking line: verify is the check. Ask for a review (`references/apps-reviewer.md`) only when the
+  person asks for one.
 - "Who can open it" and the budget: the person who asked for the app sets them in Canvas → {app}
   → Settings (a workspace admin can too). Point them there.
 - Removing: point the same people to the app's Settings in Canvas, "Remove app…".
@@ -133,8 +133,6 @@ name, and at most one every few minutes. The lines below stay exactly as specifi
 - Approval: "To keep its data I need an owner's OK to set up hosting and storage for {app}. The
   card is in Activity, under Needs you; tap Approve. The preview can't start until then." Name the
   owner if you know who.
-- Checking: "Checking {app} before it goes live: a second agent is trying every page. I'll post
-  here when it's live, usually within a few minutes."
 - Review failed: "The check found {n} problems ({short plain list}). Fixing them now, then it goes
   live."
 - Live, public: "{app} is live — anyone with the link can open it: {address publish returned}. Say

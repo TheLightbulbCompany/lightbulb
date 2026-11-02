@@ -55,8 +55,8 @@ OPENCLAW_VERSION="2026.8.1"
 CHROME_DEVTOOLS_MCP_VERSION="1.10.1"
 # The network engine (TheLightbulbCompany/cli): the one `lightbulb` MCP server, bundled as
 # Contents/Resources/bin/lightbulb (engine.rs installs it when none or an older one is installed).
-ENGINE_TAG="v0.9.7"
-ENGINE_SHA256="165d61b213abd5edb40c099c00725c50b29dbbaca05130ffb0f2300f4ad63ff7"
+ENGINE_TAG="v0.9.8"
+ENGINE_SHA256="aebc3c88361e80ff7cd49f50dcbf00f981cafa13769bcb8276947f6910def863"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"

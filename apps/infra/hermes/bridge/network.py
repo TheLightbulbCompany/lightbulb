@@ -452,7 +452,8 @@ def _cancel_record(session: str, record: dict) -> None:
         log.warning("network: cancel %s failed", record["id"], exc_info=True)
 
 
-def _send_assignment_result(session: str, record: dict, text: str) -> None:
+def _send_assignment_result(session: str, record: dict, text: str, reason: str = "no_result",
+                            failed_text: str = "The agent finished without a result.") -> None:
     """A model can end an assignment's turn in plain text, without the reply tool. The asker gets
     that text as the result anyway, rather than waiting out the deadline: this is not left to the
     model. A turn with no text at all reports ``failed``. Stays best-effort: the deadline still
@@ -461,10 +462,10 @@ def _send_assignment_result(session: str, record: dict, text: str) -> None:
     if not request_id or request_id in _replied or record["id"] in _replied:
         return
     body = {"from": session, "reply_to": request_id, "request_id": f"result-{record['id']}",
-            "text": text.strip() or "The agent finished without a result.",
+            "text": text.strip() or failed_text,
             "status": "done" if text.strip() else "failed"}
     if not text.strip():
-        body["reason"] = "no_result"
+        body["reason"] = reason
     try:
         ask("send", body)
     except Exception:  # noqa: BLE001 -- the class only, never the text
@@ -501,6 +502,14 @@ def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
         if outcome == "completed" or cancelled:
             if record.get("kind") == "assign" and not cancelled:
                 _send_assignment_result(session, record, body.get("finalReply") or "")
+            try:
+                _ack(session, record, "read")
+            except Exception:  # noqa: BLE001
+                log.warning("network: read ack failed for %s", record["id"], exc_info=True)
+        elif record.get("kind") == "assign":
+            # The asker is waiting and an assignment has a deadline: say so now, and do not run it again later.
+            log.warning("network: assignment %s ended %s; reported failed", record["id"], outcome)
+            _send_assignment_result(session, record, "", reason="turn_failed", failed_text="The agent could not run this assignment.")
             try:
                 _ack(session, record, "read")
             except Exception:  # noqa: BLE001

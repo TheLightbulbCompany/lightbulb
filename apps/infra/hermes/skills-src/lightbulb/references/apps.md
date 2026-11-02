@@ -15,6 +15,12 @@ accounts itself; the one-time Stripe form and what an account is are in `referen
 
 ## Start
 
+Before writing any code, check the workspace can host it:
+`/app/skills/lightbulb/scripts/lightbulb-api.sh GET "/api/v1/company/provisioning/u/$ISOL8_OWNER_ID/catalog?q=vercel"`.
+If it answers `services_account_needed`, `no_company_stripe_account` or `eligible: false`, post the
+hosting line (§ What to say) and end the turn. On a `402`, say hosting needs a paid plan and end the
+turn. Don't build something it can't host.
+
 1. Read before asking: the thread, the workspace's name, logo and brand, and any URL, screenshot
    or file someone gave you.
 2. Pick the kind: `site` (a landing page), `content-site` (edited weekly), `form`, `internal-tool`
@@ -28,8 +34,12 @@ accounts itself; the one-time Stripe form and what an account is are in `referen
 4. Follow the app's `AGENTS.md` and `.lightbulb/plan.md`. They hold the stack, the kind's
    playbook and what "done" means for it. Read `.lightbulb/lessons.md` before touching an area.
 
-Ask at most one card (`references/ui.md`), and only for what you cannot read. Every option can be
-skipped or answered "use a placeholder". For a customer-facing app or a "like X" request, offer
+Then ask once, on one card (`references/ui.md`), before you build: a `Form` of at most four `Select`
+fields, each with your default first and a fair alternative. Ask what changes what you build, such as
+who can use it, whether things can be deleted, extras beyond what they listed, and the look. Skip
+what they already said, and skip the card if nothing is left. Say "I'll go with the first option
+in each if you just say go". Never block on it: any reply, including "go", starts the build. For a
+customer-facing app or a "like X" request, offer
 one optional chip: "Look at what others in your market do first?" If it is taken, research
 alongside the build and return one card of three to five comparable products. The preview never
 waits for the research.
@@ -68,12 +78,16 @@ and post the preview line with "I couldn't check it in a browser". Walk the main
 `lightbulb app evidence --kind browser --file <recording or screenshot> --note "<what you checked>"`.
 Keep the file under `.lightbulb/evidence/` or outside the app; anywhere else is refused.
 Then run `lightbulb app status --json`, not `up`: a second `up` moves the preview past your record.
-Post only when it says `"done": true`: the preview line (§ What to say).
+Read what's on screen as the person will: wrong words like "Add a account", cut-off text and empty
+states are yours to fix first. Post only when it says `"done": true`: the preview line (§ What to say).
 The `preview_url` is for your own check. Never post it: for anyone else it is a locked door
 page. People open the app from Canvas, so the preview line carries `{canvas_url}`. A preview is
 not "live"; say "live" only after `publish` returns.
 Attach the recording to that reply (`references/chat-vs-document.md`). If `sample_data` is true,
 add that it runs on sample data and the real data arrives in a few minutes.
+
+Rows you put in `drizzle/seed.sql` are examples, so label them: end each visible name with
+"(sample)". They must never pass for the person's real customers. Offer to clear them.
 
 Outside a room turn (a Paperclip run), post the same line with `lightbulb-post.sh --room <roomId>`.
 
@@ -101,10 +115,14 @@ Progress notes while building are optional: one plain sentence about what the pe
 ("Setting up the sign-up form and where the answers go"), never a library, table, type or file
 name, and at most one every few minutes. The lines below stay exactly as specified.
 
+- Hosting: "Before I build {app}: this workspace needs a services account to host it. An admin can
+  add one from the Stripe card in Settings → Connections. Tell me when it's done and I'll start."
 - Preview ready: "Your preview of {app} is ready in Canvas: {canvas_url}. It {what it does}; it
-  keeps {what data it saves or reads}. Only people in #{room} can open it for now. Say "publish"
-  (or press Publish in Canvas) to make it live." Only if `cost_cents` is present, add "Building it
-  cost ${dollars}."
+  keeps {what data it saves or reads}. I tested it by {what you actually did, step by step}.
+  {n} example rows are in it, marked (sample); I can clear them. Only people in #{room} can open
+  it for now. Say "publish" (or press Publish in Canvas) to make it live." Name anything you could
+  not test. Only if `cost_cents` is present, add "Building it cost ${dollars}." End that reply with
+  a `FollowUps` card: "Publish it" first, then two or three changes this app would really gain from.
 - Meant for people outside the room (a sign-up page, a site, a client form), after the preview
   line and again before publishing: "Right now only people in #{room} can open it. For {your
   attendees}, set "Who can open it" to "Anyone with the link" in Canvas → {app} → Settings. You

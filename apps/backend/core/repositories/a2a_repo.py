@@ -82,18 +82,31 @@ async def get_task(org: str, task_id: str) -> dict | None:
     return _strip(item) if item else None
 
 
-async def update_task(org: str, task_id: str, *, state: str, extra: dict | None = None) -> None:
+async def update_task(
+    org: str, task_id: str, *, state: str, extra: dict | None = None, expect: str | None = None
+) -> bool:
+    """Set the state and fields; with ``expect``, only from that state (False when the task left it)."""
     fields = {**(extra or {}), "state": state, "updatedAt": int(time.time())}
     names = {f"#f{i}": k for i, k in enumerate(fields)}
     values = {f":v{i}": v for i, v in enumerate(fields.values())}
-    await run_in_thread(
-        _table().update_item,
-        Key={"pk": f"A2A#{org}", "sk": f"TASK#{task_id}"},
-        UpdateExpression="SET " + ", ".join(f"#f{i} = :v{i}" for i in range(len(fields))),
-        ExpressionAttributeNames=names,
-        ExpressionAttributeValues=values,
-        ConditionExpression="attribute_exists(sk)",
-    )
+    cond = "attribute_exists(sk)"
+    if expect is not None:
+        names["#s"], values[":expect"] = "state", expect
+        cond += " AND #s = :expect"
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": f"A2A#{org}", "sk": f"TASK#{task_id}"},
+            UpdateExpression="SET " + ", ".join(f"#f{i} = :v{i}" for i in range(len(fields))),
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+            ConditionExpression=cond,
+        )
+    except ClientError as exc:
+        if expect is not None and _is_conflict(exc):
+            return False
+        raise
+    return True
 
 
 async def _query_all(key_cond, **kw) -> list[dict]:

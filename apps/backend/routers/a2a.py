@@ -1,12 +1,19 @@
-"""The A2A door (JSON-RPC binding, A2A v1.0): Agent Card, issuer keys, SendMessage and GetTask, records."""
+"""The A2A door (JSON-RPC binding, A2A v1.0): Agent Card, issuer keys, SendMessage and GetTask, records,
+a holder's decision and the workspace rules."""
+
+from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from google.protobuf.json_format import MessageToDict
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, require_org_admin
 from core.config import settings
+from core.repositories import a2a_repo
 from core.services import a2a_tasks, network_proof
+from core.services.a2a_rules import Rules, default_rules
 from core.services.a2a_tasks import A2AError
+from core.services.messaging import ContractModel
 from routers._public_ingress import _check_rate_limit, _extract_caller_ip
 
 router = APIRouter(tags=["a2a"])
@@ -39,6 +46,35 @@ async def task_record(org: str, agent_id: str, task_id: str, ctx: AuthContext = 
         return await a2a_tasks.records(org, task_id, reader=ctx)
     except A2AError as exc:
         raise HTTPException(404, detail={"code": "task_not_found", "message": exc.message}) from None
+
+
+class Decision(ContractModel):
+    verdict: Literal["allow", "deny"]
+    reason: str = ""
+
+
+@router.post("/a2a/{org}/{agent_id}/tasks/{task_id}/decide")
+async def decide(org: str, agent_id: str, task_id: str, body: Decision, ctx: AuthContext = Depends(get_current_user)):
+    _same_org(ctx, org)
+    try:
+        return await a2a_tasks.decide(ctx, org, agent_id, task_id, verdict=body.verdict, reason=body.reason)
+    except A2AError as exc:
+        return JSONResponse({"error": {"code": exc.code, "message": exc.message}}, status_code=exc.code)
+
+
+@router.get("/a2a/{org}/rules")
+async def get_rules(org: str, ctx: AuthContext = Depends(get_current_user)):
+    _same_org(ctx, org)
+    require_org_admin(ctx)
+    return await a2a_repo.get_rules(org) or default_rules(org, [ctx.user_id]).model_dump()
+
+
+@router.put("/a2a/{org}/rules")
+async def put_rules(org: str, body: Rules, ctx: AuthContext = Depends(get_current_user)):
+    _same_org(ctx, org)
+    require_org_admin(ctx)
+    await a2a_tasks.put_rules(ctx, org, body)
+    return body.model_dump()
 
 
 @router.post("/a2a/{org}/{agent_id}")

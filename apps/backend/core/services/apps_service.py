@@ -1217,6 +1217,29 @@ async def up(
     return await _result(app, rows, transient, cost_cents)
 
 
+# A person's words that ask for an app to go live. Bare "live" is left out: "the live database"
+# is not a request.
+_PUBLISH_ASK = re.compile(r"\b(publish|ship|launch|deploy|go live|make it live|put it live)\b", re.IGNORECASE)
+
+
+async def _asked_to_publish(app: dict) -> bool:
+    """A person in the app's room asked for it to go live since the app was made. An agent may
+    publish only then: going live is the person's call (Canvas's Publish button is theirs too)."""
+    room_id = app.get("room_id")
+    if not room_id:
+        return False
+    since = str(app.get("created_at") or "")
+    for m in await messaging_repo.list_messages_before(room_id, 10**18, 100):
+        text = m.get("editedText") if int(m.get("messageRevision", 0) or 0) else m.get("text")
+        if (
+            (m.get("author") or {}).get("kind") == "human"
+            and str(m.get("createdAt") or "") >= since
+            and _PUBLISH_ASK.search(text or "")
+        ):
+            return True
+    return False
+
+
 async def publish(
     owner_id: str,
     app_id: str,
@@ -1229,6 +1252,12 @@ async def publish(
 ) -> UpResult:
     app = await _owned(owner_id, app_id)
     src = _source(app, source_id)
+    if actor.actor_kind == "agent" and not await _asked_to_publish(app):
+        raise AppsRefused(
+            "not_asked",
+            "Nobody in the room has asked for this app to go live.",
+            "post the preview line and end the turn; publish when someone says publish or ship it, or presses Publish",
+        )
     rows, transient = await _progress(app)
     pending = app.get("publish_pending")
     if transient and transient["code"] == _REFUSAL_CODE and not pending:

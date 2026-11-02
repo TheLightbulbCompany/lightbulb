@@ -30,7 +30,9 @@ turn. Don't build something it can't host.
    `mkdir -p "$HERMES_HOME/.run/<name>" && cd "$HERMES_HOME/.run/<name>"`, then
    `lightbulb app new <name> --kind <kind> --room <roomId>` (this room's id). The name is
    lowercase letters, digits and dashes. Then `cd <name> && pnpm install`: that inner folder is
-   the app's folder.
+   the app's folder. Run `lightbulb app up --json` straight away, before writing any code: it
+   files the hosting card now, so the owner can approve it while you build. If it says
+   `awaiting_approval`, post the approval line and keep going; don't end the turn yet.
 4. Follow the app's `AGENTS.md` and `.lightbulb/plan.md`. They hold the stack, the kind's
    playbook and what "done" means for it. Read `.lightbulb/lessons.md` before touching an area.
 
@@ -65,9 +67,10 @@ A result with a `state` and an `error` has it in `error.next`. `lightbulb app st
 ## Waiting for approval
 
 If `state` is `awaiting_approval`, the app's accounts need an owner's tap. The card is in
-Activity (the bell), under "Needs you", not in this room. Post the approval line (§ What to say),
-then **end the turn**. The approval posts a line in this room that mentions you; run
-`lightbulb app up --json` again when it does. Never poll, never sleep in a loop.
+Activity (the bell), under "Needs you", not in this room. Post the approval line once (§ What to
+say). Keep building while you wait. Only when the app is ready and `up` still says
+`awaiting_approval` do you **end the turn**. The approval posts a line in this room that mentions
+you; run `lightbulb app up --json` again when it does. Never poll, never sleep in a loop.
 
 ## Done means proven
 

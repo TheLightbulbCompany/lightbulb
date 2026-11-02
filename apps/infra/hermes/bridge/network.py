@@ -463,7 +463,7 @@ def _cancel_record(session: str, record: dict) -> None:
         log.warning("network: cancel %s failed", record["id"], exc_info=True)
 
 
-def _send_assignment_result(session: str, record: dict, text: str, reason: str = "no_result",
+def _send_assignment_result(session: str, record: dict, text: str,
                             failed_text: str = "The agent finished without a result.") -> None:
     """A model can end an assignment's turn in plain text, without the reply tool. The asker gets
     that text as the result anyway, rather than waiting out the deadline: this is not left to the
@@ -476,9 +476,10 @@ def _send_assignment_result(session: str, record: dict, text: str, reason: str =
             "text": text.strip() or failed_text,
             "status": "done" if text.strip() else "failed"}
     if not text.strip():
-        body["reason"] = reason
+        body["reason"] = "error"  # the engine takes only timed_out, stopped or error (mail.rs decide)
     try:
-        ask("send", body)
+        if ask("send", body).get("state") == "refused":  # a receipt, not an error: say so
+            log.warning("network: result for %s refused", record["id"])
     except Exception:  # noqa: BLE001 -- the class only, never the text
         log.warning("network: result for %s not sent", record["id"], exc_info=True)
 
@@ -529,7 +530,7 @@ def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
         elif record.get("kind") == "assign":
             # The asker is waiting and an assignment has a deadline: say so now, and do not run it again later.
             log.warning("network: assignment %s ended %s; reported failed", record["id"], outcome)
-            _send_assignment_result(session, record, "", reason="turn_failed", failed_text="The agent could not run this assignment.")
+            _send_assignment_result(session, record, "", failed_text="The agent could not run this assignment.")
             try:
                 _ack(session, record, "read")
             except Exception:  # noqa: BLE001

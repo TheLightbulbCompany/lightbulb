@@ -392,16 +392,20 @@ def _always_on(session_id: str) -> bool:
     return ":" not in address and address != "terminal"
 
 
+def _worker_host(row: dict) -> bool:
+    return row.get("kind") == "worker" or row.get("free") is not None
+
+
 @mcp.tool(annotations=READ, description=SPEC["find_workers"]["description"])
 @_noted
 async def find_workers(query: str = "", limit: int = 20) -> dict:
     found = await _network_sessions(_net_caller(), query)
     online = [row for row in found if row.get("online") is True]
     # Computers that start fresh workers first, then always-on agents: the engine's ``always_on``.
-    hosts = [{**row, "always_on": False} for row in online if row.get("kind") == "worker"]
-    named = [
-        {**row, "always_on": True} for row in online if row.get("kind") != "worker" and _always_on(row["session_id"])
-    ]
+    # A worker host is the row with ``free``: the app link strips ``kind`` (``link.rs``
+    # ``this_computers_own_kept``), and the engine sets ``free`` only on worker offers.
+    hosts = [{**row, "always_on": False} for row in online if _worker_host(row)]
+    named = [{**row, "always_on": True} for row in online if not _worker_host(row) and _always_on(row["session_id"])]
     kept = hosts + named
     return {"sessions": kept[: max(1, min(limit, 50))], "total": len(kept)}
 

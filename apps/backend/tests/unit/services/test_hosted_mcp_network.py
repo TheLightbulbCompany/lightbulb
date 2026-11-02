@@ -475,6 +475,8 @@ async def test_find_workers_lists_computers_that_start_workers_first(member, mon
         {"session_id": "abc/claude:1", "online": True},
         {"session_id": "abc/opencode:new", "online": True, "kind": "worker", "free": 2},
         {"session_id": "off/opencode:new", "online": False, "kind": "worker"},
+        # Through the app link ``kind`` is stripped: ``free`` still says worker host.
+        {"session_id": "lnk/codex:new", "online": True, "free": 1},
     ]
 
     async def sessions(auth, query):
@@ -484,6 +486,7 @@ async def test_find_workers_lists_computers_that_start_workers_first(member, mon
     out = await hosted_mcp.find_workers()
     assert [(r["session_id"], r["always_on"]) for r in out["sessions"]] == [
         ("abc/opencode:new", False),
+        ("lnk/codex:new", False),
         ("abc/friday", True),
     ]
 

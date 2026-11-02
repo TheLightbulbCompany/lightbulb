@@ -45,7 +45,7 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
   const [dataErr, setDataErr] = useState<string | undefined>(undefined);
   const dn = displayName(app);
   const [noLink, setNoLink] = useState(false); // the dashboard-link route returned no url for this app
-  const hasDb = (app.resources ?? []).some((r) => r.provider === "neon" && r.resource_id);
+  const hasDb = (app.resources ?? []).some((r) => r.provider?.toLowerCase() === "neon" && r.resource_id);
   const budgetNum = Number(budget);
   const budgetOk = budget.trim() !== "" && Number.isInteger(budgetNum) && budgetNum >= 0;
   const canManage = app.can_publish === true || isAdmin;

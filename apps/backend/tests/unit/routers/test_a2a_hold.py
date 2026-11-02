@@ -22,9 +22,9 @@ RULES = {"revision": "r-1", "holders": {"agent:*": [OWNER]}, "rules": [], "defau
 BASE = f"/a2a/{ORG}/{AGENT}"
 
 
-def msg(text="please do the thing"):
+def msg(text="please do the thing", skill="message"):
     auth = {
-        "operation": {"skill": "message", "resource": f"agent:{AGENT}", "operands": {"text": text}},
+        "operation": {"skill": skill, "resource": f"agent:{AGENT}", "operands": {"text": text}},
         "intent": "do the thing",
     }
     return {
@@ -66,8 +66,8 @@ def as_user(app, user_id, role="org:member"):
         app.dependency_overrides[get_current_user] = prev
 
 
-def send(c, text="please do the thing"):
-    return c.post(BASE, json=rpc("SendMessage", {"message": msg(text)})).json()["result"]["task"]
+def send(c, text="please do the thing", skill="message"):
+    return c.post(BASE, json=rpc("SendMessage", {"message": msg(text, skill)})).json()["result"]["task"]
 
 
 def get(c, task_id):
@@ -89,7 +89,7 @@ def test_ask_session_is_held_and_holder_is_notified(client, app, hold_env):
     hold_env.send.assert_not_awaited()
     hold_env.notify.assert_awaited_once()
     owner_id, req = hold_env.notify.await_args.args
-    assert owner_id == ORG and str(req.agent_id) == AGENT and req.event_id == f"a2a:{task['id']}:hold"
+    assert owner_id == ORG and str(req.agent_id) == AGENT and req.event_id == f"a2a:{task['id']}:hold:{OWNER}"
     assert f"/a2a/{ORG}/{AGENT}/tasks/{task['id']}/decide" in req.text and REQUESTER in req.text
     holder_auth = hold_env.dm.await_args.args[0]
     assert holder_auth.user_id == OWNER and hold_env.dm.await_args.kwargs == {"create_key": task["id"]}
@@ -122,7 +122,7 @@ def test_holder_allow_dispatches_writes_exception_and_record(client, app, hold_e
     assert [x["decision"] for x in recs] == ["hold", "allow_by_holder"]
     assert recs[1]["answered_by"] == OWNER and recs[1]["holder"] == OWNER
     h = operands_hash({"text": "please do the thing"})
-    row = asyncio.run(a2a_repo.get_exception(ORG, f"agent:{AGENT}", h, int(time.time())))
+    row = asyncio.run(a2a_repo.get_exception(ORG, f"agent:{AGENT}", "message", h, int(time.time())))
     assert row is not None and row["holder"] == OWNER and row["taskId"] == task_id
 
 
@@ -141,12 +141,25 @@ def test_second_identical_request_is_allowed_by_exception(client, app, hold_env)
         assert decide(client, task_id).status_code == 200
     again = send(client)
     exc = asyncio.run(
-        a2a_repo.get_exception(ORG, f"agent:{AGENT}", operands_hash({"text": "please do the thing"}), int(time.time()))
+        a2a_repo.get_exception(
+            ORG, f"agent:{AGENT}", "message", operands_hash({"text": "please do the thing"}), int(time.time())
+        )
     )
     assert again["status"]["state"] == "TASK_STATE_WORKING"
     assert again["metadata"][URI]["rule"] == f"exception:{exc['id']}"
     other = send(client, text="something different")
     assert other["status"]["state"] == "TASK_STATE_AUTH_REQUIRED"
+    other_skill = send(client, skill="ask_session")  # same operands, another skill: not covered
+    assert other_skill["status"]["state"] == "TASK_STATE_AUTH_REQUIRED"
+
+
+def test_every_holder_is_notified(client, app, hold_env):
+    asyncio.run(a2a_repo.put_rules(ORG, {**RULES, "holders": {"agent:*": [OWNER, "user_second"]}}))
+    task_id = send(client)["id"]
+    assert hold_env.notify.await_count == 2
+    ids = [c.args[1].event_id for c in hold_env.notify.await_args_list]
+    assert ids == [f"a2a:{task_id}:hold:{OWNER}", f"a2a:{task_id}:hold:user_second"]
+    assert [c.args[0].user_id for c in hold_env.dm.await_args_list] == [OWNER, "user_second"]
 
 
 def test_expired_hold_reads_as_canceled_and_rejects_decide(client, app, hold_env, monkeypatch):

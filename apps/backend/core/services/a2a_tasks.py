@@ -180,7 +180,9 @@ async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict
     doc = await a2a_repo.get_rules(org)
     rules = Rules.model_validate(doc) if doc else default_rules(org, [auth.user_id] if auth.is_org_admin else [])
     resource = req.operation.resource
-    exception = await a2a_repo.get_exception(org, resource, claims["operation"]["operands_hash"], now)
+    exception = await a2a_repo.get_exception(
+        org, resource, req.operation.skill, claims["operation"]["operands_hash"], now
+    )
     d = a2a_rules.decide(
         rules,
         org=org,
@@ -271,7 +273,7 @@ async def _notify_holders(org: str, agent_id: str, row: dict, claims: dict) -> N
             await messaging.create_agent_message(
                 org,
                 messaging.AgentMessageRequest(
-                    event_id=f"a2a:{row['id']}:hold",
+                    event_id=f"a2a:{row['id']}:hold:{holder}",
                     room_id=room,
                     agent_id=agent_id,
                     text=text,
@@ -348,7 +350,7 @@ async def decide(
         return to_a2a_task(row)
     op = _claims(row["authority"])["operation"]
     await a2a_repo.put_exception(
-        org, op["resource"], op["operands_hash"], holder=auth.user_id, task_id=task_id, now=now
+        org, op["resource"], op["skill"], op["operands_hash"], holder=auth.user_id, task_id=task_id, now=now
     )
     if await _dispatch(AuthContext(user_id=row["requester"], org_id=org), org, agent_id, row, row["text"]):
         extra = {"roomId": row["roomId"], "dispatchMessageId": row["dispatchMessageId"]}

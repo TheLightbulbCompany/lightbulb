@@ -68,10 +68,15 @@ def test_exception_repo_roundtrip_and_expiry(repos):
     from core.repositories import a2a_repo
 
     eid = asyncio.run(
-        a2a_repo.put_exception("org_1", "session:abc", "sha256:aa", holder="user_owner", task_id="t1", now=1_000)
+        a2a_repo.put_exception(
+            "org_1", "session:abc", "ask_session", "sha256:aa", holder="user_owner", task_id="t1", now=1_000
+        )
     )
-    assert asyncio.run(a2a_repo.get_exception("org_1", "session:abc", "sha256:aa", 1_001))["id"] == eid
-    assert asyncio.run(a2a_repo.get_exception("org_1", "session:abc", "sha256:aa", 1_000 + 86_401)) is None
+    assert asyncio.run(a2a_repo.get_exception("org_1", "session:abc", "ask_session", "sha256:aa", 1_001))["id"] == eid
+    assert asyncio.run(a2a_repo.get_exception("org_1", "session:abc", "message", "sha256:aa", 1_001)) is None
+    assert (
+        asyncio.run(a2a_repo.get_exception("org_1", "session:abc", "ask_session", "sha256:aa", 1_000 + 86_401)) is None
+    )
 
 
 def test_matching_deny_beats_an_exception():

@@ -26,6 +26,21 @@ async def test_the_cap_is_stored_then_rolled(wired, value, stored):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value, stored", [("on", True), ("off", False)])
+async def test_the_network_workers_flag_is_stored_then_rolled(wired, value, stored):
+    assert await script.main(["--owner-id", "org_a", "--network-workers", value]) == 0
+    wired.assert_awaited_once_with("org_a", {"network_workers": stored})
+    script.roll_runtime_image.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_network_workers_flag_is_refused_for_the_whole_fleet(wired):
+    with pytest.raises(SystemExit):
+        await script.main(["--all", "--network-workers", "on"])
+    wired.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_cap_change_that_meets_a_concurrent_roll_exits_1(wired, monkeypatch):
     monkeypatch.setattr(script, "roll_runtime_image", AsyncMock(return_value="update-in-progress"))
     assert await script.main(["--owner-id", "org_a", "--max-concurrent-turns", "6"]) == 1

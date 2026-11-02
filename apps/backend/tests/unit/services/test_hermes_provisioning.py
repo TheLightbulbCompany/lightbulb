@@ -220,6 +220,13 @@ def test_runtime_env_carries_the_workspace_memory_id_only_when_configured():
     assert "AGENTCORE_MEMORY_ID" not in _env(memory_id="")
 
 
+def test_network_workers_is_in_the_env_only_when_on_and_turning_it_off_is_drift():
+    assert _env(network_workers=True)["LIGHTBULB_NETWORK_WORKERS"] == "1"
+    assert "LIGHTBULB_NETWORK_WORKERS" not in _env()
+    assert hermes_provisioning._env_drifted(_env(network_workers=True), _env())
+    assert hermes_provisioning._env_drifted(_env(), _env(network_workers=True))
+
+
 def test_the_turn_cap_is_a_per_owner_env_key_and_unset_means_the_image_default():
     assert _env(max_concurrent_turns=6)["LIGHTBULB_MAX_CONCURRENT_TURNS"] == "6"
     assert "LIGHTBULB_MAX_CONCURRENT_TURNS" not in _env()

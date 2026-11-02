@@ -1977,6 +1977,31 @@ async def test_a_production_first_deployment_is_rebuilt_not_recorded_as_the_prev
     assert (await _rec(src))["preview"]["deployment_id"] == "dpl_2"
 
 
+async def test_a_first_deployment_that_fails_as_production_is_rebuilt_not_reported(world):
+    world.vercel.first_is_production = True
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])  # dpl_1: production, so it builds against the empty live database
+    world.vercel.finish("dpl_1", "ERROR", 'relation "accounts" does not exist')
+    res = await svc.status(OWNER, src["app_id"])
+    rec = await _rec(src)
+    assert res["state"] == "building" and not rec.get("error")
+    assert rec["preview_pending"]["deployment_id"] == "dpl_2"
+
+
+async def test_a_failed_production_first_deployment_stops_at_the_rebuild_limit(world):
+    world.vercel.first_is_production = True
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])
+    await svc.apps_repo.patch(src["app_id"], {"preview_rebuilds": svc._PREVIEW_REBUILDS})
+    world.vercel.finish("dpl_1", "ERROR", "Type error")
+    res = await svc.status(OWNER, src["app_id"])
+    assert res["error"]["code"] == "build_failed" and len(world.vercel.created()) == 1
+
+
 async def test_production_preview_rebuilds_are_bounded(world):
     world.vercel.first_is_production = True
     src = await _source()

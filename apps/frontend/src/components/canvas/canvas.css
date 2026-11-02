@@ -37,8 +37,8 @@ button.app-item__row:focus-visible { outline: 2px solid var(--fg); outline-offse
 .app-view button:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* Primary (filled) action, danger action, and the Preview | Live segmented control. */
-.app-view__btn--primary { padding: 4px 12px; border-radius: 6px; background: var(--fg); color: Canvas; }
-.app-view__btn--primary:hover { color: Canvas; opacity: 0.85; text-decoration: none; }
+.app-view__btn--primary { padding: 4px 12px; border-radius: 6px; background: var(--fg); color: var(--plane-pane); }
+.app-view__btn--primary:hover { color: var(--plane-pane); opacity: 0.85; text-decoration: none; }
 .app-view__btn--danger { color: var(--err); }
 .app-view__seg { display: inline-flex; border: 1px solid var(--plane-edge); border-radius: 6px; overflow: hidden; }
 .app-view__seg .app-view__btn { padding: 2px 10px; }

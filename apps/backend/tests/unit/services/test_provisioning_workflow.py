@@ -1772,6 +1772,38 @@ async def test_a_read_resumes_a_card_the_owner_approved_on_their_phone():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("card_state", "called"),
+    [
+        ("awaiting_approval", None),
+        ("connecting_provider", "on_approved"),
+        ("active", "on_approved"),
+        ("rejected", "on_rejected"),
+    ],
+)
+async def test_a_bundled_request_follows_its_apps_card(card_state, called):
+    row = _row(workflow_id="pwf_2", state="awaiting_approval", bundled_with="pwf_1")
+    card = _row(state=card_state, approved_by="user_1", usage_limit={"max_amount": 100})
+    with (
+        patch.object(mod.repo, "get", AsyncMock(return_value=card)),
+        patch.object(mod, "on_approved", AsyncMock(return_value=_row(state="connecting_provider"))) as approved,
+        patch.object(mod, "on_rejected", AsyncMock(return_value=_row(state="rejected"))) as rejected,
+    ):
+        await mod._reconcile_approval(row)
+    assert approved.await_count == (called == "on_approved")
+    assert rejected.await_count == (called == "on_rejected")
+    if called == "on_approved":
+        assert approved.await_args.kwargs == {"usage_limit": {"max_amount": 100}, "approved_by": "user_1"}
+
+
+@pytest.mark.asyncio
+async def test_a_bundled_request_files_no_card_and_posts_no_line():
+    with patch.object(mod.apps_room, "post_approval_line", AsyncMock()) as line:
+        await mod._approved_line("user_1", _row(bundled_with="pwf_1"))
+    line.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_read_records_a_rejection_as_a_terminal_state():
     """A declined card must stop the workflow, not be re-read for a week."""
     row = _row(state="awaiting_approval", approval_id="apr_1")

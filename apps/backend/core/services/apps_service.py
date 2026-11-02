@@ -341,11 +341,30 @@ async def _rows(app: dict, all_rows: list[dict] | None = None) -> dict[tuple, di
 
 async def _ensure_workflows(app: dict, issue_id: str | None) -> None:
     rows = await _rows(app)
+    display = app.get("display_name") or app["name"]
+    # One card per app: hosting's card also covers the data, and names it. An app that already has
+    # its cards keeps them.
+    card = rows.get(("vercel", "project", "prod"))
     for provider, service, env in _RESOURCES:
         row = rows.get((provider, service, env))
         if row is None or row.get("state") in _DEAD:
             name = app["name"] if env == "prod" else f"{app['name']}-preview"
-            await provisioning_workflow.start(
+            carded = provider == "vercel"
+            bundle: dict = (
+                {
+                    "also": [
+                        await provisioning_workflow.consent_line(
+                            app["owner_id"], "neon", "postgres", f"The data for {display}, live and preview"
+                        )
+                    ],
+                    "title": f"Set up hosting and data for {display}",
+                }
+                if carded
+                else {"bundled_with": card["workflow_id"]}
+                if card and card.get("state") not in _DEAD
+                else {}
+            )
+            started = await provisioning_workflow.start(
                 owner_id=app["owner_id"],
                 provider_name=provider,
                 service_id=service,
@@ -355,7 +374,10 @@ async def _ensure_workflows(app: dict, issue_id: str | None) -> None:
                 reason=f"{app.get('display_name') or app['name']}: {'hosting' if provider == 'vercel' else 'a database'} ({'live' if env == 'prod' else 'preview'})",
                 app_id=app["app_id"],
                 environment=env,
+                **bundle,
             )
+            if carded:
+                card = started
 
 
 async def _secret(app: dict, rows: dict, provider: str, env: str, key: str) -> dict | None:
@@ -1089,7 +1111,7 @@ async def _result(app: dict, rows: dict, transient: AppError | None, cost_cents:
                 "state": r.get("state"),
             }
             for r in rows.values()
-            if r.get("state") != "active"
+            if r.get("state") != "active" and not (r.get("state") == "awaiting_approval" and r.get("bundled_with"))
         ],
         "canvas_url": _canvas_url(app["app_id"]),
         "sample_data": bool(built.get("sample", True)),

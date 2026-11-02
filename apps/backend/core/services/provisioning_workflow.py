@@ -440,9 +440,16 @@ async def start(
     reason: str = "",
     app_id: str | None = None,
     environment: str = "prod",
+    bundled_with: str | None = None,
+    also: list[dict] | None = None,
+    title: str | None = None,
 ) -> dict:
     """Step 1 of spec §3.2. Refuses loudly rather than opening a workflow that
-    cannot finish. ``app_id`` scopes the row to one app's own Project."""
+    cannot finish. ``app_id`` scopes the row to one app's own Project.
+
+    An app asks once for everything it needs (the guide: "user approves prerequisite and
+    dependent action"): ``also`` names the rest on the card, and those rows pass
+    ``bundled_with`` the carded row and file no card of their own."""
     account_id = await account_id_for(owner_id)
     if app_id and not await _owned_app(owner_id, app_id):
         raise WorkflowRefused("app_not_found", "That app does not exist")
@@ -508,6 +515,14 @@ async def start(
         creates_project=await _creates_project(owner_id, service, app_id),
         **await _card_lines(app_id, environment),
     )
+    if bundled_with:
+        moved = await repo.transition(
+            row["workflow_id"],
+            from_state="ask",
+            to_state="awaiting_approval",
+            fields={"approval": snapshot, "bundled_with": bundled_with},
+        )
+        return moved or row
     try:
         approval_id = await provisioning_approvals.request_provider_consent(
             owner_id=owner_id,
@@ -516,6 +531,8 @@ async def start(
             snapshot=snapshot,
             limit_editable=await limit_is_editable(account_id),
             reason=reason,
+            also=also,
+            title=title,
         )
     except Exception:
         # The row is already `ask`, and the dedupe above treats an `ask` row as
@@ -536,7 +553,7 @@ async def start(
         row["workflow_id"],
         from_state="ask",
         to_state="awaiting_approval",
-        fields={"approval": snapshot, "approval_id": approval_id},
+        fields={"approval": snapshot, "approval_id": approval_id, "bundle": bool(also)},
     )
     return moved or row
 
@@ -626,10 +643,24 @@ async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by
     )
 
 
+async def consent_line(owner_id: str, provider_name: str, service_id: str, what: str) -> dict:
+    """What the card must say about a service it also covers: the guide's informed approval."""
+    service, provider = await _read_catalog(await account_id_for(owner_id), provider_name, service_id)
+    snapshot = snapshot_of(service, provider, {})
+    return {
+        "what": what,
+        "provider": snapshot.get("provider_name"),
+        "service": snapshot.get("service_ref"),
+        "terms_url": snapshot.get("terms_url"),
+        "privacy_policy_url": snapshot.get("privacy_policy_url"),
+        "price_display": provisioning_approvals.price_display(snapshot),
+    }
+
+
 async def _approved_line(approved_by: str, moved: dict | None) -> dict | None:
     """Only the caller whose transition WON posts: a second click or the phone
     approval read after the route both find the row moved and post nothing."""
-    if moved:
+    if moved and not moved.get("bundled_with"):
         await apps_room.post_approval_line(owner_id=moved["owner_id"], user_id=approved_by, workflow=moved)
     return moved
 
@@ -1270,6 +1301,16 @@ async def _reconcile_approval(row: dict) -> dict:
     construction — the row is left exactly as it was and the next read looks
     again.
     """
+    if row.get("bundled_with") and not row.get("approval_id"):
+        card = await repo.get(row["bundled_with"])
+        if not card or card.get("state") in ("rejected", "cancelled"):
+            return await on_rejected(row["workflow_id"]) or row
+        if card.get("state") in ("ask", "awaiting_approval"):
+            return row
+        moved = await on_approved(
+            row["workflow_id"], usage_limit=card.get("usage_limit"), approved_by=card.get("approved_by") or "paperclip"
+        )
+        return moved or row
     approval_id = row.get("approval_id")
     if not approval_id:
         return row

@@ -195,6 +195,7 @@ def world(monkeypatch):
                 "configuration": kw["configuration"],
                 "state": "awaiting_approval",
                 "created_at": f"2026-10-29T00:00:{len(rows):02d}",
+                **({"bundled_with": kw["bundled_with"]} if kw.get("bundled_with") else {}),
             }
             return dict(rows[wid])
 
@@ -203,6 +204,7 @@ def world(monkeypatch):
         monkeypatch.setattr(wf, "advance_on_read", AsyncMock(side_effect=lambda wid: dict(rows[wid])))
         monkeypatch.setattr(wf, "account_id_for", AsyncMock(return_value="acct_1"))
         monkeypatch.setattr(wf, "cancel", AsyncMock())
+        monkeypatch.setattr(wf, "consent_line", AsyncMock(return_value={"what": "data", "provider": "Neon"}))
         monkeypatch.setattr(
             svc.wf_repo, "list_for_owner", AsyncMock(side_effect=lambda o: [dict(r) for r in rows.values()])
         )
@@ -308,11 +310,10 @@ async def test_up_files_one_workflow_per_service_and_returns_cards(world):
         c.kwargs["app_id"] == src["app_id"] and c.kwargs["issue_id"] == "iss_1" for c in world.start.await_args_list
     )
     assert world.start.await_args_list[0].kwargs["configuration"] == {"name": "crew"}
-    assert {(c["provider"], c["service"], c["state"]) for c in res["cards"]} == {
-        ("Vercel", "project", "awaiting_approval"),
-        ("Neon", "postgres", "awaiting_approval"),
-    }
-    assert len(res["cards"]) == 3
+    assert [(c["provider"], c["service"]) for c in res["cards"]] == [("Vercel", "project")]
+    card, *data = world.start.await_args_list
+    assert card.kwargs["also"] and "bundled_with" not in card.kwargs
+    assert [c.kwargs["bundled_with"] for c in data] == ["pwf_1", "pwf_1"]
     assert res["canvas_url"] == f"https://web.test/chat?panel=canvas&app={src['app_id']}"
     app = await svc.apps_repo.get(src["app_id"])
     assert (

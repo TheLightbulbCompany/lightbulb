@@ -51,7 +51,8 @@ async def test_session_dispatch_uses_origin_person_link(setup, monkeypatch):
     monkeypatch.setattr("core.services.hosted_mcp._through_member", through)
     ok = await a2a_tasks._dispatch(AuthContext(user_id="user_r", org_id=ORG), ORG, "friday", setup, "go")
     assert ok and setup["dispatchRequestId"] == setup["id"]
-    (auth,), kw = through.call_args
+    (auth, op), kw = through.call_args
+    assert op == "send"
     assert auth.user_id == "user_origin" and auth.org_id == ORG
     assert kw["to"] == "abc" and kw["request_id"] == setup["id"] and kw["sender"] == ("friday", "Friday")
     assert kw["text"].startswith("[A2A]") and kw["text"].endswith("\ngo")

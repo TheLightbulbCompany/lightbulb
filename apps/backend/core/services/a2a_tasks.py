@@ -14,9 +14,9 @@ from pydantic import ValidationError
 
 from core.auth import AuthContext
 from core.config import settings
-from core.repositories import a2a_repo
+from core.repositories import a2a_repo, local_sessions_repo, messaging_repo
 from core.services import a2a_rules, hosted_mcp, messaging
-from core.services.a2a_authority import URI, AuthorityError, AuthorityRequest, mint, sign_record, verify
+from core.services.a2a_authority import URI, AuthorityError, AuthorityRequest, Operation, mint, sign_record, verify
 from core.services.a2a_rules import Rules, default_rules
 from core.services.network_proof import _unb64
 
@@ -179,25 +179,45 @@ async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict
         raise A2AError(-32602, "replay")
     doc = await a2a_repo.get_rules(org)
     rules = Rules.model_validate(doc) if doc else default_rules(org, [auth.user_id] if auth.is_org_admin else [])
-    resource = req.operation.resource
-    exception = await a2a_repo.get_exception(
-        org, resource, req.operation.skill, claims["operation"]["operands_hash"], now
+    row = await _decide_and_store(
+        auth, org, agent_id, jws, claims, text, rules=rules, chain_agents=[], session_person=None, now=now
     )
+    return to_a2a_task(row)
+
+
+async def _decide_and_store(
+    auth: AuthContext,
+    org: str,
+    agent_id: str,
+    jws: str,
+    claims: dict,
+    text: str,
+    *,
+    rules: Rules,
+    chain_agents: list[str],
+    session_person: str | None,
+    now: int,
+) -> dict:
+    """Decide a minted authority, dispatch when allowed, sign its record, store the task and ask any
+    holders; the stored row."""
+    requester = claims["requester"]["person"]
+    op = claims["operation"]
+    exception = await a2a_repo.get_exception(org, op["resource"], op["skill"], op["operands_hash"], now)
     d = a2a_rules.decide(
         rules,
         org=org,
-        requester_person=auth.user_id,
+        requester_person=requester,
         requester_org=auth.org_id,
-        chain_agents=[],
-        resource=resource,
-        skill=req.operation.skill,
-        session_person=None,
+        chain_agents=chain_agents,
+        resource=op["resource"],
+        skill=op["skill"],
+        session_person=session_person,
         exception=exception,
     )
     row = {
         "id": str(uuid.uuid4()),
         "agentId": agent_id,
-        "requester": auth.user_id,
+        "requester": requester,
         "authority": jws,
         "policyRevision": rules.revision,
         "rule": d.rule,
@@ -225,12 +245,82 @@ async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict
     await a2a_repo.put_task(org, row)
     if row["state"] == "held":
         await _notify_holders(org, agent_id, row, claims)
-    return to_a2a_task(row)
+    return row
+
+
+async def _origin_person(owner_id: str, room_id: str | None, message_id: str | None) -> str | None:
+    """The human in this workspace who wrote the origin message; None when there is none."""
+    if not room_id or not message_id:
+        return None
+    room = await messaging_repo.get_room(room_id)
+    message = await messaging_repo.get_message_by_id(room_id, message_id)
+    if not room or room.get("ownerId") != owner_id or not message:
+        return None
+    author = message.get("author") or {}
+    if author.get("kind") != "human" or not str(author.get("id", "")).startswith("user_"):
+        return None
+    member = await messaging_repo.get_member(room_id, "human", author["id"])
+    if not member or messaging_repo.member_home(member, owner_id) != owner_id:
+        return None  # a foreign human in a shared room does not ask under this workspace
+    return author["id"]
+
+
+async def ask_session(owner_id: str, body, *, now: int | None = None) -> dict:
+    """A hosted agent asks a laptop session, under the person whose message it is answering (else the
+    agent's first holder); held for the session's person unless a rule allows it."""
+    now = int(time.time()) if now is None else now
+    if await agent_name(owner_id, body.agent_id) is None:
+        raise A2AError(404, "unknown_agent")
+    session = await local_sessions_repo.get_session(owner_id, body.session_id)
+    if session is None:
+        raise A2AError(404, "unknown_session")
+    doc = await a2a_repo.get_rules(owner_id)
+    rules = Rules.model_validate(doc) if doc else default_rules(owner_id, [])
+    person = await _origin_person(owner_id, body.room_id, body.origin_message_id)
+    verified_by = "origin-message"
+    if person is None:
+        # ponytail: the agent's first holder stands in as requester; holders are admins by convention,
+        # not checked against Clerk here
+        holders = a2a_rules._holders(rules, f"agent:{body.agent_id}", None)
+        if not holders:
+            raise A2AError(403, "no_requester")
+        person, verified_by = holders[0], "agent-runtime"
+    req = AuthorityRequest(
+        operation=Operation(skill="ask_session", resource=f"session:{body.session_id}", operands={"text": body.text}),
+        intent=body.intent,
+    )
+    chain = [
+        {"agent": None, "session": None, "person": person, "at": now},
+        {"agent": body.agent_id, "session": body.run_id, "person": person, "at": now},
+    ]
+    try:
+        jws, claims = mint(
+            requester_person=person, org=owner_id, verified_by=verified_by, chain=chain, request=req, now=now
+        )
+    except AuthorityError as exc:
+        raise A2AError(400, f"invalid authority: {exc.check}") from None
+    row = await _decide_and_store(
+        AuthContext(user_id=person, org_id=owner_id),
+        owner_id,
+        body.agent_id,
+        jws,
+        claims,
+        body.text,
+        rules=rules,
+        chain_agents=[body.agent_id],
+        session_person=session.get("humanUserId"),
+        now=now,
+    )
+    return {"taskId": row["id"], "state": row["state"], "holders": row["holders"]}
 
 
 def session_header(*, requester_display: str, for_whom: str, intent: str, record_url: str) -> str:
     """The first line a laptop session sees: who asked, for whom, why, and where the signed record is."""
-    head = f"[A2A] {requester_display} for {for_whom}: {intent[:200]} — record: {record_url}\n"
+
+    def one(v: str) -> str:
+        return v.replace("\r", " ").replace("\n", " ")
+
+    head = f"[A2A] {one(requester_display)} for {one(for_whom)}: {one(intent[:200])} — record: {record_url}\n"
     if len(head.encode()) > 512:  # hard cap: cut the whole header on a character boundary, keep the newline
         head = head.encode()[:511].decode(errors="ignore") + "\n"
     return head

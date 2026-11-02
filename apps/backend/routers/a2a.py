@@ -1,5 +1,5 @@
 """The A2A door (JSON-RPC binding, A2A v1.0): Agent Card, issuer keys, SendMessage and GetTask, records,
-a holder's decision and the workspace rules."""
+a holder's decision, the workspace rules, and the hook-token ask from a hosted agent."""
 
 from typing import Literal
 
@@ -11,6 +11,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin
 from core.config import settings
 from core.repositories import a2a_repo
 from core.services import a2a_tasks, network_proof
+from core.services.container_auth import _require_hook_token
 from core.services.a2a_rules import Rules, default_rules
 from core.services.a2a_tasks import A2AError
 from core.services.messaging import ContractModel
@@ -98,3 +99,22 @@ async def jsonrpc(org: str, agent_id: str, body: dict = Body(...), ctx: AuthCont
     except A2AError as exc:
         return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": exc.code, "message": exc.message}}
     return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
+
+
+class AskSessionRequest(ContractModel):
+    session_id: str
+    text: str
+    intent: str
+    origin_message_id: str | None = None
+    room_id: str | None = None  # the turn's room, where the origin message lives
+    agent_id: str
+    run_id: str | None = None
+
+
+@router.post("/api/v1/internal/a2a/{owner_id}/ask-session")
+async def ask_session(owner_id: str, body: AskSessionRequest, request: Request):
+    await _require_hook_token(owner_id, request)
+    try:
+        return await a2a_tasks.ask_session(owner_id, body)
+    except A2AError as exc:
+        raise HTTPException(exc.code, detail={"code": exc.message}) from None

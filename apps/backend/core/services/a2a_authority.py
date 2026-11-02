@@ -100,6 +100,7 @@ def _shape_ok(c: dict) -> bool:
         and all(isinstance(h, dict) for h in c["chain"])
         and isinstance(op, dict)
         and all(_is(op.get(k), str) for k in ("skill", "resource", "operands_hash"))
+        and isinstance(op.get("operands"), dict)
         and _is(c.get("intent"), str)
         and (c.get("on_behalf_of") is None or _is(c["on_behalf_of"], str))
         and c.get("policy") is None

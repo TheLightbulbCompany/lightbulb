@@ -255,6 +255,32 @@ def test_an_assignment_whose_turn_fails_tells_the_asker_and_is_not_run_again(net
     assert [(c["reply_to"], c["status"], c["reason"]) for c in net.calls("send")] == [("r1", "failed", "turn_failed")]
 
 
+def test_an_assignment_turn_is_stopped_at_its_deadline(net, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    def slow(agent_id, body, token, reserved):
+        t0 = time.time()
+        while not turn.run_aborted(body["abortKey"]) and time.time() - t0 < 5:
+            time.sleep(0.02)
+        turn.release_turn()
+        return "aborted" if turn.run_aborted(body["abortKey"]) else "completed"
+
+    monkeypatch.setattr(turn, "run_turn", slow)
+    soon = (datetime.now(timezone.utc) + timedelta(seconds=0.3)).isoformat()
+    net.answer(**_peek({**REC, "kind": "assign", "request_id": "r1", "deadline_at": soon}), send={})
+    t0 = time.time()
+    assert network.ensure_started(background=False)
+    assert _until(lambda: ("m1", "read") in _acks(net))
+    assert time.time() - t0 < 3
+    assert net.calls("send") == []  # the asker's engine already said timed_out
+
+
+def test_seconds_left_reads_both_deadline_forms():
+    assert network._seconds_left(time.time() + 10) > 9
+    assert network._seconds_left("2020-01-01T00:00:00Z") < 0
+    assert network._seconds_left(None) is None and network._seconds_left("soon") is None
+
+
 def test_a_cancelled_assignment_is_read_and_sends_no_result(net, monkeypatch):
     def stopped(agent_id, body, token, reserved):
         turn.abort_run(body["abortKey"])

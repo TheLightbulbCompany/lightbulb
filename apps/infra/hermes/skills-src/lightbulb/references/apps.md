@@ -64,9 +64,9 @@ A result with a `state` and an `error` has it in `error.next`. `lightbulb app st
 
 ## Waiting for approval
 
-If `state` is `awaiting_approval`, the app's accounts need an owner's tap. The cards are in
+If `state` is `awaiting_approval`, the app's accounts need an owner's tap. The card is in
 Activity (the bell), under "Needs you", not in this room. Post the approval line (§ What to say),
-then **end the turn**. Each approval posts a line in this room that mentions you; run
+then **end the turn**. The approval posts a line in this room that mentions you; run
 `lightbulb app up --json` again when it does. Never poll, never sleep in a loop.
 
 ## Done means proven
@@ -128,8 +128,8 @@ name, and at most one every few minutes. The lines below stay exactly as specifi
   attendees}, set "Who can open it" to "Anyone with the link" in Canvas → {app} → Settings. You
   can do that yourself, or a workspace admin can."
 - Approval: "To keep its data I need an owner's OK to set up hosting and storage for {app}. The
-  three cards are in Activity, under Needs you; tap Approve on each. The preview can't start
-  until the hosting card is approved." Name the owner if you know who.
+  card is in Activity, under Needs you; tap Approve. The preview can't start until then." Name the
+  owner if you know who.
 - Checking: "Checking {app} before it goes live: a second agent is trying every page. I'll post
   here when it's live, usually within a few minutes."
 - Review failed: "The check found {n} problems ({short plain list}). Fixing them now, then it goes

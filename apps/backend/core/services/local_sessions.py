@@ -267,8 +267,25 @@ class PendingQuestion(ContractModel):
     def unique_questions(self):
         if len({question.question for question in self.questions}) != len(self.questions):
             raise ValueError("Question texts must be unique")
-        if len(self.model_dump_json(by_alias=True).encode("utf-8")) > 10 * 1024:
-            raise ValueError("Question input exceeds 10 KiB")
+        # Native bounds the original input to 10 KiB. Projection adds bounded IDs,
+        # digest and default fields; it must not reject an input already held by the hook.
+        if len(self.model_dump_json(by_alias=True).encode("utf-8")) > 10 * 1024 + 1024:
+            raise ValueError("Question descriptor exceeds its bounded envelope")
+        largest = {}
+        for question in self.questions:
+            selectable = (
+                ", ".join(option.label for option in question.options)
+                if question.multi_select
+                else max(
+                    (option.label for option in question.options),
+                    key=lambda value: len(json.dumps(value, ensure_ascii=False).encode("utf-8")),
+                )
+            )
+            largest[question.question] = max(
+                (selectable, "x" * 128), key=lambda value: len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+            )
+        if len(json.dumps(largest, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 2000:
+            raise ValueError("Question cannot fit its answer envelope")
         return self
 
 

@@ -637,7 +637,10 @@ def pending_question(events: list[Event]) -> object:
         if tag.get("question") is not True or tag.get("full") is not True or tag.get("promptId") != event.item_id:
             continue
         source = tag.get("input")
-        if not isinstance(source, dict) or len(json.dumps(source, ensure_ascii=False).encode("utf-8")) > 10 * 1024:
+        if (
+            not isinstance(source, dict)
+            or len(json.dumps(source, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 10 * 1024
+        ):
             continue
         try:
             found = sessions.PendingQuestion.model_validate(

@@ -111,8 +111,8 @@ A running session shows its live terminal when Lightbulb started it, when it is 
 background session, or when it is a plain Codex session (Codex's own background service runs
 it, and Lightbulb opens one more Codex terminal on the same conversation). A running session with no live
 terminal (a plain `claude`, or `codex --no-daemon`) shows its conversation (transcript, message
-box and approvals) to workspace members on the web, in the desktop app and on the phone, under a
-one-line hint: its own Claude Code terminal tells its person to press the left arrow key (←) once
+box, questions and approvals) to workspace members on the web, in the desktop app and on the phone.
+Terminal-sharing instructions live under **Details → Access**: its own Claude Code terminal tells its person to press the left arrow key (←) once
 to make it live, and a Codex session started with `--no-daemon` is started again with
 `lightbulb codex`. The public link stays terminal-only. A session that runs
 inside the Claude or Codex app, or an editor, has no terminal: people read its conversation
@@ -122,6 +122,15 @@ is its conversation." Its person can also stop sharing from the workspace (**Who
 the whole session, including what it did meanwhile. A session with a live terminal shows that terminal and no transcript.
 You still read the structured record with
 `lightbulb_local_sessions`.
+
+Claude questions captured by a current desktop app are answered directly in Lightbulb, with
+options or a written answer, even when the conversation has no shared terminal. Questions,
+permissions and follow-ups are separate interactions: while a question waits, there is no
+ordinary follow-up box. A provider-held question remains visible over a live terminal until
+answered; other terminal input stays in the terminal. Older desktop sessions
+without a held question keep their terminal-only prompt until their next captured request.
+Conversation messages use normal app typography; raw structured tool results stay folded
+behind **show output**. A control restriction is explained once.
 
 **Session browser** (desktop app on the session's Mac, sharing on): a shared Claude Code or
 Codex session browses with its `lightbulb-browser` tools in that Mac's "Lightbulb agent"

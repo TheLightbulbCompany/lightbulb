@@ -271,7 +271,7 @@
 .session-tool-badge--corner svg { width: 11px; height: 11px; }
 .native-session-prompt-row { display: flex; gap: 8px; align-items: flex-start; }
 .native-session-prompt-row .native-session-glyph { padding-top: 8px; font-family: var(--font-mono), ui-monospace, monospace; }
-.native-session-composer textarea { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; }
+.native-session-composer textarea { font-family: var(--font-sans); }
 .room-thread-replies { border-top: 1px solid var(--border); margin-top: 8px; }
 .room-members { padding: 12px 20px; border-bottom: 1px solid var(--border); max-height: 280px; overflow: auto; }
 .room-member { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 4px 0; }
@@ -674,12 +674,12 @@
 .native-session-agent[data-state="running"] .native-session-agent-status { color: inherit; }
 .native-session-agent:focus { outline: 2px solid var(--ring); outline-offset: 2px; }
 .native-session-nested { margin-left: calc(1ch + 8px); padding-left: 8px; border-left: 1px solid var(--border); }
-/* Terminal grammar: monospace, tight rhythm, no cards. */
-.native-session { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: var(--text-caption); line-height: 1.5; }
+/* Conversation text follows the app typography; commands and output retain monospace. */
+.native-session { font-family: var(--font-body); font-size: var(--text-ui); line-height: 1.55; }
 .native-session .native-session-row { padding: 2px 0; }
 .native-session .native-session-prompt { background: none; border: 0; border-radius: 0; padding: 2px 0; margin: 12px 0 2px; }
 .native-session .native-session-prompt-text { font-weight: 600; }
-.native-session .native-session-prose, .native-session .native-session-prose * { font-family: inherit; font-size: inherit; line-height: inherit; }
+.native-session .native-session-prose { font-family: inherit; font-size: inherit; line-height: inherit; }
 .native-session-finished { color: var(--muted-foreground); }
 .native-session-finished[data-status="done"] > .native-session-glyph { color: var(--ok); }
 .native-session-finished[data-status="error"] > .native-session-glyph { color: var(--err); }

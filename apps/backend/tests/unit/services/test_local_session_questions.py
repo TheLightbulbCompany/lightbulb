@@ -211,3 +211,23 @@ def test_answer_size_is_utf8_json_bytes():
     small = {"Which release?": "é" * 970}
     assert len(json.dumps(small, ensure_ascii=False, separators=(",", ":")).encode()) < 2000
     assert answer(answers=small).answers == small
+
+
+def test_full_question_source_fits_when_projection_adds_metadata():
+    import json
+
+    source = {
+        "questions": [
+            {"question": "Choose a path", "options": [{"label": str(i), "description": "x" * 1600} for i in range(6)]}
+        ]
+    }
+    base = len(json.dumps(source, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    source["questions"][0]["options"][-1]["description"] += "x" * (10 * 1024 - 5 - base)
+    projected = pending_question([service.LocalSessionEventBody.model_validate(question_event(input=source))])
+    assert projected is not None and projected is not _NO_PROMPT
+    assert projected["questions"][0]["question"] == "Choose a path"
+
+
+def test_unanswerable_question_key_envelope_is_not_advertised():
+    source = {"questions": [{"question": str(i) + "x" * 550, "options": [{"label": "Yes"}]} for i in range(4)]}
+    assert pending_question([service.LocalSessionEventBody.model_validate(question_event(input=source))]) is None

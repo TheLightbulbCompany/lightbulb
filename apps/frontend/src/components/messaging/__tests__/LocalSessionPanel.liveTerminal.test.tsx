@@ -39,6 +39,32 @@ it("keeps saved conversation readable after a terminal exits, without stale cont
   expect(screen.queryByText(/screen is gone/)).toBeNull();
 });
 
+it("finds this Mac's terminal even before the relay advertises it", async () => {
+  const invoke = vi.fn(async (command: string) => command === "terminal_panel" ? { live: true } : null);
+  Object.defineProperty(window, "__TAURI__", { configurable: true, value: { core: { invoke } } });
+  try {
+    render(<LocalSessionPanel session={{ ...session, terminal: undefined, terminalReason: "plain" }}
+      ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} />);
+    expect(await screen.findByRole("region", { name: "Session terminal" })).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("terminal_panel", expect.objectContaining({ sessionId: "s" }));
+    expect(screen.queryByRole("textbox", { name: /send to/i })).toBeNull();
+  } finally { Reflect.deleteProperty(window, "__TAURI__"); }
+});
+
+it("does not offer an ordinary follow-up while a terminal question needs an answer", async () => {
+  render(<LocalSessionPanel session={{ ...session, terminal: undefined, terminalReason: "plain", status: "waiting-approval", waitingFor: "Which approach?" }}
+    ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} />);
+  expect(await screen.findByText("Which approach?")).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: /send to/i })).toBeNull();
+  expect(document.querySelector(".session-live-hint")).toBeNull();
+});
+
+it("shows a control connection warning once", () => {
+  render(<LocalSessionPanel session={{ ...session, controlUnavailableReason: "history-gap" }}
+    ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} />);
+  expect(screen.getAllByText(/History has a gap/)).toHaveLength(1);
+});
+
 it("drops the message box and the history region when the viewer can type in the live terminal", async () => {
   render(<LocalSessionPanel session={session} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
   await screen.findByRole("region", { name: "Live terminal (view only)" });
@@ -119,14 +145,14 @@ it("shows the conversation, not a wall, for a plain session", async () => {
   expect(client.watchLocalSession).not.toHaveBeenCalled();
   expect(screen.queryByText(/not started through Lightbulb/)).toBeNull();
   expect(document.querySelector(".session-state-panel")).toBeNull();
-  expect(document.querySelector(".session-live-hint")!.textContent).toMatch(/^Press ← in its terminal to share this one live/);
+  expect(document.querySelector(".session-live-hint")).toBeNull();
   expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
   mine.unmount();
   const codex = render(<LocalSessionPanel {...props} own session={{ ...plain, provider: "codex", terminalReason: "no-daemon" }} />);
-  expect(document.querySelector(".session-live-hint")!.textContent).toBe("Start it again with lightbulb codex to share its screen.");
+  expect(document.querySelector(".session-live-hint")).toBeNull();
   codex.unmount();
   render(<LocalSessionPanel {...props} own={false} session={plain} />);
-  expect(document.querySelector(".session-live-hint")!.textContent).toBe("Ask Alice to press ← in their terminal.");
+  expect(document.querySelector(".session-live-hint")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Message Alice" }));
   expect(onMessageOwner).toHaveBeenCalled();
 });
@@ -177,7 +203,7 @@ it("shows the conversation of a session that runs inside an app, with one line s
   client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
 });
 
-it("still probes this Mac's holder for an offline session, and never for a running one with no terminal", () => {
+it("probes this Mac's holder for offline sessions and running sessions before relay metadata catches up", () => {
   const invoke = vi.fn(async () => ({ live: false }));
   (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
   try {
@@ -187,7 +213,7 @@ it("still probes this Mac's holder for an offline session, and never for a runni
     offline.unmount();
     invoke.mockClear();
     render(<LocalSessionPanel {...props} session={{ ...session, terminal: undefined, status: "busy" }} />);
-    expect(invoke).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("terminal_panel", expect.objectContaining({ sessionId: "s" }));
   } finally {
     delete (window as { __TAURI__?: unknown }).__TAURI__;
   }

@@ -1511,6 +1511,39 @@ async def status(owner_id: str, app_id: str) -> AppStatus:
     return view
 
 
+_DRIVE_EVERY_S = 10
+_DRIVE_STEPS = 15 * 60 // _DRIVE_EVERY_S  # 15 minutes
+_DRIVE_STOP = {"ready", "live", "failed", "destroyed"}
+_drives: dict[str, asyncio.Task] = {}
+
+
+def drive(owner_id: str, app_id: str) -> None:
+    """After an approval, step the app on the server until its preview is up.
+
+    Steps otherwise happen only on reads, and the agent that filed the card early is busy building,
+    so an approved app sat in ``connecting_provider`` with nobody reading (run 7, 2 Nov 2026).
+    Reads still work as before; this only stops the app waiting for one. One drive per app.
+    """
+    if app_id in _drives:
+        return
+    task = asyncio.create_task(_drive(owner_id, app_id))
+    _drives[app_id] = task
+    task.add_done_callback(lambda _t: _drives.pop(app_id, None))
+
+
+async def _drive(owner_id: str, app_id: str) -> None:
+    # ponytail: in-process; a deploy that restarts the task drops the drive and the next read resumes it.
+    for _ in range(_DRIVE_STEPS):
+        await asyncio.sleep(_DRIVE_EVERY_S)
+        try:
+            view = await status(owner_id, app_id)
+        except Exception:
+            logger.exception("apps: drive stopped for %s", app_id)
+            return
+        if view["state"] in _DRIVE_STOP:
+            return
+
+
 async def update_settings(
     owner_id: str,
     app_id: str,

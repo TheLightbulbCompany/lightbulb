@@ -2779,3 +2779,16 @@ async def test_errors_ignores_a_publish_failure_older_than_a_healthy_preview(wor
     monkeypatch.setattr(svc.vercel, "runtime_logs", logs)
     await svc.errors(OWNER, src["app_id"])
     assert logs.await_args.args[1] == "dpl_new"
+
+
+async def test_drive_steps_the_app_until_its_preview_is_up_and_once_per_app():
+    states = iter(["provisioning", "building", "ready", "ready"])
+    with (
+        patch.object(svc, "_DRIVE_EVERY_S", 0),
+        patch.object(svc, "status", AsyncMock(side_effect=lambda o, a: {"state": next(states)})) as status,
+    ):
+        svc.drive(OWNER, "app_1")
+        svc.drive(OWNER, "app_1")  # a second approval read while the first drive runs
+        await asyncio.gather(*list(svc._drives.values()))
+    assert status.await_count == 3
+    assert svc._drives == {}

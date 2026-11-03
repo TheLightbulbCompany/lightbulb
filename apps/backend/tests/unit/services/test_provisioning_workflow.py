@@ -2369,3 +2369,18 @@ async def test_no_resource_is_created_for_a_removed_app():
         await mod._create_resource("acct_1", _approved(state="connecting_provider", app_id="app_1", environment="prod"))
     create.assert_not_awaited()
     assert failed.await_args.args[1] == "app_not_found"
+
+
+@pytest.mark.asyncio
+async def test_the_winning_approval_drives_its_app_without_a_reader():
+    """Run 7: the agent filed the card early and kept building, so nobody read after the approval."""
+    from core.services import apps_service
+
+    with (
+        patch.object(mod.apps_room, "post_approval_line", AsyncMock()),
+        patch.object(apps_service, "drive") as drive,
+    ):
+        await mod._approved_line("user_1", _row(app_id="app_1"))
+        await mod._approved_line("user_1", _row(app_id="app_1", bundled_with="pwf_1"))
+        await mod._approved_line("user_1", None)
+    drive.assert_called_once_with(_row()["owner_id"], "app_1")

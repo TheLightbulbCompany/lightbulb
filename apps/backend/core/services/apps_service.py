@@ -1551,6 +1551,11 @@ _DRIVE_STOP = {"ready", "live", "failed", "destroyed"}
 _drives: dict[str, asyncio.Task] = {}
 
 
+def _alive(task: asyncio.Task | None) -> bool:
+    """A finished task, or one from a loop that is not running this call, no longer holds the app's slot."""
+    return task is not None and not task.done() and task.get_loop() is asyncio.get_running_loop()
+
+
 def drive(owner_id: str, app_id: str) -> None:
     """After an approval, step the app on the server until its preview is up.
 
@@ -1558,11 +1563,11 @@ def drive(owner_id: str, app_id: str) -> None:
     so an approved app sat in ``connecting_provider`` with nobody reading (run 7, 2 Nov 2026).
     Reads still work as before; this only stops the app waiting for one. One drive per app.
     """
-    if app_id in _drives:
+    if _alive(_drives.get(app_id)):
         return
     task = asyncio.create_task(_drive(owner_id, app_id))
     _drives[app_id] = task
-    task.add_done_callback(lambda _t: _drives.pop(app_id, None))
+    task.add_done_callback(lambda t: _drives.pop(app_id, None) if _drives.get(app_id) is t else None)
 
 
 async def _drive(owner_id: str, app_id: str) -> None:
@@ -1612,11 +1617,11 @@ async def _moved(app: dict, run_id: str | None = None) -> None:
 def watch(owner_id: str, app_id: str) -> None:
     """Look at the app every minute until it is done, and say once in its room when it has stopped moving.
     One watch per app, like ``drive``."""
-    if app_id in _watches:
+    if _alive(_watches.get(app_id)):
         return
     task = asyncio.create_task(_watch(owner_id, app_id))
     _watches[app_id] = task
-    task.add_done_callback(lambda _t: _watches.pop(app_id, None))
+    task.add_done_callback(lambda t: _watches.pop(app_id, None) if _watches.get(app_id) is t else None)
 
 
 async def _watch(owner_id: str, app_id: str) -> None:

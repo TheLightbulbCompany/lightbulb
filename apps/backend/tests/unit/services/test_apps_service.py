@@ -8,6 +8,7 @@ import io  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
 import tarfile  # noqa: E402
+import threading  # noqa: E402
 from datetime import UTC, datetime, timedelta  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 from unittest.mock import AsyncMock, patch  # noqa: E402
@@ -167,6 +168,18 @@ def world(monkeypatch):
             BillingMode="PAY_PER_REQUEST",
         )
         boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-state")
+        # Repos run each DynamoDB call in a thread; moto is not thread-safe the way DynamoDB is atomic per
+        # request, so concurrent readers once saw "dictionary changed size during iteration". One call at a time.
+        to_thread, one_call = asyncio.to_thread, threading.Lock()
+
+        def _serial(f, *a, **kw):
+            def locked():
+                with one_call:
+                    return f(*a, **kw)
+
+            return to_thread(locked)
+
+        monkeypatch.setattr(asyncio, "to_thread", _serial)
         for k, v in {
             "OWNER_STATE_BUCKET": "test-state",
             "APPS_DOMAIN": "apps.example.com",

@@ -969,6 +969,7 @@ async def test_a_cap_found_at_wake_time_posts_once_and_waits(world):
 
 
 async def test_an_owner_who_stays_capped_gets_one_line_not_one_a_day(world):
+    world.now = world.now // 86400 * 86400 + 12 * 3600  # noon UTC: the next midnight is past BUILDING_S
     app = await _app()
     await _fail()
     world.reason = "included_daily_cap"

@@ -3026,20 +3026,29 @@ async def get_follow_up(room_id: str, follow_up_id: str) -> dict | None:
     return await _get(room_pk(room_id), followup_sk(follow_up_id))
 
 
-async def count_recent_follow_ups(room_id: str, agent_id: str, *, window_s: int) -> int:
-    """Follow-ups this agent was owed in this room within the last ``window_s``.
+async def latest_human_message(room_id: str) -> dict | None:
+    """The newest human-authored ``MSG`` in the room, or None.
 
-    ponytail: reads every FOLLOWUP row in the room partition (TTL-bounded to 7
-    days, capped at 3/agent/hour); add a per-agent key if a room ever holds enough
-    to matter.
+    ponytail: reads the whole room partition (like ``get_message_by_id``); add an index once a measured room needs it.
     """
-    cutoff = datetime.fromtimestamp(time.time() - window_s, timezone.utc).isoformat()
+    rows = await _query(room_pk(room_id), begins_with="MSG#", ascending=False)
+    return next((r for r in rows if r.get("author", {}).get("kind") == "human"), None)
+
+
+async def count_follow_ups_since(room_id: str, agent_id: str, since_iso: str | None) -> int:
+    """Follow-ups this agent was owed in this room at or after ``since_iso`` (all of them when None).
+
+    ponytail: reads every FOLLOWUP row in the room partition (TTL-bounded to 7 days); add a per-agent key
+    if a room ever holds enough to matter.
+    """
     rows = await _query(room_pk(room_id), begins_with="FOLLOWUP#")
     return sum(
         1
         for row in rows
         # A re-dispatched lost steer (reason steer_lost) is a human message, not a delegation.
-        if row.get("agentId") == agent_id and row.get("reason") != "steer_lost" and row.get("createdAt", "") >= cutoff
+        if row.get("agentId") == agent_id
+        and row.get("reason") != "steer_lost"
+        and (since_iso is None or row.get("createdAt", "") >= since_iso)
     )
 
 

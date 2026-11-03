@@ -82,3 +82,10 @@ async def test_without_a_human_message_only_the_last_hour_counts(table, roster):
         for i in range(10):
             await messaging.create_follow_up(OWNER, _req(i, trigger["messageId"]))
     assert (await messaging.create_follow_up(OWNER, _req(10, trigger["messageId"]))).status == "accepted"
+
+
+def test_the_cap_notice_claims_only_what_happened():
+    assert FOLLOW_UP_CAP_NOTICE == (
+        "I paused here so my background work can't loop, and a finished result wasn't delivered. "
+        "Ask me here to check where it got to."
+    )

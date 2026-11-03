@@ -1589,6 +1589,7 @@ _WATCH_EVERY_S = 60
 _WATCH_TOTAL_S = 3 * 3600
 _STUCK_S = 5 * 60
 _STUCK_NO_RUNS_S = 20 * 60  # an old CLI links no runs, so a quiet app may still have an agent coding on it
+_STUCK_WAITING_S = 45 * 60  # its last run finished cleanly: the agent chose to wait (it delegated, say)
 _RUN_FRESH = timedelta(minutes=5)
 _RUN_IDS_KEPT = 10
 _watches: dict[str, asyncio.Task] = {}
@@ -1634,9 +1635,13 @@ def _working(run: dict | None, now: datetime) -> bool:
     """An agent run still open whose last heartbeat (or dispatch, before its first one) is under 5 minutes old."""
     if not run or run.get("status") == "ended":
         return False
+    return _fresh(run.get("lastHeartbeatAt") or run.get("dispatchedAt"), now, _RUN_FRESH)
+
+
+def _fresh(stamp: object, now: datetime, within: timedelta) -> bool:
     try:
-        return now - datetime.fromisoformat(run.get("lastHeartbeatAt") or run.get("dispatchedAt")) < _RUN_FRESH
-    except (TypeError, ValueError):  # missing, malformed or naive: not a heartbeat anyone can trust
+        return now - datetime.fromisoformat(stamp) < within  # type: ignore[arg-type]
+    except (TypeError, ValueError):  # missing, malformed or naive: not a time anyone can trust
         return False
 
 
@@ -1665,13 +1670,34 @@ async def _look(owner_id: str, app_id: str) -> bool:
     if app.get("preview_pending") or app.get("publish_pending"):
         return False
     now = datetime.now(UTC)
+    # Stripe still setting a resource up, and the row changed within the drive's window: the server is working.
+    setting_up = wf_repo.TERMINAL_STATES | wf_repo.CANCELLABLE_STATES  # the rest wait on a person or are done
+    if any(
+        r.get("state") not in setting_up and _fresh(r.get("updated_at"), now, timedelta(seconds=_DRIVE_TOTAL_S))
+        for r in rows.values()
+    ):
+        return False
     since = app.get("progress_at") or app.get("updated_at") or app.get("created_at")
     run_ids = app.get("run_ids") or []
-    if not since or (now - datetime.fromisoformat(since)).total_seconds() < (_STUCK_S if run_ids else _STUCK_NO_RUNS_S):
+    newest = await messaging_repo.get_run(owner_id, run_ids[-1]) if run_ids else None
+    if not run_ids:
+        quiet = _STUCK_NO_RUNS_S
+    elif newest and newest.get("status") == "ended" and newest.get("outcome") == "completed":
+        quiet = _STUCK_WAITING_S
+    else:
+        quiet = _STUCK_S
+    if not since or (now - datetime.fromisoformat(since)).total_seconds() < quiet:
         return False
-    for run_id in run_ids:
+    if _working(newest, now):
+        return False
+    for run_id in run_ids[:-1]:
         if _working(await messaging_repo.get_run(owner_id, run_id), now):
             return False
+    # Any run in the app's room (one the app never linked) still beating: the agent is working.
+    if app.get("room_id") and any(
+        _working(r, now) for r in await messaging_repo.list_open_runs_for_room(owner_id, app["room_id"])
+    ):
+        return False
     step = "setting up hosting" if state == "provisioning" else "building"  # a pending deploy is never stuck
     stuck = {"at": utc_now_iso(), "step": step}
     # Conditional: of two instances (a rolling deploy), one marks it and posts; a new progress since wins.

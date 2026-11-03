@@ -137,7 +137,7 @@ async def post_stuck_line(app: dict, display: str, step: str) -> None:
         await post_system_line(
             app,
             f"apps-stuck:{app['app_id']}:{app.get('progress_at')}",
-            f"{display} stopped at {step}: nothing has moved for 5 minutes. Reply here and it will pick up again.",
+            f"{display} stopped at {step}: nothing has moved for 5 minutes. Ask the agent here to pick it up again.",
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("apps: stuck line failed for %s: %s", app.get("app_id"), type(e).__name__)

@@ -880,7 +880,10 @@ class UsageReportResponse(ContractModel):
 
 FOLLOW_UP_TEXT_MAX_BYTES = 32_768
 FOLLOW_UP_CAP_SINCE_HUMAN = 10
-FOLLOW_UP_CAP_NOTICE = "I paused my background work here so it can't loop. Reply here and I'll pick it up again."
+FOLLOW_UP_CAP_NOTICE = (
+    "I paused here so my background work can't loop, and a finished result wasn't delivered. "
+    "Ask me here to check where it got to."
+)
 
 
 class FollowUpRequest(ContractModel):

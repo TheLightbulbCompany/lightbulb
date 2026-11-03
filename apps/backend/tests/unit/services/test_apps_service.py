@@ -2840,6 +2840,7 @@ def room(monkeypatch):
     """Runs by id, and the lines posted into the room."""
     runs: dict = {}
     lines: list[str] = []
+    open_runs: list[dict] = []
 
     async def create_message(**kw):
         lines.append(kw["text"])
@@ -2847,7 +2848,8 @@ def room(monkeypatch):
 
     monkeypatch.setattr(svc.messaging_repo, "get_run", AsyncMock(side_effect=lambda o, r: runs.get(r)))
     monkeypatch.setattr(svc.messaging_repo, "create_message", create_message)
-    return SimpleNamespace(runs=runs, lines=lines)
+    monkeypatch.setattr(svc.messaging_repo, "list_open_runs_for_room", AsyncMock(side_effect=lambda o, r: open_runs))
+    return SimpleNamespace(runs=runs, lines=lines, open_runs=open_runs)
 
 
 async def _building(world, run_ids=("run_1",), quiet_min=6.0):
@@ -2858,7 +2860,7 @@ async def _building(world, run_ids=("run_1",), quiet_min=6.0):
     return src["app_id"]
 
 
-STUCK_LINE = "Crew stopped at building: nothing has moved for 5 minutes. Reply here and it will pick up again."
+STUCK_LINE = "Crew stopped at building: nothing has moved for 5 minutes. Ask the agent here to pick it up again."
 
 
 async def test_a_status_read_with_nothing_moving_does_not_stamp_progress(world, watched):
@@ -3042,3 +3044,48 @@ async def test_a_bad_heartbeat_reads_as_not_working(world, room):
     room.runs["run_1"] = {"status": "started", "lastHeartbeatAt": "not a time"}
     assert await svc._look(OWNER, app_id) is True
     assert room.lines == [STUCK_LINE]
+
+
+async def test_an_unlinked_run_still_beating_in_the_room_is_not_stuck(world, room):
+    app_id = await _building(world, quiet_min=30)
+    room.open_runs.append({"runId": "run_other", "status": "dispatched", "dispatchedAt": _ago(1)})
+    assert await svc._look(OWNER, app_id) is False
+    room.open_runs[0] = {"runId": "run_other", "status": "started", "lastHeartbeatAt": _ago(2)}
+    assert await svc._look(OWNER, app_id) is False
+    room.open_runs[0] = {"runId": "run_other", "status": "started", "lastHeartbeatAt": _ago(6)}
+    assert await svc._look(OWNER, app_id) is True
+    assert room.lines == [STUCK_LINE]
+
+
+async def test_a_run_that_finished_cleanly_chose_to_wait_so_the_app_gets_45_minutes(world, room):
+    app_id = await _building(world, run_ids=("run_old", "run_1"), quiet_min=10)
+    room.runs["run_old"] = {"status": "ended", "outcome": "error"}
+    room.runs["run_1"] = {"status": "ended", "outcome": "completed"}
+    assert await svc._look(OWNER, app_id) is False
+    await svc.apps_repo.patch(app_id, {"progress_at": _ago(46)})
+    assert await svc._look(OWNER, app_id) is True
+    assert room.lines == [STUCK_LINE]
+
+
+async def test_a_run_that_errored_keeps_the_five_minute_rule(world, room):
+    app_id = await _building(world, run_ids=("run_1",), quiet_min=6)
+    room.runs["run_1"] = {"status": "ended", "outcome": "error"}
+    assert await svc._look(OWNER, app_id) is True
+    assert room.lines == [STUCK_LINE]
+
+
+async def test_hosting_still_being_set_up_is_working_until_the_drive_window_passes(world, room):
+    src = await _source()
+    await _up(src)
+    for r in world.rows.values():
+        r["state"] = "connecting_provider"
+    await svc.status(OWNER, src["app_id"])  # the rows moved: progress
+    await svc.apps_repo.patch(src["app_id"], {"progress_at": _ago(30), "run_ids": ["run_1"]})
+    for r in world.rows.values():
+        r["updated_at"] = _ago(6)
+    assert await svc._look(OWNER, src["app_id"]) is False
+    for r in world.rows.values():
+        r["updated_at"] = _ago(16)
+    assert await svc._look(OWNER, src["app_id"]) is True
+    assert (await svc.apps_repo.get(src["app_id"]))["stuck"]["step"] == "setting up hosting"
+    assert room.lines == [STUCK_LINE.replace("building", "setting up hosting")]

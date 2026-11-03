@@ -1,5 +1,5 @@
 //! Starting and finding holders. No registry file: a holder IS its socket, and `HELLO` says
-//! what runs in it. A socket that refuses a connection belongs to a dead holder.
+//! what runs in it. Failed probes do not prove a holder is dead and never remove its endpoint.
 
 use super::protocol::{encode, read_frame, split_offset, with_offset, END, HELLO, HISTORY, OUTPUT, REPLAY, SNAPSHOT};
 use serde::Serialize;
@@ -264,12 +264,17 @@ pub fn start_with_env(exe: &Path, dir: &Path, cwd: &Path, argv: &[String], size:
     Err("The session did not start in time. Try again.".into())
 }
 
-/// The running holders, oldest first. Removes sockets whose holder is gone.
+/// The running holders, oldest first. Failed probes leave endpoints alone: a busy
+/// listening socket can refuse a connection, so failure does not prove its holder died.
 pub fn list() -> Vec<HolderInfo> {
     list_in(&socket_dir())
 }
 
 pub fn list_in(dir: &Path) -> Vec<HolderInfo> {
+    list_with_probe(dir, |path| Ok(hello(path)))
+}
+
+fn list_with_probe(dir: &Path, probe: impl Fn(&Path) -> std::io::Result<Option<HolderInfo>>) -> Vec<HolderInfo> {
     let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
     let mut found: Vec<(std::time::SystemTime, HolderInfo)> = vec![];
     for entry in entries.flatten() {
@@ -277,13 +282,8 @@ pub fn list_in(dir: &Path) -> Vec<HolderInfo> {
         if path.extension().is_none_or(|e| e != "sock") {
             continue;
         }
-        match hello(&path) {
-            Some(info) => found.push((entry.metadata().and_then(|m| m.created()).unwrap_or(std::time::UNIX_EPOCH), info)),
-            None if UnixStream::connect(&path).is_err() => {
-                let _ = std::fs::remove_file(&path);
-                let _ = std::fs::remove_file(path.with_extension("thread"));
-            }
-            None => {}
+        if let Ok(Some(info)) = probe(&path) {
+            found.push((entry.metadata().and_then(|m| m.created()).unwrap_or(std::time::UNIX_EPOCH), info));
         }
     }
     found.sort_by_key(|(created, _)| *created);
@@ -500,6 +500,37 @@ pub fn stranded_at(holders: &[HolderInfo], login: u64, birth: impl Fn(u32) -> Op
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn holder_discovery_ignores_refused_endpoints_without_deleting_their_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("12345678.sock");
+        let thread = socket.with_extension("thread");
+        std::fs::write(&socket, b"endpoint").unwrap();
+        std::fs::write(&thread, b"thread identity").unwrap();
+        assert!(list_with_probe(dir.path(), |_| Err(std::io::ErrorKind::ConnectionRefused.into())).is_empty());
+        assert!(socket.exists());
+        assert!(thread.exists());
+    }
+
+    #[test]
+    fn holder_discovery_keeps_endpoints_when_a_probe_is_denied_or_interrupted() {
+        use std::io::ErrorKind;
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::TimedOut, ErrorKind::Interrupted,
+            ErrorKind::WouldBlock, ErrorKind::NotFound, ErrorKind::ConnectionRefused, ErrorKind::Other] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("12345678.sock");
+            let thread = socket.with_extension("thread");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            std::fs::write(&thread, b"thread identity").unwrap();
+            assert!(list_with_probe(dir.path(), |_| Err(std::io::Error::from(kind))).is_empty());
+            assert!(socket.exists(), "{kind:?} is not proof that a holder died");
+            assert!(thread.exists(), "keep the holder's conversation binding");
+            let client = UnixStream::connect(&socket).unwrap();
+            let (_accepted, _) = listener.accept().unwrap();
+            drop(client);
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -709,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn holder_binds_one_codex_thread_and_forgets_it_with_the_holder() {
+    fn holder_binds_one_codex_thread_and_keeps_it_after_failed_discovery() {
         let dir = tempfile::tempdir().unwrap();
         let info = HolderInfo {
             id: "ab12cd34".into(),
@@ -731,9 +762,10 @@ mod tests {
             Some("22222222-2222-4222-8222-222222222222"),
             "a new thread in the same Codex (/new) replaces the old one"
         );
-        std::fs::write(&info.socket, b"").unwrap(); // a socket nobody listens on
-        assert!(list_in(dir.path()).is_empty());
-        assert_eq!(thread(&info), None, "a dead holder's binding goes with its socket");
+        std::fs::write(&info.socket, b"").unwrap();
+        assert!(list_with_probe(dir.path(), |_| Err(std::io::ErrorKind::ConnectionRefused.into())).is_empty());
+        assert_eq!(thread(&info).as_deref(), Some("22222222-2222-4222-8222-222222222222"),
+            "a failed probe cannot invalidate a holder's conversation binding");
     }
 
     /// A holder that answers a watch HELLO with its screen at `end`, sends `live` output, then

@@ -123,17 +123,17 @@ async def update_task(
     return True
 
 
-async def put_notification(org: str, message_id: str, task_id: str, holder: str) -> None:
-    """Index a hold notification posted to ``holder``, so a press on its card finds the task."""
-    item = {"pk": f"A2A#{org}", "sk": f"NOTIF#{message_id}", "taskId": task_id, "holder": holder}
+async def put_notification(org: str, message_id: str, task_id: str, holder: str, room_id: str) -> None:
+    """Index a hold notification posted to ``holder`` in ``room_id``, so a press on its card finds the task."""
+    item = {"pk": f"A2A#{org}", "sk": f"NOTIF#{message_id}", "taskId": task_id, "holder": holder, "roomId": room_id}
     await run_in_thread(_table().put_item, Item=item)
 
 
-async def get_task_by_notification(org: str, message_id: str) -> tuple[str, str] | None:
-    """``(task_id, holder)`` for a hold notification's message id; None for any other message."""
+async def get_task_by_notification(org: str, message_id: str) -> tuple[str, str, str] | None:
+    """``(task_id, holder, room_id)`` for a hold notification's message id; None for any other message."""
     resp = await run_in_thread(_table().get_item, Key={"pk": f"A2A#{org}", "sk": f"NOTIF#{message_id}"})
     item = resp.get("Item")
-    return (item["taskId"], item["holder"]) if item else None
+    return (item["taskId"], item["holder"], item["roomId"]) if item else None
 
 
 async def _query_all(key_cond, **kw) -> list[dict]:

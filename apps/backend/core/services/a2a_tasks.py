@@ -482,7 +482,7 @@ async def _notify_holders(org: str, agent_id: str, row: dict, claims: dict) -> N
                 ),
             )
             sent[holder] = str(receipt.message_id)
-            await a2a_repo.put_notification(org, sent[holder], row["id"], holder)
+            await a2a_repo.put_notification(org, sent[holder], row["id"], holder, str(room))
         except Exception:
             logger.exception("a2a holder notification failed", extra={"org": org, "task": row["id"]})
     if sent:
@@ -496,18 +496,23 @@ _VERDICTS: dict[str, Literal["allow", "deny"]] = {"Approve": "allow", "Deny": "d
 
 
 async def answer_from_message(
-    auth: AuthContext, org: str, request: messaging.CreateMessageRequest, *, now: int | None = None
+    auth: AuthContext,
+    org: str,
+    room_id: str,
+    request: messaging.CreateMessageRequest,
+    *,
+    now: int | None = None,
 ) -> bool:
-    """A holder's press on their hold card (a reply ``Approve``/``Deny`` to the notification) decides the
-    hold; True when the message was that press (stored without waking the agent). A refused decision is
-    told back in the room by the agent."""
+    """A holder's press on their hold card (a reply ``Approve``/``Deny`` to the notification, in the
+    notification's room) decides the hold; True when the message was that press (stored without waking
+    the agent). A refused decision is told back in the room by the agent."""
     verdict = _VERDICTS.get(request.text.strip())
     if verdict is None or request.reply_to_message_id is None:
         return False
     found = await a2a_repo.get_task_by_notification(org, str(request.reply_to_message_id))
-    if found is None or found[1] != auth.user_id:
+    if found is None or found[1] != auth.user_id or found[2] != room_id:
         return False
-    task_id, holder = found
+    task_id, holder, room = found
     row = await a2a_repo.get_task(org, task_id)
     if row is None:
         return False
@@ -515,12 +520,11 @@ async def answer_from_message(
         await decide(auth, org, row["agentId"], task_id, verdict=verdict, reason="in-app", now=now)
     except A2AError as exc:
         try:  # the press is still the holder's answer attempt: never wake the agent on it
-            dm = AuthContext(user_id=holder, org_id=org)
             await messaging.create_agent_message(
                 org,
                 messaging.AgentMessageRequest(
                     event_id=f"a2a:{task_id}:answer-failed:{holder}",
-                    room_id=await hosted_mcp.person_dm(dm, row["agentId"], create_key=task_id),
+                    room_id=room,
                     agent_id=row["agentId"],
                     text=f"could not record your answer: {exc.message}",
                     reply_to_message_id=None,

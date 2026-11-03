@@ -28,6 +28,7 @@ from core.observability.e2e_correlation import E2ECorrelationMiddleware
 from core.repositories import container_repo
 from core.services.messaging import ApiProblem
 from core.services import hosted_mcp
+from core.services.a2a_auth import READ_SCOPE_A2A, RESOURCE_A2A, SEND_SCOPE
 from core.services.hosted_mcp import READ_SCOPE, RESOURCE, WRITE_SCOPE
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
@@ -1184,6 +1185,16 @@ async def mcp_protected_resource_metadata():
         "resource": RESOURCE,
         "authorization_servers": [settings.CLERK_ISSUER],
         "scopes_supported": ["user:org:read", READ_SCOPE, WRITE_SCOPE],
+        "bearer_methods_supported": ["header"],
+    }
+
+
+@app.get("/.well-known/oauth-protected-resource/a2a", include_in_schema=False)
+async def a2a_protected_resource_metadata():
+    return {
+        "resource": RESOURCE_A2A,
+        "authorization_servers": [settings.CLERK_ISSUER],
+        "scopes_supported": ["user:org:read", READ_SCOPE_A2A, SEND_SCOPE],
         "bearer_methods_supported": ["header"],
     }
 

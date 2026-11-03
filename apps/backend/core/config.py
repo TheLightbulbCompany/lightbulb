@@ -53,6 +53,9 @@ class Settings(BaseSettings):
 
     # Clerk Auth
     CLERK_ISSUER: str = "https://your-clerk-domain.clerk.accounts.dev"
+    # The A2A door also accepts a grant for the /mcp audience that carries an A2A scope: only if Clerk
+    # does not echo the requested /a2a resource into `aud` (checked once against the dev instance).
+    A2A_ACCEPT_MCP_AUDIENCE: bool = False
     # SEC-8 token-origin fence. Clerk session tokens carry NO `aud` claim (all
     # our clients call plain getToken(), no JWT template), so the origin check
     # is the `azp` (authorized party) claim — the frontend origin that minted

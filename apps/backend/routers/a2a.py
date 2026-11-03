@@ -11,6 +11,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin
 from core.config import settings
 from core.repositories import a2a_repo
 from core.services import a2a_tasks, network_proof
+from core.services.a2a_auth import READ_SCOPE_A2A, SEND_SCOPE, A2ACaller, a2a_caller, oauth_endpoints, require_scope
 from core.services.container_auth import _require_hook_token
 from core.services.a2a_rules import Rules, default_rules
 from core.services.a2a_tasks import A2AError
@@ -34,7 +35,8 @@ async def agent_card(org: str, agent_id: str, request: Request):
     name = await a2a_tasks.agent_name(org, agent_id)
     if name is None:
         raise HTTPException(404, detail={"code": "agent_not_found"})
-    return MessageToDict(a2a_tasks.agent_card(org, agent_id, name, settings.PUBLIC_API_BASE.rstrip("/")))
+    base = settings.PUBLIC_API_BASE.rstrip("/")
+    return MessageToDict(a2a_tasks.agent_card(org, agent_id, name, base, await oauth_endpoints()))
 
 
 def _same_org(ctx: AuthContext, org: str) -> None:
@@ -43,10 +45,11 @@ def _same_org(ctx: AuthContext, org: str) -> None:
 
 
 @router.get("/a2a/{org}/{agent_id}/tasks/{task_id}/record")
-async def task_record(org: str, agent_id: str, task_id: str, ctx: AuthContext = Depends(get_current_user)):
-    _same_org(ctx, org)
+async def task_record(org: str, agent_id: str, task_id: str, caller: A2ACaller = Depends(a2a_caller)):
+    _same_org(caller.auth, org)
+    require_scope(caller, READ_SCOPE_A2A)
     try:
-        return await a2a_tasks.records(org, task_id, reader=ctx)
+        return await a2a_tasks.records(org, task_id, reader=caller.auth)
     except A2AError as exc:
         raise HTTPException(404, detail={"code": "task_not_found", "message": exc.message}) from None
 
@@ -80,19 +83,21 @@ async def put_rules(org: str, body: Rules, ctx: AuthContext = Depends(get_curren
 
 
 @router.post("/a2a/{org}/{agent_id}")
-async def jsonrpc(org: str, agent_id: str, body: dict = Body(...), ctx: AuthContext = Depends(get_current_user)):
-    _same_org(ctx, org)
+async def jsonrpc(org: str, agent_id: str, body: dict = Body(...), caller: A2ACaller = Depends(a2a_caller)):
+    _same_org(caller.auth, org)
     rpc_id, method, params = body.get("id"), body.get("method"), body.get("params")
+    # A missing scope is an HTTP 403: the call never reaches the method.
+    require_scope(caller, SEND_SCOPE if method == "SendMessage" else READ_SCOPE_A2A)
     try:
         if not isinstance(params, dict):
             raise A2AError(-32602, "params must be an object.")
         if method == "SendMessage":
             # A2A v1.0 SendMessageResponse: the Task under "task" (the a2a-sdk client parses it so).
-            result = {"task": await a2a_tasks.send_message(ctx, org, agent_id, params.get("message"))}
+            result = {"task": await a2a_tasks.send_message(caller, org, agent_id, params.get("message"))}
         elif method == "GetTask":
             if not isinstance(params.get("id"), str):
                 raise A2AError(-32602, "params.id must be a string.")
-            result = await a2a_tasks.get_task(org, params["id"], reader=ctx)
+            result = await a2a_tasks.get_task(org, params["id"], reader=caller.auth)
         elif method == "CancelTask":
             raise A2AError(-32004, "CancelTask is not supported.")
         else:

@@ -60,6 +60,27 @@ RESOURCE = f"{settings.PUBLIC_API_BASE.rstrip('/')}/mcp"
 
 
 class ClerkOAuthVerifier(TokenVerifier):
+    def __init__(
+        self,
+        *,
+        resource: str = RESOURCE,
+        required_scopes: set[str] | None = None,
+        fallback_audience: tuple[str, frozenset[str]] | None = None,
+    ):
+        """``fallback_audience`` (audience, scopes): also accept that audience when the grant holds any of
+        those scopes (the A2A door's stand-in while Clerk may not echo its resource)."""
+        self.resource = resource
+        self.required_scopes = {READ_SCOPE, "user:org:read"} if required_scopes is None else required_scopes
+        self.fallback_audience = fallback_audience
+
+    def _audience_ok(self, audience: list, scopes: list) -> bool:
+        if self.resource in audience:
+            return True
+        if self.fallback_audience is None:
+            return False
+        aud, any_of = self.fallback_audience
+        return aud in audience and bool(any_of.intersection(scopes))
+
     async def verify_token(self, token: str) -> AccessToken | None:
         """Check an opaque token's revocation, audience, selected org and live membership."""
         if not settings.CLERK_SECRET_KEY or "." in token:
@@ -91,10 +112,10 @@ class ClerkOAuthVerifier(TokenVerifier):
                     or not isinstance(client_id, str)
                     or not client_id
                     or not isinstance(audience, list)
-                    or RESOURCE not in audience
                     or not isinstance(scopes, list)
                     or not all(isinstance(scope, str) for scope in scopes)
-                    or not {READ_SCOPE, "user:org:read"}.issubset(scopes)
+                    or not self._audience_ok(audience, scopes)
+                    or not self.required_scopes.issubset(scopes)
                     or not isinstance(expiration, (int, float))
                     or expiration <= time.time()
                 ):
@@ -121,7 +142,7 @@ class ClerkOAuthVerifier(TokenVerifier):
                 client_id=client_id,
                 scopes=scopes,
                 expires_at=int(expiration),
-                resource=RESOURCE,
+                resource=self.resource,
                 subject=subject,
                 claims={"org_id": org_id, "iss": settings.CLERK_ISSUER, **await _registered_client(client_id)},
             )

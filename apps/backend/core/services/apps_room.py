@@ -6,6 +6,7 @@ import logging
 import uuid
 
 from core.auth import AuthContext
+from core.constants import SYSTEM_ACTOR_ID
 from core.repositories import apps_repo, messaging_repo
 from core.services import messaging
 
@@ -103,3 +104,40 @@ async def post_approval_line(*, owner_id: str, user_id: str, workflow: dict) -> 
         )
     except Exception as e:  # noqa: BLE001 — a chat line never undoes an approval
         logger.warning("apps: approval line failed for %s: %s", workflow_id, type(e).__name__)
+
+
+async def post_system_line(app: dict, key: str, text: str, targets: list[dict] | None = None) -> dict | None:
+    """A system line in the app's room. The key is the receipt: a resend replays it. ``None``: the room is gone."""
+    room_id = app["room_id"]
+    try:
+        message, _ = await messaging_repo.create_message(
+            room_id=room_id,
+            owner_id=app["owner_id"],
+            idemp_pk=messaging_repo.room_pk(room_id),
+            idemp_sk=messaging_repo.human_idemp_sk(SYSTEM_ACTOR_ID, key),
+            req_hash=messaging_repo.request_hash(key),
+            author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+            text=text,
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+            run_id=None,
+            dispatch_targets=targets or [],
+            source_agent_id=None,
+            client_message_id=None,
+        )
+        return message
+    except (messaging_repo.RoomArchived, messaging_repo.RoomNotFound):
+        return None
+
+
+async def post_stuck_line(app: dict, display: str, step: str) -> None:
+    """Once per quiet spell (keyed by ``progress_at``); wakes nobody. Never raises: the stuck mark is stored."""
+    try:
+        await post_system_line(
+            app,
+            f"apps-stuck:{app['app_id']}:{app.get('progress_at')}",
+            f"{display} stopped at {step}: nothing has moved for 5 minutes. Reply here and it will pick up again.",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("apps: stuck line failed for %s: %s", app.get("app_id"), type(e).__name__)

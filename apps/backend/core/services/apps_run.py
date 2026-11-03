@@ -21,7 +21,6 @@ import time
 from datetime import UTC, datetime, timedelta
 
 from core.config import settings
-from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import plain
 from core.repositories import apps_repo, billing_repo, messaging_repo
 from core.services import apps_room, apps_service, apps_source
@@ -215,29 +214,7 @@ async def on_run_ended(owner_id: str, row: dict) -> None:
         logger.warning("apps build: run end not recorded owner=%s", owner_id, exc_info=True)
 
 
-async def _post(app: dict, key: str, text: str, targets: list[dict] | None = None) -> dict | None:
-    """A system line in the app's room. The key is the receipt: a resend replays it. ``None``: the room is gone."""
-    room_id = app["room_id"]
-    try:
-        message, _ = await messaging_repo.create_message(
-            room_id=room_id,
-            owner_id=app["owner_id"],
-            idemp_pk=messaging_repo.room_pk(room_id),
-            idemp_sk=messaging_repo.human_idemp_sk(SYSTEM_ACTOR_ID, key),
-            req_hash=messaging_repo.request_hash(key),
-            author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
-            text=text,
-            mentions=[],
-            reply_to_message_id=None,
-            thread_root_message_id=None,
-            run_id=None,
-            dispatch_targets=targets or [],
-            source_agent_id=None,
-            client_message_id=None,
-        )
-        return message
-    except (messaging_repo.RoomArchived, messaging_repo.RoomNotFound):
-        return None
+_post = apps_room.post_system_line
 
 
 async def _wake_room(app: dict, builder: dict, n: int) -> dict:

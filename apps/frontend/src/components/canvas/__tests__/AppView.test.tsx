@@ -42,6 +42,14 @@ describe("AppView", () => {
     expect(screen.queryByRole("group", { name: "View" })).toBeNull();
   });
 
+  it("a stuck app says where it stopped instead of the preview notice", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes. Reply in the room and it will pick up again.")).toBeTruthy();
+    expect(screen.queryByText(/looking at the preview/)).toBeNull();
+  });
+
   it("a failed publish says so in words, keeps the build error under Details, and leaves Publish available", async () => {
     open.mockResolvedValue("https://p.apps.test/?pass=1");
     render(<AppView app={app({ state: "failed", live_version: null, live_url: null, preview_url: "https://p", can_publish: true, error: { message: 'Command "npx drizzle-kit migrate && next build" exited with 1' } })} onBack={vi.fn()} />);

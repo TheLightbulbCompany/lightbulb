@@ -2851,11 +2851,9 @@ def room(monkeypatch):
 
 
 async def _building(world, run_ids=("run_1",), quiet_min=6.0):
-    """An app past its approvals with nothing moving for ``quiet_min`` minutes."""
+    """The agent uploaded its source and went quiet for ``quiet_min`` minutes without running `up`."""
     src = await _source()
-    await _up(src)
-    await _all_active(world, src["app_id"])
-    await svc.status(OWNER, src["app_id"])  # the preview build starts, and never finishes
+    await svc.status(OWNER, src["app_id"])
     await svc.apps_repo.patch(src["app_id"], {"progress_at": _ago(quiet_min), "run_ids": list(run_ids)})
     return src["app_id"]
 
@@ -2963,7 +2961,7 @@ async def test_a_second_instance_reading_the_same_quiet_app_posts_nothing(world,
     stale = await svc.apps_repo.get(app_id, consistent_read=True)
     assert await svc._look(OWNER, app_id) is True
     monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(return_value=stale))  # it read before the first wrote
-    assert await svc._look(OWNER, app_id) is True
+    assert await svc._look(OWNER, app_id) is False  # its write fails: no line, and it keeps watching
     assert room.lines == [STUCK_LINE]
 
 
@@ -3000,3 +2998,47 @@ async def test_the_watch_is_one_per_app_and_stops_when_there_is_nothing_left(mon
     ):
         await svc._watch(OWNER, "app_1")
     assert len(sleeps) == 180  # three hours
+
+
+async def _deploying(world, quiet_min=6.0):
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])  # the preview build starts
+    await svc.apps_repo.patch(src["app_id"], {"progress_at": _ago(quiet_min), "run_ids": ["run_1"]})
+    return src["app_id"]
+
+
+async def test_a_deployment_vercel_still_builds_is_never_stuck(world, room):
+    app_id = await _deploying(world, quiet_min=60)
+    assert await svc._look(OWNER, app_id) is False
+    assert room.lines == [] and (await svc.apps_repo.get(app_id)).get("stuck") is None
+
+
+async def test_a_finished_preview_nobody_read_is_not_reported_stuck(world, room):
+    app_id = await _deploying(world)
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    assert await svc._look(OWNER, app_id) is True  # the look steps it: ready, nothing left to watch
+    app = await svc.apps_repo.get(app_id)
+    assert app["state"] == "ready" and app.get("stuck") is None and room.lines == []
+
+
+async def test_an_app_approved_after_hours_of_waiting_is_not_reported_stuck(world, room):
+    src = await _source()
+    await _up(src)
+    await svc.apps_repo.patch(src["app_id"], {"progress_at": _ago(180), "run_ids": ["run_1"]})
+    for r in world.rows.values():  # on_approved moved the rows; nobody has read since
+        r["state"] = "provisioning"
+    assert await svc._look(OWNER, src["app_id"]) is False
+    app = await svc.apps_repo.get(src["app_id"])
+    assert app.get("stuck") is None and app["progress_at"] > _ago(1) and room.lines == []
+
+
+async def test_a_bad_heartbeat_reads_as_not_working(world, room):
+    now = datetime.now(UTC)
+    for beat in ("garbage", "2026-11-03T00:00:00", None, 5):
+        assert svc._working({"status": "started", "lastHeartbeatAt": beat}, now) is False
+    app_id = await _building(world)
+    room.runs["run_1"] = {"status": "started", "lastHeartbeatAt": "not a time"}
+    assert await svc._look(OWNER, app_id) is True
+    assert room.lines == [STUCK_LINE]

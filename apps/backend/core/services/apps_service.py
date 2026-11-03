@@ -1634,18 +1634,22 @@ def _working(run: dict | None, now: datetime) -> bool:
     """An agent run still open whose last heartbeat (or dispatch, before its first one) is under 5 minutes old."""
     if not run or run.get("status") == "ended":
         return False
-    beat = run.get("lastHeartbeatAt") or run.get("dispatchedAt")
-    return bool(beat) and now - datetime.fromisoformat(beat) < _RUN_FRESH
-
-
-def _stuck_step(app: dict, state: str) -> str:
-    if state == "provisioning":
-        return "setting up hosting"
-    return "publishing" if app.get("publish_pending") else "building"
+    try:
+        return now - datetime.fromisoformat(run.get("lastHeartbeatAt") or run.get("dispatchedAt")) < _RUN_FRESH
+    except (TypeError, ValueError):  # missing, malformed or naive: not a heartbeat anyone can trust
+        return False
 
 
 async def _look(owner_id: str, app_id: str) -> bool:
     """One look. True when there is nothing left to watch: done, removed, or already said stuck."""
+    # Step it first, like any read: a build Vercel finished or a row an approval moved is progress, not silence.
+    try:
+        await status(owner_id, app_id)
+    except AppsRefused:
+        return True  # removed
+    except Exception:  # noqa: BLE001 — a blip in the step is not a judgement; look again next minute
+        logger.warning("apps: watch step failed for %s", app_id, exc_info=True)
+        return False
     found = await apps_repo.get(app_id, consistent_read=True)
     if not found or found.get("owner_id") != owner_id or found.get("stuck"):
         return True
@@ -1657,6 +1661,9 @@ async def _look(owner_id: str, app_id: str) -> bool:
     # Waiting on a person is never stuck. No rows at all: `up` never ran, so nobody has been asked.
     if (state == "awaiting_approval" and rows) or any(r.get("state") == "awaiting_user_action" for r in rows.values()):
         return False
+    # A deployment still pending after that step is one Vercel reports queued or building: the server is working.
+    if app.get("preview_pending") or app.get("publish_pending"):
+        return False
     now = datetime.now(UTC)
     since = app.get("progress_at") or app.get("updated_at") or app.get("created_at")
     run_ids = app.get("run_ids") or []
@@ -1665,11 +1672,11 @@ async def _look(owner_id: str, app_id: str) -> bool:
     for run_id in run_ids:
         if _working(await messaging_repo.get_run(owner_id, run_id), now):
             return False
-    step = _stuck_step(app, state)
+    step = "setting up hosting" if state == "provisioning" else "building"  # a pending deploy is never stuck
     stuck = {"at": utc_now_iso(), "step": step}
     # Conditional: of two instances (a rolling deploy), one marks it and posts; a new progress since wins.
     if await _patch(app, {"stuck": stuck}, expect={"stuck": None, "progress_at": app.get("progress_at")}) is None:
-        return True
+        return False  # another instance marked it, or it moved: the next look sees which
     await apps_room.post_stuck_line(app, _display(app), step)
     return True
 

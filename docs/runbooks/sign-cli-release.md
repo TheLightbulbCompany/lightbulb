@@ -16,8 +16,9 @@ upload, and the job fails if the key file is missing.
 
 ## When
 
-After every `v*` release of the CLI, once its own release workflow is green (its `bump-brew` job
-must have pointed the formula's `url` at the new tag first, or the brew step fails on purpose).
+By itself, every hour at :23: it signs the latest CLI release when it has no Linux `.sig` yet and
+is at least 15 minutes old (so `bump-brew` has pointed the formula's `url` at the tag). To sign
+one now, or an older one, run it by hand:
 
 ```bash
 gh workflow run sign-cli-release.yml -R TheLightbulbCompany/lightbulb -f tag=vX.Y.Z

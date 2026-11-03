@@ -489,7 +489,7 @@ async def _notify_holders(org: str, agent_id: str, row: dict, claims: dict) -> N
     base = settings.PUBLIC_API_BASE.rstrip("/")
     operands = op["operands"]
     shown = operands["text"] if isinstance(operands.get("text"), str) else json.dumps(operands, separators=(",", ":"))
-    chain = " → ".join(h.get("agent") or h["person"] for h in claims["chain"])
+    chain = _inert(" → ".join(h.get("agent") or h["person"] for h in claims["chain"]))
     # Answered by pressing the card (``answer_from_message``) or at the REST route with a sign-in token.
     text = (
         f"I need your OK to {op['skill']} on {op['resource']} for {row['requester']} (via {chain}): "

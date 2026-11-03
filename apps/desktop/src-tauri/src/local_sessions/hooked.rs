@@ -158,6 +158,7 @@ pub(super) fn discover(dir: &Path) -> Vec<NativeSession> {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,

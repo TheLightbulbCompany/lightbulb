@@ -1334,6 +1334,10 @@ struct NativeSession {
     /// None for every other tracked session.
     #[serde(default)]
     holder: Option<String>,
+    /// Fresh discovery proved this writer is the bound holder's own child. Never persisted:
+    /// a shared daemon can outlive the TUI whose thread binding remains on an ended holder.
+    #[serde(skip)]
+    direct_holder: bool,
     /// A Claude background session's job id (`id` in `claude agents --json`, 8 hex): what
     /// `claude attach` takes. None for every other session.
     #[serde(default)]
@@ -1652,6 +1656,10 @@ fn track(found: &mut Vec<NativeSession>, holders: &[HolderInfo]) {
         } else {
             holder_of(session.process.pid, holders).filter(|_| process(session.process.pid).ok().as_ref() == Some(&session.process))
         };
+        session.direct_holder = holder.is_some_and(|bound| {
+            holder_of(session.process.pid, holders).is_some_and(|direct| direct.id == bound.id)
+                && process(session.process.pid).ok().as_ref() == Some(&session.process)
+        });
         session.holder = holder.map(|h| h.id.clone());
     }
 }
@@ -2410,6 +2418,7 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -2487,6 +2496,32 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_a_direct_codex_holder_is_proven_by_parent_and_process_birth() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let thread = "11111111-1111-4111-8111-111111111111";
+        let holder = HolderInfo {
+            id: "ab12cd34".into(), socket: dir.path().join("ab12cd34.sock"),
+            pid: std::process::id(), provider_pid: child.id(),
+            argv: vec!["/opt/homebrew/bin/codex".into(), "--no-daemon".into()],
+            cwd: "/".into(), watch: true, type_input: true,
+        };
+        crate::holder::manager::bind_thread(&holder, thread);
+        let mut found = vec![native_at("codex", thread, child.id())];
+        track(&mut found, std::slice::from_ref(&holder));
+        let proven = found[0].direct_holder;
+        let encoded = serde_json::to_value(&found[0]).unwrap();
+        let restored: NativeSession = serde_json::from_value(encoded.clone()).unwrap();
+        // Even a previously direct holder is not evidence after its process disappears.
+        child.kill().unwrap(); child.wait().unwrap();
+        track(&mut found, std::slice::from_ref(&holder));
+        assert!(proven);
+        assert!(!encoded.as_object().unwrap().contains_key("direct_holder"));
+        assert!(!restored.direct_holder, "fresh process proof cannot be restored from disk");
+        assert!(!found[0].direct_holder, "an ended provider does not prove readiness");
+    }
+
+    #[test]
     fn local_sessions_codex_is_mirrored_by_the_thread_its_holder_bound() {
         let dir = tempfile::tempdir().unwrap();
         let holder = HolderInfo {
@@ -2509,6 +2544,7 @@ mod tests {
         let mut found = vec![codex];
         track(&mut found, std::slice::from_ref(&holder));
         assert_eq!(found[0].holder.as_deref(), Some("ab12cd34"));
+        assert!(!found[0].direct_holder, "a daemon/thread association is not a live provider child");
         // A Claude holder a stray Codex hook bound to the thread is not its terminal (prod e2e
         // 2026-10-22: the plain Codex session opened as a blank pane).
         let dir = tempfile::tempdir().unwrap();
@@ -2624,6 +2660,7 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -2693,6 +2730,7 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -3176,6 +3214,7 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -3283,6 +3322,7 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                direct_holder: false,
                 job: None,
                 forked_from: None,
                 forked_by_person: None,
@@ -3376,6 +3416,7 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                direct_holder: false,
                 job: None,
                 forked_from: None,
                 forked_by_person: None,
@@ -3468,6 +3509,7 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                direct_holder: false,
                 job: None,
                 forked_from: None,
                 forked_by_person: None,
@@ -3575,6 +3617,7 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                direct_holder: false,
                 job: None,
                 forked_from: None,
                 forked_by_person: None,
@@ -3647,6 +3690,7 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                direct_holder: false,
                 job: None,
                 forked_from: None,
                 forked_by_person: None,

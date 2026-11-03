@@ -255,6 +255,7 @@ fn from_writer(
         active_turn,
         last_assistant_message: None,
         holder: None,
+        direct_holder: false,
         job: None,
         // A fork's header names the thread it came from (`forked_from_id`, 0.164.0), so its lineage
         // outlives the daemon that ran it; the app-server's `forkedFromId` says the same while loaded.

@@ -346,6 +346,63 @@ it("keeps loading older pages without a scroll so the plan and changed files see
   expect(await screen.findByText(/1 file changed/)).toBeTruthy();
 });
 
+it("keeps the reader's latest scroll position when an older page arrives during live work", async () => {
+  let height = 1000;
+  const positions = new WeakMap<HTMLElement, number>();
+  const heightSpy = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(() => height);
+  const viewportSpy = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(200);
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true,
+    get() { return positions.get(this) ?? 400; }, set(value: number) { positions.set(this, value); } });
+  let releaseOlder!: (page: { events: ReturnType<typeof textEvent>[]; nextAfterSeq: null }) => void;
+  const older = new Promise<{ events: ReturnType<typeof textEvent>[]; nextAfterSeq: null }>(resolve => { releaseOlder = resolve; });
+  const list = vi.fn(async (_id: string, after: number) => after === 0 ? older
+    : { events: Array.from({ length: 50 }, (_, i) => textEvent(11 + i)), nextAfterSeq: null });
+  try {
+    render(<LocalSessionPanel session={{ ...session, provider: "codex", terminal: undefined, terminalReason: "plain", status: "busy", latestEventSeq: 60 }}
+      ownerName="Alice" own client={{ ...client, listLocalSessionEvents: list } as never} revision={0} onAccessLost={() => {}} />);
+    await waitFor(() => expect(list).toHaveBeenCalledWith("s", 0, 10));
+    const history = screen.getByRole("region", { name: "Native session history" });
+    history.scrollTop = 650;
+    fireEvent.scroll(history);
+    height = 1200;
+    await act(async () => releaseOlder({ events: Array.from({ length: 10 }, (_, i) => textEvent(i + 1)), nextAfterSeq: null }));
+    expect(history.scrollTop).toBe(850);
+  } finally {
+    cleanup(); heightSpy.mockRestore(); viewportSpy.mockRestore();
+    Reflect.deleteProperty(HTMLElement.prototype, "scrollTop");
+  }
+});
+
+it("does not snap a reader back to the tail when new output grows the history", async () => {
+  let height = 1000;
+  const heightSpy = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(() => height);
+  const viewportSpy = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(200);
+  const resize = new Map<Element, () => void>();
+  const Observer = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe(node: Element) { resize.set(node, () => this.callback([], this as unknown as ResizeObserver)); }
+    disconnect() {} unobserve() {}
+  } as unknown as typeof ResizeObserver;
+  let appended = false;
+  const list = vi.fn(async (_id: string, after: number) => ({ events: after === 0 ? [textEvent(1), textEvent(2)] : appended && after === 2 ? [textEvent(3)] : [], nextAfterSeq: null }));
+  const props = { ownerName: "Alice", own: true, client: { ...client, listLocalSessionEvents: list } as never, onAccessLost: () => {} };
+  const running = { ...session, provider: "codex" as const, terminal: undefined, terminalReason: "plain" as const, status: "busy" as const, latestEventSeq: 2 };
+  try {
+    const view = render(<LocalSessionPanel {...props} session={running} revision={0} />);
+    await screen.findByText("t2");
+    const history = screen.getByRole("region", { name: "Native session history" });
+    history.scrollTop = 250; fireEvent.scroll(history);
+    appended = true; height = 1400;
+    view.rerender(<LocalSessionPanel {...props} session={{ ...running, latestEventSeq: 3 }} revision={1} />);
+    await screen.findByText("t3");
+    act(() => resize.get(history.firstElementChild!)?.());
+    expect(history.scrollTop).toBe(250);
+  } finally {
+    cleanup(); heightSpy.mockRestore(); viewportSpy.mockRestore(); globalThis.ResizeObserver = Observer;
+  }
+});
+
 it("shows a retry line in the status area when the first history load fails, and clears it after a good retry", async () => {
   let fail = true;
   const list = vi.fn(async () => { if (fail) throw new Error("net"); return { events: [], nextAfterSeq: null }; });

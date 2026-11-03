@@ -684,9 +684,9 @@ impl Host {
                     if let Some(session) = &mirror.session_id {
                         crate::holder::manager::end_asked_forget(session);
                     }
-                    if native.provider == "codex" && native.status == "idle" {
-                        // The turn completed between discovery sweeps: upload it, then
-                        // finish the session instead of leaving a closed thread live.
+                    if native.provider == "codex" && native.status == "idle" && native.holder.is_none() {
+                        // An unheld thread's turn completed between discovery sweeps: upload it,
+                        // then finish it. A held terminal is still open and waiting for input.
                         mirror.deferred_end_reason = Some("exited".into());
                     }
                     // Its next end is news again: leaving this set would make the
@@ -4454,7 +4454,17 @@ pub(super) mod tests {
         child.wait().unwrap();
         observed.unwrap();
         assert!(host.mirrors[&key].ended_at.is_none() && !host.mirrors[&key].withheld(), "judged by the run that is live now");
-        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), Some(key));
+        assert!(host.mirrors[&key].deferred_end_reason.is_none(),
+            "an idle held terminal waits for input; draining history must not end it");
+        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), Some(key.clone()));
+        // The register and history upload finish before the person enters their first prompt.
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.registered();
+        mirror.pending = None;
+        mirror.queue.clear();
+        host.finish_deferred_end(&key).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none(), "history drain keeps the input-ready terminal live");
+        assert_eq!(host.mirrors[&key].native.status, "idle");
     }
 
     #[test]

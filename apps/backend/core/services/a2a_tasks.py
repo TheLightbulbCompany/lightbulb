@@ -478,6 +478,11 @@ async def _dispatch(auth: AuthContext, org: str, agent_id: str, row: dict, text:
     return True
 
 
+def _inert(v: str) -> str:
+    """Requester text on one line with no backtick, so it can never open an ``openui-lang`` card."""
+    return v.replace("\r", " ").replace("\n", " ").replace("`", "'")
+
+
 async def _notify_holders(org: str, agent_id: str, row: dict, claims: dict) -> None:
     """The agent asks each holder in their DM with it; a failed post is logged (the hold still expires)."""
     op = claims["operation"]
@@ -488,8 +493,8 @@ async def _notify_holders(org: str, agent_id: str, row: dict, claims: dict) -> N
     # Answered by pressing the card (``answer_from_message``) or at the REST route with a sign-in token.
     text = (
         f"I need your OK to {op['skill']} on {op['resource']} for {row['requester']} (via {chain}): "
-        f"{claims['intent'][:200]}\n"
-        f"Request: {shown[:500]}\n"
+        f"{_inert(claims['intent'][:200])}\n"
+        f"Request: {_inert(shown[:500])}\n"
         f"Answer with POST {base}/a2a/{org}/{agent_id}/tasks/{row['id']}/decide "
         '{"verdict": "allow"} or {"verdict": "deny"}, signed in to Lightbulb.\n'
         f"```openui-lang\n{_CARD}\n```"
@@ -538,29 +543,36 @@ async def answer_from_message(
     if verdict is None or request.reply_to_message_id is None:
         return False
     found = await a2a_repo.get_task_by_notification(org, str(request.reply_to_message_id))
-    if found is None or found[1] != auth.user_id or found[2] != room_id:
+    if found is None or found[2] != room_id:
         return False
     task_id, holder, room = found
     row = await a2a_repo.get_task(org, task_id)
     if row is None:
         return False
-    try:
-        await decide(auth, org, row["agentId"], task_id, verdict=verdict, reason="in-app", now=now)
-    except A2AError as exc:
-        try:  # the press is still the holder's answer attempt: never wake the agent on it
-            await messaging.create_agent_message(
-                org,
-                messaging.AgentMessageRequest(
-                    event_id=f"a2a:{task_id}:answer-failed:{holder}",
-                    room_id=room,
-                    agent_id=row["agentId"],
-                    text=f"could not record your answer: {exc.message}",
-                    reply_to_message_id=None,
-                    thread_root_message_id=None,
-                ),
-            )
-        except Exception:
-            logger.exception("a2a answer refusal post failed", extra={"org": org, "task": task_id})
+    if holder != auth.user_id:
+        error = "not_holder"  # spec §10.2: someone else's card, pressed in its room, records nothing
+    else:
+        try:
+            await decide(auth, org, row["agentId"], task_id, verdict=verdict, reason="in-app", now=now)
+            return True
+        except A2AError as exc:
+            error = exc.message
+        if error == "not_held" and ((await a2a_repo.get_task(org, task_id)) or {}).get("answeredBy") == auth.user_id:
+            return True  # the same holder pressed twice (or the client resent the press): already recorded
+    try:  # the press is still an answer attempt: never wake the agent on it
+        await messaging.create_agent_message(
+            org,
+            messaging.AgentMessageRequest(
+                event_id=f"a2a:{task_id}:answer-failed:{auth.user_id}",
+                room_id=room,
+                agent_id=row["agentId"],
+                text=f"could not record your answer: {error}",
+                reply_to_message_id=None,
+                thread_root_message_id=None,
+            ),
+        )
+    except Exception:
+        logger.exception("a2a answer refusal post failed", extra={"org": org, "task": task_id})
     return True
 
 
@@ -683,6 +695,8 @@ async def _redecide(org: str, row: dict, rules: Rules, *, now: int) -> dict:
     answer is rejected ``no_holder``. An expired hold cancels as expired; a row stored before its
     decide inputs were (phase 1) cancels ``policy_changed``. Every write expects held: a holder who
     answered first keeps their answer."""
+    if ((await a2a_repo.get_rules(org)) or {}).get("revision", "default") != rules.revision:
+        return row  # a newer document landed while this loop ran: its own re-decide handles the row
     if _as_of(row, now)["state"] != "held":
         return await _current(org, row, now)
     if "requesterOrg" not in row:
@@ -725,8 +739,9 @@ async def _redecide(org: str, row: dict, rules: Rules, *, now: int) -> dict:
 
 
 def revision(rules: Rules) -> str:
-    """The server's revision: sha256 hex of the document's canonical JSON without ``revision``."""
-    doc = rules.model_dump(exclude={"revision"})
+    """The server's revision: sha256 hex of the document's canonical JSON without ``revision`` and
+    without unset fields (a document with no ``when`` keeps its phase-1 revision)."""
+    doc = rules.model_dump(exclude={"revision"}, exclude_none=True)
     return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 

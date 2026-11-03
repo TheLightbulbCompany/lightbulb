@@ -1,7 +1,7 @@
 """Who calls the A2A door: a session JWT, or an outside client's Clerk OAuth grant for the /a2a audience."""
 
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -103,3 +103,12 @@ async def test_require_scope_refuses_read_only_for_send():
     with pytest.raises(HTTPException) as exc:
         a2a_auth.require_scope(caller, a2a_auth.SEND_SCOPE)
     assert exc.value.status_code == 403 and exc.value.detail["code"] == "scope_required"
+
+
+async def test_per_agent_key_is_refused_before_clerk_is_asked(monkeypatch):
+    verifier = MagicMock()
+    monkeypatch.setattr(a2a_auth, "_verifier", verifier)
+    with pytest.raises(HTTPException) as exc:
+        await a2a_auth.a2a_caller(bearer("lbk_" + "0" * 40))
+    assert exc.value.status_code == 401 and exc.value.detail == {"code": "invalid_token"}
+    verifier.assert_not_called()

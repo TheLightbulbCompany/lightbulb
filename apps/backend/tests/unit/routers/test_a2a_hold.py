@@ -1,6 +1,8 @@
 """Held tasks: holder notification, the holder's decision, exceptions, expiry and rules changes."""
 
 import asyncio
+import hashlib
+import json
 import time
 import uuid
 from contextlib import contextmanager
@@ -12,6 +14,8 @@ import pytest
 from core.auth import AuthContext, get_current_user
 from core.repositories import a2a_repo
 from core.services.a2a_authority import operands_hash
+from core.services.a2a_rules import Rules
+from core.services.a2a_tasks import revision
 
 URI = "https://thelightbulb.company/a2a/ext/authority/v1"
 ORG = "org_test_456"
@@ -22,10 +26,10 @@ RULES = {"revision": "r-1", "holders": {"agent:*": [OWNER]}, "rules": [], "defau
 BASE = f"/a2a/{ORG}/{AGENT}"
 
 
-def msg(text="please do the thing", skill="message"):
+def msg(text="please do the thing", skill="message", intent="do the thing"):
     auth = {
         "operation": {"skill": skill, "resource": f"agent:{AGENT}", "operands": {"text": text}},
-        "intent": "do the thing",
+        "intent": intent,
     }
     return {
         "messageId": str(uuid.uuid4()),
@@ -66,8 +70,8 @@ def as_user(app, user_id, role="org:member"):
         app.dependency_overrides[get_current_user] = prev
 
 
-def send(c, text="please do the thing", skill="message"):
-    return c.post(BASE, json=rpc("SendMessage", {"message": msg(text, skill)})).json()["result"]["task"]
+def send(c, text="please do the thing", skill="message", intent="do the thing"):
+    return c.post(BASE, json=rpc("SendMessage", {"message": msg(text, skill, intent)})).json()["result"]["task"]
 
 
 def get(c, task_id):
@@ -220,3 +224,11 @@ def test_failed_dispatch_after_allow_is_a_failed_task(client, app, hold_env):
 def test_get_rules_without_a_document_returns_the_defaults(client, a2a_env):
     r = client.get(f"/a2a/{ORG}/rules").json()
     assert r["revision"] == "default" and r["holders"]["agent:*"] == [REQUESTER]
+
+
+def test_revision_of_a_document_without_when_is_its_phase1_revision():
+    rule = {"id": "r", "resource": "agent:*", "skill": "message", "requesters": [f"org:{ORG}"], "effect": "allow"}
+    phase1 = {"holders": RULES["holders"], "rules": [rule], "default": "hold"}  # no `when` key at all
+    expected = hashlib.sha256(json.dumps(phase1, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert revision(Rules.model_validate({**phase1, "revision": "x"})) == expected
+    assert revision(Rules.model_validate({**phase1, "rules": [{**rule, "when": None}]})) == expected

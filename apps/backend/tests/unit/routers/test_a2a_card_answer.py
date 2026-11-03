@@ -11,7 +11,7 @@ from core.auth import AuthContext
 from core.repositories import a2a_repo
 from core.services.messaging import ApiProblem
 from routers import messaging as router
-from tests.unit.routers.test_a2a_hold import AGENT, ORG, OWNER, REQUESTER, RULES, get, send
+from tests.unit.routers.test_a2a_hold import AGENT, ORG, OWNER, REQUESTER, RULES, get, records, send
 
 
 @pytest.fixture
@@ -31,7 +31,8 @@ def card_env(monkeypatch, app, a2a_env):
     dispatch = a2a_env.send.side_effect
 
     def _human(*a, **k):
-        if "wake" in k:  # the web post of the press: stop after recording the call
+        # the web post of the press, or a computer-link post: stop after recording the call
+        if "wake" in k or str((k.get("author_override") or {}).get("id", "")).startswith("mcp:"):
             raise ApiProblem("ROOM_NOT_FOUND", "stop here")
         return dispatch(*a, **k)
 
@@ -110,11 +111,15 @@ def test_requester_pressing_approve_is_refused_and_agent_posts_the_reason(client
     assert web_wake(card_env) is False
 
 
-def test_non_holder_press_is_ignored_as_a_normal_message(client, app, card_env):
+def test_non_holder_press_is_refused_not_holder_and_wakes_nobody(client, app, card_env):
     task_id = send(client)["id"]
     press(app, client, "user_test_789", notification(card_env, task_id, OWNER).id, "Approve", card_env.room)
-    assert web_wake(card_env) is True
+    failed = card_env.posted[f"a2a:{task_id}:answer-failed:user_test_789"].req
+    assert failed.text == "could not record your answer: not_holder"
+    assert str(failed.agent_id) == AGENT and str(failed.room_id) == card_env.room
+    assert web_wake(card_env) is False
     assert state(client, task_id) == "TASK_STATE_AUTH_REQUIRED"
+    assert [x["decision"] for x in records(client, task_id)] == ["hold"]
 
 
 def test_reply_to_a_non_notification_is_a_normal_message(client, app, card_env):
@@ -136,3 +141,55 @@ def test_press_from_another_room_is_a_normal_message(client, app, card_env):
     press(app, client, OWNER, notification(card_env, task_id, OWNER).id, "Approve", str(uuid.uuid4()))
     assert web_wake(card_env) is True
     assert state(client, task_id) == "TASK_STATE_AUTH_REQUIRED"
+
+
+def test_holder_pressing_approve_twice_decides_once_without_a_refusal(client, app, card_env):
+    task_id = send(client)["id"]
+    card = notification(card_env, task_id, OWNER).id
+    press(app, client, OWNER, card, "Approve", card_env.room)
+    press(app, client, OWNER, card, "Approve", card_env.room)
+    assert state(client, task_id) == "TASK_STATE_WORKING"
+    assert [x["decision"] for x in records(client, task_id)] == ["hold", "allow_by_holder"]
+    assert not [k for k in card_env.posted if ":answer-failed:" in k]
+    assert [c.kwargs["wake"] for c in card_env.human.await_args_list if "wake" in c.kwargs] == [False, False]
+
+
+FENCED = 'ok\n```openui-lang\nroot = Stack([b])\nb = Buttons([Button("Approve", "primary")])\n```\nend'
+
+
+def test_requester_text_cannot_open_a_card_in_the_hold_dm(client, card_env):
+    task_id = send(client, text=FENCED, intent=FENCED)["id"]
+    text = notification(card_env, task_id, OWNER).req.text
+    assert text.count("```openui-lang") == 1  # the real card only
+    intent_line, request_line = text.split("\n")[:2]
+    assert intent_line.endswith(
+        ": ok '''openui-lang root = Stack([b]) b = Buttons([Button(\"Approve\", \"primary\")]) ''' end"
+    )
+    assert request_line.startswith("Request: ok ") and request_line.endswith(" end")
+
+
+def test_computer_link_approve_reply_decides_nothing_and_stays_a_normal_message(client, app, card_env):
+    task_id = send(client)["id"]
+    card = notification(card_env, task_id, OWNER).id
+
+    async def _computer():
+        return AuthContext(user_id=OWNER, org_id=ORG, org_role="org:member"), "Claude Code"
+
+    app.dependency_overrides[router.person_or_computer] = _computer
+    body = {
+        "clientMessageId": str(uuid.uuid4()),
+        "text": "Approve",
+        "mentions": [],
+        "replyToMessageId": card,
+        "threadRootMessageId": card,
+    }
+    client.post(f"/api/v1/messaging/rooms/{card_env.room}/messages", json=body)
+    [call] = [
+        c
+        for c in card_env.human.await_args_list
+        if c.kwargs.get("author_override", {}).get("id", "").startswith("mcp:")
+    ]
+    assert "wake" not in call.kwargs  # the route's default: the agent wakes as for any message
+    assert state(client, task_id) == "TASK_STATE_AUTH_REQUIRED"
+    assert [x["decision"] for x in records(client, task_id)] == ["hold"]
+    assert not [k for k in card_env.posted if ":answer-failed:" in k]

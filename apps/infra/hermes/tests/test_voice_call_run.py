@@ -220,7 +220,8 @@ def test_a_voice_run_gets_the_dm_environment_on_the_calls_transcript(env, home, 
                                                turn._turn_lock("agent-1", CALL_SESSION).locked())))
     turn.register_call_run(IDENTITY)
     assert turn._run_call(IDENTITY, REQUEST, _frames())[0::2] == ("completed", "It landed.")
-    assert env["overlay"] == {"LIGHTBULB_ROOM_SESSION_KEY": SESSION} and env["family"] == "call"
+    assert env["overlay"] == {"LIGHTBULB_ROOM_SESSION_KEY": SESSION, "LIGHTBULB_RUN_ID": IDENTITY["runId"]}
+    assert env["family"] == "call"
     assert env["session"] == CALL_SESSION
     assert scopes == [CALL_SESSION] and locks == [(False, True)]  # the call's own work folder and turn lock
     # No step cap, and no post-turn review fork after a spoken turn.

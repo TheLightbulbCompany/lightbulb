@@ -457,18 +457,20 @@ async def _notify_holders(org: str, agent_id: str, row: dict, claims: dict) -> N
     operands = op["operands"]
     shown = operands["text"] if isinstance(operands.get("text"), str) else json.dumps(operands, separators=(",", ":"))
     chain = " → ".join(h.get("agent") or h["person"] for h in claims["chain"])
-    # ponytail: answered at the REST route with a Lightbulb sign-in token; the in-app button is phase 1b
+    # Answered by pressing the card (``answer_from_message``) or at the REST route with a sign-in token.
     text = (
         f"I need your OK to {op['skill']} on {op['resource']} for {row['requester']} (via {chain}): "
         f"{claims['intent'][:200]}\n"
         f"Request: {shown[:500]}\n"
         f"Answer with POST {base}/a2a/{org}/{agent_id}/tasks/{row['id']}/decide "
-        '{"verdict": "allow"} or {"verdict": "deny"}, signed in to Lightbulb.'
+        '{"verdict": "allow"} or {"verdict": "deny"}, signed in to Lightbulb.\n'
+        f"```openui-lang\n{_CARD}\n```"
     )
+    sent: dict[str, str] = {}
     for holder in row["holders"]:
         try:
             room = await hosted_mcp.person_dm(AuthContext(user_id=holder, org_id=org), agent_id, create_key=row["id"])
-            await messaging.create_agent_message(
+            receipt = await messaging.create_agent_message(
                 org,
                 messaging.AgentMessageRequest(
                     event_id=f"a2a:{row['id']}:hold:{holder}",
@@ -479,8 +481,55 @@ async def _notify_holders(org: str, agent_id: str, row: dict, claims: dict) -> N
                     thread_root_message_id=None,
                 ),
             )
+            sent[holder] = str(receipt.message_id)
+            await a2a_repo.put_notification(org, sent[holder], row["id"], holder)
         except Exception:
             logger.exception("a2a holder notification failed", extra={"org": org, "task": row["id"]})
+    if sent:
+        row["notificationMessageIds"] = sent
+        # expect="held": a holder who already answered keeps the task's new state
+        await a2a_repo.update_task(org, row["id"], state="held", extra={"notificationMessageIds": sent}, expect="held")
+
+
+_CARD = 'root = Stack([b])\nb = Buttons([Button("Approve", "primary"), Button("Deny", "secondary")])'
+_VERDICTS: dict[str, Literal["allow", "deny"]] = {"Approve": "allow", "Deny": "deny"}
+
+
+async def answer_from_message(
+    auth: AuthContext, org: str, request: messaging.CreateMessageRequest, *, now: int | None = None
+) -> bool:
+    """A holder's press on their hold card (a reply ``Approve``/``Deny`` to the notification) decides the
+    hold; True when the message was that press (stored without waking the agent). A refused decision is
+    told back in the room by the agent."""
+    verdict = _VERDICTS.get(request.text.strip())
+    if verdict is None or request.reply_to_message_id is None:
+        return False
+    found = await a2a_repo.get_task_by_notification(org, str(request.reply_to_message_id))
+    if found is None or found[1] != auth.user_id:
+        return False
+    task_id, holder = found
+    row = await a2a_repo.get_task(org, task_id)
+    if row is None:
+        return False
+    try:
+        await decide(auth, org, row["agentId"], task_id, verdict=verdict, reason="in-app", now=now)
+    except A2AError as exc:
+        try:  # the press is still the holder's answer attempt: never wake the agent on it
+            dm = AuthContext(user_id=holder, org_id=org)
+            await messaging.create_agent_message(
+                org,
+                messaging.AgentMessageRequest(
+                    event_id=f"a2a:{task_id}:answer-failed:{holder}",
+                    room_id=await hosted_mcp.person_dm(dm, row["agentId"], create_key=task_id),
+                    agent_id=row["agentId"],
+                    text=f"could not record your answer: {exc.message}",
+                    reply_to_message_id=None,
+                    thread_root_message_id=None,
+                ),
+            )
+        except Exception:
+            logger.exception("a2a answer refusal post failed", extra={"org": org, "task": task_id})
+    return True
 
 
 async def _leave(

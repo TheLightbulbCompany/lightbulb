@@ -16,6 +16,7 @@ from core.auth import AuthContext
 from core.config import settings
 from core.repositories import a2a_repo, local_sessions_repo, messaging_repo
 from core.services import a2a_rules, hosted_mcp, messaging, network_route
+from core.services.a2a_auth import READ_SCOPE_A2A, SEND_SCOPE, A2ACaller
 from core.services.a2a_authority import URI, AuthorityError, AuthorityRequest, Operation, mint, sign_record, verify
 from core.services.a2a_rules import Rules, default_rules
 from core.services.network_proof import _unb64
@@ -45,7 +46,8 @@ class A2AError(Exception):
         self.message = message
 
 
-def agent_card(org: str, agent_id: str, agent_name: str, base_url: str) -> a2a_types.AgentCard:
+def agent_card(org: str, agent_id: str, agent_name: str, base_url: str, oauth: dict[str, str]) -> a2a_types.AgentCard:
+    """``oauth``: Clerk's ``authorization_url`` and ``token_url`` (``a2a_auth.oauth_endpoints``)."""
     return a2a_types.AgentCard(
         name=agent_name,
         description=f"{agent_name}, a Lightbulb workspace agent. Every task carries signed authority.",
@@ -69,9 +71,25 @@ def agent_card(org: str, agent_id: str, agent_name: str, base_url: str) -> a2a_t
         security_schemes={
             "clerk": a2a_types.SecurityScheme(
                 http_auth_security_scheme=a2a_types.HTTPAuthSecurityScheme(scheme="Bearer", bearer_format="JWT")
-            )
+            ),
+            "oauth": a2a_types.SecurityScheme(
+                oauth2_security_scheme=a2a_types.OAuth2SecurityScheme(
+                    oauth2_metadata_url=f"{settings.CLERK_ISSUER.rstrip('/')}/.well-known/oauth-authorization-server",
+                    flows=a2a_types.OAuthFlows(
+                        authorization_code=a2a_types.AuthorizationCodeOAuthFlow(
+                            **oauth,
+                            scopes={SEND_SCOPE: "Send the agent tasks.", READ_SCOPE_A2A: "Read your tasks."},
+                            pkce_required=True,
+                        )
+                    ),
+                )
+            ),
         },
-        security_requirements=[a2a_types.SecurityRequirement(schemes={"clerk": a2a_types.StringList()})],
+        # Either one: a Lightbulb sign-in, or an OAuth grant for this door's audience.
+        security_requirements=[
+            a2a_types.SecurityRequirement(schemes={"clerk": a2a_types.StringList()}),
+            a2a_types.SecurityRequirement(schemes={"oauth": a2a_types.StringList()}),
+        ],
         default_input_modes=["text/plain"],
         default_output_modes=["text/plain"],
         skills=[
@@ -160,7 +178,8 @@ def _authority_request(message: dict, agent_id: str) -> tuple[AuthorityRequest, 
     return req, text
 
 
-async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict, *, now: int | None = None) -> dict:
+async def send_message(caller: A2ACaller, org: str, agent_id: str, message: dict, *, now: int | None = None) -> dict:
+    auth = caller.auth
     now = int(time.time()) if now is None else now
     # Only a workspace agent: any other id (a person's user_...) would get a system post in a human DM.
     if await agent_name(org, agent_id) is None:
@@ -170,8 +189,9 @@ async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict
         jws, claims = mint(
             requester_person=auth.user_id,
             org=org,
-            verified_by="clerk-session",
-            chain=[{"agent": None, "session": None, "person": auth.user_id, "at": now}],
+            verified_by=caller.verified_by,
+            # An OAuth client is the first hop's agent; rules match it as agent:<client_id>.
+            chain=[{"agent": caller.client_id, "session": None, "person": auth.user_id, "at": now}],
             request=req,
             now=now,
         )
@@ -183,7 +203,16 @@ async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict
     doc = await a2a_repo.get_rules(org)
     rules = Rules.model_validate(doc) if doc else default_rules(org, [auth.user_id] if auth.is_org_admin else [])
     row = await _decide_and_store(
-        auth, org, agent_id, jws, claims, text, rules=rules, chain_agents=[], session_person=None, now=now
+        auth,
+        org,
+        agent_id,
+        jws,
+        claims,
+        text,
+        rules=rules,
+        chain_agents=[caller.client_id] if caller.client_id else [],
+        session_person=None,
+        now=now,
     )
     return to_a2a_task(row)
 

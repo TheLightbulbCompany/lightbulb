@@ -47,7 +47,12 @@ name: desktop-build
     - apps/desktop/**
     # The app compiles in the Claude plugin's files (local_sessions/plugin.rs, enrollment.rs).
     - packages/claude-plugin/**
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      hosted_runner:
+        description: Use GitHub-hosted macOS when the signing Mac is unavailable
+        type: boolean
+        default: false
 permissions:
   contents: write
 concurrency:
@@ -65,14 +70,12 @@ jobs:
   # runner can be offline, and a check nobody can turn green blocks every PR.
   test-desktop:
     name: TestDesktop
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || inputs.hosted_runner == true
     # Pull-request code runs on the persistent signing Mac; drop the workflow's
     # `contents: write` token, which only the build/publish jobs need.
     permissions:
       contents: read
-    runs-on:
-    - self-hosted
-    - macos-desktop
+    runs-on: ${{ fromJSON(inputs.hosted_runner == true && '["macos-15"]' || '["self-hosted","macos-desktop"]') }}
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -107,10 +110,9 @@ jobs:
       run: bash .github/scripts/mac-runner-disk.sh prune
   build-desktop-prod:
     name: BuildDesktopProd
-    if: github.event_name == 'workflow_dispatch'
-    runs-on:
-    - self-hosted
-    - macos-desktop
+    needs: test-desktop
+    if: always() && github.event_name == 'workflow_dispatch' && (needs.test-desktop.result == 'success' || needs.test-desktop.result == 'skipped')
+    runs-on: ${{ fromJSON(inputs.hosted_runner == true && '["macos-15"]' || '["self-hosted","macos-desktop"]') }}
     timeout-minutes: 150
     steps:
     - name: Checkout

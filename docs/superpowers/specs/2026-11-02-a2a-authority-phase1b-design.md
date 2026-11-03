@@ -1,6 +1,6 @@
 # A2A authority extension, phase 1b: design
 
-**Status:** draft for the founder's approval. Nothing is built.
+**Status:** APPROVED by the founder 2 Nov 2026 with the author's calls as written. Plan: docs/superpowers/plans/2026-11-02-a2a-authority-phase1b.md.
 **Builds on:** phase 1 (branch `feat/a2a-authority-design` at `82fddd7bb`, PR #4562, not merged). This branch (`feat/a2a-phase1b`) stacks on it and is rebased onto `main` when #4562 merges; a branch from `origin/main` cannot carry phase 1b because phase 1 is not there yet (controller ruling, founder may object).
 **Builder check (2 Nov):** run; nine contradictions and eleven questions folded in below; calls marked "my call".
 **Scope (from the phase-1 spec §2a cut list):** third-party OAuth clients, an Approve/Deny button in the app for held tasks, `when` clauses on rules, re-deciding held tasks on a policy change, Agent Card signatures. Everything else stays in phase 2 and later.

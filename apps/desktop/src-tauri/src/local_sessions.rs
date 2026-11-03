@@ -1652,7 +1652,24 @@ fn track(found: &mut Vec<NativeSession>, holders: &[HolderInfo]) {
     found.retain(|s| !holders.iter().any(|h| h.provider_pid == s.process.pid && crate::holder::manager::attach_job(h).is_some()));
     for session in found.iter_mut() {
         let holder = if session.provider == "codex" {
-            holders.iter().find(|h| codex_holder(h) && crate::holder::manager::thread(h).as_deref() == Some(session.conversation.as_str()))
+            // Discovery names the actual rollout writer. A resumed private TUI
+            // can be ready before its next SessionStart hook; its direct holder
+            // is sufficient proof, unlike an argv that merely requests a thread.
+            let direct = holder_of(session.process.pid, holders).filter(|h| {
+                codex_holder(h) && session.restriction.is_none()
+                    && process(session.process.pid).ok().as_ref() == Some(&session.process)
+            });
+            if let Some(h) = direct {
+                crate::holder::manager::bind_thread(h, &session.conversation);
+            }
+            direct.or_else(|| {
+                // Only a shared daemon's verified thread can have a different
+                // writer from its terminal. An external private writer must
+                // never be shown through a blocked resume's stale binding.
+                (session.job.as_deref() == Some(session.conversation.as_str())).then(|| {
+                    holders.iter().find(|h| codex_holder(h) && crate::holder::manager::thread(h).as_deref() == Some(session.conversation.as_str()))
+                }).flatten()
+            })
         } else {
             holder_of(session.process.pid, holders).filter(|_| process(session.process.pid).ok().as_ref() == Some(&session.process))
         };
@@ -2506,9 +2523,13 @@ mod tests {
             argv: vec!["/opt/homebrew/bin/codex".into(), "--no-daemon".into()],
             cwd: "/".into(), watch: true, type_input: true,
         };
-        crate::holder::manager::bind_thread(&holder, thread);
         let mut found = vec![native_at("codex", thread, child.id())];
-        track(&mut found, std::slice::from_ref(&holder));
+        let blocked = HolderInfo { id: "cd34ef56".into(), socket: dir.path().join("cd34ef56.sock"),
+            pid: 1, provider_pid: 2, ..holder.clone() };
+        crate::holder::manager::bind_thread(&blocked, thread);
+        track(&mut found, &[blocked, holder.clone()]);
+        assert_eq!(found[0].holder.as_deref(), Some(holder.id.as_str()), "a blocked retry cannot replace the actual writer's terminal");
+        assert_eq!(crate::holder::manager::thread(&holder).as_deref(), Some(thread), "the actual writer binds before any new turn");
         let proven = found[0].direct_holder;
         let encoded = serde_json::to_value(&found[0]).unwrap();
         let restored: NativeSession = serde_json::from_value(encoded.clone()).unwrap();
@@ -2541,7 +2562,12 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].holder, None, "an unbound thread (plain codex) is tracked, without a holder");
         crate::holder::manager::bind_thread(&holder, thread);
-        let mut found = vec![codex];
+        let mut found = vec![codex.clone()];
+        track(&mut found, std::slice::from_ref(&holder));
+        assert_eq!(found[0].holder, None, "an external writer cannot use a blocked resume's binding");
+        let mut daemon = codex;
+        daemon.job = Some(thread.into());
+        let mut found = vec![daemon];
         track(&mut found, std::slice::from_ref(&holder));
         assert_eq!(found[0].holder.as_deref(), Some("ab12cd34"));
         assert!(!found[0].direct_holder, "a daemon/thread association is not a live provider child");

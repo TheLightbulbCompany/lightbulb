@@ -260,6 +260,12 @@ async def _decide_and_store(
         "rule": d.rule,
         "holders": d.holders,
         "createdAt": now,
+        # every decide input beyond the authority itself, so a rules change can re-decide the task
+        "requesterOrg": auth.org_id,
+        "chainAgents": chain_agents,
+        "sessionPerson": session_person,
+        "originIsPerson": origin_is_person,
+        "verifiedBy": claims["requester"]["verified_by"],
     }
     if d.effect == "hold" and not d.holders:
         # A hold nobody can answer is a silent hang: refuse it.
@@ -594,10 +600,15 @@ async def decide(
     state, decision = ("working", "allow_by_holder") if verdict == "allow" else ("rejected", "deny_by_holder")
     if row["state"] != "held":
         raise A2AError(409, "not_held")
-    if row["policyRevision"] != ((await a2a_repo.get_rules(org)) or {}).get("revision", "default"):
-        # Never resumed under rules the hold was not decided by (a put_rules raced this hold).
-        await _leave(org, row, "canceled", "canceled", now=now, extra={"reason": "policy_changed"})
-        raise A2AError(409, "policy_changed")
+    doc = await a2a_repo.get_rules(org)
+    if row["policyRevision"] != (doc or {}).get("revision", "default"):
+        # Never answered under rules the hold was not decided by (a put_rules raced this hold): decide
+        # it again first, and answer only if it is still held and this person still holds it.
+        row = await _redecide(org, row, Rules.model_validate(doc) if doc else default_rules(org, []), now=now)
+        if row["state"] != "held":
+            raise A2AError(409, "not_held")
+        if auth.user_id not in row["holders"]:
+            raise A2AError(403, "not_holder")
     # Claim the answer first: a second holder, the expiry or a rules change can only lose the race.
     row = await _leave(
         org,
@@ -624,7 +635,14 @@ async def decide(
         task_id=task_id,
         now=now,
     )
-    if await _dispatch(AuthContext(user_id=row["requester"], org_id=org), org, agent_id, row, row["text"]):
+    await _dispatch_from_hold(org, row, now)
+    return to_a2a_task(row)
+
+
+async def _dispatch_from_hold(org: str, row: dict, now: int) -> None:
+    """Dispatch a task that just left held for working, as its requester (their DM with the agent),
+    and write the outcome; a failed dispatch ends the task failed, never stuck."""
+    if await _dispatch(AuthContext(user_id=row["requester"], org_id=org), org, row["agentId"], row, row["text"]):
         if row.get("delivered"):
             await _complete_delivered(org, row, now)
         keys = ("roomId", "dispatchMessageId", "dispatchRequestId", "delivered", "artifact", "record")
@@ -634,8 +652,55 @@ async def decide(
         extra = {"reason": row["reason"], "record": row["record"]}
     # ponytail: a reply landing between dispatch and this write finds no room on the task and stays
     # unlinked, the same window send_message has
-    await a2a_repo.update_task(org, task_id, state=row["state"], extra=extra)
-    return to_a2a_task(row)
+    await a2a_repo.update_task(org, row["id"], state=row["state"], extra=extra)
+
+
+async def _redecide(org: str, row: dict, rules: Rules, *, now: int) -> dict:
+    """Decide a held task again under ``rules`` and act on it; the updated row. Allow dispatches
+    (``allow_by_policy``, no exception), deny rejects (``deny_by_policy``), hold stays held with the new
+    holders and revision (``redecided``, holders asked again if the set changed), a hold nobody can
+    answer is rejected ``no_holder``. An expired hold cancels as expired; a row stored before its
+    decide inputs were (phase 1) cancels ``policy_changed``. Every write expects held: a holder who
+    answered first keeps their answer."""
+    if _as_of(row, now)["state"] != "held":
+        return await _current(org, row, now)
+    if "requesterOrg" not in row:
+        done = await _leave(org, row, "canceled", "canceled", now=now, extra={"reason": "policy_changed"})
+        return done or await a2a_repo.get_task(org, row["id"])
+    claims = _claims(row["authority"])
+    op = claims["operation"]
+    d = a2a_rules.decide(
+        rules,
+        org=org,
+        requester_person=row["requester"],
+        requester_org=row["requesterOrg"],
+        chain_agents=row["chainAgents"],
+        resource=op["resource"],
+        skill=op["skill"],
+        session_person=row["sessionPerson"],
+        exception=await a2a_repo.get_exception(
+            org, op["resource"], op["skill"], row["requester"], op["operands_hash"], now
+        ),
+        origin_is_person=row["originIsPerson"],
+        operands=op["operands"],
+        intent=claims["intent"],
+        verified_by=row["verifiedBy"],
+    )
+    extra = {"rule": d.rule, "holders": d.holders, "policyRevision": rules.revision}
+    if d.effect == "hold" and d.holders:
+        done = await _leave(org, row, "held", "redecided", now=now, extra=extra, holder=d.holders)
+        if done and set(d.holders) != set(row.get("holders") or []):
+            # Fresh cards and NOTIF rows; the old ones still resolve to this task (ruling 1).
+            await _notify_holders(org, row["agentId"], done, claims)
+    elif d.effect == "allow":
+        done = await _leave(org, row, "working", "allow_by_policy", now=now, extra={**extra, "dispatchedAt": now})
+        if done:
+            await _dispatch_from_hold(org, done, now)
+    else:  # deny, or a hold nobody can answer
+        if d.effect == "hold":
+            extra["rule"] = "no_holder"
+        done = await _leave(org, row, "rejected", "deny_by_policy", now=now, extra=extra)
+    return done or await a2a_repo.get_task(org, row["id"])
 
 
 def revision(rules: Rules) -> str:
@@ -645,22 +710,20 @@ def revision(rules: Rules) -> str:
 
 
 async def put_rules(auth: AuthContext, org: str, rules: Rules, *, now: int | None = None) -> dict:
-    """Store the rules under a server-assigned revision; a new revision first cancels every held task
-    (reason policy_changed): a hold is never re-decided under rules its holder did not see. A hold
-    made between the cancel and the store is caught by ``decide``'s revision check. Returns the
-    stored document."""
+    """Store the rules under a server-assigned revision; a new revision then re-decides every held task
+    under it (``_redecide``). A hold decided under the old rules but stored after the scan is caught
+    by ``decide``'s revision check. Returns the stored document."""
     if not auth.is_org_admin:
         raise A2AError(403, "admin")
     now = int(time.time()) if now is None else now
     doc = {**rules.model_dump(), "revision": revision(rules)}
     old = await a2a_repo.get_rules(org)
+    await a2a_repo.put_rules(org, doc)  # first: a hold made from now on is decided by the new rules
     if (old or {}).get("revision", "default") != doc["revision"]:
+        stored = Rules.model_validate(doc)
+        # ponytail: one task at a time inside the request; a queue when an org holds hundreds
         for row in await a2a_repo.list_held_tasks(org):
-            if _as_of(row, now)["state"] != "held":
-                await _current(org, row, now)  # already expired: it cancels as expired, not policy_changed
-                continue
-            await _leave(org, row, "canceled", "canceled", now=now, extra={"reason": "policy_changed"})
-    await a2a_repo.put_rules(org, doc)
+            await _redecide(org, row, stored, now=now)
     return doc
 
 

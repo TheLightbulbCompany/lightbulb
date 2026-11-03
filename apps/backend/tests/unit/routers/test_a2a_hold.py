@@ -183,7 +183,7 @@ def test_expired_hold_reads_as_canceled_and_rejects_decide(client, app, hold_env
     hold_env.send.assert_not_awaited()
 
 
-def test_put_rules_assigns_the_revision_and_a_new_one_cancels_held_tasks(client, app, hold_env):
+def test_put_rules_assigns_the_revision_and_a_new_one_redecides_held_tasks(client, app, hold_env):
     with as_user(app, "user_test_789"):
         assert client.put(f"/a2a/{ORG}/rules", json=RULES).status_code == 403
         assert client.get(f"/a2a/{ORG}/rules").status_code == 403
@@ -197,25 +197,8 @@ def test_put_rules_assigns_the_revision_and_a_new_one_cancels_held_tasks(client,
     changed = {**RULES, "holders": {"agent:*": [OWNER, "user_second"]}}
     new = client.put(f"/a2a/{ORG}/rules", json=changed).json()["revision"]
     assert new != rev and client.get(f"/a2a/{ORG}/rules").json()["revision"] == new
-    t = get(client, task_id)
-    assert t["status"]["state"] == "TASK_STATE_CANCELED" and t["metadata"][URI]["reason"] == "policy_changed"
-    recs = records(client, task_id)
-    assert [x["decision"] for x in recs] == ["hold", "canceled"] and recs[1]["rule"] == "policy_changed"
-
-
-def test_answer_under_a_newer_revision_is_409_policy_changed_and_cancels(client, app, hold_env):
-    task_id = send(client)["id"]
-    asyncio.run(a2a_repo.put_rules(ORG, {**RULES, "revision": "r-2"}))  # stored after the hold, not canceled yet
-    with as_user(app, OWNER):
-        r = decide(client, task_id)
-    assert r.status_code == 409 and r.json()["error"]["message"] == "policy_changed"
-    t = get(client, task_id)
-    assert t["status"]["state"] == "TASK_STATE_CANCELED" and t["metadata"][URI]["reason"] == "policy_changed"
-    assert [(x["decision"], x["rule"]) for x in records(client, task_id)] == [
-        ("hold", "default"),
-        ("canceled", "policy_changed"),
-    ]
-    hold_env.send.assert_not_awaited()
+    assert get(client, task_id)["status"]["state"] == "TASK_STATE_AUTH_REQUIRED"  # still held (test_a2a_redecide)
+    assert [x["decision"] for x in records(client, task_id)] == ["hold", "redecided"]
 
 
 def test_failed_dispatch_after_allow_is_a_failed_task(client, app, hold_env):

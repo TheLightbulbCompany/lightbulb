@@ -1,5 +1,5 @@
 {
- "_comment": "Twelve-plus deterministic cases for core.services.a2a_rules.decide (org org_1, admin user_admin). 'rules' replaces the rule list of default_rules; 'rule' is the expected rule id. The operand-substitution pair has the same resource and skill and differs only in 'exception': the pair proves exception-present allows and exception-absent holds; matching an exception to its operands lives in the repository lookup (a2a_repo.get_exception), not in decide. Not covered: a policy revision cancelling a held task (held then canceled) is a task-state transition in a2a_tasks.put_rules, not a decide call; tests/unit/routers/test_a2a_hold.py covers it.",
+ "_comment": "Fifteen deterministic cases for core.services.a2a_rules.decide (org org_1, admin user_admin). 'rules' replaces the rule list of default_rules; 'rule' is the expected rule id. The operand-substitution pair has the same resource and skill and differs only in 'exception': the pair proves exception-present allows and exception-absent holds; matching an exception to its operands lives in the repository lookup (a2a_repo.get_exception), not in decide. Not covered: a policy revision cancelling a held task (held then canceled) is a task-state transition in a2a_tasks.put_rules, not a decide call; tests/unit/routers/test_a2a_hold.py covers it.",
  "cases": [
   {
    "name": "friday_asks_aden_session",
@@ -217,6 +217,68 @@
       "user_mallory"
      ],
      "effect": "deny"
+    }
+   ]
+  },
+  {
+   "name": "when_intent_matches_allows",
+   "requester_person": "user_x",
+   "requester_org": "org_1",
+   "chain_agents": [],
+   "resource": "session:abc",
+   "skill": "ask_session",
+   "session_person": "user_aden",
+   "exception": null,
+   "intent": "Status of my own session",
+   "verified_by": "origin-message",
+   "expected": "allow",
+   "rule": "w1",
+   "rules": [
+    {
+     "id": "w1",
+     "resource": "session:*",
+     "skill": "ask_session",
+     "requesters": [
+      "org:org_1"
+     ],
+     "effect": "allow",
+     "when": {
+      "intent_matches": "status of my own session",
+      "verified_by_in": [
+       "origin-message"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "when_intent_differs_falls_to_default",
+   "requester_person": "user_x",
+   "requester_org": "org_1",
+   "chain_agents": [],
+   "resource": "session:abc",
+   "skill": "ask_session",
+   "session_person": "user_aden",
+   "exception": null,
+   "intent": "delete it",
+   "verified_by": "origin-message",
+   "expected": "hold",
+   "rule": "default",
+   "rules": [
+    {
+     "id": "w1",
+     "resource": "session:*",
+     "skill": "ask_session",
+     "requesters": [
+      "org:org_1"
+     ],
+     "effect": "allow",
+     "when": {
+      "intent_matches": "status of my own session",
+      "verified_by_in": [
+       "origin-message"
+      ]
+     }
     }
    ]
   }

@@ -46,8 +46,30 @@ describe("AppView", () => {
     open.mockResolvedValue("https://p.apps.test/?pass=1");
     render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
     await screen.findByTitle("Invoices");
-    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes. Reply in the room and it will pick up again.")).toBeTruthy();
+    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes.")).toBeTruthy();
     expect(screen.queryByText(/looking at the preview/)).toBeNull();
+  });
+
+  it("a stuck app offers a manager Ask the agent under the stopped line, and asks with no error", async () => {
+    admin = true;
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    askAgent.mockResolvedValue(undefined);
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", stuck: { at: "2026-11-03T00:00:00Z", step: "setting up hosting" } })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    const line = screen.getByText("Stopped at setting up hosting. Nothing has moved for 5 minutes.");
+    const button = screen.getByRole("button", { name: "Ask the agent to fix it" });
+    expect(line.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(button);
+    await screen.findByText("Asked the agent in #finance. It'll post there.");
+    expect(askAgent).toHaveBeenCalledWith("a1", undefined);
+  });
+
+  it("a member who can't manage the app sees the stopped line but no Ask button", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Ask the agent to fix it" })).toBeNull();
   });
 
   it("a stuck building app shows only the stuck line, not the making-the-preview line", async () => {

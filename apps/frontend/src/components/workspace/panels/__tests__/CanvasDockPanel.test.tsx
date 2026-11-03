@@ -24,6 +24,13 @@ describe("CanvasDockPanel deep link", () => {
     expect(screen.queryByText(/isn't in this workspace/)).toBeNull();
   });
 
+  it("a stuck building app says where it stopped, like the list and the view", () => {
+    hook = { ...base, apps: [row({ state: "building", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })] };
+    panel("a1");
+    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes.")).toBeTruthy();
+    expect(screen.queryByText(/making the preview|Building the new version/)).toBeNull();
+  });
+
   it("a building app is named, not opened", () => {
     hook = { ...base, apps: [row({ state: "building" })] };
     panel("a1");

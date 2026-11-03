@@ -14,8 +14,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import itertools
 import json
 import logging
+import random
 import re
 import secrets as _random
 import uuid
@@ -1511,8 +1513,9 @@ async def status(owner_id: str, app_id: str) -> AppStatus:
     return view
 
 
-_DRIVE_EVERY_S = 10
-_DRIVE_STEPS = 15 * 60 // _DRIVE_EVERY_S  # 15 minutes
+# Stripe's Provisioning guide: poll after 1, 2, 4, 8, 16, 30 s, then every 30 s, for up to 15 minutes.
+_DRIVE_WAITS = (1, 2, 4, 8, 16, 30)
+_DRIVE_TOTAL_S = 15 * 60
 _DRIVE_STOP = {"ready", "live", "failed", "destroyed"}
 _drives: dict[str, asyncio.Task] = {}
 
@@ -1533,8 +1536,13 @@ def drive(owner_id: str, app_id: str) -> None:
 
 async def _drive(owner_id: str, app_id: str) -> None:
     # ponytail: in-process; a deploy that restarts the task drops the drive and the next read resumes it.
-    for _ in range(_DRIVE_STEPS):
-        await asyncio.sleep(_DRIVE_EVERY_S)
+    elapsed = 0.0
+    for i in itertools.count():
+        wait = _DRIVE_WAITS[min(i, len(_DRIVE_WAITS) - 1)]
+        elapsed += wait
+        if elapsed > _DRIVE_TOTAL_S:
+            return
+        await asyncio.sleep(wait * random.uniform(0.9, 1.1))  # ±10 % jitter
         try:
             view = await status(owner_id, app_id)
         except Exception:

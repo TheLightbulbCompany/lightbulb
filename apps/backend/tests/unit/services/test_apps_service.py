@@ -2783,12 +2783,36 @@ async def test_errors_ignores_a_publish_failure_older_than_a_healthy_preview(wor
 
 async def test_drive_steps_the_app_until_its_preview_is_up_and_once_per_app():
     states = iter(["provisioning", "building", "ready", "ready"])
+    sleeps: list[float] = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
     with (
-        patch.object(svc, "_DRIVE_EVERY_S", 0),
+        patch.object(svc.asyncio, "sleep", fake_sleep),
         patch.object(svc, "status", AsyncMock(side_effect=lambda o, a: {"state": next(states)})) as status,
     ):
         svc.drive(OWNER, "app_1")
         svc.drive(OWNER, "app_1")  # a second approval read while the first drive runs
         await asyncio.gather(*list(svc._drives.values()))
-    assert status.await_count == 3
+    assert status.await_count == 3  # stopped early on ready
+    assert len(sleeps) == 3
     assert svc._drives == {}
+
+
+async def test_drive_follows_stripes_schedule_with_jitter_and_stops_after_fifteen_minutes():
+    sleeps: list[float] = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    with (
+        patch.object(svc.asyncio, "sleep", fake_sleep),
+        patch.object(svc, "status", AsyncMock(return_value={"state": "provisioning"})) as status,
+    ):
+        await svc._drive(OWNER, "app_1")
+    for got, want in zip(sleeps, (1, 2, 4, 8, 16, 30, 30), strict=False):
+        assert want * 0.9 <= got <= want * 1.1
+    assert svc._DRIVE_WAITS == (1, 2, 4, 8, 16, 30)
+    assert len(sleeps) == status.await_count == 1 + (900 - 61) // 30 + 5  # 6 steps = 61 s, then every 30 s
+    assert sum(sleeps) <= 900 * 1.1

@@ -270,6 +270,13 @@ pub fn list() -> Vec<HolderInfo> {
 }
 
 pub fn list_in(dir: &Path) -> Vec<HolderInfo> {
+    list_with_probe(dir, |path| match hello(path) {
+        Some(info) => Ok(Some(info)),
+        None => UnixStream::connect(path).map(|_| None),
+    })
+}
+
+fn list_with_probe(dir: &Path, probe: impl Fn(&Path) -> std::io::Result<Option<HolderInfo>>) -> Vec<HolderInfo> {
     let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
     let mut found: Vec<(std::time::SystemTime, HolderInfo)> = vec![];
     for entry in entries.flatten() {
@@ -277,13 +284,16 @@ pub fn list_in(dir: &Path) -> Vec<HolderInfo> {
         if path.extension().is_none_or(|e| e != "sock") {
             continue;
         }
-        match hello(&path) {
-            Some(info) => found.push((entry.metadata().and_then(|m| m.created()).unwrap_or(std::time::UNIX_EPOCH), info)),
-            None if UnixStream::connect(&path).is_err() => {
+        match probe(&path) {
+            Ok(Some(info)) => found.push((entry.metadata().and_then(|m| m.created()).unwrap_or(std::time::UNIX_EPOCH), info)),
+            // Permission errors, timeouts and resource exhaustion say nothing about whether
+            // the holder is alive. Unlinking that socket strands its still-running terminal.
+            // Only an explicit refusal proves this published endpoint has no listener.
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
                 let _ = std::fs::remove_file(&path);
                 let _ = std::fs::remove_file(path.with_extension("thread"));
             }
-            None => {}
+            Ok(None) | Err(_) => {}
         }
     }
     found.sort_by_key(|(created, _)| *created);
@@ -500,6 +510,37 @@ pub fn stranded_at(holders: &[HolderInfo], login: u64, birth: impl Fn(u32) -> Op
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn holder_discovery_removes_only_explicitly_refused_endpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("12345678.sock");
+        let thread = socket.with_extension("thread");
+        std::fs::write(&socket, b"endpoint").unwrap();
+        std::fs::write(&thread, b"thread identity").unwrap();
+        assert!(list_with_probe(dir.path(), |_| Err(std::io::ErrorKind::ConnectionRefused.into())).is_empty());
+        assert!(!socket.exists());
+        assert!(!thread.exists());
+    }
+
+    #[test]
+    fn holder_discovery_keeps_endpoints_when_a_probe_is_denied_or_interrupted() {
+        use std::io::ErrorKind;
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::TimedOut, ErrorKind::Interrupted,
+            ErrorKind::WouldBlock, ErrorKind::NotFound, ErrorKind::Other] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("12345678.sock");
+            let thread = socket.with_extension("thread");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            std::fs::write(&thread, b"thread identity").unwrap();
+            assert!(list_with_probe(dir.path(), |_| Err(std::io::Error::from(kind))).is_empty());
+            assert!(socket.exists(), "{kind:?} is not proof that a holder died");
+            assert!(thread.exists(), "keep the holder's conversation binding");
+            let client = UnixStream::connect(&socket).unwrap();
+            let (_accepted, _) = listener.accept().unwrap();
+            drop(client);
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -731,8 +772,8 @@ mod tests {
             Some("22222222-2222-4222-8222-222222222222"),
             "a new thread in the same Codex (/new) replaces the old one"
         );
-        std::fs::write(&info.socket, b"").unwrap(); // a socket nobody listens on
-        assert!(list_in(dir.path()).is_empty());
+        std::fs::write(&info.socket, b"").unwrap();
+        assert!(list_with_probe(dir.path(), |_| Err(std::io::ErrorKind::ConnectionRefused.into())).is_empty());
         assert_eq!(thread(&info), None, "a dead holder's binding goes with its socket");
     }
 

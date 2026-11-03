@@ -36,7 +36,7 @@ async def agent_card(org: str, agent_id: str, request: Request):
     if name is None:
         raise HTTPException(404, detail={"code": "agent_not_found"})
     base = settings.PUBLIC_API_BASE.rstrip("/")
-    return MessageToDict(a2a_tasks.agent_card(org, agent_id, name, base, await oauth_endpoints()))
+    return MessageToDict(a2a_tasks.signed_agent_card(org, agent_id, name, base, await oauth_endpoints()))
 
 
 def _same_org(ctx: AuthContext, org: str) -> None:

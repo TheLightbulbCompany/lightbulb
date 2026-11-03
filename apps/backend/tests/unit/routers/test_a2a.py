@@ -1,7 +1,10 @@
 import asyncio
+import base64
+import json
 
 import pytest
 
+from core.config import settings
 from core.services import a2a_authority, a2a_tasks
 
 URI = "https://thelightbulb.company/a2a/ext/authority/v1"
@@ -58,9 +61,24 @@ def test_card_lists_required_extension(client, a2a_env):
     ext = c["capabilities"]["extensions"][0]
     assert r.status_code == 200 and ext == {"uri": URI, "required": True, "description": ext["description"]}
     assert c["name"] == "Friday" and c["capabilities"]["streaming"] is False
-    assert c["supportedInterfaces"][0]["protocolVersion"] == "1.0" and "signatures" not in c
+    assert c["supportedInterfaces"][0]["protocolVersion"] == "1.0"
+    [sig] = c["signatures"]
+    header = json.loads(base64.urlsafe_b64decode(sig["protected"] + "=" * (-len(sig["protected"]) % 4)))
+    assert header == {
+        "typ": "JOSE",
+        "alg": "EdDSA",
+        "kid": a2a_authority.network_proof.kid(),
+        "jku": f"{settings.PUBLIC_API_BASE.rstrip('/')}/a2a/keys.json",
+    }
     assert {s["id"] for s in c["skills"]} == {"message", "ask_session"}
     assert client.get("/a2a/org_test_456/nobody/agent-card.json").status_code == 404
+
+
+def test_card_without_issuer_key_is_unsigned_and_200(client, a2a_env, monkeypatch, caplog):
+    monkeypatch.setattr("core.config.settings.NETWORK_PROOF_KEY", "")
+    r = client.get("/a2a/org_test_456/friday/agent-card.json")
+    assert r.status_code == 200 and "signatures" not in r.json()
+    assert "unsigned" in caplog.text
 
 
 def test_keys_is_a_jwks_of_the_issuer_key(client, a2a_env):

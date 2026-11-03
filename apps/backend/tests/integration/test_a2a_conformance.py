@@ -30,3 +30,20 @@ async def test_official_client_fetches_card_and_sends_message(async_client_org_a
     assert resp.task.status.state == TaskState.TASK_STATE_WORKING
     task = await client.get_task(GetTaskRequest(id=resp.task.id), context=ctx)
     assert task.id == resp.task.id and task.metadata[URI]["rule"] == "r1"
+
+
+async def test_card_signature_verifies_against_keys_json_and_tamper_fails(async_client_org_admin, a2a_env, monkeypatch):  # noqa: F811
+    import jwt
+    from a2a.utils.signing import InvalidSignaturesError, create_signature_verifier
+
+    monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", "http://test")
+    card = await A2ACardResolver(async_client_org_admin, "http://test").get_agent_card(
+        "/a2a/org_test_456/friday/agent-card.json"
+    )
+    jwks = (await async_client_org_admin.get("/a2a/keys.json")).json()["keys"]
+    keys = {k["kid"]: jwt.PyJWK.from_dict(k) for k in jwks}
+    verify = create_signature_verifier(lambda kid, jku: keys[kid], ["EdDSA"])
+    verify(card)
+    card.name = "Mallory"
+    with pytest.raises(InvalidSignaturesError):
+        verify(card)

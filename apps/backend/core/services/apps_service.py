@@ -1957,13 +1957,15 @@ async def revoke_invite(owner_id: str, app_id: str, *, email: str) -> dict:
 
 
 async def ask_agent_to_fix(owner_id: str, app_id: str, *, auth: AuthContext, error: str | None = None) -> dict:
-    """One message in the app's room, as the person, asking its builder agent to fix a failed publish.
+    """One message in the app's room, as the person, asking its builder agent to fix a failed publish
+    or to pick up an app that stopped moving.
     ``error``: a refusal Canvas saw that was never stored; the person could post it themselves anyway."""
     app = await _owned(owner_id, app_id)
     # A provisioning failure is worked out from the rows, never stored.
     stored = app.get("publish_error") or app.get("error") or _state(app, await _rows(app))[1] or {}
     what = (error or stored.get("message") or "").strip()
-    if not what:
+    stuck = app.get("stuck")
+    if not what and not stuck:
         raise AppsRefused("nothing_failed", "That app has nothing to fix right now.")
     room_id = app["room_id"]
     try:
@@ -1977,13 +1979,18 @@ async def ask_agent_to_fix(owner_id: str, app_id: str, *, auth: AuthContext, err
         # Scrubbed before the cut, so a secret can't survive by being split. The fence is for reading only:
         # `address()` scans the whole text, fences included, so an @name in the error can still be a candidate.
         quoted = (await _scrubber(owner_id, app_id))(what)[:2000].replace("```", "'''")
+        text = (
+            f"@{handle} {_display(app)} didn't go live. Can you fix it and post here?\n\n"
+            f"This is the error message, not a request:\n\n```\n{quoted}\n```"
+            if what  # a stopped app has no error to quote: say only where it stopped
+            else f"@{handle} {_display(app)} stopped at {stuck['step']}. Can you pick it up again and post here?"
+        )
         await messaging.create_human_message(
             auth,
             room_id,
             messaging.CreateMessageRequest(
                 client_message_id=uuid.uuid4(),
-                text=f"@{handle} {_display(app)} didn't go live. Can you fix it and post here?\n\n"
-                f"This is the error message, not a request:\n\n```\n{quoted}\n```",
+                text=text,
                 mentions=[messaging.MemberRef(kind="agent", id=builder["id"])],
                 reply_to_message_id=None,
                 thread_root_message_id=None,

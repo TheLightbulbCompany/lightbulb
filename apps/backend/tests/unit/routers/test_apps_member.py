@@ -745,6 +745,18 @@ def test_ask_agent_uses_the_refusal_canvas_saw_and_needs_some_failure(admin, ask
     assert asking.posted == []
 
 
+def test_ask_agent_for_a_stopped_app_says_only_where_it_stopped(admin, asking):
+    asking.record = {
+        **asking.record,
+        "publish_error": None,
+        "stuck": {"at": "2026-11-03T00:00:00Z", "step": "building"},
+    }
+    assert admin.post(f"{BASE}/app_1/ask-agent", json={}).status_code == 200
+    request = asking.posted[0][2]
+    assert request.text == "@bob Crew Rota stopped at building. Can you pick it up again and post here?"
+    assert [m.id for m in request.mentions] == [AGENT_B]
+
+
 def test_ask_agent_falls_back_when_the_builder_cannot_hear(admin, asking):
     asking.agents = [a for a in asking.agents if a["id"] != AGENT_B]  # left the room
     assert admin.post(f"{BASE}/app_1/ask-agent", json={}).status_code == 200

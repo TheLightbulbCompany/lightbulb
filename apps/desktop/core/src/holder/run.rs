@@ -379,8 +379,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
         cmd.env("LANG", "en_US.UTF-8");
     }
     cmd.cwd(cwd);
-    // Bind under another name and rename into place: `list` deletes a `.sock` that refuses a
-    // connection, so the socket must never appear under its real name before it is listening.
+    // Bind under another name and rename into place so discovery sees the published socket
+    // only after it is listening.
     // It is published before the provider starts, so the provider's first hook finds the holder
     // (an early `hello` waits in the listen backlog until the event loop answers it).
     let binding = socket.with_extension("bind");

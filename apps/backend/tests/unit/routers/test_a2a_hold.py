@@ -192,7 +192,9 @@ def test_put_rules_assigns_the_revision_and_a_new_one_redecides_held_tasks(clien
     assert client.put(f"/a2a/{ORG}/rules", json={**RULES, "revision": "mine"}).json()["revision"] == rev  # ignored
     assert client.get(f"/a2a/{ORG}/rules").json()["revision"] == rev
     task_id = send(client)["id"]
-    assert client.put(f"/a2a/{ORG}/rules", json=RULES).json()["revision"] == rev  # same document: nothing canceled
+    assert (
+        client.put(f"/a2a/{ORG}/rules", json=RULES).json()["revision"] == rev
+    )  # same document: the hold is not re-decided
     assert get(client, task_id)["status"]["state"] == "TASK_STATE_AUTH_REQUIRED"
     changed = {**RULES, "holders": {"agent:*": [OWNER, "user_second"]}}
     new = client.put(f"/a2a/{ORG}/rules", json=changed).json()["revision"]

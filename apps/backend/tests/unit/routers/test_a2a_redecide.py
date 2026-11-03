@@ -184,3 +184,39 @@ def test_expired_hold_still_cancels_as_expired(client, app, env, monkeypatch):
         ("canceled", "expired"),
     ]
     env.send.assert_not_awaited()
+
+
+def test_hold_with_no_holders_is_rejected_no_holder(client, app, env):
+    task_id = send(client)["id"]
+    put_rules(client, {**RULES, "holders": {"agent:*": []}})
+    assert get(client, task_id)["status"]["state"] == "TASK_STATE_REJECTED"
+    assert [(x["decision"], x["rule"]) for x in records(client, task_id)] == [
+        ("hold", "default"),
+        ("deny_by_policy", "no_holder"),
+    ]
+    env.send.assert_not_awaited()
+
+
+def test_a_failed_redecide_does_not_strand_the_others_and_a_retried_put_repairs_it(client, app, env, monkeypatch):
+    ids = [send(client, text="one")["id"], send(client, text="two")["id"]]
+    real = a2a_repo.get_exception
+    calls = []
+
+    async def _flaky(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("table blip")
+        return await real(*a, **k)
+
+    monkeypatch.setattr(a2a_repo, "get_exception", _flaky)
+    changed = {**RULES, "holders": {"agent:*": [OWNER, SECOND]}}
+    r = client.put(f"/a2a/{ORG}/rules", json=changed)
+    assert r.status_code == 200
+    rev = r.json()["revision"]
+    revs = sorted(asyncio.run(a2a_repo.get_task(ORG, i))["policyRevision"] for i in ids)
+    assert revs.count(rev) == 1  # one re-decided, one left under the old revision
+    assert put_rules(client, changed) == rev  # the same document again
+    for i in ids:
+        row = asyncio.run(a2a_repo.get_task(ORG, i))
+        assert row["state"] == "held" and row["policyRevision"] == rev and row["holders"] == [OWNER, SECOND]
+        assert [x["decision"] for x in records(client, i)] == ["hold", "redecided"]

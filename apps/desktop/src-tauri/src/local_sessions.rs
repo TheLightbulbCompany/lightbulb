@@ -674,6 +674,10 @@ pub struct Command {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     approval_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    answers: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     decision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
@@ -821,6 +825,11 @@ impl Journal {
                 .text
                 .as_ref()
                 .is_some_and(|t| !t.trim().is_empty() && t.len() <= 8192),
+            "answer" => {
+                cmd.prompt_id.is_some() && cmd.input_digest.is_some() && cmd.answers.as_ref().is_some_and(Value::is_object)
+                    && cmd.text.is_none() && cmd.expected_turn_id.is_none() && cmd.approval_id.is_none()
+                    && cmd.decision.is_none() && cmd.mode.is_none()
+            }
             "approve" => {
                 cmd.approval_id.is_some()
                     && cmd.input_digest.is_some()
@@ -839,6 +848,7 @@ impl Journal {
             && cmd.deliver_by.saturating_sub(cmd.created_at) <= 30
             && cmd.state == "dispatched"
             && shaped
+            && (cmd.kind == "answer" || (cmd.prompt_id.is_none() && cmd.answers.is_none()))
             && cmd.command_seq > 0;
         // Order first: a crash between these writes must block the next send,
         // not leave an unknown native intent invisible to sequence fencing.
@@ -996,6 +1006,14 @@ struct PrivateCodexCompactionPayload {
     _replacement_history: Vec<serde::de::IgnoredAny>,
 }
 
+/// Claude's request cache is private model input, never a public transcript event.
+/// Unknown fields are validated and discarded by serde without allocating their values.
+#[derive(Deserialize)]
+struct PrivateClaudeRequest {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
 impl Cursor {
     fn read(&mut self, path: &Path, provider: &str) -> Result<Vec<Value>> {
         let mut file = secure_file(path)?;
@@ -1016,12 +1034,12 @@ impl Cursor {
                 .read_until(b'\n', &mut bytes)
                 .map_err(|e| e.to_string())?;
             if n > MAX_JSONL_ROW {
-                if provider != "codex" {
+                if !matches!(provider, "codex" | "claude") {
                     return Err("history-gap".into());
                 }
-                // A Codex compaction replaces private model context and never has
-                // public output. Scan only to a bounded newline, then validate the
-                // complete JSON without allocating its replacement history.
+                // Private Codex compactions and Claude request-cache blobs have no
+                // public output. Scan to a bounded newline, then validate all JSON
+                // without allocating the private payload. Public oversized rows fail.
                 let mut length = n;
                 let mut complete = bytes.ends_with(b"\n");
                 drop(bytes);
@@ -1040,18 +1058,22 @@ impl Cursor {
                 }
                 reader.seek(SeekFrom::Start(self.offset)).map_err(|_| "history-gap")?;
                 let mut parser = serde_json::Deserializer::from_reader((&mut reader).take(length as u64));
-                let compacted = PrivateCodexCompaction::deserialize(&mut parser)
-                    .map_err(|_| "history-gap")?;
+                let kind = if provider == "codex" {
+                    let compacted = PrivateCodexCompaction::deserialize(&mut parser).map_err(|_| "history-gap")?;
+                    if compacted.kind != "compacted" { return Err("history-gap".into()); }
+                    "compacted"
+                } else {
+                    let request = PrivateClaudeRequest::deserialize(&mut parser).map_err(|_| "history-gap")?;
+                    if request.kind != "api-request-blob" { return Err("history-gap".into()); }
+                    "api-request-blob"
+                };
                 parser.end().map_err(|_| "history-gap")?;
-                if compacted.kind != "compacted" {
-                    return Err("history-gap".into());
-                }
                 let current = secure_file(path)?.metadata().map_err(|_| "history-gap")?;
                 if current.ino() != meta.ino() || current.len() < self.offset + length as u64 {
                     return Err("history-gap".into());
                 }
                 reader.seek(SeekFrom::Start(self.offset + length as u64)).map_err(|_| "history-gap")?;
-                rows.push(json!({"type":"compacted"}));
+                rows.push(json!({"type":kind}));
                 self.offset += length as u64;
                 consumed += length;
                 continue;
@@ -1795,11 +1817,20 @@ struct WaitingPrompt {
 }
 
 impl WaitingPrompt {
+    fn replace_with(&self, other: &Self) -> bool {
+        // A late observational hook cannot revoke the question channel that is still held.
+        if self.held.is_some() && other.held.is_none() && self.tool.as_deref() == Some("AskUserQuestion")
+            && self.tool == other.tool && self.summary == other.summary { return false; }
+        !self.is(other)
+    }
+
     /// The same prompt reported twice, or a second prompt that reads alike?
     /// Tool-use ids settle it when both sides carry one -- the same command
     /// denied and asked again is two prompts. Otherwise the tool and what it is
     /// asking about do, which is what pairs a question's two hooks.
     fn is(&self, other: &Self) -> bool {
+        // A held report upgrades a passive hook, even when both describe one question.
+        if self.held.is_none() && other.held.is_some() { return false; }
         if let (Some(mine), Some(theirs)) = (&self.held, &other.held) {
             return mine.id == theirs.id;
         }
@@ -2489,6 +2520,28 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_question_answer_journal_preserves_once_only_and_expiry() {
+        let mut cmd = command();
+        cmd.kind = "answer".into(); cmd.text = None;
+        cmd.prompt_id = Some("appr-0123456789abcdef0123456789abcdef".into());
+        cmd.input_digest = Some("d".repeat(64));
+        cmd.answers = Some(json!({"Pick?":"A"}));
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal { dir:dir.path().into() };
+        assert!(journal.admit(&cmd,"g1",110).unwrap());
+        assert!(!journal.admit(&cmd,"g1",110).unwrap(), "same request never writes an answer twice");
+        let mut changed = cmd.clone(); changed.answers = Some(json!({"Pick?":"B"}));
+        assert!(journal.admit(&changed,"g1",110).is_err(), "retry cannot change an already admitted answer");
+        for (generation,now) in [("g2",110),("g1",130)] {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(!Journal {dir:dir.path().into()}.admit(&cmd,generation,now).unwrap());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        cmd.decision = Some("allow".into());
+        assert!(!Journal {dir:dir.path().into()}.admit(&cmd,"g1",110).unwrap(), "question answer cannot carry permission authority");
+    }
+
+    #[test]
     fn local_sessions_agent_wire_expiry_and_legacy_human_hash() {
         let human = command();
         let wire = serde_json::to_string(&human).unwrap();
@@ -2829,6 +2882,31 @@ mod tests {
         assert_eq!(cursor.read(&path, "codex").unwrap()[0]["type"], "compacted");
         assert_eq!(cursor.read(&path, "codex").unwrap(), vec![json!({"type":"compacted"})]);
         assert_eq!(cursor.read(&path, "codex").unwrap(), vec![public]);
+    }
+
+    #[test]
+    fn local_sessions_cursor_skips_valid_private_claude_request_blob_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let blob = json!({"type":"api-request-blob", "sessionId":"private", "hash":"cache",
+            "message":{"role":"user","content":[{"type":"tool_result","content":"x".repeat(MAX_JSONL_ROW)}]}});
+        let public = json!({"type":"assistant","message":{"content":[{"type":"text","text":"Still here"}]}});
+        fs::write(&path, format!("{blob}\n{public}\n")).unwrap();
+        let mut cursor = Cursor::default();
+        let rows = cursor.read(&path, "claude").unwrap();
+        assert_eq!(rows, vec![json!({"type":"api-request-blob"})]);
+        assert!(normalize_public_message("claude", "test", &rows[0]).unwrap().is_empty());
+        assert_eq!(cursor.read(&path, "claude").unwrap(), vec![public]);
+        for row in [
+            format!("{{\"type\":\"assistant\",\"message\":\"{}\"}}\n", "x".repeat(MAX_JSONL_ROW)),
+            format!("{{\"type\":\"api-request-blob\",\"message\":\"{}\",}}\n", "x".repeat(MAX_JSONL_ROW)),
+            blob.to_string(),
+        ] {
+            fs::write(&path, row).unwrap();
+            let mut cursor = Cursor::default();
+            assert_eq!(cursor.read(&path, "claude").unwrap_err(), "history-gap");
+            assert_eq!(cursor.offset, 0);
+        }
     }
 
     #[test]

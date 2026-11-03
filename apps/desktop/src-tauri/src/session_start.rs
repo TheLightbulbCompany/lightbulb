@@ -51,6 +51,9 @@ const CODEX_EFFORTS: &[(&str, &str)] = &[
 ];
 const MAX_PROMPT: usize = 8192;
 
+/// Internet is a Lightbulb session default, independent of filesystem and approval mode.
+pub(crate) const CODEX_INTERNET: &str = "sandbox_workspace_write.network_access=true";
+
 type Failure = (&'static str, String);
 
 #[derive(Deserialize)]
@@ -210,6 +213,7 @@ fn argv(program: &Path, start: &Start, daemon: Option<&Path>) -> Vec<String> {
         // Explicitly override a Mac's global config: a missing selection must
         // never inherit approval_policy=never + danger-full-access (YOLO mode).
         argv.extend(["--sandbox".into(), "workspace-write".into()]);
+        argv.extend(["-c".into(), CODEX_INTERNET.into()]);
         if start.mode.as_deref() != Some("auto-review") {
             argv.extend(["--ask-for-approval".into(), "on-request".into()]);
         } else {
@@ -319,7 +323,7 @@ fn open_argv(program: &Path, tool: &str, conversation: &str) -> Vec<String> {
     if tool == "codex" {
         // Root options before the subcommand, as resume.rs starts Codex.
         vec![program, "--no-daemon".into(), "--sandbox".into(), "workspace-write".into(),
-            "--ask-for-approval".into(), "on-request".into(), "fork".into(), conversation.into()]
+            "-c".into(), CODEX_INTERNET.into(), "--ask-for-approval".into(), "on-request".into(), "fork".into(), conversation.into()]
     } else {
         vec![program, "--resume".into(), conversation.into(), "--fork-session".into(),
             "--permission-mode".into(), "manual".into()]
@@ -491,7 +495,7 @@ pub(crate) fn inside_approved(folder: &Path, approved: &[PathBuf]) -> bool {
 fn cli_argv(program: &Path, tool: &str, args: &[String]) -> Vec<String> {
     let mut argv = vec![program.to_string_lossy().into_owned()];
     if tool == "codex" {
-        argv.push("--no-daemon".into());
+        argv.extend(["--no-daemon".into(), "-c".into(), CODEX_INTERNET.into()]);
     }
     argv.extend(args.iter().cloned());
     argv
@@ -607,6 +611,7 @@ mod tests {
                 "--no-daemon",
                 "--sandbox",
                 "workspace-write",
+                "-c", "sandbox_workspace_write.network_access=true",
                 "--ask-for-approval",
                 "on-request"
             ]
@@ -624,7 +629,7 @@ mod tests {
         assert_eq!(
             held,
             ["/bin/codex", "--remote", "unix://", "-C", "/work/app", "-c", "check_for_update_on_startup=false",
-                "-m", "gpt-6-luna", "--sandbox", "workspace-write", "--ask-for-approval", "on-request",
+                "-m", "gpt-6-luna", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", "--ask-for-approval", "on-request",
                 "-c", "model_reasoning_effort=\"high\"", "--", "fix it"]
         );
         assert!(crate::local_sessions::codex::on_daemon(&held));
@@ -632,6 +637,18 @@ mod tests {
         // Claude has no daemon form.
         assert_eq!(argv(Path::new("/bin/claude"), &start("claude", None, None, ""), Some(Path::new("/w"))),
             ["/bin/claude", "--permission-mode", "manual"]);
+    }
+
+    #[test]
+    fn session_start_codex_has_internet_without_full_filesystem_access() {
+        for daemon in [None, Some(Path::new("/work/app"))] {
+            let args = argv(Path::new("/bin/codex"), &start("codex", None, None, ""), daemon);
+            assert!(args.iter().any(|arg| arg == "sandbox_workspace_write.network_access=true"));
+            assert!(args.windows(2).any(|pair| pair == ["--sandbox", "workspace-write"]));
+            assert!(!args.iter().any(|arg| arg == "danger-full-access"));
+        }
+        let args = cli_argv(Path::new("/bin/codex"), "codex", &[]);
+        assert!(args.iter().any(|arg| arg == "sandbox_workspace_write.network_access=true"));
     }
 
     #[test]
@@ -643,6 +660,7 @@ mod tests {
                 "--no-daemon",
                 "--sandbox",
                 "workspace-write",
+                "-c", "sandbox_workspace_write.network_access=true",
                 "--ask-for-approval",
                 "on-request"
             ]
@@ -662,6 +680,7 @@ mod tests {
                 "--no-daemon",
                 "--sandbox",
                 "workspace-write",
+                "-c", "sandbox_workspace_write.network_access=true",
                 "--ask-for-approval",
                 "on-request",
                 "-c",
@@ -762,7 +781,7 @@ mod tests {
         assert_eq!(open_argv(Path::new("/bin/claude"), "claude", id),
             ["/bin/claude", "--resume", id, "--fork-session", "--permission-mode", "manual"]);
         assert_eq!(open_argv(Path::new("/bin/codex"), "codex", id),
-            ["/bin/codex", "--no-daemon", "--sandbox", "workspace-write", "--ask-for-approval", "on-request", "fork", id]);
+            ["/bin/codex", "--no-daemon", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", "--ask-for-approval", "on-request", "fork", id]);
         let home = tempfile::tempdir().unwrap();
         let start = "6f1c1d52-0f7b-4c1e-9d38-2a6d8f3e7b10";
         for bad in [
@@ -788,6 +807,6 @@ mod tests {
         let args: Vec<String> = ["--resume", "abc", "--dangerously-skip-permissions"].iter().map(|s| s.to_string()).collect();
         assert_eq!(cli_argv(Path::new("/bin/claude"), "claude", &args), ["/bin/claude", "--resume", "abc", "--dangerously-skip-permissions"]);
         // Codex: only the plumbing the start link needs, then the person's words.
-        assert_eq!(cli_argv(Path::new("/bin/codex"), "codex", &args[..2]), ["/bin/codex", "--no-daemon", "--resume", "abc"]);
+        assert_eq!(cli_argv(Path::new("/bin/codex"), "codex", &args[..2]), ["/bin/codex", "--no-daemon", "-c", "sandbox_workspace_write.network_access=true", "--resume", "abc"]);
     }
 }

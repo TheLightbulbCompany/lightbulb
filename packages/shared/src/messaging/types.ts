@@ -507,6 +507,7 @@ export interface LocalSession {
   pendingPickupIds?: Record<string, string>;
   /** A permission prompt the owner's Mac holds open for a remote answer. */
   pendingApproval?: LocalSessionPendingApproval;
+  pendingQuestion?: LocalSessionPendingQuestion;
   /** As the harness wrote it. Read-only: neither CLI takes a change from outside its terminal. */
   model?: string;
   permissionMode?: string;
@@ -584,6 +585,13 @@ export interface LocalSessionUsage { inputTokens: number; outputTokens: number; 
 
 /** Claude's session mode switches; "session" is Codex's "allow for this conversation"; "similar" applies the tool's own suggested allow rule for the rest of the session. */
 export type LocalSessionApprovalMode = "acceptEdits" | "plan" | "default" | "session" | "similar";
+/** An interactive question held by the provider, separate from tool permissions. */
+export interface LocalSessionPendingQuestion {
+  promptId: string;
+  inputDigest: string;
+  questions: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean }[];
+}
+
 export interface LocalSessionPendingApproval {
   approvalId: string;
   tool: string;
@@ -604,7 +612,7 @@ export interface LocalSessionPendingApproval {
 
 export interface LocalSessionAuditEntry {
   at: string;
-  action: "native_send_requested" | "native_send_approved" | "native_send_denied" | "native_send_cancelled" | "send" | "interrupt" | "end" | "approve" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
+  action: "native_send_requested" | "native_send_approved" | "native_send_denied" | "native_send_cancelled" | "send" | "interrupt" | "end" | "approve" | "answer" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
     | "share_link_audience" | "session_copied"
     | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired"
     | "pickup_requested" | "pickup_request_declined" | "join_requested" | "join_allowed" | "join_declined" | "join_allow_undone" | "ask_to_join_on" | "ask_to_join_off" | "sender_removed"
@@ -681,6 +689,7 @@ export type LocalSessionCommand = {
   expectedGeneration: string;
   expectedTurnId?: string | null;
 } & ({ kind: "send"; text: string } | { kind: "interrupt"; text?: never } | { kind: "end"; text?: never; expectedTurnId?: never }
+  | { kind: "answer"; promptId: string; inputDigest: string; answers: Record<string, string>; text?: never; expectedTurnId?: never }
   | { kind: "approve"; approvalId: string; decision: "allow" | "deny"; inputDigest: string; mode?: LocalSessionApprovalMode; text?: string;
       /** Allow only: SHA-256 of canonicalJson of the input this viewer was shown (a `full` approval). */
       shownDigest?: string });
@@ -688,7 +697,7 @@ export type LocalSessionCommand = {
 export type LocalSessionCommandReceipt = {
   requestId: string;
   expectedGeneration: string;
-  kind: "send" | "interrupt" | "approve" | "end";
+  kind: "send" | "interrupt" | "approve" | "answer" | "end";
   text: string | null;
   expectedTurnId: string | null;
   sessionId: string;

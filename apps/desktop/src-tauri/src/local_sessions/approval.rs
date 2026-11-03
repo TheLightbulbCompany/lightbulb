@@ -12,8 +12,11 @@
 //! - The decision is built here, from a closed set: allow, allow + a
 //!   session-scoped mode Claude itself suggested, allow + the allow rule Claude
 //!   itself suggested ("similar"), pinned to this session, or deny. Never
-//!   `updatedInput`, never a persistent rule -- a remote approver cannot widen
+//!   arbitrary `updatedInput`, never a persistent rule -- a remote approver cannot widen
 //!   what runs beyond what Claude offered, nor past this session.
+//! - AskUserQuestion has a separate answer contract: only answers are accepted,
+//!   and the hook appends them to its original, digest-bound questions. Other
+//!   tools can never receive rewritten input through this channel.
 //! - A call can be approved remotely only when the approver saw all of it.
 //!   `exact` (the legacy flag old clients gate on, never widened) says the
 //!   one-line summary IS the call. `full` says the shipped input IS the raw
@@ -78,17 +81,85 @@ pub(crate) struct Answer {
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answers: Option<Value>,
 }
 
-/// Only a real permission prompt is held. A question (`AskUserQuestion`) is
-/// answered with words, not allow/deny, and stays in the terminal.
+/// Hold permission prompts and complete questions through separate answer contracts.
 pub(crate) fn holdable(provider: &str, stdin: &Value) -> bool {
     provider == "claude"
         && stdin["hook_event_name"] == "PermissionRequest"
         && stdin["tool_name"]
             .as_str()
-            .is_some_and(|t| !t.is_empty() && t != "AskUserQuestion")
+            .is_some_and(|t| !t.is_empty() && (t != "AskUserQuestion" || question_relayable(&stdin["tool_input"])))
         && stdin["session_id"].as_str().is_some_and(|s| !s.is_empty())
+}
+
+/// Only bounded, complete Claude questions travel through the answer channel.
+/// Duplicate question text is ambiguous because Claude's answers are keyed by that text.
+pub(crate) fn question_input(input: &Value) -> bool {
+    let Some(questions) = input["questions"].as_array() else { return false };
+    if questions.is_empty() || questions.len() > 4 || !visible(input) { return false; }
+    let mut texts = std::collections::HashSet::new();
+    questions.iter().all(|q| {
+        if !q.as_object().is_some_and(|o| o.keys().all(|k| matches!(k.as_str(), "question" | "header" | "options" | "multiSelect")))
+            || !q.get("header").is_none_or(|h| h.as_str().is_some_and(|s| !s.trim().is_empty() && s.len() <= 2000)) { return false; }
+        let Some(text) = q["question"].as_str().filter(|s| !s.trim().is_empty() && s.len() <= 2000) else { return false };
+        let Some(options) = q["options"].as_array().filter(|o| !o.is_empty() && o.len() <= 9) else { return false };
+        let mut labels = std::collections::HashSet::new();
+        texts.insert(text) && q.get("multiSelect").is_none_or(Value::is_boolean) && options.iter().all(|o| {
+            o.as_object().is_some_and(|o| o.keys().all(|k| matches!(k.as_str(), "label" | "description")))
+                && o["label"].as_str().is_some_and(|s| !s.trim().is_empty() && s.len() <= 500 && labels.insert(s))
+                && o.get("description").is_none_or(|d| d.as_str().is_some_and(|s| s.len() <= 2000 && (s.is_empty() || !s.trim().is_empty())))
+        })
+    }) && serde_json::to_vec(input).is_ok_and(|b| b.len() <= MAX_APPROVAL_INPUT)
+        && question_answer_budget(questions)
+}
+
+/// Admission must leave enough answer space for every predefined selection and
+/// at least a small custom answer. Question text is also serialized as map keys.
+fn question_answer_budget(questions: &[Value]) -> bool {
+    let mut worst = serde_json::Map::new();
+    for q in questions {
+        let labels: Vec<&str> = q["options"].as_array().unwrap().iter()
+            .map(|o| o["label"].as_str().unwrap()).collect();
+        let selectable = if q["multiSelect"] == true {
+            labels.join(", ")
+        } else {
+            labels.into_iter().max_by_key(|s| serde_json::to_vec(s).unwrap().len()).unwrap().to_owned()
+        };
+        let custom = "x".repeat(128);
+        let answer = if serde_json::to_vec(&selectable).unwrap().len() > serde_json::to_vec(&custom).unwrap().len() {
+            selectable
+        } else { custom };
+        worst.insert(q["question"].as_str().unwrap().to_owned(), json!(answer));
+    }
+    serde_json::to_vec(&worst).is_ok_and(|b| b.len() <= 2000)
+}
+
+/// A question has no deny-only mode: if privacy/size filtering changes its input,
+/// leave the terminal prompt alone instead of holding a question the app cannot show.
+pub(crate) fn question_relayable(input: &Value) -> bool {
+    question_input(input) && shown_input("AskUserQuestion", input).1
+}
+
+/// Answers may contain custom text, but can never replace questions or other tool arguments.
+pub(crate) fn question_answers(input: &Value, answers: &Value) -> bool {
+    if !question_input(input) { return false; }
+    let Some(answers) = answers.as_object() else { return false };
+    let questions = input["questions"].as_array().unwrap();
+    answers.len() == questions.len() && questions.iter().all(|q| {
+        answers.get(q["question"].as_str().unwrap()).and_then(Value::as_str)
+            .is_some_and(|a| !a.trim().is_empty() && a.len() <= 2000 && !a.chars().any(hidden))
+    }) && serde_json::to_vec(answers).is_ok_and(|b| b.len() <= 2000)
+}
+
+fn question_decision(input: &Value, answer: &Answer) -> Option<Value> {
+    let answers = answer.answers.as_ref()?;
+    if answer.decision != "answer" || answer.mode.is_some() || answer.message.is_some() || !question_answers(input, answers) { return None; }
+    let mut updated = input.clone();
+    updated["answers"] = answers.clone();
+    Some(json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":updated}}}))
 }
 
 pub(crate) fn digest(input: &Value) -> String {
@@ -315,6 +386,7 @@ pub(crate) fn valid_id(id: &str) -> bool {
 /// The hook's stdout document for one delivered answer. `similar` is the rule the hook's own
 /// stdin suggested (`similar()`), never anything the app sent.
 pub(crate) fn decision(answer: &Answer, similar: Option<&Value>) -> Option<Value> {
+    if answer.answers.is_some() { return None; }
     let decision = match answer.decision.as_str() {
         "allow" => {
             let mut d = json!({"behavior":"allow"});
@@ -415,6 +487,7 @@ pub(crate) fn hold(
         && private_write(&private_path, &private_payload).is_ok();
     let private_send = native_send && written;
     let _private_guard = Remove(private_path);
+    if tool == "AskUserQuestion" && (!full || !written || !question_input(&stdin["tool_input"])) { return; }
     let similar = similar(tool, &stdin["permission_suggestions"]);
     let mut modes = modes(tool, &stdin["permission_suggestions"]);
     if similar.is_some() {
@@ -481,7 +554,13 @@ pub(crate) fn hold(
         {
             continue;
         }
-        let Some(document) = decision(&answer, similar.as_ref().map(|(rules, _)| rules)) else {
+        let document = if tool == "AskUserQuestion" {
+            if !held.full { continue; }
+            question_decision(&stdin["tool_input"], &answer)
+        } else {
+            decision(&answer, similar.as_ref().map(|(rules, _)| rules))
+        };
+        let Some(document) = document else {
             continue;
         };
         // The one write this process ever makes to Claude's control channel.
@@ -519,7 +598,94 @@ mod tests {
             decision: decision.into(),
             mode: None,
             message: None,
+            answers: None,
         }
+    }
+
+    fn question() -> Value {
+        json!({"questions":[{"question":"Which framework?","header":"Framework","options":[{"label":"React","description":"Components"},{"label":"Vue"}],"multiSelect":false}]})
+    }
+
+    #[test]
+    fn local_sessions_question_contract_is_narrow_and_preserves_original_input() {
+        let input = question();
+        let mut a = answer("answer");
+        a.answers = Some(json!({"Which framework?":"React"}));
+        let document = question_decision(&input, &a).unwrap();
+        let updated = &document["hookSpecificOutput"]["decision"]["updatedInput"];
+        assert_eq!(updated["questions"], input["questions"]);
+        assert_eq!(updated["answers"], a.answers.clone().unwrap());
+        assert_eq!(document["hookSpecificOutput"]["hookEventName"], "PermissionRequest");
+        assert!(decision(&a, None).is_none(), "ordinary permissions never accept answers");
+        assert!(question_decision(&input, &answer("allow")).is_none(), "allow alone never answers a question");
+        assert!(serde_json::from_value::<Answer>(json!({"approvalId":ID,"inputDigest":"d".repeat(64),"decision":"answer","updatedInput":{"command":"evil"}})).is_err());
+        assert!(!question_answers(&input, &json!({"Other question":"React"})));
+        assert!(!question_answers(&input, &json!({"Which framework?":"React","Extra":"x"})));
+        assert!(!question_answers(&input, &json!({"Which framework?":"é".repeat(1000)})));
+        a.mode = Some("acceptEdits".into());
+        assert!(question_decision(&input, &a).is_none());
+        let mut duplicate = input.clone();
+        duplicate["questions"].as_array_mut().unwrap().push(input["questions"][0].clone());
+        assert!(!question_input(&duplicate));
+        let mut optional = input.clone();
+        optional["questions"][0].as_object_mut().unwrap().remove("multiSelect");
+        assert!(question_input(&optional), "omitted multiSelect means single select");
+        optional["questions"][0]["multiSelect"] = json!("false");
+        assert!(!question_input(&optional));
+        let hook = json!({"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","session_id":"s","tool_input":input});
+        assert!(holdable("claude", &hook));
+        let mut passive = hook; passive["hook_event_name"] = json!("PreToolUse");
+        assert!(!holdable("claude", &passive), "passive discovery cannot block the interactive picker");
+    }
+
+    #[test]
+    fn local_sessions_question_admission_reserves_answer_keys_selections_and_custom_budget() {
+        assert!(question_relayable(&question()));
+        let long_keys = json!({"questions":(0..4).map(|n| json!({"question":format!("{n}{}","q".repeat(549)),"options":[{"label":"A"},{"label":"B"}]})).collect::<Vec<_>>()});
+        assert!(!question_input(&long_keys), "four 550-byte question keys cannot fit an answer");
+        let multi = json!({"questions":[{"question":"Pick?","multiSelect":true,"options":(0..9).map(|n| json!({"label":format!("{n}{}","a".repeat(259))})).collect::<Vec<_>>()}]});
+        assert!(!question_input(&multi), "all predefined multi-select labels must fit together");
+        let escaped = json!({"questions":(0..4).map(|n| json!({"question":format!("Pick {n}?"),"options":[{"label":"\\".repeat(300)}]})).collect::<Vec<_>>()});
+        assert!(!question_input(&escaped), "answer admission counts JSON escaping, not raw label bytes");
+        let tight_custom = json!({"questions":(0..4).map(|n| json!({"question":format!("{n}{}","q".repeat(399)),"options":[{"label":"A"}]})).collect::<Vec<_>>()});
+        assert!(!question_input(&tight_custom), "short predefined options must still leave custom-answer space");
+        for input in [long_keys,multi,escaped,tight_custom] {
+            assert!(!holdable("claude", &json!({"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","session_id":"s","tool_input":input})));
+        }
+    }
+
+    #[test]
+    fn local_sessions_question_unrepresentable_inputs_never_enter_the_hold() {
+        let mut secret = question();
+        secret["questions"][0]["question"] = json!("Which API_KEY should be used?");
+        assert!(question_input(&secret), "question schema alone is insufficient");
+        assert!(!shown_input("AskUserQuestion", &secret).1);
+        assert!(!question_relayable(&secret), "privacy filtering must leave the terminal in charge");
+        let mut unicode = question();
+        for option in unicode["questions"][0]["options"].as_array_mut().unwrap() {
+            option["description"] = json!("é".repeat(1000));
+        }
+        assert!(question_input(&unicode));
+        assert!(!shown_input("AskUserQuestion", &unicode).1, "ASCII wire expansion exceeds the relay bound");
+        for input in [secret,unicode] {
+            let hook = json!({"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","session_id":"s","tool_input":input});
+            assert!(!holdable("claude", &hook));
+        }
+        assert!(holdable("claude", &json!({"hook_event_name":"PermissionRequest","tool_name":"Bash","session_id":"s","tool_input":{"command":"echo API_KEY"}})), "ordinary permissions keep deny-only holds");
+        for header in [json!(42),json!("   "),json!(null)] {
+            let mut input = question(); input["questions"][0]["header"] = header;
+            assert!(!question_relayable(&input));
+        }
+        let mut extra = question(); extra["questions"][0]["unknown"] = json!(true);
+        assert!(!question_relayable(&extra));
+        let mut extra = question(); extra["questions"][0]["options"][0]["unknown"] = json!(true);
+        assert!(!question_relayable(&extra));
+        for description in [json!(42),json!("  "),json!(null)] {
+            let mut input = question(); input["questions"][0]["options"][0]["description"] = description;
+            assert!(!question_relayable(&input));
+        }
+        let mut empty = question(); empty["questions"][0]["options"][0]["description"] = json!("");
+        assert!(question_relayable(&empty));
     }
 
     #[test]
@@ -951,6 +1117,73 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&out).unwrap(),
             json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}})
+        );
+        assert!(
+            !Path::new(&held.reply).exists(),
+            "the hook removes its channel"
+        );
+        assert!(
+            !deliver(&held.reply, Some(&right)),
+            "nobody holds an answered prompt"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_sessions_question_hook_writes_one_bound_answer_and_closes() {
+        let dir = PathBuf::from(format!(
+            "/private/tmp/lbt-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        let wake = dir.join("wake.sock");
+        let app = UnixDatagram::bind(&wake).unwrap();
+        let (mut reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let stdin = json!({"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"AskUserQuestion",
+            "tool_input":question(),"permission_suggestions":[]});
+        let fd = {
+            use std::os::unix::io::IntoRawFd;
+            writer.into_raw_fd()
+        };
+        let wake_for_hook = wake.clone();
+        let stdin_for_hook = stdin.clone();
+        let hook = std::thread::spawn(move || hold(&wake_for_hook, "claude", &stdin_for_hook, fd));
+        let mut buf = [0u8; 4096];
+        let n = app.recv(&mut buf).unwrap();
+        let event = lifecycle::parse_datagram(&buf[..n]).unwrap();
+        let held = event.held.clone().expect("the prompt is announced as held");
+        assert!(reply_allowed(&dir, &held.reply, &held.id));
+        assert_eq!(held.input_digest, digest(&question()));
+        assert!(acknowledge(&held.reply, &held.id));
+        // Noise the hook must ignore: a probe, a wrong id, a wrong digest.
+        assert!(deliver(&held.reply, None));
+        let wrong = Answer {
+            approval_id: ID.into(),
+            input_digest: held.input_digest.clone(),
+            answers: Some(json!({"Which framework?":"React"})),
+            ..answer("answer")
+        };
+        assert!(deliver(&held.reply, Some(&wrong)));
+        let stale = Answer {
+            approval_id: held.id.clone(),
+            answers: Some(json!({"Which framework?":"React"})),
+            ..answer("answer")
+        };
+        assert!(deliver(&held.reply, Some(&stale)));
+        let right = Answer {
+            approval_id: held.id.clone(),
+            input_digest: held.input_digest.clone(),
+            answers: Some(json!({"Which framework?":"React"})),
+            ..answer("answer")
+        };
+        assert!(deliver(&held.reply, Some(&right)));
+        hook.join().unwrap();
+        let mut out = String::new();
+        std::io::Read::read_to_string(&mut reader, &mut out).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&out).unwrap(),
+            question_decision(&question(), &right).unwrap()
         );
         assert!(
             !Path::new(&held.reply).exists(),

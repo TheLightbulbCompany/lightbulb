@@ -174,7 +174,7 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
  * running, what it changed, who may do what with it. The session pane keeps the
  * transcript and the prompt; this is where the rest lives.
  */
-export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, session, ownerName, own, client, events, onMessageOwner, nameOf }: {
+export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, session, ownerName, own, client, events, onMessageOwner, nameOf, terminalHint }: {
   open: boolean; onOpenChange: (open: boolean) => void;
   /** Once closed: put focus back on whatever opened it. Nothing here is a Radix trigger, so Radix cannot. */
   onClosed?: () => void;
@@ -182,6 +182,7 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
   session: LocalSession; ownerName: string; own: boolean; client: Client;
   /** The session's own loaded events, for its plan and its changes. */
   events: readonly LocalSessionEvent[];
+  terminalHint?: ReactNode;
   onMessageOwner?: () => void;
   /** A workspace member's name, for the people the owner let in. */
   nameOf?: (userId: string) => string;
@@ -210,7 +211,7 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
             ? <SessionOverview expanded events={events} git={session.changes} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />} />
             : <p className="text-muted-foreground">No plan or file changes yet.</p>}
         </TabsContent>
-        <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} switches={switches} nameOf={nameOf ?? (() => "A teammate")} /></TabsContent>
+        <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} switches={switches} nameOf={nameOf ?? (() => "A teammate")} />{terminalHint}</TabsContent>
         <TabsContent value="work" className="session-details-tab"><LocalSessionWork sessionId={session.sessionId} /></TabsContent>
       </Tabs>
       {/* One link to copy, under Access ("Who can see this"): a workspace member who opens it lands in the app. */}

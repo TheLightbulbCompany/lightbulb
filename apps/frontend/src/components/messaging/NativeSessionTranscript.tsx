@@ -36,9 +36,12 @@ function ToolRow({ provider, row, seq, subagentName }: { provider: Provider; row
   const { status, preview, full, numbered, summary, more, showOutput, truncated } = toolRowView(row);
   const isDiff = numbered.length > 0;
   const withMarker = (text: string) => (truncated && text ? `${text}\n(truncated)` : text);
-  const shown = open ? full || preview : preview;
+  // Structured tool results are implementation details, often one enormous JSON line.
+  // Keep the activity visible, with the payload available on demand.
+  const structured = /^\s*[\[{]/.test(preview || full);
+  const shown = open ? full || preview : structured ? "" : preview;
   const hidden = isDiff ? Math.max(0, numbered.length - DIFF_LINES) : more;
-  const canExpand = hidden > 0 || (!isDiff && showOutput);
+  const canExpand = hidden > 0 || (!isDiff && (showOutput || structured));
   if (row.call.tool?.name === "AgentReport") {
     // Claude Code's collapsed `› Message from @agent (expand)`.
     return <div className="native-session-row" aria-label={`Native event ${seq}`} role="article">

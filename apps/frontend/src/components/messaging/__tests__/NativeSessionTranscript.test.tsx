@@ -14,6 +14,16 @@ describe("NativeSessionTranscript", () => {
     ev(4, { kind: "thinking", role: "assistant", text: "" }),
     ev(5, { kind: "text", role: "assistant", text: "All good." }),
   ];
+  it("keeps raw structured tool results behind a details button", () => {
+    const output = '{"message":"Successfully stopped task","command":"a very long internal command"}';
+    render(<NativeSessionTranscript provider="claude" busy={false} ownerName="Alice" participants={people} events={[
+      ev(1, { kind: "tool", role: "assistant", text: "Stop task", itemId: "stop1", tool: { name: "TaskStop", status: "running", input: { task_id: "task1" } } }),
+      ev(2, { kind: "tool", role: "tool", parentId: "stop1", text: output, tool: { name: "result", status: "done", result: output } }),
+    ]} />);
+    expect(screen.queryByText(output, { exact: false })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "show output" }));
+    expect(screen.getByText(output, { exact: false })).toBeInTheDocument();
+  });
   it("rehydrates offline follow-ups in the same prompt style after a page reload", () => {
     render(<NativeSessionTranscript provider="claude" events={[]} busy={false} ownerName="Prasiddha" participants={people}
       outbox={[{ requestId: "saved", text: "resume when ready", chip: { label: "Queued for session", tone: "pending", detail: null } }]} />);

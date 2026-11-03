@@ -26,6 +26,7 @@ export type AppRow = {
   created_by_name?: string;
   agent_name?: string;
   can_open: boolean;
+  stuck?: { at: string; step: string } | null;
   can_publish?: boolean; // mock (R17): plan 1 computes it
   error?: { message: string } | null; // the last build/publish failure, when the backend reports one
   publish_failed?: boolean; // a live app's state stays "live" through a failed publish

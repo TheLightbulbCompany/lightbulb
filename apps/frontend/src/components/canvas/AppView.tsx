@@ -132,7 +132,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const publishing = (phase.k === "publishing" || phase.k === "slow") && !publishCtl.done && !publishCtl.failed;
   // A live app keeps serving through a failed publish: the row says "live", so it is named here.
   const liveAppFailed = app.state !== "failed" && app.publish_failed === true && phase.k === "idle";
-  const askable = canManage && !publishing && (app.state === "failed" || app.publish_failed === true || phase.k === "failed");
+  const askable = canManage && !publishing && (!!app.stuck || app.state === "failed" || app.publish_failed === true || phase.k === "failed");
 
   return <div className="app-view">
     <header className="app-view__bar">
@@ -155,7 +155,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
     {liveAppFailed && <div className="canvas__notice"><Problem raw={app.error?.message ?? null}>The last version didn&apos;t go live. People still see the version before it.</Problem></div>}
     {putBackLine?.id === app.app_id && <p role="status" className="canvas__notice">{putBackLine.text}</p>}
     {askable && <AskAgent key={app.app_id} app={app} error={phase.k === "failed" ? phase.msg : undefined} />}
-    {t === "preview" && <p className="canvas__notice">You&apos;re looking at the preview. Only you and {room} see it until it&apos;s published{canManage ? ": press Publish, or say “ship it” in the room" : ""}. The data here is examples; the live app starts empty.</p>}
+    {!app.stuck && t === "preview" && <p className="canvas__notice">You&apos;re looking at the preview. Only you and {room} see it until it&apos;s published{canManage ? ": press Publish, or say “ship it” in the room" : ""}. The data here is examples; the live app starts empty.</p>}
     {!canManage && <p className="canvas__notice">{app.open_to === "room" ? `Open to ${room}` : `Open to ${whoName}`}. Only {app.created_by_name ?? "the person who asked for it"} or a workspace admin can change who can open it.</p>}
     {settingsOpen && <AppSettings app={app} publishCtl={publishCtl} onClose={() => setSettingsOpen(false)} onRemoved={onBack} />}
     {tabError && <div className="canvas__notice"><Problem raw={tabError.raw}>{dn} didn&apos;t open. Try again in a moment.</Problem></div>}

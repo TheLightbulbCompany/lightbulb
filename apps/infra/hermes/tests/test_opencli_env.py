@@ -70,3 +70,38 @@ def test_plain_terminal_call_is_untouched(refreshed):
     browser_control._TURN.set({"runId": "r"})
     assert browser_control.pre_tool_call("terminal", {"command": "ls"}) is None
     assert refreshed == []
+
+
+def test_room_turn_overlay_carries_run_id_only_when_there_is_one(monkeypatch):
+    seen = {}
+    _stub_scopes(monkeypatch, seen)
+    with turn._room_turn_env("agent-1", "k", "k", "run-1", {}, None, None):
+        pass
+    assert seen["overlay"]["LIGHTBULB_RUN_ID"] == "run-1"
+    with turn._room_turn_env("agent-1", "k", "k", None, {}, None, None):
+        pass
+    assert "LIGHTBULB_RUN_ID" not in seen["overlay"]
+
+
+def test_concurrent_room_turns_keep_their_own_run_id(monkeypatch):
+    import threading
+
+    overlays, ready = [], threading.Barrier(2)
+    _stub_scopes(monkeypatch, {})
+
+    @contextmanager
+    def secret_scope(agent_id, overlay=None):
+        overlays.append(overlay)
+        yield
+
+    monkeypatch.setattr(turn, "_secret_scope", secret_scope)
+
+    def run(rid):
+        ready.wait()
+        with turn._room_turn_env("agent-1", "k", "k", rid, {}, None, None):
+            pass
+
+    ts = [threading.Thread(target=run, args=(r,)) for r in ("A", "B")]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert sorted(o["LIGHTBULB_RUN_ID"] for o in overlays) == ["A", "B"]

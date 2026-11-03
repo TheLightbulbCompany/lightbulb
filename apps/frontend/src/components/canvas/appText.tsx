@@ -28,8 +28,9 @@ export function liveLine(app: AppRow): string {
   return app.open_to === "room" ? `Live — ${audience(app)} can open it` : `Live — ${audience(app)}`;
 }
 
-/** The one line for an app that is not ready yet; null when it is ready. */
+/** The one line for an app that stopped moving or is not ready yet; null when it is ready. */
 export function statusLine(app: AppRow): string | null {
+  if (app.stuck) return `Stopped at ${app.stuck.step}. Nothing has moved for 5 minutes.`;
   const room = roomOf(app);
   switch (app.state) {
     case "awaiting_approval": return `Waiting for an owner to approve${app.requested_by?.trim() ? ` ${app.requested_by.trim()}'s request` : ""}: the cards are in Activity, under Needs you.`;

@@ -115,6 +115,13 @@ def test_build_routes_accept_hook_token_or_computer_proof_and_nothing_else(clien
     assert client.post(f"{BASE}/up", json=UP_BODY, headers=no_agent).status_code == 200
     assert up.await_args.kwargs["actor"] == svc.BuilderCaller("org_a", "agent", "agent")
 
+    with_run = {**HOOK, "X-Lightbulb-Run": "run_1"}
+    assert client.post(f"{BASE}/up", json=UP_BODY, headers=with_run).status_code == 200
+    assert up.await_args.kwargs["actor"] == svc.BuilderCaller("org_a", "agt_1", "agent", run_id="run_1")
+    bad_run = {**HOOK, "X-Lightbulb-Run": "a b"}  # a malformed run id links nothing; the call still works
+    assert client.post(f"{BASE}/up", json=UP_BODY, headers=bad_run).status_code == 200
+    assert up.await_args.kwargs["actor"] == svc.BuilderCaller("org_a", "agt_1", "agent")
+
     bad_agent = {**HOOK, "X-Lightbulb-Agent-Id": "a b\n"}
     assert client.post(f"{BASE}/up", json=UP_BODY, headers=bad_agent).status_code == 422
 
@@ -184,9 +191,11 @@ def test_publish_rollback_destroy_pass_through(client, monkeypatch):
     assert r.json()["version"] == 2
     assert pub.await_args.args == ("org_a", "app_1") and pub.await_args.kwargs["source_id"] == "s2"
     assert client.post(f"{BASE}/app_1/rollback", json={"version": 1}, headers=HOOK).status_code == 200
-    assert rb.await_args.kwargs == {"version": 1}
-    assert client.post(f"{BASE}/app_1/rollback", json={}, headers=HOOK).status_code == 200
-    assert rb.await_args.kwargs == {"version": None}
+    assert rb.await_args.kwargs == {"version": 1, "run_id": None}
+    assert (
+        client.post(f"{BASE}/app_1/rollback", json={}, headers={**HOOK, "X-Lightbulb-Run": "run_9"}).status_code == 200
+    )
+    assert rb.await_args.kwargs == {"version": None, "run_id": "run_9"}
     r = client.post(f"{BASE}/app_1/destroy", json={}, headers=HOOK)
     assert r.json()["state"] == "awaiting_owner"
 

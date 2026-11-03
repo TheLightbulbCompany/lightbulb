@@ -52,11 +52,11 @@ async def test_a_second_write_of_the_same_follow_up_is_a_replay(table):  # noqa:
 
 
 @pytest.mark.asyncio
-async def test_recent_follow_ups_count_per_agent_inside_the_window(table):  # noqa: F811
+async def test_recent_follow_ups_count_per_agent_since_a_point(table):  # noqa: F811
     room_id, _ = await _room()
     await _create(room_id, "33333333-3333-4333-8333-000000000001")
     await _create(room_id, "33333333-3333-4333-8333-000000000002")
     await _create(room_id, "33333333-3333-4333-8333-000000000003", agent_id="99999999-9999-4999-8999-999999999999")
 
-    assert await repo.count_recent_follow_ups(room_id, FRIDAY, window_s=3600) == 2
-    assert await repo.count_recent_follow_ups(room_id, FRIDAY, window_s=-60) == 0
+    assert await repo.count_follow_ups_since(room_id, FRIDAY, None) == 2
+    assert await repo.count_follow_ups_since(room_id, FRIDAY, "9999-01-01") == 0

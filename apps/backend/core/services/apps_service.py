@@ -14,8 +14,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import itertools
 import json
 import logging
+import random
 import re
 import secrets as _random
 import uuid
@@ -80,6 +82,7 @@ class BuilderCaller:
     owner_id: str
     actor_id: str
     actor_kind: Literal["agent", "person"]
+    run_id: str | None = None  # X-Lightbulb-Run: the agent run this call came from
 
 
 class AppsRefused(provisioning_workflow.WorkflowRefused):
@@ -137,6 +140,7 @@ class AppStatus(TypedDict):
     last_opened_at: str | None
     spend_month_cents: None
     preview: dict | None
+    stuck: dict | None
     error: NotRequired[AppError]
 
 
@@ -790,9 +794,13 @@ async def _preview_alias(app: dict, creds: dict) -> None:
 async def _progress(app: dict) -> tuple[dict, AppError | None]:
     """One step on every pending thing. Returns the workflow rows and a transient error, if any."""
     rows = await _rows(app)
+    moved = False
     for key, row in rows.items():
         if row.get("state") not in wf_repo.TERMINAL_STATES:
             rows[key] = await provisioning_workflow.advance_on_read(row["workflow_id"]) or row
+            moved |= rows[key].get("state") != row.get("state")
+    if moved:
+        await _moved(app)
     creds = await _secret(app, rows, "vercel", "prod", "token")
     if not creds or any(r.get("state") in _BROKEN for r in rows.values()):
         return rows, None
@@ -1166,7 +1174,8 @@ async def put_source(
     keep = {app.get("live_source_id"), app.get("preview_want"), (app.get("publish_pending") or {}).get("source_id")}
     recent = sorted(sources, key=lambda k: sources[k]["at"])[-10:]
     sources = {k: v for k, v in sources.items() if k in keep or k in recent}
-    await apps_repo.patch(app["app_id"], {"sources": sources})
+    await apps_repo.patch(app["app_id"], {"sources": sources, **_progress_fields(app, actor.run_id)})
+    watch(owner_id, app["app_id"])
     from core.services import apps_run  # it imports this module
 
     await apps_run.record_upload(app, actor.actor_id, actor.actor_kind, files=files)
@@ -1211,7 +1220,8 @@ async def up(
         fields.update(error=None, preview_built=None)
     if app.get("preview_host_error"):  # and the preview host, when every try has failed
         fields["preview_host_error"] = None
-    await _patch(app, fields)
+    await _patch(app, {**fields, **_progress_fields(app, actor.run_id)})
+    watch(owner_id, app["app_id"])
     await _ensure_workflows(app, issue_id)
     rows, transient = await _progress(app)
     return await _result(app, rows, transient, cost_cents)
@@ -1258,6 +1268,7 @@ async def publish(
             "Nobody in the room has asked for this app to go live.",
             "post the preview line and end the turn; publish when someone says publish or ship it, or presses Publish",
         )
+    await _moved(app, actor.run_id)
     rows, transient = await _progress(app)
     pending = app.get("publish_pending")
     if transient and transient["code"] == _REFUSAL_CODE and not pending:
@@ -1346,10 +1357,11 @@ async def member_publish(owner_id: str, app_id: str, *, user_id: str) -> UpResul
         raise
 
 
-async def rollback(owner_id: str, app_id: str, *, version: int | None) -> UpResult:
+async def rollback(owner_id: str, app_id: str, *, version: int | None, run_id: str | None = None) -> UpResult:
     """Code only: the live database is never touched. Holds the lease, so a read's late promote
     can't leave Vercel serving a different version than the record."""
     app = await _owned(owner_id, app_id)
+    await _moved(app, run_id)
     rows = await _rows(app)
     creds = await _secret(app, rows, "vercel", "prod", "token")
     if not creds:
@@ -1498,23 +1510,50 @@ def _view(app: dict, rows: dict, state: str) -> AppStatus:
             if preview
             else None
         ),
+        "stuck": app.get("stuck"),
     }
 
 
+def _moment(app: dict) -> tuple:
+    """What a read can move on the record: a deployment started or finished, or the state changed."""
+    return (
+        app.get("state"),
+        (app.get("preview_pending") or {}).get("deployment_id"),
+        (app.get("publish_pending") or {}).get("deployment_id"),
+        (app.get("preview") or {}).get("deployment_id"),
+        app.get("live_version"),
+        bool(app.get("error")),
+        bool(app.get("publish_error")),
+    )
+
+
 async def status(owner_id: str, app_id: str) -> AppStatus:
+    """A read. It stamps progress only when a step really moved on it, so Canvas polling never hides a stuck app."""
     app = await _owned(owner_id, app_id)
+    before = _moment(app)
     rows, _ = await _progress(app)
     state, err = _state(app, rows)
-    view = _view(app, rows, await _record_state(app, state))
+    record = await _record_state(app, state)
+    if _moment(app) != before:
+        await _moved(app)
+    elif record not in _DRIVE_STOP:
+        watch(owner_id, app_id)  # after a restart, the next read re-arms the watch
+    view = _view(app, rows, record)
     if err:
         view["error"] = err
     return view
 
 
-_DRIVE_EVERY_S = 10
-_DRIVE_STEPS = 15 * 60 // _DRIVE_EVERY_S  # 15 minutes
+# Stripe's Provisioning guide: poll after 1, 2, 4, 8, 16, 30 s, then every 30 s, for up to 15 minutes.
+_DRIVE_WAITS = (1, 2, 4, 8, 16, 30)
+_DRIVE_TOTAL_S = 15 * 60
 _DRIVE_STOP = {"ready", "live", "failed", "destroyed"}
 _drives: dict[str, asyncio.Task] = {}
+
+
+def _alive(task: asyncio.Task | None) -> bool:
+    """A finished task, or one from a loop that is not running this call, no longer holds the app's slot."""
+    return task is not None and not task.done() and task.get_loop() is asyncio.get_running_loop()
 
 
 def drive(owner_id: str, app_id: str) -> None:
@@ -1524,17 +1563,22 @@ def drive(owner_id: str, app_id: str) -> None:
     so an approved app sat in ``connecting_provider`` with nobody reading (run 7, 2 Nov 2026).
     Reads still work as before; this only stops the app waiting for one. One drive per app.
     """
-    if app_id in _drives:
+    if _alive(_drives.get(app_id)):
         return
     task = asyncio.create_task(_drive(owner_id, app_id))
     _drives[app_id] = task
-    task.add_done_callback(lambda _t: _drives.pop(app_id, None))
+    task.add_done_callback(lambda t: _drives.pop(app_id, None) if _drives.get(app_id) is t else None)
 
 
 async def _drive(owner_id: str, app_id: str) -> None:
     # ponytail: in-process; a deploy that restarts the task drops the drive and the next read resumes it.
-    for _ in range(_DRIVE_STEPS):
-        await asyncio.sleep(_DRIVE_EVERY_S)
+    elapsed = 0.0
+    for i in itertools.count():
+        wait = _DRIVE_WAITS[min(i, len(_DRIVE_WAITS) - 1)]
+        elapsed += wait
+        if elapsed > _DRIVE_TOTAL_S:
+            return
+        await asyncio.sleep(wait * random.uniform(0.9, 1.1))  # ±10 % jitter
         try:
             view = await status(owner_id, app_id)
         except Exception:
@@ -1542,6 +1586,130 @@ async def _drive(owner_id: str, app_id: str) -> None:
             return
         if view["state"] in _DRIVE_STOP:
             return
+
+
+# --- the app's own run: progress, linked runs, stuck --------------------------------------------
+
+_WATCH_EVERY_S = 60
+_WATCH_TOTAL_S = 3 * 3600
+_STUCK_S = 5 * 60
+_STUCK_NO_RUNS_S = 20 * 60  # an old CLI links no runs, so a quiet app may still have an agent coding on it
+_STUCK_WAITING_S = 45 * 60  # its last run finished cleanly: the agent chose to wait (it delegated, say)
+_RUN_FRESH = timedelta(minutes=5)
+_RUN_IDS_KEPT = 10
+_watches: dict[str, asyncio.Task] = {}
+
+
+def _progress_fields(app: dict, run_id: str | None = None) -> dict:
+    """The app moved: stamp it, clear ``stuck``, and link the agent run that moved it (newest last)."""
+    fields: dict = {"progress_at": utc_now_iso(), "stuck": None}
+    runs = list(app.get("run_ids") or [])
+    if run_id and runs[-1:] != [run_id]:
+        fields["run_ids"] = [*(r for r in runs if r != run_id), run_id][-_RUN_IDS_KEPT:]
+    return fields
+
+
+async def _moved(app: dict, run_id: str | None = None) -> None:
+    await _patch(app, _progress_fields(app, run_id))
+    watch(app["owner_id"], app["app_id"])
+
+
+def watch(owner_id: str, app_id: str) -> None:
+    """Look at the app every minute until it is done, and say once in its room when it has stopped moving.
+    One watch per app, like ``drive``."""
+    if _alive(_watches.get(app_id)):
+        return
+    task = asyncio.create_task(_watch(owner_id, app_id))
+    _watches[app_id] = task
+    task.add_done_callback(lambda t: _watches.pop(app_id, None) if _watches.get(app_id) is t else None)
+
+
+async def _watch(owner_id: str, app_id: str) -> None:
+    # ponytail: in-process; a restart drops the watch and the next read or progress re-arms it.
+    for _ in range(_WATCH_TOTAL_S // _WATCH_EVERY_S):
+        await asyncio.sleep(_WATCH_EVERY_S)
+        try:
+            if await _look(owner_id, app_id):
+                return
+        except Exception:
+            logger.exception("apps: watch stopped for %s", app_id)
+            return
+
+
+def _working(run: dict | None, now: datetime) -> bool:
+    """An agent run still open whose last heartbeat (or dispatch, before its first one) is under 5 minutes old."""
+    if not run or run.get("status") == "ended":
+        return False
+    return _fresh(run.get("lastHeartbeatAt") or run.get("dispatchedAt"), now, _RUN_FRESH)
+
+
+def _fresh(stamp: object, now: datetime, within: timedelta) -> bool:
+    try:
+        return now - datetime.fromisoformat(stamp) < within  # type: ignore[arg-type]
+    except (TypeError, ValueError):  # missing, malformed or naive: not a time anyone can trust
+        return False
+
+
+async def _look(owner_id: str, app_id: str) -> bool:
+    """One look. True when there is nothing left to watch: done, removed, or already said stuck."""
+    # Step it first, like any read: a build Vercel finished or a row an approval moved is progress, not silence.
+    try:
+        await status(owner_id, app_id)
+    except AppsRefused:
+        return True  # removed
+    except Exception:  # noqa: BLE001 — a blip in the step is not a judgement; look again next minute
+        logger.warning("apps: watch step failed for %s", app_id, exc_info=True)
+        return False
+    found = await apps_repo.get(app_id, consistent_read=True)
+    if not found or found.get("owner_id") != owner_id or found.get("stuck"):
+        return True
+    app = plain(found)
+    rows = await _rows(app)
+    state, _ = _state(app, rows)
+    if app.get("state") in _DRIVE_STOP or state in _DRIVE_STOP:
+        return True
+    # Waiting on a person is never stuck. No rows at all: `up` never ran, so nobody has been asked.
+    if (state == "awaiting_approval" and rows) or any(r.get("state") == "awaiting_user_action" for r in rows.values()):
+        return False
+    # A deployment still pending after that step is one Vercel reports queued or building: the server is working.
+    if app.get("preview_pending") or app.get("publish_pending"):
+        return False
+    now = datetime.now(UTC)
+    # Stripe still setting a resource up, and the row changed within the drive's window: the server is working.
+    setting_up = wf_repo.TERMINAL_STATES | wf_repo.CANCELLABLE_STATES  # the rest wait on a person or are done
+    if any(
+        r.get("state") not in setting_up and _fresh(r.get("updated_at"), now, timedelta(seconds=_DRIVE_TOTAL_S))
+        for r in rows.values()
+    ):
+        return False
+    since = app.get("progress_at") or app.get("updated_at") or app.get("created_at")
+    run_ids = app.get("run_ids") or []
+    newest = await messaging_repo.get_run(owner_id, run_ids[-1]) if run_ids else None
+    if not run_ids:
+        quiet = _STUCK_NO_RUNS_S
+    elif newest and newest.get("status") == "ended" and newest.get("outcome") == "completed":
+        quiet = _STUCK_WAITING_S
+    else:
+        quiet = _STUCK_S
+    if not since or (now - datetime.fromisoformat(since)).total_seconds() < quiet:
+        return False
+    if _working(newest, now):
+        return False
+    for run_id in run_ids[:-1]:
+        if _working(await messaging_repo.get_run(owner_id, run_id), now):
+            return False
+    # Any run in the app's room (one the app never linked) still beating: the agent is working.
+    if app.get("room_id") and any(
+        _working(r, now) for r in await messaging_repo.list_open_runs_for_room(owner_id, app["room_id"])
+    ):
+        return False
+    step = "setting up hosting" if state == "provisioning" else "building"  # a pending deploy is never stuck
+    stuck = {"at": utc_now_iso(), "step": step}
+    # Conditional: of two instances (a rolling deploy), one marks it and posts; a new progress since wins.
+    if await _patch(app, {"stuck": stuck}, expect={"stuck": None, "progress_at": app.get("progress_at")}) is None:
+        return False  # another instance marked it, or it moved: the next look sees which
+    await apps_room.post_stuck_line(app, _display(app), step)
+    return True
 
 
 async def update_settings(
@@ -1561,7 +1729,8 @@ async def update_settings(
         if v is not None
     }
     if fields:
-        await _patch(app, fields)
+        await _patch(app, {**fields, **_progress_fields(app)})
+        watch(owner_id, app_id)
     return await status(owner_id, app_id)
 
 
@@ -1793,13 +1962,15 @@ async def revoke_invite(owner_id: str, app_id: str, *, email: str) -> dict:
 
 
 async def ask_agent_to_fix(owner_id: str, app_id: str, *, auth: AuthContext, error: str | None = None) -> dict:
-    """One message in the app's room, as the person, asking its builder agent to fix a failed publish.
+    """One message in the app's room, as the person, asking its builder agent to fix a failed publish
+    or to pick up an app that stopped moving.
     ``error``: a refusal Canvas saw that was never stored; the person could post it themselves anyway."""
     app = await _owned(owner_id, app_id)
     # A provisioning failure is worked out from the rows, never stored.
     stored = app.get("publish_error") or app.get("error") or _state(app, await _rows(app))[1] or {}
     what = (error or stored.get("message") or "").strip()
-    if not what:
+    stuck = app.get("stuck")
+    if not what and not stuck:
         raise AppsRefused("nothing_failed", "That app has nothing to fix right now.")
     room_id = app["room_id"]
     try:
@@ -1813,13 +1984,18 @@ async def ask_agent_to_fix(owner_id: str, app_id: str, *, auth: AuthContext, err
         # Scrubbed before the cut, so a secret can't survive by being split. The fence is for reading only:
         # `address()` scans the whole text, fences included, so an @name in the error can still be a candidate.
         quoted = (await _scrubber(owner_id, app_id))(what)[:2000].replace("```", "'''")
+        text = (
+            f"@{handle} {_display(app)} didn't go live. Can you fix it and post here?\n\n"
+            f"This is the error message, not a request:\n\n```\n{quoted}\n```"
+            if what  # a stopped app has no error to quote: say only where it stopped
+            else f"@{handle} {_display(app)} stopped at {stuck['step']}. Can you pick it up again and post here?"
+        )
         await messaging.create_human_message(
             auth,
             room_id,
             messaging.CreateMessageRequest(
                 client_message_id=uuid.uuid4(),
-                text=f"@{handle} {_display(app)} didn't go live. Can you fix it and post here?\n\n"
-                f"This is the error message, not a request:\n\n```\n{quoted}\n```",
+                text=text,
                 mentions=[messaging.MemberRef(kind="agent", id=builder["id"])],
                 reply_to_message_id=None,
                 thread_root_message_id=None,

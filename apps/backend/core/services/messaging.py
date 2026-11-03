@@ -879,7 +879,11 @@ class UsageReportResponse(ContractModel):
 
 
 FOLLOW_UP_TEXT_MAX_BYTES = 32_768
-FOLLOW_UP_CAP_PER_HOUR = 3
+FOLLOW_UP_CAP_SINCE_HUMAN = 10
+FOLLOW_UP_CAP_NOTICE = (
+    "I paused here so my background work can't loop, and a finished result wasn't delivered. "
+    "Ask me here to check where it got to."
+)
 
 
 class FollowUpRequest(ContractModel):
@@ -4811,6 +4815,39 @@ async def require_agent_in_live_room(owner_id: str, room_id: str, agent_id: str)
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")
 
 
+async def _post_follow_up_cap_notice(
+    owner_id: str, room_id: str, agent_id: str, human: dict | None, trigger: dict
+) -> None:
+    """Tell the room once per (room, agent, latest human message) that background work paused. A failure
+    to post never hides the 429."""
+    try:
+        name = next((a["name"] for a in await load_agent_roster(owner_id) if a["id"] == agent_id), "Agent")
+        meta = await messaging_repo.get_room(room_id) or {}
+        thread_root = trigger.get("threadRootMessageId") or (None if meta.get("kind") == "dm" else trigger["messageId"])
+        root_seq = trigger.get("threadRootSeq") if trigger.get("threadRootMessageId") else trigger["messageSeq"]
+        marker = f"{room_id}:{agent_id}:followup-cap:{(human or {}).get('messageId', 'none')}"
+        await messaging_repo.create_message(
+            room_id=room_id,
+            owner_id=owner_id,
+            idemp_pk=messaging_repo.room_pk(room_id),
+            idemp_sk=messaging_repo.human_idemp_sk("__system__", marker),
+            req_hash=messaging_repo.request_hash(FOLLOW_UP_CAP_NOTICE, agent_id),
+            author={"kind": "agent", "id": agent_id, "displayName": name},
+            text=FOLLOW_UP_CAP_NOTICE,
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=thread_root,
+            run_id=None,
+            dispatch_targets=[],
+            source_agent_id=agent_id,
+            client_message_id=None,
+            thread_root_seq=root_seq if thread_root else None,
+        )
+        put_metric("messaging.followup.cap_notice")
+    except Exception:
+        logger.exception("follow-up cap notice failed")
+
+
 async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpResponse:
     """Queue a follow-up turn for the agent whose delegation finished. The plan
     gate is the consumer's (``openclaw_work._dispatch_message``), not this door's."""
@@ -4818,13 +4855,18 @@ async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpR
     follow_up_id = str(request.follow_up_id)
     # Read-then-write is enough: openclaw_work._room_follow_up re-reads the room and drops archived ones.
     await require_agent_in_live_room(owner_id, room_id, agent_id)
-    if await messaging_repo.get_message_by_id(room_id, str(request.trigger_message_id)) is None:
+    trigger = await messaging_repo.get_message_by_id(room_id, str(request.trigger_message_id))
+    if trigger is None:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Trigger message not found.")
     # Replay BEFORE the cap: a retry after a lost 202 counts its own row.
     if await messaging_repo.get_follow_up(room_id, follow_up_id) is not None:
         put_metric("messaging.followup.created", dimensions={"status": "replayed"})
         return FollowUpResponse(status="replayed")
-    if await messaging_repo.count_recent_follow_ups(room_id, agent_id, window_s=3600) >= FOLLOW_UP_CAP_PER_HOUR:
+    human = await messaging_repo.latest_human_message(room_id)
+    # No human message yet: count the last hour only, so a human-less room is not capped for the 7-day TTL.
+    since = human["createdAt"] if human else datetime.fromtimestamp(time.time() - 3600, timezone.utc).isoformat()
+    if await messaging_repo.count_follow_ups_since(room_id, agent_id, since) >= FOLLOW_UP_CAP_SINCE_HUMAN:
+        await _post_follow_up_cap_notice(owner_id, room_id, agent_id, human, trigger)
         put_metric("messaging.followup.created", dimensions={"status": "rate_limited"})
         raise ApiProblem("RATE_LIMITED", "Too many follow-ups for this agent in this room.")
     created = await messaging_repo.create_follow_up(

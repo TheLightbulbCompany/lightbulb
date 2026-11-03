@@ -42,6 +42,51 @@ describe("AppView", () => {
     expect(screen.queryByRole("group", { name: "View" })).toBeNull();
   });
 
+  it("a stuck app says where it stopped instead of the preview notice", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes.")).toBeTruthy();
+    expect(screen.queryByText(/looking at the preview/)).toBeNull();
+  });
+
+  it("a stuck app offers a manager Ask the agent under the stopped line, and asks with no error", async () => {
+    admin = true;
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    askAgent.mockResolvedValue(undefined);
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", stuck: { at: "2026-11-03T00:00:00Z", step: "setting up hosting" } })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    const line = screen.getByText("Stopped at setting up hosting. Nothing has moved for 5 minutes.");
+    const button = screen.getByRole("button", { name: "Ask the agent to fix it" });
+    expect(line.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(button);
+    await screen.findByText("Asked the agent in #finance. It'll post there.");
+    expect(askAgent).toHaveBeenCalledWith("a1", undefined);
+  });
+
+  it("a member who can't manage the app sees the stopped line but no Ask button", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Ask the agent to fix it" })).toBeNull();
+  });
+
+  it("a stuck building app shows only the stuck line, not the making-the-preview line", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ state: "building", live_version: null, live_url: null, preview_url: null, stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
+    expect(screen.getByText(/^Stopped at building\./)).toBeTruthy();
+    expect(screen.queryByText(/making the preview/)).toBeNull();
+  });
+
+  it("stuck: null keeps the usual preview notice", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", stuck: null })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    expect(screen.getByText(/You're looking at the preview\./)).toBeTruthy();
+    expect(screen.queryByText(/Stopped at/)).toBeNull();
+  });
+
   it("a failed publish says so in words, keeps the build error under Details, and leaves Publish available", async () => {
     open.mockResolvedValue("https://p.apps.test/?pass=1");
     render(<AppView app={app({ state: "failed", live_version: null, live_url: null, preview_url: "https://p", can_publish: true, error: { message: 'Command "npx drizzle-kit migrate && next build" exited with 1' } })} onBack={vi.fn()} />);

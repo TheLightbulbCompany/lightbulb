@@ -3760,6 +3760,8 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
             room_env["LIGHTBULB_ROOM_REQUESTER_ID"] = str(author["id"])
     if cdp := browser_control.cdp_url():  # opencli in the shell drives the run's browser
         room_env = {**(room_env or {}), "OPENCLI_CDP_ENDPOINT": cdp}
+    if run_id:  # the CLI forwards it as X-Lightbulb-Run; per-turn secret scope, so concurrent turns never share it
+        room_env = {**(room_env or {}), "LIGHTBULB_RUN_ID": str(run_id)}
     with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         try:
             yield browser_lease

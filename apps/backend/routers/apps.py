@@ -7,6 +7,7 @@ removes it (R73). Thin over ``core/services/apps_service.py``; this file only au
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from typing import Annotated, Literal
 
@@ -148,6 +149,9 @@ async def _caller(request: Request, *, upload: bool = False) -> svc.BuilderCalle
     else:
         raise HTTPException(status_code=401, detail="missing credentials")
     await require_always_on_entitlement(caller.owner_id, message=PAID_MESSAGE)  # R22
+    run_id = request.headers.get("X-Lightbulb-Run")
+    if run_id and _AGENT_ID_RE.fullmatch(run_id):  # absent or malformed: the app links no run (old CLIs)
+        caller = dataclasses.replace(caller, run_id=run_id)
     return caller
 
 
@@ -237,7 +241,7 @@ async def publish(app_id: str, body: PublishBody, caller: Builder):
 
 @router.post("/build/{app_id}/rollback")
 async def rollback(app_id: str, body: RollbackBody, caller: Builder):
-    return await _run(svc.rollback(caller.owner_id, app_id, version=body.version))
+    return await _run(svc.rollback(caller.owner_id, app_id, version=body.version, run_id=caller.run_id))
 
 
 @router.post("/build/{app_id}/destroy")

@@ -2,7 +2,7 @@
 
 // Canvas in the right pane: the workspace's apps. params.app selects one (deep link ?app=).
 import { AppList } from "@/components/canvas/AppList";
-import { AppView } from "@/components/canvas/AppView";
+import { AppView, AskAgent } from "@/components/canvas/AppView";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { displayName, statusLine } from "@/components/canvas/appText";
 import { useApps } from "@/hooks/useApps";
@@ -20,6 +20,7 @@ export function CanvasDockPanel({ id, params }: PanelProps) {
       return <div className="canvas">
         <h2 className="canvas__heading">{displayName(open)}</h2>
         <p className="canvas__notice">{statusLine(open)}</p>
+        {open.stuck && (open.can_publish === true || canManage) && <AskAgent app={open} />}
         <button type="button" className="app-view__btn" onClick={close}>All apps</button>
       </div>;
     }

@@ -84,6 +84,13 @@ it("a Button posts exactly its label", async () => {
   expect(onReply).toHaveBeenCalledWith("Yes", expect.any(String));
 });
 
+it("renders Approve/Deny and presses Approve", async () => {
+  const onReply = vi.fn().mockResolvedValue(undefined);
+  wrap('root = Stack([b])\nb = Buttons([Button("Approve", "primary"), Button("Deny", "secondary")])', { onReply });
+  await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+  expect(onReply).toHaveBeenCalledWith("Approve", expect.any(String));
+});
+
 it("an answered FollowUps card marks the chip it posted", () => {
   wrap('root = Stack([f])\nf = FollowUps(["Show me the numbers", "Draft the email"])', { onReply: vi.fn(), answered: "Draft the email" });
   expect(screen.getByRole("button", { name: "Draft the email" })).toHaveAttribute("aria-pressed", "true");

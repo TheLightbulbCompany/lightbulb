@@ -35,6 +35,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, chat_gate
 from core.services import messaging as service
 from core.services import (
+    a2a_tasks,
     hook_grants,
     hosted_mcp,
     network_login,
@@ -983,7 +984,13 @@ async def create_room_message(
 ):
     auth, label = caller
     if label is None:
-        return await service.create_human_message(auth, room_id, request)
+        try:  # a holder's Approve/Deny press on an A2A hold card decides it and wakes nobody
+            # no workspace (resolve_owner_id's 409) is never a hold card
+            handled = bool(auth.org_id) and await a2a_tasks.answer_from_message(auth, resolve_owner_id(auth), request)
+        except Exception:
+            logger.exception("a2a card answer failed", extra={"room": room_id})
+            handled = False
+        return await service.create_human_message(auth, room_id, request, wake=not handled)
     # A coding session's send through its signed-in computer: authored "<label> via <person>",
     # accountable to the person, exactly as the hosted MCP's room send is. The engine names only the
     # message it replies to; its thread is that message's (as the hosted send resolves it).

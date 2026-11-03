@@ -420,9 +420,9 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
 }
 
 fn bind_resumed_holder(held: &crate::holder::manager::HolderInfo, w: &Wanted) {
-    if w.provider == "codex" {
-        // Resume already names its thread. Bind private writers too: waiting for
-        // their first prompt's hook leaves a running terminal invisible in the app.
+    if w.provider == "codex" && codex::on_daemon(&held.argv) {
+        // The RPC above proved this daemon thread loaded. A private TUI's
+        // requested target is not ownership: discovery binds its actual writer.
         crate::holder::manager::bind_thread(held, &w.conversation_id);
     }
 }
@@ -623,13 +623,16 @@ mod tests {
     }
 
     #[test]
-    fn a_private_codex_resume_is_bound_before_its_first_prompt() {
+    fn a_private_codex_resume_waits_for_writer_proof_and_a_daemon_is_bound() {
         let dir = tempfile::tempdir().unwrap();
         let mut held = crate::holder::manager::HolderInfo {
             id: "ab12cd34".into(), socket: dir.path().join("ab12cd34.sock"),
             pid: 1, provider_pid: 2, cwd: dir.path().into(), watch: true, type_input: true,
             argv: argv(Path::new("/bin/codex"), &wanted("codex", "default"), true, false, None),
         };
+        bind_resumed_holder(&held, &wanted("codex", "default"));
+        assert!(crate::holder::manager::thread(&held).is_none());
+        held.argv = argv(Path::new("/bin/codex"), &wanted("codex", "default"), true, true, None);
         bind_resumed_holder(&held, &wanted("codex", "default"));
         assert_eq!(crate::holder::manager::thread(&held).as_deref(), Some(CONV));
         std::fs::remove_file(held.socket.with_extension("thread")).unwrap();

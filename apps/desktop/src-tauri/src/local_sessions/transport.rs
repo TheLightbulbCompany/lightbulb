@@ -3079,9 +3079,11 @@ fn epoch_secs() -> u64 {
 
 /// The stored identity has to still be at that pid: pids are reused, and
 /// `kill(pid, 0)` would call the stranger that inherited it this session alive
-/// forever. `process` is a `proc_pidinfo` read -- no spawn, no signal.
+/// forever. Executable lookup can fail after an updater unlinks a running
+/// binary; that is not an exit. Authorization still verifies the executable
+/// separately. This is only a kernel liveness read -- no spawn, no signal.
 fn still_running(identity: &Process) -> bool {
-    process(identity.pid).is_ok_and(|current| &current == identity)
+    lightbulb_core::os::process_birth(identity.pid) == Some(identity.birth_micros)
 }
 
 fn transcript_unread(mirror: &Mirror) -> bool {
@@ -3798,6 +3800,32 @@ async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
 pub(super) mod tests {
     use super::super::engine_view::{EngineEnded, EngineRow};
     use super::*;
+
+    #[test]
+    fn local_sessions_an_unlinked_executable_is_not_a_process_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("cat");
+        fs::copy("/bin/cat", &binary).unwrap();
+        let mut child = std::process::Command::new(&binary)
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().unwrap();
+        let identity = process(child.id()).unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.process = identity.clone();
+        mirror.native.status = "idle".into();
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        fs::remove_file(&binary).unwrap();
+        host.liveness_tick();
+        let alive = still_running(&identity);
+        let reused = still_running(&Process { birth_micros: identity.birth_micros + 1, ..identity.clone() });
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(host.mirrors[SID].ended_at.is_none(), "the live terminal must remain registered");
+        host.liveness_tick();
+        assert!(host.mirrors[SID].ended_at.is_some(), "only the actual exit ends the session");
+        assert!(alive, "an updater removing the executable must not end a live session");
+        assert!(!reused, "a reused pid must not keep the old session alive");
+        assert!(!still_running(&identity), "the actual exit must still be observed");
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn transport_a_stuck_workspace_scan_blocks_the_next_one() {

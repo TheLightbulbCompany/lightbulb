@@ -222,7 +222,7 @@ fn from_writer(
     let reported = row["payload"]["cli_version"]
         .as_str()
         .ok_or("missing runtime version")?;
-    // A Desktop app upgrade resumes the same rollout and keeps its creation-time
+    // An upgrade resumes the same rollout and keeps its creation-time
     // cli_version. The writer is verified separately against the exact installed
     // bundle inode; a supported paginated header is not its current runtime version.
     let app_header = source == "vscode"
@@ -230,9 +230,12 @@ fn from_writer(
         && row["payload"]["history_mode"] == "paginated";
     let desktop_upgrade = app_header
         && (at_least(version, [0, 159, 2]) || (desktop_bundle && desktop_prerelease(version)));
+    let cli_upgrade = row["payload"]["history_mode"] == "paginated"
+        && (source == "cli" || row["payload"]["originator"] == "codex-tui")
+        && at_least(version, [0, 159, 2]);
     // A conversation the bundle started carries the bundle's prerelease in its header too.
     let header = accepted_version(reported) || (desktop_bundle && app_header && desktop_prerelease(reported));
-    let verified = header && (desktop_upgrade || (accepted_version(version) && reported == version));
+    let verified = header && (desktop_upgrade || cli_upgrade || (accepted_version(version) && reported == version));
     let (status, active_turn, title) = tail_state(&path);
     let title = root.parent().and_then(|codex| thread_name(&codex.join("session_index.jsonl"), conversation)).or(title);
     Ok(NativeSession {
@@ -1846,6 +1849,7 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
 mod tests {
     use super::*;
 
+
     /// A `thread/read` result as Codex 0.164.0's app-server returns it (trimmed to what is read).
     fn thread(id: &str, status: Value, path: &Path) -> Value {
         json!({"id": id, "sessionId": id, "forkedFromId": null, "parentThreadId": null, "ephemeral": false,
@@ -3002,6 +3006,23 @@ mod tests {
             "originator":"Codex Desktop","cli_version":"0.150.0","history_mode":"paginated"}});
         fs::write(&path, format!("{meta}\n")).unwrap();
         assert_eq!(from_rollout(&root, process, &path, "0.160.1").unwrap().restriction.as_deref(), Some("runtime-unverified"));
+    }
+
+    #[test]
+    fn local_sessions_codex_cli_upgrade_keeps_supported_history_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let path = root.join("rollout-cli.jsonl");
+        fs::write(&path, format!("{}\n", json!({"type":"session_meta","payload":{
+            "id":"cli", "source":"cli", "originator":"codex-tui",
+            "cli_version":"0.163.0", "history_mode":"paginated"}}))).unwrap();
+        let process = Process { pid: 42, birth_micros: 123, executable: "/bin/codex".into() };
+        let resumed = from_rollout(&root, process.clone(), &path, "0.166.0").unwrap();
+        assert_eq!(resumed.restriction, None);
+        assert_eq!(resumed.version, "0.166.0");
+        for unverified in ["", "0.150.0", "0.166.0-custom"] {
+            assert_eq!(from_rollout(&root, process.clone(), &path, unverified).unwrap().restriction.as_deref(), Some("runtime-unverified"));
+        }
     }
 
     /// A fork's own rollout header names its origin (seen on a `codex fork` through the daemon,

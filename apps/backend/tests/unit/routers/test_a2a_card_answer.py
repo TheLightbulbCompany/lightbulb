@@ -46,7 +46,7 @@ def notification(env, task_id, holder):
     return env.posted[f"a2a:{task_id}:hold:{holder}"]
 
 
-def press(app, client, user, reply_to, text):
+def press(app, client, user, reply_to, text, room):
     async def _caller():
         return AuthContext(user_id=user, org_id=ORG, org_role="org:member"), None
 
@@ -58,7 +58,7 @@ def press(app, client, user, reply_to, text):
         "replyToMessageId": reply_to,
         "threadRootMessageId": reply_to,
     }
-    client.post(f"/api/v1/messaging/rooms/{uuid.uuid4()}/messages", json=body)
+    client.post(f"/api/v1/messaging/rooms/{room}/messages", json=body)
 
 
 def web_wake(env):
@@ -75,14 +75,14 @@ def test_notification_text_carries_the_openui_fence_and_index_row(client, card_e
     n = notification(card_env, task_id, OWNER)
     assert "```openui-lang\n" in n.req.text and 'Button("Approve", "primary")' in n.req.text
     assert 'root = Stack([b])\nb = Buttons([Button("Approve", "primary"), Button("Deny", "secondary")])' in n.req.text
-    assert asyncio.run(a2a_repo.get_task_by_notification(ORG, n.id)) == (task_id, OWNER)
+    assert asyncio.run(a2a_repo.get_task_by_notification(ORG, n.id)) == (task_id, OWNER, card_env.room)
     row = asyncio.run(a2a_repo.get_task(ORG, task_id))
     assert row["notificationMessageIds"][OWNER] == n.id
 
 
 def test_holder_pressing_approve_decides_and_stores_quietly(client, app, card_env):
     task_id = send(client)["id"]
-    press(app, client, OWNER, notification(card_env, task_id, OWNER).id, " Approve ")
+    press(app, client, OWNER, notification(card_env, task_id, OWNER).id, " Approve ", card_env.room)
     assert state(client, task_id) == "TASK_STATE_WORKING"
     assert web_wake(card_env) is False
     assert asyncio.run(a2a_repo.get_task(ORG, task_id))["decisionReason"] == "in-app"
@@ -90,7 +90,7 @@ def test_holder_pressing_approve_decides_and_stores_quietly(client, app, card_en
 
 def test_holder_pressing_deny_rejects(client, app, card_env):
     task_id = send(client)["id"]
-    press(app, client, OWNER, notification(card_env, task_id, OWNER).id, "Deny")
+    press(app, client, OWNER, notification(card_env, task_id, OWNER).id, "Deny", card_env.room)
     assert state(client, task_id) == "TASK_STATE_REJECTED"
     assert web_wake(card_env) is False
 
@@ -101,8 +101,8 @@ def test_requester_pressing_approve_is_refused_and_agent_posts_the_reason(client
     # the fact (as a holders change would) and give them a card of their own.
     card = str(uuid.uuid4())
     asyncio.run(a2a_repo.update_task(ORG, task_id, state="held", extra={"holders": [OWNER, REQUESTER]}))
-    asyncio.run(a2a_repo.put_notification(ORG, card, task_id, REQUESTER))
-    press(app, client, REQUESTER, card, "Approve")
+    asyncio.run(a2a_repo.put_notification(ORG, card, task_id, REQUESTER, card_env.room))
+    press(app, client, REQUESTER, card, "Approve", card_env.room)
     failed = card_env.posted[f"a2a:{task_id}:answer-failed:{REQUESTER}"].req
     assert failed.text.startswith("could not record your answer: self")
     assert str(failed.agent_id) == AGENT and str(failed.room_id) == card_env.room
@@ -112,20 +112,27 @@ def test_requester_pressing_approve_is_refused_and_agent_posts_the_reason(client
 
 def test_non_holder_press_is_ignored_as_a_normal_message(client, app, card_env):
     task_id = send(client)["id"]
-    press(app, client, "user_test_789", notification(card_env, task_id, OWNER).id, "Approve")
+    press(app, client, "user_test_789", notification(card_env, task_id, OWNER).id, "Approve", card_env.room)
     assert web_wake(card_env) is True
     assert state(client, task_id) == "TASK_STATE_AUTH_REQUIRED"
 
 
 def test_reply_to_a_non_notification_is_a_normal_message(client, app, card_env):
     task_id = send(client)["id"]
-    press(app, client, OWNER, str(uuid.uuid4()), "Approve")
+    press(app, client, OWNER, str(uuid.uuid4()), "Approve", card_env.room)
     assert web_wake(card_env) is True
     assert state(client, task_id) == "TASK_STATE_AUTH_REQUIRED"
 
 
 def test_other_text_in_reply_to_notification_is_a_normal_message(client, app, card_env):
     task_id = send(client)["id"]
-    press(app, client, OWNER, notification(card_env, task_id, OWNER).id, "ok thanks")
+    press(app, client, OWNER, notification(card_env, task_id, OWNER).id, "ok thanks", card_env.room)
+    assert web_wake(card_env) is True
+    assert state(client, task_id) == "TASK_STATE_AUTH_REQUIRED"
+
+
+def test_press_from_another_room_is_a_normal_message(client, app, card_env):
+    task_id = send(client)["id"]
+    press(app, client, OWNER, notification(card_env, task_id, OWNER).id, "Approve", str(uuid.uuid4()))
     assert web_wake(card_env) is True
     assert state(client, task_id) == "TASK_STATE_AUTH_REQUIRED"

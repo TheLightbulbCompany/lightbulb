@@ -986,7 +986,9 @@ async def create_room_message(
     if label is None:
         try:  # a holder's Approve/Deny press on an A2A hold card decides it and wakes nobody
             # no workspace (resolve_owner_id's 409) is never a hold card
-            handled = bool(auth.org_id) and await a2a_tasks.answer_from_message(auth, resolve_owner_id(auth), request)
+            handled = bool(auth.org_id) and await a2a_tasks.answer_from_message(
+                auth, resolve_owner_id(auth), room_id, request
+            )
         except Exception:
             logger.exception("a2a card answer failed", extra={"room": room_id})
             handled = False

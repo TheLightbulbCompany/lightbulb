@@ -35,7 +35,9 @@ def test_verify_rejects_expired_and_tampered(monkeypatch):
         a.verify(jws, now=999)
     head, body, sig = jws.split(".")
     with pytest.raises(a.AuthorityError, match="signature"):
-        a.verify(f"{head}.{body}.{sig[:-2]}AA", now=1_001)
+        a.verify(
+            f"{head}.{body}.{'B' if sig[0] != 'B' else 'C'}{sig[1:]}", now=1_001
+        )  # flip the first byte; the last byte is often already zero
 
 
 def test_verify_rejects_wrong_typ_and_long_intent(monkeypatch):

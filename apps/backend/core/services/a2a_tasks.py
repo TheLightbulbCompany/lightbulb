@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from core.auth import AuthContext
 from core.config import settings
 from core.repositories import a2a_repo, local_sessions_repo, messaging_repo
-from core.services import a2a_rules, hosted_mcp, messaging, network_route
+from core.services import a2a_rules, hosted_mcp, messaging, network_proof, network_route
 from core.services.a2a_auth import READ_SCOPE_A2A, SEND_SCOPE, A2ACaller
 from core.services.a2a_authority import URI, AuthorityError, AuthorityRequest, Operation, mint, sign_record, verify
 from core.services.a2a_rules import Rules, default_rules
@@ -107,6 +107,25 @@ def agent_card(org: str, agent_id: str, agent_name: str, base_url: str, oauth: d
             ),
         ],
     )
+
+
+def signed_agent_card(
+    org: str, agent_id: str, agent_name: str, base_url: str, oauth: dict[str, str]
+) -> a2a_types.AgentCard:
+    """The card with a JWS signature (RFC 7515, EdDSA) by the issuer key that ``/a2a/keys.json`` serves.
+    Without ``NETWORK_PROOF_KEY`` the card is served unsigned, with a warning."""
+    card = agent_card(org, agent_id, agent_name, base_url, oauth)
+    if not settings.NETWORK_PROOF_KEY:
+        logger.warning("a2a card served unsigned: NETWORK_PROOF_KEY is not set")
+        return card
+    from a2a.utils.signing import create_agent_card_signer
+    from jwt import PyJWK
+    from jwt.algorithms import OKPAlgorithm
+
+    kid = network_proof.kid()
+    jwk = {**OKPAlgorithm.to_jwk(network_proof._private(), as_dict=True), "kid": kid}
+    header = {"typ": "JOSE", "alg": "EdDSA", "kid": kid, "jku": f"{base_url}/a2a/keys.json"}
+    return create_agent_card_signer(PyJWK.from_dict(jwk), header)(card)
 
 
 async def agent_name(org: str, agent_id: str) -> str | None:

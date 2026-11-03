@@ -652,10 +652,12 @@ impl Host {
                     // Older releases ended an idle resumed Codex terminal after its history
                     // drained. Its provider and held terminal still run, but no new task can
                     // start while the UI hides that terminal behind Continue. A fresh native
-                    // capture proves it is input-ready; repair that false end without a new writer.
+                    // capture proves the writer is that holder's own live child; a daemon may
+                    // outlive an ended TUI and is not this repair. Reuse the existing writer.
                     let returned_codex_terminal = native.provider == "codex"
                         && native.status == "idle"
                         && native.holder.is_some()
+                        && native.direct_holder
                         && !super::session_states::end_was_meant(mirror)
                         && self.discovery_read_ms.is_none_or(|read| mirror.ended_at_ms.is_none_or(|end| read >= end));
                     // A Codex thread that is idle again and not shared stays ended: reviving it
@@ -3847,6 +3849,7 @@ pub(super) mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -4446,6 +4449,7 @@ pub(super) mod tests {
         native.app = false;
         native.status = "idle".into();
         native.holder = Some("ab12cd34".into());
+        native.direct_holder = true;
         let mut host = test_host(dir, vec![]);
         host.observe(vec![native.clone()]).unwrap();
         let key = native_key(&native);
@@ -4479,11 +4483,12 @@ pub(super) mod tests {
 
     #[test]
     fn local_sessions_codex_terminal_recovery_requires_a_fresh_live_unintended_end() {
-        for case in ["no-holder", "ended-native", "intentional", "stale-discovery"] {
+        for case in ["no-holder", "not-direct", "ended-native", "intentional", "stale-discovery"] {
             let dir = tempfile::tempdir().unwrap();
             let (mut host, key, mut native) = falsely_ended_codex_terminal(dir.path());
             match case {
                 "no-holder" => native.holder = None,
+                "not-direct" => native.direct_holder = false,
                 "ended-native" => native.status = "ended".into(),
                 "intentional" => host.mirrors.get_mut(&key).unwrap().ended_reason = Some(super::super::lifecycle::ON_PURPOSE.into()),
                 "stale-discovery" => {
@@ -6615,6 +6620,7 @@ pub(super) mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -6912,6 +6918,7 @@ pub(super) mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -7041,6 +7048,7 @@ pub(super) mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,

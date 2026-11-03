@@ -126,3 +126,52 @@ def test_agent_originated_ask_is_held_for_its_stand_in_requester_not_self():
         origin_is_person=False,
     )
     assert (d.effect, d.holders) == ("hold", ["user_owner"])
+
+
+def _when_rules(when, effect="allow", rule_id="w1"):
+    rule = r.Rule(
+        id=rule_id, resource="session:*", skill="ask_session", requesters=["org:org_1"], effect=effect, when=when
+    )
+    return R.model_copy(update={"rules": [rule]})
+
+
+def _ask(rules, **kw):
+    return r.decide(
+        rules,
+        requester_person="user_x",
+        resource="session:abc",
+        skill="ask_session",
+        **{**K, "session_person": "user_owner", **kw},
+    )
+
+
+def test_when_intent_matches_allows_only_the_matching_intent():
+    rules = _when_rules(r.When(intent_matches="status of my own session"))
+    assert _ask(rules, intent="Status  of my OWN session").rule == "w1"
+    d = _ask(rules, intent="delete it")
+    assert (d.effect, d.rule) == ("hold", "default")
+
+
+def test_when_operands_equal_requires_every_key():
+    rules = _when_rules(r.When(operands_equal={"text": "status?"}))
+    assert _ask(rules, operands={"text": "status?", "x": "y"}).rule == "w1"
+    assert _ask(rules, operands={"other": "status?"}).rule == "default"
+    assert _ask(rules, operands={"text": "different"}).rule == "default"
+
+
+def test_when_verified_by_in_restricts_proof():
+    rules = _when_rules(r.When(verified_by_in=["origin-message"]))
+    assert _ask(rules, verified_by="origin-message").rule == "w1"
+    assert _ask(rules, verified_by="agent-runtime").rule == "default"
+
+
+def test_rule_with_when_never_matches_without_inputs():
+    rules = _when_rules(r.When(intent_matches="x", operands_equal={"a": "b"}, verified_by_in=["origin-message"]))
+    assert _ask(rules).rule == "default"
+
+
+def test_deny_with_when_still_wins_over_exception():
+    rules = _when_rules(r.When(intent_matches="drop it"), effect="deny", rule_id="d1")
+    d = _ask(rules, intent="drop it", exception={"id": "e1"})
+    assert (d.effect, d.rule) == ("deny", "d1")
+    assert _ask(rules, intent="other", exception={"id": "e1"}).effect == "allow"

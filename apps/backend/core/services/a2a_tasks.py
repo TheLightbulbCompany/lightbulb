@@ -247,6 +247,9 @@ async def _decide_and_store(
         session_person=session_person,
         exception=exception,
         origin_is_person=origin_is_person,
+        operands=op["operands"],
+        intent=claims["intent"],
+        verified_by=claims["requester"]["verified_by"],
     )
     row = {
         "id": str(uuid.uuid4()),

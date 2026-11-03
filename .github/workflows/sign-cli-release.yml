@@ -8,7 +8,10 @@
 # It also signs the two Linux assets' `.sha256` with the release key, which exists only on this
 # Mac (`~/Library/Application Support/lightbulb-release/release.key`), and uploads the `.sig`s.
 #
-# Run after every `v*` release of the CLI: gh workflow run sign-cli-release.yml -f tag=vX.Y.Z
+# Runs by itself every hour: `find` picks the latest CLI release when it has all its assets but
+# no Linux `.sig` yet (this workflow's last upload, so a missing one means it was never signed)
+# and signs it. v0.9.8 and v0.9.9 shipped unsigned because this was
+# a step someone had to remember. By hand: gh workflow run sign-cli-release.yml -f tag=vX.Y.Z
 # Runbook: docs/runbooks/sign-cli-release.md.
 #
 # GitHub-hosted macos-latest on purpose: the self-hosted `macos-desktop` Mac is reserved for
@@ -22,10 +25,12 @@ name: sign-cli-release
         description: Public CLI release tag to sign (e.g. v0.2.4)
         required: true
         type: string
+  schedule:
+  - cron: '23 * * * *'
 permissions:
   contents: read
 concurrency:
-  group: sign-cli-${{ inputs.tag }}
+  group: sign-cli
   cancel-in-progress: false
 env:
   # Same App Store Connect key as desktop-build.yml / the iOS release; IDs are public metadata.
@@ -33,10 +38,48 @@ env:
   APPLE_API_ISSUER: 7c5f3df2-6cda-46fb-b3d5-2ebbceb1dd0e
   SIGN_ID: 'Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)'
   TEAM_ID: WZX4U3C22Y
-  TAG: ${{ inputs.tag }}
   ASSET: lightbulb-macos-arm64.tar.gz
 jobs:
+  find:
+    runs-on: ubuntu-latest # keeps the signing Mac free for desktop builds when there is nothing to sign
+    outputs:
+      tags: ${{ steps.find.outputs.tags }}
+    steps:
+    - id: find
+      run: |-
+        set -euo pipefail
+        if [ -n "$INPUT_TAG" ]; then
+          jq -cn --arg t "$INPUT_TAG" '[$t]' > tags.json
+        else
+          # The latest release only: an older unsigned one is superseded, and the brew step fails
+          # on purpose for a tag the formula no longer names. 15 minutes old at least, so the
+          # public bump-brew has pointed the formula at it.
+          UNTIL="$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+          gh api 'repos/TheLightbulbCompany/cli/releases?per_page=5' | jq -c --arg until "$UNTIL" '
+            [ [ .[] | select((.draft or .prerelease) | not) ][0] // empty
+              | select(.created_at <= $until)
+              | select([.assets[].name] as $a
+                  | ($a | index("lightbulb-macos-arm64.tar.gz.sha256"))
+                    and ($a | index("lightbulb-linux-arm64.tar.gz.sha256"))
+                    and ($a | index("lightbulb-linux-x86_64.tar.gz.sha256"))
+                    and (($a | index("lightbulb-linux-arm64.tar.gz.sha256.sig")) | not))
+              | .tag_name ]' > tags.json
+        fi
+        cat tags.json
+        echo "tags=$(cat tags.json)" >> "$GITHUB_OUTPUT"
+      env:
+        INPUT_TAG: ${{ inputs.tag }}
+        GH_TOKEN: ${{ github.token }}
   sign:
+    needs: find
+    if: needs.find.outputs.tags != '[]'
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        tag: ${{ fromJSON(needs.find.outputs.tags) }}
+    env:
+      TAG: ${{ matrix.tag }}
     runs-on: [self-hosted, macos-desktop] # the native lane; GitHub-hosted macOS is paid for a private repo
     timeout-minutes: 30
     steps:

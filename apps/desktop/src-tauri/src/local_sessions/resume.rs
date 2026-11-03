@@ -195,19 +195,19 @@ fn argv(program: &Path, w: &Wanted, own: bool, daemon: bool, kept: Option<&str>)
         ];
     }
     if w.provider == "codex" {
-        // Root options before the subcommand.
-        vec![
-            program,
-            "--no-daemon".into(),
-            "--sandbox".into(),
-            (if plan { "read-only" } else { "workspace-write" }).into(),
-            "--ask-for-approval".into(),
-            "on-request".into(),
-            "-c".into(),
-            "check_for_update_on_startup=false".into(),
-            "resume".into(),
-            w.conversation_id.clone(),
-        ]
+        // A plan keeps read-only files while networking remains available. Codex's
+        // legacy read-only flag has no network setting; use its documented profile.
+        let mut args = vec![program, "--no-daemon".into()];
+        if plan {
+            let profile = format!("lightbulb-plan-{}", uuid::Uuid::new_v4().simple());
+            args.extend(["-c".into(), format!("default_permissions=\"{profile}\""), "-c".into(),
+                format!("permissions.{profile}={{extends=\":read-only\",network={{enabled=true}}}}")]);
+        } else {
+            args.extend(["--sandbox".into(), "workspace-write".into(), "-c".into(), crate::session_start::CODEX_INTERNET.into()]);
+        }
+        args.extend(["--ask-for-approval".into(), "on-request".into(), "-c".into(),
+            "check_for_update_on_startup=false".into(), "resume".into(), w.conversation_id.clone()]);
+        args
     } else {
         vec![
             program,
@@ -682,10 +682,15 @@ mod tests {
         assert_eq!(argv(claude, &wanted("claude", "default"), false, false, Some("auto"))[4], "plan", "a teammate's resume is plan");
         assert_eq!(argv(claude, &wanted("claude", "plan"), true, false, Some("auto"))[4], "plan", "a plan request stays plan");
         let codex = Path::new("/bin/codex");
-        assert_eq!(
-            argv(codex, &wanted("codex", "default"), false, false, None),
-            ["/bin/codex", "--no-daemon", "--sandbox", "read-only", "--ask-for-approval", "on-request", "-c", "check_for_update_on_startup=false", "resume", CONV]
-        );
+        let plan = argv(codex, &wanted("codex", "default"), false, false, None);
+        assert_eq!(&plan[..2], ["/bin/codex", "--no-daemon"]);
+        assert!(plan.iter().any(|arg| arg.starts_with("default_permissions=\"lightbulb-plan-")));
+        assert!(plan.iter().any(|arg| arg.contains("extends=\":read-only\",network={enabled=true}")));
+        assert!(!plan.iter().any(|arg| arg == "--sandbox" || arg == "workspace-write" || arg == "danger-full-access"));
+        assert!(plan.windows(2).any(|pair| pair == ["--ask-for-approval", "on-request"]));
+        assert_eq!(&plan[plan.len()-2..], ["resume", CONV]);
+        let owner = argv(codex, &wanted("codex", "default"), true, false, None);
+        assert!(owner.iter().any(|arg| arg == crate::session_start::CODEX_INTERNET));
         assert_eq!(argv(codex, &wanted("codex", "default"), true, false, None)[3], "workspace-write");
         // A resumed Claude Code session runs in the classic renderer, as a new one does (owner ruling 2026-10-07).
         let classic = |argv: &[String]| crate::holder::run::provider_environment(vec![], argv).iter().any(|(k, _)| k == crate::holder::run::CLASSIC_RENDERER);

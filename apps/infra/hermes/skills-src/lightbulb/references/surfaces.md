@@ -132,6 +132,13 @@ without a held question keep their terminal-only prompt until their next capture
 Conversation messages use normal app typography; raw structured tool results stay folded
 behind **show output**. A control restriction is explained once.
 
+Lightbulb-launched Codex sessions have Internet access by default, including Continue and
+read-only plan sessions. Internet access is separate from file access and approval mode:
+editing stays within the workspace, plans keep read-only files, and approvals still apply.
+A managed policy can still deny networking; daemon resume reports that denial rather than
+silently presenting a session without the requested access. An already running session must
+be reopened to receive new launch defaults.
+
 **Session browser** (desktop app on the session's Mac, sharing on): a shared Claude Code or
 Codex session browses with its `lightbulb-browser` tools in that Mac's "Lightbulb agent"
 Chrome, with the workspace's sign-ins, exactly as a run does after `lightbulb_desktop

@@ -151,7 +151,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
     </header>
     {app.state === "failed"
       ? <div className="canvas__notice"><Problem raw={app.error?.message ?? null}>The last publish didn&apos;t land.{canManage ? " Press Publish to try again, or ask" : " Ask"} the agent in {room}.</Problem></div>
-      : pending && <p className="canvas__notice">{pending}</p>}
+      : pending && !app.stuck && <p className="canvas__notice">{pending}</p>}
     {liveAppFailed && <div className="canvas__notice"><Problem raw={app.error?.message ?? null}>The last version didn&apos;t go live. People still see the version before it.</Problem></div>}
     {putBackLine?.id === app.app_id && <p role="status" className="canvas__notice">{putBackLine.text}</p>}
     {askable && <AskAgent key={app.app_id} app={app} error={phase.k === "failed" ? phase.msg : undefined} />}

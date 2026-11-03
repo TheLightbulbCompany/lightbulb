@@ -50,6 +50,21 @@ describe("AppView", () => {
     expect(screen.queryByText(/looking at the preview/)).toBeNull();
   });
 
+  it("a stuck building app shows only the stuck line, not the making-the-preview line", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ state: "building", live_version: null, live_url: null, preview_url: null, stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
+    expect(screen.getByText(/^Stopped at building\./)).toBeTruthy();
+    expect(screen.queryByText(/making the preview/)).toBeNull();
+  });
+
+  it("stuck: null keeps the usual preview notice", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", stuck: null })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    expect(screen.getByText(/You're looking at the preview\./)).toBeTruthy();
+    expect(screen.queryByText(/Stopped at/)).toBeNull();
+  });
+
   it("a failed publish says so in words, keeps the build error under Details, and leaves Publish available", async () => {
     open.mockResolvedValue("https://p.apps.test/?pass=1");
     render(<AppView app={app({ state: "failed", live_version: null, live_url: null, preview_url: "https://p", can_publish: true, error: { message: 'Command "npx drizzle-kit migrate && next build" exited with 1' } })} onBack={vi.fn()} />);

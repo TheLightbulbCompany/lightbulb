@@ -211,6 +211,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     const node = scroller.current;
     if (!node) return;
     atBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_SLACK;
+    // An older page can be in flight while the reader keeps moving. Preserve where
+    // they moved to, rather than restoring the position captured when the read began.
+    if (anchor.current) anchor.current.top = node.scrollTop;
     if (history.loading) return;
     if (node.scrollTop < SCROLLBACK_SLACK && history.hasOlder) {
       anchor.current = { height: node.scrollHeight, top: node.scrollTop };

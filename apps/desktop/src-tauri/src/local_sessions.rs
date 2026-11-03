@@ -2,6 +2,7 @@
 mod approval;
 mod claude;
 mod engine_view;
+mod cursor_image;
 pub(crate) mod codex;
 mod hooked;
 pub mod enrollment;
@@ -1038,8 +1039,9 @@ impl Cursor {
                     return Err("history-gap".into());
                 }
                 // Private Codex compactions and Claude request-cache blobs have no
-                // public output. Scan to a bounded newline, then validate all JSON
-                // without allocating the private payload. Public oversized rows fail.
+                // public output. Codex tool-image rows retain text and metadata while
+                // discarding only known image data URLs. Scan a bounded complete row
+                // and validate all JSON; oversized public text still fails.
                 let mut length = n;
                 let mut complete = bytes.ends_with(b"\n");
                 drop(bytes);
@@ -1058,22 +1060,31 @@ impl Cursor {
                 }
                 reader.seek(SeekFrom::Start(self.offset)).map_err(|_| "history-gap")?;
                 let mut parser = serde_json::Deserializer::from_reader((&mut reader).take(length as u64));
-                let kind = if provider == "codex" {
-                    let compacted = PrivateCodexCompaction::deserialize(&mut parser).map_err(|_| "history-gap")?;
-                    if compacted.kind != "compacted" { return Err("history-gap".into()); }
-                    "compacted"
+                let projected = if provider == "codex" {
+                    let compacted = PrivateCodexCompaction::deserialize(&mut parser);
+                    if compacted.is_ok_and(|row| row.kind == "compacted") {
+                        parser.end().map_err(|_| "history-gap")?;
+                        json!({"type":"compacted"})
+                    } else {
+                        drop(parser);
+                        reader.seek(SeekFrom::Start(self.offset)).map_err(|_| "history-gap")?;
+                        let mut image_parser = serde_json::Deserializer::from_reader((&mut reader).take(length as u64));
+                        let row = cursor_image::read(&mut image_parser).map_err(|_| "history-gap")?;
+                        image_parser.end().map_err(|_| "history-gap")?;
+                        row
+                    }
                 } else {
                     let request = PrivateClaudeRequest::deserialize(&mut parser).map_err(|_| "history-gap")?;
                     if request.kind != "api-request-blob" { return Err("history-gap".into()); }
-                    "api-request-blob"
+                    parser.end().map_err(|_| "history-gap")?;
+                    json!({"type":"api-request-blob"})
                 };
-                parser.end().map_err(|_| "history-gap")?;
                 let current = secure_file(path)?.metadata().map_err(|_| "history-gap")?;
                 if current.ino() != meta.ino() || current.len() < self.offset + length as u64 {
                     return Err("history-gap".into());
                 }
                 reader.seek(SeekFrom::Start(self.offset + length as u64)).map_err(|_| "history-gap")?;
-                rows.push(json!({"type":kind}));
+                rows.push(projected);
                 self.offset += length as u64;
                 consumed += length;
                 continue;
@@ -2905,6 +2916,68 @@ mod tests {
             fs::write(&path, row).unwrap();
             let mut cursor = Cursor::default();
             assert_eq!(cursor.read(&path, "claude").unwrap_err(), "history-gap");
+            assert_eq!(cursor.offset, 0);
+        }
+    }
+
+    fn codex_image_output_row() -> Value {
+        let mut output = vec![json!({"type":"input_text", "text":"t".repeat(47)})];
+        for length in [688643, 652363, 816271, 598883, 558067, 587843, 589199, 734887, 653119] {
+            let prefix = "data:image/jpeg;base64,";
+            output.push(json!({"type":"input_image", "image_url":format!("{prefix}{}", "A".repeat(length-prefix.len())), "detail":"auto"}));
+        }
+        json!({"timestamp":"2026-11-02T00:00:00Z", "ordinal":202, "type":"response_item",
+            "payload":{"type":"custom_tool_call_output", "id":null, "call_id":"call-images", "output":output,
+                "internal_chat_message_metadata_passthrough":{"nested":[1,true,"keep"]}},
+            "metadata":{"source":"fixture", "ordinal":202}})
+    }
+
+    #[test]
+    fn local_sessions_cursor_preserves_codex_image_output_text_metadata_and_following_public_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let mut expected = codex_image_output_row();
+        let encoded = format!("{expected}\n");
+        assert!(encoded.len() > MAX_JSONL_ROW);
+        let public = json!({"type":"event_msg", "payload":{"type":"item_completed",
+            "item":{"type":"UserMessage", "id":"next", "content":[{"type":"text", "text":"Still visible"}]}}});
+        fs::write(&path, format!("{encoded}{public}\n")).unwrap();
+        for block in expected["payload"]["output"].as_array_mut().unwrap().iter_mut().skip(1) {
+            block["image_url"] = json!("[image data omitted]");
+        }
+        let mut cursor = Cursor::default();
+        assert_eq!(cursor.read(&path, "codex").unwrap(), vec![expected]);
+        assert_eq!(cursor.offset, encoded.len() as u64);
+        let following = cursor.read(&path, "codex").unwrap();
+        assert_eq!(following, vec![public]);
+        assert_eq!(normalize_public_message("codex", "s", &following[0]).unwrap()[0]["text"], "Still visible");
+    }
+
+    #[test]
+    fn local_sessions_cursor_refuses_oversized_unknown_text_and_invalid_image_rows_without_advancing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let original = codex_image_output_row();
+        let mut wrong_kind = original.clone();
+        wrong_kind["type"] = json!("event_msg");
+        let mut public_text = original.clone();
+        public_text["payload"]["output"][0]["text"] = json!("x".repeat(MAX_JSONL_ROW));
+        let mut wrong_block = original.clone();
+        wrong_block["payload"]["output"][1]["type"] = json!("input_text");
+        let mut invalid_data = original.clone();
+        invalid_data["payload"]["output"][1]["image_url"] = json!("data:image/jpeg;base64,invalid!");
+        let mut unknown_mime = original.clone();
+        for block in unknown_mime["payload"]["output"].as_array_mut().unwrap().iter_mut().skip(1) {
+            block["image_url"] = json!(block["image_url"].as_str().unwrap().replace("image/jpeg", "video/mpeg"));
+        }
+        let mut rows: Vec<String> = [wrong_kind, public_text, wrong_block, invalid_data, unknown_mime]
+            .into_iter().map(|row| format!("{row}\n")).collect();
+        rows.push(original.to_string()); // A complete JSON value with no durable newline is still partial.
+        rows.push(format!("{original} trailing\n"));
+        for contents in rows {
+            fs::write(&path, contents).unwrap();
+            let mut cursor = Cursor::default();
+            assert_eq!(cursor.read(&path, "codex").unwrap_err(), "history-gap");
             assert_eq!(cursor.offset, 0);
         }
     }

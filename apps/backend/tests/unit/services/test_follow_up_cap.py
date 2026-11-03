@@ -56,3 +56,29 @@ async def test_cap_counts_since_the_human_message_and_notice_posts_once(table, r
 
     await _post(room_id, client_id="h-2")  # a human reply resets the count
     assert (await messaging.create_follow_up(OWNER, _req(12, human["messageId"]))).status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_notice_threads_under_a_top_level_trigger(table, roster):  # noqa: F811
+    room_id, _ = await _room()
+    ROOM[0] = room_id
+    human = await _post(room_id, client_id="h-1")
+    for i in range(10):
+        await messaging.create_follow_up(OWNER, _req(i, human["messageId"]))
+    with pytest.raises(ApiProblem):
+        await messaging.create_follow_up(OWNER, _req(10, human["messageId"]))
+    (notice,) = await _notices(room_id)
+    assert notice["threadRootMessageId"] == human["messageId"]
+
+
+@pytest.mark.asyncio
+async def test_without_a_human_message_only_the_last_hour_counts(table, roster):  # noqa: F811
+    room_id, _ = await _room()
+    ROOM[0] = room_id
+    trigger = await _post(room_id, client_id="h-1", author={"kind": "agent", "id": FRIDAY, "displayName": "Friday"})
+    assert await repo.latest_human_message(room_id) is None
+    old = "2020-01-01T00:00:00+00:00"
+    with patch("core.repositories.messaging_repo.utc_now_iso", return_value=old):
+        for i in range(10):
+            await messaging.create_follow_up(OWNER, _req(i, trigger["messageId"]))
+    assert (await messaging.create_follow_up(OWNER, _req(10, trigger["messageId"]))).status == "accepted"

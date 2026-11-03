@@ -106,7 +106,7 @@ def test_unknown_room_member_or_trigger_is_404(client, repo, piece, value):
 def test_the_room_agent_cap_is_429(client, repo):
     repo["count"].return_value = 10
     assert client.post(URL, json=BODY, headers=H).status_code == 429
-    assert repo["count"].call_args.args == (ROOM, AGENT, None)
+    assert repo["count"].call_args.args[:2] == (ROOM, AGENT)
     repo["notice"].assert_awaited_once()
     repo["create"].assert_not_awaited()
 

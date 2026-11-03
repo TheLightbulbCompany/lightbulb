@@ -4819,7 +4819,9 @@ async def _post_follow_up_cap_notice(
     to post never hides the 429."""
     try:
         name = next((a["name"] for a in await load_agent_roster(owner_id) if a["id"] == agent_id), "Agent")
-        thread_root = trigger.get("threadRootMessageId")
+        meta = await messaging_repo.get_room(room_id) or {}
+        thread_root = trigger.get("threadRootMessageId") or (None if meta.get("kind") == "dm" else trigger["messageId"])
+        root_seq = trigger.get("threadRootSeq") if trigger.get("threadRootMessageId") else trigger["messageSeq"]
         marker = f"{room_id}:{agent_id}:followup-cap:{(human or {}).get('messageId', 'none')}"
         await messaging_repo.create_message(
             room_id=room_id,
@@ -4836,7 +4838,7 @@ async def _post_follow_up_cap_notice(
             dispatch_targets=[],
             source_agent_id=agent_id,
             client_message_id=None,
-            thread_root_seq=trigger.get("threadRootSeq") if thread_root else None,
+            thread_root_seq=root_seq if thread_root else None,
         )
         put_metric("messaging.followup.cap_notice")
     except Exception:
@@ -4858,7 +4860,8 @@ async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpR
         put_metric("messaging.followup.created", dimensions={"status": "replayed"})
         return FollowUpResponse(status="replayed")
     human = await messaging_repo.latest_human_message(room_id)
-    since = human["createdAt"] if human else None
+    # No human message yet: count the last hour only, so a human-less room is not capped for the 7-day TTL.
+    since = human["createdAt"] if human else datetime.fromtimestamp(time.time() - 3600, timezone.utc).isoformat()
     if await messaging_repo.count_follow_ups_since(room_id, agent_id, since) >= FOLLOW_UP_CAP_SINCE_HUMAN:
         await _post_follow_up_cap_notice(owner_id, room_id, agent_id, human, trigger)
         put_metric("messaging.followup.created", dimensions={"status": "rate_limited"})

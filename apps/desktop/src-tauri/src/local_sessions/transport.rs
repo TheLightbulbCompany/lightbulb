@@ -629,11 +629,10 @@ impl Host {
                     }
                 }
                 if mirror.ended_at.is_some() {
-                    // The session is over: a hook, its own pid or the engine said so, and a
-                    // listing cannot argue (but for Claude, below). Only a new process on the same identity
-                    // (a resume) brings it back. The same process under a generation
-                    // minted by an older formula is not a resume: reviving it would
-                    // register an "ended" status the relay rejects (INVALID_REQUEST).
+                    // An end is authoritative unless a new process resumes the conversation,
+                    // or fresh native evidence below proves the old end was false. A generation
+                    // minted by an older formula alone is not a resume: that would register an
+                    // "ended" status the relay rejects (INVALID_REQUEST).
                     let resumed_codex_activity = mirror.ended_reason.as_deref() == Some("exited")
                         && native.provider == "codex"
                         && mirror.ended_at.is_some_and(|ended_at| {
@@ -650,13 +649,22 @@ impl Host {
                         // A pass that read before the end says nothing about it. A true false end
                         // loses nothing: the returning row wakes a fresh pass (`apply_engine`).
                         && self.discovery_read_ms.is_none_or(|read| mirror.ended_at_ms.is_none_or(|end| read >= end));
+                    // Older releases ended an idle resumed Codex terminal after its history
+                    // drained. Its provider and held terminal still run, but no new task can
+                    // start while the UI hides that terminal behind Continue. A fresh native
+                    // capture proves it is input-ready; repair that false end without a new writer.
+                    let returned_codex_terminal = native.provider == "codex"
+                        && native.status == "idle"
+                        && native.holder.is_some()
+                        && !super::session_states::end_was_meant(mirror)
+                        && self.discovery_read_ms.is_none_or(|read| mirror.ended_at_ms.is_none_or(|end| read >= end));
                     // A Codex thread that is idle again and not shared stays ended: reviving it
                     // only defers its end behind an upload and a register it never makes.
                     if native.provider == "codex" && native.status == "idle" && !mirror.shared {
                         continue;
                     }
                     if mirror.native.process == native.process {
-                        if !resumed_codex_activity && !returned_claude {
+                        if !resumed_codex_activity && !returned_claude && !returned_codex_terminal {
                             continue;
                         }
                         let next_generation = uuid::Uuid::new_v4().to_string();
@@ -4431,6 +4439,62 @@ pub(super) mod tests {
         mirror.pending = None;
         assert!(mirror.advance());
         assert!(!mirror.withheld(), "promoted: a plain terminal shares its conversation (owner ruling 2026-10-11)");
+    }
+
+    fn falsely_ended_codex_terminal(dir: &Path) -> (Host, String, NativeSession) {
+        let mut native = test_native("5eed0010-0000-4000-8000-000000000010");
+        native.app = false;
+        native.status = "idle".into();
+        native.holder = Some("ab12cd34".into());
+        let mut host = test_host(dir, vec![]);
+        host.observe(vec![native.clone()]).unwrap();
+        let key = native_key(&native);
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.session_id = Some(SID.into());
+        mirror.registered();
+        host.end_session(&key, "exited").unwrap();
+        (host, key, native)
+    }
+
+    #[test]
+    fn local_sessions_a_live_codex_terminal_repairs_its_same_process_false_end_without_a_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, native) = falsely_ended_codex_terminal(dir.path());
+        let old = host.mirrors[&key].generation.clone();
+        host.observe(vec![native.clone()]).unwrap();
+        let mirror = &host.mirrors[&key];
+        assert!(mirror.ended_at.is_none(), "a verified idle terminal is still open");
+        assert_eq!(mirror.native.status, "idle");
+        assert_eq!(mirror.native.process, native.process, "no second writer or new prompt needed");
+        assert_ne!(mirror.generation, old, "fence the ended run's receipts");
+        assert_eq!(mirror.previous_generation.as_deref(), Some(old.as_str()));
+        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), Some(key.clone()));
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.registered();
+        mirror.pending = None;
+        mirror.queue.clear();
+        host.finish_deferred_end(&key).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none(), "registration and history drain leave the terminal usable");
+    }
+
+    #[test]
+    fn local_sessions_codex_terminal_recovery_requires_a_fresh_live_unintended_end() {
+        for case in ["no-holder", "ended-native", "intentional", "stale-discovery"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut host, key, mut native) = falsely_ended_codex_terminal(dir.path());
+            match case {
+                "no-holder" => native.holder = None,
+                "ended-native" => native.status = "ended".into(),
+                "intentional" => host.mirrors.get_mut(&key).unwrap().ended_reason = Some(super::super::lifecycle::ON_PURPOSE.into()),
+                "stale-discovery" => {
+                    host.mirrors.get_mut(&key).unwrap().ended_at_ms = Some(5000);
+                    host.discovery_read_ms = Some(4999);
+                }
+                _ => unreachable!(),
+            }
+            host.observe(vec![native]).unwrap();
+            assert!(host.mirrors[&key].ended_at.is_some(), "{case} cannot revive the run");
+        }
     }
 
     #[test]

@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from core.repositories import a2a_repo
+from core.services import a2a_tasks
+from core.services.a2a_rules import Rules
 from core.services.a2a_authority import operands_hash
 from tests.unit.routers.test_a2a_hold import (  # noqa: F401 (hold_env is a fixture)
     AGENT,
@@ -220,3 +222,14 @@ def test_a_failed_redecide_does_not_strand_the_others_and_a_retried_put_repairs_
         row = asyncio.run(a2a_repo.get_task(ORG, i))
         assert row["state"] == "held" and row["policyRevision"] == rev and row["holders"] == [OWNER, SECOND]
         assert [x["decision"] for x in records(client, i)] == ["hold", "redecided"]
+
+
+def test_redecide_under_a_superseded_document_leaves_the_row_alone(client, app, env):
+    task_id = send(client)["id"]
+    row = asyncio.run(a2a_repo.get_task(ORG, task_id))
+    allow_all = when_text("ok", "please do the thing", "allow")
+    stale = Rules.model_validate({**RULES, "revision": "older", "rules": [allow_all]})  # stored is r-1
+    assert asyncio.run(a2a_tasks._redecide(ORG, row, stale, now=int(time.time()))) == row
+    assert [x["decision"] for x in records(client, task_id)] == ["hold"]
+    assert get(client, task_id)["status"]["state"] == "TASK_STATE_AUTH_REQUIRED"
+    env.send.assert_not_awaited()

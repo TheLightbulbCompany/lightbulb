@@ -10,7 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from core.auth import AuthContext, get_current_user, security
 from core.config import settings
-from core.services import hosted_mcp
+from core.services import agent_keys, hosted_mcp
 
 RESOURCE_A2A = f"{settings.PUBLIC_API_BASE.rstrip('/')}/a2a"
 SEND_SCOPE = "lightbulb:a2a:send"
@@ -41,6 +41,8 @@ def _verifier() -> hosted_mcp.ClerkOAuthVerifier:
 
 async def a2a_caller(credentials: HTTPAuthorizationCredentials = Depends(security)) -> A2ACaller:
     token = credentials.credentials
+    if token.startswith(agent_keys.PREFIX):  # a per-agent key never leaves the process, not even to Clerk
+        raise HTTPException(401, detail={"code": "invalid_token"})
     if "." in token:  # a JWT: the signed-in session path
         return session_caller(await get_current_user(credentials))
     access = await _verifier().verify_token(token)

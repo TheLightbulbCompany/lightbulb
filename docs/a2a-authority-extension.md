@@ -101,13 +101,13 @@ One JSON document per workspace:
 
 `resource` matches exactly or by a trailing `*`. `requesters` entries are a person id, `org:<id>`, or `agent:<id>` (matches any agent in the chain, including an OAuth client id). `effect` is `allow`, `deny` or `hold`. `@session-person` stands for the person who owns the target laptop session. Holders are chosen by the exact key, else the longest wildcard prefix.
 
-**`when` clauses.** A rule may carry `when`, extra conditions that must all hold for the rule to match; every clause that is set must match (AND).
+**`when` clauses.** A rule may carry `when`, extra conditions that must all hold for the rule to match; every clause that is set must match (AND). Field names are camelCase as the API returns them; snake_case is accepted on input only.
 
 | Field | Type | Matches when |
 |---|---|---|
-| `operands_equal` | object of strings | every key is present in the request's operands with exactly that value |
-| `intent_matches` | string | the request's intent equals it after both are case-folded and whitespace is collapsed |
-| `verified_by_in` | list of strings | the requester's `verified_by` is one of them |
+| `operandsEqual` | object of strings | every key is present in the request's operands with exactly that value |
+| `intentMatches` | string | the request's intent equals it after both are case-folded and whitespace is collapsed |
+| `verifiedByIn` | list of strings | the requester's `verified_by` is one of them |
 
 A clause with no input to test (no operands, no intent, no `verified_by`) does not match, so the rule does not apply. A `deny` rule whose `when` matches still wins over an exception; a `deny` rule whose `when` does not match is simply not a hit.
 

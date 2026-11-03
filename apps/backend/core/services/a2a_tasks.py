@@ -592,6 +592,8 @@ async def decide(
     if auth.user_id == row["requester"] and _claims(row["authority"])["requester"]["verified_by"] != "agent-runtime":
         raise A2AError(403, "self")
     holders = row.get("holders") or []
+    # Checked against the holders before any re-decide below: in the rules-change race a newly added
+    # holder gets 403 and a removed holder's press still triggers the re-decide (accepted).
     if auth.user_id not in holders:
         raise A2AError(403, "not_holder")
     row = await _current(org, row, now)
@@ -711,19 +713,23 @@ def revision(rules: Rules) -> str:
 
 async def put_rules(auth: AuthContext, org: str, rules: Rules, *, now: int | None = None) -> dict:
     """Store the rules under a server-assigned revision; a new revision then re-decides every held task
-    under it (``_redecide``). A hold decided under the old rules but stored after the scan is caught
-    by ``decide``'s revision check. Returns the stored document."""
+    under it (``_redecide``), and any PUT re-decides a held task left under an older revision (one
+    whose re-decide failed, or a hold stored after the scan; ``decide``'s revision check also catches
+    those). Returns the stored document."""
     if not auth.is_org_admin:
         raise A2AError(403, "admin")
     now = int(time.time()) if now is None else now
     doc = {**rules.model_dump(), "revision": revision(rules)}
-    old = await a2a_repo.get_rules(org)
     await a2a_repo.put_rules(org, doc)  # first: a hold made from now on is decided by the new rules
-    if (old or {}).get("revision", "default") != doc["revision"]:
-        stored = Rules.model_validate(doc)
-        # ponytail: one task at a time inside the request; a queue when an org holds hundreds
-        for row in await a2a_repo.list_held_tasks(org):
+    stored = Rules.model_validate(doc)
+    # ponytail: one task at a time inside the request; a queue when an org holds hundreds
+    for row in await a2a_repo.list_held_tasks(org):
+        if row["policyRevision"] == doc["revision"]:
+            continue  # already decided by this document; a retried PUT repairs any task that failed
+        try:
             await _redecide(org, row, stored, now=now)
+        except Exception:
+            logger.exception("a2a re-decide failed", extra={"org": org, "task": row["id"]})
     return doc
 
 

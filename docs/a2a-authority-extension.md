@@ -2,7 +2,7 @@
 
 Extension URI: `https://thelightbulb.company/a2a/ext/authority/v1`
 
-This page describes what Lightbulb's A2A endpoint does today (phases 1 and 1b). Source: `core/services/a2a_authority.py`, `a2a_auth.py`, `a2a_rules.py`, `a2a_tasks.py` and `routers/a2a.py` in `apps/backend`.
+This page describes what Lightbulb's A2A endpoint does today. Source: `core/services/a2a_authority.py`, `a2a_auth.py`, `a2a_rules.py`, `a2a_tasks.py` and `routers/a2a.py` in `apps/backend`.
 
 ## What it is
 
@@ -85,7 +85,7 @@ Discovery: `GET /.well-known/oauth-protected-resource/a2a` names the resource, C
 
 An OAuth caller is still a person: `requester.person` is the signed-in user who granted access, `requester.verified_by` is `clerk-oauth`, and `chain[0].agent` is the OAuth client id. Rules name the client as `agent:<client_id>` in `requesters`, and a `when` clause can require `verified_by` of `clerk-oauth`.
 
-Operator step: the two scopes must be created in the Clerk Dashboard before a client can be granted them. The setting `A2A_ACCEPT_MCP_AUDIENCE` (default off) also accepts a grant issued for the `/mcp` audience that carries an A2A scope, for the case where Clerk does not echo the requested `/a2a` resource into `aud`.
+Operator step: the two scopes must be created in the Clerk Dashboard before a client can be granted them.
 
 ## The rule document and evaluation
 
@@ -142,7 +142,7 @@ Task states (A2A names): `working` is `TASK_STATE_WORKING`; `held` is `TASK_STAT
 - A hold expires after 24 hours: `canceled`, reason `expired`.
 - A `working` task not finished 24 hours after dispatch becomes `failed`, reason `undeliverable`. Both expiries are noticed when the task is read (or, for `working`, when a reply arrives) and written once with a signed record; a reply after that completes nothing.
 - A failed dispatch is `failed`, reason `dispatch_failed` (or `undeliverable` for a laptop session: no linked computer, or the send was refused).
-- A new policy revision re-decides held tasks (see Revision); only a task stored before phase 1b is canceled as `policy_changed`.
+- A new policy revision re-decides held tasks (see Revision); only a task stored before decision inputs were recorded is canceled as `policy_changed`.
 - When a workspace agent replies to the dispatched message, the reply becomes the task's artifact and the task `completed`.
 - An `ask_session` the laptop session accepted is `completed` at once, with artifact `{"artifactId": <request id>, "parts": [{"text": "delivered"}]}` and `delivered: true` in the metadata. The session's reply does not come back to the task in phase 1.
 
@@ -154,7 +154,7 @@ Each state change appends a signed record (JWS, `typ` `lightbulb-a2a-record`, sa
   "input": { "requester", "chain", "operation", "intent" } }
 ```
 
-`decision` is one of `allow`, `deny`, `hold`, `allow_by_holder`, `deny_by_holder`, `allow_by_policy`, `deny_by_policy`, `redecided`, `completed`, `failed`, `canceled`. A rejection by rule or by `no_holder` is recorded as `deny`. `rule` is a rule id, `default`, `outside_org`, `exception:<id>`, `holder`, `no_holder`, or a reason (`expired`, `policy_changed` for pre-1b rows, `dispatch_failed`, `undeliverable`). A re-decide records the rule that now applies. `input` is the snapshot the decision saw. A record is readable by the requester, the task's holders and workspace admins.
+`decision` is one of `allow`, `deny`, `hold`, `allow_by_holder`, `deny_by_holder`, `allow_by_policy`, `deny_by_policy`, `redecided`, `completed`, `failed`, `canceled`. A rejection by rule or by `no_holder` is recorded as `deny`. `rule` is a rule id, `default`, `outside_org`, `exception:<id>`, `holder`, `no_holder`, or a reason (`expired`, `policy_changed` for rows stored before decision inputs were recorded, `dispatch_failed`, `undeliverable`). A re-decide records the rule that now applies. `input` is the snapshot the decision saw. A record is readable by the requester, the task's holders and workspace admins.
 
 ## Card signature
 
@@ -172,7 +172,7 @@ The Agent Card carries a JWS signature made with the issuer key that `GET /a2a/k
 | `GET`, `PUT /a2a/{org}/rules` | read or replace the rule document (workspace admins); `PUT` returns the stored document with its server revision |
 | `POST /api/v1/internal/a2a/{owner}/ask-session` | a hosted agent asks a laptop session; authenticated by the runtime's hook token, not by users |
 
-`decide` errors: 404 `not_found`; 403 `self` (the requester, unless the task's requester is an agent run's stand-in, `verified_by: agent-runtime`), 403 `not_holder`; 409 `expired`, 409 `not_held` (already answered, canceled, rejected or never held, including a row from before phase 1b that a rules change canceled). A second answer to the same task loses.
+`decide` errors: 404 `not_found`; 403 `self` (the requester, unless the task's requester is an agent run's stand-in, `verified_by: agent-runtime`), 403 `not_holder`; 409 `expired`, 409 `not_held` (already answered, canceled, rejected or never held, including a row stored before decision inputs were recorded that a rules change canceled). A second answer to the same task loses.
 
 **Asking the holder.** Each holder gets a direct message from the agent with the operation and resource, the requester and the chain (`person → agent` ids), the first 200 characters of the intent, the first 500 characters of the operand text (or the operands as compact JSON), and the `decide` URL. The message ends with an OpenUI card (a fenced block with language `openui-lang`) holding an Approve and a Deny button. The `decide` route stays available with a Lightbulb sign-in token.
 

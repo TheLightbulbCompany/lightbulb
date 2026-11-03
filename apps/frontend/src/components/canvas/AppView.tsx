@@ -13,7 +13,7 @@ import { Problem, displayName, refusalCode, roomOf, statusLine } from "./appText
 import "./canvas.css";
 
 /** "Ask the agent to fix it": one message in the app's room, as the person. Remounts per failure, so a new one can ask again. */
-function AskAgent({ app, error }: { app: AppRow; error?: string }) {
+export function AskAgent({ app, error }: { app: AppRow; error?: string }) {
   const { askAgent } = useApps();
   const [state, setState] = useState<"idle" | "asking" | "asked" | { status?: number; code?: string; raw: string }>("idle");
   const room = roomOf(app);

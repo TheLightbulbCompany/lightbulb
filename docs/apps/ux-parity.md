@@ -20,7 +20,7 @@ Emergent was seen on 31 Oct 2026, on one `pilot-tracker` request.
 | 13 | Publish | Publish button, health check | Run 3: worked, 17 min with review. Run 1 published without being asked; refused from #4575 | UNTESTED |
 | 14 | Undo | Rollback | Run 3: Canvas put back v1 in seconds, data kept | MATCH |
 | 15 | Share | Public link | Run 3: public worked about a minute after confirming; back to room after | MATCH |
-| 16 | Stuck run | Pauses, refunds, says so | Sits at building or checking | GAP |
+| 16 | Stuck run | Not yet seen | App marks itself stopped after 5 quiet minutes and tells the room (#4589); not yet seen firing in prod | UNTESTED |
 | 17 | Edit by pointing at the page | Edit toolbar on the preview | None | GAP |
 
 Not yet seen on Emergent: publish, change, undo, a stuck run, and whether its app works (it needs a person to enter its password).
@@ -56,5 +56,17 @@ Same wording every run, sent to an agent in a room, with nobody stepping in exce
 | 1 | Marketing site | 15 min (31 to a working form) | Works after the agent fixed a crash | 1 answer, 1 card | Published unasked |
 | 2 | Sign-up form | 8.5 min | Works | 1 card | Promised an email it cannot send |
 | 4 | Dashboard | 9 min | Works | 1 card | Sample totals shown as "Live data" |
+| 5 | Customer portal | 10.5 min | Staff side works; customer isolation untested | 1 card | None |
+| 6 | Booking | none | Failed: the agent filed its own Board Approval instead of `lightbulb app up`; no app was created | 1 card (wrong one) | Said it was "built and clean" with no app |
+| 7 | Content site | 43 min | Failed: no way to write a post; the agent's last result was dropped by the room follow-up cap (3/hour) and it went silent 14 h | 1 card | None found |
+| 8 | Inventory | 30 min (4 min "ready" was the starter placeholder) | Works: add, edit, low-stock flag | 1 card | Canvas called the placeholder a preview with Publish |
+| 9 | Team tool (time off) | 55 min | Works: request, manager approve | 1 card | Preview full of "Verify test" rows left by `lightbulb app verify` |
+| 10 | Job tracker | none | Failed: sent 20 s after run 9, the agent took both as one turn and never started it | none | Nothing said it was skipped |
 
-Times exclude my own delay answering. 6 requests and the free-tier repeat remain.
+Runs 8–10 used shorter wording than the list above (inventory for the office, time off instead of team requests). Times exclude my own delay answering. Score so far: 7 of 10 working, median first usable preview about 15 min.
+
+### What runs 6–10 changed (3 Nov 2026)
+
+- Approval now carries an app to its preview by itself (#4583): run 8 went from approval to deployed in 2 min.
+- The app owns its run (#4589): `progress_at`, linked agent runs, a "stopped" line within 5 min; the follow-up cap is 10 per human message and says when it triggers.
+- Open: the starter placeholder counts as "ready"; the agent shows nothing until its whole review loop ends (starter `AGENTS.md` says "post nothing until done"), so first usable preview is 30–55 min against Emergent's ~5; verify leaves test rows in the preview; two requests close together become one turn.

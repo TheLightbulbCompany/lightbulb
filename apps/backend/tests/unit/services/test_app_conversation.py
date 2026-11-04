@@ -141,6 +141,9 @@ async def test_a_person_starting_from_the_cli_gets_the_ceo_and_a_workspace_app(c
 
 async def test_two_starts_for_one_name_make_one_app_and_one_request(chat, monkeypatch):
     first = await _start()
+    # The builder took it up (a fresh run in the conversation): a retry is the same request, said once.
+    run = {"status": "open", "dispatchedAt": svc.utc_now_iso()}
+    monkeypatch.setattr(svc.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[run]))
     again = await _start()
     # The owner index lags a create: a racing start finds the winner through the name guard.
     monkeypatch.setattr(svc.apps_repo, "get_by_name", AsyncMock(return_value=None))
@@ -148,6 +151,21 @@ async def test_two_starts_for_one_name_make_one_app_and_one_request(chat, monkey
     assert first["app_id"] == again["app_id"] == raced["app_id"]
     assert len(await svc.apps_repo.list_for_owner(OWNER)) == 1
     assert len(chat.posts) == 1
+
+
+async def test_a_second_start_is_heard_when_it_is_new_or_nobody_is_building(chat, monkeypatch):
+    await _start()
+    # Nobody took the request up (no run, no source): a retry says it again, which wakes the builder.
+    await _start()
+    assert len(chat.posts) == 2 and _woken(chat.posts[-1]) == [FORGE]
+    # Someone else's request while the builder works is its own line, never dropped.
+    run = {"status": "open", "dispatchedAt": svc.utc_now_iso()}
+    monkeypatch.setattr(svc.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[run]))
+    chat.members["room_1"].append({"kind": "human", "id": BOB.user_id})
+    await _start(requested_by=BOB.user_id)
+    assert len(chat.posts) == 3 and chat.posts[-1]["text"] == "user_bob (in #general): build a booking page"
+    await _start(requested_by=BOB.user_id)
+    assert len(chat.posts) == 3
 
 
 async def test_start_refuses_a_name_already_built(chat):
@@ -297,6 +315,8 @@ async def test_every_message_in_an_apps_conversation_is_for_its_builder(monkeypa
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(meta, sender)))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[sender, builder]))
     monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Ada"))
+    address = AsyncMock(return_value=None)
+    monkeypatch.setattr(messaging, "address", address)
     # Stop at the write: what it would dispatch is the point.
     created = AsyncMock(side_effect=messaging.messaging_repo.MessageForbidden("stop"))
     monkeypatch.setattr(messaging.messaging_repo, "create_message", created)
@@ -314,6 +334,7 @@ async def test_every_message_in_an_apps_conversation_is_for_its_builder(monkeypa
     targets = created.await_args.kwargs["dispatch_targets"]
     assert [t["agentId"] for t in targets] == woken
     assert all(t["eventKind"] == "user_request" for t in targets)
+    assert address.await_count == (0 if extra else 1)  # the app's builder needs no reading of the text
 
 
 # --- apps don't belong to rooms (Task 2) --------------------------------------------------------
@@ -381,3 +402,48 @@ async def test_an_agent_publishes_a_roomless_app_only_when_asked_in_its_conversa
     assert not await svc._asked_to_publish(app)
     said.append({"author": {"kind": "human"}, "text": "publish it", "createdAt": "2999-01-01T00:00:00Z"})
     assert await svc._asked_to_publish(app)
+
+
+# --- Task 1 review --------------------------------------------------------------------------------
+
+
+async def test_a_relay_seats_nobody_and_a_seat_is_not_access(chat, monkeypatch):
+    res = await _start()  # a room app: Ada asked in #general and sits in its conversation
+    room = res["conversation_id"]
+    chat.members["room_1"].append({"kind": "human", "id": BOB.user_id})
+    await conv.ask(AGENT, res["app_id"], "and a map", origin={"room_id": "room_1", "requested_by": BOB.user_id})
+    assert chat.posts[-1]["text"] == "user_bob (in #general): and a map"
+    assert BOB.user_id not in [m["id"] for m in chat.members[room]]
+    # Bob opens it (he is in #general), then the creator narrows it to herself: Bob leaves, Ada stays.
+    await conv.open_conversation(BOB, res["app_id"])
+    left: list[str] = []
+
+    async def unseat(room_id, user_id):
+        chat.members[room_id] = [m for m in chat.members[room_id] if m["id"] != user_id]
+        left.append(user_id)
+        return True
+
+    monkeypatch.setattr(session_chat, "_unseat", unseat)
+    await svc.update_settings(OWNER, res["app_id"], open_to="me")
+    assert left == [BOB.user_id] and "user_1" in [m["id"] for m in chat.members[room]]
+    # Seated again by hand, a seat alone still opens nothing.
+    chat.members[room].append({"kind": "human", "id": BOB.user_id})
+    with pytest.raises(svc.AppsRefused):
+        await conv.open_conversation(BOB, res["app_id"])
+
+
+async def test_a_first_upload_that_loses_the_adoption_carries_on_with_the_winner(chat, monkeypatch):
+    res = await _start()
+    real = svc.apps_repo.patch
+
+    async def raced(app_id, fields, *, expect=None):
+        if expect == {"state": "requested"}:  # another upload adopted it a moment earlier
+            await real(app_id, {"state": "building", "actor_id": CEO, "actor_kind": "agent"})
+            return None
+        return await real(app_id, fields, expect=expect)
+
+    monkeypatch.setattr(svc.apps_repo, "patch", raced)
+    src = await svc.put_source(OWNER, name="booking", commit="c1", archive=_tar(SRC_V1), actor=AGENT)
+    app = await svc.apps_repo.get(res["app_id"])
+    assert src["app_id"] == res["app_id"] and (app["state"], app["actor_id"]) == ("building", CEO)
+    assert app["sources"]

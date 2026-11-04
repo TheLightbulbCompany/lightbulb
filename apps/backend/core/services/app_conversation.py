@@ -8,8 +8,10 @@ session by room, so each app builds in parallel with the room it came from and w
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from core.auth import AuthContext, resolve_owner_id
 from core.constants import SYSTEM_ACTOR_ID
@@ -110,17 +112,29 @@ async def _seat(owner_id: str, meta: dict, user_id: str) -> None:
 
 
 async def _can_open(owner_id: str, app: dict, auth: AuthContext) -> bool:
-    """Whoever can open the app (``apps_service._can_open``: by its sharing), and anyone already seated in
-    its conversation."""
+    """Whoever can open the app, by its sharing (``apps_service._can_open``). A seat is never a grant:
+    narrowing the sharing must take the conversation away too (``unseat_who_cannot_open``)."""
     if svc._can_open(app, auth, False):
         return True
-    for room_id in (
-        app.get("room_id") if app.get("open_to") in ("room", "invited") else None,
-        app.get("conversation_id"),
-    ):
-        if room_id and await messaging.still_reads_room(owner_id, auth.user_id, room_id, owner_id):
-            return True
-    return False
+    room_id = app.get("room_id") if app.get("open_to") in ("room", "invited") else None
+    return bool(room_id) and await messaging.still_reads_room(owner_id, auth.user_id, room_id, owner_id)
+
+
+async def unseat_who_cannot_open(app: dict) -> int:
+    """After a sharing change: every person seated in the conversation who may no longer open the app
+    leaves it (its creator stays; an admin is seated again on their next open). Returns how many left."""
+    room_id = app.get("conversation_id")
+    if not room_id or app["open_to"] in ("workspace", "public"):
+        return 0
+    room = app.get("room_id") if app["open_to"] in ("room", "invited") else None
+    removed = 0
+    for m in await messaging_repo.list_members(room_id):
+        if m.get("kind") != "human" or m["id"] == app.get("created_by"):
+            continue
+        if room and await messaging.still_reads_room(app["owner_id"], m["id"], room, app["owner_id"]):
+            continue
+        removed += await session_chat._unseat(room_id, m["id"])
+    return removed
 
 
 async def open_conversation(auth: AuthContext, app_id: str) -> dict:
@@ -176,8 +190,12 @@ async def _relay(app: dict, meta: dict, key: str, text: str) -> dict:
     return message
 
 
-async def _reserve(caller: BuilderCaller, name: str, origin_room_id: str | None, requester: str | None) -> dict:
-    """The app record in state ``requested``, once per name: a second start finds the first's."""
+async def _reserve(
+    caller: BuilderCaller, name: str, origin_room_id: str | None, requester: str | None
+) -> tuple[dict, bool]:
+    """The app record in state ``requested``, once per name: a second start finds the first's. The flag:
+    whether this call made it."""
+    made = False
     owner_id = caller.owner_id
     app = await apps_repo.get_by_name(owner_id, name)
     if app is None:
@@ -197,6 +215,7 @@ async def _reserve(caller: BuilderCaller, name: str, origin_room_id: str | None,
                 display_name=svc._display({"name": name}),
                 state="requested",
             )
+            made = True
         except apps_repo.NameTaken:
             app = await apps_repo.claimed_by(owner_id, name)  # a start racing this one won the name
             if app is None:
@@ -210,7 +229,12 @@ async def _reserve(caller: BuilderCaller, name: str, origin_room_id: str | None,
             f"{name} is already an app in this workspace.",
             "pick another name, or ask its builder in the app's conversation in Canvas",
         )
-    return app
+    return app, made
+
+
+async def _builder_busy(owner_id: str, room_id: str) -> bool:
+    now = datetime.now(UTC)
+    return any(svc._working(r, now) for r in await messaging_repo.list_open_runs_for_room(owner_id, room_id))
 
 
 async def start(
@@ -234,12 +258,16 @@ async def start(
     builder = builder or await _default_builder({"owner_id": owner_id}, origin_room_id)
     if builder is None:
         raise _NO_AGENT
-    app = await _reserve(caller, name, origin_room_id, person)
+    app, made = await _reserve(caller, name, origin_room_id, person)
     meta = await _ensure(app, builder)
     if person:
         await _seat(owner_id, meta, person)
     text = await _attributed(caller, request_text, person, origin_room_id)
-    await _relay(app, meta, f"apps-start:{app['app_id']}", text)
+    # The receipt is this request (who and what): a retry replays it, another person's request is its own line.
+    key = f"apps-start:{app['app_id']}:{hashlib.sha256(text.encode()).hexdigest()[:16]}"
+    if not made and not app.get("sources") and not await _builder_busy(owner_id, meta["roomId"]):
+        key += f":{uuid.uuid4()}"  # nobody is building it: say it again, which wakes the builder
+    await _relay(app, meta, key, text)
     display, canvas_url = svc._display(app), svc._canvas_url(app["app_id"])
     line = f"Started {display}. It's being built in its own conversation in Canvas: {canvas_url}"
     return {
@@ -275,9 +303,7 @@ async def ask(
         if caller.actor_kind == "person"
         else await _requester(owner_id, (origin or {}).get("requested_by"), room_id)
     )
-    meta = await _ensure(app)
-    if person:
-        await _seat(owner_id, meta, person)
+    meta = await _ensure(app)  # nobody is seated: the line says who asked, and opening decides who may read it
     said = await _attributed(caller, text, person, room_id)
     message = await _relay(app, meta, f"apps-ask:{app_id}:{client_message_id or uuid.uuid4()}", said)
     return {"conversation_id": meta["roomId"], "message_id": message["messageId"]}

@@ -1214,8 +1214,9 @@ async def put_source(
         raise AppsRefused("app_destroyed", f"{name} was removed.", "pick another name")
     if app.get("state") == "requested":  # reserved by `app start`: its builder's first upload takes it over
         adopted = {"state": "building", "actor_id": actor.actor_id, "actor_kind": actor.actor_kind}
-        await apps_repo.patch(app["app_id"], adopted, expect={"state": "requested"})
-        app = {**app, **adopted}
+        won = await apps_repo.patch(app["app_id"], adopted, expect={"state": "requested"})
+        # Lost to another first upload: carry on with the record as that one left it.
+        app = plain(won or await apps_repo.get(app["app_id"], consistent_read=True) or app)
     source_id = await apps_source.put(owner_id, app["app_id"], commit=commit, data=archive)
     files = await asyncio.to_thread(lambda: dict(apps_source.iter_files(archive)))
     names = [n for n, _ in _migrations(files)[0]]
@@ -1799,6 +1800,10 @@ async def update_settings(
     if fields:
         await _patch(app, {**fields, **_progress_fields(app)})
         watch(owner_id, app_id)
+    if open_to is not None:
+        from core.services import app_conversation  # it imports this module
+
+        await app_conversation.unseat_who_cannot_open({**app, "open_to": open_to})
     return await status(owner_id, app_id)
 
 

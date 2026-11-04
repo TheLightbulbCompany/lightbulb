@@ -4117,7 +4117,8 @@ async def create_human_message(
         "displayName": await human_display_name(auth.user_id),
     }
     addressing = None
-    if meta.get("kind") != "dm" and feed_roster is None:
+    # An app's conversation is addressed to its builder (below), so nothing is routed by reading the text.
+    if meta.get("kind") != "dm" and not meta.get("app") and feed_roster is None:
         # Who the text speaks to (routing v2 §3.1). Chat never holds: an unfinished message routes
         # anyway, and its continuation reaches the run as a steer.
         addressing = await address(

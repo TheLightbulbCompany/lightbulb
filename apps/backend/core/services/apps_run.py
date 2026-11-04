@@ -86,7 +86,8 @@ async def _builders_app(owner_id: str, row: dict) -> dict | None:
     here = [
         a
         for a in await apps_repo.list_for_owner(owner_id)
-        if row.get("roomId") in (a.get("room_id"), a.get("conversation_id"))
+        # The room it is built in: a started app's origin room hears its builder on other work too.
+        if row.get("roomId") == apps_room.room_of(a)
         and a.get("actor_kind") == "agent"
         and a.get("state") != "destroyed"
     ]
@@ -315,7 +316,10 @@ async def advance(app: dict) -> None:
         await _write(app, due_at=None)
         return
     wake = build.get("wake") or {}
-    if phase == "server" or await messaging_repo.list_open_runs_for_room(app["owner_id"], room_id):
+    # Open runs in its conversation and its room: an older app opened mid-build still builds in its room.
+    if phase == "server" or any(
+        [await messaging_repo.list_open_runs_for_room(app["owner_id"], r) for r in apps_service._rooms(app)]
+    ):
         await _hold(app, build, now)
         return
     issue = await _issue_status(wake, now)

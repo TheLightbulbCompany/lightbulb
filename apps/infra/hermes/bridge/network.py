@@ -173,6 +173,7 @@ def _enable_workers() -> None:
 
 def _start() -> bool:
     global _proc, _token, _etag, _sha, _sessions, _stopping, _ready
+    _a2a_declared.clear()  # a fresh engine starts with only the file's sessions
     fetched = _fetch_sessions()
     if fetched is None:
         return False  # not connected yet (no log: the normal state of most workspaces)
@@ -293,6 +294,25 @@ def ask(op: str, body: dict | None = None, timeout_s: float = 10.0) -> dict:
     return answer.get("result") or {}
 
 
+#: People whose ``a2a`` session this engine run was told about (cleared when a set replaces them).
+_a2a_declared: set[str] = set()
+
+
+def declare_a2a_session(person: str) -> None:
+    """Declare ``{app: "a2a", person}`` to the engine once (the engine refuses ``app.send`` for an
+    undeclared session). Same ``members``/``revoked_keys`` handling as ``reload_sessions``."""
+    if person in _a2a_declared:
+        return
+    sessions = list(_sessions.get("sessions") or [])
+    if not any(s.get("app") == "a2a" and s.get("person") == person for s in sessions):
+        sessions.append({"app": "a2a", "person": person})
+    params = {"sessions": sessions, "revoked_keys": _sessions.get("revoked_keys") or []}
+    if "members" in _sessions:
+        params["members"] = _sessions["members"]
+    ask("cloud.sessions.set", params)
+    _a2a_declared.add(person)
+
+
 def reload_sessions() -> int:
     """Re-read ``sessions.json`` from S3 and declare it to the running sidecar (the backend's
     ``network.sessions`` RPC, after it rewrote the file). Returns the session count."""
@@ -311,6 +331,7 @@ def reload_sessions() -> int:
     params["revoked_keys"] = data.get("revoked_keys") or []
     ask("cloud.sessions.set", params)
     _sessions = data
+    _a2a_declared.clear()  # the set replaced the engine's sessions, the a2a ones included
     SESSIONS_FILE.write_bytes(raw)
     return len(data.get("sessions") or [])
 

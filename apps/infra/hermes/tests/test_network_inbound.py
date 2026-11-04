@@ -3,11 +3,15 @@
 notice. Runs against test_network's fake sidecar; turn.run_turn is replaced by a recorder."""
 from __future__ import annotations
 
+import json
 import threading
 import time
+import urllib.error
+import urllib.request
 
 import pytest
 
+import bridge
 from bridge import network, turn
 from test_network import _until, net  # noqa: F401 -- the fake sidecar fixture
 
@@ -300,3 +304,55 @@ def test_network_workers_goes_above_the_first_table(net, monkeypatch):
     cfg.write_text('# mine\nname = "x"\nnetwork_workers = false\n[t]\nnetwork_workers = 5\n', encoding="utf-8")
     network._enable_workers()
     assert cfg.read_text(encoding="utf-8") == '# mine\nname = "x"\nnetwork_workers = true\n[t]\nnetwork_workers = 5\n'
+
+
+def test_a_reply_to_an_a2a_session_goes_to_the_backend_not_a_turn(net, turns, monkeypatch):
+    monkeypatch.setattr(bridge, "API", "https://api.test")
+    monkeypatch.setattr(bridge, "HOOK_TOKEN", "hook-tok")
+    posted: list = []
+    status = {"code": 503}
+
+    class _Res:
+        def __init__(self, code):
+            self.status = code
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        posted.append((req.full_url, dict(req.header_items()), json.loads(req.data)))
+        if status["code"] >= 500:
+            raise urllib.error.HTTPError(req.full_url, status["code"], "down", {}, None)
+        return _Res(status["code"])
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    reply = {"id": "m9", "from": "mac-p", "reply_to": "task-1", "framed": "all green"}
+    net.answer(**_peek(reply, session="a2a-1a2b3c4d"))
+    assert network.ensure_started(background=False)
+    assert _until(lambda: len(posted) == 1)
+    time.sleep(0.2)
+    assert _acks(net) == []  # a 5xx is left unacked for the next sweep
+    status["code"] = 200
+    network.sweep()
+    assert _until(lambda: len(_acks(net, "read")) == 1)
+    url, headers, body = posted[-1]
+    assert url == "https://api.test/api/v1/internal/a2a/org_test/session-reply"
+    assert headers["Authorization"] == "Bearer hook-tok"
+    assert body == {"request_id": "task-1", "text": "all green"}
+    assert _acks(net) == [("m9", "delivered"), ("m9", "read")]
+    assert all(c["session"] == "a2a-1a2b3c4d" for c in net.calls("inbox.ack"))
+    assert turns.ran == []
+
+
+def test_concurrent_a2a_declares_keep_both_people(net):
+    assert network.ensure_started(background=False)
+    threads = [threading.Thread(target=network.declare_a2a_session, args=(p,)) for p in ("A", "B", "C", "D")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    last = net.calls("cloud.sessions.set")[-1]["sessions"]
+    assert {s["person"] for s in last if s.get("app") == "a2a"} == {"A", "B", "C", "D"}

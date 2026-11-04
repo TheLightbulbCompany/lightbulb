@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from core.auth import AuthContext
 from core.config import settings
 from core.repositories import a2a_repo, local_sessions_repo, messaging_repo
-from core.services import a2a_rules, hosted_mcp, messaging, network_proof, network_route
+from core.services import a2a_rules, container_rpc, hosted_mcp, messaging, network_member, network_proof, network_route
 from core.services.a2a_auth import READ_SCOPE_A2A, SEND_SCOPE, A2ACaller
 from core.services.a2a_authority import (
     URI,
@@ -418,9 +418,30 @@ async def _complete_delivered(org: str, row: dict, now: int) -> None:
     row["record"] = await _record(org, row, "completed", now=now)
 
 
+async def on_session_reply(org: str, task_id: str, text: str) -> None:
+    """A laptop session answered a hosted send (its reply reached the cloud member's ``a2a`` session):
+    the reply text becomes the artifact of a ``working`` task (completed, with its record) or of one
+    completed as delivered (its record stands). Once: a second reply writes nothing."""
+    row = await a2a_repo.get_task(org, task_id)
+    if row is None or row.get("dispatchRequestId") != task_id:  # the dispatch request id is the task id
+        raise A2AError(404, "unknown_request")
+    artifact = {"artifactId": task_id, "parts": [{"text": text}]}
+    if row["state"] == "completed":
+        await a2a_repo.reply_to_delivered(org, task_id, artifact=artifact)
+        return
+    now = int(time.time())
+    row = await _current(org, row, now)
+    if row["state"] != "working":
+        return  # failed, past its day, or answered: a late reply completes nothing
+    jws = _record_jws(row, "completed", now=now)
+    if await a2a_repo.complete_task(org, task_id, artifact=artifact, record=jws):
+        await a2a_repo.append_record(org, task_id, {"jws": jws})
+
+
 async def _dispatch_session(org: str, agent_id: str, row: dict, text: str) -> bool:
-    """``app.send`` to the session through the origin person's most recent computer link, as
-    ``<agent name> via <person>``; sets ``delivered`` on success."""
+    """``app.send`` to the session through the workspace's cloud member (``network.a2a_send``) when
+    its runtime is warm, else (or when that fails) through the origin person's most recent computer
+    link as ``<agent name> via <person>``; sets ``delivered`` on success."""
     claims = _claims(row["authority"])
     origin = claims["chain"][0]["person"]
     url = f"{settings.PUBLIC_API_BASE.rstrip('/')}/a2a/{org}/{agent_id}/tasks/{row['id']}/record"
@@ -428,8 +449,33 @@ async def _dispatch_session(org: str, agent_id: str, row: dict, text: str) -> bo
         requester_display=row["requester"], for_whom=origin, intent=claims["intent"], record_url=url
     )
     request_id = hosted_mcp._network_request_id(row["id"])
+    to = claims["operation"]["resource"].removeprefix("session:")
+    a2a = {
+        "role": "ROLE_AGENT",
+        "parts": [{"text": header + text}],
+        "metadata": {URI: row["authority"]},
+        "extensions": [URI],
+    }
+    params = {
+        "to": to,
+        "text": header + text,
+        "request_id": request_id,
+        "a2a": a2a,
+        "person": network_member.app_person(origin),
+    }
     try:
-        # ponytail: the send rides the origin person's computer link; the cloud member bridge replaces this in phase 2
+        # Only a warm member is asked: an invoke would cold-start a parked workspace (~55 s).
+        if await network_member._session_is_warm(org):
+            await container_rpc.call(org, "network.a2a_send", params, timeout_s=SESSION_SEND_TIMEOUT_S)
+            row.update(dispatchRequestId=request_id, delivered=True)
+            return True
+    except Exception as exc:  # noqa: BLE001 -- the class only: the params carry the authority JWS
+        logger.warning(
+            "a2a bridge send failed (%s); trying the person's link",
+            type(exc).__name__,
+            extra={"org": org, "task": row["id"]},
+        )
+    try:
         link = await network_route.best_link(origin)
         if link is None:
             row["failReason"] = "undeliverable"
@@ -442,7 +488,7 @@ async def _dispatch_session(org: str, agent_id: str, row: dict, text: str) -> bo
             "send",
             SESSION_SEND_TIMEOUT_S,
             route=route,
-            to=claims["operation"]["resource"].removeprefix("session:"),
+            to=to,
             text=header + text,
             request_id=request_id,
         )

@@ -208,3 +208,22 @@ async def complete_task(org: str, task_id: str, *, artifact: dict, record: str) 
             return False
         raise
     return True
+
+
+async def reply_to_delivered(org: str, task_id: str, *, artifact: dict) -> bool:
+    """A task completed as delivered takes its session's reply as the artifact, once; False when it
+    was not delivered or already has a reply. The completed record stands: no second one."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": f"A2A#{org}", "sk": f"TASK#{task_id}"},
+            UpdateExpression="SET artifact = :a, replied = :t, updatedAt = :now",
+            ConditionExpression="#s = :done AND delivered = :t AND attribute_not_exists(replied)",
+            ExpressionAttributeNames={"#s": "state"},
+            ExpressionAttributeValues={":done": "completed", ":t": True, ":a": artifact, ":now": int(time.time())},
+        )
+    except ClientError as exc:
+        if _is_conflict(exc):
+            return False
+        raise
+    return True

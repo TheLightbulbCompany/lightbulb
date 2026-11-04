@@ -187,3 +187,9 @@ def test_with_the_member_route_off_the_bridge_is_never_called(client, bridge, mo
     bridge.rpc.assert_not_awaited()
     bridge.warm.assert_not_awaited()
     bridge.best_link.assert_awaited_once()
+
+
+def test_the_member_route_is_on_by_default():
+    from core.config import Settings
+
+    assert Settings.model_fields["A2A_DISPATCH_VIA_MEMBER"].default is True

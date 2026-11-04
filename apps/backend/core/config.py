@@ -56,9 +56,9 @@ class Settings(BaseSettings):
     # The A2A door also accepts a grant for the /mcp audience that carries an A2A scope: only if Clerk
     # does not echo the requested /a2a resource into `aud` (checked once against the dev instance).
     A2A_ACCEPT_MCP_AUDIENCE: bool = False
-    # Hosted A2A sends to laptop sessions ride the workspace's cloud member first. Off until the member
-    # has a sign-in identity: laptops refuse what it relays, so the person's computer link is the live route.
-    A2A_DISPATCH_VIA_MEMBER: bool = False
+    # Hosted A2A sends to laptop sessions ride the workspace's cloud member first: it signs in as the
+    # workspace (CLI v0.9.11+). A laptop that refuses what it relays falls back to the person's link.
+    A2A_DISPATCH_VIA_MEMBER: bool = True
     # SEC-8 token-origin fence. Clerk session tokens carry NO `aud` claim (all
     # our clients call plain getToken(), no JWT template), so the origin check
     # is the `azp` (authorized party) claim — the frontend origin that minted

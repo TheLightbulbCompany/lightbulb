@@ -266,6 +266,12 @@ async def test_link(app_id: str, caller: Builder, response: Response):
     return {"url": await _run(svc.test_link(caller.owner_id, app_id, actor=caller))}
 
 
+@router.post("/build/{app_id}/reset-preview-data")
+async def reset_preview_data(app_id: str, caller: Builder):
+    """The preview database back to its schema and sample data, after ``app verify`` sent test values. Never live."""
+    return await _run(svc.reset_preview_data(caller.owner_id, app_id))
+
+
 # --- members ------------------------------------------------------------------------------------
 
 

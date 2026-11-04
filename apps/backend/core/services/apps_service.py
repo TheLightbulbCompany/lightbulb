@@ -1900,6 +1900,17 @@ async def test_link(owner_id: str, app_id: str, *, actor: BuilderCaller) -> str:
     return f"{url}/_lightbulb/session#token={token}"
 
 
+async def reset_preview_data(owner_id: str, app_id: str) -> dict:
+    """``app verify`` sends the preview's forms with test values; this takes them back out. The preview
+    database goes back to its migrated schema and seed through the step ``up`` uses: forget which
+    migrations it holds, then step. ``reset`` is False when this read could not step (another read holds
+    the lease, the app has an error, no database yet); the forgotten key makes the next step reset it."""
+    app = await _owned(owner_id, app_id)
+    await _patch(app, {"preview_migrations": None})
+    await _progress(app)
+    return {"reset": bool(app.get("preview_migrations"))}
+
+
 async def invite(owner_id: str, app_id: str, *, emails: list[str], user_id: str) -> dict:
     """One single-use, 14-day link per email, to this app only; a room app then becomes "invited"
     (``update_settings`` re-pushes LIGHTBULB_OPEN_TO and redeploys). R48: a public app needs no pass, so

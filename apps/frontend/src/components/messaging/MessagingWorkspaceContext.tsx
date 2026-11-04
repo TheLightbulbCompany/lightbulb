@@ -47,6 +47,9 @@ export interface MessagingWorkspaceValue {
   setSessionChat: (open: boolean) => void;
   /** The chat room on screen beside a session (SessionChat reports it), or null. */
   setSessionChatRoomId: (roomId: string | null) => void;
+  /** A side column (an app's conversation in Canvas) says which room it shows under its own key, or null when hidden.
+   * Each one is suppressed from notifications on its own, beside the main room. */
+  setSideRoom: (key: string, roomId: string | null) => void;
   /** Focus an empty new session (the composer that starts one on your Mac). */
   openNewSession: () => void;
   sessionFocus: SessionFocusTarget | null;
@@ -209,7 +212,16 @@ export function MessagingWorkspaceProvider({
   // The live provider carries ONE room channel. While a session's chat is open the covered room
   // lends it that channel, and catches up when it gets it back.
   const sessionChatOpen = !!sessionFocus?.chat;
-  const [sessionChatRoomId, setSessionChatRoomId] = useState<string | null>(null);
+  // Side columns on screen, by key: each room is kept from toasting on its own, the main room too.
+  const [sideRooms, setSideRooms] = useState<Readonly<Record<string, string>>>({});
+  const setSideRoom = useCallback((key: string, roomId: string | null) => setSideRooms((now) => {
+    if ((now[key] ?? null) === roomId) return now;
+    const next = { ...now };
+    if (roomId) next[key] = roomId; else delete next[key];
+    return next;
+  }), []);
+  const setSessionChatRoomId = useCallback((roomId: string | null) => setSideRoom("session-chat", roomId), [setSideRoom]);
+  const sideRoomIds = useMemo(() => [...new Set(Object.values(sideRooms))], [sideRooms]);
   // Browser watches run frames even when the room is hidden; visibility still
   // controls read receipts and notification suppression.
   // Fresh or returning is decided once per workspace, as soon as the room list
@@ -1082,13 +1094,14 @@ export function MessagingWorkspaceProvider({
     closeSession,
     setSessionChat,
     setSessionChatRoomId,
+    setSideRoom,
     sessionSource: rooms.resourceSource,
     resolveSessionOwner,
     workspaceSessions,
     scope,
     freshLanding,
     explicitPickCount,
-  }}><MessageNotifications activeRoomId={sessionChatRoomId ?? rooms.activeRoomId} threadId={threadId} roomVisible={sessionChatRoomId ? true : roomVisible} repliesInline={!!sessionChatRoomId} rooms={rooms.rooms}
+  }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible} sideRoomIds={sideRoomIds} rooms={rooms.rooms}
     onOpen={openNotificationTarget} activeSessionId={sessionFocus?.sessionId ?? null}
     onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal + needingYou} />{children}
     {selectRoomError && <div role="alert" className="px-4 py-2 text-ui text-err">{selectRoomError}{" "}

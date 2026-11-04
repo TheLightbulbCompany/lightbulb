@@ -107,12 +107,24 @@ it("suppresses a focused conversation but not an unopened thread in it", async (
   await waitFor(() => expect(mocks.notifySuccess).toHaveBeenCalledTimes(1));
 });
 
-it("suppresses thread replies too in a room that shows replies inline (a session's chat)", async () => {
+it("suppresses thread replies too in a side room, which shows replies inline (a session's chat)", async () => {
   vi.mocked(document.hasFocus).mockReturnValue(true);
-  render(<MessageNotifications activeRoomId="room" threadId={null} roomVisible repliesInline onOpen={vi.fn()} />);
+  render(<MessageNotifications activeRoomId="main" threadId={null} roomVisible sideRoomIds={["room"]} onOpen={vi.fn()} />);
   await act(async () => { emit({ ...event, payload: { ...event.payload, threadRootMessageId: "root" } } as LiveEvent); });
   expect(mocks.nativeNotify).not.toHaveBeenCalled();
   expect(mocks.notifySuccess).not.toHaveBeenCalled();
+});
+
+it("keeps the main room and every side room quiet at once, and toasts a room no longer on screen", async () => {
+  vi.mocked(document.hasFocus).mockReturnValue(true);
+  const at = (roomId: string, messageId: string) => ({ ...event, payload: { ...event.payload, roomId, messageId } } as LiveEvent);
+  const view = render(<MessageNotifications activeRoomId="main" threadId={null} roomVisible sideRoomIds={["chat", "conv"]} onOpen={vi.fn()} />);
+  await act(async () => { emit(at("main", "m1")); emit(at("chat", "m2")); emit(at("conv", "m3")); });
+  expect(mocks.nativeNotify).not.toHaveBeenCalled();
+  // The app's conversation is hidden (its pane is not shown): it unregisters, and its messages notify again.
+  view.rerender(<MessageNotifications activeRoomId="main" threadId={null} roomVisible sideRoomIds={["chat"]} onOpen={vi.fn()} />);
+  await act(async () => { emit(at("conv", "m4")); });
+  await waitFor(() => expect(mocks.nativeNotify).toHaveBeenCalledTimes(1));
 });
 
 describe("asking for notification permission", () => {

@@ -168,6 +168,9 @@ def test_up_returns_up_result(client, monkeypatch):
     assert kw["approved_destructive"] is None and kw["requested_by"] is None
     client.post(f"{BASE}/up", json={**UP_BODY, "requested_by": "user_ada"}, headers=HOOK)
     assert up.await_args.kwargs["requested_by"] == "user_ada"
+    body = {k: v for k, v in UP_BODY.items() if k != "room_id"}  # no room: a CLI-only app
+    assert client.post(f"{BASE}/up", json={**body, "open_to": "me"}, headers=HOOK).status_code == 200
+    assert (up.await_args.kwargs["room_id"], up.await_args.kwargs["open_to"]) == (None, "me")
 
 
 def test_status_shape_matches_contract(client, monkeypatch):
@@ -212,6 +215,9 @@ def test_source_upload_and_its_errors(client, monkeypatch):
     assert put.await_args.kwargs["placeholder"] is False  # an old CLI sends no field
     client.post(f"{BASE}/source", data={**form, "placeholder": "true"}, files=files, headers=HOOK)
     assert put.await_args.kwargs["placeholder"] is True
+    # No room: an app belongs to its workspace.
+    r = client.post(f"{BASE}/source", data={"name": "crew", "commit": "c1"}, files=files, headers=HOOK)
+    assert r.status_code == 200 and put.await_args.kwargs["room_id"] is None
 
     monkeypatch.setattr(mod, "MAX_UPLOAD", 4)
     assert client.post(f"{BASE}/source", data=form, files=files, headers=HOOK).status_code == 413
@@ -498,4 +504,98 @@ def test_unauthenticated_upload_is_refused_before_the_body_is_read(client, hook,
         r = client.post(f"{BASE}/source", content=gen(), headers={**headers, "Content-Type": "multipart/form-data"})
         assert r.status_code == 401, headers
         assert len(pulled) <= 1, headers  # the transport may prime one chunk; the app read none
+    put.assert_not_awaited()
+
+
+def test_start_and_ask_pass_the_caller_through(client, monkeypatch):
+    from core.services import app_conversation
+
+    out = {"app_id": "app_1", "conversation_id": "c1", "canvas_url": "u", "next": "n"}
+    start, ask = AsyncMock(return_value=out), AsyncMock(return_value={"conversation_id": "c1", "message_id": "m1"})
+    monkeypatch.setattr(app_conversation, "start", start)
+    monkeypatch.setattr(app_conversation, "ask", ask)
+    body = {"name": "booking", "request": "build a booking page", "origin_room_id": "room_1", "requested_by": "u1"}
+    assert client.post(f"{BASE}/start", json=body, headers=HOOK).json() == out
+    caller, name, text = start.await_args.args
+    assert (caller.actor_id, caller.actor_kind, name, text) == ("agt_1", "agent", "booking", "build a booking page")
+    assert start.await_args.kwargs == {"origin_room_id": "room_1", "requested_by": "u1"}
+    assert client.post(f"{BASE}/start", json={**body, "request": ""}, headers=HOOK).status_code == 422
+    r = client.post(
+        f"{BASE}/app_1/ask",
+        json={"text": "green", "origin": {"room_id": "room_1", "requested_by": "u1"}, "client_message_id": "msg_9"},
+        headers=HOOK,
+    )
+    assert r.json()["message_id"] == "m1"
+    assert ask.await_args.args[1:] == ("app_1", "green")
+    assert ask.await_args.kwargs == {
+        "origin": {"room_id": "room_1", "requested_by": "u1"},
+        "client_message_id": "msg_9",
+    }
+    assert client.post(f"{BASE}/app_1/ask", json={"text": "green"}).status_code == 401
+
+
+def test_pull_by_name_returns_the_archive_its_commit_and_the_real_id(client, monkeypatch):
+    by_name = AsyncMock(return_value={"app_id": "app_1", "owner_id": "org_a", "name": "booking"})
+    monkeypatch.setattr(svc.apps_repo, "get_by_name", by_name)
+    latest = AsyncMock(return_value=(b"tarbytes", "c7"))
+    monkeypatch.setattr(svc, "latest_source", latest)
+    r = client.get(f"{BASE}/booking/source", headers=HOOK)
+    assert r.status_code == 200 and r.content == b"tarbytes"
+    assert r.headers["X-Lightbulb-Commit"] == "c7" and r.headers["X-Lightbulb-App"] == "app_1"
+    assert latest.await_args.args[:2] == ("org_a", "app_1") and by_name.await_args.args == ("org_a", "booking")
+    # An id skips the lookup; an unknown name is a 404.
+    by_name.reset_mock()
+    assert client.get(f"{BASE}/app_1/source", headers=HOOK).headers["X-Lightbulb-App"] == "app_1"
+    by_name.assert_not_awaited()
+    by_name.return_value = None
+    r = client.get(f"{BASE}/nope/source", headers=HOOK)
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "app_not_found"
+    latest.side_effect = svc.AppsRefused("source_not_found", "That app has no source yet.")
+    assert client.get(f"{BASE}/app_1/source", headers=HOOK).status_code == 404
+    assert client.get(f"{BASE}/app_1/source").status_code == 401
+
+
+def test_builder_routes_take_the_apps_name(client, monkeypatch):
+    monkeypatch.setattr(svc.apps_repo, "get_by_name", AsyncMock(return_value={"app_id": "app_1"}))
+    st = AsyncMock(return_value=STATUS)
+    monkeypatch.setattr(svc, "status", st)
+    assert client.get(f"{BASE}/crew/status", headers=HOOK).status_code == 200
+    assert st.await_args.args == ("org_a", "app_1")
+
+
+def test_source_upload_passes_base_commit_and_stale_base_is_409(client, monkeypatch):
+    put = AsyncMock(return_value={"app_id": "app_1", "source_id": "s1"})
+    monkeypatch.setattr(svc, "put_source", put)
+    form = {"name": "crew", "commit": "c2"}
+    files = {"archive": ("src.tar.gz", b"tarbytes", "application/gzip")}
+    client.post(f"{BASE}/source", data=form, files=files, headers=HOOK)
+    assert put.await_args.kwargs["base_commit"] is None  # an old CLI sends none
+    client.post(f"{BASE}/source", data={**form, "base_commit": "c1"}, files=files, headers=HOOK)
+    assert put.await_args.kwargs["base_commit"] == "c1"
+    next_ = "run lightbulb app pull, merge your change, then lightbulb app up"
+    put.side_effect = svc.AppsRefused("stale_base", "Crew changed since your copy.", next_)
+    r = client.post(f"{BASE}/source", data={**form, "base_commit": "c0"}, files=files, headers=HOOK)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "stale_base" and r.json()["detail"]["next"] == next_
+
+
+def test_start_takes_the_clis_room_id(client, monkeypatch):
+    from core.services import app_conversation
+
+    start = AsyncMock(return_value={"app_id": "app_1", "conversation_id": "c1", "canvas_url": "u", "next": "n"})
+    monkeypatch.setattr(app_conversation, "start", start)
+    client.post(f"{BASE}/start", json={"name": "booking", "request": "r", "room_id": "room_1"}, headers=HOOK)
+    assert start.await_args.kwargs["origin_room_id"] == "room_1"
+
+
+def test_a_commit_that_cannot_go_back_out_in_a_header_is_refused(client, monkeypatch):
+    put = AsyncMock(return_value={"app_id": "app_1", "source_id": "s1"})
+    monkeypatch.setattr(svc, "put_source", put)
+    files = {"archive": ("src.tar.gz", b"tarbytes", "application/gzip")}
+    for bad in ("c1\r\nX-Evil: 1", "c 1", "ünï"):
+        r = client.post(f"{BASE}/source", data={"name": "crew", "commit": bad}, files=files, headers=HOOK)
+        assert r.status_code == 422, bad
+    r = client.post(
+        f"{BASE}/source", data={"name": "crew", "commit": "c1", "base_commit": "c 0"}, files=files, headers=HOOK
+    )
+    assert r.status_code == 422
     put.assert_not_awaited()

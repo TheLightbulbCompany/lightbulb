@@ -17,22 +17,32 @@ import "./messaging.css";
 const NO_REACTIONS: readonly string[] = [];
 const NO_MESSAGES: readonly RoomMessage[] = [];
 
+/** The column's words; Canvas's app conversation (AppConversation) says them about an app. */
+export type ChatWords = { label: string; title: string; empty: string; unavailable: string; full: string; ended: string; compose?: string };
+const SESSION_WORDS: ChatWords = {
+  label: "Session chat", title: "Chat", empty: "Talk about the session here. The terminal stays the session's.",
+  unavailable: "Chat is not available for this session.", full: "This chat is full.", ended: "This session ended. Its chat is read-only.",
+};
+
 /**
  * The session's chat (PR #3807): people talk beside the terminal,
  * never into it. Its own room slot (subscription, scroll, draft), so a terminal reset never touches
  * the draft. It posts only through the room message door; a chat seat never lets anyone type into
  * the session. Threads and reactions are left out: replies render inline.
  */
-export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRoom, onRead }: {
+export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRoom, onRead, words = SESSION_WORDS }: {
+  /** What openChat opens: a session, or an app in Canvas. */
   sessionId: string;
   /** The session's own person: their name takes the owner colour, as in the terminal. */
   sessionOwnerId: string;
-  openChat: (sessionId: string) => Promise<RoomDetail>;
-  onClose: () => void;
+  openChat: (sessionId: string) => Promise<Pick<RoomDetail, "roomId">>;
+  /** Absent: the column has no close (Canvas's app conversation stays beside the preview). */
+  onClose?: () => void;
   /** The chat room on screen, or null when the column closes (its notifications are not toasted while shown). */
   onRoom?: (roomId: string | null) => void;
   /** The reader's cursor in this chat moved (on open, and on each arrival read while it is open). */
   onRead?: () => void;
+  words?: ChatWords;
 }) {
   const { userId } = useAuth();
   const rooms = useRooms(null, true, true, false);
@@ -50,10 +60,10 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
       selectRoom(room.roomId);
       onRoom?.(room.roomId);
     }, (e: unknown) => {
-      if (alive) setError(e instanceof ApiError && e.status === 409 ? "This chat is full." : "Chat is not available for this session.");
+      if (alive) setError(e instanceof ApiError && e.status === 409 ? words.full : words.unavailable);
     });
     return () => { alive = false; onRoom?.(null); };
-  }, [sessionId, openChat, selectRoom, onRoom]);
+  }, [sessionId, openChat, selectRoom, onRoom, words]);
 
   // Sharing paused while the column was open: the hook already dropped the subscription and stopped
   // reading; the "Access removed" panel is not the room on screen either.
@@ -103,11 +113,11 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
     personColor={message.author.kind === "human" ? personColor(message.author.id, sessionOwnerId) : undefined} />;
   };
 
-  return <aside className="session-chat" aria-label="Session chat">
+  return <aside className="session-chat" aria-label={words.label}>
     <header className="room-context-header">
       {/* On the left, and not an X: the session's own close sits at the right end of its header, where this one used to land. */}
-      <Button variant="ghost" size="icon-sm" aria-label="Close chat" title="Close chat" onClick={onClose}><PanelRightClose aria-hidden="true" /></Button>
-      <h3 className="font-semibold">Chat</h3>
+      {onClose && <Button variant="ghost" size="icon-sm" aria-label="Close chat" title="Close chat" onClick={onClose}><PanelRightClose aria-hidden="true" /></Button>}
+      <h3 className="font-semibold">{words.title}</h3>
     </header>
     {rooms.accessRemoved
       // Sharing paused (or the reader left the workspace) while the column was open: the room panel's words.
@@ -116,15 +126,15 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
       <RoomTimeline roomId={roomId ?? "opening"} messages={messages} readSeq={null} ownLastSentSeq={null}
         renderMessage={renderMessage} historyComplete={rooms.historyComplete} historyLoading={rooms.historyLoading}
         historyError={rooms.historyErrorMessage} onLoadOlder={() => void rooms.loadOlder()}
-        empty={<p className="room-empty">{roomId ? "Talk about the session here. The terminal stays the session's." : "Opening chat…"}</p>}>
+        empty={<p className="room-empty">{roomId ? words.empty : "Opening chat…"}</p>}>
         {rooms.optimisticMessages.filter((m) => m.roomId === roomId).map((m) =>
           <p key={m.clientMessageId} className="room-message opacity-60">{m.text}</p>)}
       </RoomTimeline>
       {archived
-        ? <p role="status" className="room-composer room-archived text-ui text-muted-foreground">This session ended. Its chat is read-only.</p>
+        ? <p role="status" className="room-composer room-archived text-ui text-muted-foreground">{words.ended}</p>
         : <RoomComposer text={text} onTextChange={setText} members={members} clientMessageId={clientMessageId}
           sendState={rooms.sendState(clientMessageId)} onSubmit={send} onRetry={send}
-          onReconcile={(id) => rooms.reconcileSend(id)} onUploadAttachment={rooms.uploadAttachment} disabled={!roomId || !rooms.httpReady} label="Message the people here" placeholder="Message the people here" roomKind="channel" />}
+          onReconcile={(id) => rooms.reconcileSend(id)} onUploadAttachment={rooms.uploadAttachment} disabled={!roomId || !rooms.httpReady} label={words.compose ?? "Message the people here"} placeholder={words.compose ?? "Message the people here"} roomKind="channel" />}
     </>}
   </aside>;
 }

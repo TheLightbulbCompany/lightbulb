@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import uuid
 from typing import Annotated, Literal
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -18,6 +19,7 @@ from pydantic import BaseModel, EmailStr, Field, StringConstraints
 from core.config import settings
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories.apps_repo import NameTaken
+from core.services import app_conversation
 from core.services import apps_service as svc
 from core.services import network_login, network_proof
 from core.services.apps_db import AppsDbError
@@ -166,6 +168,14 @@ async def _upload_caller(request: Request) -> svc.BuilderCaller:
 Builder = Annotated[svc.BuilderCaller, Depends(builder_caller)]
 
 
+async def _builder_app_id(app_id: str, caller: Builder) -> str:
+    """``{app_id}`` on a builder route: the id or the app's name, so ``app ask booking`` works from any folder."""
+    return await _run(svc.resolve_app_id(caller.owner_id, app_id))
+
+
+AppId = Annotated[str, Depends(_builder_app_id)]
+
+
 async def _read_capped(request: Request) -> None:
     """Refuse a declared oversize upload unread, and count a chunked one as it arrives. The body is
     kept on the request so the proof hash and ``form()`` replay it."""
@@ -190,9 +200,9 @@ class Origin(BaseModel):
 
 class UpBody(BaseModel):
     name: str = Field(max_length=63)
-    room_id: str = Field(max_length=128)
+    room_id: str | None = Field(default=None, max_length=128)  # optional: where the request came from
     services: list[Annotated[str, Field(max_length=64)]] = Field(max_length=20)
-    open_to: Literal["room", "workspace", "invited", "public"]
+    open_to: Literal["me", "invited", "workspace", "public", "room"]
     budget_usd: int = Field(ge=0)
     source_id: str = Field(max_length=128)
     origin: Origin
@@ -213,20 +223,90 @@ class RollbackBody(BaseModel):
     version: int | None = Field(default=None, ge=1)
 
 
+class StartBody(BaseModel):
+    name: str = Field(max_length=63)
+    request: str = Field(min_length=1, max_length=4000)
+    origin_room_id: str | None = Field(default=None, max_length=128)
+    room_id: str | None = Field(default=None, max_length=128)  # what the CLI's `app start --room` sends
+    requested_by: str | None = Field(default=None, max_length=128)
+
+
+class AskOrigin(BaseModel):
+    room_id: str | None = Field(default=None, max_length=128)
+    requested_by: str | None = Field(default=None, max_length=128)
+
+
+class AskBody(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    origin: AskOrigin | None = None
+    client_message_id: str | None = Field(default=None, max_length=128)  # the source message: a resend is a no-op
+
+
+@router.post("/build/start")
+async def start(body: StartBody, caller: Builder):
+    """A room agent's first move on an app request: the app gets its own conversation, the room is free."""
+    return await _run(
+        app_conversation.start(
+            caller,
+            body.name,
+            body.request,
+            origin_room_id=body.origin_room_id or body.room_id,
+            requested_by=body.requested_by,
+        )
+    )
+
+
+@router.post("/build/{app_id}/ask")
+async def ask(app_id: AppId, body: AskBody, caller: Builder):
+    origin = body.origin.model_dump(exclude_none=True) if body.origin else None
+    return await _run(
+        app_conversation.ask(caller, app_id, body.text, origin=origin, client_message_id=body.client_message_id)
+    )
+
+
+_COMMIT = re.compile(r"[A-Za-z0-9]{1,200}")
+
+
 @router.post("/build/source")
 async def put_source(request: Request, caller: Annotated[svc.BuilderCaller, Depends(_upload_caller)]):
     # Parsed by hand, after builder_caller: the proof check hashes the raw body first, and FastAPI's
     # own form parsing would consume the stream before it (Starlette replays the cached body here).
     async with request.form(max_part_size=4096) as form:
         archive = form.get("archive")
-        fields = {k: form.get(k) for k in ("name", "room_id", "commit")}
+        fields = {k: form.get(k) for k in ("name", "commit")}
         if not hasattr(archive, "read") or not all(isinstance(v, str) and v for v in fields.values()):
-            raise HTTPException(422, {"code": "invalid_request", "message": "name, room_id, commit and archive"})
+            raise HTTPException(422, {"code": "invalid_request", "message": "name, commit and archive"})
+        room_id = form.get("room_id")  # optional: an app belongs to its workspace, not a room
+        if room_id is not None and not (isinstance(room_id, str) and len(room_id) <= 128):
+            raise HTTPException(422, {"code": "invalid_request", "message": "room_id"})
+        fields["room_id"] = room_id or None
+        if not _COMMIT.fullmatch(fields["commit"]):  # it goes back out in a response header on pull
+            raise HTTPException(422, {"code": "invalid_request", "message": "commit"})
+        base_commit = form.get("base_commit")  # what the upload was built on; old CLIs omit it
+        if base_commit is not None and not (isinstance(base_commit, str) and _COMMIT.fullmatch(base_commit)):
+            raise HTTPException(422, {"code": "invalid_request", "message": "base_commit"})
         placeholder = form.get("placeholder") == "true"  # the starter's untouched page; old CLIs omit it
         data = await archive.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
         raise _too_large()
-    return await _run(svc.put_source(caller.owner_id, **fields, archive=data, actor=caller, placeholder=placeholder))
+    return await _run(
+        svc.put_source(
+            caller.owner_id,
+            **fields,
+            archive=data,
+            actor=caller,
+            placeholder=placeholder,
+            base_commit=base_commit or None,
+        )
+    )
+
+
+@router.get("/build/{app_id}/source")
+async def get_source(app_id: AppId, caller: Builder):
+    """The newest uploaded source, for ``app pull``: the archive, its commit and the real app id in headers."""
+    data, commit = await _run(svc.latest_source(caller.owner_id, app_id, caller))
+    headers = {"X-Lightbulb-Commit": commit, "X-Lightbulb-App": app_id, "Cache-Control": "no-store"}
+    return Response(data, media_type="application/gzip", headers=headers)
 
 
 @router.post("/build/up")
@@ -236,39 +316,39 @@ async def up(body: UpBody, caller: Builder):
 
 
 @router.post("/build/{app_id}/publish")
-async def publish(app_id: str, body: PublishBody, caller: Builder):
+async def publish(app_id: AppId, body: PublishBody, caller: Builder):
     return await _run(svc.publish(caller.owner_id, app_id, **body.model_dump(), actor=caller))
 
 
 @router.post("/build/{app_id}/rollback")
-async def rollback(app_id: str, body: RollbackBody, caller: Builder):
+async def rollback(app_id: AppId, body: RollbackBody, caller: Builder):
     return await _run(svc.rollback(caller.owner_id, app_id, version=body.version, run_id=caller.run_id))
 
 
 @router.post("/build/{app_id}/destroy")
-async def destroy(app_id: str, caller: Builder):
+async def destroy(app_id: AppId, caller: Builder):
     return await _run(svc.destroy(caller.owner_id, app_id, actor=caller))
 
 
 @router.get("/build/{app_id}/status")
-async def status(app_id: str, caller: Builder):
+async def status(app_id: AppId, caller: Builder):
     return await _run(svc.status(caller.owner_id, app_id))
 
 
 @router.get("/build/{app_id}/errors")
-async def errors(app_id: str, caller: Builder):
+async def errors(app_id: AppId, caller: Builder):
     return await _run(svc.errors(caller.owner_id, app_id))
 
 
 @router.post("/build/{app_id}/test-link")
-async def test_link(app_id: str, caller: Builder, response: Response):
+async def test_link(app_id: AppId, caller: Builder, response: Response):
     """The builder's own short-lived way past the preview's door. Never live."""
     response.headers["Cache-Control"] = "no-store"  # a pass: never cached
     return {"url": await _run(svc.test_link(caller.owner_id, app_id, actor=caller))}
 
 
 @router.post("/build/{app_id}/reset-preview-data")
-async def reset_preview_data(app_id: str, caller: Builder):
+async def reset_preview_data(app_id: AppId, caller: Builder):
     """The preview database back to its schema and sample data, after ``app verify`` sent test values. Never live."""
     return await _run(svc.reset_preview_data(caller.owner_id, app_id))
 
@@ -303,7 +383,7 @@ async def list_apps(auth: Annotated[AuthContext, Depends(get_current_user)]):
 
 
 class SettingsBody(BaseModel):
-    open_to: Literal["room", "workspace", "invited", "public"] | None = None
+    open_to: Literal["me", "invited", "workspace", "public", "room"] | None = None
     budget_usd: int | None = Field(default=None, ge=0, strict=True)
     display_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)] | None = None
 
@@ -322,6 +402,11 @@ class RevokeInviteBody(BaseModel):
 
 class AskAgentBody(BaseModel):
     error: str | None = Field(default=None, max_length=2000)  # a refusal Canvas saw that the record never kept
+
+
+class MemberAskBody(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    client_message_id: uuid.UUID | None = None
 
 
 class MemberPublishBody(BaseModel):
@@ -369,6 +454,19 @@ async def ask_agent(
     app_id: str, body: AskAgentBody, owner_id: Manager, auth: Annotated[AuthContext, Depends(get_current_user)]
 ):
     return await _run(svc.ask_agent_to_fix(owner_id, app_id, auth=auth, error=body.error))
+
+
+@router.post("/{app_id}/ask")
+async def member_ask(
+    app_id: str, body: MemberAskBody, owner_id: Manager, auth: Annotated[AuthContext, Depends(get_current_user)]
+):
+    return await _run(app_conversation.ask_as_member(auth, app_id, body.text, body.client_message_id))
+
+
+@router.post("/{app_id}/conversation")
+async def open_conversation(app_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Canvas opens the app's conversation: created on the first open, the caller seated (anyone who can open the app)."""
+    return await _run(app_conversation.open_conversation(auth, app_id))
 
 
 @router.post("/{app_id}/open")

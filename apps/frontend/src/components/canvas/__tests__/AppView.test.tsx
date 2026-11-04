@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { AppRow } from "@/hooks/useApps";
 
 const open = vi.fn();
@@ -8,7 +8,9 @@ const publish = vi.fn();
 const askAgent = vi.fn();
 const rollback = vi.fn();
 let admin = false;
-vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ open, refresh, publish, askAgent, rollback, listInvites: async () => [] }) }));
+const openConversation = vi.fn(async () => ({ roomId: "conv-1" }));
+vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ open, refresh, publish, askAgent, rollback, openConversation, listInvites: async () => [] }) }));
+vi.mock("../AppConversation", () => ({ AppConversation: ({ app, shown }: { app: AppRow; shown?: boolean }) => <aside aria-label="Conversation" data-shown={String(shown)}>{app.app_id}</aside> }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => admin }));
 import { AppView } from "../AppView";
 
@@ -18,9 +20,48 @@ const app = (over: Partial<AppRow> = {}): AppRow => ({
   spend_month_cents: 0, can_open: true, ...over,
 });
 
-beforeEach(() => { vi.restoreAllMocks(); open.mockReset(); refresh.mockReset(); publish.mockReset(); askAgent.mockReset(); rollback.mockReset(); admin = false; });
+beforeEach(() => { vi.restoreAllMocks(); open.mockReset(); refresh.mockReset(); publish.mockReset(); askAgent.mockReset(); rollback.mockReset(); openConversation.mockClear(); admin = false; });
 
 describe("AppView", () => {
+  it("shows the app's conversation beside the preview, with a Conversation | App switch for a narrow panel", async () => {
+    open.mockResolvedValue("https://x.apps.test/?pass=1");
+    const { container } = render(<AppView app={app()} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    const split = container.querySelector(".app-view__split")!;
+    expect(split.querySelector(".app-view__main iframe")).not.toBeNull();
+    expect(within(split as HTMLElement).getByRole("complementary", { name: "Conversation" }).textContent).toBe("a1");
+    const view = container.querySelector(".app-view")!;
+    expect(view.getAttribute("data-pane")).toBe("preview");
+    fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
+    expect(view.getAttribute("data-pane")).toBe("conversation");
+    expect(screen.getByRole("button", { name: "Conversation" }).getAttribute("aria-pressed")).toBe("true");
+    expect(view.hasAttribute("data-narrow")).toBe(false); // jsdom has no width: wide, both shown
+    expect(screen.getByRole("complementary", { name: "Conversation" }).getAttribute("data-shown")).toBe("true");
+  });
+
+  it("in a narrow panel the conversation counts as on screen only on its pane, and Settings shows the app pane", async () => {
+    const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(500);
+    open.mockResolvedValue("https://x.apps.test/?pass=1");
+    const { container } = render(<AppView app={app({ can_publish: true })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    const view = container.querySelector(".app-view")!;
+    const conversation = () => screen.getByRole("complementary", { name: "Conversation" }).getAttribute("data-shown");
+    expect(view.hasAttribute("data-narrow")).toBe(true);
+    expect(conversation()).toBe("false"); // the app pane is showing: its messages still notify
+    fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
+    expect(conversation()).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(view.getAttribute("data-pane")).toBe("preview"); // Settings lives on the app pane
+    expect(conversation()).toBe("false");
+    width.mockRestore();
+  });
+
+  it("an app from no room, shared with only its creator, names no room when refused", async () => {
+    open.mockRejectedValue(Object.assign(new Error("not shared"), { status: 403 }));
+    render(<AppView app={app({ room_id: null, room_name: undefined, open_to: "me", created_by_name: "Dana" })} onBack={vi.fn()} />);
+    expect(await screen.findByText(/Only its creator and workspace admins can open Invoices\. Ask Dana to share it\./)).toBeTruthy();
+  });
+
   it("requests a pass and sets it as the frame src", async () => {
     open.mockResolvedValue("https://x.apps.test/?pass=1");
     render(<AppView app={app()} onBack={vi.fn()} />);
@@ -38,7 +79,7 @@ describe("AppView", () => {
     const frame = await screen.findByTitle("Invoices");
     expect(frame.getAttribute("src")).toBe("https://p.apps.test/?pass=1");
     expect(open).toHaveBeenCalledWith("a1", "preview");
-    expect(screen.getByText(/You're looking at the preview\. Only you and #finance see it until it's published: press Publish, or say “ship it” in the room\./)).toBeTruthy();
+    expect(screen.getByText(/You're looking at the preview\. It isn't live until it's published: press Publish, or say “ship it” in the conversation\./)).toBeTruthy();
     expect(screen.queryByRole("group", { name: "View" })).toBeNull();
   });
 
@@ -60,7 +101,7 @@ describe("AppView", () => {
     const button = screen.getByRole("button", { name: "Ask the agent to fix it" });
     expect(line.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(button);
-    await screen.findByText("Asked the agent in #finance. It'll post there.");
+    await screen.findByText("Asked the agent in the conversation. It'll answer there.");
     expect(askAgent).toHaveBeenCalledWith("a1", undefined);
   });
 
@@ -83,7 +124,7 @@ describe("AppView", () => {
     open.mockResolvedValue("https://a1.preview.test/");
     render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", agent_working: true })} onBack={vi.fn()} />);
     await waitFor(() => expect(screen.getByTitle("Invoices")).toBeTruthy());
-    expect(screen.getByText("This is a first version. The agent is still working on it and will post in #finance when it's ready.")).toBeTruthy();
+    expect(screen.getByText("This is a first version. The agent is still working on it and will post in the conversation when it's ready.")).toBeTruthy();
     expect(screen.queryByText(/looking at the preview/)).toBeNull();
   });
 
@@ -120,7 +161,7 @@ describe("AppView", () => {
     render(<AppView app={app({ state: "failed", live_version: null, live_url: null, preview_url: "https://p", can_publish: true, error: { message: 'Command "npx drizzle-kit migrate && next build" exited with 1' } })} onBack={vi.fn()} />);
     await screen.findByTitle("Invoices");
     const alert = screen.getAllByRole("alert").map((a) => a.textContent).join();
-    expect(alert).toContain("The last publish didn't land. Press Publish to try again, or ask the agent in #finance.");
+    expect(alert).toContain("The last publish didn't land. Press Publish to try again, or ask the agent in the conversation.");
     expect(alert).toContain('Command "npx drizzle-kit migrate && next build" exited with 1');
     expect(screen.getByRole("button", { name: "Publish" })).toBeTruthy();
     expect(screen.queryByText("Something went wrong. Ask the agent in #finance.")).toBeNull();
@@ -235,7 +276,7 @@ describe("AppView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
     await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.preview.test/"));
     expect([pressed("Preview"), pressed("Live")]).toEqual(["true", "false"]);
-    expect(screen.getByText("You're looking at the preview. Only you and #finance see it until it's published. The data here is examples; the live app starts empty.")).toBeTruthy();
+    expect(screen.getByText("You're looking at the preview. It isn't live until it's published. The data here is examples; the live app starts empty.")).toBeTruthy();
     expect(open).toHaveBeenLastCalledWith("a1", "preview");
     fireEvent.click(screen.getByRole("button", { name: "Live" }));
     await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.live.test/"));
@@ -253,6 +294,15 @@ describe("AppView", () => {
     render(<AppView app={app({ state: "provisioning", live_version: null })} onBack={vi.fn()} />);
     expect(screen.getByText("Setting up its hosting and data, usually a few minutes.")).toBeTruthy();
     expect(screen.queryByText("Preview: not live yet.")).toBeNull();
+  });
+
+  it("an app with nothing built yet asks for no pass and says what's coming", () => {
+    render(<AppView app={app({ state: "requested", preview_url: null, live_url: null, live_version: null })} onBack={vi.fn()} />);
+    expect(open).not.toHaveBeenCalled();
+    expect(screen.getByText(/^The agent is making the preview\./)).toBeTruthy();
+    expect(screen.queryByText(/You're looking at the preview/)).toBeNull();
+    expect(screen.queryByText("Opening…")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open in its own tab" })).toBeNull();
   });
 
   it("falls back to live when the preview goes away", async () => {
@@ -296,11 +346,17 @@ describe("AppView", () => {
     it("Publish asks first, naming the audience; Cancel posts nothing", async () => {
       render(<AppView app={ready({ open_to: "workspace" })} onBack={vi.fn()} />);
       fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
-      expect(screen.getByText("Make this preview live for everyone in the workspace? You can undo it from the room.")).toBeTruthy();
+      expect(screen.getByText("Make this preview live for everyone in the workspace? You can undo it from its conversation.")).toBeTruthy();
       expect(publish).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
       expect(screen.getByRole("button", { name: "Publish" })).toBeTruthy();
       expect(publish).not.toHaveBeenCalled();
+    });
+
+    it("an app shared with only its creator says so grammatically in the confirm", async () => {
+      render(<AppView app={ready({ open_to: "me" })} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      expect(screen.getByText("Make this preview live just for its creator and workspace admins? You can undo it from its conversation.")).toBeTruthy();
     });
 
     it.each([
@@ -342,7 +398,7 @@ describe("AppView", () => {
       publish.mockRejectedValueOnce(new Error("The build failed: missing env")).mockResolvedValueOnce({ app_id: "a1", state: "building" });
       render(<AppView app={ready()} onBack={vi.fn()} />);
       await clickPublish();
-      expect((await screen.findAllByRole("alert")).map((a) => a.textContent).join()).toContain("This version didn't go live. People still see the last live version. Try again, or ask the agent in #finance to fix it.");
+      expect((await screen.findAllByRole("alert")).map((a) => a.textContent).join()).toContain("This version didn't go live. People still see the last live version. Try again, or ask the agent in its conversation to fix it.");
       expect(screen.getByText("Details").closest("details")!.textContent).toContain("The build failed: missing env");
       fireEvent.click(screen.getByRole("button", { name: "Try again" }));
       expect(await screen.findByText("Publishing…")).toBeTruthy();
@@ -466,7 +522,10 @@ describe("AppView", () => {
       await act(async () => finish());
       expect(askAgent).toHaveBeenCalledTimes(1);
       expect(askAgent).toHaveBeenCalledWith("a1", undefined); // the backend reads the stored error
-      expect(screen.getByRole("status").textContent).toBe("Asked the agent in #finance. It'll post there.");
+      // The conversation is opened first, so an older app with only its room gets one and the ask lands in it.
+      expect(openConversation).toHaveBeenCalledWith("a1");
+      expect(openConversation.mock.invocationCallOrder[0]).toBeLessThan(askAgent.mock.invocationCallOrder[0]);
+      expect(screen.getByRole("status").textContent).toBe("Asked the agent in the conversation. It'll answer there.");
       expect(screen.queryByRole("button", { name: "Ask the agent to fix it" })).toBeNull();
     });
 
@@ -474,7 +533,7 @@ describe("AppView", () => {
       askAgent.mockRejectedValue(Object.assign(new Error("Only members"), { status: 403 }));
       render(<AppView app={failed()} onBack={vi.fn()} />);
       fireEvent.click(await ask());
-      await screen.findByText(/You're not in #finance, so this can't be posted as you\. Join it, or ask someone in it\./);
+      await screen.findByText(/You can't post in this app's conversation\./);
       expect(screen.getAllByText("Details").some((d) => d.closest("details")!.textContent!.includes("Only members"))).toBe(true);
     });
 
@@ -482,7 +541,7 @@ describe("AppView", () => {
       askAgent.mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce(undefined);
       render(<AppView app={failed()} onBack={vi.fn()} />);
       fireEvent.click(await ask());
-      await screen.findByText(/We couldn't ask in #finance\. Try again\./);
+      await screen.findByText(/We couldn't ask\. Try again\./);
       fireEvent.click(await ask());
       expect((await screen.findByRole("status")).textContent).toContain("Asked the agent");
     });
@@ -497,7 +556,7 @@ describe("AppView", () => {
       askAgent.mockRejectedValue(Object.assign(new Error("There is no agent"), { status: 409, body: { detail: { code: "no_agent" } } }));
       render(<AppView app={failed()} onBack={vi.fn()} />);
       fireEvent.click(await ask());
-      const alert = await screen.findByText(/There's no agent in #finance to ask\. Add one to the room\./);
+      const alert = await screen.findByText(/There's no agent in the conversation to ask\. Add one to the workspace\./);
       expect(alert.textContent).not.toContain("We couldn't ask");
       expect(screen.queryByText(/We couldn't ask/)).toBeNull();
     });

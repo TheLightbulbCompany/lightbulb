@@ -23,6 +23,8 @@ export interface RunToastContext {
   teamsPanelActive: boolean;
   /** The room on screen, if any: its runs show their own progress, so they never toast. */
   visibleRoomId?: string | null;
+  /** Rooms on screen in a side column (session chat, an app's conversation): their runs never toast either. */
+  sideRoomIds?: readonly string[];
 }
 
 export type RunToastAction =
@@ -75,7 +77,7 @@ export const MAX_TRACKED_RUNS = 200;
 // run for its agent regardless of the run's session.
 function chatSuppressed(agentId: string, sessionId: string | null, ctx: RunToastContext, roomId?: string): boolean {
   return (
-    (!!roomId && roomId === ctx.visibleRoomId) ||
+    (!!roomId && (roomId === ctx.visibleRoomId || !!ctx.sideRoomIds?.includes(roomId))) ||
     ctx.watchedChatKeys.has(agentId) ||
     ctx.watchedChatKeys.has(`${agentId}:${sessionId ?? ""}`)
   );

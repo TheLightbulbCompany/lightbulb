@@ -1067,3 +1067,27 @@ async def test_the_owners_own_provider_running_out_is_not_resumed(note):
     app = await _app()
     await messaging.post_run_failure_message(OWNER, _turn(), "error", messaging.PROVIDER_QUOTA_EXHAUSTED)
     assert (await _build(app)).get("due_at") is None
+
+
+# --- an app with its own conversation (Task 1 review) ---------------------------------------------
+
+
+async def test_only_turns_in_the_room_an_app_is_built_in_are_its_build_turns(world):
+    """A started app keeps its origin room: its builder's other work there is not this build."""
+    app = await _app(conversation_id="conv_1")
+    assert await _fail() is None  # a turn in the origin room
+    assert (await _build(app)).get("due_at") is None
+    assert await _fail(roomId="conv_1") == "CEO lost its place on Crew. Trying again in a minute."
+
+
+async def test_an_open_run_in_the_older_room_holds_the_wake_of_an_app_opened_mid_build(world, monkeypatch):
+    app = await _app(conversation_id="conv_1")
+    await _fail(roomId="conv_1")
+    runs = AsyncMock(side_effect=lambda o, r: world.open_runs if r == ROOM else [])
+    monkeypatch.setattr(apps_run.messaging_repo, "list_open_runs_for_room", runs)
+    world.open_runs = [{"agentId": AGENT}]
+    await _at_due(world, app)
+    assert not world.lines
+    world.open_runs = []
+    await _at_due(world, app)
+    assert len(world.lines) == 1 and world.lines[0]["room_id"] == "conv_1"

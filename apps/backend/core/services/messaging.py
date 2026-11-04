@@ -1626,6 +1626,13 @@ async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tupl
             row = await local_sessions_repo.get_session(meta["ownerId"], meta["session"]["sessionId"])
             if row is not None and row.get("removedAt") is not None:
                 raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+        elif meta.get("app"):
+            # An app's conversation: a seat never outlives the right to open the app (its sharing narrowed,
+            # the person left the app's room) — this door does not wait for the unseat sweep either.
+            from core.services import app_conversation  # lazy: it imports this module
+
+            if not await app_conversation.seat_still_opens(meta["ownerId"], meta["app"]["app_id"], user_id):
+                raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
         return meta, member
     # A human of the room's own workspace who lost access keeps the reconcile hint;
     # everyone else (a stranger, or a foreign member viewing from the wrong org) sees nothing.
@@ -4117,7 +4124,8 @@ async def create_human_message(
         "displayName": await human_display_name(auth.user_id),
     }
     addressing = None
-    if meta.get("kind") != "dm" and feed_roster is None:
+    # An app's conversation is addressed to its builder (below), so nothing is routed by reading the text.
+    if meta.get("kind") != "dm" and not meta.get("app") and feed_roster is None:
         # Who the text speaks to (routing v2 §3.1). Chat never holds: an unfinished message routes
         # anyway, and its continuation reaches the run as a steer.
         addressing = await address(
@@ -4129,7 +4137,9 @@ async def create_human_message(
         members,
         mentions + [{"kind": "agent", "id": a} for a in (addressing or {}).get("agents", [])],
         None,
-        room_kind=meta.get("kind"),
+        # An app's own conversation (app_conversation) is its builder's: every person's message there is
+        # addressed to it, as in a DM.
+        room_kind="dm" if meta.get("app") else meta.get("kind"),
         feed_roster=feed_roster,
         in_thread=request.thread_root_message_id is not None,
     )

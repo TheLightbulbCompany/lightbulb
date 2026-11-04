@@ -54,14 +54,20 @@ describe("AppList", () => {
     expect(screen.getByRole("group").getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("building apps are listed but not openable", () => {
+  it("building apps open to their status and conversation", () => {
     const onOpen = vi.fn();
-    render(<AppList {...props} onOpen={onOpen} apps={[app({ state: "building", live_version: null }), app({ app_id: "a2", name: "Pipeline", state: "building" })]} />);
-    expect(screen.getByText("The agent is making the preview. It'll post in #finance when it's ready.")).toBeTruthy(); // first build
-    expect(screen.getByText("Building the new version. It'll show here and in #finance when it's ready.")).toBeTruthy(); // a publish or a change
+    render(<AppList {...props} onOpen={onOpen} apps={[app({ state: "building", live_version: null }), app({ app_id: "a2", name: "Pipeline", state: "building", conversation_id: "c2" })]} />);
+    expect(screen.getByText("The agent is making the preview. It'll post in #finance when it's ready.")).toBeTruthy(); // an older app, its conversation not opened yet
+    expect(screen.getByText("Building the new version. It'll show here and in its conversation when it's ready.")).toBeTruthy(); // a publish or a change
     fireEvent.click(screen.getByText("Invoices"));
-    expect(onOpen).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(onOpen).toHaveBeenCalledWith("a1");
+  });
+
+  it("an app from no room names no room, and one shared with only its creator says so", () => {
+    render(<AppList {...props} apps={[app({ room_id: null, room_name: undefined, open_to: "me", created_by_name: "Dana" })]} />);
+    expect(screen.getByText("asked by Dana")).toBeTruthy();
+    expect(screen.getByText("only its creator and admins")).toBeTruthy();
+    expect(screen.queryByText(/#room/)).toBeNull();
   });
 
   it("shows a title-cased display name, not the slug, and hides zero spend", () => {

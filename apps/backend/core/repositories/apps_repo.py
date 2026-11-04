@@ -145,7 +145,7 @@ async def create(
     *,
     owner_id: str,
     name: str,
-    room_id: str,
+    room_id: str | None,
     created_by: str | None,
     actor_id: str,
     actor_kind: str,
@@ -154,7 +154,10 @@ async def create(
     open_to: str,
     budget_usd: int,
     display_name: str | None = None,
+    state: str = "building",
+    origin_room_id: str | None = None,
 ) -> dict:
+    """``state`` "requested": reserved by ``app start``, no source yet (the first upload adopts it)."""
     now = utc_now_iso()
     item = ddb_safe(
         {
@@ -163,6 +166,8 @@ async def create(
             "name": name,
             "display_name": display_name,
             "room_id": room_id,
+            "origin_room_id": origin_room_id,
+            "conversation_id": None,
             "created_by": created_by,
             "actor_id": actor_id,
             "actor_kind": actor_kind,
@@ -170,7 +175,7 @@ async def create(
             "services": services,
             "open_to": open_to,
             "budget_usd": budget_usd,
-            "state": "building",
+            "state": state,
             "stripe_project_id": None,
             "vercel": None,
             "neon": None,
@@ -194,7 +199,7 @@ async def create(
                 {
                     "Put": {
                         "TableName": table.table_name,
-                        "Item": {"app_id": _guard_id(name), "claimed_by": owner_id},
+                        "Item": {"app_id": _guard_id(name), "claimed_by": owner_id, "target_app_id": item["app_id"]},
                         "ConditionExpression": "attribute_not_exists(app_id)",
                     }
                 },
@@ -208,6 +213,16 @@ async def create(
                 raise NameTaken(name) from e
         raise
     return item
+
+
+async def claimed_by(owner_id: str, name: str) -> dict | None:
+    """The app holding ``name`` for ``owner_id``, strongly read through the name guard: the owner index
+    lags a create, so a racing second create finds the winner here. ``None``: another owner's, or an old
+    guard that names no app."""
+    guard = await get(_guard_id(name), consistent_read=True)
+    if not guard or guard.get("claimed_by") != owner_id or not guard.get("target_app_id"):
+        return None
+    return await get(guard["target_app_id"], consistent_read=True)
 
 
 async def _query_owner(owner_id: str, name: str | None = None) -> list[dict]:

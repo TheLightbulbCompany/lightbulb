@@ -1,4 +1,4 @@
-"""One line in an app's room when a live app has not been opened for 30 days.
+"""One line in an app's conversation (else its room) when a live app has not been opened for 30 days.
 
 Runs once a day from the digest sweeper's loop (its own pass). The line is posted by the
 app's own agent when it has one, else the workspace CEO. ``idle_posted_at`` is only written
@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from core.repositories import apps_repo
-from core.services import messaging, owner_facts
+from core.services import apps_room, messaging, owner_facts
 
 logger = logging.getLogger(__name__)
 
@@ -67,17 +67,24 @@ async def post_idle_lines(owner_id: str, *, now: datetime | None = None) -> int:
             if not agent_id:
                 logger.warning("apps_idle: no author owner=%s app=%s", owner_id, app["app_id"])
                 continue
-            origin = _ORIGIN.get((app.get("origin") or {}).get("kind"), "built in this room")
+            # Its conversation when it has one, else its room; a CLI-only app has neither (the CLI says it).
+            room_id = apps_room.room_of(app)
+            if not room_id:
+                continue
             name = app["name"]
+            said = (
+                ""
+                if app.get("conversation_id")
+                else f" ({_ORIGIN.get((app.get('origin') or {}).get('kind'), 'built in this room')})"
+            )
             window = int(now.timestamp() // IDLE.total_seconds())
             await messaging.post_agent_message(
                 owner_id,
                 messaging.AgentPostRequest(
                     event_id=f"app-idle:{app['app_id']}:{window}",
                     agent_id=uuid.UUID(agent_id),
-                    room_id=uuid.UUID(str(app["room_id"])),
-                    text=f"{name} ({origin}) has not been opened in 30 days. "
-                    f"Say 'remove {name}' if it's no longer needed.",
+                    room_id=uuid.UUID(str(room_id)),
+                    text=f"{name}{said} has not been opened in 30 days. Say 'remove {name}' if it's no longer needed.",
                 ),
             )
             await apps_repo.patch(app["app_id"], {"idle_posted_at": now.isoformat()})

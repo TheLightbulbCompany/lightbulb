@@ -1,4 +1,5 @@
-"""The app's room: where its builder agent hears what happened to the app."""
+"""The app's room: where its builder agent hears what happened to the app. That is the app's own
+conversation (``app_conversation``) once it has one, else (an older app) the room it was built in."""
 
 from __future__ import annotations
 
@@ -11,6 +12,11 @@ from core.repositories import apps_repo, messaging_repo
 from core.services import messaging
 
 logger = logging.getLogger(__name__)
+
+
+def room_of(app: dict) -> str | None:
+    """Where the app's builder hears about it: its own conversation, else the room it was built in."""
+    return app.get("conversation_id") or app.get("room_id")
 
 
 async def _member(owner_id: str, user_id: str, room_id: str) -> bool:
@@ -67,12 +73,12 @@ async def post_approval_line(*, owner_id: str, user_id: str, workflow: dict) -> 
     workflow_id = workflow["workflow_id"]
     try:
         app = await apps_repo.get(workflow["app_id"])
-        room_id = (app or {}).get("room_id")
+        room_id = room_of(app or {})
         if not room_id:
             logger.warning("apps: no room for app %s, approval line skipped", workflow["app_id"])
             return
         author = await _author(owner_id, user_id, room_id)
-        if author is None:
+        if author is None and not app.get("conversation_id"):
             logger.warning("apps: no human member to post the approval line for %s", workflow_id)
             return
         provider = str(workflow.get("provider_name") or "")
@@ -84,17 +90,22 @@ async def post_approval_line(*, owner_id: str, user_id: str, workflow: dict) -> 
         # Address the builder agent so the line wakes it, not just the room.
         builder = await _builder(app, room_id) if app.get("actor_kind") == "agent" else None
         mentions = [messaging.MemberRef(kind="agent", id=builder["id"])] if builder else []
+        text = (
+            f"Approved hosting and data for {display}. Setting it up."
+            if workflow.get("bundle")
+            else f"Approved {what} for {display} ({env}). Setting it up."
+        )
+        if author is None:  # the app's conversation with nobody seated who can sign it: Lightbulb says it
+            targets = [{"agentId": builder["id"], "eventKind": "user_request"}] if builder else []
+            await post_system_line(app, f"apps-approval:{workflow_id}", text, targets)
+            return
         await messaging.create_human_message(
             AuthContext(user_id=author, org_id=owner_id),
             room_id,
             messaging.CreateMessageRequest(
                 # A replay of the same approval is a no-op on the messaging side.
                 client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"apps-approval:{workflow_id}"),
-                text=(
-                    f"Approved hosting and data for {display}. Setting it up."
-                    if workflow.get("bundle")
-                    else f"Approved {what} for {display} ({env}). Setting it up."
-                ),
+                text=text,
                 mentions=mentions,
                 reply_to_message_id=None,
                 thread_root_message_id=None,
@@ -106,11 +117,16 @@ async def post_approval_line(*, owner_id: str, user_id: str, workflow: dict) -> 
         logger.warning("apps: approval line failed for %s: %s", workflow_id, type(e).__name__)
 
 
-async def post_system_line(app: dict, key: str, text: str, targets: list[dict] | None = None) -> dict | None:
-    """A system line in the app's room. The key is the receipt: a resend replays it. ``None``: the room is gone."""
-    room_id = app["room_id"]
+async def post_system_line(
+    app: dict, key: str, text: str, targets: list[dict] | None = None, *, room_id: str | None = None
+) -> dict | None:
+    """A system line in the app's room (``room_of``), or in ``room_id``. The key is the receipt: a resend
+    replays it (``"replayed": True`` on the result). ``None``: the room is gone."""
+    room_id = room_id or room_of(app)
+    if not room_id:
+        return None
     try:
-        message, _ = await messaging_repo.create_message(
+        message, replayed = await messaging_repo.create_message(
             room_id=room_id,
             owner_id=app["owner_id"],
             idemp_pk=messaging_repo.room_pk(room_id),
@@ -126,7 +142,7 @@ async def post_system_line(app: dict, key: str, text: str, targets: list[dict] |
             source_agent_id=None,
             client_message_id=None,
         )
-        return message
+        return {**message, "replayed": replayed}
     except (messaging_repo.RoomArchived, messaging_repo.RoomNotFound):
         return None
 
@@ -141,3 +157,19 @@ async def post_stuck_line(app: dict, display: str, step: str) -> None:
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("apps: stuck line failed for %s: %s", app.get("app_id"), type(e).__name__)
+
+
+async def post_origin_ready_line(app: dict, display: str, canvas_url: str) -> None:
+    """Once ever, in the room the request came from, at the app's first real preview: its first version
+    is in Canvas. Not "ready": only the CLI knows when the builder is done. Never raises."""
+    if not app.get("origin_room_id") or not app.get("conversation_id"):
+        return
+    try:
+        await post_system_line(
+            app,
+            f"apps-origin-ready:{app['app_id']}",
+            f"{display}'s first version is in Canvas: {canvas_url}",
+            room_id=app["origin_room_id"],
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("apps: origin ready line failed for %s: %s", app.get("app_id"), type(e).__name__)

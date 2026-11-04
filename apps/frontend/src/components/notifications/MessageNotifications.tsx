@@ -13,8 +13,9 @@ export function MessageNotifications(props: {
   activeRoomId: string | null;
   threadId: string | null;
   roomVisible: boolean;
-  /** The room on screen shows thread replies inline (a session's chat): a reply there is on screen too. */
-  repliesInline?: boolean;
+  /** Rooms on screen in a side column (a session's chat, an app's conversation in Canvas), each beside
+   * whatever the main view shows. They show thread replies inline: a reply there is on screen too. */
+  sideRoomIds?: readonly string[];
   onOpen: (roomId: string, threadId: string | null, messageId: string) => void;
   /** The shared session on screen, if any: its own notifications are not shown while you watch it. */
   activeSessionId?: string | null;
@@ -27,13 +28,14 @@ export function MessageNotifications(props: {
   const current = useRef(props);
   useEffect(() => { current.current = props; });
 
-  const { activeRoomId, roomVisible, rooms } = props;
+  const { activeRoomId, roomVisible, rooms, sideRoomIds } = props;
   useEffect(() => {
     setRoomView({
       visibleRoomId: roomVisible ? activeRoomId : null,
+      sideRoomIds,
       rooms: new Map((rooms ?? []).map((room) => [room.roomId, { kind: room.kind, name: room.name }])),
     });
-  }, [activeRoomId, roomVisible, rooms]);
+  }, [activeRoomId, roomVisible, rooms, sideRoomIds]);
   useEffect(() => () => setRoomView({ visibleRoomId: null, rooms: new Map() }), []);
 
   // The desktop app's own notices, when macOS notifications are off.
@@ -136,9 +138,9 @@ export function MessageNotifications(props: {
       if (seen.has(messageId)) return;
       seen.add(messageId);
       if (seen.size > 1000) seen.delete(seen.values().next().value!);
-      const watched = current.current.roomVisible && current.current.activeRoomId === roomId &&
-        (!threadRootMessageId || current.current.repliesInline || current.current.threadId === threadRootMessageId) &&
-        document.visibilityState === "visible" && document.hasFocus();
+      const now = current.current;
+      const inMain = now.roomVisible && now.activeRoomId === roomId && (!threadRootMessageId || now.threadId === threadRootMessageId);
+      const watched = (inMain || !!now.sideRoomIds?.includes(roomId)) && document.visibilityState === "visible" && document.hasFocus();
       if (watched) return;
       if (data.runId && !claimRunNotice(data.runId)) return;
       capture("notification_shown", { channel: "web", room_kind: data.roomKind });

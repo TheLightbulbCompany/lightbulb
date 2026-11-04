@@ -82,6 +82,8 @@ def test_list_marks_can_open_by_room_membership(member, monkeypatch):
         _record("app_5", "ws", "room_out", "workspace"),
         _record("app_6", "pub", "room_gone", "public"),
         _record("app_7", "gone", "room_in", "room", state="destroyed"),
+        _record("app_8", "solo", None, "workspace"),
+        _record("app_9", "private", None, "me", created_by="user_founder"),
     ]
     rooms = {
         "room_in": {"roomId": "room_in", "ownerId": "org_a", "name": "Ops"},
@@ -123,11 +125,12 @@ def test_list_marks_can_open_by_room_membership(member, monkeypatch):
     assert {n: a["can_open"] for n, a in rows.items()} == {
         "mine": True,
         "theirs": False,
-        "inv": True,
+        "inv": False,  # "invited" is the invitees (by link) and managers, never the room
         "inv-out": False,
         "ws": True,
         "pub": True,
-    }
+        "solo": True,
+    }  # "private" is its creator's only: not listed to another member
     assert rows["mine"]["room_name"] == "Ops" and rows["pub"]["room_name"] is None
     assert rows["theirs"]["room_name"] is None  # a room the caller is not in is not named
     assert rows["mine"]["created_by_name"] == "Ada" and rows["mine"]["agent_name"] is None
@@ -165,6 +168,7 @@ def test_patch_requires_creator_or_org_admin(admin, member, monkeypatch, paid):
     assert upd.await_args.kwargs == {"open_to": "public", "budget_usd": 50, "display_name": None}
     paid.assert_awaited_with("org_a", message=mod.PAID_MESSAGE)
 
+    assert admin.patch(f"{BASE}/app_1", json={"open_to": "me"}).status_code == 200  # only me
     r = admin.patch(f"{BASE}/app_1", json={"display_name": "  Crew Rota  "})
     assert r.status_code == 200 and upd.await_args.kwargs["display_name"] == "Crew Rota"
     for bad in (
@@ -403,6 +407,13 @@ def test_invites_require_admin_and_set_open_to_invited(member, invites):
     admin = _as("admin")
     for bad in ({"emails": []}, {"emails": ["not-an-email"]}, {"emails": [f"u{i}@x.co" for i in range(21)]}, {}):
         assert admin.post(f"{BASE}/app_a/invites", json=bad).status_code == 422, bad
+    # A room app stays a room app (its room keeps it; the links work too). An only-me app becomes "invited".
+    r = admin.post(f"{BASE}/app_b/invites", json={"emails": ["dee@x.co"]})
+    assert r.status_code == 200 and r.json() == {"invited": 1, "open_to": "room"}
+    sent.clear()
+    table.update_item(
+        Key={"app_id": "app_a"}, UpdateExpression="SET open_to = :m", ExpressionAttributeValues={":m": "me"}
+    )
     r = admin.post(f"{BASE}/app_a/invites", json={"emails": ["Bo@X.co", "cy@x.co"]})
     assert r.status_code == 200 and r.json() == {"invited": 2, "open_to": "invited"}
     assert table.get_item(Key={"app_id": "app_a"})["Item"]["open_to"] == "invited"
@@ -410,7 +421,7 @@ def test_invites_require_admin_and_set_open_to_invited(member, invites):
     assert all(m["kind"] == "apps_invite" and "https://alpha.apps.test/_lightbulb/invite#t=" in m["html"] for m in sent)
     # only the token's hash is stored
     stored = [i for i in table.scan()["Items"] if i["app_id"].startswith("INVITE#")]
-    assert len(stored) == 2 and all(_token(m) not in str(stored) for m in sent)
+    assert len(stored) == 3 and all(_token(m) not in str(stored) for m in sent)
     assert admin.post(f"{BASE}/app_zzz/invites", json={"emails": ["a@x.co"]}).status_code == 404
 
 
@@ -534,6 +545,7 @@ def test_remove_accepts_the_display_name_or_the_slug(admin, monkeypatch):
     [
         ("POST", "rollback", {"version": 1}),
         ("POST", "ask-agent", {}),
+        ("POST", "ask", {"text": "make it blue"}),
         ("GET", "invites", None),
         ("DELETE", "invites", {"email": "a@x.co"}),
     ],
@@ -546,6 +558,7 @@ def test_new_member_routes_are_manager_gated(monkeypatch, method, path, body):
     monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(side_effect=lambda a, **_: records.get(a)))
     for name in ("rollback", "ask_agent_to_fix", "list_invites", "revoke_invite"):
         monkeypatch.setattr(svc, name, AsyncMock(side_effect=AssertionError("the gate comes first")))
+    monkeypatch.setattr(mod.app_conversation, "ask_as_member", AsyncMock(side_effect=AssertionError("gate first")))
     try:
         r = _as("member").request(method, f"{BASE}/mine/{path}", json=body)
         assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
@@ -837,3 +850,13 @@ def test_invite_email_names_the_app_by_its_display_name_escaped(invites):
     assert sent[0]["subject"] == "You're invited to Sign-up <b>now</b>"
     assert "Sign-up &lt;b&gt;now&lt;/b&gt;" in sent[0]["html"] and "<b>" not in sent[0]["html"]
     assert "alpha" not in sent[0]["text"].split("https://")[0]  # the slug stays in the address
+
+
+def test_conversation_opens_for_any_signed_in_member_and_the_service_decides(member, monkeypatch):
+    opened = AsyncMock(return_value={"room_id": "c1"})
+    monkeypatch.setattr(mod.app_conversation, "open_conversation", opened)
+    assert member.post(f"{BASE}/app_1/conversation").json() == {"room_id": "c1"}
+    assert opened.await_args.args[0].user_id == "user_member" and opened.await_args.args[1] == "app_1"
+    opened.side_effect = svc.AppsRefused("not_a_member", "no")
+    r = member.post(f"{BASE}/app_1/conversation")
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_a_member"

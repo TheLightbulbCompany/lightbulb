@@ -86,7 +86,10 @@ async def _builders_app(owner_id: str, row: dict) -> dict | None:
     here = [
         a
         for a in await apps_repo.list_for_owner(owner_id)
-        if a.get("room_id") == row.get("roomId") and a.get("actor_kind") == "agent" and a.get("state") != "destroyed"
+        # The room it is built in: a started app's origin room hears its builder on other work too.
+        if row.get("roomId") == apps_room.room_of(a)
+        and a.get("actor_kind") == "agent"
+        and a.get("state") != "destroyed"
     ]
     if not here:
         return None
@@ -94,7 +97,7 @@ async def _builders_app(owner_id: str, row: dict) -> dict | None:
     app = plain(await apps_repo.get(latest["app_id"], consistent_read=True) or {})
     if not app:
         return None
-    builder = await apps_room._builder(app, app["room_id"], guess=False)
+    builder = await apps_room._builder(app, row["roomId"], guess=False)
     return app if builder and builder["id"] == row.get("agentId") else None
 
 
@@ -130,7 +133,7 @@ async def record_upload(app: dict, actor_id: str, actor_kind: str, *, files: dic
         if actor_kind == "agent":
             named = actor_id
             if actor_id == _PLACEHOLDER:
-                running = await messaging_repo.list_open_runs_for_room(app["owner_id"], app["room_id"])
+                running = await messaging_repo.list_open_runs_for_room(app["owner_id"], apps_room.room_of(app))
                 agents = {r.get("agentId") for r in running}
                 named = agents.pop() if len(agents) == 1 else None
         for _ in range(3):
@@ -244,7 +247,7 @@ async def _wake_issue(app: dict, builder: dict, n: int) -> dict:
                 f"Your earlier turns on the app `{app['name']}` stopped before it finished, and the room "
                 "turn could not resume it. Run `lightbulb app status --json`, continue from where it "
                 "stopped, and post in the room when it's done or if you need a person.\n\n"
-                f"## From\nThe app's room: room `{app['room_id']}`."
+                f"## From\nThe app's room: room `{apps_room.room_of(app)}`."
             ),
             "status": "todo",
             "assigneeAgentId": builder["id"],
@@ -307,12 +310,16 @@ async def advance(app: dict) -> None:
     if phase in ("finished", "owner"):
         await _write(app, due_at=None)
         return
-    room = await messaging_repo.get_room(app["room_id"])
+    room_id = apps_room.room_of(app)
+    room = await messaging_repo.get_room(room_id) if room_id else None
     if not room or room.get("archivedAt") or room.get("deletedAt"):
         await _write(app, due_at=None)
         return
     wake = build.get("wake") or {}
-    if phase == "server" or await messaging_repo.list_open_runs_for_room(app["owner_id"], app["room_id"]):
+    # Open runs where it is built: an older app opened mid-build still builds in its room.
+    if phase == "server" or any(
+        [await messaging_repo.list_open_runs_for_room(app["owner_id"], r) for r in apps_service._build_rooms(app)]
+    ):
         await _hold(app, build, now)
         return
     issue = await _issue_status(wake, now)
@@ -325,7 +332,7 @@ async def advance(app: dict) -> None:
     if issue == "cancelled":  # a person said no: no more wakes until a new source
         await _write(app, due_at=None, stopped=True)
         return
-    builder = await apps_room._builder(app, app["room_id"], guess=False)
+    builder = await apps_room._builder(app, room_id, guess=False)
     attempts = int((build.get("attempts") or {}).get("wake") or 0)
     today = _wakes_today(build, now)
     unsent = bool(wake.get("n")) and not wake.get("sent")  # a sweeper died mid-wake: same key, same attempt

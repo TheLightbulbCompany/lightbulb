@@ -94,3 +94,13 @@ async def test_post_failure_does_not_patch(env):
     env.post.side_effect = RuntimeError("nope")
     assert await apps_idle.post_idle_lines("o1", now=NOW) == 0
     env.patch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_app_with_a_conversation_hears_there_and_one_with_no_room_is_skipped(env):
+    conversation = str(uuid.uuid4())
+    env.apps = [_app("Solo", room_id=None), _app("Talk", conversation_id=conversation)]
+    assert await apps_idle.post_idle_lines("o1", now=NOW) == 1
+    req = env.post.await_args.args[1]
+    assert str(req.room_id) == conversation
+    assert req.text == "Talk has not been opened in 30 days. Say 'remove Talk' if it's no longer needed."

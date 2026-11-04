@@ -282,6 +282,7 @@ export function RunNotifications() {
       // place's main view or the pane).
       teamsPanelActive: workspace.teamsPanelVisible,
       visibleRoomId: roomView.visibleRoomId,
+      sideRoomIds: roomView.sideRoomIds,
     };
     agentsRef.current = agents;
     execRef.current = { refreshActivity, apiGet: api.get };

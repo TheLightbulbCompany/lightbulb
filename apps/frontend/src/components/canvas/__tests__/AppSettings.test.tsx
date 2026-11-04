@@ -32,6 +32,32 @@ beforeEach(() => {
 });
 
 describe("AppSettings", () => {
+  it("offers Only me, and no room choice for an app that came from no room", async () => {
+    const { unmount } = render(<AppSettings app={app({ is_creator: true })} onClose={vi.fn()} />);
+    expect(screen.getByLabelText("#finance (this room)")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Only me (and workspace admins)"));
+    expect(screen.getByText("Only you and workspace admins will be able to open it.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Change who can open it" }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith("a1", { open_to: "me" }));
+    unmount();
+    render(<AppSettings app={app({ room_id: null, room_name: undefined, open_to: "workspace", is_creator: true })} onClose={vi.fn()} />);
+    expect(screen.queryByLabelText(/this room/)).toBeNull();
+    expect(screen.getByLabelText("Only me (and workspace admins)")).toBeTruthy();
+  });
+
+  it("an admin who didn't make the app is never told it's theirs", () => {
+    render(<AppSettings app={app()} onClose={vi.fn()} />);
+    expect(screen.queryByLabelText("Only me (and workspace admins)")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Only its creator and workspace admins"));
+    expect(screen.getByText("Only its creator and workspace admins will be able to open it.")).toBeTruthy();
+  });
+
+  it("lists invitees on a room app too: invite links work on any app that isn't public", async () => {
+    listInvites.mockResolvedValue(["ann@x.com"]);
+    render(<AppSettings app={app({ open_to: "room" })} onClose={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "Remove ann@x.com" })).toBeTruthy();
+  });
+
   it("choosing people I invite shows the email list", async () => {
     render(<AppSettings app={app()} onClose={vi.fn()} />);
     expect(screen.queryByLabelText(/Email addresses/)).toBeNull();
@@ -242,7 +268,7 @@ describe("AppSettings", () => {
     unmount();
     render(<AppSettings app={app({ can_publish: true, preview_url: "https://p" })} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Publish" }));
-    expect(screen.getByText("Make this preview live for #finance? You can undo it from the room.")).toBeTruthy();
+    expect(screen.getByText("Make this preview live for #finance? You can undo it from its conversation.")).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: "Publish" })[0]);
     await waitFor(() => expect(publish).toHaveBeenCalledWith("a1"));
   });

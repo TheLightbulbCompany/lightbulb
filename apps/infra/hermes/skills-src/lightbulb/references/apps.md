@@ -13,6 +13,26 @@ This file replaces the "First move" of `references/software-projects.md` for an 
 document, no issues. Its git, workspace-size and stack rules still apply. `up` asks for the app's
 accounts itself; the one-time Stripe form and what an account is are in `references/money.md`.
 
+## Where the app is built
+
+Every app has its own conversation, named "App · {name}", shown beside the app in Canvas. The app
+is built there, never in a team room, so several apps can be built at once.
+
+- **Asked in a room or a DM:** hand it over. Run
+  `lightbulb app start "<the request, word for word>" --name <name> --room <roomId> --requested-by <sender id> --json`
+  (`sender` id: the user id on their message, never a name), post the line its `next` gives you
+  once, and end the turn. If `next` says the app was already started, post nothing. Don't build here.
+- **A message in a room about an app that already exists** (a change, a question, "ship it"):
+  `lightbulb app ask <name> "<the message, word for word>" --room <roomId> --requested-by <sender id> --message-id <message id>`,
+  then one line: "Passed to {app}'s conversation in Canvas." The builder answers there. If they
+  asked to ship it, add: "To make it live, say “ship it” in the app's conversation in Canvas."
+- **In an app's own conversation** you are its builder: the first message is the request,
+  relayed by Lightbulb as "{person} (in #room): …" or "(via CLI): …". Follow Start below, with
+  `lightbulb app new <name> --kind <kind>` and no `--room` (it takes over the app that was
+  started). Every later message here is from someone shaping the app: act on it.
+- **Changing an app you didn't start, or from another folder:** `lightbulb app pull <name>` first.
+  If `up` says `stale_base`, pull again, merge, and run `up` again.
+
 ## Start
 
 Before writing any code, check the workspace can host it:
@@ -28,7 +48,7 @@ turn. Don't build something it can't host.
    that takes money), `automation` (a scheduled job, off by default).
 3. Make it in an empty folder of its own:
    `mkdir -p "$HERMES_HOME/.run/<name>" && cd "$HERMES_HOME/.run/<name>"`, then
-   `lightbulb app new <name> --kind <kind> --room <roomId>` (this room's id). The name is
+   `lightbulb app new <name> --kind <kind>` (in an app's own conversation, as above). The name is
    lowercase letters, digits and dashes. Then `cd <name> && pnpm install`: that inner folder is
    the app's folder. Run `lightbulb app up --json` straight away, before writing any code: it
    files the hosting card now, so the owner can approve it while you build. If it says
@@ -52,9 +72,10 @@ Build the first version yourself; never hand the first build to a sub-agent. Mak
 first, the one thing the person asked for, and run `up` as soon as `app check` passes: the person
 should see something in minutes, not after everything is finished.
 
-`lightbulb app check` → fix → `lightbulb app up --json`. On the first `up` add
-`--requested-by "<the person's user id>"` (the `sender` id on their message; a name is ignored)
-so Canvas shows who asked and they can change its Settings. `up` commits, checks, sends the
+`lightbulb app check` → fix → `lightbulb app up --json`. An app built in its own conversation
+already knows who asked (`app start` recorded it). Only for an app you build in a room you were
+asked in (no conversation), add `--requested-by "<the person's user id>"` on the first `up` (the
+`sender` id on their message; a name is ignored). `up` commits, checks, sends the
 code and waits for the build (up to ten minutes). Read its `next`. If it starts with fix, diagnose or undo,
 do that; otherwise do the step it names:
 
@@ -107,7 +128,9 @@ add that it runs on sample data and the real data arrives in a few minutes.
 Rows you put in `drizzle/seed.sql` are examples, so label them: end each visible name with
 "(sample)". They must never pass for the person's real customers. Offer to clear them.
 
-Outside a room turn (a Paperclip run), post the same line with `lightbulb-post.sh --room <roomId>`.
+Outside a room turn (a Paperclip run), post the same line in the app's conversation with
+`lightbulb-post.sh --room <roomId>`, where `<roomId>` is the app's `conversation_id` (from
+`lightbulb app status --json`, run in the app's folder).
 
 ## Changes and publishing
 

@@ -160,14 +160,15 @@ async def post_stuck_line(app: dict, display: str, step: str) -> None:
 
 
 async def post_origin_ready_line(app: dict, display: str, canvas_url: str) -> None:
-    """Once ever, in the room the request came from: the app built elsewhere is ready. Never raises."""
+    """Once ever, in the room the request came from, at the app's first real preview: its first version
+    is in Canvas. Not "ready": only the CLI knows when the builder is done. Never raises."""
     if not app.get("origin_room_id") or not app.get("conversation_id"):
         return
     try:
         await post_system_line(
             app,
             f"apps-origin-ready:{app['app_id']}",
-            f"{display} is ready in Canvas: {canvas_url}",
+            f"{display}'s first version is in Canvas: {canvas_url}",
             room_id=app["origin_room_id"],
         )
     except Exception as e:  # noqa: BLE001

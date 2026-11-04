@@ -242,7 +242,7 @@ async def test_approval_line_goes_to_the_conversation(chat):
     assert post["text"] == "Approved hosting for Booking (live). Setting it up."
 
 
-async def test_the_origin_room_hears_once_when_the_app_is_ready(chat, world):  # noqa: F811
+async def test_the_origin_room_hears_once_when_the_first_version_is_in_canvas(chat, world):  # noqa: F811
     res = await _start()
     src = await svc.put_source(
         OWNER, name="booking", room_id=res["conversation_id"], commit="c1", archive=_tar(SRC_V1), actor=AGENT
@@ -264,7 +264,7 @@ async def test_the_origin_room_hears_once_when_the_app_is_ready(chat, world):  #
     assert (await svc.status(OWNER, res["app_id"]))["state"] == "ready"
     await svc.status(OWNER, res["app_id"])
     ready = [p for p in chat.posts if p["room_id"] == "room_1"]
-    assert [p["text"] for p in ready] == [f"Booking is ready in Canvas: {res['canvas_url']}"]
+    assert [p["text"] for p in ready] == [f"Booking's first version is in Canvas: {res['canvas_url']}"]
     assert _woken(ready[0]) == []
 
 

@@ -87,6 +87,18 @@ describe("AppView", () => {
     expect(screen.queryByText(/looking at the preview/)).toBeNull();
   });
 
+  it("no first-version notice over a building preview or a live app's preview", async () => {
+    open.mockResolvedValue("https://a1.preview.test/");
+    const { unmount } = render(<AppView app={app({ state: "building", live_version: null, live_url: null, preview_url: "https://p", agent_working: true })} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTitle("Invoices")).toBeTruthy());
+    expect(screen.queryByText(/first version/)).toBeNull();
+    unmount();
+    render(<AppView app={app({ preview_url: "https://p", agent_working: true })} onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(screen.getByText(/looking at the preview/)).toBeTruthy());
+    expect(screen.queryByText(/first version/)).toBeNull();
+  });
+
   it("stuck wins over the first-version notice", async () => {
     open.mockResolvedValue("https://a1.preview.test/");
     render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", agent_working: true, stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);

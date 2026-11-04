@@ -3192,3 +3192,19 @@ async def test_agent_working_needs_a_preview(world, room):
     app_id = await _building(world)
     room.runs["run_1"] = {"status": "started", "lastHeartbeatAt": _ago(1)}
     assert (await svc.status(OWNER, app_id))["agent_working"] is False
+
+
+async def test_agent_working_only_on_a_ready_preview_with_no_live_version(world, room):
+    src, _, _ = await _ready_preview(world)
+    app_id = src["app_id"]
+    await svc.apps_repo.patch(app_id, {"run_ids": ["run_1"]})
+    room.runs["run_1"] = {"status": "started", "lastHeartbeatAt": _ago(1)}
+    assert (await svc.status(OWNER, app_id))["agent_working"] is True
+    # a preview that is still building (like the starter placeholder) is not a first version
+    await _up(await _source(SRC_V2, "c2"))
+    view = await svc.status(OWNER, app_id)  # deploys the new source
+    assert view["state"] == "building" and view["agent_working"] is False
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    assert (await svc.status(OWNER, app_id))["agent_working"] is True
+    await _go_live(world, src)
+    assert (await svc.status(OWNER, app_id))["agent_working"] is False  # a live app's next version

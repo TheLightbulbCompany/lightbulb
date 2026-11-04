@@ -78,8 +78,9 @@ you; run `lightbulb app up --json` again when it does. Never poll, never sleep i
 
 ## First version, then done
 
-When `up` first returns a `preview_url`, post the first-version line once (§ What to say), then keep
-going: add tests for the business rules, fill in the rest, and run `up` again after each change.
+The first time `up` returns state `ready` and its `next` says the preview is up, post the
+first-version line once (§ What to say). A `preview_url` alone is not that: while `next` says the app
+is still the starter placeholder, post nothing. Then keep going: add tests for the business rules, fill in the rest, and run `up` again after each change.
 Canvas tells people the agent is still working while your run is open.
 
 Then prove it. Run `lightbulb app verify --json`. It signs in past the door and
@@ -131,7 +132,7 @@ name, and at most one every few minutes. The lines below stay exactly as specifi
 
 - Hosting: "Before I build {app}: this workspace needs a services account to host it. An admin can
   add one from the Stripe card in Settings → Connections. Tell me when it's done and I'll start."
-- First version (once, after the first preview; never "ready" or "live"): "A first version of {app}
+- First version (once, at the first `ready` preview; never "ready" or "live"): "A first version of {app}
   is in Canvas: {canvas_url}. It {what works so far}. I'm still working on {what's left} and will
   post here when it's ready." If `sample_data` is true, add that it runs on sample data for now.
 - Preview ready (when `"done": true`): "Your preview of {app} is ready in Canvas: {canvas_url}. It {what it does}; it

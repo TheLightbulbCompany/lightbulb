@@ -1555,7 +1555,7 @@ async def status(owner_id: str, app_id: str) -> AppStatus:
         await _moved(app)
     elif record not in _DRIVE_STOP:
         watch(owner_id, app_id)  # after a restart, the next read re-arms the watch
-    view = _view(app, rows, record, await _agent_working(owner_id, app))
+    view = _view(app, rows, record, await _agent_working(owner_id, app, record))
     if err:
         view["error"] = err
     return view
@@ -1667,10 +1667,11 @@ def _fresh(stamp: object, now: datetime, within: timedelta) -> bool:
         return False
 
 
-async def _agent_working(owner_id: str, app: dict) -> bool:
-    """Whether an agent is still improving a preview: one read of the newest linked run, none without a preview."""
+async def _agent_working(owner_id: str, app: dict, state: str) -> bool:
+    """Whether an agent is still improving a ready first preview: one read of the newest linked run.
+    Never over the starter placeholder (state "building") or a live app's next version."""
     run_ids = app.get("run_ids") or []
-    if not app.get("preview") or not run_ids:
+    if state != "ready" or app.get("live_version") or not app.get("preview") or not run_ids:
         return False
     return _working(await messaging_repo.get_run(owner_id, run_ids[-1]), datetime.now(UTC))
 
@@ -1787,7 +1788,8 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
             logger.warning("apps: roster unavailable; agent names left empty")
     out = []
     for a in apps:
-        row = _view(a, await _rows(a, all_rows), a.get("state") or "", await _agent_working(owner_id, a))
+        state = a.get("state") or ""
+        row = _view(a, await _rows(a, all_rows), state, await _agent_working(owner_id, a, state))
         del row["versions"]
         previous = _previous_version(a)
         shows = _preview_source(a)

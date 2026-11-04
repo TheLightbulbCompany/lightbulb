@@ -624,3 +624,11 @@ async def test_a_person_pulls_or_asks_only_an_app_they_can_open(chat):
     assert (await svc.latest_source(OWNER, res["app_id"], PERSON))[1] == "c1"
     assert (await svc.latest_source(OWNER, res["app_id"], AGENT))[1] == "c1"
     await conv.ask(PERSON, res["app_id"], "make it red")
+
+
+@pytest.mark.asyncio
+async def test_a_request_from_a_direct_message_says_so(monkeypatch):
+    monkeypatch.setattr(conv.messaging, "human_display_name", AsyncMock(return_value="Ada"))
+    monkeypatch.setattr(conv.messaging_repo, "get_room", AsyncMock(return_value={"kind": "dm"}))
+    caller = svc.BuilderCaller(owner_id=OWNER, actor_id="agent_x", actor_kind="agent")
+    assert await conv._attributed(caller, "build it", "user_ada", "dm_1") == "Ada (in a direct message): build it"

@@ -467,25 +467,30 @@ def sweep() -> None:
 
 
 def _a2a_reply(session: str, record: dict) -> None:
-    """Hand the reply to the backend's ``session-reply`` route with the hook token, then ack it. A
-    4xx (an unknown request) never changes, so it is acked too; a 5xx or a network error stays
-    unacked for the next sweep. Logs the record id and status, never the text."""
-    body = {"request_id": record.get("reply_to") or record.get("request_id"), "text": record.get("framed") or ""}
-    req = urllib.request.Request(
-        f"{bridge.API}/api/v1/internal/a2a/{bridge.OWNER}/session-reply",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as res:
-            status = res.status
-    except urllib.error.HTTPError as exc:
-        status = exc.code
-    except Exception as exc:  # noqa: BLE001 -- the class only
-        status = 0
-        log.warning("network: a2a reply %s failed (%s)", record["id"], type(exc).__name__)
-    if not 200 <= status < 500:
+    """Hand the reply to the backend's ``session-reply`` route with the hook token, then ack it. Acked
+    once taken, or on a 404 (unknown request) or 422 (bad body), which never change; anything else
+    stays unacked for the next sweep. A record with no ``reply_to`` answers nothing: acked here.
+    Logs the record id and status, never the text."""
+    if not record.get("reply_to"):
+        log.warning("network: a2a record %s has no reply_to; acked unforwarded", record["id"])
+        status = 404
+    else:
+        body = {"request_id": record["reply_to"], "text": record.get("text") or "", "session": session}
+        req = urllib.request.Request(
+            f"{bridge.API}/api/v1/internal/a2a/{bridge.OWNER}/session-reply",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as res:
+                status = res.status
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        except Exception as exc:  # noqa: BLE001 -- the class only
+            status = 0
+            log.warning("network: a2a reply %s failed (%s)", record["id"], type(exc).__name__)
+    if not (200 <= status < 300 or status in (404, 422)):
         log.warning("network: a2a reply %s not taken (%s); left unacked", record["id"], status)
         return
     try:

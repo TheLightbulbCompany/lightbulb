@@ -332,7 +332,9 @@ def test_network_workers_goes_above_the_first_table(net, monkeypatch):
     assert cfg.read_text(encoding="utf-8") == '# mine\nname = "x"\nnetwork_workers = true\n[t]\nnetwork_workers = 5\n'
 
 
-def test_a_reply_to_an_a2a_session_goes_to_the_backend_not_a_turn(net, turns, monkeypatch):
+@pytest.fixture
+def backend(monkeypatch):
+    """``urlopen`` to the backend: records each POST and answers ``status["code"]``."""
     monkeypatch.setattr(bridge, "API", "https://api.test")
     monkeypatch.setattr(bridge, "HOOK_TOKEN", "hook-tok")
     posted: list = []
@@ -350,27 +352,57 @@ def test_a_reply_to_an_a2a_session_goes_to_the_backend_not_a_turn(net, turns, mo
 
     def fake_urlopen(req, timeout=None):
         posted.append((req.full_url, dict(req.header_items()), json.loads(req.data)))
-        if status["code"] >= 500:
-            raise urllib.error.HTTPError(req.full_url, status["code"], "down", {}, None)
+        if status["code"] >= 300:
+            raise urllib.error.HTTPError(req.full_url, status["code"], "no", {}, None)
         return _Res(status["code"])
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    reply = {"id": "m9", "from": "mac-p", "reply_to": "task-1", "framed": "all green"}
-    net.answer(**_peek(reply, session="a2a-1a2b3c4d"))
+    return posted, status
+
+
+A2A_SESSION = "a2a-1a2b3c4d"
+A2A_REPLY = {"id": "m9", "from": "mac-p", "reply_to": "task-1", "text": "all green", "framed": "[Lightbulb] all green"}
+
+
+def test_a_reply_to_an_a2a_session_goes_to_the_backend_not_a_turn(net, turns, backend):
+    posted, status = backend
+    net.answer(**_peek(A2A_REPLY, session=A2A_SESSION))
     assert network.ensure_started(background=False)
     assert _until(lambda: len(posted) == 1)
+    for code in (401, 429):  # retried, never acked
+        status["code"] = code
+        network.sweep()
+        assert _until(lambda: len(posted) >= 2)
     time.sleep(0.2)
-    assert _acks(net) == []  # a 5xx is left unacked for the next sweep
+    assert _acks(net) == []  # a 5xx, 401 or 429 is left unacked for the next sweep
     status["code"] = 200
     network.sweep()
     assert _until(lambda: len(_acks(net, "read")) == 1)
     url, headers, body = posted[-1]
     assert url == "https://api.test/api/v1/internal/a2a/org_test/session-reply"
     assert headers["Authorization"] == "Bearer hook-tok"
-    assert body == {"request_id": "task-1", "text": "all green"}
+    assert body == {"request_id": "task-1", "text": "all green", "session": A2A_SESSION}
     assert _acks(net) == [("m9", "delivered"), ("m9", "read")]
-    assert all(c["session"] == "a2a-1a2b3c4d" for c in net.calls("inbox.ack"))
+    assert all(c["session"] == A2A_SESSION for c in net.calls("inbox.ack"))
     assert turns.ran == []
+
+
+@pytest.mark.parametrize("code", [404, 422])
+def test_an_unknown_or_bad_a2a_reply_is_acked(net, turns, backend, code):
+    posted, status = backend
+    status["code"] = code
+    net.answer(**_peek(A2A_REPLY, session=A2A_SESSION))
+    assert network.ensure_started(background=False)
+    assert _until(lambda: len(_acks(net, "read")) == 1)
+    assert len(posted) >= 1
+
+
+def test_an_a2a_record_without_reply_to_is_acked_unforwarded(net, turns, backend):
+    posted, _ = backend
+    net.answer(**_peek({k: v for k, v in A2A_REPLY.items() if k != "reply_to"}, session=A2A_SESSION))
+    assert network.ensure_started(background=False)
+    assert _until(lambda: len(_acks(net, "read")) == 1)
+    assert posted == [] and turns.ran == []
 
 
 def test_concurrent_a2a_declares_keep_both_people(net):

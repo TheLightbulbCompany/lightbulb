@@ -133,12 +133,13 @@ class SessionReplyRequest(ContractModel):
 
     request_id: str
     text: str
+    session: str  # the cloud member's a2a session the reply arrived on
 
 
 @router.post("/api/v1/internal/a2a/{owner_id}/session-reply")
 async def session_reply(owner_id: str, body: SessionReplyRequest, _: dict = Depends(_require_hook_token)):
     try:
-        await a2a_tasks.on_session_reply(owner_id, body.request_id, body.text)
+        await a2a_tasks.on_session_reply(owner_id, body.request_id, body.text, body.session)
     except A2AError as exc:
         raise HTTPException(exc.code, detail={"code": exc.message}) from None
     return {"ok": True}

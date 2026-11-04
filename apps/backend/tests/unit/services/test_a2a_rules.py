@@ -175,3 +175,29 @@ def test_deny_with_when_still_wins_over_exception():
     d = _ask(rules, intent="drop it", exception={"id": "e1"})
     assert (d.effect, d.rule) == ("deny", "d1")
     assert _ask(rules, intent="other", exception={"id": "e1"}).effect == "allow"
+
+
+def test_default_carries_the_laptops_member_rules():
+    by_id = {x.id: x.model_dump(exclude_none=True) for x in R.rules}
+    for skill in ("message", "assign"):
+        assert by_id[f"members-{skill}"] == {
+            "id": f"members-{skill}",
+            "resource": "session:*",
+            "skill": skill,
+            "requesters": ["org:*"],
+            "effect": "allow",
+        }
+        d = r.decide(R, requester_person="user_x", resource="session:abc", skill=skill, **K)
+        assert (d.effect, d.rule) == ("allow", f"members-{skill}")
+
+
+def test_org_star_is_this_workspace_only():
+    d = r.decide(
+        R, requester_person="user_x", resource="session:abc", skill="message", **{**K, "requester_org": "org_other"}
+    )
+    assert (d.effect, d.rule) == ("deny", "outside_org")
+
+
+def test_ask_session_matches_no_member_rule_and_stays_held():
+    d = r.decide(R, requester_person="user_x", resource="session:abc", skill="ask_session", **K)
+    assert (d.effect, d.rule) == ("hold", "default")

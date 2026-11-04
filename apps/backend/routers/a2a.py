@@ -6,6 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from google.protobuf.json_format import MessageToDict
+from pydantic import Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin
 from core.config import settings
@@ -126,3 +127,21 @@ async def ask_session(owner_id: str, body: AskSessionRequest, _: dict = Depends(
         return await a2a_tasks.ask_session(owner_id, body)
     except A2AError as exc:
         raise HTTPException(exc.code, detail={"code": exc.message}) from None
+
+
+class SessionReplyRequest(ContractModel):
+    """A laptop session's reply to a hosted send, forwarded by the cloud member's bridge."""
+
+    request_id: str
+    text: str
+    session: str  # the cloud member's a2a session the reply arrived on
+    sender: str = Field(alias="from")  # the replying laptop session's address
+
+
+@router.post("/api/v1/internal/a2a/{owner_id}/session-reply")
+async def session_reply(owner_id: str, body: SessionReplyRequest, _: dict = Depends(_require_hook_token)):
+    try:
+        await a2a_tasks.on_session_reply(owner_id, body.request_id, body.text, body.session, body.sender)
+    except A2AError as exc:
+        raise HTTPException(exc.code, detail={"code": exc.message}) from None
+    return {"ok": True}

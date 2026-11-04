@@ -43,7 +43,12 @@ def default_rules(org: str, admin_ids: list[str]) -> Rules:
     return Rules(
         revision="default",
         holders={"agent:*": admin_ids, "session:*": ["@session-person"], "room:*": admin_ids},
-        rules=[Rule(id="r1", resource="agent:*", skill="message", requesters=[f"org:{org}"], effect="allow")],
+        rules=[
+            Rule(id="r1", resource="agent:*", skill="message", requesters=[f"org:{org}"], effect="allow"),
+            # The laptop's shipped default (CLI rules.rs default_rules), so a pushed default decides as it does.
+            Rule(id="members-message", resource="session:*", skill="message", requesters=["org:*"], effect="allow"),
+            Rule(id="members-assign", resource="session:*", skill="assign", requesters=["org:*"], effect="allow"),
+        ],
     )
 
 
@@ -102,7 +107,9 @@ def decide(
 
     def requester_matches(r: str) -> bool:
         return (
-            r == requester_person or r == f"org:{requester_org}" or (r.startswith("agent:") and r[6:] in chain_agents)
+            r == requester_person
+            or r in (f"org:{requester_org}", "org:*")  # org:* is this workspace: requester_org == org above
+            or (r.startswith("agent:") and r[6:] in chain_agents)
         )
 
     hits = [

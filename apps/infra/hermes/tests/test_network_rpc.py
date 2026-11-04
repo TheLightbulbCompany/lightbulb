@@ -198,3 +198,78 @@ def test_network_invite_logs_no_ticket(net, caplog):
                   "team.get": {"team_id": "tm1", "members": []}})
     _rpc("network.invite")
     assert "TICKET" not in caplog.text
+
+
+def test_a2a_send_declares_then_sends_with_the_a2a_object(net):
+    assert network.ensure_started(background=False)
+    a2a = {"role": "ROLE_USER", "parts": [{"text": "hi"}], "metadata": {"https://x/ext": "jws.jws.jws"},
+           "extensions": ["https://x/ext"]}
+    net.answer(**{"app.send": {"receipt": "r1"}})
+    params = {"to": "atlas", "text": "hi", "request_id": "req-1", "person": "user_a", "a2a": a2a}
+    assert _rpc("network.a2a_send", params) == {"ok": True, "payload": {"receipt": "r1"}}
+    ops = [c["op"] for c in net.calls() if c["op"] in ("cloud.sessions.set", "app.send")]
+    assert ops[-2:] == ["cloud.sessions.set", "app.send"]
+    assert {"app": "a2a", "person": "user_a"} in _sent(net, "cloud.sessions.set")[-1]["sessions"]
+    assert _sent(net, "app.send")[-1] == {"op": "app.send", "app": "a2a", "person": "user_a", "to": "atlas",
+                                          "text": "hi", "request_id": "req-1", "a2a": a2a, "wait": True}
+    declared_once = len(net.calls("cloud.sessions.set"))
+    _rpc("network.a2a_send", params)  # declared once per process
+    assert len(net.calls("cloud.sessions.set")) == declared_once
+    assert len(net.calls("app.send")) == 2
+
+
+def test_a2a_send_with_missing_params_is_invalid_request(net):
+    full = {"to": "atlas", "text": "hi", "request_id": "r", "person": "u", "a2a": {"role": "ROLE_USER"}}
+    for key in full:
+        answer = _rpc("network.a2a_send", {k: v for k, v in full.items() if k != key})
+        assert answer["ok"] is False and answer["error"]["code"] == "INVALID_REQUEST", key
+    assert _rpc("network.a2a_send", {**full, "a2a": "x"})["error"]["code"] == "INVALID_REQUEST"
+    assert net.calls("app.send") == []
+
+
+def test_a2a_send_when_the_sidecar_is_off_is_unavailable(net, monkeypatch):
+    monkeypatch.setattr(bridge, "NETWORK_KEY", "")
+    answer = _rpc("network.a2a_send", {"to": "a", "text": "t", "request_id": "r", "person": "u", "a2a": {}})
+    assert answer["ok"] is False and answer["error"]["code"] == "UNAVAILABLE"
+
+
+def test_a2a_declares_accumulate_across_people(net):
+    assert network.ensure_started(background=False)
+    net.answer(**{"app.send": {"receipt": "r"}})
+    p = lambda who: {"to": "t", "text": "x", "request_id": "r-" + who, "person": who, "a2a": {"role": "ROLE_USER"}}
+    _rpc("network.a2a_send", p("A"))
+    _rpc("network.a2a_send", p("B"))
+    n = len(net.calls("cloud.sessions.set"))
+    _rpc("network.a2a_send", p("A"))
+    assert len(net.calls("cloud.sessions.set")) == n
+    a2a = [s for s in _sent(net, "cloud.sessions.set")[-1]["sessions"] if s.get("app") == "a2a"]
+    assert {s["person"] for s in a2a} == {"A", "B"}
+
+
+def test_a2a_failed_declare_is_not_cached(net):
+    assert network.ensure_started(background=False)
+    net.answer(**{"cloud.sessions.set": {"ok": False, "error": "internal"}})
+    body = {"to": "t", "text": "x", "request_id": "r", "person": "A", "a2a": {"role": "ROLE_USER"}}
+    assert _rpc("network.a2a_send", body)["ok"] is False
+    assert network._a2a_declared == set() and net.calls("app.send") == []
+    net.answer(**{"cloud.sessions.set": {"ok": True, "result": {}}, "app.send": {"receipt": "r"}})
+    assert _rpc("network.a2a_send", body)["ok"] is True
+
+
+def test_a2a_send_empty_strings_are_invalid_request(net):
+    full = {"to": "a", "text": "t", "request_id": "r", "person": "u", "a2a": {"role": "ROLE_USER"}}
+    for key in ("to", "text", "request_id", "person"):
+        assert _rpc("network.a2a_send", {**full, key: ""})["error"]["code"] == "INVALID_REQUEST", key
+
+
+def test_a_sessions_reload_keeps_the_a2a_declarations(net):
+    assert network.ensure_started(background=False)
+    net.answer(**{"app.send": {"receipt": "r"}})
+    _rpc("network.a2a_send", {"to": "t", "text": "x", "request_id": "r", "person": "A", "a2a": {"role": "ROLE_USER"}})
+    new = {"sessions": [{"name": "atlas", "agent": "Atlas", "agentId": "a-atlas"}]}
+    net.s3.seed("org_test/network/sessions.json", json.dumps(new).encode())
+    assert _rpc("network.sessions") == {"ok": True, "payload": {"count": 1}}
+    declared = net.calls("cloud.sessions.set")[-1]["sessions"]
+    assert declared == new["sessions"] + [{"app": "a2a", "person": "A"}]  # a reply to A still lands
+    assert network._a2a_declared == {"A"}
+    assert json.loads(network.SESSIONS_FILE.read_text()) == new  # the file stays the backend's

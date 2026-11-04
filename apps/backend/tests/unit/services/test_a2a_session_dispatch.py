@@ -35,6 +35,8 @@ def net(monkeypatch):
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Origin Person"))
     call = AsyncMock(return_value={"ok": True})
     monkeypatch.setattr("core.services.network_route.call", call)
+    # No warm cloud member: the phase-1 path, the origin person's computer link.
+    monkeypatch.setattr("core.services.network_member._session_is_warm", AsyncMock(return_value=False))
     return SimpleNamespace(conns=conns, call=call)
 
 
@@ -43,7 +45,10 @@ def setup(repos, monkeypatch):  # noqa: F811
     monkeypatch.setattr("core.config.settings.NETWORK_PROOF_KEY", "test-seed")
     monkeypatch.setattr("core.services.a2a_tasks.agent_name", AsyncMock(return_value="Friday"))
     req = a.AuthorityRequest(
-        operation=a.Operation(skill="ask_session", resource="session:abc", operands={"text": "go"}), intent="do it"
+        operation=a.Operation(
+            skill="ask_session", resource="session:abcdefghijkl/claude:conv-1", operands={"text": "go"}
+        ),
+        intent="do it",
     )
     chain = [{"agent": None, "session": None, "person": "user_origin", "at": 1}]
     jws, claims = a.mint(
@@ -86,7 +91,7 @@ async def test_allowed_session_ask_sends_app_send_through_the_origin_link_and_co
     assert link == LINK and op == "app.send" and timeout == a2a_tasks.SESSION_SEND_TIMEOUT_S
     assert params["app"] == "friday" and params["title"] == "Friday via Origin"
     assert params["person"] == network_member.app_person("user_origin")
-    assert params["to"] == "abc" and params["request_id"] == row["id"]
+    assert params["to"] == "abcdefghijkl/claude:conv-1" and params["request_id"] == row["id"]
     assert params["text"].startswith("[A2A] user_origin for user_origin: do it") and params["text"].endswith("\ngo")
     stored = await a2a_repo.get_task(ORG, row["id"])
     assert stored["state"] == "completed" and stored["delivered"] is True

@@ -173,6 +173,60 @@ def _enable_workers() -> None:
     path.write_text("\n".join([*top, "network_workers = true", *lines[cut:]]) + "\n", encoding="utf-8")
 
 
+#: The workspace proof is valid 30 days; renew once fewer than this many seconds remain.
+PROOF_RENEW_S = 15 * 86_400
+PROOF_TICK_S = 3600.0
+_proof_exp = 0.0  # 0 = none held, so the next tick fetches
+
+
+def refresh_runtime_proof(now: float | None = None) -> bool:
+    """Fetch this runtime's workspace proof from the backend, write ``login.json`` (0600, atomic)
+    and tell a running engine to re-read it. False on any error; never raises, never logs the proof."""
+    global _proof_exp
+    try:
+        req = urllib.request.Request(
+            f"{bridge.API}/api/v1/internal/network/{bridge.OWNER}/runtime-proof",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            got = json.loads(resp.read())
+        proof, exp = got["proof"], float(got["exp"])
+        NET_HOME.mkdir(parents=True, exist_ok=True)
+        tmp = NET_HOME / "login.json.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"proof": proof, "route_url": None, "name": "workspace"}, fh)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, NET_HOME / "login.json")
+        _proof_exp = exp
+    except Exception as exc:  # noqa: BLE001 -- the engine starts without it; the next tick retries
+        log.warning("network: runtime proof not refreshed (%s)", type(exc).__name__)
+        return False
+    if _running():
+        try:
+            ask("login.changed", {})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("network: login.changed failed (%s)", type(exc).__name__)
+    return True
+
+
+def renew_proof_if_due(now: float | None = None) -> bool:
+    """Refresh when fewer than 15 days remain (or none is held). True when it posted."""
+    if _proof_exp - (time.time() if now is None else now) >= PROOF_RENEW_S:
+        return False
+    refresh_runtime_proof(now)
+    return True
+
+
+def _renew_loop(proc) -> None:
+    while _proc is proc and not _stopping:
+        time.sleep(PROOF_TICK_S)
+        if _proc is proc:
+            renew_proof_if_due()
+
+
 def _start() -> bool:
     global _proc, _token, _etag, _sha, _sessions, _stopping, _ready
     with _sessions_lock:  # not mid-declare: a declare would record a person this engine never saw
@@ -203,6 +257,7 @@ def _start() -> bool:
         fh.write(base64.b64decode(bridge.NETWORK_KEY))
     os.chmod(key_path, 0o600)
 
+    refresh_runtime_proof()
     _enable_workers()
     SOCKET.unlink(missing_ok=True)
     _token = secrets.token_urlsafe(32)
@@ -228,6 +283,7 @@ def _start() -> bool:
     sub.sendall(_line("subscribe", None))
     _spawn(_subscriber, "network-events", sub)
     _ready = True
+    _spawn(_renew_loop, "network-proof-renew", _proc)
     log.info("network: member started (%d sessions)", len(_sessions.get("sessions") or []))
     return True
 

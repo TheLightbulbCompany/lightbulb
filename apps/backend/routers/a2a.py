@@ -126,3 +126,19 @@ async def ask_session(owner_id: str, body: AskSessionRequest, _: dict = Depends(
         return await a2a_tasks.ask_session(owner_id, body)
     except A2AError as exc:
         raise HTTPException(exc.code, detail={"code": exc.message}) from None
+
+
+class SessionReplyRequest(ContractModel):
+    """A laptop session's reply to a hosted send, forwarded by the cloud member's bridge."""
+
+    request_id: str
+    text: str
+
+
+@router.post("/api/v1/internal/a2a/{owner_id}/session-reply")
+async def session_reply(owner_id: str, body: SessionReplyRequest, _: dict = Depends(_require_hook_token)):
+    try:
+        await a2a_tasks.on_session_reply(owner_id, body.request_id, body.text)
+    except A2AError as exc:
+        raise HTTPException(exc.code, detail={"code": exc.message}) from None
+    return {"ok": True}

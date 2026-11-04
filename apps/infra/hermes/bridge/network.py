@@ -26,6 +26,8 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from pathlib import Path
 from typing import Callable
@@ -296,21 +298,25 @@ def ask(op: str, body: dict | None = None, timeout_s: float = 10.0) -> dict:
 
 #: People whose ``a2a`` session this engine run was told about (cleared when a set replaces them).
 _a2a_declared: set[str] = set()
+#: One ``cloud.sessions.set`` at a time: each replaces the engine's sessions, so two concurrent
+#: RPC threads (``ThreadingHTTPServer``) could otherwise undeclare each other's people.
+_sessions_lock = threading.Lock()
 
 
 def declare_a2a_session(person: str) -> None:
     """Declare ``{app: "a2a", person}`` to the engine once (the engine refuses ``app.send`` for an
     undeclared session). Same ``members``/``revoked_keys`` handling as ``reload_sessions``."""
-    if person in _a2a_declared:
-        return
-    # The set replaces the engine's sessions, so it carries every person declared so far.
-    sessions = [x for x in (_sessions.get("sessions") or []) if x.get("app") != "a2a"]
-    sessions += [{"app": "a2a", "person": p} for p in sorted(_a2a_declared | {person})]
-    params = {"sessions": sessions, "revoked_keys": _sessions.get("revoked_keys") or []}
-    if "members" in _sessions:
-        params["members"] = _sessions["members"]
-    ask("cloud.sessions.set", params)
-    _a2a_declared.add(person)
+    with _sessions_lock:
+        if person in _a2a_declared:
+            return
+        # The set replaces the engine's sessions, so it carries every person declared so far.
+        sessions = [x for x in (_sessions.get("sessions") or []) if x.get("app") != "a2a"]
+        sessions += [{"app": "a2a", "person": p} for p in sorted(_a2a_declared | {person})]
+        params = {"sessions": sessions, "revoked_keys": _sessions.get("revoked_keys") or []}
+        if "members" in _sessions:
+            params["members"] = _sessions["members"]
+        ask("cloud.sessions.set", params)
+        _a2a_declared.add(person)
 
 
 def reload_sessions() -> int:
@@ -329,9 +335,10 @@ def reload_sessions() -> int:
     # The engine replaces its revoked set on every set (absent is none), so a sign-out
     # (``network_login.revoke``) reaches a warm engine only if the reload carries it.
     params["revoked_keys"] = data.get("revoked_keys") or []
-    ask("cloud.sessions.set", params)
-    _sessions = data
-    _a2a_declared.clear()  # the set replaced the engine's sessions, the a2a ones included
+    with _sessions_lock:  # a declare between this set and the clear would be wiped unrecorded
+        ask("cloud.sessions.set", params)
+        _sessions = data
+        _a2a_declared.clear()  # the set replaced the engine's sessions, the a2a ones included
     SESSIONS_FILE.write_bytes(raw)
     return len(data.get("sessions") or [])
 
@@ -437,6 +444,12 @@ def sweep() -> None:
     for group in peek.get("sessions") or []:
         session = group.get("session")
         agent_id = agent_for_session(session)
+        if not agent_id and str(session).startswith("a2a-"):
+            # A laptop session's reply to a hosted A2A send: it completes the task, never a turn.
+            for record in group.get("records") or []:
+                if record.get("id"):
+                    _spawn(_a2a_reply, f"network-a2a-{record['id']}", session, record)
+            continue
         for record in group.get("records") or []:
             if not agent_id or not record.get("id"):
                 log.warning("network: a record for session %s has no agent or id; left unacked", session)
@@ -451,6 +464,35 @@ def sweep() -> None:
                 turn.release_turn()  # already run in this process
                 continue
             _spawn(_run_record, f"network-turn-{record['id']}", session, agent_id, record, key)
+
+
+def _a2a_reply(session: str, record: dict) -> None:
+    """Hand the reply to the backend's ``session-reply`` route with the hook token, then ack it. A
+    4xx (an unknown request) never changes, so it is acked too; a 5xx or a network error stays
+    unacked for the next sweep. Logs the record id and status, never the text."""
+    body = {"request_id": record.get("reply_to") or record.get("request_id"), "text": record.get("framed") or ""}
+    req = urllib.request.Request(
+        f"{bridge.API}/api/v1/internal/a2a/{bridge.OWNER}/session-reply",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as res:
+            status = res.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    except Exception as exc:  # noqa: BLE001 -- the class only
+        status = 0
+        log.warning("network: a2a reply %s failed (%s)", record["id"], type(exc).__name__)
+    if not 200 <= status < 500:
+        log.warning("network: a2a reply %s not taken (%s); left unacked", record["id"], status)
+        return
+    try:
+        _ack(session, record, "delivered")
+        _ack(session, record, "read")
+    except Exception:  # noqa: BLE001 -- the next sweep forwards it again; the backend writes it once
+        log.warning("network: a2a reply ack failed for %s", record["id"], exc_info=True)
 
 
 def _ack(session: str, record: dict, stage: str) -> None:

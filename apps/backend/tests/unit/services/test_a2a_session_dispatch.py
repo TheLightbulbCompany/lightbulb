@@ -35,6 +35,8 @@ def net(monkeypatch):
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Origin Person"))
     call = AsyncMock(return_value={"ok": True})
     monkeypatch.setattr("core.services.network_route.call", call)
+    # No warm cloud member: the phase-1 path, the origin person's computer link.
+    monkeypatch.setattr("core.services.network_member._session_is_warm", AsyncMock(return_value=False))
     return SimpleNamespace(conns=conns, call=call)
 
 

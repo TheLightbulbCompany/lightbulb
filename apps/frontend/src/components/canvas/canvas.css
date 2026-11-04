@@ -33,7 +33,7 @@ button.app-item__main:focus-visible { outline: 2px solid var(--fg); outline-offs
 .app-state[data-tone="ok"] { color: var(--ok); }
 .app-item__next { font-size: var(--text-ui); color: var(--fg-soft); overflow-wrap: anywhere; }
 .app-item__meta { font-size: var(--text-caption); color: var(--fg-mute); overflow-wrap: anywhere; }
-.app-item__act { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: 999px; background: var(--fg); color: var(--plane-pane); font-size: var(--text-caption); font-weight: 600; transition: transform 120ms var(--ease-out, ease-out); }
+.app-item__act { flex: none; display: inline-flex; text-decoration: none; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: 999px; background: var(--fg); color: var(--plane-pane); font-size: var(--text-caption); font-weight: 600; transition: transform 120ms var(--ease-out, ease-out); }
 .app-item__act:active { transform: scale(0.97); }
 .app-item__act:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
 .app-list__empty { display: grid; gap: 4px; padding: 24px 0; max-width: 56ch; }

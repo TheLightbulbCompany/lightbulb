@@ -51,6 +51,18 @@ describe("AppList", () => {
     expect(screen.queryByRole("button", { name: "Review" })).toBeNull();
   });
 
+  it("an app only a person can unblock says what and where, before any other state", () => {
+    const msg = "Setting up services needs a services account — add one from the Stripe card in Settings → Connections.";
+    const { unmount } = render(<AppList {...props} canManage apps={[app({ state: "awaiting_approval", live_version: null, setup_blocker: { message: msg }, stuck: { at: "x", step: "building" } })]} />);
+    expect(screen.getByText("Needs setup")).toBeTruthy();
+    expect(screen.getByText(msg)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open Connections" }).getAttribute("href")).toBe("/settings/connections");
+    expect(screen.queryByText("Stopped")).toBeNull();
+    unmount();
+    render(<AppList {...props} apps={[app({ state: "awaiting_approval", live_version: null, setup_blocker: { message: msg } })]} />);
+    expect(screen.queryByRole("link", { name: "Open Connections" })).toBeNull(); // only someone who can manage it
+  });
+
   it("a stuck app says it stopped and where, not its usual status", () => {
     render(<AppList {...props} apps={[app({ state: "building", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })]} />);
     expect(screen.getByText("Stopped")).toBeTruthy();

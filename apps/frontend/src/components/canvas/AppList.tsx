@@ -4,7 +4,7 @@
 // thing to do next, and who asked. Apps that need the person sort first. Everyone sees every app; one the
 // viewer cannot open is greyed with where to ask (spec §4).
 import { useState } from "react";
-import { ArrowRight, CircleAlert, CircleCheck, Hammer, Hourglass, Radio, ShieldQuestion } from "lucide-react";
+import { ArrowRight, CircleAlert, CircleCheck, Hammer, Hourglass, Plug, Radio, ShieldQuestion } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { AppRow } from "@/hooks/useApps";
 import { openPanel } from "@/components/workspace/workspaceController";
@@ -19,10 +19,12 @@ const WHO: Record<string, string> = {
 const whoCanOpen = (app: AppRow) => (app.open_to === "room" ? `people in ${roomOf(app)}` : WHO[app.open_to] ?? app.open_to);
 
 type Tone = "need" | "bad" | "run" | "ok" | "idle";
-type Phase = { label: string; tone: Tone; Icon: LucideIcon; next: string; review?: boolean };
+type Phase = { label: string; tone: Tone; Icon: LucideIcon; next: string; review?: boolean; setup?: boolean };
 
 /** Where the app stands, in one word, and the one thing that happens or needs doing next. */
 export function phaseOf(app: AppRow, canManage: boolean): Phase {
+  // Only a person can unblock it (no Stripe services account): that, before anything else, and where to do it.
+  if (app.setup_blocker && app.live_version == null) return { label: "Needs setup", tone: "need", Icon: Plug, next: app.setup_blocker.message, setup: canManage };
   // Waiting on an owner is not stuck: nothing is meant to move until someone approves.
   if (app.stuck && app.state !== "awaiting_approval") return { label: "Stopped", tone: "bad", Icon: CircleAlert, next: `Nothing has moved for 5 minutes at ${app.stuck.step}. Open it to ask the agent.` };
   switch (app.state) {
@@ -97,6 +99,7 @@ function Row({ app, phase, onOpen, canManage }: { app: AppRow; phase: Phase; onO
     : <button type="button" className="app-item__main" onClick={() => onOpen(app.app_id)}>{body}</button>;
   return <li className="app-item">
     {main}
+    {phase.setup && <a className="app-item__act" href="/settings/connections">Open Connections<ArrowRight size={14} aria-hidden="true" /></a>}
     {phase.review && !blocked && <button type="button" className="app-item__act" onClick={() => openPanel("activity", {}, { pushUrl: true })}>
       Review<ArrowRight size={14} aria-hidden="true" />
     </button>}

@@ -545,6 +545,7 @@ const RESUME_REFUSED: Record<string, (mac: string, folder: string) => string> = 
 
 /** One line about a resume already asked for (waiting, or refused by the Mac), or null. */
 export function resumeStatus(session: LocalSession, own: boolean, ownerName: string, nameOf: (userId: string) => string, userId?: string | null): string | null {
+  if (session.status !== "ended") return null;
   const resume = session.resume;
   if (!resume) return null;
   const mac = own ? "your Mac" : `${ownerName}’s Mac`;
@@ -554,8 +555,10 @@ export function resumeStatus(session: LocalSession, own: boolean, ownerName: str
 }
 
 export type SessionResumeFlow = {
+  automatic?: boolean;
   available: boolean; status: string | null; saving: boolean; error: string | null;
   recovery?: "folder-access" | "sharing";
+  check?: () => Promise<void>;
   resume: (message: string) => Promise<boolean>;
   /** Where the first message stands once the session runs again; null before, and once it landed. */
   chip: SessionReceiptChip | null;
@@ -567,12 +570,22 @@ const firstMessages = new Map<string, { requestId: string; text: string }>();
 
 export function useSessionResume(client: SessionControlClient, prop: LocalSession, opts: {
   own: boolean; userId?: string | null; ownerName: string; nameOf: (userId: string) => string; uuid: () => string;
-}): SessionResumeFlow {
+  /** Opening the owner's desktop conversation restores it without sending a turn. Search hits omit this. */
+  autoOpen?: boolean;
+  /** Owned by the selected conversation, so generation remounts cannot open it twice. */
+  openedConversation?: { current: string | null };
+}): SessionResumeFlow & { session: LocalSession } {
   const { own, userId, ownerName, nameOf, uuid } = opts;
+  const automatic = own && opts.autoOpen === true;
+  const [autoOpening, setAutoOpening] = useState(automatic && prop.status === "ended");
   // Ended sessions are absent from workspace listings, so the page's copy goes stale once a resume
   // is asked or refused: keep the newer read while this is still the same ended run.
-  const [fresh, setFresh] = useState<LocalSession | null>(null);
-  const session = fresh && fresh.sessionId === prop.sessionId && fresh.generation === prop.generation && prop.status === "ended" ? fresh : prop;
+  const source = `${prop.sessionId}:${prop.generation}:${prop.status}`;
+  const [fresh, setFresh] = useState<{ source: string; session: LocalSession } | null>(null);
+  const session = fresh?.source === source ? fresh.session : prop;
+  const [checked, setChecked] = useState<string | null>(null);
+  const localOpened = useRef<string | null>(null);
+  const opened = opts.openedConversation ?? localOpened;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [first, setFirst] = useState(() => firstMessages.get(session.sessionId) ?? null);
@@ -590,7 +603,7 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
     try {
       const updated = await client.resumeLocalSession(session.sessionId, { resumeId, ...(text ? { message: text } : {}) });
       attemptId.current = null;
-      if (updated?.status === "ended") setFresh(updated);
+      if (updated) setFresh({ source, session: updated });
       if (text) {
         const sent = { requestId: resumeId, text };
         firstMessages.set(session.sessionId, sent);
@@ -607,9 +620,75 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
               : "Could not resume this session. Try again.");
       return false;
     } finally { setSaving(false); }
-  }, [client, session.sessionId, uuid]);
+  }, [client, session.sessionId, source, uuid]);
+  // A stale sidebar row must not launch a second writer. Read the session before
+  // restoring; a failed read leaves an explicit retry instead of guessing.
+  useEffect(() => {
+    if (!automatic || prop.status !== "ended" || !client.getLocalSession) return;
+    setAutoOpening(opened.current !== prop.sessionId);
+    let alive = true;
+    void client.getLocalSession(prop.sessionId).then(latest => {
+      if (alive) {
+        if (latest.status !== "ended" || latest.resume?.state === "pending") opened.current = prop.sessionId;
+        if (latest.status !== "ended") { setAutoOpening(false); setError(null); }
+        setFresh({ source, session: latest }); setChecked(source);
+      }
+    }, () => { if (alive) setError("Could not check this session. Try again."); });
+    return () => { alive = false; };
+  }, [automatic, client, prop.sessionId, prop.status, source, opened]);
+  useEffect(() => {
+    if (!automatic || checked !== source || opened.current === session.sessionId || session.resume?.state === "failed"
+      || !canResumeSession(session, own, userId)) return;
+    opened.current = session.sessionId;
+    void resume("");
+  }, [automatic, checked, source, session, own, userId, resume, opened]);
+  useEffect(() => {
+    if (automatic && prop.status !== "ended") { opened.current = prop.sessionId; setAutoOpening(false); setError(null); }
+  }, [automatic, prop.sessionId, prop.status, opened]);
+  // Keep the selected run fresh until its sidebar catches up. Ended rows can
+  // stay outside the active listing even after a new generation registers.
+  useEffect(() => {
+    if (!automatic || prop.status !== "ended" || session.status === "ended" || !client.getLocalSession) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      try {
+        const latest = await client.getLocalSession!(prop.sessionId);
+        if (!alive) return;
+        setFresh({ source, session: latest });
+        if (latest.status === "ended") {
+          setAutoOpening(false);
+          setError("This session stopped before it was ready. Try again.");
+          return;
+        }
+      } catch { /* keep the working terminal while a metadata read retries */ }
+      if (alive) timer = setTimeout(() => void tick(), 5000);
+    };
+    timer = setTimeout(() => void tick(), 5000);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [automatic, client, prop.sessionId, prop.status, session.status, source]);
   const pending = session.status === "ended" && session.resume?.state === "pending";
   const requestedAt = session.resume?.requestedAt;
+  const checkOpening = useCallback(async () => {
+    if (!client.getLocalSession) return;
+    try {
+      const latest = await client.getLocalSession(session.sessionId);
+      setFresh({ source, session: latest });
+      if (latest.status === "ended" && latest.resume?.state === "pending") {
+        setError("Your Mac has not opened this conversation yet. Check that Lightbulb is running and connected, then check again.");
+      } else {
+        setAutoOpening(false);
+        setError(latest.status === "ended" && !latest.resume ? "This session did not open. Try again." : null);
+      }
+    } catch { setError("Could not check this session. Try again."); }
+  }, [client, session.sessionId, source]);
+  useEffect(() => {
+    if (!automatic || !pending) return;
+    const requested = Date.parse(requestedAt ?? "");
+    const age = Number.isFinite(requested) ? Math.max(0, Date.now() - requested) : 0;
+    const timer = setTimeout(() => setError("Your Mac has not opened this conversation yet. Check that Lightbulb is running and connected, then check again."), Math.max(0, 30_000 - age));
+    return () => clearTimeout(timer);
+  }, [automatic, pending, requestedAt]);
   useEffect(() => {
     const read = client.getLocalSession;
     if (!pending || !read) return;
@@ -620,21 +699,23 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const next = () => {
-      if (!alive || Date.now() >= expires) return;
+      if (!alive) return;
+      if (Date.now() >= expires) { setError("The request to open this session expired. Check again to refresh its status."); return; }
       timer = setTimeout(() => void tick(), Date.now() - started < RESUME_FAST_MS ? AUTO_CHECK_INTERVAL_MS : RESUME_SLOW_MS);
     };
     const tick = async () => {
       try {
         const latest = await read(session.sessionId);
         if (!alive) return;
-        if (latest.status === "ended") setFresh(latest);
+        setFresh({ source, session: latest });
+        if (latest.status === "ended" && !latest.resume) setError("This session did not open. Try again.");
         if (latest.status !== "ended" || latest.resume?.state !== "pending") return; // resolved or refused
       } catch { /* the next tick asks again */ }
       next();
     };
     next();
     return () => { alive = false; clearTimeout(timer); };
-  }, [client, session.sessionId, pending, requestedAt]);
+  }, [client, session.sessionId, pending, requestedAt, source]);
   useEffect(() => {
     const get = client.getLocalSessionCommand;
     if (!first || !running || !get) return;
@@ -663,11 +744,12 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
     ...(check === "missing" && !receipt ? { error: "The session started again without it." } : {}),
   } : null;
   return {
+    session, automatic: automatic && autoOpening,
     available: !!client.resumeLocalSession && canResumeSession(session, own, userId),
     status: resumeStatus(session, own, ownerName, nameOf, userId),
     recovery: own && session.resume?.state === "failed"
       ? session.resume.reason === "FOLDER_NOT_APPROVED" ? "folder-access" : session.resume.reason === "SHARING_OFF" ? "sharing" : undefined
       : undefined,
-    saving, error, resume, chip: receiptChip(attempt),
+    saving, error, resume, check: client.getLocalSession ? checkOpening : undefined, chip: receiptChip(attempt),
   };
 }

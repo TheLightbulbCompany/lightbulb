@@ -11,10 +11,35 @@ const ended = (changes: Partial<LocalSession> = {}): LocalSession => ({
 });
 const client = () => ({ submitLocalSessionCommand: vi.fn(), resumeLocalSession: vi.fn(async () => ended()), getLocalSessionCommand: vi.fn() });
 
-function Harness({ s, c, own = false, userId = "bob" }: { s: LocalSession; c: ReturnType<typeof client>; own?: boolean; userId?: string }) {
-  const flow = useSessionResume(c, s, { own, userId, ownerName: "Alice", nameOf: id => (id === "bob" ? "Bob" : "Someone"), uuid: () => "r-1" });
+it("opens an owner desktop conversation without asking for Continue", () => {
+  render(<SessionResume own ownerName="Alice" flow={{ available: true, automatic: true, status: null, saving: false, error: null, resume: vi.fn(), chip: null }} />);
+  expect(screen.getByRole("status")).toHaveTextContent("Opening this conversation");
+  expect(screen.queryByRole("button")).toBeNull();
+});
+
+it("checks a slow pending open without submitting another resume", async () => {
+  const check = vi.fn(async () => {});
+  const resume = vi.fn();
+  render(<SessionResume own ownerName="Alice" flow={{ available: false, automatic: true, status: "Opening this session on your Mac…", saving: false,
+    error: "Your Mac has not opened this conversation yet.", check, resume, chip: null }} />);
+  await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+  expect(check).toHaveBeenCalledOnce();
+  expect(resume).not.toHaveBeenCalled();
+});
+
+function Harness({ s, c, own = false, userId = "bob", autoOpen = false }: { s: LocalSession; c: ReturnType<typeof client>; own?: boolean; userId?: string; autoOpen?: boolean }) {
+  const flow = useSessionResume(c, s, { own, userId, autoOpen, ownerName: "Alice", nameOf: id => (id === "bob" ? "Bob" : "Someone"), uuid: () => "r-1" });
   return <><SessionResume flow={flow} own={own} ownerName="Alice" /><ResumeDelivery flow={flow} /></>;
 }
+
+it("offers Continue when a conversation the owner already opened subsequently ends", async () => {
+  const c = client();
+  const view = render(<Harness own autoOpen s={ended({ status: "idle", generation: "g2" })} c={c} />);
+  view.rerender(<Harness own autoOpen s={ended({ generation: "g2" })} c={c} />);
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeInTheDocument();
+  expect(screen.queryByText("Opening this conversation…")).toBeNull();
+  expect(c.resumeLocalSession).not.toHaveBeenCalled();
+});
 
 it("lets someone who could send resume it with a message, in plan mode on the owner's Mac", async () => {
   const c = client();

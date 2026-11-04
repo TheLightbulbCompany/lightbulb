@@ -62,7 +62,8 @@ type Client = SessionSource["client"] & SessionControlClient & PickupClient & Pa
  * as on the phone. What the session is running, what it changed and who may do
  * what with it live behind Details.
  */
-export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf, onEvent, focusSeq }: {
+export function LocalSessionPanel({ session: supplied, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf, onEvent, focusSeq, openedConversation }: {
+  openedConversation?: { current: string | null };
   /** A turn to open the conversation at (a session search hit): its row is scrolled to and marked. */
   focusSeq?: number;
   /** Live events, for watching a running session's terminal from another machine. */
@@ -78,6 +79,16 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // Not compiled: it reads the clock and a ref during render on purpose (the screen-due timer, the kept
   // terminal), which the React Compiler would memoize stale.
   "use no memo";
+  const { userId, orgId } = useAuth();
+  const resume = useSessionResume(client, supplied, {
+    own, userId, ownerName, uuid: () => crypto.randomUUID(),
+    nameOf: who => supplied.pendingJoinNames?.[who] ?? nameOf?.(who) ?? participants.find(p => p.id === who)?.displayName ?? "A teammate",
+    autoOpen: own && isDesktopApp() && !focusSeq && !conversationOnly(supplied),
+    openedConversation,
+  });
+  // A resumed run may be absent from the sidebar's current listing. The direct
+  // read is authoritative for the whole panel, including terminal attachment.
+  const session = resume.session;
   // The history feeds the plan, the changed files, the pending prompt and the approval reason, and an app
   // session's conversation. The relay throttles hints with no trailing edge, so a quiet poll while busy keeps those current.
   const busy = session.status === "busy";
@@ -250,7 +261,6 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? session.waitingFor ?? "" : null;
   const question = session.status === "waiting-approval" && session.provider === "claude" ? pendingQuestion(main) : null;
   const target = sessionLabel(session);
-  const { userId, orgId } = useAuth();
   // One row per session a person opens: whether anyone looks at a teammate's session is the
   // first question the sharing feature has to answer. No title, no path, no text.
   useEffect(() => {
@@ -262,7 +272,6 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // A live terminal is the only input: no message box under it. A viewer who cannot type keeps the watch-only line.
   const terminalLive = local === "local" || liveTerminal;
   const terminalOnScreen = terminalLive && !showBrowser;
-  const resume = useSessionResume(client, session, { own, userId, ownerName, nameOf: personName, uuid: () => crypto.randomUUID() });
   const askPickup = useSessionJoinRequest(client, session, "pickup");
   const glyph = session.provider === "claude" ? "❯" : "›";
   const plan = useMemo(() => sessionPlan(main), [main]);

@@ -15,20 +15,23 @@ export function SessionResume({ flow, own, ownerName }: { flow: SessionResumeFlo
   const [text, setText] = useState("");
   const id = useId();
   if (!flow.available && !flow.status) return null;
+  const retry = !!flow.error || flow.status?.startsWith("Not resumed:");
   return <div className="room-composer local-session-readonly">
     <div>
       {flow.status && <p role="status" className="text-ui text-muted-foreground">{flow.status}</p>}
-      {flow.available && <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void flow.resume(text).then(ok => { if (ok) setText(""); }); }}>
+      {flow.automatic && !retry && !flow.status && <p role="status" className="text-ui text-muted-foreground">Opening this conversation…</p>}
+      {flow.available && (!flow.automatic || retry) && <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void flow.resume(text).then(ok => { if (ok) setText(""); }); }}>
         <label htmlFor={id} className="sr-only">Message to send when it resumes</label>
         <textarea id={id} className="room-input" rows={2} value={text} onChange={event => setText(event.target.value)}
           placeholder="Message to send when it resumes (optional)" />
         <p className="text-caption text-muted-foreground">{own ? "Starts it again on your Mac, in the same folder."
           : `Starts it again on ${ownerName}’s Mac in plan mode. ${ownerName} sees it there and can end it.`}</p>
         <div className="local-session-actions">
-          <Button type="submit" size="sm" disabled={flow.saving}>{flow.saving ? "Opening…" : own ? "Continue" : text.trim() ? "Resume and send" : "Resume"}</Button>
+          <Button type="submit" size="sm" disabled={flow.saving}>{flow.saving ? "Opening…" : flow.automatic ? "Try again" : own ? "Continue" : text.trim() ? "Resume and send" : "Resume"}</Button>
         </div>
       </form>}
       {flow.error && <p role="alert" className="text-ui text-warn">{flow.error}</p>}
+      {flow.error && !flow.available && flow.check && <Button type="button" size="sm" onClick={() => void flow.check?.()}>Check again</Button>}
       {flow.recovery && <Link href="/settings?panel=desktop" className="text-ui underline underline-offset-4">{flow.recovery === "folder-access" ? "Review folder access" : "Open session sharing settings"}</Link>}
     </div>
   </div>;

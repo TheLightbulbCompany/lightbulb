@@ -283,3 +283,14 @@ async def test_a_steer_by_another_person_lowers_the_runs_grant(monkeypatch):
     assert len(steers) == 1
     lowered = local_session_grants.verify(STEER_HEADERS[0]["X-Lightbulb-Local-Session-Token"])
     assert lowered.requester_id is None and lowered.room_id == ROOM and lowered.turn_id == FIRST
+
+
+@pytest.mark.asyncio
+async def test_a_new_top_level_message_in_a_channel_gets_its_own_turn(monkeypatch):
+    """Two requests posted seconds apart in a channel are two conversations, not one."""
+    worker, created, ingress, steers, _ = _fixture(monkeypatch, runs=[LIVE])
+    await worker._dispatch_message(
+        {**META, "kind": "channel"}, MEMBER, _message(threadRootMessageId=None), "user_request"
+    )
+    assert steers == []
+    assert len(created) == 1 and len(ingress) == 1

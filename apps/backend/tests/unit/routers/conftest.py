@@ -17,9 +17,27 @@ from tests.unit.services.conftest import repos  # noqa: E402, F401
 
 
 @pytest.fixture
-def a2a_env(monkeypatch, repos):  # noqa: F811
-    """Signing key, the roster lookup and the DM room for the A2A routes; yields the dispatch mock."""
+def a2a_env(app, monkeypatch, repos):  # noqa: F811
+    """Signing key, the roster lookup and the DM room for the A2A routes; yields the dispatch mock.
+    The door's caller is the signed-in person `get_current_user` (overridden by the client fixtures)
+    returns, and the card's OAuth URLs are Clerk's fallback paths (no network)."""
     import uuid
+
+    import httpx
+    from fastapi import Depends
+
+    from core.auth import get_current_user
+    from core.services import a2a_auth
+
+    async def _session(auth=Depends(get_current_user)):
+        return a2a_auth.session_caller(auth)
+
+    async def _no_clerk():
+        raise httpx.ConnectError("no network in tests")
+
+    app.dependency_overrides[a2a_auth.a2a_caller] = _session
+    monkeypatch.setattr(a2a_auth, "_endpoints", {})
+    monkeypatch.setattr(a2a_auth, "_clerk_metadata", _no_clerk)
 
     monkeypatch.setattr("core.config.settings.NETWORK_PROOF_KEY", "test-seed")
     monkeypatch.setattr(
@@ -37,3 +55,4 @@ def a2a_env(monkeypatch, repos):  # noqa: F811
     send = AsyncMock(side_effect=_send)
     monkeypatch.setattr("core.services.messaging.create_human_message", send)
     yield SimpleNamespace(room=room, send=send, dm=dm, sent=sent)
+    app.dependency_overrides.pop(a2a_auth.a2a_caller, None)

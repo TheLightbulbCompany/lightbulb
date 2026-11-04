@@ -32,6 +32,9 @@ def run(cases: list[dict]) -> list[dict]:
             session_person=c["session_person"],
             exception=c.get("exception"),
             origin_is_person=c.get("origin_is_person", True),
+            operands=c.get("operands"),
+            intent=c.get("intent"),
+            verified_by=c.get("verified_by"),
         )
         ok = d.effect == c["expected"] and ("rule" not in c or d.rule == c["rule"])
         rows.append({"name": c["name"], "expected": c["expected"], "got": d.effect, "rule": d.rule, "ok": ok})

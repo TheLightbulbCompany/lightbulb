@@ -15,7 +15,8 @@ from pydantic import ValidationError
 from core.auth import AuthContext
 from core.config import settings
 from core.repositories import a2a_repo, local_sessions_repo, messaging_repo
-from core.services import a2a_rules, hosted_mcp, messaging, network_route
+from core.services import a2a_rules, hosted_mcp, messaging, network_proof, network_route
+from core.services.a2a_auth import READ_SCOPE_A2A, SEND_SCOPE, A2ACaller
 from core.services.a2a_authority import URI, AuthorityError, AuthorityRequest, Operation, mint, sign_record, verify
 from core.services.a2a_rules import Rules, default_rules
 from core.services.network_proof import _unb64
@@ -45,7 +46,8 @@ class A2AError(Exception):
         self.message = message
 
 
-def agent_card(org: str, agent_id: str, agent_name: str, base_url: str) -> a2a_types.AgentCard:
+def agent_card(org: str, agent_id: str, agent_name: str, base_url: str, oauth: dict[str, str]) -> a2a_types.AgentCard:
+    """``oauth``: Clerk's ``authorization_url`` and ``token_url`` (``a2a_auth.oauth_endpoints``)."""
     return a2a_types.AgentCard(
         name=agent_name,
         description=f"{agent_name}, a Lightbulb workspace agent. Every task carries signed authority.",
@@ -69,9 +71,25 @@ def agent_card(org: str, agent_id: str, agent_name: str, base_url: str) -> a2a_t
         security_schemes={
             "clerk": a2a_types.SecurityScheme(
                 http_auth_security_scheme=a2a_types.HTTPAuthSecurityScheme(scheme="Bearer", bearer_format="JWT")
-            )
+            ),
+            "oauth": a2a_types.SecurityScheme(
+                oauth2_security_scheme=a2a_types.OAuth2SecurityScheme(
+                    oauth2_metadata_url=f"{settings.CLERK_ISSUER.rstrip('/')}/.well-known/oauth-authorization-server",
+                    flows=a2a_types.OAuthFlows(
+                        authorization_code=a2a_types.AuthorizationCodeOAuthFlow(
+                            **oauth,
+                            scopes={SEND_SCOPE: "Send the agent tasks.", READ_SCOPE_A2A: "Read your tasks."},
+                            pkce_required=True,
+                        )
+                    ),
+                )
+            ),
         },
-        security_requirements=[a2a_types.SecurityRequirement(schemes={"clerk": a2a_types.StringList()})],
+        # Either one: a Lightbulb sign-in, or an OAuth grant for this door's audience.
+        security_requirements=[
+            a2a_types.SecurityRequirement(schemes={"clerk": a2a_types.StringList()}),
+            a2a_types.SecurityRequirement(schemes={"oauth": a2a_types.StringList()}),
+        ],
         default_input_modes=["text/plain"],
         default_output_modes=["text/plain"],
         skills=[
@@ -89,6 +107,25 @@ def agent_card(org: str, agent_id: str, agent_name: str, base_url: str) -> a2a_t
             ),
         ],
     )
+
+
+def signed_agent_card(
+    org: str, agent_id: str, agent_name: str, base_url: str, oauth: dict[str, str]
+) -> a2a_types.AgentCard:
+    """The card with a JWS signature (RFC 7515, EdDSA) by the issuer key that ``/a2a/keys.json`` serves.
+    Without ``NETWORK_PROOF_KEY`` the card is served unsigned, with a warning."""
+    card = agent_card(org, agent_id, agent_name, base_url, oauth)
+    if not settings.NETWORK_PROOF_KEY:
+        logger.warning("a2a card served unsigned: NETWORK_PROOF_KEY is not set")
+        return card
+    from a2a.utils.signing import create_agent_card_signer
+    from jwt import PyJWK
+    from jwt.algorithms import OKPAlgorithm
+
+    kid = network_proof.kid()
+    jwk = {**OKPAlgorithm.to_jwk(network_proof._private(), as_dict=True), "kid": kid}
+    header = {"typ": "JOSE", "alg": "EdDSA", "kid": kid, "jku": f"{base_url}/a2a/keys.json"}
+    return create_agent_card_signer(PyJWK.from_dict(jwk), header)(card)
 
 
 async def agent_name(org: str, agent_id: str) -> str | None:
@@ -160,7 +197,8 @@ def _authority_request(message: dict, agent_id: str) -> tuple[AuthorityRequest, 
     return req, text
 
 
-async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict, *, now: int | None = None) -> dict:
+async def send_message(caller: A2ACaller, org: str, agent_id: str, message: dict, *, now: int | None = None) -> dict:
+    auth = caller.auth
     now = int(time.time()) if now is None else now
     # Only a workspace agent: any other id (a person's user_...) would get a system post in a human DM.
     if await agent_name(org, agent_id) is None:
@@ -170,8 +208,9 @@ async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict
         jws, claims = mint(
             requester_person=auth.user_id,
             org=org,
-            verified_by="clerk-session",
-            chain=[{"agent": None, "session": None, "person": auth.user_id, "at": now}],
+            verified_by=caller.verified_by,
+            # An OAuth client is the first hop's agent; rules match it as agent:<client_id>.
+            chain=[{"agent": caller.client_id, "session": None, "person": auth.user_id, "at": now}],
             request=req,
             now=now,
         )
@@ -183,7 +222,16 @@ async def send_message(auth: AuthContext, org: str, agent_id: str, message: dict
     doc = await a2a_repo.get_rules(org)
     rules = Rules.model_validate(doc) if doc else default_rules(org, [auth.user_id] if auth.is_org_admin else [])
     row = await _decide_and_store(
-        auth, org, agent_id, jws, claims, text, rules=rules, chain_agents=[], session_person=None, now=now
+        auth,
+        org,
+        agent_id,
+        jws,
+        claims,
+        text,
+        rules=rules,
+        chain_agents=[caller.client_id] if caller.client_id else [],
+        session_person=None,
+        now=now,
     )
     return to_a2a_task(row)
 
@@ -218,6 +266,9 @@ async def _decide_and_store(
         session_person=session_person,
         exception=exception,
         origin_is_person=origin_is_person,
+        operands=op["operands"],
+        intent=claims["intent"],
+        verified_by=claims["requester"]["verified_by"],
     )
     row = {
         "id": str(uuid.uuid4()),
@@ -228,6 +279,12 @@ async def _decide_and_store(
         "rule": d.rule,
         "holders": d.holders,
         "createdAt": now,
+        # every decide input beyond the authority itself, so a rules change can re-decide the task
+        "requesterOrg": auth.org_id,
+        "chainAgents": chain_agents,
+        "sessionPerson": session_person,
+        "originIsPerson": origin_is_person,
+        "verifiedBy": claims["requester"]["verified_by"],
     }
     if d.effect == "hold" and not d.holders:
         # A hold nobody can answer is a silent hang: refuse it.
@@ -421,25 +478,32 @@ async def _dispatch(auth: AuthContext, org: str, agent_id: str, row: dict, text:
     return True
 
 
+def _inert(v: str) -> str:
+    """Requester text on one line with no backtick, so it can never open an ``openui-lang`` card."""
+    return v.replace("\r", " ").replace("\n", " ").replace("`", "'")
+
+
 async def _notify_holders(org: str, agent_id: str, row: dict, claims: dict) -> None:
     """The agent asks each holder in their DM with it; a failed post is logged (the hold still expires)."""
     op = claims["operation"]
     base = settings.PUBLIC_API_BASE.rstrip("/")
     operands = op["operands"]
     shown = operands["text"] if isinstance(operands.get("text"), str) else json.dumps(operands, separators=(",", ":"))
-    chain = " → ".join(h.get("agent") or h["person"] for h in claims["chain"])
-    # ponytail: answered at the REST route with a Lightbulb sign-in token; the in-app button is phase 1b
+    chain = _inert(" → ".join(h.get("agent") or h["person"] for h in claims["chain"]))
+    # Answered by pressing the card (``answer_from_message``) or at the REST route with a sign-in token.
     text = (
         f"I need your OK to {op['skill']} on {op['resource']} for {row['requester']} (via {chain}): "
-        f"{claims['intent'][:200]}\n"
-        f"Request: {shown[:500]}\n"
+        f"{_inert(claims['intent'][:200])}\n"
+        f"Request: {_inert(shown[:500])}\n"
         f"Answer with POST {base}/a2a/{org}/{agent_id}/tasks/{row['id']}/decide "
-        '{"verdict": "allow"} or {"verdict": "deny"}, signed in to Lightbulb.'
+        '{"verdict": "allow"} or {"verdict": "deny"}, signed in to Lightbulb.\n'
+        f"```openui-lang\n{_CARD}\n```"
     )
+    sent: dict[str, str] = {}
     for holder in row["holders"]:
         try:
             room = await hosted_mcp.person_dm(AuthContext(user_id=holder, org_id=org), agent_id, create_key=row["id"])
-            await messaging.create_agent_message(
+            receipt = await messaging.create_agent_message(
                 org,
                 messaging.AgentMessageRequest(
                     event_id=f"a2a:{row['id']}:hold:{holder}",
@@ -450,8 +514,66 @@ async def _notify_holders(org: str, agent_id: str, row: dict, claims: dict) -> N
                     thread_root_message_id=None,
                 ),
             )
+            sent[holder] = str(receipt.message_id)
+            await a2a_repo.put_notification(org, sent[holder], row["id"], holder, str(room))
         except Exception:
             logger.exception("a2a holder notification failed", extra={"org": org, "task": row["id"]})
+    if sent:
+        row["notificationMessageIds"] = sent
+        # expect="held": a holder who already answered keeps the task's new state
+        await a2a_repo.update_task(org, row["id"], state="held", extra={"notificationMessageIds": sent}, expect="held")
+
+
+_CARD = 'root = Stack([b])\nb = Buttons([Button("Approve", "primary"), Button("Deny", "secondary")])'
+_VERDICTS: dict[str, Literal["allow", "deny"]] = {"Approve": "allow", "Deny": "deny"}
+
+
+async def answer_from_message(
+    auth: AuthContext,
+    org: str,
+    room_id: str,
+    request: messaging.CreateMessageRequest,
+    *,
+    now: int | None = None,
+) -> bool:
+    """A holder's press on their hold card (a reply ``Approve``/``Deny`` to the notification, in the
+    notification's room) decides the hold; True when the message was that press (stored without waking
+    the agent). A refused decision is told back in the room by the agent."""
+    verdict = _VERDICTS.get(request.text.strip())
+    if verdict is None or request.reply_to_message_id is None:
+        return False
+    found = await a2a_repo.get_task_by_notification(org, str(request.reply_to_message_id))
+    if found is None or found[2] != room_id:
+        return False
+    task_id, holder, room = found
+    row = await a2a_repo.get_task(org, task_id)
+    if row is None:
+        return False
+    if holder != auth.user_id:
+        error = "not_holder"  # spec §10.2: someone else's card, pressed in its room, records nothing
+    else:
+        try:
+            await decide(auth, org, row["agentId"], task_id, verdict=verdict, reason="in-app", now=now)
+            return True
+        except A2AError as exc:
+            error = exc.message
+        if error == "not_held" and ((await a2a_repo.get_task(org, task_id)) or {}).get("answeredBy") == auth.user_id:
+            return True  # the same holder pressed twice (or the client resent the press): already recorded
+    try:  # the press is still an answer attempt: never wake the agent on it
+        await messaging.create_agent_message(
+            org,
+            messaging.AgentMessageRequest(
+                event_id=f"a2a:{task_id}:answer-failed:{auth.user_id}",
+                room_id=room,
+                agent_id=row["agentId"],
+                text=f"could not record your answer: {error}",
+                reply_to_message_id=None,
+                thread_root_message_id=None,
+            ),
+        )
+    except Exception:
+        logger.exception("a2a answer refusal post failed", extra={"org": org, "task": task_id})
+    return True
 
 
 async def _leave(
@@ -501,6 +623,8 @@ async def decide(
     if auth.user_id == row["requester"] and _claims(row["authority"])["requester"]["verified_by"] != "agent-runtime":
         raise A2AError(403, "self")
     holders = row.get("holders") or []
+    # Checked against the holders before any re-decide below: in the rules-change race a newly added
+    # holder gets 403 and a removed holder's press still triggers the re-decide (accepted).
     if auth.user_id not in holders:
         raise A2AError(403, "not_holder")
     row = await _current(org, row, now)
@@ -509,10 +633,15 @@ async def decide(
     state, decision = ("working", "allow_by_holder") if verdict == "allow" else ("rejected", "deny_by_holder")
     if row["state"] != "held":
         raise A2AError(409, "not_held")
-    if row["policyRevision"] != ((await a2a_repo.get_rules(org)) or {}).get("revision", "default"):
-        # Never resumed under rules the hold was not decided by (a put_rules raced this hold).
-        await _leave(org, row, "canceled", "canceled", now=now, extra={"reason": "policy_changed"})
-        raise A2AError(409, "policy_changed")
+    doc = await a2a_repo.get_rules(org)
+    if row["policyRevision"] != (doc or {}).get("revision", "default"):
+        # Never answered under rules the hold was not decided by (a put_rules raced this hold): decide
+        # it again first, and answer only if it is still held and this person still holds it.
+        row = await _redecide(org, row, Rules.model_validate(doc) if doc else default_rules(org, []), now=now)
+        if row["state"] != "held":
+            raise A2AError(409, "not_held")
+        if auth.user_id not in row["holders"]:
+            raise A2AError(403, "not_holder")
     # Claim the answer first: a second holder, the expiry or a rules change can only lose the race.
     row = await _leave(
         org,
@@ -539,7 +668,14 @@ async def decide(
         task_id=task_id,
         now=now,
     )
-    if await _dispatch(AuthContext(user_id=row["requester"], org_id=org), org, agent_id, row, row["text"]):
+    await _dispatch_from_hold(org, row, now)
+    return to_a2a_task(row)
+
+
+async def _dispatch_from_hold(org: str, row: dict, now: int) -> None:
+    """Dispatch a task that just left held for working, as its requester (their DM with the agent),
+    and write the outcome; a failed dispatch ends the task failed, never stuck."""
+    if await _dispatch(AuthContext(user_id=row["requester"], org_id=org), org, row["agentId"], row, row["text"]):
         if row.get("delivered"):
             await _complete_delivered(org, row, now)
         keys = ("roomId", "dispatchMessageId", "dispatchRequestId", "delivered", "artifact", "record")
@@ -549,33 +685,85 @@ async def decide(
         extra = {"reason": row["reason"], "record": row["record"]}
     # ponytail: a reply landing between dispatch and this write finds no room on the task and stays
     # unlinked, the same window send_message has
-    await a2a_repo.update_task(org, task_id, state=row["state"], extra=extra)
-    return to_a2a_task(row)
+    await a2a_repo.update_task(org, row["id"], state=row["state"], extra=extra)
+
+
+async def _redecide(org: str, row: dict, rules: Rules, *, now: int) -> dict:
+    """Decide a held task again under ``rules`` and act on it; the updated row. Allow dispatches
+    (``allow_by_policy``, no exception), deny rejects (``deny_by_policy``), hold stays held with the new
+    holders and revision (``redecided``, holders asked again if the set changed), a hold nobody can
+    answer is rejected ``no_holder``. An expired hold cancels as expired; a row stored before its
+    decide inputs were (phase 1) cancels ``policy_changed``. Every write expects held: a holder who
+    answered first keeps their answer."""
+    if ((await a2a_repo.get_rules(org)) or {}).get("revision", "default") != rules.revision:
+        return row  # a newer document landed while this loop ran: its own re-decide handles the row
+    if _as_of(row, now)["state"] != "held":
+        return await _current(org, row, now)
+    if "requesterOrg" not in row:
+        done = await _leave(org, row, "canceled", "canceled", now=now, extra={"reason": "policy_changed"})
+        return done or await a2a_repo.get_task(org, row["id"])
+    claims = _claims(row["authority"])
+    op = claims["operation"]
+    d = a2a_rules.decide(
+        rules,
+        org=org,
+        requester_person=row["requester"],
+        requester_org=row["requesterOrg"],
+        chain_agents=row["chainAgents"],
+        resource=op["resource"],
+        skill=op["skill"],
+        session_person=row["sessionPerson"],
+        exception=await a2a_repo.get_exception(
+            org, op["resource"], op["skill"], row["requester"], op["operands_hash"], now
+        ),
+        origin_is_person=row["originIsPerson"],
+        operands=op["operands"],
+        intent=claims["intent"],
+        verified_by=row["verifiedBy"],
+    )
+    extra = {"rule": d.rule, "holders": d.holders, "policyRevision": rules.revision}
+    if d.effect == "hold" and d.holders:
+        done = await _leave(org, row, "held", "redecided", now=now, extra=extra, holder=d.holders)
+        if done and set(d.holders) != set(row.get("holders") or []):
+            # Fresh cards and NOTIF rows; the old ones still resolve to this task (ruling 1).
+            await _notify_holders(org, row["agentId"], done, claims)
+    elif d.effect == "allow":
+        done = await _leave(org, row, "working", "allow_by_policy", now=now, extra={**extra, "dispatchedAt": now})
+        if done:
+            await _dispatch_from_hold(org, done, now)
+    else:  # deny, or a hold nobody can answer
+        if d.effect == "hold":
+            extra["rule"] = "no_holder"
+        done = await _leave(org, row, "rejected", "deny_by_policy", now=now, extra=extra)
+    return done or await a2a_repo.get_task(org, row["id"])
 
 
 def revision(rules: Rules) -> str:
-    """The server's revision: sha256 hex of the document's canonical JSON without ``revision``."""
-    doc = rules.model_dump(exclude={"revision"})
+    """The server's revision: sha256 hex of the document's canonical JSON without ``revision`` and
+    without unset fields (a document with no ``when`` keeps its phase-1 revision)."""
+    doc = rules.model_dump(exclude={"revision"}, exclude_none=True)
     return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 async def put_rules(auth: AuthContext, org: str, rules: Rules, *, now: int | None = None) -> dict:
-    """Store the rules under a server-assigned revision; a new revision first cancels every held task
-    (reason policy_changed): a hold is never re-decided under rules its holder did not see. A hold
-    made between the cancel and the store is caught by ``decide``'s revision check. Returns the
-    stored document."""
+    """Store the rules under a server-assigned revision; a new revision then re-decides every held task
+    under it (``_redecide``), and any PUT re-decides a held task left under an older revision (one
+    whose re-decide failed, or a hold stored after the scan; ``decide``'s revision check also catches
+    those). Returns the stored document."""
     if not auth.is_org_admin:
         raise A2AError(403, "admin")
     now = int(time.time()) if now is None else now
     doc = {**rules.model_dump(), "revision": revision(rules)}
-    old = await a2a_repo.get_rules(org)
-    if (old or {}).get("revision", "default") != doc["revision"]:
-        for row in await a2a_repo.list_held_tasks(org):
-            if _as_of(row, now)["state"] != "held":
-                await _current(org, row, now)  # already expired: it cancels as expired, not policy_changed
-                continue
-            await _leave(org, row, "canceled", "canceled", now=now, extra={"reason": "policy_changed"})
-    await a2a_repo.put_rules(org, doc)
+    await a2a_repo.put_rules(org, doc)  # first: a hold made from now on is decided by the new rules
+    stored = Rules.model_validate(doc)
+    # ponytail: one task at a time inside the request; a queue when an org holds hundreds
+    for row in await a2a_repo.list_held_tasks(org):
+        if row["policyRevision"] == doc["revision"]:
+            continue  # already decided by this document; a retried PUT repairs any task that failed
+        try:
+            await _redecide(org, row, stored, now=now)
+        except Exception:
+            logger.exception("a2a re-decide failed", extra={"org": org, "task": row["id"]})
     return doc
 
 

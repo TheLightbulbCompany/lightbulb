@@ -314,7 +314,9 @@ async def start(
     meta = await _ensure(app, builder)
     if person:
         await _seat(owner_id, meta, person)
+    # The builder is told which app this conversation builds: unnamed, it once answered from memory with another app.
     text = await _attributed(caller, request_text, person, origin_room_id, via)
+    text += f"\n\nThis conversation builds {svc._display(app)}, named {app['name']}."
     # The receipt is this request (who and what): a retry replays it, another person's request is its own line.
     key = f"apps-start:{app['app_id']}:{hashlib.sha256(text.encode()).hexdigest()[:16]}"
     # Found idle: say it again, which wakes the builder. Never on a race: the winner's line is being posted now.

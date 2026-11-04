@@ -135,7 +135,11 @@ async def test_start_reserves_the_app_and_hands_the_request_to_its_conversation(
     assert (meta["kind"], meta["hidden"], meta["app"]) == ("channel", True, {"app_id": res["app_id"]})
     assert [(m["kind"], m["id"]) for m in chat.members[room]] == [("agent", FORGE), ("human", "user_1")]
     (post,) = chat.posts
-    assert post["room_id"] == room and post["text"] == "Ada (in #general): build a booking page"
+    assert (
+        post["room_id"] == room
+        and post["text"]
+        == "Ada (in #general): build a booking page\n\nThis conversation builds Booking, named booking."
+    )
     assert _woken(post) == [FORGE]
     line = f"Started Booking. It's being built in its own conversation in Canvas: {res['canvas_url']}"
     assert res["next"] == f'post this line in the room as written, then end your turn: "{line}"'
@@ -146,7 +150,11 @@ async def test_a_person_starting_from_the_cli_gets_the_ceo_and_a_workspace_app(c
     app = await svc.apps_repo.get(res["app_id"])
     assert (app["open_to"], app["room_id"], app["created_by"]) == ("workspace", None, "user_1")
     (post,) = chat.posts
-    assert post["text"] == "Ada (via CLI): build a booking page" and _woken(post) == [CEO]
+    assert post[
+        "text"
+    ] == "Ada (via CLI): build a booking page\n\nThis conversation builds Booking, named booking." and _woken(post) == [
+        CEO
+    ]
 
 
 async def test_two_starts_for_one_name_make_one_app_and_one_request(chat, monkeypatch):
@@ -177,7 +185,11 @@ async def test_a_second_start_is_heard_when_it_is_new_or_nobody_is_building(chat
     monkeypatch.setattr(svc.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[run]))
     chat.members["room_1"].append({"kind": "human", "id": BOB.user_id})
     await _start(requested_by=BOB.user_id)
-    assert len(chat.posts) == 3 and chat.posts[-1]["text"] == "user_bob (in #general): build a booking page"
+    assert (
+        len(chat.posts) == 3
+        and chat.posts[-1]["text"]
+        == "user_bob (in #general): build a booking page\n\nThis conversation builds Booking, named booking."
+    )
     await _start(requested_by=BOB.user_id)
     assert len(chat.posts) == 3
 
@@ -547,7 +559,10 @@ async def test_a_start_by_an_agent_for_a_person_makes_them_its_creator(chat):
     app = await svc.apps_repo.get(first["app_id"])
     assert app["created_by"] == "user_1"
     assert "user_1" in [m["id"] for m in chat.members[first["conversation_id"]]]
-    assert chat.posts[-1]["text"] == "Ada (in #general): build a booking page"
+    assert (
+        chat.posts[-1]["text"]
+        == "Ada (in #general): build a booking page\n\nThis conversation builds Booking, named booking."
+    )
     # Someone outside the room is never believed: Bob is not made its creator.
     second = await conv.start(AGENT, "notes", "notes", origin_room_id="room_1", requested_by=BOB.user_id)
     assert (await svc.apps_repo.get(second["app_id"]))["created_by"] is None
@@ -675,4 +690,7 @@ async def test_a_started_app_is_watched_and_a_canvas_request_says_where_it_came_
     monkeypatch.setattr(svc, "watch", lambda owner, app_id: watched_ids.append(app_id))
     res = await conv.start_as_member(ADA, "A booking page for haircuts")
     assert watched_ids == [res["app_id"]]
-    assert chat.posts[-1]["text"] == "Ada (in Canvas): A booking page for haircuts"
+    assert (
+        chat.posts[-1]["text"]
+        == "Ada (in Canvas): A booking page for haircuts\n\nThis conversation builds Booking Haircuts, named booking-haircuts."
+    )

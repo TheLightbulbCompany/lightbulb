@@ -54,6 +54,12 @@ describe("AppList", () => {
     expect(screen.getByRole("group").getAttribute("aria-disabled")).toBe("true");
   });
 
+  it("a first publish says it is publishing, not making the preview", () => {
+    render(<AppList {...props} onOpen={vi.fn()} apps={[app({ state: "building", live_version: null, publishing: true })]} />);
+    expect(screen.getByText("Publishing. It'll be live in a minute or two.")).toBeTruthy();
+    expect(screen.queryByText(/making the preview/)).toBeNull();
+  });
+
   it("building apps open to their status and conversation", () => {
     const onOpen = vi.fn();
     render(<AppList {...props} onOpen={onOpen} apps={[app({ state: "building", live_version: null }), app({ app_id: "a2", name: "Pipeline", state: "building", conversation_id: "c2" })]} />);

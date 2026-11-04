@@ -79,6 +79,22 @@ describe("AppView", () => {
     expect(screen.queryByText(/making the preview/)).toBeNull();
   });
 
+  it("while the agent is still working, the preview says it's a first version", async () => {
+    open.mockResolvedValue("https://a1.preview.test/");
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", agent_working: true })} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTitle("Invoices")).toBeTruthy());
+    expect(screen.getByText("This is a first version. The agent is still working on it and will post in #finance when it's ready.")).toBeTruthy();
+    expect(screen.queryByText(/looking at the preview/)).toBeNull();
+  });
+
+  it("stuck wins over the first-version notice", async () => {
+    open.mockResolvedValue("https://a1.preview.test/");
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", agent_working: true, stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTitle("Invoices")).toBeTruthy());
+    expect(screen.queryByText(/first version/)).toBeNull();
+    expect(screen.queryByText(/looking at the preview/)).toBeNull();
+  });
+
   it("stuck: null keeps the usual preview notice", async () => {
     open.mockResolvedValue("https://p.apps.test/?pass=1");
     render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", stuck: null })} onBack={vi.fn()} />);

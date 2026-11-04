@@ -141,6 +141,7 @@ class AppStatus(TypedDict):
     spend_month_cents: None
     preview: dict | None
     stuck: dict | None
+    agent_working: bool  # the newest linked agent run is open and beating: the preview is a first version
     error: NotRequired[AppError]
 
 
@@ -1487,7 +1488,7 @@ async def remove(owner_id: str, app_id: str, *, confirm_name: str, user_id: str)
     return {"state": "destroyed"}
 
 
-def _view(app: dict, rows: dict, state: str) -> AppStatus:
+def _view(app: dict, rows: dict, state: str, agent_working: bool = False) -> AppStatus:
     preview = app.get("preview")
     return {
         "app_id": app["app_id"],
@@ -1526,6 +1527,7 @@ def _view(app: dict, rows: dict, state: str) -> AppStatus:
             else None
         ),
         "stuck": app.get("stuck"),
+        "agent_working": agent_working,
     }
 
 
@@ -1553,7 +1555,7 @@ async def status(owner_id: str, app_id: str) -> AppStatus:
         await _moved(app)
     elif record not in _DRIVE_STOP:
         watch(owner_id, app_id)  # after a restart, the next read re-arms the watch
-    view = _view(app, rows, record)
+    view = _view(app, rows, record, await _agent_working(owner_id, app, record))
     if err:
         view["error"] = err
     return view
@@ -1663,6 +1665,15 @@ def _fresh(stamp: object, now: datetime, within: timedelta) -> bool:
         return now - datetime.fromisoformat(stamp) < within  # type: ignore[arg-type]
     except (TypeError, ValueError):  # missing, malformed or naive: not a time anyone can trust
         return False
+
+
+async def _agent_working(owner_id: str, app: dict, state: str) -> bool:
+    """Whether an agent is still improving a ready first preview: one read of the newest linked run.
+    Never over the starter placeholder (state "building") or a live app's next version."""
+    run_ids = app.get("run_ids") or []
+    if state != "ready" or app.get("live_version") or not app.get("preview") or not run_ids:
+        return False
+    return _working(await messaging_repo.get_run(owner_id, run_ids[-1]), datetime.now(UTC))
 
 
 async def _look(owner_id: str, app_id: str) -> bool:
@@ -1777,7 +1788,8 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
             logger.warning("apps: roster unavailable; agent names left empty")
     out = []
     for a in apps:
-        row = _view(a, await _rows(a, all_rows), a.get("state") or "")
+        state = a.get("state") or ""
+        row = _view(a, await _rows(a, all_rows), state, await _agent_working(owner_id, a, state))
         del row["versions"]
         previous = _previous_version(a)
         shows = _preview_source(a)

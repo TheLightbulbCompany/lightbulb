@@ -19,5 +19,7 @@ describe("statusLine", () => {
   it("without stuck, the usual line", () => {
     expect(statusLine(app({ stuck: null }))).toBe("The agent is making the preview. It'll post in #finance when it's ready.");
     expect(statusLine(app({ state: "ready" }))).toBeNull();
+    expect(statusLine(app({ preview_url: "https://p" }))).toBe("The agent is making the preview. It'll post in #finance when it's ready."); // the starter placeholder
+    expect(statusLine(app({ preview_url: "https://p", live_version: 2 }))).toBe("Building the new version. It'll show here and in #finance when it's ready.");
   });
 });

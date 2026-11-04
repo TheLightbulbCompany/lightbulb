@@ -168,6 +168,14 @@ async def _upload_caller(request: Request) -> svc.BuilderCaller:
 Builder = Annotated[svc.BuilderCaller, Depends(builder_caller)]
 
 
+async def _builder_app_id(app_id: str, caller: Builder) -> str:
+    """``{app_id}`` on a builder route: the id or the app's name, so ``app ask booking`` works from any folder."""
+    return await _run(svc.resolve_app_id(caller.owner_id, app_id))
+
+
+AppId = Annotated[str, Depends(_builder_app_id)]
+
+
 async def _read_capped(request: Request) -> None:
     """Refuse a declared oversize upload unread, and count a chunked one as it arrives. The body is
     kept on the request so the proof hash and ``form()`` replay it."""
@@ -219,6 +227,7 @@ class StartBody(BaseModel):
     name: str = Field(max_length=63)
     request: str = Field(min_length=1, max_length=4000)
     origin_room_id: str | None = Field(default=None, max_length=128)
+    room_id: str | None = Field(default=None, max_length=128)  # what the CLI's `app start --room` sends
     requested_by: str | None = Field(default=None, max_length=128)
 
 
@@ -241,14 +250,14 @@ async def start(body: StartBody, caller: Builder):
             caller,
             body.name,
             body.request,
-            origin_room_id=body.origin_room_id,
+            origin_room_id=body.origin_room_id or body.room_id,
             requested_by=body.requested_by,
         )
     )
 
 
 @router.post("/build/{app_id}/ask")
-async def ask(app_id: str, body: AskBody, caller: Builder):
+async def ask(app_id: AppId, body: AskBody, caller: Builder):
     origin = body.origin.model_dump(exclude_none=True) if body.origin else None
     return await _run(
         app_conversation.ask(caller, app_id, body.text, origin=origin, client_message_id=body.client_message_id)
@@ -268,11 +277,31 @@ async def put_source(request: Request, caller: Annotated[svc.BuilderCaller, Depe
         if room_id is not None and not (isinstance(room_id, str) and len(room_id) <= 128):
             raise HTTPException(422, {"code": "invalid_request", "message": "room_id"})
         fields["room_id"] = room_id or None
+        base_commit = form.get("base_commit")  # what the upload was built on; old CLIs omit it
+        if base_commit is not None and not (isinstance(base_commit, str) and len(base_commit) <= 200):
+            raise HTTPException(422, {"code": "invalid_request", "message": "base_commit"})
         placeholder = form.get("placeholder") == "true"  # the starter's untouched page; old CLIs omit it
         data = await archive.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
         raise _too_large()
-    return await _run(svc.put_source(caller.owner_id, **fields, archive=data, actor=caller, placeholder=placeholder))
+    return await _run(
+        svc.put_source(
+            caller.owner_id,
+            **fields,
+            archive=data,
+            actor=caller,
+            placeholder=placeholder,
+            base_commit=base_commit or None,
+        )
+    )
+
+
+@router.get("/build/{app_id}/source")
+async def get_source(app_id: AppId, caller: Builder):
+    """The newest uploaded source, for ``app pull``: the archive, its commit and the real app id in headers."""
+    data, commit = await _run(svc.latest_source(caller.owner_id, app_id))
+    headers = {"X-Lightbulb-Commit": commit, "X-Lightbulb-App": app_id, "Cache-Control": "no-store"}
+    return Response(data, media_type="application/gzip", headers=headers)
 
 
 @router.post("/build/up")
@@ -282,39 +311,39 @@ async def up(body: UpBody, caller: Builder):
 
 
 @router.post("/build/{app_id}/publish")
-async def publish(app_id: str, body: PublishBody, caller: Builder):
+async def publish(app_id: AppId, body: PublishBody, caller: Builder):
     return await _run(svc.publish(caller.owner_id, app_id, **body.model_dump(), actor=caller))
 
 
 @router.post("/build/{app_id}/rollback")
-async def rollback(app_id: str, body: RollbackBody, caller: Builder):
+async def rollback(app_id: AppId, body: RollbackBody, caller: Builder):
     return await _run(svc.rollback(caller.owner_id, app_id, version=body.version, run_id=caller.run_id))
 
 
 @router.post("/build/{app_id}/destroy")
-async def destroy(app_id: str, caller: Builder):
+async def destroy(app_id: AppId, caller: Builder):
     return await _run(svc.destroy(caller.owner_id, app_id, actor=caller))
 
 
 @router.get("/build/{app_id}/status")
-async def status(app_id: str, caller: Builder):
+async def status(app_id: AppId, caller: Builder):
     return await _run(svc.status(caller.owner_id, app_id))
 
 
 @router.get("/build/{app_id}/errors")
-async def errors(app_id: str, caller: Builder):
+async def errors(app_id: AppId, caller: Builder):
     return await _run(svc.errors(caller.owner_id, app_id))
 
 
 @router.post("/build/{app_id}/test-link")
-async def test_link(app_id: str, caller: Builder, response: Response):
+async def test_link(app_id: AppId, caller: Builder, response: Response):
     """The builder's own short-lived way past the preview's door. Never live."""
     response.headers["Cache-Control"] = "no-store"  # a pass: never cached
     return {"url": await _run(svc.test_link(caller.owner_id, app_id, actor=caller))}
 
 
 @router.post("/build/{app_id}/reset-preview-data")
-async def reset_preview_data(app_id: str, caller: Builder):
+async def reset_preview_data(app_id: AppId, caller: Builder):
     """The preview database back to its schema and sample data, after ``app verify`` sent test values. Never live."""
     return await _run(svc.reset_preview_data(caller.owner_id, app_id))
 

@@ -3208,3 +3208,63 @@ async def test_agent_working_only_on_a_ready_preview_with_no_live_version(world,
     assert (await svc.status(OWNER, app_id))["agent_working"] is True
     await _go_live(world, src)
     assert (await svc.status(OWNER, app_id))["agent_working"] is False  # a live app's next version
+
+
+async def test_two_writers_pull_the_latest_and_a_stale_base_is_refused(world):
+    first = await _source(SRC_V1, commit="c1")
+    app_id = first["app_id"]
+    assert await svc.resolve_app_id(OWNER, "crew") == app_id
+    assert await svc.resolve_app_id(OWNER, app_id) == app_id
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.resolve_app_id(OWNER, "nope")
+    assert e.value.code == "app_not_found"
+
+    data, commit = await svc.latest_source(OWNER, app_id)
+    assert commit == "c1" and dict(svc.apps_source.iter_files(data))["app/page.tsx"].decode() == SRC_V1["app/page.tsx"]
+
+    # Built on c1, which is the latest: accepted, and the pull now returns it.
+    await svc.put_source(OWNER, name="crew", commit="c2", archive=_tar(SRC_V2), actor=PERSON, base_commit="c1")
+    data, commit = await svc.latest_source(OWNER, app_id)
+    assert commit == "c2" and dict(svc.apps_source.iter_files(data))["app/page.tsx"] == b"v2"
+
+    # Another writer still on c1: refused, nothing stored.
+    before = (await svc.apps_repo.get(app_id, consistent_read=True))["sources"]
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.put_source(
+            OWNER, name="crew", commit="c3", archive=_tar({**SRC_V2, "x": "y"}), actor=AGENT, base_commit="c1"
+        )
+    assert e.value.code == "stale_base"
+    assert e.value.next == "run lightbulb app pull, merge your change, then lightbulb app up"
+    assert (await svc.apps_repo.get(app_id, consistent_read=True))["sources"] == before
+
+    # No base: today's behaviour, accepted.
+    await svc.put_source(OWNER, name="crew", commit="c3", archive=_tar({**SRC_V2, "x": "y"}), actor=AGENT)
+    assert (await svc.latest_source(OWNER, app_id))[1] == "c3"
+
+
+async def test_a_requested_app_has_no_source_to_pull(world):
+    app = await svc.apps_repo.create(
+        owner_id=OWNER,
+        name="booking",
+        room_id=None,
+        created_by="user_1",
+        actor_id="user_1",
+        actor_kind="person",
+        origin={"kind": "asked"},
+        services=[],
+        open_to="workspace",
+        budget_usd=0,
+        state="requested",
+    )
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.latest_source(OWNER, app["app_id"])
+    assert e.value.code == "source_not_found"
+
+
+def test_a_started_apps_build_rooms_leave_out_the_room_it_was_asked_in():
+    started = {"conversation_id": "conv", "room_id": "room_1", "origin_room_id": "room_1"}
+    assert svc._build_rooms(started) == ["conv"]
+    older = {"conversation_id": "conv", "room_id": "room_1"}  # opened mid-build: still builds in its room
+    assert svc._build_rooms(older) == ["conv", "room_1"]
+    assert svc._build_rooms({"room_id": "room_1"}) == ["room_1"]
+    assert svc._rooms(started) == ["conv", "room_1"]  # publish asks still count there

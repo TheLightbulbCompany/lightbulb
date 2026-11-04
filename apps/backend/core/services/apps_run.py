@@ -316,9 +316,9 @@ async def advance(app: dict) -> None:
         await _write(app, due_at=None)
         return
     wake = build.get("wake") or {}
-    # Open runs in its conversation and its room: an older app opened mid-build still builds in its room.
+    # Open runs where it is built: an older app opened mid-build still builds in its room.
     if phase == "server" or any(
-        [await messaging_repo.list_open_runs_for_room(app["owner_id"], r) for r in apps_service._rooms(app)]
+        [await messaging_repo.list_open_runs_for_room(app["owner_id"], r) for r in apps_service._build_rooms(app)]
     ):
         await _hold(app, build, now)
         return

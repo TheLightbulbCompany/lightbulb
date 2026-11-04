@@ -213,6 +213,13 @@ def _rooms(app: dict) -> list[str]:
     )
 
 
+def _build_rooms(app: dict) -> list[str]:
+    """Where its builder works: the conversation, and an older app's room. A started app's room is only where
+    it was asked for (``room_id == origin_room_id``), so a busy agent there never holds its stuck line or wake."""
+    room = app.get("room_id") if app.get("room_id") != app.get("origin_room_id") else None
+    return list(dict.fromkeys(r for r in (app.get("conversation_id"), room) if r))
+
+
 def _can_open(app: dict, auth: AuthContext, in_room: bool) -> bool:
     """Who opens it: "me" its managers; "room" and "invited" also the app's room (R35: invitees use their
     links); "workspace" and "public" every member."""
@@ -287,6 +294,30 @@ def _migrations_key(files: dict[str, bytes]) -> str:
     """R63: what the preview reset is keyed on — each migration's name and content hash."""
     migrations, _ = _migrations(files)
     return _fp([[name, hashlib.sha256(sql.encode()).hexdigest()] for name, sql in migrations])
+
+
+def _latest_source(app: dict) -> tuple[str, dict] | None:
+    sources = app.get("sources") or {}
+    return max(sources.items(), key=lambda kv: kv[1]["at"]) if sources else None
+
+
+async def resolve_app_id(owner_id: str, ref: str) -> str:
+    """A builder route's ``{app_id}``: the id, or the app's name in this workspace (names never start "app_")."""
+    if ref.startswith("app_"):
+        return ref
+    app = await apps_repo.get_by_name(owner_id, ref)
+    if not app:
+        raise AppsRefused("app_not_found", "That app does not exist.")
+    return app["app_id"]
+
+
+async def latest_source(owner_id: str, app_id: str) -> tuple[bytes, str]:
+    """The newest uploaded archive and its commit, for ``app pull``."""
+    latest = _latest_source(await _owned(owner_id, app_id))
+    if not latest:
+        raise AppsRefused("source_not_found", "That app has no source yet.", "wait for its first upload")
+    source_id, src = latest
+    return await apps_source.get(owner_id, app_id, source_id), src["commit"]
 
 
 def _source(app: dict, source_id: str) -> dict:
@@ -1191,8 +1222,10 @@ async def put_source(
     archive: bytes,
     actor: BuilderCaller,
     placeholder: bool = False,
+    base_commit: str | None = None,
 ) -> dict:
-    """R32: the source upload creates the app record; ``up`` fills in the rest."""
+    """R32: the source upload creates the app record; ``up`` fills in the rest. ``base_commit``: the commit the
+    upload was built on; one that is not the app's latest is refused (two writers). Absent: not checked."""
     _check_name(name)
     await _check_room(owner_id, room_id)
     app = await apps_repo.get_by_name(owner_id, name)
@@ -1212,6 +1245,16 @@ async def put_source(
         )
     if app.get("state") == "destroyed":
         raise AppsRefused("app_destroyed", f"{name} was removed.", "pick another name")
+    latest = _latest_source(app)
+    # ponytail: check-then-write, so two uploads in the same second can both pass; a conditional patch on
+    # `sources` closes it if that ever happens.
+    if base_commit and latest and latest[1]["commit"] != base_commit:
+        raise AppsRefused(
+            "stale_base",
+            f"{_display(app)} changed since your copy: its latest version is {latest[1]['commit']}, yours is built"
+            f" on {base_commit}.",
+            "run lightbulb app pull, merge your change, then lightbulb app up",
+        )
     if app.get("state") == "requested":  # reserved by `app start`: its builder's first upload takes it over
         adopted = {"state": "building", "actor_id": actor.actor_id, "actor_kind": actor.actor_kind}
         won = await apps_repo.patch(app["app_id"], adopted, expect={"state": "requested"})
@@ -1767,8 +1810,8 @@ async def _look(owner_id: str, app_id: str) -> bool:
     for run_id in run_ids[:-1]:
         if _working(await messaging_repo.get_run(owner_id, run_id), now):
             return False
-    # Any run in the app's conversation or the room it came from (one the app never linked) still beating.
-    for room_id in _rooms(app):
+    # Any run where it is built (one the app never linked) still beating.
+    for room_id in _build_rooms(app):
         if any(_working(r, now) for r in await messaging_repo.list_open_runs_for_room(owner_id, room_id)):
             return False
     step = "setting up hosting" if state == "provisioning" else "building"  # a pending deploy is never stuck

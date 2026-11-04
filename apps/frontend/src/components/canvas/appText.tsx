@@ -28,13 +28,14 @@ export function liveLine(app: AppRow): string {
   return app.open_to === "room" ? `Live — ${audience(app)} can open it` : `Live — ${audience(app)}`;
 }
 
-/** The one line for an app that is not ready yet; null when it is ready. */
+/** The one line for an app that stopped moving or is not ready yet; null when it is ready. */
 export function statusLine(app: AppRow): string | null {
+  if (app.stuck) return `Stopped at ${app.stuck.step}. Nothing has moved for 5 minutes.`;
   const room = roomOf(app);
   switch (app.state) {
     case "awaiting_approval": return `Waiting for an owner to approve${app.requested_by?.trim() ? ` ${app.requested_by.trim()}'s request` : ""}: the cards are in Activity, under Needs you.`;
     case "provisioning": return "Setting up its hosting and data, usually a few minutes.";
-    case "building": return app.live_version == null && !app.preview_url
+    case "building": return app.live_version == null // a first build, even over the starter placeholder's preview
       ? `The agent is making the preview. It'll post in ${room} when it's ready.`
       : `Building the new version. It'll show here and in ${room} when it's ready.`; // a publish or a change: not "the preview"
     case "failed": return `Something went wrong. Ask the agent in ${room}.`;

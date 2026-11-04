@@ -27,6 +27,12 @@ describe("AppList", () => {
     expect(props.onOpen).toHaveBeenCalledWith("a1");
   });
 
+  it("a stuck app's row says where it stopped, not its usual status", () => {
+    render(<AppList {...props} apps={[app({ state: "building", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })]} />);
+    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes.")).toBeTruthy();
+    expect(screen.queryByText(/Building the new version/)).toBeNull();
+  });
+
   it("greys an app the viewer cannot open and names its room", () => {
     const onOpen = vi.fn();
     render(<AppList {...props} onOpen={onOpen} apps={[app({ can_open: false })]} />);

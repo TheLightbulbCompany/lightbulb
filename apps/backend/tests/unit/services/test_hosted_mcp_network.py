@@ -469,6 +469,29 @@ async def test_find_workers_lists_online_always_on_agents_only(member):
 
 
 @pytest.mark.asyncio
+async def test_find_workers_lists_computers_that_start_workers_first(member, monkeypatch):
+    rows = [
+        {"session_id": "abc/friday", "online": True},
+        {"session_id": "abc/claude:1", "online": True},
+        {"session_id": "abc/opencode:new", "online": True, "kind": "worker", "free": 2},
+        {"session_id": "off/opencode:new", "online": False, "kind": "worker"},
+        # Through the app link ``kind`` is stripped: ``free`` still says worker host.
+        {"session_id": "lnk/codex:new", "online": True, "free": 1},
+    ]
+
+    async def sessions(auth, query):
+        return rows
+
+    monkeypatch.setattr(hosted_mcp, "_network_sessions", sessions)
+    out = await hosted_mcp.find_workers()
+    assert [(r["session_id"], r["always_on"]) for r in out["sessions"]] == [
+        ("abc/opencode:new", False),
+        ("lnk/codex:new", False),
+        ("abc/friday", True),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_result_record_and_a_receipts_result_pass_through(member):
     member.engine.mail = [
         {**_record("re1", "x done"), "kind": "result", "status": "done", "reply_to": "m-as1", "framed": "[result]"}

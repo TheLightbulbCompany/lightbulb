@@ -42,6 +42,79 @@ describe("AppView", () => {
     expect(screen.queryByRole("group", { name: "View" })).toBeNull();
   });
 
+  it("a stuck app says where it stopped instead of the preview notice", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes.")).toBeTruthy();
+    expect(screen.queryByText(/looking at the preview/)).toBeNull();
+  });
+
+  it("a stuck app offers a manager Ask the agent under the stopped line, and asks with no error", async () => {
+    admin = true;
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    askAgent.mockResolvedValue(undefined);
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", stuck: { at: "2026-11-03T00:00:00Z", step: "setting up hosting" } })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    const line = screen.getByText("Stopped at setting up hosting. Nothing has moved for 5 minutes.");
+    const button = screen.getByRole("button", { name: "Ask the agent to fix it" });
+    expect(line.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(button);
+    await screen.findByText("Asked the agent in #finance. It'll post there.");
+    expect(askAgent).toHaveBeenCalledWith("a1", undefined);
+  });
+
+  it("a member who can't manage the app sees the stopped line but no Ask button", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Ask the agent to fix it" })).toBeNull();
+  });
+
+  it("a stuck building app shows only the stuck line, not the making-the-preview line", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ state: "building", live_version: null, live_url: null, preview_url: null, stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
+    expect(screen.getByText(/^Stopped at building\./)).toBeTruthy();
+    expect(screen.queryByText(/making the preview/)).toBeNull();
+  });
+
+  it("while the agent is still working, the preview says it's a first version", async () => {
+    open.mockResolvedValue("https://a1.preview.test/");
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", agent_working: true })} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTitle("Invoices")).toBeTruthy());
+    expect(screen.getByText("This is a first version. The agent is still working on it and will post in #finance when it's ready.")).toBeTruthy();
+    expect(screen.queryByText(/looking at the preview/)).toBeNull();
+  });
+
+  it("no first-version notice over a building preview or a live app's preview", async () => {
+    open.mockResolvedValue("https://a1.preview.test/");
+    const { unmount } = render(<AppView app={app({ state: "building", live_version: null, live_url: null, preview_url: "https://p", agent_working: true })} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTitle("Invoices")).toBeTruthy());
+    expect(screen.queryByText(/first version/)).toBeNull();
+    unmount();
+    render(<AppView app={app({ preview_url: "https://p", agent_working: true })} onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(screen.getByText(/looking at the preview/)).toBeTruthy());
+    expect(screen.queryByText(/first version/)).toBeNull();
+  });
+
+  it("stuck wins over the first-version notice", async () => {
+    open.mockResolvedValue("https://a1.preview.test/");
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", agent_working: true, stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTitle("Invoices")).toBeTruthy());
+    expect(screen.queryByText(/first version/)).toBeNull();
+    expect(screen.queryByText(/looking at the preview/)).toBeNull();
+  });
+
+  it("stuck: null keeps the usual preview notice", async () => {
+    open.mockResolvedValue("https://p.apps.test/?pass=1");
+    render(<AppView app={app({ live_version: null, live_url: null, preview_url: "https://p", stuck: null })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    expect(screen.getByText(/You're looking at the preview\./)).toBeTruthy();
+    expect(screen.queryByText(/Stopped at/)).toBeNull();
+  });
+
   it("a failed publish says so in words, keeps the build error under Details, and leaves Publish available", async () => {
     open.mockResolvedValue("https://p.apps.test/?pass=1");
     render(<AppView app={app({ state: "failed", live_version: null, live_url: null, preview_url: "https://p", can_publish: true, error: { message: 'Command "npx drizzle-kit migrate && next build" exited with 1' } })} onBack={vi.fn()} />);
@@ -162,7 +235,7 @@ describe("AppView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
     await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.preview.test/"));
     expect([pressed("Preview"), pressed("Live")]).toEqual(["true", "false"]);
-    expect(screen.getByText("You're looking at the preview. Only you and #finance see it until it's published.")).toBeTruthy();
+    expect(screen.getByText("You're looking at the preview. Only you and #finance see it until it's published. The data here is examples; the live app starts empty.")).toBeTruthy();
     expect(open).toHaveBeenLastCalledWith("a1", "preview");
     fireEvent.click(screen.getByRole("button", { name: "Live" }));
     await waitFor(() => expect(screen.getByTitle("Invoices").getAttribute("src")).toBe("https://a1.live.test/"));

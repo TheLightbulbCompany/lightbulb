@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
+import Link from "next/link";
 import type { SessionResumeFlow } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { ReceiptChip } from "./NativeSessionTranscript";
@@ -24,10 +25,11 @@ export function SessionResume({ flow, own, ownerName }: { flow: SessionResumeFlo
         <p className="text-caption text-muted-foreground">{own ? "Starts it again on your Mac, in the same folder."
           : `Starts it again on ${ownerName}’s Mac in plan mode. ${ownerName} sees it there and can end it.`}</p>
         <div className="local-session-actions">
-          <Button type="submit" size="sm" disabled={flow.saving}>{text.trim() ? "Resume and send" : "Resume"}</Button>
+          <Button type="submit" size="sm" disabled={flow.saving}>{flow.saving ? "Opening…" : own ? "Continue" : text.trim() ? "Resume and send" : "Resume"}</Button>
         </div>
       </form>}
       {flow.error && <p role="alert" className="text-ui text-warn">{flow.error}</p>}
+      {flow.recovery && <Link href="/settings?panel=desktop" className="text-ui underline underline-offset-4">{flow.recovery === "folder-access" ? "Review folder access" : "Open session sharing settings"}</Link>}
     </div>
   </div>;
 }

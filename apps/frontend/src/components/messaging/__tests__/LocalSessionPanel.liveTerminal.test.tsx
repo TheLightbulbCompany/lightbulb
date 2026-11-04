@@ -28,6 +28,43 @@ const session: LocalSession = { sessionId: "s", deviceId: "mac", humanUserId: "a
 const client = { listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(), listWorkspaceSessions: vi.fn(), setLocalSessionSharing: vi.fn(), watchLocalSession: vi.fn(async () => undefined), sendLocalSessionInput: vi.fn() };
 const below = (a: HTMLElement, b: HTMLElement) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
+it("keeps saved conversation readable after a terminal exits, without stale control warnings", async () => {
+  client.listLocalSessionEvents.mockResolvedValueOnce({ events: [
+    { seq: 1, kind: "text", truncated: false, role: "assistant", text: "Your orchestration notes are still here." },
+  ], nextAfterSeq: null } as never);
+  render(<LocalSessionPanel session={{ ...session, status: "ended", latestEventSeq: 1, controlUnavailableReason: "history-gap" }}
+    ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} />);
+  expect(await screen.findByText("Your orchestration notes are still here.")).toBeInTheDocument();
+  expect(screen.queryByText(/Control is unavailable/)).toBeNull();
+  expect(screen.queryByText(/screen is gone/)).toBeNull();
+});
+
+it("finds this Mac's terminal even before the relay advertises it", async () => {
+  const invoke = vi.fn(async (command: string) => command === "terminal_panel" ? { live: true } : null);
+  Object.defineProperty(window, "__TAURI__", { configurable: true, value: { core: { invoke } } });
+  try {
+    render(<LocalSessionPanel session={{ ...session, terminal: undefined, terminalReason: "plain" }}
+      ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} />);
+    expect(await screen.findByRole("region", { name: "Session terminal" })).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("terminal_panel", expect.objectContaining({ sessionId: "s" }));
+    expect(screen.queryByRole("textbox", { name: /send to/i })).toBeNull();
+  } finally { Reflect.deleteProperty(window, "__TAURI__"); }
+});
+
+it("does not offer an ordinary follow-up while a terminal question needs an answer", async () => {
+  render(<LocalSessionPanel session={{ ...session, terminal: undefined, terminalReason: "plain", status: "waiting-approval", waitingFor: "Which approach?" }}
+    ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} />);
+  expect(await screen.findByText("Which approach?")).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: /send to/i })).toBeNull();
+  expect(document.querySelector(".session-live-hint")).toBeNull();
+});
+
+it("shows a control connection warning once", () => {
+  render(<LocalSessionPanel session={{ ...session, controlUnavailableReason: "history-gap" }}
+    ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} />);
+  expect(screen.getAllByText(/History has a gap/)).toHaveLength(1);
+});
+
 it("drops the message box and the history region when the viewer can type in the live terminal", async () => {
   render(<LocalSessionPanel session={session} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
   await screen.findByRole("region", { name: "Live terminal (view only)" });
@@ -108,14 +145,14 @@ it("shows the conversation, not a wall, for a plain session", async () => {
   expect(client.watchLocalSession).not.toHaveBeenCalled();
   expect(screen.queryByText(/not started through Lightbulb/)).toBeNull();
   expect(document.querySelector(".session-state-panel")).toBeNull();
-  expect(document.querySelector(".session-live-hint")!.textContent).toMatch(/^Press ← in its terminal to share this one live/);
+  expect(document.querySelector(".session-live-hint")).toBeNull();
   expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
   mine.unmount();
   const codex = render(<LocalSessionPanel {...props} own session={{ ...plain, provider: "codex", terminalReason: "no-daemon" }} />);
-  expect(document.querySelector(".session-live-hint")!.textContent).toBe("Start it again with lightbulb codex to share its screen.");
+  expect(document.querySelector(".session-live-hint")).toBeNull();
   codex.unmount();
   render(<LocalSessionPanel {...props} own={false} session={plain} />);
-  expect(document.querySelector(".session-live-hint")!.textContent).toBe("Ask Alice to press ← in their terminal.");
+  expect(document.querySelector(".session-live-hint")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Message Alice" }));
   expect(onMessageOwner).toHaveBeenCalled();
 });
@@ -166,7 +203,7 @@ it("shows the conversation of a session that runs inside an app, with one line s
   client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
 });
 
-it("still probes this Mac's holder for an offline session, and never for a running one with no terminal", () => {
+it("probes this Mac's holder for offline sessions and running sessions before relay metadata catches up", () => {
   const invoke = vi.fn(async () => ({ live: false }));
   (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
   try {
@@ -176,7 +213,7 @@ it("still probes this Mac's holder for an offline session, and never for a runni
     offline.unmount();
     invoke.mockClear();
     render(<LocalSessionPanel {...props} session={{ ...session, terminal: undefined, status: "busy" }} />);
-    expect(invoke).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("terminal_panel", expect.objectContaining({ sessionId: "s" }));
   } finally {
     delete (window as { __TAURI__?: unknown }).__TAURI__;
   }
@@ -257,7 +294,7 @@ it("says an empty ended session never started, and offers Resume only for one th
   expect(screen.queryByText("This session ended before anything was sent.")).toBeNull();
   unread.unmount();
   render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 4, resumable: true }} />);
-  expect(await screen.findByRole("button", { name: "Resume" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
 });
 
 it("pauses an admitted teammate's typing while the owner answers a join request", async () => {
@@ -296,7 +333,7 @@ it("says the login session restarted and offers Resume", async () => {
   const props = { ownerName: "Alice", own: true, client: { ...client, resumeLocalSession: vi.fn() } as never, revision: 0, onAccessLost: () => {} };
   render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 3, resumable: true, endedReason: "login-session-ended" }} />);
   expect(document.querySelector(".session-state-title, .session-ended-line")?.textContent).toBe("Ended · your Mac's login session restarted");
-  expect(await screen.findByRole("button", { name: /^Resume/ })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: /^Continue/ })).toBeTruthy();
 });
 
 const textEvent = (seq: number) => ({ seq, kind: "text", role: "user", text: `t${seq}` });
@@ -307,6 +344,63 @@ it("keeps loading older pages without a scroll so the plan and changed files see
   render(<LocalSessionPanel session={{ ...session, status: "idle", latestEventSeq: 60 }} ownerName="Alice" own client={{ ...client, listLocalSessionEvents: list } as never} revision={0} onAccessLost={() => {}} />);
   await waitFor(() => expect(list).toHaveBeenCalledWith("s", 0, 10));
   expect(await screen.findByText(/1 file changed/)).toBeTruthy();
+});
+
+it("keeps the reader's latest scroll position when an older page arrives during live work", async () => {
+  let height = 1000;
+  const positions = new WeakMap<HTMLElement, number>();
+  const heightSpy = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(() => height);
+  const viewportSpy = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(200);
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true,
+    get() { return positions.get(this) ?? 400; }, set(value: number) { positions.set(this, value); } });
+  let releaseOlder!: (page: { events: ReturnType<typeof textEvent>[]; nextAfterSeq: null }) => void;
+  const older = new Promise<{ events: ReturnType<typeof textEvent>[]; nextAfterSeq: null }>(resolve => { releaseOlder = resolve; });
+  const list = vi.fn(async (_id: string, after: number) => after === 0 ? older
+    : { events: Array.from({ length: 50 }, (_, i) => textEvent(11 + i)), nextAfterSeq: null });
+  try {
+    render(<LocalSessionPanel session={{ ...session, provider: "codex", terminal: undefined, terminalReason: "plain", status: "busy", latestEventSeq: 60 }}
+      ownerName="Alice" own client={{ ...client, listLocalSessionEvents: list } as never} revision={0} onAccessLost={() => {}} />);
+    await waitFor(() => expect(list).toHaveBeenCalledWith("s", 0, 10));
+    const history = screen.getByRole("region", { name: "Native session history" });
+    history.scrollTop = 650;
+    fireEvent.scroll(history);
+    height = 1200;
+    await act(async () => releaseOlder({ events: Array.from({ length: 10 }, (_, i) => textEvent(i + 1)), nextAfterSeq: null }));
+    expect(history.scrollTop).toBe(850);
+  } finally {
+    cleanup(); heightSpy.mockRestore(); viewportSpy.mockRestore();
+    Reflect.deleteProperty(HTMLElement.prototype, "scrollTop");
+  }
+});
+
+it("does not snap a reader back to the tail when new output grows the history", async () => {
+  let height = 1000;
+  const heightSpy = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(() => height);
+  const viewportSpy = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(200);
+  const resize = new Map<Element, () => void>();
+  const Observer = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe(node: Element) { resize.set(node, () => this.callback([], this as unknown as ResizeObserver)); }
+    disconnect() {} unobserve() {}
+  } as unknown as typeof ResizeObserver;
+  let appended = false;
+  const list = vi.fn(async (_id: string, after: number) => ({ events: after === 0 ? [textEvent(1), textEvent(2)] : appended && after === 2 ? [textEvent(3)] : [], nextAfterSeq: null }));
+  const props = { ownerName: "Alice", own: true, client: { ...client, listLocalSessionEvents: list } as never, onAccessLost: () => {} };
+  const running = { ...session, provider: "codex" as const, terminal: undefined, terminalReason: "plain" as const, status: "busy" as const, latestEventSeq: 2 };
+  try {
+    const view = render(<LocalSessionPanel {...props} session={running} revision={0} />);
+    await screen.findByText("t2");
+    const history = screen.getByRole("region", { name: "Native session history" });
+    history.scrollTop = 250; fireEvent.scroll(history);
+    appended = true; height = 1400;
+    view.rerender(<LocalSessionPanel {...props} session={{ ...running, latestEventSeq: 3 }} revision={1} />);
+    await screen.findByText("t3");
+    act(() => resize.get(history.firstElementChild!)?.());
+    expect(history.scrollTop).toBe(250);
+  } finally {
+    cleanup(); heightSpy.mockRestore(); viewportSpy.mockRestore(); globalThis.ResizeObserver = Observer;
+  }
 });
 
 it("shows a retry line in the status area when the first history load fails, and clears it after a good retry", async () => {
@@ -348,7 +442,7 @@ it("keeps an ended held session's final screen, read-only, under an Ended line w
   expect(typing.admitted).toBe(false);
   expect(document.querySelector(".session-ended-line")!.textContent).toMatch(/^Ended · /);
   expect(screen.queryByText("The screen is gone: this session's terminal closed.")).toBeNull();
-  expect(await screen.findByRole("button", { name: "Resume" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
 });
 
 it("says the screen is gone once the Mac no longer shows it", () => {

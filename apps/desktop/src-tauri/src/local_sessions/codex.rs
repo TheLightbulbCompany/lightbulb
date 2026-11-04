@@ -222,7 +222,7 @@ fn from_writer(
     let reported = row["payload"]["cli_version"]
         .as_str()
         .ok_or("missing runtime version")?;
-    // A Desktop app upgrade resumes the same rollout and keeps its creation-time
+    // An upgrade resumes the same rollout and keeps its creation-time
     // cli_version. The writer is verified separately against the exact installed
     // bundle inode; a supported paginated header is not its current runtime version.
     let app_header = source == "vscode"
@@ -230,9 +230,12 @@ fn from_writer(
         && row["payload"]["history_mode"] == "paginated";
     let desktop_upgrade = app_header
         && (at_least(version, [0, 159, 2]) || (desktop_bundle && desktop_prerelease(version)));
+    let cli_upgrade = row["payload"]["history_mode"] == "paginated"
+        && (source == "cli" || row["payload"]["originator"] == "codex-tui")
+        && at_least(version, [0, 159, 2]);
     // A conversation the bundle started carries the bundle's prerelease in its header too.
     let header = accepted_version(reported) || (desktop_bundle && app_header && desktop_prerelease(reported));
-    let verified = header && (desktop_upgrade || (accepted_version(version) && reported == version));
+    let verified = header && (desktop_upgrade || cli_upgrade || (accepted_version(version) && reported == version));
     let (status, active_turn, title) = tail_state(&path);
     let title = root.parent().and_then(|codex| thread_name(&codex.join("session_index.jsonl"), conversation)).or(title);
     Ok(NativeSession {
@@ -255,6 +258,7 @@ fn from_writer(
         active_turn,
         last_assistant_message: None,
         holder: None,
+        direct_holder: false,
         job: None,
         // A fork's header names the thread it came from (`forked_from_id`, 0.164.0), so its lineage
         // outlives the daemon that ran it; the app-server's `forkedFromId` says the same while loaded.
@@ -1004,14 +1008,11 @@ fn started_thread(frame: &str, folder: &Path) -> Option<String> {
 /// refused. The connection stays open a while so the thread is loaded when the TUI arrives.
 pub(super) async fn resume_on_daemon(socket: &Path, thread: &str, folder: &Path, plan: bool) -> Result<()> {
     let mut conn = connected(socket).await?;
-    let params = json!({"threadId": thread, "cwd": folder, "excludeTurns": true,
-        "sandbox": if plan { "read-only" } else { "workspace-write" }, "approvalPolicy": "on-request"});
+    let params = resume_params(thread, folder, plan);
     let resumed = tokio::time::timeout(std::time::Duration::from_secs(20), call(&mut conn, 2, "thread/resume", params))
         .await
         .map_err(|_| "thread/resume timed out")??;
-    if !within(&resumed, plan) {
-        return Err(LOOSER.into());
-    }
+    resume_permissions(&resumed, plan)?;
     tokio::spawn(async move {
         // ponytail: a fixed hold, not a handshake (the daemon has no "client joined" event); 0.164.0
         // kept an idle thread loaded with no client at all.
@@ -1020,8 +1021,41 @@ pub(super) async fn resume_on_daemon(socket: &Path, thread: &str, folder: &Path,
     Ok(())
 }
 
+/// Internet is available in either mode; a teammate's filesystem remains read-only.
+/// Named permission profiles and legacy sandbox modes are separate config systems, so the plan
+/// request intentionally omits `sandbox`. A fresh name cannot inherit a user's broader profile.
+fn resume_params(thread: &str, folder: &Path, plan: bool) -> Value {
+    let mut params = json!({"threadId": thread, "cwd": folder, "excludeTurns": true,
+        "approvalPolicy": "on-request"});
+    if plan {
+        let name = format!("lightbulb-plan-{}", uuid::Uuid::new_v4());
+        let mut config = serde_json::Map::new();
+        config.insert("default_permissions".into(), json!(name));
+        config.insert(format!("permissions.{name}"),
+            json!({"extends": ":read-only", "network": {"enabled": true}}));
+        params["config"] = Value::Object(config);
+    } else {
+        params["sandbox"] = json!("workspace-write");
+        params["config"] = json!({"sandbox_workspace_write.network_access": true});
+    }
+    params
+}
+
 /// `resume_on_daemon`'s refusal of a thread that already runs under looser permissions.
 pub(super) const LOOSER: &str = "thread runs under looser permissions";
+
+/// The daemon must keep file and approval restrictions while actually allowing Internet access.
+/// A managed policy may refuse network access; report that refusal rather than silently opening
+/// another unusable terminal or retrying with weaker permissions.
+fn resume_permissions(resumed: &Value, plan: bool) -> Result<()> {
+    if !within(resumed, plan) {
+        return Err(LOOSER.into());
+    }
+    if resumed["sandbox"]["networkAccess"] != true {
+        return Err("Codex did not allow Internet access for this session".into());
+    }
+    Ok(())
+}
 
 /// The thread's permissions after `thread/resume` are no looser than asked.
 fn within(resumed: &Value, plan: bool) -> bool {
@@ -1815,6 +1849,7 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
 mod tests {
     use super::*;
 
+
     /// A `thread/read` result as Codex 0.164.0's app-server returns it (trimmed to what is read).
     fn thread(id: &str, status: Value, path: &Path) -> Value {
         json!({"id": id, "sessionId": id, "forkedFromId": null, "parentThreadId": null, "ephemeral": false,
@@ -2162,15 +2197,41 @@ mod tests {
         assert_eq!(private_argv(&daemon[..1]), ["/bin/codex"]);
     }
 
+    #[test]
+    fn local_sessions_codex_daemon_resume_requests_internet_without_more_file_access() {
+        let workspace = resume_params("thread", Path::new("/work"), false);
+        assert_eq!(workspace["sandbox"], "workspace-write");
+        assert_eq!(workspace["config"]["sandbox_workspace_write.network_access"], true);
+        assert_eq!(workspace["approvalPolicy"], "on-request");
+        let plan = resume_params("thread", Path::new("/work"), true);
+        assert!(plan.get("sandbox").is_none(), "do not mix named and legacy permissions");
+        let name = plan["config"]["default_permissions"].as_str().unwrap();
+        assert!(name.starts_with("lightbulb-plan-"));
+        assert!(uuid::Uuid::parse_str(name.strip_prefix("lightbulb-plan-").unwrap()).is_ok());
+        assert_eq!(plan["config"][format!("permissions.{name}")],
+            json!({"extends": ":read-only", "network": {"enabled": true}}));
+        assert_eq!(plan["approvalPolicy"], "on-request");
+        assert_eq!(plan["cwd"], "/work");
+        assert_eq!(plan["excludeTurns"], true);
+        assert_ne!(plan["config"]["default_permissions"],
+            resume_params("thread", Path::new("/work"), true)["config"]["default_permissions"]);
+    }
+
     /// A teammate's resume is read-only: a thread the daemon already runs looser is refused.
     #[test]
     fn local_sessions_codex_a_daemon_resume_is_never_looser_than_asked() {
-        let resumed = |sandbox: &str, approval: &str| json!({"sandbox":{"type":sandbox},"approvalPolicy":approval});
+        let resumed = |sandbox: &str, approval: &str| json!({"sandbox":{"type":sandbox,"networkAccess":true},"approvalPolicy":approval});
         assert!(within(&resumed("readOnly", "on-request"), true));
         assert!(!within(&resumed("workspaceWrite", "on-request"), true));
         assert!(!within(&resumed("dangerFullAccess", "on-request"), false));
         assert!(!within(&resumed("readOnly", "never"), false));
         assert!(within(&resumed("workspaceWrite", "on-request"), false));
+        for plan in [true, false] {
+            let sandbox = if plan { "readOnly" } else { "workspaceWrite" };
+            assert!(resume_permissions(&json!({"sandbox":{"type":sandbox,"networkAccess":false},"approvalPolicy":"on-request"}), plan).is_err());
+            assert!(resume_permissions(&json!({"sandbox":{"type":sandbox},"approvalPolicy":"on-request"}), plan).is_err());
+            assert!(resume_permissions(&resumed(sandbox, "on-request"), plan).is_ok());
+        }
     }
 
     #[test]
@@ -2945,6 +3006,23 @@ mod tests {
             "originator":"Codex Desktop","cli_version":"0.150.0","history_mode":"paginated"}});
         fs::write(&path, format!("{meta}\n")).unwrap();
         assert_eq!(from_rollout(&root, process, &path, "0.160.1").unwrap().restriction.as_deref(), Some("runtime-unverified"));
+    }
+
+    #[test]
+    fn local_sessions_codex_cli_upgrade_keeps_supported_history_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let path = root.join("rollout-cli.jsonl");
+        fs::write(&path, format!("{}\n", json!({"type":"session_meta","payload":{
+            "id":"cli", "source":"cli", "originator":"codex-tui",
+            "cli_version":"0.163.0", "history_mode":"paginated"}}))).unwrap();
+        let process = Process { pid: 42, birth_micros: 123, executable: "/bin/codex".into() };
+        let resumed = from_rollout(&root, process.clone(), &path, "0.166.0").unwrap();
+        assert_eq!(resumed.restriction, None);
+        assert_eq!(resumed.version, "0.166.0");
+        for unverified in ["", "0.150.0", "0.166.0-custom"] {
+            assert_eq!(from_rollout(&root, process.clone(), &path, unverified).unwrap().restriction.as_deref(), Some("runtime-unverified"));
+        }
     }
 
     /// A fork's own rollout header names its origin (seen on a `codex fork` through the daemon,

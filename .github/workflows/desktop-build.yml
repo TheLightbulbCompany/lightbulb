@@ -47,7 +47,12 @@ name: desktop-build
     - apps/desktop/**
     # The app compiles in the Claude plugin's files (local_sessions/plugin.rs, enrollment.rs).
     - packages/claude-plugin/**
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      hosted_runner:
+        description: Use GitHub-hosted macOS when the signing Mac is unavailable
+        type: boolean
+        default: false
 permissions:
   contents: write
 concurrency:
@@ -65,14 +70,12 @@ jobs:
   # runner can be offline, and a check nobody can turn green blocks every PR.
   test-desktop:
     name: TestDesktop
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || inputs.hosted_runner == true
     # Pull-request code runs on the persistent signing Mac; drop the workflow's
     # `contents: write` token, which only the build/publish jobs need.
     permissions:
       contents: read
-    runs-on:
-    - self-hosted
-    - macos-desktop
+    runs-on: ${{ fromJSON(inputs.hosted_runner == true && '["macos-15"]' || '["self-hosted","macos-desktop"]') }}
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -107,10 +110,9 @@ jobs:
       run: bash .github/scripts/mac-runner-disk.sh prune
   build-desktop-prod:
     name: BuildDesktopProd
-    if: github.event_name == 'workflow_dispatch'
-    runs-on:
-    - self-hosted
-    - macos-desktop
+    needs: test-desktop
+    if: always() && github.event_name == 'workflow_dispatch' && (needs.test-desktop.result == 'success' || needs.test-desktop.result == 'skipped')
+    runs-on: ${{ fromJSON(inputs.hosted_runner == true && '["macos-15"]' || '["self-hosted","macos-desktop"]') }}
     timeout-minutes: 150
     steps:
     - name: Checkout
@@ -322,6 +324,16 @@ jobs:
         VERSION="0.4.${{ github.run_number }}"
         DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-v${VERSION}"
+        if [ "$HOSTED_RUNNER" = true ]; then
+          # Apple's folder-to-image method on hosted Macs. Avoid the explicit
+          # scratch-volume detach that timed out twice on macos-15.
+          # https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution
+          STAGING="$RUNNER_TEMP/lightbulb-dmg-source"
+          mkdir -p "$STAGING"
+          ditto "$APP" "$STAGING/Lightbulb.app"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -srcfolder "$STAGING" -volname Lightbulb -format UDZO -ov "$DMG"
+        else
         # Build the DMG by mounting a scratch image under $RUNNER_TEMP, NOT under
         # /Volumes. Tauri's bundle_dmg.sh (and a plain `hdiutil create -srcfolder`)
         # mount at /Volumes/<name>, which a self-hosted runner can't write to
@@ -340,6 +352,7 @@ jobs:
         hdiutil detach "$MNT" -force
         hdiutil convert "$RW" -format UDZO -o "$DMG"
         rm -f "$RW"; rm -rf "$MNT"
+        fi
         # Sign, notarize, staple the DMG (the .app inside is already notarized+stapled).
         codesign --force --timestamp --keychain "$KEYCHAIN_PATH" --sign "$SIGN_ID" "$DMG"
         # The Mac's uplink drops long uploads; retry each network call, 3 attempts.
@@ -351,6 +364,7 @@ jobs:
         echo "Published $DMG to $TAG"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        HOSTED_RUNNER: ${{ inputs.hosted_runner }}
     - name: Publish draft release
       run: |-
         for i in 1 2 3; do

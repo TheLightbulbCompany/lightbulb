@@ -629,11 +629,10 @@ impl Host {
                     }
                 }
                 if mirror.ended_at.is_some() {
-                    // The session is over: a hook, its own pid or the engine said so, and a
-                    // listing cannot argue (but for Claude, below). Only a new process on the same identity
-                    // (a resume) brings it back. The same process under a generation
-                    // minted by an older formula is not a resume: reviving it would
-                    // register an "ended" status the relay rejects (INVALID_REQUEST).
+                    // An end is authoritative unless a new process resumes the conversation,
+                    // or fresh native evidence below proves the old end was false. A generation
+                    // minted by an older formula alone is not a resume: that would register an
+                    // "ended" status the relay rejects (INVALID_REQUEST).
                     let resumed_codex_activity = mirror.ended_reason.as_deref() == Some("exited")
                         && native.provider == "codex"
                         && mirror.ended_at.is_some_and(|ended_at| {
@@ -650,13 +649,24 @@ impl Host {
                         // A pass that read before the end says nothing about it. A true false end
                         // loses nothing: the returning row wakes a fresh pass (`apply_engine`).
                         && self.discovery_read_ms.is_none_or(|read| mirror.ended_at_ms.is_none_or(|end| read >= end));
+                    // Older releases ended an idle resumed Codex terminal after its history
+                    // drained. Its provider and held terminal still run, but no new task can
+                    // start while the UI hides that terminal behind Continue. A fresh native
+                    // capture proves the writer is that holder's own live child; a daemon may
+                    // outlive an ended TUI and is not this repair. Reuse the existing writer.
+                    let returned_codex_terminal = native.provider == "codex"
+                        && native.status == "idle"
+                        && native.holder.is_some()
+                        && native.direct_holder
+                        && !super::session_states::end_was_meant(mirror)
+                        && self.discovery_read_ms.is_none_or(|read| mirror.ended_at_ms.is_none_or(|end| read >= end));
                     // A Codex thread that is idle again and not shared stays ended: reviving it
                     // only defers its end behind an upload and a register it never makes.
                     if native.provider == "codex" && native.status == "idle" && !mirror.shared {
                         continue;
                     }
                     if mirror.native.process == native.process {
-                        if !resumed_codex_activity && !returned_claude {
+                        if !resumed_codex_activity && !returned_claude && !returned_codex_terminal {
                             continue;
                         }
                         let next_generation = uuid::Uuid::new_v4().to_string();
@@ -684,9 +694,9 @@ impl Host {
                     if let Some(session) = &mirror.session_id {
                         crate::holder::manager::end_asked_forget(session);
                     }
-                    if native.provider == "codex" && native.status == "idle" {
-                        // The turn completed between discovery sweeps: upload it, then
-                        // finish the session instead of leaving a closed thread live.
+                    if native.provider == "codex" && native.status == "idle" && native.holder.is_none() {
+                        // An unheld thread's turn completed between discovery sweeps: upload it,
+                        // then finish it. A held terminal is still open and waiting for input.
                         mirror.deferred_end_reason = Some("exited".into());
                     }
                     // Its next end is news again: leaving this set would make the
@@ -707,7 +717,11 @@ impl Host {
                             .clone(),
                     );
                 }
-                if mirror.native.restriction.as_deref() == Some("history-gap") {
+                if mirror.native.restriction.as_deref() == Some("history-gap")
+                    && !(mirror.native.process == native.process
+                        && native.restriction.is_none()
+                        && readable_history(mirror))
+                {
                     native.restriction = Some("history-gap".into());
                 }
                 // A process's lineage never changes: one failed `ps` (or a spare-claimed job
@@ -1053,7 +1067,6 @@ impl Host {
                             && enrollment::hook_path()
                                 .parent()
                                 .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
-                            && approval::acknowledge(&held.reply, &held.id)
                     })
                     .map(|mut held| {
                         let tool = event.tool_name.as_deref().unwrap_or("");
@@ -1083,6 +1096,13 @@ impl Host {
                             held.exact &= private_send.is_some();
                         }
                         (held, private_send, input)
+                    })
+                    .filter(|(held, _, input)| {
+                        // Do not hold a question whose complete, digest-checked input cannot
+                        // be displayed. Permissions retain their separate deny-only path.
+                        (event.tool_name.as_deref() != Some("AskUserQuestion")
+                            || (held.full && input.as_ref().is_some_and(approval::question_relayable)))
+                            && approval::acknowledge(&held.reply, &held.id)
                     });
                 // A Codex hold comes from its daemon, not a hook: a hook's report of the same prompt
                 // must not replace the answerable one.
@@ -1108,7 +1128,7 @@ impl Host {
                 // An open episode is not itself a reason to swallow this: a
                 // question answered inside one turn can be followed by a real
                 // permission prompt before any other transition clears it.
-                if !mirror.waiting.as_ref().is_some_and(|open| open.is(&prompt)) {
+                if mirror.waiting.as_ref().is_none_or(|open| open.replace_with(&prompt)) {
                     if !withheld {
                         mirror.queue.push(approval_row(text.as_deref().unwrap_or(""), &prompt));
                     }
@@ -1616,10 +1636,7 @@ impl Host {
                 false,
             );
             let readable = mirror.native.restriction.as_deref() == Some("history-gap")
-                && mirror.native.transcript.as_deref().is_some_and(|path| {
-                    let mut probe = mirror.cursor.clone();
-                    probe.read(path, &mirror.native.provider).is_ok_and(|rows| !rows.is_empty())
-                });
+                && readable_history(&mirror);
             if readable || mirror.native.restriction.as_deref() != Some("history-gap") {
                 // A successful bounded read permits retry; discovery must still
                 // reverify the native binary before control is available.
@@ -2603,7 +2620,7 @@ impl Host {
             dir: self.dir.join("receipts"),
         };
         private_dir(&journal.dir)?;
-        if cmd.kind == "approve" {
+        if matches!(cmd.kind.as_str(), "approve" | "answer") {
             return self.approve(&journal, cmd, anchor).await;
         }
         if journal
@@ -2841,7 +2858,9 @@ impl Host {
         let held = mirror
             .waiting
             .as_ref()
-            .and_then(|w| w.held.clone().filter(|held| answerable(held, w.shipped_full, cmd)));
+            .and_then(|w| w.held.clone().filter(|held| if cmd.kind == "answer" {
+                question_answerable(w, held, cmd)
+            } else { w.tool.as_deref() != Some("AskUserQuestion") && answerable(held, w.shipped_full, cmd) }));
         // A Codex hold is answered over its daemon (`codex::answer`), named by the request's item.
         let codex = held
             .as_ref()
@@ -2853,7 +2872,11 @@ impl Host {
             && !mirror.withheld()
             && !self.stop.load(Ordering::SeqCst)
             && cmd.authorized_at(now)
-            && self.verified(&mirror.native).await.is_ok()
+            && (if cmd.kind == "answer" {
+                question_runtime(&mirror.native, process(mirror.native.process.pid).ok().as_ref())
+            } else {
+                self.verified(&mirror.native).await.is_ok()
+            })
             && !self.stopped_now(&key);
         let mirror = &self.mirrors[&key];
         if !journal.admit(cmd, &mirror.generation, now)? {
@@ -2871,7 +2894,8 @@ impl Host {
         let answer = approval::Answer {
             approval_id: held.id.clone(),
             input_digest: held.input_digest.clone(),
-            decision: cmd.decision.clone().unwrap_or_default(),
+            decision: if cmd.kind == "answer" { "answer".into() } else { cmd.decision.clone().unwrap_or_default() },
+            answers: cmd.answers.clone(),
             mode: cmd.mode.clone(),
             message: (cmd.decision.as_deref() == Some("deny")).then(|| {
                 match cmd.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
@@ -2957,6 +2981,25 @@ fn daemon_held(held: &approval::Held) -> bool {
     held.reply == CODEX_DAEMON
 }
 
+/// A complete held question proves its own input capability. Reading older history or
+/// the engine's ordinary-send capability is unnecessary; the provider process incarnation
+/// and still-held private hook channel remain mandatory.
+fn question_runtime(native: &NativeSession, current: Option<&Process>) -> bool {
+    native.provider == "claude" && native.status != "ended"
+        && matches!(native.restriction.as_deref(), None | Some("history-gap" | "runtime-unverified"))
+        && current == Some(&native.process)
+}
+
+fn question_answerable(prompt: &WaitingPrompt, held: &approval::Held, cmd: &Command) -> bool {
+    prompt.tool.as_deref() == Some("AskUserQuestion") && prompt.shipped_full && held.full
+        && cmd.kind == "answer" && cmd.text.is_none() && cmd.mode.is_none() && cmd.decision.is_none()
+        && cmd.approval_id.is_none() && cmd.expected_turn_id.is_none()
+        && cmd.prompt_id.as_deref() == Some(held.id.as_str())
+        && cmd.input_digest.as_deref() == Some(held.input_digest.as_str())
+        && cmd.actor.is_none() && cmd.actor_user_id.as_deref().is_some_and(|u| !u.is_empty())
+        && prompt.input.as_ref().zip(cmd.answers.as_ref()).is_some_and(|(i,a)| approval::question_answers(i,a))
+}
+
 /// Does this command answer exactly this held prompt, with an option it offered?
 fn answerable(held: &approval::Held, shipped_full: bool, cmd: &Command) -> bool {
     // A person's decision only: an agent never answers a permission prompt.
@@ -2989,6 +3032,12 @@ fn approval_row(text: &str, prompt: &WaitingPrompt) -> Value {
             "modes": held.modes,
         },
     });
+    if prompt.tool.as_deref() == Some("AskUserQuestion") {
+        row["tool"]["input"]["question"] = json!(true);
+        row["tool"]["input"]["promptId"] = json!(held.id);
+        row["tool"]["input"]["exact"] = json!(false);
+        row["tool"]["input"]["modes"] = json!([]);
+    }
     if let Some(similar) = &held.similar {
         row["tool"]["input"]["similar"] = json!(similar);
     }
@@ -3030,9 +3079,11 @@ fn epoch_secs() -> u64 {
 
 /// The stored identity has to still be at that pid: pids are reused, and
 /// `kill(pid, 0)` would call the stranger that inherited it this session alive
-/// forever. `process` is a `proc_pidinfo` read -- no spawn, no signal.
+/// forever. Executable lookup can fail after an updater unlinks a running
+/// binary; that is not an exit. Authorization still verifies the executable
+/// separately. This is only a kernel liveness read -- no spawn, no signal.
 fn still_running(identity: &Process) -> bool {
-    process(identity.pid).is_ok_and(|current| &current == identity)
+    lightbulb_core::os::process_birth(identity.pid) == Some(identity.birth_micros)
 }
 
 fn transcript_unread(mirror: &Mirror) -> bool {
@@ -3134,6 +3185,20 @@ fn ended_recovery_keys(mirrors: &BTreeMap<String, Mirror>) -> BTreeSet<String> {
         .filter(|(_, mirror)| needs_ended_recovery(mirror))
         .map(|(key, _)| key.clone())
         .collect()
+}
+
+/// Retry the exact durable cursor; never reset it or skip an unread record. A
+/// partial final record is not ready. Verified EOF can recover without new output.
+fn readable_history(mirror: &Mirror) -> bool {
+    mirror.native.transcript.as_deref().is_some_and(|path| {
+        let mut probe = mirror.cursor.clone();
+        probe.read(path, &mirror.native.provider).is_ok_and(|rows| {
+            !rows.is_empty()
+                || secure_file(path)
+                    .and_then(|file| file.metadata().map_err(|e| e.to_string()))
+                    .is_ok_and(|meta| Some(meta.ino()) == probe.inode && meta.len() == probe.offset)
+        })
+    })
 }
 
 /// A read failure is a history problem only. A process that is gone is ended by `liveness_tick`,
@@ -3545,6 +3610,14 @@ fn attach_approval_input(mirror: &mut Mirror, mut batch: Value) -> Value {
     if over(&batch) {
         batch["events"].as_array_mut().unwrap().truncate(at + 1);
     }
+    if over(&batch) && at > 0 && waiting.tool.as_deref() == Some("AskUserQuestion") {
+        // Keep the complete question queued for its own frame; unlike a permission
+        // it has no useful deny-only form, and consuming a downgraded row strands it.
+        batch["events"].as_array_mut().unwrap().truncate(at);
+        if let Some(waiting) = mirror.waiting.as_mut() { waiting.shipped_full = false; }
+        mirror.pending = Some(batch.clone());
+        return batch;
+    }
     if over(&batch) {
         let row = batch["events"][at]["tool"]["input"].as_object_mut().unwrap();
         row.remove("input");
@@ -3728,6 +3801,32 @@ pub(super) mod tests {
     use super::super::engine_view::{EngineEnded, EngineRow};
     use super::*;
 
+    #[test]
+    fn local_sessions_an_unlinked_executable_is_not_a_process_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("cat");
+        fs::copy("/bin/cat", &binary).unwrap();
+        let mut child = std::process::Command::new(&binary)
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().unwrap();
+        let identity = process(child.id()).unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.process = identity.clone();
+        mirror.native.status = "idle".into();
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        fs::remove_file(&binary).unwrap();
+        host.liveness_tick();
+        let alive = still_running(&identity);
+        let reused = still_running(&Process { birth_micros: identity.birth_micros + 1, ..identity.clone() });
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(host.mirrors[SID].ended_at.is_none(), "the live terminal must remain registered");
+        host.liveness_tick();
+        assert!(host.mirrors[SID].ended_at.is_some(), "only the actual exit ends the session");
+        assert!(alive, "an updater removing the executable must not end a live session");
+        assert!(!reused, "a reused pid must not keep the old session alive");
+        assert!(!still_running(&identity), "the actual exit must still be observed");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn transport_a_stuck_workspace_scan_blocks_the_next_one() {
         static FLAG: AtomicBool = AtomicBool::new(false);
@@ -3778,6 +3877,7 @@ pub(super) mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -4372,6 +4472,64 @@ pub(super) mod tests {
         assert!(!mirror.withheld(), "promoted: a plain terminal shares its conversation (owner ruling 2026-10-11)");
     }
 
+    fn falsely_ended_codex_terminal(dir: &Path) -> (Host, String, NativeSession) {
+        let mut native = test_native("5eed0010-0000-4000-8000-000000000010");
+        native.app = false;
+        native.status = "idle".into();
+        native.holder = Some("ab12cd34".into());
+        native.direct_holder = true;
+        let mut host = test_host(dir, vec![]);
+        host.observe(vec![native.clone()]).unwrap();
+        let key = native_key(&native);
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.session_id = Some(SID.into());
+        mirror.registered();
+        host.end_session(&key, "exited").unwrap();
+        (host, key, native)
+    }
+
+    #[test]
+    fn local_sessions_a_live_codex_terminal_repairs_its_same_process_false_end_without_a_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, key, native) = falsely_ended_codex_terminal(dir.path());
+        let old = host.mirrors[&key].generation.clone();
+        host.observe(vec![native.clone()]).unwrap();
+        let mirror = &host.mirrors[&key];
+        assert!(mirror.ended_at.is_none(), "a verified idle terminal is still open");
+        assert_eq!(mirror.native.status, "idle");
+        assert_eq!(mirror.native.process, native.process, "no second writer or new prompt needed");
+        assert_ne!(mirror.generation, old, "fence the ended run's receipts");
+        assert_eq!(mirror.previous_generation.as_deref(), Some(old.as_str()));
+        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), Some(key.clone()));
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.registered();
+        mirror.pending = None;
+        mirror.queue.clear();
+        host.finish_deferred_end(&key).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none(), "registration and history drain leave the terminal usable");
+    }
+
+    #[test]
+    fn local_sessions_codex_terminal_recovery_requires_a_fresh_live_unintended_end() {
+        for case in ["no-holder", "not-direct", "ended-native", "intentional", "stale-discovery"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut host, key, mut native) = falsely_ended_codex_terminal(dir.path());
+            match case {
+                "no-holder" => native.holder = None,
+                "not-direct" => native.direct_holder = false,
+                "ended-native" => native.status = "ended".into(),
+                "intentional" => host.mirrors.get_mut(&key).unwrap().ended_reason = Some(super::super::lifecycle::ON_PURPOSE.into()),
+                "stale-discovery" => {
+                    host.mirrors.get_mut(&key).unwrap().ended_at_ms = Some(5000);
+                    host.discovery_read_ms = Some(4999);
+                }
+                _ => unreachable!(),
+            }
+            host.observe(vec![native]).unwrap();
+            assert!(host.mirrors[&key].ended_at.is_some(), "{case} cannot revive the run");
+        }
+    }
+
     #[test]
     fn local_sessions_a_shared_codex_thread_resumed_under_a_holder_while_idle_revives_and_registers() {
         let dir = tempfile::tempdir().unwrap();
@@ -4393,7 +4551,17 @@ pub(super) mod tests {
         child.wait().unwrap();
         observed.unwrap();
         assert!(host.mirrors[&key].ended_at.is_none() && !host.mirrors[&key].withheld(), "judged by the run that is live now");
-        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), Some(key));
+        assert!(host.mirrors[&key].deferred_end_reason.is_none(),
+            "an idle held terminal waits for input; draining history must not end it");
+        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), Some(key.clone()));
+        // The register and history upload finish before the person enters their first prompt.
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.registered();
+        mirror.pending = None;
+        mirror.queue.clear();
+        host.finish_deferred_end(&key).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none(), "history drain keeps the input-ready terminal live");
+        assert_eq!(host.mirrors[&key].native.status, "idle");
     }
 
     #[test]
@@ -5747,6 +5915,45 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn local_sessions_discovery_recovers_readable_history_without_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        fs::write(&path, "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n").unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.transcript = Some(path.clone());
+        mirror.native.restriction = Some("history-gap".into());
+        let key = native_key(&mirror.native);
+        let mut observed = mirror.native.clone();
+        observed.restriction = None;
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        assert_eq!(host.observe(vec![observed.clone()]).unwrap(), vec![key.clone()]);
+        assert!(host.mirrors[&key].native.restriction.is_none());
+        assert_eq!(host.mirrors[&key].cursor.offset, fs::metadata(&path).unwrap().len());
+        let at_end = host.mirrors[&key].cursor.clone();
+        host.mirrors.get_mut(&key).unwrap().native.restriction = Some("history-gap".into());
+        host.observe(vec![observed.clone()]).unwrap();
+        assert!(host.mirrors[&key].native.restriction.is_none(), "verified EOF needs no new output");
+        assert_eq!(host.mirrors[&key].cursor.offset, at_end.offset);
+        for contents in ["{bad}\n", "{\"type\":"] {
+            fs::write(&path, contents).unwrap();
+            let mirror = host.mirrors.get_mut(&key).unwrap();
+            mirror.cursor = Cursor::default();
+            mirror.native.restriction = Some("history-gap".into());
+            host.observe(vec![observed.clone()]).unwrap();
+            assert_eq!(host.mirrors[&key].native.restriction.as_deref(), Some("history-gap"));
+            assert_eq!(host.mirrors[&key].cursor.offset, 0);
+        }
+        fs::rename(&path, dir.path().join("previous.jsonl")).unwrap();
+        fs::write(&path, "{}\n").unwrap();
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.cursor = at_end.clone();
+        mirror.native.restriction = Some("history-gap".into());
+        host.observe(vec![observed]).unwrap();
+        assert_eq!(host.mirrors[&key].native.restriction.as_deref(), Some("history-gap"));
+        assert_eq!(host.mirrors[&key].cursor.offset, at_end.offset, "rotation never resets history");
+    }
+
+    #[test]
     fn local_sessions_restore_retries_only_readable_history_gaps() {
         let dir = tempfile::tempdir().unwrap();
         let scope = dir.path().join("scope");
@@ -5920,6 +6127,26 @@ pub(super) mod tests {
         // Only an approval row's `full` marks a batch as needing the feature.
         assert!(!carries_approval_input(&batch(vec![json!({"kind":"tool","tool":{"input":{"full":true}}})])));
         assert!(ascii_wire_len(&wire_batch(wire)).unwrap() <= 16384);
+    }
+
+    #[test]
+    fn local_sessions_question_full_input_defers_instead_of_being_consumed_partial() {
+        let mut mirror = test_mirror(SID, "gen-1");
+        let input = json!({"questions":[{"question":"Pick?","options":[{"label":"A","description":"x".repeat(1500)},{"label":"B"}],"multiSelect":false}]});
+        assert!(approval::question_relayable(&input));
+        let held = approval::Held { id:format!("appr-{}",uuid::Uuid::new_v4().simple()), input_digest:approval::digest(&input), reply:String::new(), exact:false, modes:vec![], full:true, similar:None };
+        let prompt = WaitingPrompt {tool:Some("AskUserQuestion".into()),held:Some(held),input:Some(input.clone()),..WaitingPrompt::default()};
+        let row = approval_row("Pick?",&prompt);
+        mirror.waiting = Some(prompt);
+        let batch = |events:Vec<Value>| json!({"type":"local.session.events","sessionId":SID,"generation":"gen-1","batchId":"b","afterSeq":0,"events":events});
+        let earlier = json!({"kind":"text","role":"assistant","text":"x".repeat(15000)});
+        let deferred = attach_approval_input(&mut mirror,batch(vec![earlier.clone(),row.clone()]));
+        assert_eq!(deferred["events"],json!([earlier]),"question stays in the queue for its own frame");
+        assert!(!mirror.waiting.as_ref().unwrap().shipped_full);
+        let alone = attach_approval_input(&mut mirror,batch(vec![row]));
+        assert_eq!(alone["events"][0]["tool"]["input"]["input"],input);
+        assert!(mirror.waiting.as_ref().unwrap().shipped_full);
+        assert!(ascii_wire_len(&wire_batch(alone)).unwrap() <= 16384);
     }
 
     /// The hook's side file reaches the waiting prompt; the app re-checks `full` against the digest.
@@ -6130,6 +6357,41 @@ pub(super) mod tests {
         );
         assert!(entry(false, &mirrors).get("stats").is_none(), "an older relay rejects the field");
         assert_eq!(entry(true, &mirrors)["stats"]["permissionMode"], "plan");
+    }
+
+    #[test]
+    fn local_sessions_question_answers_bind_full_prompt_and_passive_hooks_cannot_revoke_it() {
+        let input = json!({"questions":[{"question":"Pick?","options":[{"label":"A"},{"label":"B"}],"multiSelect":false}]});
+        let held = approval::Held { id: "appr-0123456789abcdef0123456789abcdef".into(), input_digest: approval::digest(&input), reply: String::new(), exact:false, full:true, modes:vec![], similar:None };
+        let passive = WaitingPrompt { tool:Some("AskUserQuestion".into()), summary:"Pick?".into(), ..WaitingPrompt::default() };
+        let mut prompt = WaitingPrompt { held:Some(held.clone()), input:Some(input), shipped_full:true, ..passive.clone() };
+        assert!(passive.replace_with(&prompt), "held report upgrades passive PreToolUse");
+        assert!(!prompt.replace_with(&passive), "late passive PreToolUse keeps held PermissionRequest");
+        let next = WaitingPrompt { held:Some(approval::Held { id:"appr-11111111111111111111111111111111".into(), ..held.clone() }), ..prompt.clone() };
+        assert!(prompt.replace_with(&next), "same words with a new held id are a new question");
+        let cmd: Command = serde_json::from_value(json!({"requestId":"r1","expectedGeneration":"g1","kind":"answer","promptId":held.id,"inputDigest":held.input_digest,"answers":{"Pick?":"A"},"text":null,"expectedTurnId":null,"sessionId":"s1","roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null})).unwrap();
+        assert!(question_answerable(&prompt,&held,&cmd));
+        let mut wrong = cmd.clone(); wrong.prompt_id = Some("old".into());
+        assert!(!question_answerable(&prompt,&held,&wrong));
+        wrong = cmd.clone(); wrong.input_digest = Some("e".repeat(64));
+        assert!(!question_answerable(&prompt,&held,&wrong));
+        wrong = cmd.clone(); wrong.answers = Some(json!({"Other?":"A"}));
+        assert!(!question_answerable(&prompt,&held,&wrong));
+        wrong = cmd.clone(); wrong.mode = Some("acceptEdits".into());
+        assert!(!question_answerable(&prompt,&held,&wrong));
+        prompt.shipped_full = false;
+        assert!(!question_answerable(&prompt,&held,&cmd));
+        let mut native = test_mirror(SID,"gen-1").native;
+        native.provider = "claude".into(); native.restriction = Some("history-gap".into());
+        assert!(question_runtime(&native,Some(&native.process)), "current held question does not depend on older transcript history");
+        native.restriction = Some("runtime-unverified".into());
+        assert!(question_runtime(&native,Some(&native.process)), "hook and process identity prove this narrow capability");
+        assert!(!question_runtime(&native,None), "a dead or unreadable process cannot be answered");
+        let mut stale = native.process.clone(); stale.birth_micros += 1;
+        assert!(!question_runtime(&native,Some(&stale)), "PID reuse must not reach a successor");
+        native.restriction = Some("sharing-off".into());
+        assert!(!question_runtime(&native,Some(&native.process)), "other restrictions still block");
+
     }
 
     #[test]
@@ -6386,6 +6648,7 @@ pub(super) mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -6683,6 +6946,7 @@ pub(super) mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -6812,6 +7076,7 @@ pub(super) mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,

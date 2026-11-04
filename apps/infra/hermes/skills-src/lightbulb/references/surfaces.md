@@ -111,8 +111,8 @@ A running session shows its live terminal when Lightbulb started it, when it is 
 background session, or when it is a plain Codex session (Codex's own background service runs
 it, and Lightbulb opens one more Codex terminal on the same conversation). A running session with no live
 terminal (a plain `claude`, or `codex --no-daemon`) shows its conversation (transcript, message
-box and approvals) to workspace members on the web, in the desktop app and on the phone, under a
-one-line hint: its own Claude Code terminal tells its person to press the left arrow key (←) once
+box, questions and approvals) to workspace members on the web, in the desktop app and on the phone.
+Terminal-sharing instructions live under **Details → Access**: its own Claude Code terminal tells its person to press the left arrow key (←) once
 to make it live, and a Codex session started with `--no-daemon` is started again with
 `lightbulb codex`. The public link stays terminal-only. A session that runs
 inside the Claude or Codex app, or an editor, has no terminal: people read its conversation
@@ -122,6 +122,22 @@ is its conversation." Its person can also stop sharing from the workspace (**Who
 the whole session, including what it did meanwhile. A session with a live terminal shows that terminal and no transcript.
 You still read the structured record with
 `lightbulb_local_sessions`.
+
+Claude questions captured by a current desktop app are answered directly in Lightbulb, with
+options or a written answer, even when the conversation has no shared terminal. Questions,
+permissions and follow-ups are separate interactions: while a question waits, there is no
+ordinary follow-up box. A provider-held question remains visible over a live terminal until
+answered; other terminal input stays in the terminal. Older desktop sessions
+without a held question keep their terminal-only prompt until their next captured request.
+Conversation messages use normal app typography; raw structured tool results stay folded
+behind **show output**. A control restriction is explained once.
+
+Lightbulb-launched Codex sessions have Internet access by default, including Continue and
+read-only plan sessions. Internet access is separate from file access and approval mode:
+editing stays within the workspace, plans keep read-only files, and approvals still apply.
+A managed policy can still deny networking; daemon resume reports that denial rather than
+silently presenting a session without the requested access. An already running session must
+be reopened to receive new launch defaults.
 
 **Session browser** (desktop app on the session's Mac, sharing on): a shared Claude Code or
 Codex session browses with its `lightbulb-browser` tools in that Mac's "Lightbulb agent"
@@ -170,8 +186,8 @@ opening one from that list opens the session in that room's right column.
 Opening a session from the sidebar Sessions section or from a session link
 instead fills the middle with the sharer's DM beside it. A running session
 shows as a live terminal. A live terminal has no Lightbulb message box under it: the terminal is the only input (the box returns only if the Mac refuses remote typing). A viewer who cannot type sees a "Watching · Only <owner> can type in this session." line instead. An ended session that Lightbulb hosted keeps its final screen, read-only, under "Ended · <time>"
-with Resume, for as long as the owner's Lightbulb app runs; once the app quits or restarts the
-panel says the screen is gone, still with Resume. Nothing of the screen is saved anywhere. A
+with Continue for its owner (Resume for teammates), for as long as the owner's Lightbulb app runs. Once the final screen is unavailable,
+the panel shows saved conversation messages when available; the terminal picture itself is not saved. A
 session whose Mac is offline shows "Mac offline" with Resume greyed out, the follow-up box, and
 **Pick up** for a teammate when its owner allows pick-up. The sidebar Sessions section lists live
 sessions; All sessions lists every session. Desktop sharing is opt-in; disabling it stops local sharing. Native
@@ -331,13 +347,16 @@ person's terminal. You read the session's structured record with
 `lightbulb_local_sessions` instead. A session started with `lightbulb claude` in
 a terminal shows in the owner's panel too, at that terminal's size; both can type.
 
-**Resume**: an ended session shows **Resume and send** to its owner and to the
+**Resume**: an ended session shows **Continue** to its owner and **Resume and send** to the
 people who could send to it when it ended (not to everyone team control let in).
 It starts again on the owner's Mac, in the same folder (which must still be an
 approved folder), with the same conversation, once that Mac is on (within 24
 hours). A teammate's resume runs in plan mode. The owner can take a teammate's
 resume permission back. If the Mac refuses, the session reads "Not resumed:
-<reason>". You cannot resume a session; tell the person to press Resume. A Claude Code
+<reason>". Folder-access refusals offer the owner **Review folder access**, linking to Desktop settings.
+A pending request says it is opening the session; this is not evidence that the Mac is off.
+Hosted MCP identities such as ChatGPT appear under **Connected assistants**, not among coding sessions.
+You cannot resume a session; tell the person to press Continue (or Resume on a teammate's session). A Claude Code
 session that ended before its first message has nothing to resume: it shows
 "This session ended before anything was sent." and is not listed. A Codex
 session that ended that way stays listed and can be resumed. A session that

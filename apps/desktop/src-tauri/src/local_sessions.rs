@@ -2,6 +2,7 @@
 mod approval;
 mod claude;
 mod engine_view;
+mod cursor_image;
 pub(crate) mod codex;
 mod hooked;
 pub mod enrollment;
@@ -674,6 +675,10 @@ pub struct Command {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     approval_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    answers: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     decision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
@@ -821,6 +826,11 @@ impl Journal {
                 .text
                 .as_ref()
                 .is_some_and(|t| !t.trim().is_empty() && t.len() <= 8192),
+            "answer" => {
+                cmd.prompt_id.is_some() && cmd.input_digest.is_some() && cmd.answers.as_ref().is_some_and(Value::is_object)
+                    && cmd.text.is_none() && cmd.expected_turn_id.is_none() && cmd.approval_id.is_none()
+                    && cmd.decision.is_none() && cmd.mode.is_none()
+            }
             "approve" => {
                 cmd.approval_id.is_some()
                     && cmd.input_digest.is_some()
@@ -839,6 +849,7 @@ impl Journal {
             && cmd.deliver_by.saturating_sub(cmd.created_at) <= 30
             && cmd.state == "dispatched"
             && shaped
+            && (cmd.kind == "answer" || (cmd.prompt_id.is_none() && cmd.answers.is_none()))
             && cmd.command_seq > 0;
         // Order first: a crash between these writes must block the next send,
         // not leave an unknown native intent invisible to sequence fencing.
@@ -996,6 +1007,14 @@ struct PrivateCodexCompactionPayload {
     _replacement_history: Vec<serde::de::IgnoredAny>,
 }
 
+/// Claude's request cache is private model input, never a public transcript event.
+/// Unknown fields are validated and discarded by serde without allocating their values.
+#[derive(Deserialize)]
+struct PrivateClaudeRequest {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
 impl Cursor {
     fn read(&mut self, path: &Path, provider: &str) -> Result<Vec<Value>> {
         let mut file = secure_file(path)?;
@@ -1016,12 +1035,13 @@ impl Cursor {
                 .read_until(b'\n', &mut bytes)
                 .map_err(|e| e.to_string())?;
             if n > MAX_JSONL_ROW {
-                if provider != "codex" {
+                if !matches!(provider, "codex" | "claude") {
                     return Err("history-gap".into());
                 }
-                // A Codex compaction replaces private model context and never has
-                // public output. Scan only to a bounded newline, then validate the
-                // complete JSON without allocating its replacement history.
+                // Private Codex compactions and Claude request-cache blobs have no
+                // public output. Codex tool-image rows retain text and metadata while
+                // discarding only known image data URLs. Scan a bounded complete row
+                // and validate all JSON; oversized public text still fails.
                 let mut length = n;
                 let mut complete = bytes.ends_with(b"\n");
                 drop(bytes);
@@ -1040,18 +1060,31 @@ impl Cursor {
                 }
                 reader.seek(SeekFrom::Start(self.offset)).map_err(|_| "history-gap")?;
                 let mut parser = serde_json::Deserializer::from_reader((&mut reader).take(length as u64));
-                let compacted = PrivateCodexCompaction::deserialize(&mut parser)
-                    .map_err(|_| "history-gap")?;
-                parser.end().map_err(|_| "history-gap")?;
-                if compacted.kind != "compacted" {
-                    return Err("history-gap".into());
-                }
+                let projected = if provider == "codex" {
+                    let compacted = PrivateCodexCompaction::deserialize(&mut parser);
+                    if compacted.is_ok_and(|row| row.kind == "compacted") {
+                        parser.end().map_err(|_| "history-gap")?;
+                        json!({"type":"compacted"})
+                    } else {
+                        drop(parser);
+                        reader.seek(SeekFrom::Start(self.offset)).map_err(|_| "history-gap")?;
+                        let mut image_parser = serde_json::Deserializer::from_reader((&mut reader).take(length as u64));
+                        let row = cursor_image::read(&mut image_parser).map_err(|_| "history-gap")?;
+                        image_parser.end().map_err(|_| "history-gap")?;
+                        row
+                    }
+                } else {
+                    let request = PrivateClaudeRequest::deserialize(&mut parser).map_err(|_| "history-gap")?;
+                    if request.kind != "api-request-blob" { return Err("history-gap".into()); }
+                    parser.end().map_err(|_| "history-gap")?;
+                    json!({"type":"api-request-blob"})
+                };
                 let current = secure_file(path)?.metadata().map_err(|_| "history-gap")?;
                 if current.ino() != meta.ino() || current.len() < self.offset + length as u64 {
                     return Err("history-gap".into());
                 }
                 reader.seek(SeekFrom::Start(self.offset + length as u64)).map_err(|_| "history-gap")?;
-                rows.push(json!({"type":"compacted"}));
+                rows.push(projected);
                 self.offset += length as u64;
                 consumed += length;
                 continue;
@@ -1301,6 +1334,10 @@ struct NativeSession {
     /// None for every other tracked session.
     #[serde(default)]
     holder: Option<String>,
+    /// Fresh discovery proved this writer is the bound holder's own child. Never persisted:
+    /// a shared daemon can outlive the TUI whose thread binding remains on an ended holder.
+    #[serde(skip)]
+    direct_holder: bool,
     /// A Claude background session's job id (`id` in `claude agents --json`, 8 hex): what
     /// `claude attach` takes. None for every other session.
     #[serde(default)]
@@ -1615,10 +1652,31 @@ fn track(found: &mut Vec<NativeSession>, holders: &[HolderInfo]) {
     found.retain(|s| !holders.iter().any(|h| h.provider_pid == s.process.pid && crate::holder::manager::attach_job(h).is_some()));
     for session in found.iter_mut() {
         let holder = if session.provider == "codex" {
-            holders.iter().find(|h| codex_holder(h) && crate::holder::manager::thread(h).as_deref() == Some(session.conversation.as_str()))
+            // Discovery names the actual rollout writer. A resumed private TUI
+            // can be ready before its next SessionStart hook; its direct holder
+            // is sufficient proof, unlike an argv that merely requests a thread.
+            let direct = holder_of(session.process.pid, holders).filter(|h| {
+                codex_holder(h) && session.restriction.is_none()
+                    && process(session.process.pid).ok().as_ref() == Some(&session.process)
+            });
+            if let Some(h) = direct {
+                crate::holder::manager::bind_thread(h, &session.conversation);
+            }
+            direct.or_else(|| {
+                // Only a shared daemon's verified thread can have a different
+                // writer from its terminal. An external private writer must
+                // never be shown through a blocked resume's stale binding.
+                (session.job.as_deref() == Some(session.conversation.as_str())).then(|| {
+                    holders.iter().find(|h| codex_holder(h) && crate::holder::manager::thread(h).as_deref() == Some(session.conversation.as_str()))
+                }).flatten()
+            })
         } else {
             holder_of(session.process.pid, holders).filter(|_| process(session.process.pid).ok().as_ref() == Some(&session.process))
         };
+        session.direct_holder = holder.is_some_and(|bound| {
+            holder_of(session.process.pid, holders).is_some_and(|direct| direct.id == bound.id)
+                && process(session.process.pid).ok().as_ref() == Some(&session.process)
+        });
         session.holder = holder.map(|h| h.id.clone());
     }
 }
@@ -1795,11 +1853,20 @@ struct WaitingPrompt {
 }
 
 impl WaitingPrompt {
+    fn replace_with(&self, other: &Self) -> bool {
+        // A late observational hook cannot revoke the question channel that is still held.
+        if self.held.is_some() && other.held.is_none() && self.tool.as_deref() == Some("AskUserQuestion")
+            && self.tool == other.tool && self.summary == other.summary { return false; }
+        !self.is(other)
+    }
+
     /// The same prompt reported twice, or a second prompt that reads alike?
     /// Tool-use ids settle it when both sides carry one -- the same command
     /// denied and asked again is two prompts. Otherwise the tool and what it is
     /// asking about do, which is what pairs a question's two hooks.
     fn is(&self, other: &Self) -> bool {
+        // A held report upgrades a passive hook, even when both describe one question.
+        if self.held.is_none() && other.held.is_some() { return false; }
         if let (Some(mine), Some(theirs)) = (&self.held, &other.held) {
             return mine.id == theirs.id;
         }
@@ -2368,6 +2435,7 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -2445,6 +2513,36 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_a_direct_codex_holder_is_proven_by_parent_and_process_birth() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let thread = "11111111-1111-4111-8111-111111111111";
+        let holder = HolderInfo {
+            id: "ab12cd34".into(), socket: dir.path().join("ab12cd34.sock"),
+            pid: std::process::id(), provider_pid: child.id(),
+            argv: vec!["/opt/homebrew/bin/codex".into(), "--no-daemon".into()],
+            cwd: "/".into(), watch: true, type_input: true,
+        };
+        let mut found = vec![native_at("codex", thread, child.id())];
+        let blocked = HolderInfo { id: "cd34ef56".into(), socket: dir.path().join("cd34ef56.sock"),
+            pid: 1, provider_pid: 2, ..holder.clone() };
+        crate::holder::manager::bind_thread(&blocked, thread);
+        track(&mut found, &[blocked, holder.clone()]);
+        assert_eq!(found[0].holder.as_deref(), Some(holder.id.as_str()), "a blocked retry cannot replace the actual writer's terminal");
+        assert_eq!(crate::holder::manager::thread(&holder).as_deref(), Some(thread), "the actual writer binds before any new turn");
+        let proven = found[0].direct_holder;
+        let encoded = serde_json::to_value(&found[0]).unwrap();
+        let restored: NativeSession = serde_json::from_value(encoded.clone()).unwrap();
+        // Even a previously direct holder is not evidence after its process disappears.
+        child.kill().unwrap(); child.wait().unwrap();
+        track(&mut found, std::slice::from_ref(&holder));
+        assert!(proven);
+        assert!(!encoded.as_object().unwrap().contains_key("direct_holder"));
+        assert!(!restored.direct_holder, "fresh process proof cannot be restored from disk");
+        assert!(!found[0].direct_holder, "an ended provider does not prove readiness");
+    }
+
+    #[test]
     fn local_sessions_codex_is_mirrored_by_the_thread_its_holder_bound() {
         let dir = tempfile::tempdir().unwrap();
         let holder = HolderInfo {
@@ -2464,9 +2562,15 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].holder, None, "an unbound thread (plain codex) is tracked, without a holder");
         crate::holder::manager::bind_thread(&holder, thread);
-        let mut found = vec![codex];
+        let mut found = vec![codex.clone()];
+        track(&mut found, std::slice::from_ref(&holder));
+        assert_eq!(found[0].holder, None, "an external writer cannot use a blocked resume's binding");
+        let mut daemon = codex;
+        daemon.job = Some(thread.into());
+        let mut found = vec![daemon];
         track(&mut found, std::slice::from_ref(&holder));
         assert_eq!(found[0].holder.as_deref(), Some("ab12cd34"));
+        assert!(!found[0].direct_holder, "a daemon/thread association is not a live provider child");
         // A Claude holder a stray Codex hook bound to the thread is not its terminal (prod e2e
         // 2026-10-22: the plain Codex session opened as a blank pane).
         let dir = tempfile::tempdir().unwrap();
@@ -2486,6 +2590,28 @@ mod tests {
         serde_json::from_value(json!({"requestId":"r1", "expectedGeneration":"g1", "kind":"send", "text":"hello",
             "expectedTurnId":null, "sessionId":"s1", "roomId":"room", "actorUserId":"alice", "commandSeq":1,
             "state":"dispatched", "createdAt":100, "deliverBy":130, "held":false, "providerMessageId":null})).unwrap()
+    }
+
+    #[test]
+    fn local_sessions_question_answer_journal_preserves_once_only_and_expiry() {
+        let mut cmd = command();
+        cmd.kind = "answer".into(); cmd.text = None;
+        cmd.prompt_id = Some("appr-0123456789abcdef0123456789abcdef".into());
+        cmd.input_digest = Some("d".repeat(64));
+        cmd.answers = Some(json!({"Pick?":"A"}));
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal { dir:dir.path().into() };
+        assert!(journal.admit(&cmd,"g1",110).unwrap());
+        assert!(!journal.admit(&cmd,"g1",110).unwrap(), "same request never writes an answer twice");
+        let mut changed = cmd.clone(); changed.answers = Some(json!({"Pick?":"B"}));
+        assert!(journal.admit(&changed,"g1",110).is_err(), "retry cannot change an already admitted answer");
+        for (generation,now) in [("g2",110),("g1",130)] {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(!Journal {dir:dir.path().into()}.admit(&cmd,generation,now).unwrap());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        cmd.decision = Some("allow".into());
+        assert!(!Journal {dir:dir.path().into()}.admit(&cmd,"g1",110).unwrap(), "question answer cannot carry permission authority");
     }
 
     #[test]
@@ -2560,6 +2686,7 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -2629,6 +2756,7 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -2832,6 +2960,93 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_cursor_skips_valid_private_claude_request_blob_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let blob = json!({"type":"api-request-blob", "sessionId":"private", "hash":"cache",
+            "message":{"role":"user","content":[{"type":"tool_result","content":"x".repeat(MAX_JSONL_ROW)}]}});
+        let public = json!({"type":"assistant","message":{"content":[{"type":"text","text":"Still here"}]}});
+        fs::write(&path, format!("{blob}\n{public}\n")).unwrap();
+        let mut cursor = Cursor::default();
+        let rows = cursor.read(&path, "claude").unwrap();
+        assert_eq!(rows, vec![json!({"type":"api-request-blob"})]);
+        assert!(normalize_public_message("claude", "test", &rows[0]).unwrap().is_empty());
+        assert_eq!(cursor.read(&path, "claude").unwrap(), vec![public]);
+        for row in [
+            format!("{{\"type\":\"assistant\",\"message\":\"{}\"}}\n", "x".repeat(MAX_JSONL_ROW)),
+            format!("{{\"type\":\"api-request-blob\",\"message\":\"{}\",}}\n", "x".repeat(MAX_JSONL_ROW)),
+            blob.to_string(),
+        ] {
+            fs::write(&path, row).unwrap();
+            let mut cursor = Cursor::default();
+            assert_eq!(cursor.read(&path, "claude").unwrap_err(), "history-gap");
+            assert_eq!(cursor.offset, 0);
+        }
+    }
+
+    fn codex_image_output_row() -> Value {
+        let mut output = vec![json!({"type":"input_text", "text":"t".repeat(47)})];
+        for length in [688643, 652363, 816271, 598883, 558067, 587843, 589199, 734887, 653119] {
+            let prefix = "data:image/jpeg;base64,";
+            output.push(json!({"type":"input_image", "image_url":format!("{prefix}{}", "A".repeat(length-prefix.len())), "detail":"auto"}));
+        }
+        json!({"timestamp":"2026-11-02T00:00:00Z", "ordinal":202, "type":"response_item",
+            "payload":{"type":"custom_tool_call_output", "id":null, "call_id":"call-images", "output":output,
+                "internal_chat_message_metadata_passthrough":{"nested":[1,true,"keep"]}},
+            "metadata":{"source":"fixture", "ordinal":202}})
+    }
+
+    #[test]
+    fn local_sessions_cursor_preserves_codex_image_output_text_metadata_and_following_public_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let mut expected = codex_image_output_row();
+        let encoded = format!("{expected}\n");
+        assert!(encoded.len() > MAX_JSONL_ROW);
+        let public = json!({"type":"event_msg", "payload":{"type":"item_completed",
+            "item":{"type":"UserMessage", "id":"next", "content":[{"type":"text", "text":"Still visible"}]}}});
+        fs::write(&path, format!("{encoded}{public}\n")).unwrap();
+        for block in expected["payload"]["output"].as_array_mut().unwrap().iter_mut().skip(1) {
+            block["image_url"] = json!("[image data omitted]");
+        }
+        let mut cursor = Cursor::default();
+        assert_eq!(cursor.read(&path, "codex").unwrap(), vec![expected]);
+        assert_eq!(cursor.offset, encoded.len() as u64);
+        let following = cursor.read(&path, "codex").unwrap();
+        assert_eq!(following, vec![public]);
+        assert_eq!(normalize_public_message("codex", "s", &following[0]).unwrap()[0]["text"], "Still visible");
+    }
+
+    #[test]
+    fn local_sessions_cursor_refuses_oversized_unknown_text_and_invalid_image_rows_without_advancing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let original = codex_image_output_row();
+        let mut wrong_kind = original.clone();
+        wrong_kind["type"] = json!("event_msg");
+        let mut public_text = original.clone();
+        public_text["payload"]["output"][0]["text"] = json!("x".repeat(MAX_JSONL_ROW));
+        let mut wrong_block = original.clone();
+        wrong_block["payload"]["output"][1]["type"] = json!("input_text");
+        let mut invalid_data = original.clone();
+        invalid_data["payload"]["output"][1]["image_url"] = json!("data:image/jpeg;base64,invalid!");
+        let mut unknown_mime = original.clone();
+        for block in unknown_mime["payload"]["output"].as_array_mut().unwrap().iter_mut().skip(1) {
+            block["image_url"] = json!(block["image_url"].as_str().unwrap().replace("image/jpeg", "video/mpeg"));
+        }
+        let mut rows: Vec<String> = [wrong_kind, public_text, wrong_block, invalid_data, unknown_mime]
+            .into_iter().map(|row| format!("{row}\n")).collect();
+        rows.push(original.to_string()); // A complete JSON value with no durable newline is still partial.
+        rows.push(format!("{original} trailing\n"));
+        for contents in rows {
+            fs::write(&path, contents).unwrap();
+            let mut cursor = Cursor::default();
+            assert_eq!(cursor.read(&path, "codex").unwrap_err(), "history-gap");
+            assert_eq!(cursor.offset, 0);
+        }
+    }
+
+    #[test]
     fn local_sessions_cursor_keeps_oversized_public_and_invalid_compaction_blocked() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history.jsonl");
@@ -3025,6 +3240,7 @@ mod tests {
             active_turn: None,
             last_assistant_message: None,
             holder: None,
+            direct_holder: false,
             job: None,
             forked_from: None,
             forked_by_person: None,
@@ -3132,6 +3348,7 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                direct_holder: false,
                 job: None,
                 forked_from: None,
                 forked_by_person: None,
@@ -3225,6 +3442,7 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                direct_holder: false,
                 job: None,
                 forked_from: None,
                 forked_by_person: None,
@@ -3317,6 +3535,7 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                direct_holder: false,
                 job: None,
                 forked_from: None,
                 forked_by_person: None,
@@ -3424,6 +3643,7 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                direct_holder: false,
                 job: None,
                 forked_from: None,
                 forked_by_person: None,
@@ -3496,6 +3716,7 @@ mod tests {
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
+                direct_holder: false,
                 job: None,
                 forked_from: None,
                 forked_by_person: None,

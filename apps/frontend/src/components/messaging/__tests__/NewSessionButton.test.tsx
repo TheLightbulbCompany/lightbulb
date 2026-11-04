@@ -295,6 +295,21 @@ it("a held start whose holder is gone clears itself and the form returns", async
   expect(localStorage.getItem(PENDING_KEY)).toBeNull();
 });
 
+it("ending a held session while its panel stays open returns to the start form", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  let live = true;
+  desktop(async (command) => command === "terminal_options" ? OPTIONS
+    : command === "terminal_panel" ? { live } : { holderId: "cx1" });
+  render(view());
+  await userEvent.click(await card("Codex", false));
+  await userEvent.click(startBtn("Codex"));
+  expect(await screen.findByText(/It joins Sessions after your first prompt/)).toBeInTheDocument();
+  live = false;
+  for (let i = 0; i < 17; i++) await act(async () => { vi.advanceTimersByTime(1_000); });
+  expect(screen.getByRole("button", { name: "Start Codex" })).toBeEnabled();
+  expect(localStorage.getItem(PENDING_KEY)).toBeNull();
+});
+
 it("reopening restores a held start as opened and probes its holder", async () => {
   localStorage.setItem(PENDING_KEY, JSON.stringify({ startId: "old", scope: "alice:org-a", startedAt: Date.now() - 60_000, phase: "opened", holderId: "h9", tool: "codex" }));
   const invoke = desktop(async (command) => command === "terminal_options" ? OPTIONS : { live: true });

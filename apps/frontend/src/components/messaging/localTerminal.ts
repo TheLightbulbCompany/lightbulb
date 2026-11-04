@@ -74,6 +74,7 @@ const TRACK_MS = 250;
 const REPROBE_MS = 2000;
 const REPROBE_FOR_MS = 30_000;
 const REPROBE_SLOW_MS = 10_000;
+const LIVE_PROBE_MS = 5000;
 // Strictly increasing: the backend drops a non-greater `at`, and a close and the next open can share a clock tick.
 let last = 0;
 const now = () => (last = Math.max(performance.timeOrigin + performance.now(), last + 0.01));
@@ -109,7 +110,9 @@ export function useLocalTerminal(target: { sessionId: string } | { holderId: str
       // is indexed): keep asking while it runs. The slot is unmounted while the answer is "none", so
       // the probe carries no rect; a "live" answer mounts the slot and the next tick places it.
       const gap = Date.now() - t0 < REPROBE_FOR_MS ? REPROBE_MS : REPROBE_SLOW_MS;
-      const reprobe = none && Date.now() - probedAt >= gap;
+      // A successful placement is not a lifetime guarantee. The process can exit
+      // without another layout change (including before its first prompt).
+      const reprobe = Date.now() - probedAt >= (none ? gap : LIVE_PROBE_MS);
       if (shape === sent && !reprobe) return;
       sent = shape;
       probedAt = Date.now();

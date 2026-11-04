@@ -5,7 +5,7 @@ let hook: Record<string, unknown> = {};
 vi.mock("@/hooks/useApps", () => ({ useApps: () => hook }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => false }));
 vi.mock("../../workspaceController", () => ({ updatePanelParams: vi.fn() }));
-vi.mock("@/components/canvas/AppView", () => ({ AppView: () => <div>app view</div> }));
+vi.mock("@/components/canvas/AppView", () => ({ AppView: () => <div>app view</div>, AskAgent: () => <button type="button">Ask the agent to fix it</button> }));
 import { CanvasDockPanel } from "../CanvasDockPanel";
 
 const row = (over: Record<string, unknown> = {}) => ({ app_id: "a1", name: "Invoices", room_id: "r", room_name: "finance", state: "ready", open_to: "room",
@@ -22,6 +22,30 @@ describe("CanvasDockPanel deep link", () => {
     expect(screen.getByRole("alert")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
     expect(screen.queryByText(/isn't in this workspace/)).toBeNull();
+  });
+
+  it("a stuck building app says where it stopped, like the list and the view", () => {
+    hook = { ...base, apps: [row({ state: "building", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })] };
+    panel("a1");
+    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes.")).toBeTruthy();
+    expect(screen.queryByText(/making the preview|Building the new version/)).toBeNull();
+  });
+
+  it("a stopped app offers the ask button to someone who can manage it, and not to others", () => {
+    const stuck = { state: "building", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } };
+    hook = { ...base, apps: [row({ ...stuck, can_publish: true })] };
+    const { unmount } = panel("a1");
+    expect(screen.getByRole("button", { name: "Ask the agent to fix it" })).toBeTruthy();
+    unmount();
+    hook = { ...base, apps: [row({ ...stuck, can_publish: false })] };
+    panel("a1");
+    expect(screen.queryByRole("button", { name: "Ask the agent to fix it" })).toBeNull();
+  });
+
+  it("a building app that is not stopped offers no ask button", () => {
+    hook = { ...base, apps: [row({ state: "building", can_publish: true })] };
+    panel("a1");
+    expect(screen.queryByRole("button", { name: "Ask the agent to fix it" })).toBeNull();
   });
 
   it("a building app is named, not opened", () => {

@@ -662,6 +662,10 @@ async def _approved_line(approved_by: str, moved: dict | None) -> dict | None:
     approval read after the route both find the row moved and post nothing."""
     if moved and not moved.get("bundled_with"):
         await apps_room.post_approval_line(owner_id=moved["owner_id"], user_id=approved_by, workflow=moved)
+        if moved.get("app_id"):
+            from core.services import apps_service  # apps_service imports this module
+
+            apps_service.drive(moved["owner_id"], moved["app_id"])
     return moved
 
 

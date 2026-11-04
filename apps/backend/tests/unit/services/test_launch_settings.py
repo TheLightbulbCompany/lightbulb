@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -271,13 +272,19 @@ async def _mint(row, *, force=False, coupon_id="coupon_new"):
     return result, coupon_create, put_mock
 
 
+@pytest.fixture
+def coupon_still_redeemable(monkeypatch):
+    # The real deadline is a date: minting is refused once it has passed, and these tests are about minting.
+    monkeypatch.setattr(ls, "COUPON_REDEEM_BY", datetime(2099, 1, 1, tzinfo=timezone.utc))
+
+
 async def test_create_stripe_coupon_conflicts_when_already_configured():
     with patch.object(ls, "effective", AsyncMock(return_value=_effective_row(stripe_coupon_id="coupon_old"))):
         with pytest.raises(ls.CouponAlreadyConfigured):
             await ls.create_stripe_coupon(ADMIN)
 
 
-async def test_create_stripe_coupon_mints_100_off_once_with_redeem_by():
+async def test_create_stripe_coupon_mints_100_off_once_with_redeem_by(coupon_still_redeemable):
     result, coupon_create, put_mock = await _mint(_effective_row())
     assert result == {"stripe_coupon_id": "coupon_new"}
     kwargs = coupon_create.call_args.kwargs
@@ -294,14 +301,14 @@ async def test_create_stripe_coupon_mints_100_off_once_with_redeem_by():
     assert "stripe_promotion_code_id" not in written  # promotion codes are dead
 
 
-async def test_create_stripe_coupon_force_bumps_the_nonce():
+async def test_create_stripe_coupon_force_bumps_the_nonce(coupon_still_redeemable):
     row = _effective_row(stripe_coupon_id="coupon_old", mint_nonce=1)
     _, coupon_create, put_mock = await _mint(row, force=True)
     assert coupon_create.call_args.kwargs["idempotency_key"].endswith(":prod_flat:2")
     assert put_mock.call_args.args[0]["mint_nonce"] == 2
 
 
-async def test_create_stripe_coupon_retry_after_a_partial_failure_is_byte_identical():
+async def test_create_stripe_coupon_retry_after_a_partial_failure_is_byte_identical(coupon_still_redeemable):
     """A first attempt that crashed after Coupon.create never persisted the
     id/nonce — the retry must compute the SAME nonce so the idempotency key
     matches and Stripe replays instead of conflicting."""
@@ -321,7 +328,7 @@ async def test_create_stripe_coupon_requires_the_flat_price_id():
             await ls.create_stripe_coupon(ADMIN)
 
 
-async def test_create_stripe_coupon_stripe_error_raises_without_leaking_the_message():
+async def test_create_stripe_coupon_stripe_error_raises_without_leaking_the_message(coupon_still_redeemable):
     with (
         patch.object(ls, "effective", AsyncMock(return_value=_effective_row())),
         patch.object(ls.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat"),

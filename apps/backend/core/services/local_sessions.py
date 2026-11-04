@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import logging
 import time
 import uuid
@@ -206,6 +207,88 @@ ApprovalMode = Literal["acceptEdits", "plan", "default", "session", "similar"]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 
 
+def _question_text(value: str, limit: int) -> str:
+    if (
+        not value.strip()
+        or len(value.encode("utf-8")) > limit
+        or any(ord(c) < 32 and c not in "\n\r\t" or 127 <= ord(c) <= 159 for c in value)
+    ):
+        raise ValueError("Question text must be visible and bounded")
+    return value
+
+
+class QuestionOption(ContractModel):
+    label: str
+    description: str | None = None
+
+    @field_validator("label")
+    @classmethod
+    def label_text(cls, value):
+        return _question_text(value, 500)
+
+    @field_validator("description")
+    @classmethod
+    def description_text(cls, value):
+        return _question_text(value, 2000) if value else value
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("description",))
+
+
+class SessionQuestion(ContractModel):
+    question: str
+    header: str | None = None
+    options: list[QuestionOption] = Field(min_length=1, max_length=9)
+    multi_select: bool = Field(default=False, strict=True)
+
+    @field_validator("question", "header")
+    @classmethod
+    def question_text(cls, value):
+        return _question_text(value, 2000) if value is not None else value
+
+    @model_validator(mode="after")
+    def unique_options(self):
+        if len({option.label for option in self.options}) != len(self.options):
+            raise ValueError("Question options must be unique")
+        return self
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("header",))
+
+
+class PendingQuestion(ContractModel):
+    prompt_id: OpaqueId
+    input_digest: Digest
+    questions: list[SessionQuestion] = Field(min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def unique_questions(self):
+        if len({question.question for question in self.questions}) != len(self.questions):
+            raise ValueError("Question texts must be unique")
+        # Native bounds the original input to 10 KiB. Projection adds bounded IDs,
+        # digest and default fields; it must not reject an input already held by the hook.
+        if len(self.model_dump_json(by_alias=True).encode("utf-8")) > 10 * 1024 + 1024:
+            raise ValueError("Question descriptor exceeds its bounded envelope")
+        largest = {}
+        for question in self.questions:
+            selectable = (
+                ", ".join(option.label for option in question.options)
+                if question.multi_select
+                else max(
+                    (option.label for option in question.options),
+                    key=lambda value: len(json.dumps(value, ensure_ascii=False).encode("utf-8")),
+                )
+            )
+            largest[question.question] = max(
+                (selectable, "x" * 128), key=lambda value: len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+            )
+        if len(json.dumps(largest, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 2000:
+            raise ValueError("Question cannot fit its answer envelope")
+        return self
+
+
 class PendingApproval(ContractModel):
     """The permission prompt a session is holding open for a remote answer (desktop-reported).
 
@@ -384,6 +467,7 @@ class LocalSession(ContractModel):
     pending_pickups: list[str] | None = None
     pending_pickup_ids: dict[str, str] | None = None
     pending_approval: PendingApproval | None = None
+    pending_question: PendingQuestion | None = None
     # Read-only: the harness's own model and permission mode. Neither CLI takes a runtime
     # change from outside its terminal (Claude's mode only rides an approval's setMode).
     model: Label | None = None
@@ -421,6 +505,7 @@ class LocalSession(ContractModel):
             info,
             (
                 "pending_approval",
+                "pending_question",
                 "start_id",
                 "terminal",
                 "terminal_reason",
@@ -568,12 +653,16 @@ class LocalSessionEventPage(ContractModel):
 #: Optional command fields added after the wire froze: absent on the wire, never null, so a send
 #: stays byte-identical for desktops (and request hashes) that predate them.
 _APPROVAL_FIELDS = ("approval_id", "decision", "mode", "input_digest", "shown_digest")
+_QUESTION_FIELDS = ("prompt_id", "answers")
+# A current held hook supplies its own process/prompt proof. The native answer adapter
+# rechecks that proof even when history replay or ordinary engine discovery is incomplete.
+_QUESTION_RECOVERABLE_REASONS = (None, "history-gap", "runtime-unverified")
 
 
 class LocalSessionCommand(ContractModel):
     request_id: OpaqueId
     expected_generation: OpaqueId
-    kind: Literal["send", "interrupt", "approve", "end"]
+    kind: Literal["send", "interrupt", "approve", "answer", "end"]
     text: str | None = Field(default=None, max_length=MAX_COMMAND_BYTES)
     expected_turn_id: OpaqueId | None = None
     approval_id: OpaqueId | None = None
@@ -584,6 +673,8 @@ class LocalSessionCommand(ContractModel):
     # command's public keys (it is stored as ``approvalShownDigest``): the Mac's Command is
     # deny_unknown_fields.
     shown_digest: Digest | None = None
+    prompt_id: OpaqueId | None = None
+    answers: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def validate_command(self):
@@ -601,8 +692,23 @@ class LocalSessionCommand(ContractModel):
                 raise ValueError("a mode switch only accompanies allow")
             if self.text is not None and (self.decision != "deny" or len(self.text.encode("utf-8")) > 500):
                 raise ValueError("only a deny carries a short message")
+        elif self.kind == "answer":
+            if not self.prompt_id or not self.input_digest or not self.answers or len(self.answers) > 4:
+                raise ValueError("answer requires promptId, inputDigest and one to four answers")
+            if any(
+                getattr(self, key) is not None
+                for key in ("approval_id", "decision", "mode", "shown_digest", "text", "expected_turn_id")
+            ):
+                raise ValueError("answer takes no approval, text or turn fields")
+            for key, value in self.answers.items():
+                _question_text(key, 2000)
+                _question_text(value, 2000)
+            if len(json.dumps(self.answers, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 2000:
+                raise ValueError("answers exceed 2000 UTF-8 bytes")
         elif any(approval):
             raise ValueError("approval fields belong to approve")
+        if self.kind != "answer" and any(getattr(self, name) is not None for name in _QUESTION_FIELDS):
+            raise ValueError("question fields belong to answer")
         if (
             len(self.model_dump_json(by_alias=True, include=set(LocalSessionCommand.model_fields)).encode("utf-8"))
             > MAX_COMMAND_BYTES
@@ -612,7 +718,7 @@ class LocalSessionCommand(ContractModel):
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
-        return _drop_none(self, handler(self), info, _APPROVAL_FIELDS)
+        return _drop_none(self, handler(self), info, (*_APPROVAL_FIELDS, *_QUESTION_FIELDS))
 
 
 class AgentActor(ContractModel):
@@ -652,7 +758,15 @@ class CommandReceipt(LocalSessionCommand):
             self,
             handler(self),
             info,
-            ("actor_user_id", "actor", "invocation_expires_at", "cancelled_at", "native_hop", *_APPROVAL_FIELDS),
+            (
+                "actor_user_id",
+                "actor",
+                "invocation_expires_at",
+                "cancelled_at",
+                "native_hop",
+                *_APPROVAL_FIELDS,
+                *_QUESTION_FIELDS,
+            ),
         )
 
 
@@ -943,10 +1057,16 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     public["shareUsage"] = bool(row.get("shareUsage"))
     if stats.get("usage") and viewer is not None and (viewer == row["humanUserId"] or public["shareUsage"]):
         public["usage"] = stats["usage"]
-    # A session that takes no input refuses every answer (_require_control), so its prompt is
-    # shown as one to answer in the terminal, never as a card whose buttons can only fail.
+    # Permission decisions still require ordinary verified control. A held question has
+    # its own fenced response route below, so it need not depend on ordinary send support.
     if public["status"] != "waiting-approval" or not row["capabilitiesVerified"] or row.get("controlUnavailableReason"):
         public.pop("pendingApproval", None)
+    # The exact held question is its own response capability, independent of ordinary sends.
+    if (
+        public["status"] != "waiting-approval"
+        or row.get("controlUnavailableReason") not in _QUESTION_RECOVERABLE_REASONS
+    ):
+        public.pop("pendingQuestion", None)
     if row.get("pickupAllowed") or (viewer is not None and viewer == row["humanUserId"]):
         public["pickup"] = _pickup_public(row)
     return _public(LocalSession, public)
@@ -1513,6 +1633,7 @@ async def set_sharing(
                     # Only me: an "Anyone" link does not come back public when sharing resumes.
                     updated["shareLink"] = _with_audience(row["shareLink"], "workspace")
                 updated.pop("pendingApproval", None)
+                updated.pop("pendingQuestion", None)
                 updated.pop("privateSendApproval", None)
             try:
                 await repo.put_session(updated, row, enrollment)
@@ -1638,7 +1759,12 @@ def _require_control(row: dict, request: LocalSessionCommand, *, allow_offline_s
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This session can only be ended on its Mac.")
         return
     caps = row["capabilities"]
-    # A Mac that failed control closed (controlUnavailableReason) takes no input, read on this row.
+    if request.kind == "answer" and row.get("controlUnavailableReason") in _QUESTION_RECOVERABLE_REASONS:
+        # A paired desktop reported this exact held prompt, not permission to start a new turn.
+        # Its native adapter rechecks the process and hook before resolving the answer.
+        _require_pending_question(row, request)
+        return
+    # Ordinary controls stay closed when the Mac cannot verify them.
     if not row["capabilitiesVerified"] or row.get("controlUnavailableReason"):
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Sending is unavailable for this session.")
     if request.kind == "approve":
@@ -1674,6 +1800,16 @@ def _require_pending_approval(row: dict, request: LocalSessionCommand) -> None:
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This prompt can only be approved in the terminal.")
     if request.mode is not None and request.mode not in pending.get("modes", []):
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "That option is not offered for this prompt.")
+
+
+def _require_pending_question(row: dict, request: LocalSessionCommand) -> None:
+    pending = row.get("pendingQuestion")
+    if row["provider"] != "claude" or row["status"] != "waiting-approval" or not pending:
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "The session is no longer waiting for an answer.")
+    if pending["promptId"] != request.prompt_id or pending["inputDigest"] != request.input_digest:
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "That question has changed.")
+    if set(request.answers or {}) != {question["question"] for question in pending["questions"]}:
+        raise ApiProblem("INVALID_REQUEST", "Answer exactly the questions shown in this prompt.")
 
 
 async def submit_command(
@@ -2045,6 +2181,7 @@ AUDIT_ACTIONS = Literal[
     "interrupt",
     "end",
     "approve",
+    "answer",
     "deny",
     "team_control_on",
     "team_control_off",

@@ -30,7 +30,9 @@ turn. Don't build something it can't host.
    `mkdir -p "$HERMES_HOME/.run/<name>" && cd "$HERMES_HOME/.run/<name>"`, then
    `lightbulb app new <name> --kind <kind> --room <roomId>` (this room's id). The name is
    lowercase letters, digits and dashes. Then `cd <name> && pnpm install`: that inner folder is
-   the app's folder.
+   the app's folder. Run `lightbulb app up --json` straight away, before writing any code: it
+   files the hosting card now, so the owner can approve it while you build. If it says
+   `awaiting_approval`, post the approval line and keep going; don't end the turn yet.
 4. Follow the app's `AGENTS.md` and `.lightbulb/plan.md`. They hold the stack, the kind's
    playbook and what "done" means for it. Read `.lightbulb/lessons.md` before touching an area.
 
@@ -45,6 +47,10 @@ alongside the build and return one card of three to five comparable products. Th
 waits for the research.
 
 ## The loop
+
+Build the first version yourself; never hand the first build to a sub-agent. Make the main flow
+first, the one thing the person asked for, and run `up` as soon as `app check` passes: the person
+should see something in minutes, not after everything is finished.
 
 `lightbulb app check` → fix → `lightbulb app up --json`. On the first `up` add
 `--requested-by "<the person's user id>"` (the `sender` id on their message; a name is ignored)
@@ -65,23 +71,32 @@ A result with a `state` and an `error` has it in `error.next`. `lightbulb app st
 ## Waiting for approval
 
 If `state` is `awaiting_approval`, the app's accounts need an owner's tap. The card is in
-Activity (the bell), under "Needs you", not in this room. Post the approval line (§ What to say),
-then **end the turn**. The approval posts a line in this room that mentions you; run
-`lightbulb app up --json` again when it does. Never poll, never sleep in a loop.
+Activity (the bell), under "Needs you", not in this room. Post the approval line once (§ What to
+say). Keep building while you wait. Only when the app is ready and `up` still says
+`awaiting_approval` do you **end the turn**. The approval posts a line in this room that mentions
+you; run `lightbulb app up --json` again when it does. Never poll, never sleep in a loop.
 
-## Done means proven
+## First version, then done
 
-When `up` returns a `preview_url`, run `lightbulb app test-link --json` and open the `url` it prints
-in the shared browser (`references/surfaces.md` § Browser): the bare address stops at the door.
-Never install or download a browser. If the shared browser can't open the app, say what happened
-and post the preview line with "I couldn't check it in a browser". Walk the main flow and record it:
+The first time `up` returns state `ready` and its `next` says the preview is up, post the
+first-version line once (§ What to say). A `preview_url` alone is not that: while `next` says the app
+is still the starter placeholder, post nothing. Then keep going: add tests for the business rules, fill in the rest, and run `up` again after each change.
+Canvas tells people the agent is still working while your run is open.
+
+Then prove it. Run `lightbulb app verify --json`. It signs in past the door and
+opens every page, with no browser. Fix what it lists, then run `up` and `verify` again.
+Then try the main flow once: get a `url` from `lightbulb app test-link --json` and open it with the
+browser tool's navigate call, not by typing into the address bar. If that doesn't work first time,
+stop trying and add "I couldn't try it in a browser" to the ready line. Don't spend more than two
+minutes here. Never install a browser, and never build a local server or redirect to get past a
+browser problem. If you did try it, record it:
 `lightbulb app evidence --kind browser --file <recording or screenshot> --note "<what you checked>"`.
 Keep the file under `.lightbulb/evidence/` or outside the app; anywhere else is refused.
 Then run `lightbulb app status --json`, not `up`: a second `up` moves the preview past your record.
 Read what's on screen as the person will: wrong words like "Add a account", cut-off text and empty
-states are yours to fix first. Post only when it says `"done": true`: the preview line (§ What to say).
+states are yours to fix first. Post the ready line (§ What to say) only when it says `"done": true`.
 The `preview_url` is for your own check. Never post it: for anyone else it is a locked door
-page. People open the app from Canvas, so the preview line carries `{canvas_url}`. A preview is
+page. People open the app from Canvas, so both lines carry `{canvas_url}`. A preview is
 not "live"; say "live" only after `publish` returns.
 Attach the recording to that reply (`references/chat-vs-document.md`). If `sample_data` is true,
 add that it runs on sample data and the real data arrives in a few minutes.
@@ -94,10 +109,10 @@ Outside a room turn (a Paperclip run), post the same line with `lightbulb-post.s
 ## Changes and publishing
 
 - An edit: the same loop, then one line saying what changed.
-- "ship it" or "publish": ask the reviewer for a pass (`references/apps-reviewer.md`); `publish`
-  refuses without one for the exact commit in HEAD. Post the checking line, then end the turn. The reviewer never posts in the
-  room; you do. On failures, post the review-failed line, fix them and ask again. On a pass, run
-  `lightbulb app publish --json`, then post the live line.
+- "ship it" or "publish": run `lightbulb app verify --json` for the current version, fix anything
+  it lists, then run `lightbulb app publish --json` and post the live line. No second agent and no
+  checking line: verify is the check. Ask for a review (`references/apps-reviewer.md`) only when the
+  person asks for one.
 - "Who can open it" and the budget: the person who asked for the app sets them in Canvas → {app}
   → Settings (a workspace admin can too). Point them there.
 - Removing: point the same people to the app's Settings in Canvas, "Remove app…".
@@ -117,7 +132,10 @@ name, and at most one every few minutes. The lines below stay exactly as specifi
 
 - Hosting: "Before I build {app}: this workspace needs a services account to host it. An admin can
   add one from the Stripe card in Settings → Connections. Tell me when it's done and I'll start."
-- Preview ready: "Your preview of {app} is ready in Canvas: {canvas_url}. It {what it does}; it
+- First version (once, at the first `ready` preview; never "ready" or "live"): "A first version of {app}
+  is in Canvas: {canvas_url}. It {what works so far}. I'm still working on {what's left} and will
+  post here when it's ready." If `sample_data` is true, add that it runs on sample data for now.
+- Preview ready (when `"done": true`): "Your preview of {app} is ready in Canvas: {canvas_url}. It {what it does}; it
   keeps {what data it saves or reads}. I tested it by {what you actually did, step by step}.
   {n} example rows are in it, marked (sample); I can clear them. Only people in #{room} can open
   it for now. Say "publish" (or press Publish in Canvas) to make it live." Name anything you could
@@ -130,8 +148,6 @@ name, and at most one every few minutes. The lines below stay exactly as specifi
 - Approval: "To keep its data I need an owner's OK to set up hosting and storage for {app}. The
   card is in Activity, under Needs you; tap Approve. The preview can't start until then." Name the
   owner if you know who.
-- Checking: "Checking {app} before it goes live: a second agent is trying every page. I'll post
-  here when it's live, usually within a few minutes."
 - Review failed: "The check found {n} problems ({short plain list}). Fixing them now, then it goes
   live."
 - Live, public: "{app} is live — anyone with the link can open it: {address publish returned}. Say

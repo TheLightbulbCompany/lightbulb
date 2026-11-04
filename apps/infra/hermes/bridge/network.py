@@ -436,6 +436,17 @@ def _ack(session: str, record: dict, stage: str) -> None:
     ask("inbox.ack", {"session": session, "record": record["id"], "stage": stage})
 
 
+def _seconds_left(deadline) -> float | None:
+    """Seconds until an assignment's ``deadline_at`` (RFC 3339 text or epoch seconds), or None."""
+    from datetime import datetime
+    try:
+        at = float(deadline) if isinstance(deadline, (int, float)) else datetime.fromisoformat(
+            str(deadline).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+    return at - time.time()
+
+
 def _cancel_record(session: str, record: dict) -> None:
     """A cancel never takes a model turn: on the same thread it would queue behind the very turn it
     has to stop. It interrupts that turn and answers for it. A turn already over has its result,
@@ -452,7 +463,7 @@ def _cancel_record(session: str, record: dict) -> None:
         log.warning("network: cancel %s failed", record["id"], exc_info=True)
 
 
-def _send_assignment_result(session: str, record: dict, text: str, reason: str = "no_result",
+def _send_assignment_result(session: str, record: dict, text: str,
                             failed_text: str = "The agent finished without a result.") -> None:
     """A model can end an assignment's turn in plain text, without the reply tool. The asker gets
     that text as the result anyway, rather than waiting out the deadline: this is not left to the
@@ -465,9 +476,10 @@ def _send_assignment_result(session: str, record: dict, text: str, reason: str =
             "text": text.strip() or failed_text,
             "status": "done" if text.strip() else "failed"}
     if not text.strip():
-        body["reason"] = reason
+        body["reason"] = "error"  # the engine takes only timed_out, stopped or error (mail.rs decide)
     try:
-        ask("send", body)
+        if ask("send", body).get("state") == "refused":  # a receipt, not an error: say so
+            log.warning("network: result for %s refused", record["id"])
     except Exception:  # noqa: BLE001 -- the class only, never the text
         log.warning("network: result for %s not sent", record["id"], exc_info=True)
 
@@ -492,11 +504,20 @@ def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
             "abortKey": key,
             "message": message}
     outcome = None
+    # The asker's engine closes an assignment `timed_out` at its deadline; the turn must stop then,
+    # not run on and spend the workspace's model after nobody is waiting (an abort like a cancel's).
+    left = _seconds_left(record.get("deadline_at")) if record.get("kind") == "assign" else None
+    stop = threading.Timer(max(left, 0), turn.abort_run, [key]) if left is not None else None
+    if stop:
+        stop.daemon = True
+        stop.start()
     try:
         outcome = turn.run_turn(agent_id, body, None, True)  # releases the reserved turn itself
     except Exception:  # noqa: BLE001 -- stays unread; the class only, never the text
         log.warning("network: turn for %s failed", record["id"], exc_info=True)
     finally:
+        if stop:
+            stop.cancel()
         cancelled = turn.run_aborted(key)  # _cancel_record answered for it; it must not run again
         turn.finish_run(key, outcome or "error")
         if outcome == "completed" or cancelled:
@@ -509,7 +530,7 @@ def _run_record(session: str, agent_id: str, record: dict, key: str) -> None:
         elif record.get("kind") == "assign":
             # The asker is waiting and an assignment has a deadline: say so now, and do not run it again later.
             log.warning("network: assignment %s ended %s; reported failed", record["id"], outcome)
-            _send_assignment_result(session, record, "", reason="turn_failed", failed_text="The agent could not run this assignment.")
+            _send_assignment_result(session, record, "", failed_text="The agent could not run this assignment.")
             try:
                 _ack(session, record, "read")
             except Exception:  # noqa: BLE001

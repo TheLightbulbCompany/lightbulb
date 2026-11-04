@@ -8,6 +8,7 @@ import io  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
 import tarfile  # noqa: E402
+import threading  # noqa: E402
 from datetime import UTC, datetime, timedelta  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 from unittest.mock import AsyncMock, patch  # noqa: E402
@@ -138,6 +139,14 @@ def published(monkeypatch):
     return m
 
 
+@pytest.fixture(autouse=True)
+def watched(monkeypatch):
+    """The real watch sleeps a minute in the background; tests that want it call ``svc._look`` or ``_watch``."""
+    calls: list[str] = []
+    monkeypatch.setattr(svc, "watch", lambda o, a: calls.append(a))
+    return calls
+
+
 @pytest.fixture
 def world(monkeypatch):
     with mock_aws():
@@ -159,6 +168,18 @@ def world(monkeypatch):
             BillingMode="PAY_PER_REQUEST",
         )
         boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-state")
+        # Repos run each DynamoDB call in a thread; moto is not thread-safe the way DynamoDB is atomic per
+        # request, so concurrent readers once saw "dictionary changed size during iteration". One call at a time.
+        to_thread, one_call = asyncio.to_thread, threading.Lock()
+
+        def _serial(f, *a, **kw):
+            def locked():
+                with one_call:
+                    return f(*a, **kw)
+
+            return to_thread(locked)
+
+        monkeypatch.setattr(asyncio, "to_thread", _serial)
         for k, v in {
             "OWNER_STATE_BUCKET": "test-state",
             "APPS_DOMAIN": "apps.example.com",
@@ -473,6 +494,24 @@ async def test_preview_reseeds_after_a_schema_change(world):
     assert world.reset.await_count == 2 and len(world.vercel.created()) == 3
 
 
+async def test_reset_preview_data_reseeds_the_preview_without_a_rebuild(world):
+    """`app verify` sends forms with test values; this puts the preview back to schema + seed."""
+    src, _, _ = await _ready_preview(world)
+    assert world.reset.await_count == 1
+    assert await svc.reset_preview_data(OWNER, src["app_id"]) == {"reset": True}
+    assert world.reset.await_count == 2 and len(world.vercel.created()) == 1  # same build, fresh data
+    assert world.reset.await_args.kwargs["seed_sql"] == SRC_V1["drizzle/seed.sql"]
+    # another read holds the lease: not reset now, but the next step does it
+    later = (svc.datetime.now(svc.UTC) + svc.timedelta(seconds=30)).isoformat()
+    await svc.apps_repo.patch(src["app_id"], {"progress_lease_until": later})
+    assert await svc.reset_preview_data(OWNER, src["app_id"]) == {"reset": False}
+    assert world.reset.await_count == 2
+    earlier = (svc.datetime.now(svc.UTC) - svc.timedelta(seconds=1)).isoformat()
+    await svc.apps_repo.patch(src["app_id"], {"progress_lease_until": earlier})
+    await svc.status(OWNER, src["app_id"])
+    assert world.reset.await_count == 3
+
+
 async def test_publish_waits_for_the_live_database_secret(world):
     """An active row whose secret has not landed: the production build would run its migrations
     without DATABASE_URL and fail. Refuse with a reason instead; publish once it is there."""
@@ -486,6 +525,32 @@ async def test_publish_waits_for_the_live_database_secret(world):
     world.secrets[key] = blob
     pub = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=PERSON)
     assert pub["state"] == "building"
+
+
+@pytest.mark.parametrize(
+    ("author", "text", "allowed"),
+    [
+        ("human", "Looks great, ship it", True),
+        ("human", "please publish", True),
+        ("human", "Approved hosting and data for Crew. Setting it up.", False),
+        ("human", "does it use the live database?", False),
+        ("agent", "I'll publish it now", False),
+    ],
+)
+async def test_an_agent_publishes_only_when_a_person_asked(world, monkeypatch, author, text, allowed):
+    src, _, _ = await _ready_preview(world)
+    rec = await svc.apps_repo.get(src["app_id"])
+    msg = {"author": {"kind": author}, "text": text, "createdAt": "2999-01-01T00:00:00Z"}
+    monkeypatch.setattr(svc.messaging_repo, "list_messages_before", AsyncMock(return_value=[msg]))
+    agent = svc.BuilderCaller(owner_id=OWNER, actor_id="agent_7", actor_kind="agent")
+    assert rec.get("room_id")
+    if allowed:
+        pub = await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=agent)
+        assert pub["state"] == "building"
+    else:
+        with pytest.raises(svc.AppsRefused) as e:
+            await svc.publish(OWNER, src["app_id"], source_id=src["source_id"], actor=agent)
+        assert e.value.code == "not_asked"
 
 
 async def test_publish_deploys_and_adds_domain_once(world):
@@ -2753,3 +2818,393 @@ async def test_errors_ignores_a_publish_failure_older_than_a_healthy_preview(wor
     monkeypatch.setattr(svc.vercel, "runtime_logs", logs)
     await svc.errors(OWNER, src["app_id"])
     assert logs.await_args.args[1] == "dpl_new"
+
+
+async def test_drive_steps_the_app_until_its_preview_is_up_and_once_per_app():
+    states = iter(["provisioning", "building", "ready", "ready"])
+    sleeps: list[float] = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    with (
+        patch.object(svc.asyncio, "sleep", fake_sleep),
+        patch.object(svc, "status", AsyncMock(side_effect=lambda o, a: {"state": next(states)})) as status,
+    ):
+        svc.drive(OWNER, "app_1")
+        svc.drive(OWNER, "app_1")  # a second approval read while the first drive runs
+        await asyncio.gather(*list(svc._drives.values()))
+    assert status.await_count == 3  # stopped early on ready
+    assert len(sleeps) == 3
+    assert svc._drives == {}
+
+
+async def test_drive_follows_stripes_schedule_with_jitter_and_stops_after_fifteen_minutes():
+    sleeps: list[float] = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    with (
+        patch.object(svc.asyncio, "sleep", fake_sleep),
+        patch.object(svc, "status", AsyncMock(return_value={"state": "provisioning"})) as status,
+    ):
+        await svc._drive(OWNER, "app_1")
+    for got, want in zip(sleeps, (1, 2, 4, 8, 16, 30, 30), strict=False):
+        assert want * 0.9 <= got <= want * 1.1
+    assert svc._DRIVE_WAITS == (1, 2, 4, 8, 16, 30)
+    assert len(sleeps) == status.await_count == 1 + (900 - 61) // 30 + 5  # 6 steps = 61 s, then every 30 s
+    assert sum(sleeps) <= 900 * 1.1
+
+
+# --- the app owns its run: progress, linked runs, stuck -----------------------------------------
+
+_REAL_WATCH = svc.watch  # the autouse ``watched`` fixture replaces it
+
+
+def _ago(minutes: float) -> str:
+    return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+
+
+@pytest.fixture
+def room(monkeypatch):
+    """Runs by id, and the lines posted into the room."""
+    runs: dict = {}
+    lines: list[str] = []
+    open_runs: list[dict] = []
+
+    async def create_message(**kw):
+        lines.append(kw["text"])
+        return {"messageId": f"m{len(lines)}"}, True
+
+    monkeypatch.setattr(svc.messaging_repo, "get_run", AsyncMock(side_effect=lambda o, r: runs.get(r)))
+    monkeypatch.setattr(svc.messaging_repo, "create_message", create_message)
+    monkeypatch.setattr(svc.messaging_repo, "list_open_runs_for_room", AsyncMock(side_effect=lambda o, r: open_runs))
+    return SimpleNamespace(runs=runs, lines=lines, open_runs=open_runs)
+
+
+async def _building(world, run_ids=("run_1",), quiet_min=6.0):
+    """The agent uploaded its source and went quiet for ``quiet_min`` minutes without running `up`."""
+    src = await _source()
+    await svc.status(OWNER, src["app_id"])
+    await svc.apps_repo.patch(src["app_id"], {"progress_at": _ago(quiet_min), "run_ids": list(run_ids)})
+    return src["app_id"]
+
+
+STUCK_LINE = "Crew stopped at building: nothing has moved for 5 minutes. Ask the agent here to pick it up again."
+
+
+async def test_a_status_read_with_nothing_moving_does_not_stamp_progress(world, watched):
+    src = await _source()
+    await _up(src)
+    await svc.apps_repo.patch(src["app_id"], {"progress_at": "2026-11-01T00:00:00+00:00"})
+    view = await svc.status(OWNER, src["app_id"])
+    assert view["state"] == "awaiting_approval" and view["stuck"] is None
+    assert (await svc.apps_repo.get(src["app_id"]))["progress_at"] == "2026-11-01T00:00:00+00:00"
+    assert watched[-1] == src["app_id"]  # a read re-arms the watch (lost on a restart)
+
+    await _all_active(world, src["app_id"])  # the rows really move: that is progress
+    await svc.status(OWNER, src["app_id"])
+    assert (await svc.apps_repo.get(src["app_id"]))["progress_at"] > "2026-11-01T00:00:00+00:00"
+
+
+async def test_a_deployment_that_finishes_on_a_read_stamps_progress(world):
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])  # deploys
+    await svc.apps_repo.patch(src["app_id"], {"progress_at": "2026-11-01T00:00:00+00:00"})
+    await svc.status(OWNER, src["app_id"])  # still QUEUED: nothing moved
+    assert (await svc.apps_repo.get(src["app_id"]))["progress_at"] == "2026-11-01T00:00:00+00:00"
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    assert (await svc.status(OWNER, src["app_id"]))["state"] == "ready"
+    assert (await svc.apps_repo.get(src["app_id"]))["progress_at"] > "2026-11-01T00:00:00+00:00"
+
+
+async def test_up_stamps_progress_and_links_the_header_run(world, watched):
+    src = await _source()
+    agent = svc.BuilderCaller(owner_id=OWNER, actor_id="agt_1", actor_kind="agent", run_id="run_1")
+    before = svc.utc_now_iso()
+    for run_id in ("run_1", "run_1", "run_2", None):
+        await svc.up(
+            OWNER,
+            name="crew",
+            room_id="room_1",
+            services=["database"],
+            open_to="room",
+            budget_usd=20,
+            source_id=src["source_id"],
+            actor=svc.BuilderCaller(**{**agent.__dict__, "run_id": run_id}),
+            origin={"kind": "idea"},
+        )
+    app = await svc.apps_repo.get(src["app_id"])
+    assert app["progress_at"] >= before
+    assert app["run_ids"] == ["run_1", "run_2"]  # once each, newest last; no header changes nothing
+    assert src["app_id"] in watched
+    runs = [f"run_{n}" for n in range(12)]
+    fields = svc._progress_fields({"run_ids": runs[:10]}, "run_0")
+    assert fields["run_ids"] == [*runs[1:10], "run_0"]
+    assert svc._progress_fields({"run_ids": runs[:10]}, "run_11")["run_ids"] == [*runs[1:10], "run_11"]
+
+
+async def test_stuck_after_five_quiet_minutes_with_no_open_run_posts_once(world, room):
+    app_id = await _building(world)
+    room.runs["run_1"] = {"status": "ended", "lastHeartbeatAt": _ago(10)}
+    assert await svc._look(OWNER, app_id) is True
+    app = await svc.apps_repo.get(app_id)
+    assert app["stuck"]["step"] == "building"
+    assert room.lines == [STUCK_LINE]
+    assert (await svc.status(OWNER, app_id))["stuck"]["step"] == "building"
+    assert await svc._look(OWNER, app_id) is True  # already said: nothing more
+    assert room.lines == [STUCK_LINE]
+
+
+async def test_not_stuck_before_five_minutes_or_while_a_linked_run_is_working(world, room):
+    app_id = await _building(world, quiet_min=4)
+    assert await svc._look(OWNER, app_id) is False
+    await svc.apps_repo.patch(app_id, {"progress_at": _ago(30), "run_ids": ["run_old", "run_1"]})
+    room.runs["run_1"] = {"status": "started", "lastHeartbeatAt": _ago(1)}
+    assert await svc._look(OWNER, app_id) is False
+    room.runs["run_1"] = {"status": "started", "lastHeartbeatAt": _ago(6)}  # open, but its heartbeat is stale
+    assert await svc._look(OWNER, app_id) is True
+    assert room.lines == [STUCK_LINE]
+
+
+async def test_waiting_on_a_person_is_never_stuck(world, room):
+    src = await _source()
+    await _up(src)
+    await svc.apps_repo.patch(src["app_id"], {"progress_at": _ago(180), "run_ids": ["run_1"]})
+    assert await svc._look(OWNER, src["app_id"]) is False  # awaiting_approval
+    await _all_active(world, src["app_id"])
+    world.rows["pwf_2"]["state"] = "awaiting_user_action"
+    assert await svc._look(OWNER, src["app_id"]) is False
+    assert room.lines == [] and (await svc.apps_repo.get(src["app_id"])).get("stuck") is None
+
+
+async def test_without_linked_runs_an_app_is_stuck_only_after_twenty_minutes(world, room):
+    app_id = await _building(world, run_ids=(), quiet_min=19)
+    assert await svc._look(OWNER, app_id) is False
+    await svc.apps_repo.patch(app_id, {"progress_at": _ago(21)})
+    assert await svc._look(OWNER, app_id) is True
+    assert room.lines == [STUCK_LINE]
+
+
+async def test_a_second_instance_reading_the_same_quiet_app_posts_nothing(world, room, monkeypatch):
+    app_id = await _building(world)
+    stale = await svc.apps_repo.get(app_id, consistent_read=True)
+    assert await svc._look(OWNER, app_id) is True
+    monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(return_value=stale))  # it read before the first wrote
+    assert await svc._look(OWNER, app_id) is False  # its write fails: no line, and it keeps watching
+    assert room.lines == [STUCK_LINE]
+
+
+async def test_progress_clears_stuck(world, room):
+    app_id = await _building(world)
+    await svc._look(OWNER, app_id)
+    assert (await svc.apps_repo.get(app_id))["stuck"]
+    src = await _source(SRC_V2, "c2")
+    assert (await svc.apps_repo.get(app_id))["stuck"] is None
+    await _up(src)
+    assert (await svc.status(OWNER, app_id))["stuck"] is None
+
+
+async def test_the_watch_is_one_per_app_and_stops_when_there_is_nothing_left(monkeypatch):
+    looks = iter([False, False, True])
+    sleeps: list[float] = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    with (
+        patch.object(svc.asyncio, "sleep", fake_sleep),
+        patch.object(svc, "_look", AsyncMock(side_effect=lambda o, a: next(looks))) as look,
+    ):
+        _REAL_WATCH(OWNER, "app_1")
+        _REAL_WATCH(OWNER, "app_1")
+        await asyncio.gather(*list(svc._watches.values()))
+    assert look.await_count == 3 and sleeps == [60, 60, 60]
+    assert svc._watches == {}
+    sleeps.clear()
+    with (
+        patch.object(svc.asyncio, "sleep", fake_sleep),
+        patch.object(svc, "_look", AsyncMock(return_value=False)),
+    ):
+        await svc._watch(OWNER, "app_1")
+    assert len(sleeps) == 180  # three hours
+
+
+async def _deploying(world, quiet_min=6.0):
+    src = await _source()
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])  # the preview build starts
+    await svc.apps_repo.patch(src["app_id"], {"progress_at": _ago(quiet_min), "run_ids": ["run_1"]})
+    return src["app_id"]
+
+
+async def test_a_deployment_vercel_still_builds_is_never_stuck(world, room):
+    app_id = await _deploying(world, quiet_min=60)
+    assert await svc._look(OWNER, app_id) is False
+    assert room.lines == [] and (await svc.apps_repo.get(app_id)).get("stuck") is None
+
+
+async def test_a_finished_preview_nobody_read_is_not_reported_stuck(world, room):
+    app_id = await _deploying(world)
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    assert await svc._look(OWNER, app_id) is True  # the look steps it: ready, nothing left to watch
+    app = await svc.apps_repo.get(app_id)
+    assert app["state"] == "ready" and app.get("stuck") is None and room.lines == []
+
+
+async def test_an_app_approved_after_hours_of_waiting_is_not_reported_stuck(world, room):
+    src = await _source()
+    await _up(src)
+    await svc.apps_repo.patch(src["app_id"], {"progress_at": _ago(180), "run_ids": ["run_1"]})
+    for r in world.rows.values():  # on_approved moved the rows; nobody has read since
+        r["state"] = "provisioning"
+    assert await svc._look(OWNER, src["app_id"]) is False
+    app = await svc.apps_repo.get(src["app_id"])
+    assert app.get("stuck") is None and app["progress_at"] > _ago(1) and room.lines == []
+
+
+async def test_a_bad_heartbeat_reads_as_not_working(world, room):
+    now = datetime.now(UTC)
+    for beat in ("garbage", "2026-11-03T00:00:00", None, 5):
+        assert svc._working({"status": "started", "lastHeartbeatAt": beat}, now) is False
+    app_id = await _building(world)
+    room.runs["run_1"] = {"status": "started", "lastHeartbeatAt": "not a time"}
+    assert await svc._look(OWNER, app_id) is True
+    assert room.lines == [STUCK_LINE]
+
+
+async def test_an_unlinked_run_still_beating_in_the_room_is_not_stuck(world, room):
+    app_id = await _building(world, quiet_min=30)
+    room.open_runs.append({"runId": "run_other", "status": "dispatched", "dispatchedAt": _ago(1)})
+    assert await svc._look(OWNER, app_id) is False
+    room.open_runs[0] = {"runId": "run_other", "status": "started", "lastHeartbeatAt": _ago(2)}
+    assert await svc._look(OWNER, app_id) is False
+    room.open_runs[0] = {"runId": "run_other", "status": "started", "lastHeartbeatAt": _ago(6)}
+    assert await svc._look(OWNER, app_id) is True
+    assert room.lines == [STUCK_LINE]
+
+
+async def test_a_run_that_finished_cleanly_chose_to_wait_so_the_app_gets_45_minutes(world, room):
+    app_id = await _building(world, run_ids=("run_old", "run_1"), quiet_min=10)
+    room.runs["run_old"] = {"status": "ended", "outcome": "error"}
+    room.runs["run_1"] = {"status": "ended", "outcome": "completed"}
+    assert await svc._look(OWNER, app_id) is False
+    await svc.apps_repo.patch(app_id, {"progress_at": _ago(46)})
+    assert await svc._look(OWNER, app_id) is True
+    assert room.lines == [STUCK_LINE]
+
+
+async def test_a_run_that_errored_keeps_the_five_minute_rule(world, room):
+    app_id = await _building(world, run_ids=("run_1",), quiet_min=6)
+    room.runs["run_1"] = {"status": "ended", "outcome": "error"}
+    assert await svc._look(OWNER, app_id) is True
+    assert room.lines == [STUCK_LINE]
+
+
+async def test_hosting_still_being_set_up_is_working_until_the_drive_window_passes(world, room):
+    src = await _source()
+    await _up(src)
+    for r in world.rows.values():
+        r["state"] = "connecting_provider"
+    await svc.status(OWNER, src["app_id"])  # the rows moved: progress
+    await svc.apps_repo.patch(src["app_id"], {"progress_at": _ago(30), "run_ids": ["run_1"]})
+    for r in world.rows.values():
+        r["updated_at"] = _ago(6)
+    assert await svc._look(OWNER, src["app_id"]) is False
+    for r in world.rows.values():
+        r["updated_at"] = _ago(16)
+    assert await svc._look(OWNER, src["app_id"]) is True
+    assert (await svc.apps_repo.get(src["app_id"]))["stuck"]["step"] == "setting up hosting"
+    assert room.lines == [STUCK_LINE.replace("building", "setting up hosting")]
+
+
+# --- the starter's placeholder page is not a ready app ------------------------------------------
+
+
+async def _placeholder_preview(world, commit="c0"):
+    src = await svc.put_source(
+        OWNER, name="crew", room_id="room_1", commit=commit, archive=_tar(SRC_V1), actor=PERSON, placeholder=True
+    )
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])  # deploys
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    return src
+
+
+async def test_a_placeholder_preview_is_building_and_stays_watched_until_the_real_source(world, room):
+    src = await _placeholder_preview(world)
+    app_id = src["app_id"]
+    assert (await svc.apps_repo.get(app_id))["sources"][src["source_id"]]["placeholder"] is True
+    assert (await svc.status(OWNER, app_id))["state"] == "building"
+    assert (await svc.apps_repo.get(app_id))["state"] == "building"
+    assert await svc._look(OWNER, app_id) is False  # the watch keeps running
+
+    real = await _source(SRC_V2, "c1")
+    assert "placeholder" not in (await svc.apps_repo.get(app_id))["sources"][real["source_id"]]
+    await _up(real)
+    await svc.status(OWNER, app_id)  # deploys the real source
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    assert (await svc.status(OWNER, app_id))["state"] == "ready"
+
+
+async def test_a_live_app_whose_new_source_is_a_placeholder_stays_live(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    later = await svc.put_source(
+        OWNER, name="crew", room_id="room_1", commit="c9", archive=_tar(SRC_V1), actor=PERSON, placeholder=True
+    )
+    await _up(later)
+    await svc.status(OWNER, src["app_id"])
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    assert (await svc.status(OWNER, src["app_id"]))["state"] == "live"
+
+
+def test_placeholder_is_judged_by_the_source_the_preview_shows():
+    rows = {("vercel", "project", "prod"): {"state": "active"}}
+    sources = {"s0": {"placeholder": True}, "s1": {}}
+    # The last build moved to the real source, but the preview still shows the placeholder.
+    app = {"preview": {"source_id": "s0"}, "preview_built": {"source_id": "s1"}, "sources": sources}
+    assert svc._state(app, rows)[0] == "building"
+    assert svc._state({**app, "preview": {"source_id": "s1"}}, rows)[0] == "ready"
+
+
+async def test_agent_working_while_the_newest_linked_run_is_open_and_beating(world, room):
+    src, _, _ = await _ready_preview(world)
+    app_id = src["app_id"]
+    assert (await svc.status(OWNER, app_id))["agent_working"] is False  # no linked run
+    await svc.apps_repo.patch(app_id, {"run_ids": ["run_old", "run_1"]})
+    room.runs["run_old"] = {"status": "started", "lastHeartbeatAt": _ago(1)}  # only the newest counts
+    assert (await svc.status(OWNER, app_id))["agent_working"] is False
+    room.runs["run_1"] = {"status": "started", "lastHeartbeatAt": _ago(1)}
+    assert (await svc.status(OWNER, app_id))["agent_working"] is True
+    room.runs["run_1"] = {"status": "started", "lastHeartbeatAt": _ago(6)}  # stale
+    assert (await svc.status(OWNER, app_id))["agent_working"] is False
+    room.runs["run_1"] = {"status": "ended", "lastHeartbeatAt": _ago(1)}
+    assert (await svc.status(OWNER, app_id))["agent_working"] is False
+
+
+async def test_agent_working_needs_a_preview(world, room):
+    app_id = await _building(world)
+    room.runs["run_1"] = {"status": "started", "lastHeartbeatAt": _ago(1)}
+    assert (await svc.status(OWNER, app_id))["agent_working"] is False
+
+
+async def test_agent_working_only_on_a_ready_preview_with_no_live_version(world, room):
+    src, _, _ = await _ready_preview(world)
+    app_id = src["app_id"]
+    await svc.apps_repo.patch(app_id, {"run_ids": ["run_1"]})
+    room.runs["run_1"] = {"status": "started", "lastHeartbeatAt": _ago(1)}
+    assert (await svc.status(OWNER, app_id))["agent_working"] is True
+    # a preview that is still building (like the starter placeholder) is not a first version
+    await _up(await _source(SRC_V2, "c2"))
+    view = await svc.status(OWNER, app_id)  # deploys the new source
+    assert view["state"] == "building" and view["agent_working"] is False
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    assert (await svc.status(OWNER, app_id))["agent_working"] is True
+    await _go_live(world, src)
+    assert (await svc.status(OWNER, app_id))["agent_working"] is False  # a live app's next version

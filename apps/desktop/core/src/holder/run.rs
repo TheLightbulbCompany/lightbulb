@@ -89,6 +89,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn packaged_codex_keeps_its_npm_update_route_when_run_without_the_launcher() {
+        let program = "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex";
+        let env = provider_environment(vec![], &[program.into()]);
+        assert!(env.contains(&("CODEX_MANAGED_BY_NPM".into(), "1".into())));
+        assert!(env.contains(&("CODEX_MANAGED_PACKAGE_ROOT".into(), "/opt/homebrew/lib/node_modules/@openai/codex".into())));
+        let wrapped = vec!["/bin/sh".into(), "-c".into(), "…".into(), "lightbulb-start".into(), "start-1".into(), "/scope".into(), program.into()];
+        let inherited = vec![("CODEX_MANAGED_BY_BUN".into(), "1".into()), ("CODEX_MANAGED_PACKAGE_ROOT".into(), "/other".into())];
+        let env = provider_environment(inherited, &wrapped);
+        assert!(env.contains(&("CODEX_MANAGED_BY_NPM".into(), "1".into())));
+        assert!(!env.iter().any(|(k, v)| k == "CODEX_MANAGED_BY_BUN" || v == "/other"));
+        // A genuine Homebrew binary and Claude must not be labelled as npm installs.
+        assert!(provider_environment(vec![], &["/opt/homebrew/Caskroom/codex/0.163.0/codex".into()]).is_empty());
+    }
+
+    #[test]
     fn holder_size_argument_parses_and_refuses_anything_else() {
         assert_eq!(parse_size("--size=120x40"), Some((120, 40)));
         assert_eq!(parse_size("--"), None);
@@ -326,6 +341,18 @@ pub fn provider_environment(env: Vec<(String, String)>, argv: &[String]) -> Vec<
     if classic {
         env.push((CLASSIC_RENDERER.into(), "1".into()));
     }
+    // provider_program bypasses codex.js to run its packaged native binary. Preserve
+    // the launcher's install metadata too: without it Codex guesses Homebrew from
+    // /opt/homebrew, even when npm owns the installation there.
+    if let Some(root) = codex_at(argv).and_then(|at| Path::new(&argv[at]).ancestors().find(|p| {
+        p.ends_with("node_modules/@openai/codex")
+    })) {
+        const MANAGED: &[&str] = &["CODEX_MANAGED_BY_NPM", "CODEX_MANAGED_BY_BUN", "CODEX_MANAGED_BY_PNPM", "CODEX_MANAGED_BY_VITE_PLUS", "CODEX_MANAGED_PACKAGE_ROOT"];
+        env.retain(|(k, _)| !MANAGED.contains(&k.as_str()));
+        let manager = if root.components().any(|c| c.as_os_str() == ".bun") { "CODEX_MANAGED_BY_BUN" } else { "CODEX_MANAGED_BY_NPM" };
+        env.push((manager.into(), "1".into()));
+        env.push(("CODEX_MANAGED_PACKAGE_ROOT".into(), root.to_string_lossy().into_owned()));
+    }
     env
 }
 
@@ -352,8 +379,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
         cmd.env("LANG", "en_US.UTF-8");
     }
     cmd.cwd(cwd);
-    // Bind under another name and rename into place: `list` deletes a `.sock` that refuses a
-    // connection, so the socket must never appear under its real name before it is listening.
+    // Bind under another name and rename into place so discovery sees the published socket
+    // only after it is listening.
     // It is published before the provider starts, so the provider's first hook finds the holder
     // (an early `hello` waits in the listen backlog until the event loop answers it).
     let binding = socket.with_extension("bind");

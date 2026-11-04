@@ -610,9 +610,45 @@ def pending_approval(events: list[Event]) -> object:
         found = None
         if not event.item_id or tool is None:
             continue
+        # A question is never a permission prompt, even if an old or malformed descriptor
+        # happens to contain approval-shaped metadata. Old clients must never offer Allow.
+        if tool.name == "AskUserQuestion" or isinstance(tool.input, dict) and tool.input.get("question") is True:
+            continue
         try:
             found = sessions.PendingApproval.model_validate(
                 {**(tool.input if isinstance(tool.input, dict) else {}), "approvalId": event.item_id, "tool": tool.name}
+            ).model_dump(by_alias=True)
+        except ValidationError:
+            found = None
+    return found
+
+
+def pending_question(events: list[Event]) -> object:
+    """Project only the last open prompt, and only a complete immutable question payload."""
+    found = _NO_PROMPT
+    for event in events:
+        if event.lifecycle != "approval_pending":
+            continue
+        found = None
+        tool = event.tool
+        if tool is None or tool.name != "AskUserQuestion" or not isinstance(tool.input, dict):
+            continue
+        tag = tool.input
+        if tag.get("question") is not True or tag.get("full") is not True or tag.get("promptId") != event.item_id:
+            continue
+        source = tag.get("input")
+        if (
+            not isinstance(source, dict)
+            or len(json.dumps(source, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 10 * 1024
+        ):
+            continue
+        try:
+            found = sessions.PendingQuestion.model_validate(
+                {
+                    "promptId": tag.get("promptId"),
+                    "inputDigest": tag.get("inputDigest"),
+                    "questions": source.get("questions"),
+                }
             ).model_dump(by_alias=True)
         except ValidationError:
             found = None
@@ -780,6 +816,7 @@ class LocalSessionRelay:
                         row["unshared"] = True
                         sessions.narrow_link(row)
                         row.pop("pendingApproval", None)
+                        row.pop("pendingQuestion", None)
                         row.pop("privateSendApproval", None)
                     # Absent, never a stored null.
                     for key in ("holderId", "forkedFrom", "networkSessionId", *ATTENTION_FIELDS, *SIGNAL_FIELDS):
@@ -815,6 +852,7 @@ class LocalSessionRelay:
                         # A terminal, a held prompt and control are the old process's, continued or not.
                         row.pop("terminal", None)
                         row.pop("pendingApproval", None)
+                        row.pop("pendingQuestion", None)
                         row.pop("privateSendApproval", None)
                         row.pop("teamControl", None)
                         # The people whose open ask this restart drops are told so on the new run.
@@ -1100,6 +1138,7 @@ class LocalSessionRelay:
                     # The prompt is answered (here or in the terminal) once the session stops waiting.
                     if item.status != "waiting-approval":
                         updated.pop("pendingApproval", None)
+                        updated.pop("pendingQuestion", None)
                         updated.pop("privateSendApproval", None)
                     moved = any(row.get(field) != updated.get(field) for field in _PUBLIC_FIELDS) or any(
                         (row.get("stats") or {}).get(key) != (updated.get("stats") or {}).get(key)
@@ -1208,6 +1247,7 @@ class LocalSessionRelay:
         else:
             updated.pop("screenUntil", None)
         updated.pop("pendingApproval", None)
+        updated.pop("pendingQuestion", None)
         updated.pop("privateSendApproval", None)
         # An ended row grants no control, so this opens the transcript for whoever started it and
         # nothing else. A start identity the row already holds is never replaced.
@@ -1289,8 +1329,15 @@ class LocalSessionRelay:
             )
         hint = now >= row.get("nextHintAt", 0)
         approval = pending_approval(message.events)
+        question = pending_question(message.events)
         approval_changed = approval is not _NO_PROMPT and row.get("pendingApproval") != approval
-        if approval_changed or (approval is not None and approval is not _NO_PROMPT):
+        question_changed = question is not _NO_PROMPT and row.get("pendingQuestion") != question
+        if (
+            approval_changed
+            or question_changed
+            or (approval is not None and approval is not _NO_PROMPT)
+            or (question is not None and question is not _NO_PROMPT)
+        ):
             # Prompt changes, including release, must refresh the session list immediately.
             hint = True
         updated = _revised(
@@ -1312,16 +1359,22 @@ class LocalSessionRelay:
             updated["finishedNotifiedAt"] = now // 1000
         if approval is not _NO_PROMPT:
             updated.pop("pendingApproval", None)
+            updated.pop("pendingQuestion", None)
             updated.pop("privateSendApproval", None)
             if approval is not None:
                 updated["pendingApproval"] = approval
+            if question is not None and question is not _NO_PROMPT and row["provider"] == "claude":
+                updated["pendingQuestion"] = question
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         # The write is cursor-fenced and a replayed batch returned above, so each end notifies once.
         if notify_ended is not None:
             _spawn(notify_attention(updated, "finished", notify_ended))
         if hint:
             await publish_resources_changed(
-                row["ownerId"], row["humanUserId"], transcript=not approval_changed, session_id=row["sessionId"]
+                row["ownerId"],
+                row["humanUserId"],
+                transcript=not (approval_changed or question_changed),
+                session_id=row["sessionId"],
             )
         return {
             "type": "local.session.events.ack",

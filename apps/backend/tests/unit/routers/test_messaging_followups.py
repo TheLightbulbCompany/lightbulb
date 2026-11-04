@@ -35,7 +35,9 @@ def repo():
         patch(f"{REPO}.get_member", AsyncMock(return_value={"kind": "agent", "id": AGENT})) as get_member,
         patch(f"{REPO}.get_message_by_id", AsyncMock(return_value={"messageId": TRIGGER})) as get_message,
         patch(f"{REPO}.get_follow_up", AsyncMock(return_value=None)) as get_follow_up,
-        patch(f"{REPO}.count_recent_follow_ups", AsyncMock(return_value=0)) as count,
+        patch(f"{REPO}.latest_human_message", AsyncMock(return_value=None)),
+        patch(f"{REPO}.count_follow_ups_since", AsyncMock(return_value=0)) as count,
+        patch("core.services.messaging._post_follow_up_cap_notice", AsyncMock()) as notice,
         patch(f"{REPO}.create_follow_up", AsyncMock(return_value=True)) as create,
     ):
         yield {
@@ -44,6 +46,7 @@ def repo():
             "get_message": get_message,
             "get_follow_up": get_follow_up,
             "count": count,
+            "notice": notice,
             "create": create,
         }
 
@@ -101,9 +104,10 @@ def test_unknown_room_member_or_trigger_is_404(client, repo, piece, value):
 
 
 def test_the_room_agent_cap_is_429(client, repo):
-    repo["count"].return_value = 3
+    repo["count"].return_value = 10
     assert client.post(URL, json=BODY, headers=H).status_code == 429
-    assert repo["count"].call_args.args == (ROOM, AGENT)
+    assert repo["count"].call_args.args[:2] == (ROOM, AGENT)
+    repo["notice"].assert_awaited_once()
     repo["create"].assert_not_awaited()
 
 

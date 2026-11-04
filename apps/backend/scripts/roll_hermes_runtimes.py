@@ -6,6 +6,10 @@ Runs INSIDE the backend task (ECS exec), like ``migrate_workspace_to_hermes``:
     uv run python -m scripts.roll_hermes_runtimes --all [--dry-run]
     uv run python -m scripts.roll_hermes_runtimes --all --respec   # model flip: env + profiles
     uv run python -m scripts.roll_hermes_runtimes --owner-id <org> --max-concurrent-turns 6
+    uv run python -m scripts.roll_hermes_runtimes --owner-id <org> --network-workers on
+
+``--network-workers on|off`` stores whether the owner's agents take network assignments on its
+container row and rolls, so every later roll keeps it.
 
 ``--max-concurrent-turns N`` stores the owner's turn cap on its container row (0 clears it back to
 the image default, 4; 1 is refused; no ``--dry-run``) and rolls, so the env carries ``LIGHTBULB_MAX_CONCURRENT_TURNS`` from then on.
@@ -71,7 +75,12 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--respec", action="store_true", help="re-spec on a current image and rewrite profiles")
     parser.add_argument("--max-concurrent-turns", type=int, help="set the owner's turn cap (0 = default)")
+    parser.add_argument("--network-workers", choices=("on", "off"), help="this owner's agents take network assignments")
     args = parser.parse_args(argv)
+    if args.network_workers:
+        if not args.owner_id or args.dry_run:
+            parser.error("--network-workers needs --owner-id and no --dry-run")
+        await container_repo.update_fields(args.owner_id, {"network_workers": args.network_workers == "on"})
     if args.max_concurrent_turns is not None:
         # 1 is refused: background compactions may take max(1, cap - 1) slots, so at 1 a compaction
         # could hold the only slot a typed turn needs.
@@ -100,7 +109,9 @@ async def main(argv: list[str] | None = None) -> int:
         # re-run it with --respec (the env no longer reads as drift) or it breaks on cold start.
         failed += result == "updated-session-busy"
         # A concurrent roll may have built its spec from the row before this cap landed: re-run.
-        failed += args.max_concurrent_turns is not None and result == "update-in-progress"
+        failed += (
+            args.max_concurrent_turns is not None or bool(args.network_workers)
+        ) and result == "update-in-progress"
     return 1 if failed else 0
 
 

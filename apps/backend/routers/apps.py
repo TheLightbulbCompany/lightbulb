@@ -7,6 +7,7 @@ removes it (R73). Thin over ``core/services/apps_service.py``; this file only au
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from typing import Annotated, Literal
 
@@ -148,6 +149,9 @@ async def _caller(request: Request, *, upload: bool = False) -> svc.BuilderCalle
     else:
         raise HTTPException(status_code=401, detail="missing credentials")
     await require_always_on_entitlement(caller.owner_id, message=PAID_MESSAGE)  # R22
+    run_id = request.headers.get("X-Lightbulb-Run")
+    if run_id and _AGENT_ID_RE.fullmatch(run_id):  # absent or malformed: the app links no run (old CLIs)
+        caller = dataclasses.replace(caller, run_id=run_id)
     return caller
 
 
@@ -218,10 +222,11 @@ async def put_source(request: Request, caller: Annotated[svc.BuilderCaller, Depe
         fields = {k: form.get(k) for k in ("name", "room_id", "commit")}
         if not hasattr(archive, "read") or not all(isinstance(v, str) and v for v in fields.values()):
             raise HTTPException(422, {"code": "invalid_request", "message": "name, room_id, commit and archive"})
+        placeholder = form.get("placeholder") == "true"  # the starter's untouched page; old CLIs omit it
         data = await archive.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
         raise _too_large()
-    return await _run(svc.put_source(caller.owner_id, **fields, archive=data, actor=caller))
+    return await _run(svc.put_source(caller.owner_id, **fields, archive=data, actor=caller, placeholder=placeholder))
 
 
 @router.post("/build/up")
@@ -237,7 +242,7 @@ async def publish(app_id: str, body: PublishBody, caller: Builder):
 
 @router.post("/build/{app_id}/rollback")
 async def rollback(app_id: str, body: RollbackBody, caller: Builder):
-    return await _run(svc.rollback(caller.owner_id, app_id, version=body.version))
+    return await _run(svc.rollback(caller.owner_id, app_id, version=body.version, run_id=caller.run_id))
 
 
 @router.post("/build/{app_id}/destroy")
@@ -260,6 +265,12 @@ async def test_link(app_id: str, caller: Builder, response: Response):
     """The builder's own short-lived way past the preview's door. Never live."""
     response.headers["Cache-Control"] = "no-store"  # a pass: never cached
     return {"url": await _run(svc.test_link(caller.owner_id, app_id, actor=caller))}
+
+
+@router.post("/build/{app_id}/reset-preview-data")
+async def reset_preview_data(app_id: str, caller: Builder):
+    """The preview database back to its schema and sample data, after ``app verify`` sent test values. Never live."""
+    return await _run(svc.reset_preview_data(caller.owner_id, app_id))
 
 
 # --- members ------------------------------------------------------------------------------------

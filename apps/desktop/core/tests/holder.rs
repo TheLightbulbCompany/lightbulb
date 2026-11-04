@@ -226,15 +226,18 @@ fn holder_keeps_the_normal_screen_when_the_alternate_one_closed_long_before_the_
 }
 
 #[test]
-fn holder_manager_lists_live_holders_and_drops_dead_sockets() {
+fn holder_manager_lists_live_holders_and_ignores_dead_sockets() {
     let dir = temp_dir();
     let socket = start_cat(&dir);
-    std::fs::write(dir.join("dead0000.sock"), b"").unwrap();
+    // A regular file is not a refused endpoint on every OS. Leave a real socket
+    // pathname behind after its listener closes, as a dead holder does.
+    let dead = std::os::unix::net::UnixListener::bind(dir.join("dead0000.sock")).unwrap();
+    drop(dead);
     let list = manager::list_in(&dir);
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].socket, socket);
     assert_eq!(list[0].argv, vec!["/bin/cat".to_string()]);
-    assert!(!dir.join("dead0000.sock").exists(), "a socket nobody listens on is removed");
+    assert!(dir.join("dead0000.sock").exists(), "discovery never unlinks an endpoint based on a failed connection");
 }
 
 /// An idle stop may end a holder only while no terminal or panel has its keyboard; a watcher

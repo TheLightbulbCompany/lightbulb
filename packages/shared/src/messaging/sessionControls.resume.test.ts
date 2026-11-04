@@ -29,9 +29,9 @@ describe("canResumeSession", () => {
 describe("resumeStatus", () => {
   it("says who asked and whose Mac it waits for, or why the Mac refused", () => {
     expect(resumeStatus(ended({ resume: { state: "pending", byUserId: "bob", requestedAt: "" } }), false, "Alice", nameOf, "bob"))
-      .toBe("You asked to resume this session. It starts on Alice’s Mac when that Mac is on, within 24 hours.");
+      .toBe("Opening this session on Alice’s Mac…");
     expect(resumeStatus(ended({ resume: { state: "pending", byUserId: "bob", requestedAt: "" } }), true, "Alice", nameOf, "alice"))
-      .toBe("Bob asked to resume this session. It starts on your Mac when that Mac is on, within 24 hours.");
+      .toBe("Bob asked to open this session on your Mac.");
     expect(resumeStatus(ended({ resume: { state: "failed", byUserId: "bob", requestedAt: "", reason: "ALREADY_RUNNING" } }), false, "Alice", nameOf, "bob"))
       .toBe("Not resumed: it is still running on Alice’s Mac, where Lightbulb cannot show it. End it there, then resume.");
     expect(resumeStatus(ended({ resume: { state: "failed", byUserId: "bob", requestedAt: "", reason: "CONTINUED" } }), true, "Alice", nameOf, "alice"))
@@ -88,7 +88,7 @@ describe("useSessionResume", () => {
     expect(result.current.available).toBe(true);
     await act(async () => { await result.current.resume(""); });
     expect(result.current.available).toBe(false); // the prop never changed
-    expect(result.current.status).toContain("You asked to resume this session");
+    expect(result.current.status).toContain("Opening this session");
     await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
     expect(getLocalSession).toHaveBeenCalledWith("s-wait");
     expect(result.current.status).toBe("Not resumed: its folder is no longer on Alice’s Mac.");
@@ -109,7 +109,7 @@ describe("useSessionResume", () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(119_000); });
       const asked = getLocalSession.mock.calls.length;
       expect(asked).toBeGreaterThan(15); // past the first 15 fast checks
-      expect(result.current.status).toContain("You asked to resume this session");
+      expect(result.current.status).toContain("Opening this session");
       wake = true; // the Mac wakes after 2 minutes and refuses
       await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
       expect(result.current.status).toBe("Not resumed: session sharing is off on Alice’s Mac.");

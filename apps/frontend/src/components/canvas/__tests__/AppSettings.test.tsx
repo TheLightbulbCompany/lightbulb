@@ -17,7 +17,7 @@ vi.mock("@/lib/notify", () => ({ notifySuccess: (m: string) => notifySuccess(m),
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => admin }));
 import { AppSettings } from "../AppSettings";
 
-const neon = { provider: "neon", service: "db", state: "ready", resource_id: "n1", environment: "prod" };
+const neon = { provider: "Neon", service: "db", state: "ready", resource_id: "n1", environment: "prod" };
 const app = (over: Partial<AppRow> = {}): AppRow => ({
   app_id: "a1", name: "Invoices", room_id: "r1", room_name: "finance", state: "ready", open_to: "room",
   budget_usd: 20, preview_url: null, live_url: "https://x", live_version: 3, last_opened_at: null,

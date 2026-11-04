@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/error";
 import type {
   LocalSession,
+  LocalSessionCommand,
   LocalSessionCommandReceipt,
   LocalSessionPickup,
   LocalSessionApprovalMode,
@@ -173,6 +174,7 @@ const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
   interrupt: "stopped the session",
   end: "ended the session",
   approve: "approved a permission prompt",
+  answer: "answered a question",
   deny: "denied a permission prompt",
   team_control_on: "let teammates control this session",
   team_control_off: "turned off teammate control",
@@ -281,6 +283,74 @@ function clipBytes(text: string, max: number): string {
     out += ch;
   }
   return out;
+}
+
+/** A provider-held question uses the command journal, never terminal key guesses.
+ * An uncertain submission keeps its exact request and answers while checking delivery.
+ */
+export function useSessionQuestion(client: SessionControlClient, session: LocalSession, uuid: () => string) {
+  const [state, setState] = useState<{ promptId: string; status: "sending" | "pending" | "applied" | "uncertain" | "rejected"; error?: string } | null>(null);
+  const attempt = useRef<Extract<LocalSessionCommand, { kind: "answer" }> | null>(null);
+  const busy = useRef(false);
+  const pending = session.pendingQuestion;
+  const current = state?.promptId === pending?.promptId ? state : null;
+  const fail = useCallback((error: unknown, promptId: string) => {
+    const rejected = error instanceof ApiError && [400, 403, 404, 409, 422].includes(error.status);
+    setState({ promptId, status: rejected ? "rejected" : "uncertain",
+      ...(rejected ? { error: error instanceof Error ? error.message : "This answer was refused." } : {}) });
+  }, []);
+  const sync = useCallback((receipt: LocalSessionCommandReceipt, promptId: string) => {
+    setState({ promptId, status: receipt.state === "applied" ? "applied" : receipt.state === "rejected" ? "rejected" : receipt.state === "unknown" ? "uncertain" : "pending",
+      ...(receipt.state === "rejected" ? { error: "This question is no longer accepting that answer." } : {}) });
+  }, []);
+  const answer = useCallback(async (answers: Record<string, string>) => {
+    if (!pending || busy.current || (current && current.status !== "rejected")) return;
+    const request: Extract<LocalSessionCommand, { kind: "answer" }> = {
+      kind: "answer", requestId: uuid(), expectedGeneration: session.generation,
+      promptId: pending.promptId, inputDigest: pending.inputDigest, answers: { ...answers },
+    };
+    attempt.current = request;
+    busy.current = true;
+    setState({ promptId: pending.promptId, status: "sending" });
+    try { sync(await client.submitLocalSessionCommand(session.sessionId, request), pending.promptId); }
+    catch (e) { fail(e, pending.promptId); } finally { busy.current = false; }
+  }, [pending, current, client, session.sessionId, session.generation, uuid, sync, fail]);
+  const promptId = pending?.promptId;
+  const status = current?.status;
+  useEffect(() => {
+    if (!promptId || !status || !["pending", "uncertain"].includes(status) || !client.getLocalSessionCommand) return;
+    const request = attempt.current;
+    if (!request || request.promptId !== promptId || request.expectedGeneration !== session.generation) return;
+    let live = true;
+    let checking = false;
+    let settled = false;
+    const check = async () => {
+      if (!live || checking || settled) return;
+      checking = true;
+      const accept = (receipt: LocalSessionCommandReceipt) => {
+        if (!live) return;
+        settled = receipt.state === "applied" || receipt.state === "rejected";
+        sync(receipt, request.promptId);
+      };
+      const refuse = (error: unknown) => {
+        if (!live) return;
+        settled = error instanceof ApiError && [400, 403, 404, 409, 422].includes(error.status);
+        fail(error, request.promptId);
+      };
+      try { accept(await client.getLocalSessionCommand!(session.sessionId, request.requestId)); }
+      catch (error) {
+        // If the initial HTTP request never arrived, reuse its immutable ID and answer.
+        // Both journals deduplicate it, including a race with the first submission.
+        if (live && error instanceof ApiError && error.status === 404) {
+          try { accept(await client.submitLocalSessionCommand(session.sessionId, request)); }
+          catch (error) { refuse(error); }
+        } else { refuse(error); }
+      } finally { checking = false; }
+    };
+    const timer = setInterval(() => { void check(); }, 2000);
+    return () => { live = false; clearInterval(timer); };
+  }, [client, session.sessionId, session.generation, promptId, status, sync, fail]);
+  return { answer, state: current, locked: !!current && current.status !== "rejected" };
 }
 
 export type ApprovalAnswer = { decision: "allow" | "deny"; mode?: LocalSessionApprovalMode; reason?: string };
@@ -480,11 +550,12 @@ export function resumeStatus(session: LocalSession, own: boolean, ownerName: str
   const mac = own ? "your Mac" : `${ownerName}’s Mac`;
   if (resume.state === "failed") return `Not resumed: ${(RESUME_REFUSED[resume.reason ?? ""] ?? ((m: string) => `${m} could not start it`))(mac, session.cwdName || "its folder")}.`;
   const who = resume.byUserId === userId ? "You" : nameOf(resume.byUserId);
-  return `${who} asked to resume this session. It starts on ${mac} when that Mac is on, within 24 hours.`;
+  return who === "You" ? `Opening this session on ${mac}…` : `${who} asked to open this session on ${mac}.`;
 }
 
 export type SessionResumeFlow = {
   available: boolean; status: string | null; saving: boolean; error: string | null;
+  recovery?: "folder-access" | "sharing";
   resume: (message: string) => Promise<boolean>;
   /** Where the first message stands once the session runs again; null before, and once it landed. */
   chip: SessionReceiptChip | null;
@@ -594,6 +665,9 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
   return {
     available: !!client.resumeLocalSession && canResumeSession(session, own, userId),
     status: resumeStatus(session, own, ownerName, nameOf, userId),
+    recovery: own && session.resume?.state === "failed"
+      ? session.resume.reason === "FOLDER_NOT_APPROVED" ? "folder-access" : session.resume.reason === "SHARING_OFF" ? "sharing" : undefined
+      : undefined,
     saving, error, resume, chip: receiptChip(attempt),
   };
 }

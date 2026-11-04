@@ -1218,6 +1218,20 @@ async def _result(app: dict, rows: dict, transient: AppError | None, cost_cents:
 # --- public -------------------------------------------------------------------------------------
 
 
+async def _refuse_a_second_app_from_a_conversation(owner_id: str, name: str, actor: BuilderCaller) -> None:
+    """A builder in an app's own conversation builds that app: a new name there would make a second app."""
+    run = await messaging_repo.get_run(owner_id, actor.run_id) if actor.run_id else None
+    room = await messaging_repo.get_room(run["roomId"]) if run and run.get("roomId") else None
+    app_id = ((room or {}).get("app") or {}).get("app_id")
+    app = await apps_repo.get(app_id) if app_id else None
+    if app and app.get("name") != name and app.get("state") != "destroyed":
+        raise AppsRefused(
+            "wrong_app",
+            f"This conversation builds {_display(app)}, named {app['name']}, not {name}.",
+            f"run lightbulb app new {app['name']} --kind <kind> in a new folder, build there, then lightbulb app up",
+        )
+
+
 async def put_source(
     owner_id: str,
     *,
@@ -1235,6 +1249,7 @@ async def put_source(
     await _check_room(owner_id, room_id)
     app = await apps_repo.get_by_name(owner_id, name)
     if app is None:
+        await _refuse_a_second_app_from_a_conversation(owner_id, name, actor)
         app = await apps_repo.create(
             owner_id=owner_id,
             name=name,

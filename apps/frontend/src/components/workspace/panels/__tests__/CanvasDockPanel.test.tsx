@@ -83,6 +83,12 @@ describe("CanvasDockPanel deep link", () => {
     expect(screen.getByText("app view")).toBeTruthy();
   });
 
+  it("an app building a new version keeps the full view: the app, Publish and Settings stay", () => {
+    hook = { ...base, apps: [row({ state: "building", live_version: 1, live_url: "https://x.example", preview_url: "https://p.example" })] };
+    panel("a1");
+    expect(screen.getByText("app view")).toBeTruthy();
+  });
+
   it("a ready app renders the view", () => {
     hook = { ...base, apps: [row()] };
     panel("a1");

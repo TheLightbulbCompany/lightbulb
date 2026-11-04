@@ -3268,3 +3268,11 @@ def test_a_started_apps_build_rooms_leave_out_the_room_it_was_asked_in():
     assert svc._build_rooms(older) == ["conv", "room_1"]
     assert svc._build_rooms({"room_id": "room_1"}) == ["room_1"]
     assert svc._rooms(started) == ["conv", "room_1"]  # publish asks still count there
+
+
+async def test_a_retried_upload_of_the_latest_commit_is_not_stale(world):
+    """An up whose answer was lost uploads the same commit again on the old base: a retry, not a stale copy."""
+    first = await _source(SRC_V1, commit="c1")
+    await svc.put_source(OWNER, name="crew", commit="c2", archive=_tar(SRC_V2), actor=PERSON, base_commit="c1")
+    again = await svc.put_source(OWNER, name="crew", commit="c2", archive=_tar(SRC_V2), actor=PERSON, base_commit="c1")
+    assert again["app_id"] == first["app_id"]

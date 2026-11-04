@@ -1248,7 +1248,8 @@ async def put_source(
     latest = _latest_source(app)
     # ponytail: check-then-write, so two uploads in the same second can both pass; a conditional patch on
     # `sources` closes it if that ever happens.
-    if base_commit and latest and latest[1]["commit"] != base_commit:
+    # The same commit again is a retried upload (its first answer was lost), not a stale copy.
+    if base_commit and latest and latest[1]["commit"] not in (base_commit, commit):
         raise AppsRefused(
             "stale_base",
             f"{_display(app)} changed since your copy: its latest version is {latest[1]['commit']}, yours is built"

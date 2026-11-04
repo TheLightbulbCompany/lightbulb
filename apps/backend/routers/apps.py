@@ -264,6 +264,9 @@ async def ask(app_id: AppId, body: AskBody, caller: Builder):
     )
 
 
+_COMMIT = re.compile(r"[A-Za-z0-9]{1,200}")
+
+
 @router.post("/build/source")
 async def put_source(request: Request, caller: Annotated[svc.BuilderCaller, Depends(_upload_caller)]):
     # Parsed by hand, after builder_caller: the proof check hashes the raw body first, and FastAPI's
@@ -277,8 +280,10 @@ async def put_source(request: Request, caller: Annotated[svc.BuilderCaller, Depe
         if room_id is not None and not (isinstance(room_id, str) and len(room_id) <= 128):
             raise HTTPException(422, {"code": "invalid_request", "message": "room_id"})
         fields["room_id"] = room_id or None
+        if not _COMMIT.fullmatch(fields["commit"]):  # it goes back out in a response header on pull
+            raise HTTPException(422, {"code": "invalid_request", "message": "commit"})
         base_commit = form.get("base_commit")  # what the upload was built on; old CLIs omit it
-        if base_commit is not None and not (isinstance(base_commit, str) and len(base_commit) <= 200):
+        if base_commit is not None and not (isinstance(base_commit, str) and _COMMIT.fullmatch(base_commit)):
             raise HTTPException(422, {"code": "invalid_request", "message": "base_commit"})
         placeholder = form.get("placeholder") == "true"  # the starter's untouched page; old CLIs omit it
         data = await archive.read(MAX_UPLOAD + 1)

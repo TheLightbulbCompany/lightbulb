@@ -585,3 +585,17 @@ def test_start_takes_the_clis_room_id(client, monkeypatch):
     monkeypatch.setattr(app_conversation, "start", start)
     client.post(f"{BASE}/start", json={"name": "booking", "request": "r", "room_id": "room_1"}, headers=HOOK)
     assert start.await_args.kwargs["origin_room_id"] == "room_1"
+
+
+def test_a_commit_that_cannot_go_back_out_in_a_header_is_refused(client, monkeypatch):
+    put = AsyncMock(return_value={"app_id": "app_1", "source_id": "s1"})
+    monkeypatch.setattr(svc, "put_source", put)
+    files = {"archive": ("src.tar.gz", b"tarbytes", "application/gzip")}
+    for bad in ("c1\r\nX-Evil: 1", "c 1", "ünï"):
+        r = client.post(f"{BASE}/source", data={"name": "crew", "commit": bad}, files=files, headers=HOOK)
+        assert r.status_code == 422, bad
+    r = client.post(
+        f"{BASE}/source", data={"name": "crew", "commit": "c1", "base_commit": "c 0"}, files=files, headers=HOOK
+    )
+    assert r.status_code == 422
+    put.assert_not_awaited()
